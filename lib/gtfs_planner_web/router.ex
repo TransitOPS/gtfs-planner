@@ -18,6 +18,7 @@ defmodule GtfsPlannerWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
+    live "/salad-demo", DemoLive
   end
 
   # Other scopes may use custom stacks.

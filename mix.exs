@@ -51,6 +51,7 @@ defmodule GtfsPlanner.MixProject do
       {:phoenix_live_dashboard, "~> 0.8.3"},
       {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
       {:tailwind, "~> 0.4", runtime: Mix.env() == :dev},
+      {:salad_ui, "~> 1.0.0-beta.3"},
       {:heroicons,
        github: "tailwindlabs/heroicons",
        tag: "v2.2.0",
