@@ -1,9 +1,0 @@
-feat: add Salad UI library PoC setup
-
-- Add salad_ui dependency (~> 1.0.0-beta.3) to mix.exs
-- Configure Tailwind v4 sources to include Salad UI components
-- Create demo LiveView at /salad-demo route for verification
-- Run salad.setup task for initial configuration
-- Successfully integrate Salad UI with Phoenix 1.8+ and Tailwind v4
-
-This provides a foundation for using Salad UI components throughout the application.
