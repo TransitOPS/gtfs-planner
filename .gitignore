@@ -35,3 +35,9 @@ gtfs_planner-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# Ignore git commit message files
+git_commit_message.txt
+
+# Ignore log files
+logfile
+
