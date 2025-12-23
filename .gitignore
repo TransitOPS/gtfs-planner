@@ -40,3 +40,5 @@ git_commit_message.txt
 
 # Ignore log files
 logfile
+
+/test-failures-output.txt

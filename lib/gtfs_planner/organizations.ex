@@ -174,9 +174,19 @@ defmodule GtfsPlanner.Organizations do
       {:error, %Ecto.Changeset{}}
   """
   def create_api_key(organization_id, attrs \\ %{}) do
-    %ApiKey{organization_id: organization_id}
-    |> ApiKey.changeset(attrs)
-    |> ApiKey.build_hashed_token(organization_id)
+    import Ecto.Changeset, only: [validate_required: 2]
+
+    changeset =
+      %ApiKey{organization_id: organization_id}
+      |> ApiKey.changeset(attrs)
+      |> validate_required([:organization_id])
+
+    {token, updated_changeset} = ApiKey.build_hashed_token(organization_id, changeset)
+
+    case Repo.insert(updated_changeset) do
+      {:ok, api_key} -> {:ok, {api_key, token}}
+      {:error, changeset} -> {:error, changeset}
+    end
   end
 
   @doc """
@@ -192,7 +202,7 @@ defmodule GtfsPlanner.Organizations do
   """
   def update_api_key(%ApiKey{} = api_key, attrs) do
     api_key
-    |> ApiKey.changeset(attrs)
+    |> ApiKey.update_changeset(attrs)
     |> Repo.update()
     |> broadcast([:api_keys, :updated])
   end
@@ -221,7 +231,13 @@ defmodule GtfsPlanner.Organizations do
       iex> change_api_key(api_key)
       %Ecto.Changeset{data: %ApiKey{}}
   """
-  def change_api_key(%ApiKey{} = api_key, attrs \\ %{}) do
+  def change_api_key(api_key, attrs \\ %{})
+
+  def change_api_key(%ApiKey{id: id} = api_key, attrs) when not is_nil(id) do
+    ApiKey.update_changeset(api_key, attrs)
+  end
+
+  def change_api_key(%ApiKey{} = api_key, attrs) do
     ApiKey.changeset(api_key, attrs)
   end
 
@@ -264,8 +280,10 @@ defmodule GtfsPlanner.Organizations do
     )
     |> Repo.one()
     |> case do
-      nil -> {:error, :not_found}
-      membership -> 
+      nil ->
+        {:error, :not_found}
+
+      membership ->
         Repo.delete(membership)
         |> broadcast([:memberships, :deleted])
     end
@@ -291,7 +309,7 @@ defmodule GtfsPlanner.Organizations do
     |> case do
       nil ->
         {:error, :not_found}
-      
+
       membership ->
         membership
         |> UserOrgMembership.changeset(%{roles: roles})
@@ -316,7 +334,7 @@ defmodule GtfsPlanner.Organizations do
       select: {o, m.roles}
     )
     |> Repo.all()
-    |> Enum.map(fn {org, roles} -> 
+    |> Enum.map(fn {org, roles} ->
       Map.put(org, :user_roles, roles)
     end)
   end

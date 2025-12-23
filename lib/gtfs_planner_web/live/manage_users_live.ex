@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Organizations
 
+  @impl true
   def render(assigns) do
     ~H"""
     <div class="space-y-12">
@@ -68,8 +69,7 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
                         phx-click="update_roles"
                         phx-value-user-id={user_data.user.id}
                       >
-                        <.icon name="hero-cog-6-tooth" class="w-4 h-4" />
-                        Edit Roles
+                        <.icon name="hero-cog-6-tooth" class="w-4 h-4" /> Edit Roles
                       </button>
 
                       <button
@@ -79,8 +79,7 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
                         phx-value-user-id={user_data.user.id}
                         phx-confirm="Are you sure you want to remove this user from the organization?"
                       >
-                        <.icon name="hero-trash" class="w-4 h-4" />
-                        Remove
+                        <.icon name="hero-trash" class="w-4 h-4" /> Remove
                       </button>
                     </div>
                   </div>
@@ -103,17 +102,17 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
   @impl true
   def mount(_params, _session, socket) do
     organization = socket.assigns.current_organization
-    
+
     if organization do
       users = Organizations.list_users_in_organization(organization.id)
-      
+
       socket =
         socket
         |> assign(:organization, organization)
         |> stream(:users, users, key: fn %{user: user} -> user.id end)
         |> assign(:invite_form, to_form(%{"email" => ""}))
         |> assign(:role_form, to_form(%{"roles" => []}))
-      
+
       {:ok, socket}
     else
       {:ok, redirect(socket, to: ~p"/organizations")}
@@ -136,20 +135,20 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
           {:ok, _membership} ->
             # Refresh the user list
             users = Organizations.list_users_in_organization(organization.id)
-            
+
             socket =
               socket
               |> stream(:users, users, reset: true)
               |> put_flash(:info, "Invitation sent to #{email}")
               |> assign(:invite_form, to_form(%{"email" => ""}))
-            
+
             {:noreply, socket}
 
           {:error, _changeset} ->
             socket =
               socket
               |> put_flash(:error, "Failed to add user to organization")
-            
+
             {:noreply, socket}
         end
 
@@ -157,7 +156,7 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
         socket =
           socket
           |> put_flash(:error, "Failed to invite user: #{inspect(changeset.errors)}")
-        
+
         {:noreply, socket}
     end
   end
@@ -172,7 +171,7 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
       socket =
         socket
         |> put_flash(:error, "You cannot remove yourself from the organization")
-      
+
       {:noreply, socket}
     else
       case Organizations.remove_user_from_organization(user_id, organization.id) do
@@ -182,14 +181,14 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
             socket
             |> stream_delete(:users, user_id)
             |> put_flash(:info, "User removed from organization")
-          
+
           {:noreply, socket}
 
         {:error, :not_found} ->
           socket =
             socket
             |> put_flash(:error, "User not found in organization")
-          
+
           {:noreply, socket}
       end
     end
@@ -198,30 +197,30 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
   @impl true
   def handle_event("update_roles", %{"user_id" => user_id, "roles" => roles_params}, socket) do
     organization = socket.assigns.current_organization
-    
+
     # Parse roles from checkbox form
-    roles = 
+    roles =
       roles_params
       |> Enum.filter(fn {_role, value} -> value == "true" end)
       |> Enum.map(fn {role, _value} -> role end)
-    
+
     case Organizations.update_user_roles(user_id, organization.id, roles) do
       {:ok, _membership} ->
         # Refresh the user list to show updated roles
         users = Organizations.list_users_in_organization(organization.id)
-        
+
         socket =
           socket
           |> stream(:users, users, reset: true)
           |> put_flash(:info, "User roles updated")
-        
+
         {:noreply, socket}
 
       {:error, :not_found} ->
         socket =
           socket
           |> put_flash(:error, "User not found in organization")
-        
+
         {:noreply, socket}
     end
   end

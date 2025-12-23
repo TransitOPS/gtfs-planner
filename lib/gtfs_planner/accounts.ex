@@ -123,7 +123,7 @@ defmodule GtfsPlanner.Accounts do
   def apply_user_email(user, password, attrs) do
     user
     |> User.email_changeset(attrs)
-    |> User.validate_current_password(password)
+    |> User.validate_current_password(password, user: user)
     |> Ecto.Changeset.apply_action(:update)
   end
 
@@ -145,7 +145,7 @@ defmodule GtfsPlanner.Accounts do
   def update_user_email(user, token) do
     context = "change:#{user.email}"
 
-    with {:ok, query} <- UserToken.verify_email_token_query(token, context),
+    with {:ok, query} <- UserToken.verify_change_email_token_query(token, context),
          %UserToken{} = token <- Repo.one(query),
          {:ok, _} <- Repo.transaction(user_email_multi(user, token, context)) do
       :ok
@@ -154,16 +154,15 @@ defmodule GtfsPlanner.Accounts do
     end
   end
 
-  defp user_email_multi(user, token, context) do
+  defp user_email_multi(user, token, _context) do
     Ecto.Multi.new()
-    |> Ecto.Multi.update(:user, User.email_changeset(user, %{email: token.context}))
-    |> Ecto.Multi.delete(:token, token)
-    |> Ecto.Multi.run(
-      :deliver,
-      fn _repo, %{user: updated_user} ->
-        {:ok, UserNotifier.deliver_user_confirmation_instructions(updated_user)}
-      end
+    |> Ecto.Multi.update(
+      :user,
+      user
+      |> User.email_changeset(%{email: token.sent_to})
+      |> User.confirm_changeset()
     )
+    |> Ecto.Multi.delete(:token, token)
   end
 
   @doc ~S"""
@@ -213,7 +212,7 @@ defmodule GtfsPlanner.Accounts do
     changeset =
       user
       |> User.password_changeset(attrs)
-      |> User.validate_current_password(password)
+      |> User.validate_current_password(password, user: user)
 
     Ecto.Multi.new()
     |> Ecto.Multi.update(:user, changeset)
@@ -240,15 +239,25 @@ defmodule GtfsPlanner.Accounts do
   Gets the user with the given signed token.
   """
   def get_user_by_session_token(token) do
-    {:ok, query} = UserToken.verify_session_token_query(token)
-    Repo.one(query)
+    case UserToken.verify_session_token_query(token) do
+      {:ok, query} ->
+        case Repo.one(query) do
+          nil -> nil
+          user -> user
+        end
+
+      _ ->
+        nil
+    end
   end
 
   @doc """
   Deletes the signed token with the given context.
   """
   def delete_session_token(token) do
-    Repo.delete_all(UserToken.token_and_context_query(token, "session"))
+    token = Base.url_decode64!(token, padding: false)
+    hashed_token = :crypto.hash(:sha256, token)
+    Repo.delete_all(UserToken.token_and_context_query(hashed_token, "session"))
     :ok
   end
 
@@ -374,13 +383,13 @@ defmodule GtfsPlanner.Accounts do
       {:error, %Ecto.Changeset{}}
 
   """
-  def invite_user(email, organization_id) when is_binary(email) do
+  def invite_user(email, _organization_id) when is_binary(email) do
     email = String.downcase(email)
 
     case get_user_by_email(email) do
       nil ->
-        %User{email: email}
-        |> User.invite_changeset()
+        %User{}
+        |> User.invite_changeset(%{email: email})
         |> Repo.insert()
 
       user ->

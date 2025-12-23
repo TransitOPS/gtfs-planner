@@ -3,12 +3,11 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
   Module for sending authentication-related emails to users.
   """
 
-  use Phoenix.Swoosh, view: GtfsPlannerWeb.EmailLayouts, layout: {GtfsPlannerWeb.EmailLayouts, :email}
-
   alias GtfsPlanner.Mailer
+  import Swoosh.Email
 
   @doc """
-  Delivers the email confirmation instructions.
+  Delivers email confirmation instructions.
 
   ## Examples
 
@@ -17,11 +16,13 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
 
   """
   def deliver_confirmation_instructions(user, url) when is_binary(url) do
+    email_body = confirmation_instructions_html(user, url)
+
     new()
-    |> to({user.email})
+    |> to(user.email)
     |> from({"GTFS Planner", "no-reply@gtfsplanner.com"})
     |> subject("Confirm your GTFS Planner email")
-    |> render_body("confirmation_instructions.html", %{user: user, url: url})
+    |> html_body(email_body)
     |> Mailer.deliver()
   end
 
@@ -35,16 +36,18 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
 
   """
   def deliver_update_email_instructions(user, url) when is_binary(url) do
+    email_body = update_email_instructions_html(user, url)
+
     new()
-    |> to({user.email})
+    |> to(user.email)
     |> from({"GTFS Planner", "no-reply@gtfsplanner.com"})
     |> subject("Update your GTFS Planner email")
-    |> render_body("update_email_instructions.html", %{user: user, url: url})
+    |> html_body(email_body)
     |> Mailer.deliver()
   end
 
   @doc """
-  Delivers the password reset instructions.
+  Delivers password reset instructions.
 
   ## Examples
 
@@ -53,16 +56,18 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
 
   """
   def deliver_reset_password_instructions(user, url) when is_binary(url) do
+    email_body = reset_password_instructions_html(user, url)
+
     new()
-    |> to({user.email})
+    |> to(user.email)
     |> from({"GTFS Planner", "no-reply@gtfsplanner.com"})
     |> subject("Reset your GTFS Planner password")
-    |> render_body("reset_password_instructions.html", %{user: user, url: url})
+    |> html_body(email_body)
     |> Mailer.deliver()
   end
 
   @doc """
-  Delivers the user invitation email.
+  Delivers user invitation email.
 
   ## Examples
 
@@ -71,15 +76,82 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
 
   """
   def deliver_user_invite(user, url) when is_binary(url) do
+    email_body = user_invite_html(user, url)
+
     new()
-    |> to({user.email})
+    |> to(user.email)
     |> from({"GTFS Planner", "no-reply@gtfsplanner.com"})
     |> subject("You're invited to join GTFS Planner")
-    |> render_body("user_invite.html", %{user: user, url: url})
+    |> html_body(email_body)
     |> Mailer.deliver()
   end
 
-  ## Helpers
+  # Helper functions to generate email HTML
+  defp confirmation_instructions_html(user, url) do
+    """
+    <p>
+      Hello #{user.email},
+    </p>
+    <p>
+      You can confirm your account email by visiting the URL below:
+    </p>
+    <p>
+      <a href="#{url}">Confirm your account</a>
+    </p>
+    <p>
+      If you didn't create an account with us, please ignore this.
+    </p>
+    """
+  end
 
-  defp extract_user_email(fun) when is_function(fun, 0), do: fun.()
+  defp update_email_instructions_html(user, url) do
+    """
+    <p>
+      Hi #{user.email},
+    </p>
+    <p>
+      You can change your email by visiting the URL below:
+    </p>
+    <p>
+      <a href="#{url}">Change your email</a>
+    </p>
+    <p>
+      If you didn't request this change, please ignore this.
+    </p>
+    """
+  end
+
+  defp reset_password_instructions_html(user, url) do
+    """
+    <p>
+      Hello #{user.email},
+    </p>
+    <p>
+      You can reset your password by visiting the URL below:
+    </p>
+    <p>
+      <a href="#{url}">Reset your password</a>
+    </p>
+    <p>
+      If you didn't request this change, please ignore this.
+    </p>
+    """
+  end
+
+  defp user_invite_html(user, url) do
+    """
+    <p>
+      Hi #{user.email},
+    </p>
+    <p>
+      You have been invited to join GTFS Planner. You can set your password by visiting the URL below:
+    </p>
+    <p>
+      <a href="#{url}">Set your password</a>
+    </p>
+    <p>
+      If you didn't request this invite, please ignore this.
+    </p>
+    """
+  end
 end

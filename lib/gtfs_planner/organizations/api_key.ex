@@ -93,8 +93,18 @@ defmodule GtfsPlanner.Organizations.ApiKey do
   def changeset(api_key \\ %__MODULE__{}, attrs) do
     api_key
     |> cast(attrs, [:description, :roles, :organization_id])
-    |> validate_required([:description, :organization_id])
+    |> validate_required([:description])
     |> validate_length(:description, max: 255)
     |> foreign_key_constraint(:organization_id)
+  end
+
+  @doc """
+  Creates a changeset for updating an existing API key.
+  """
+  def update_changeset(api_key \\ %__MODULE__{}, attrs) do
+    api_key
+    |> cast(attrs, [:description, :roles])
+    |> validate_required([:description])
+    |> validate_length(:description, max: 255)
   end
 end

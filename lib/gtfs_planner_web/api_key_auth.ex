@@ -60,14 +60,17 @@ defmodule GtfsPlannerWeb.ApiKeyAuth do
       conn
       |> put_status(:unauthorized)
       |> put_resp_content_type("application/json")
-      |> send_resp(401, Jason.encode!(%{error: "Unauthorized", message: "Invalid or missing API key"}))
+      |> send_resp(
+        401,
+        Jason.encode!(%{error: "Unauthorized", message: "Invalid or missing API key"})
+      )
       |> halt()
     end
   end
 
   # Private helper functions
 
-  defp extract_token(conn) do
+  def extract_token(conn) do
     case get_req_header(conn, "authorization") do
       [auth_header] ->
         parse_auth_header(auth_header)
@@ -77,11 +80,11 @@ defmodule GtfsPlannerWeb.ApiKeyAuth do
     end
   end
 
-  defp parse_auth_header("Bearer " <> token) do
+  defp parse_auth_header("Bearer " <> token) when token != "" do
     {:ok, token}
   end
 
-  defp parse_auth_header(token) when is_binary(token) do
+  defp parse_auth_header(token) when is_binary(token) and token != "" do
     # Compatibility mode: accept tokens without "Bearer " prefix
     {:ok, token}
   end

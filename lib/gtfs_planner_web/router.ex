@@ -55,9 +55,11 @@ defmodule GtfsPlannerWeb.Router do
 
     live_session :redirect_if_user_is_authenticated,
       on_mount: [{GtfsPlannerWeb.UserAuth, :redirect_if_user_is_authenticated}] do
+      live "/users/register", UserRegistrationLive, :new
       live "/users/log_in", UserLoginLive, :new
       live "/users/reset_password", UserForgotPasswordLive, :new
       live "/users/reset_password/:token", UserResetPasswordLive, :edit
+      live "/users/confirm/:token", UserConfirmationLive, :edit
       live "/users/accept_invite/:token", UserAcceptInviteLive, :edit
     end
   end
@@ -76,7 +78,10 @@ defmodule GtfsPlannerWeb.Router do
     pipe_through [:browser, :require_authenticated_user]
 
     live_session :require_authenticated_user_and_org,
-      on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}, GtfsPlannerWeb.AssignOrganization] do
+      on_mount: [
+        {GtfsPlannerWeb.UserAuth, :ensure_authenticated},
+        GtfsPlannerWeb.AssignOrganization
+      ] do
       # Organization-specific routes will be added here
     end
   end
@@ -105,7 +110,13 @@ defmodule GtfsPlannerWeb.Router do
 
   # Private plug wrapper functions for external modules
   defp fetch_current_user(conn, opts), do: GtfsPlannerWeb.UserAuth.fetch_current_user(conn, opts)
-  defp redirect_if_user_is_authenticated_pl(conn, opts), do: GtfsPlannerWeb.UserAuth.redirect_if_user_is_authenticated(conn, opts)
-  defp require_authenticated_user_pl(conn, opts), do: GtfsPlannerWeb.UserAuth.require_authenticated_user(conn, opts)
-  defp fetch_current_api_key(conn, opts), do: GtfsPlannerWeb.ApiKeyAuth.fetch_current_api_key(conn, opts)
+
+  defp redirect_if_user_is_authenticated_pl(conn, opts),
+    do: GtfsPlannerWeb.UserAuth.redirect_if_user_is_authenticated(conn, opts)
+
+  defp require_authenticated_user_pl(conn, opts),
+    do: GtfsPlannerWeb.UserAuth.require_authenticated_user(conn, opts)
+
+  defp fetch_current_api_key(conn, opts),
+    do: GtfsPlannerWeb.ApiKeyAuth.fetch_current_api_key(conn, opts)
 end

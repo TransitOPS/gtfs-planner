@@ -3,6 +3,7 @@ defmodule GtfsPlanner.AccountsTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.{User, UserToken, UserOrgMembership}
+  import GtfsPlanner.OrganizationsFixtures
 
   describe "get_user!/1" do
     test "raises if id does not exist" do
@@ -41,7 +42,10 @@ defmodule GtfsPlanner.AccountsTest do
 
     test "returns the user if the email and password are valid" do
       user = user_fixture()
-      assert %User{id: id} = Accounts.get_user_by_email_and_password(user.email, valid_user_password())
+
+      assert %User{id: id} =
+               Accounts.get_user_by_email_and_password(user.email, valid_user_password())
+
       assert id == user.id
     end
   end
@@ -100,7 +104,7 @@ defmodule GtfsPlanner.AccountsTest do
   describe "change_user_registration/2" do
     test "returns a changeset" do
       assert %Ecto.Changeset{} = changeset = Accounts.change_user_registration(%User{})
-      assert changeset.required == [:email, :password]
+      assert changeset.required == [:password, :email]
     end
 
     test "allows changes to email and password" do
@@ -148,11 +152,13 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "applies the email without persisting it", %{user: user} do
-      {:ok, user} =
-        Accounts.apply_user_email(user, valid_user_password(), %{email: unique_user_email()})
+      email = unique_user_email()
 
-      assert user.email == "test@example.com"
-      assert Accounts.get_user_by_email(user.email)
+      {:ok, applied_user} =
+        Accounts.apply_user_email(user, valid_user_password(), %{email: email})
+
+      assert applied_user.email == email
+      assert Accounts.get_user!(user.id).email == user.email
     end
   end
 
@@ -163,7 +169,11 @@ defmodule GtfsPlanner.AccountsTest do
 
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_update_email_instructions(%{user | email: email}, user.email, url)
+          Accounts.deliver_user_update_email_instructions(
+            %{user | email: email},
+            user.email,
+            fn token -> "#{url}/users/update_email/#{token}" end
+          )
         end)
 
       %{user: user, token: token, email: email}
@@ -233,7 +243,7 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "updates the password", %{user: user} do
-      {:ok, user} =
+      {:ok, _user} =
         Accounts.update_user_password(user, valid_user_password(), %{
           password: "new valid password",
           password_confirmation: "new valid password"
@@ -290,7 +300,7 @@ defmodule GtfsPlanner.AccountsTest do
       refute Accounts.get_user_by_session_token("oops")
     end
 
-    test "does not return user for expired token", %{user: user, token: token} do
+    test "does not return user for expired token", %{user: _user, token: token} do
       {1, nil} = Repo.update_all(UserToken, set: [inserted_at: ~N[2020-01-01 00:00:00]])
 
       refute Accounts.get_user_by_session_token(token)
@@ -304,7 +314,7 @@ defmodule GtfsPlanner.AccountsTest do
       %{user: user, token: token}
     end
 
-    test "deletes the token", %{user: user, token: token} do
+    test "deletes the token", %{user: _user, token: token} do
       assert Accounts.delete_session_token(token) == :ok
       refute Accounts.get_user_by_session_token(token)
     end
@@ -318,11 +328,12 @@ defmodule GtfsPlanner.AccountsTest do
     test "sends token through notification", %{user: user} do
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_confirmation_instructions(user, url)
+          Accounts.deliver_user_confirmation_instructions(user, fn token ->
+            "#{url}/users/confirm/#{token}"
+          end)
         end)
 
-      {:ok, token} = Base.url_decode64(token, padding: false)
-      assert user.email == Accounts.get_user_by_reset_password_token(token).email
+      assert {:ok, _} = Accounts.confirm_user(token)
     end
   end
 
@@ -334,7 +345,9 @@ defmodule GtfsPlanner.AccountsTest do
 
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_confirmation_instructions(%{user | email: email}, url)
+          Accounts.deliver_user_confirmation_instructions(%{user | email: email}, fn token ->
+            "#{url}/users/confirm/#{token}"
+          end)
         end)
 
       %{user: user, token: token, email: email}
@@ -343,7 +356,7 @@ defmodule GtfsPlanner.AccountsTest do
     test "confirms the email with a valid token", %{user: user, token: token} do
       assert {:ok, confirmed_user} = Accounts.confirm_user(token)
       assert confirmed_user.confirmed_at
-      assert confirmed_user.email != user.email
+      assert confirmed_user.email == user.email
 
       assert Accounts.get_user!(user.id).confirmed_at
     end
@@ -369,10 +382,11 @@ defmodule GtfsPlanner.AccountsTest do
     test "sends token through notification", %{user: user} do
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_reset_password_instructions(user, url)
+          Accounts.deliver_user_reset_password_instructions(user, fn token ->
+            "#{url}/users/reset_password/#{token}"
+          end)
         end)
 
-      {:ok, token} = Base.url_decode64(token, padding: false)
       assert user.email == Accounts.get_user_by_reset_password_token(token).email
     end
   end
@@ -383,13 +397,15 @@ defmodule GtfsPlanner.AccountsTest do
 
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_reset_password_instructions(user, url)
+          Accounts.deliver_user_reset_password_instructions(user, fn token ->
+            "#{url}/users/reset_password/#{token}"
+          end)
         end)
 
       %{user: user, token: token}
     end
 
-    test "returns the user with valid token", %{user: user, token: token} do
+    test "returns user with valid token", %{user: user, token: token} do
       assert reset_user = Accounts.get_user_by_reset_password_token(token)
       assert reset_user.id == user.id
     end
@@ -398,7 +414,7 @@ defmodule GtfsPlanner.AccountsTest do
       refute Accounts.get_user_by_reset_password_token("oops")
     end
 
-    test "does not return user if token expired", %{user: user, token: token} do
+    test "does not return user if token expired", %{user: _user, token: token} do
       {1, nil} = Repo.update_all(UserToken, set: [inserted_at: ~N[2020-01-01 00:00:00]])
 
       refute Accounts.get_user_by_reset_password_token(token)
@@ -436,7 +452,7 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "updates the password", %{user: user} do
-      {:ok, updated_user} =
+      {:ok, _updated_user} =
         Accounts.reset_user_password(user, %{
           password: "new valid password",
           password_confirmation: "new valid password"
@@ -497,10 +513,9 @@ defmodule GtfsPlanner.AccountsTest do
     test "sends token through notification", %{user: user} do
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, url)
+          Accounts.deliver_user_invite(user, fn token -> "#{url}/users/accept_invite/#{token}" end)
         end)
 
-      {:ok, token} = Base.url_decode64(token, padding: false)
       assert user.email == Accounts.get_user_by_invite_token(token).email
     end
   end
@@ -511,7 +526,7 @@ defmodule GtfsPlanner.AccountsTest do
 
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, url)
+          Accounts.deliver_user_invite(user, fn token -> "#{url}/users/accept_invite/#{token}" end)
         end)
 
       %{user: user, token: token}
@@ -530,18 +545,19 @@ defmodule GtfsPlanner.AccountsTest do
   describe "accept_invite_set_password/2" do
     setup do
       user = user_fixture()
-      org_id = Ecto.UUID.generate()
+      org = organization_fixture()
+      org_id = org.id
 
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, url)
+          Accounts.deliver_user_invite(user, fn token -> "#{url}/users/accept_invite/#{token}" end)
         end)
 
       %{user: user, token: token, org_id: org_id}
     end
 
     test "sets password and creates membership", %{user: user, org_id: org_id} do
-      {:ok, updated_user} =
+      {:ok, _updated_user} =
         Accounts.accept_invite_set_password(user, %{
           password: "new valid password",
           password_confirmation: "new valid password",
@@ -549,7 +565,10 @@ defmodule GtfsPlanner.AccountsTest do
         })
 
       assert Accounts.get_user_by_email_and_password(user.email, "new valid password")
-      assert membership = Repo.get_by(UserOrgMembership, user_id: user.id, organization_id: org_id)
+
+      assert membership =
+               Repo.get_by(UserOrgMembership, user_id: user.id, organization_id: org_id)
+
       assert membership
     end
 
@@ -570,7 +589,7 @@ defmodule GtfsPlanner.AccountsTest do
     test "deletes invite token after acceptance", %{user: user, org_id: org_id} do
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, url)
+          Accounts.deliver_user_invite(user, fn token -> "#{url}/users/accept_invite/#{token}" end)
         end)
 
       Accounts.accept_invite_set_password(user, %{
@@ -586,20 +605,20 @@ defmodule GtfsPlanner.AccountsTest do
   describe "list_user_org_memberships/1" do
     test "returns user's memberships" do
       user = user_fixture()
-      org1_id = Ecto.UUID.generate()
-      org2_id = Ecto.UUID.generate()
+      org1 = organization_fixture()
+      org2 = organization_fixture()
 
       {:ok, _} =
         Accounts.create_user_org_membership(%{
           user_id: user.id,
-          organization_id: org1_id,
+          organization_id: org1.id,
           roles: ["admin"]
         })
 
       {:ok, _} =
         Accounts.create_user_org_membership(%{
           user_id: user.id,
-          organization_id: org2_id,
+          organization_id: org2.id,
           roles: ["member"]
         })
 
@@ -617,20 +636,20 @@ defmodule GtfsPlanner.AccountsTest do
   describe "get_user_org_membership/2" do
     setup do
       user = user_fixture()
-      org_id = Ecto.UUID.generate()
+      org = organization_fixture()
 
       {:ok, membership} =
         Accounts.create_user_org_membership(%{
           user_id: user.id,
-          organization_id: org_id,
+          organization_id: org.id,
           roles: ["admin"]
         })
 
-      %{user: user, org_id: org_id, membership: membership}
+      %{user: user, org: org, membership: membership}
     end
 
-    test "returns membership when it exists", %{user: user, org_id: org_id, membership: membership} do
-      assert Accounts.get_user_org_membership(user.id, org_id) == membership
+    test "returns membership when it exists", %{user: user, org: org, membership: membership} do
+      assert Accounts.get_user_org_membership(user.id, org.id) == membership
     end
 
     test "returns nil when membership does not exist", %{user: user} do
@@ -641,17 +660,17 @@ defmodule GtfsPlanner.AccountsTest do
   describe "create_user_org_membership/1" do
     test "creates membership with valid attributes" do
       user = user_fixture()
-      org_id = Ecto.UUID.generate()
+      org = organization_fixture()
 
       attrs = %{
         user_id: user.id,
-        organization_id: org_id,
+        organization_id: org.id,
         roles: ["admin", "editor"]
       }
 
       assert {:ok, %UserOrgMembership{} = membership} = Accounts.create_user_org_membership(attrs)
       assert membership.user_id == user.id
-      assert membership.organization_id == org_id
+      assert membership.organization_id == org.id
       assert membership.roles == ["admin", "editor"]
     end
 
@@ -664,12 +683,12 @@ defmodule GtfsPlanner.AccountsTest do
   describe "update_user_org_membership/2" do
     setup do
       user = user_fixture()
-      org_id = Ecto.UUID.generate()
+      org = organization_fixture()
 
       {:ok, membership} =
         Accounts.create_user_org_membership(%{
           user_id: user.id,
-          organization_id: org_id,
+          organization_id: org.id,
           roles: ["admin"]
         })
 
@@ -684,27 +703,28 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "returns error with invalid attributes", %{membership: membership} do
+      # roles must be an array, passing a string should fail
       assert {:error, %Ecto.Changeset{}} =
-               Accounts.update_user_org_membership(membership, %{roles: nil})
+               Accounts.update_user_org_membership(membership, %{roles: "invalid"})
     end
   end
 
   describe "delete_user_org_membership/1" do
     setup do
       user = user_fixture()
-      org_id = Ecto.UUID.generate()
+      org = organization_fixture()
 
       {:ok, membership} =
         Accounts.create_user_org_membership(%{
           user_id: user.id,
-          organization_id: org_id,
+          organization_id: org.id,
           roles: ["admin"]
         })
 
       %{membership: membership}
     end
 
-    test "deletes the membership", %{membership: membership} do
+    test "deletes_membership membership", %{membership: membership} do
       assert {:ok, %UserOrgMembership{}} = Accounts.delete_user_org_membership(membership)
       refute Repo.get(UserOrgMembership, membership.id)
     end
@@ -713,11 +733,14 @@ defmodule GtfsPlanner.AccountsTest do
   describe "change_user_org_membership/2" do
     test "returns a changeset" do
       membership = %UserOrgMembership{}
-      assert %Ecto.Changeset{} = changeset = Accounts.change_user_org_membership(membership)
+      assert %Ecto.Changeset{} = _changeset = Accounts.change_user_org_membership(membership)
     end
 
     test "allows fields to be set" do
-      membership = %UserOrgMembership{}
+      membership = %UserOrgMembership{
+        user_id: Ecto.UUID.generate(),
+        organization_id: Ecto.UUID.generate()
+      }
 
       changeset =
         Accounts.change_user_org_membership(membership, %{

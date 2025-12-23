@@ -67,14 +67,17 @@ defmodule GtfsPlannerWeb.EnsureRole do
     role_spec = socket.assigns[:role_spec] || :administrator
 
     # Ensure we have current_user and current_organization
-    user_id = case socket.assigns[:current_user] do
-      nil -> nil
-      user -> user.id
-    end
-    organization_id = case socket.assigns[:current_organization] do
-      nil -> nil
-      org -> org.id
-    end
+    user_id =
+      case socket.assigns[:current_user] do
+        nil -> nil
+        user -> user.id
+      end
+
+    organization_id =
+      case socket.assigns[:current_organization] do
+        nil -> nil
+        org -> org.id
+      end
 
     with {:ok, _user} when not is_nil(user_id) <- {:ok, user_id},
          {:ok, _org} when not is_nil(organization_id) <- {:ok, organization_id},
@@ -120,18 +123,23 @@ defmodule GtfsPlannerWeb.EnsureRole do
   """
   def ensure_role(conn, role_spec) do
     # Get user or API key from conn
-    user_id = case conn.assigns[:current_user] do
-      nil -> nil
-      user -> user.id
-    end
-    api_key_id = case conn.assigns[:current_api_key] do
-      nil -> nil
-      api_key -> api_key.id
-    end
-    organization_id = case conn.assigns[:current_organization] do
-      nil -> nil
-      org -> org.id
-    end
+    user_id =
+      case conn.assigns[:current_user] do
+        nil -> nil
+        user -> user.id
+      end
+
+    api_key_id =
+      case conn.assigns[:current_api_key] do
+        nil -> nil
+        api_key -> api_key.id
+      end
+
+    organization_id =
+      case conn.assigns[:current_organization] do
+        nil -> nil
+        org -> org.id
+      end
 
     cond do
       is_nil(organization_id) ->
@@ -214,7 +222,7 @@ defmodule GtfsPlannerWeb.EnsureRole do
 
   defp unauthorized(conn) do
     conn
-    |> Phoenix.Controller.put_status(:forbidden)
+    |> Plug.Conn.put_status(:forbidden)
     |> Phoenix.Controller.json(%{error: "You do not have permission to access this resource."})
     |> Plug.Conn.halt()
   end

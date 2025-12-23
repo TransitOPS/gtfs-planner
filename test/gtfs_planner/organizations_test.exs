@@ -46,8 +46,8 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
 
     test "handles case-sensitive aliases" do
-      organization = organization_fixture(%{alias: "MyOrg"})
-      
+      _organization = organization_fixture(%{alias: "MyOrg"})
+
       assert Organizations.get_organization_by_alias("MyOrg")
       refute Organizations.get_organization_by_alias("myorg")
       refute Organizations.get_organization_by_alias("MYORG")
@@ -443,7 +443,7 @@ defmodule GtfsPlanner.OrganizationsTest do
       user = user_fixture()
       organization = organization_fixture()
 
-      {:ok, membership} =
+      {:ok, _membership} =
         Organizations.add_user_to_organization(
           user.id,
           organization.id,
@@ -493,7 +493,7 @@ defmodule GtfsPlanner.OrganizationsTest do
       orgs = Organizations.list_organizations_for_user(user.id)
 
       assert length(orgs) == 2
-      
+
       org1_result = Enum.find(orgs, &(&1.id == org1.id))
       org2_result = Enum.find(orgs, &(&1.id == org2.id))
 
@@ -522,7 +522,7 @@ defmodule GtfsPlanner.OrganizationsTest do
       users = Organizations.list_users_in_organization(org.id)
 
       assert length(users) == 2
-      
+
       user1_result = Enum.find(users, &(&1.user.id == user1.id))
       user2_result = Enum.find(users, &(&1.user.id == user2.id))
 

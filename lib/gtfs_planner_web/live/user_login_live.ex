@@ -56,7 +56,7 @@ defmodule GtfsPlannerWeb.UserLoginLive do
     %{"email" => email, "password" => password} = user_params
 
     if user = Accounts.get_user_by_email_and_password(email, password) do
-      token = Accounts.generate_user_session_token(user)
+      _token = Accounts.generate_user_session_token(user)
 
       socket
       |> put_flash(:info, "Welcome back!")
