@@ -51,12 +51,12 @@ defmodule GtfsPlannerWeb.UserAuthTest do
         build_conn()
         |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
 
-      assert get_resp_cookie(conn, "user_remember_me") != nil
-      cookie = get_resp_cookie(conn, "user_remember_me")
-      assert cookie.opts[:max_age] == 60 * 60 * 24 * 60
-      assert cookie.opts[:secure] == true
-      assert cookie.opts[:http_only] == true
-      assert cookie.opts[:same_site] == "Lax"
+      assert conn.resp_cookies["user_remember_me"] != nil
+      cookie = conn.resp_cookies["user_remember_me"]
+      assert cookie.max_age == 60 * 60 * 24 * 60
+      assert cookie.secure == true
+      assert cookie.http_only == true
+      assert cookie.same_site == "Lax"
     end
 
     test "without remember_me param, does not set remember_me cookie" do
@@ -66,7 +66,7 @@ defmodule GtfsPlannerWeb.UserAuthTest do
         build_conn()
         |> UserAuth.log_in_user(user, %{})
 
-      assert get_resp_cookie(conn, "user_remember_me") == nil
+      assert conn.resp_cookies["user_remember_me"] == nil
     end
   end
 
@@ -89,8 +89,8 @@ defmodule GtfsPlannerWeb.UserAuthTest do
 
     test "deletes the remember_me cookie", %{conn: conn} do
       conn = UserAuth.log_out_user(conn)
-      assert get_resp_cookie(conn, "user_remember_me") != nil
-      cookie = get_resp_cookie(conn, "user_remember_me")
+      assert conn.resp_cookies["user_remember_me"] != nil
+      cookie = conn.resp_cookies["user_remember_me"]
       assert cookie.max_age == 0
     end
 
@@ -172,13 +172,13 @@ defmodule GtfsPlannerWeb.UserAuthTest do
 
       conn = UserAuth.redirect_if_user_is_authenticated(conn, [])
       assert redirected_to(conn) == ~p"/organizations"
-      assert halted?(conn)
+      assert conn.halted
     end
 
     test "does not redirect unauthenticated user" do
       conn = build_conn() |> UserAuth.redirect_if_user_is_authenticated([])
       refute redirected_to(conn)
-      refute halted?(conn)
+      refute conn.halted
     end
   end
 
@@ -187,14 +187,14 @@ defmodule GtfsPlannerWeb.UserAuthTest do
       %{conn: conn} = register_and_log_in_user(%{})
 
       conn = UserAuth.require_authenticated_user(conn, [])
-      refute halted?(conn)
+      refute conn.halted
       assert conn.assigns.current_user != nil
     end
 
     test "redirects unauthenticated user to login page" do
       conn = build_conn() |> UserAuth.require_authenticated_user([])
       assert redirected_to(conn) == ~p"/users/log_in"
-      assert halted?(conn)
+      assert conn.halted
     end
 
     test "stores return_to path for GET requests" do
@@ -221,14 +221,14 @@ defmodule GtfsPlannerWeb.UserAuthTest do
       %{conn: conn} = register_and_log_in_user(%{})
 
       conn = UserAuth.redirect_logged_out_user(conn, [])
-      refute halted?(conn)
+      refute conn.halted
       assert conn.assigns.current_user != nil
     end
 
     test "redirects unauthenticated user to login page with flash" do
       conn = build_conn() |> UserAuth.redirect_logged_out_user([])
       assert redirected_to(conn) == ~p"/users/log_in"
-      assert halted?(conn)
+      assert conn.halted
       assert Phoenix.Flash.get(conn.assigns.flash, :error) == "You must log in to access this page."
     end
   end
