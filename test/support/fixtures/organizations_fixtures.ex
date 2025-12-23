@@ -12,9 +12,14 @@ defmodule GtfsPlanner.OrganizationsFixtures do
   def unique_organization_alias, do: "org#{System.unique_integer()}"
 
   @doc """
+  Generate a valid organization alias.
+  """
+  def valid_organization_alias, do: "example-org"
+
+  @doc """
   Generate a valid organization name.
   """
-  def valid_organization_name, do: "Test Organization #{System.unique_integer()}"
+  def valid_organization_name, do: "Example Organization"
 
   @doc """
   Generate valid organization attributes.
@@ -27,7 +32,7 @@ defmodule GtfsPlanner.OrganizationsFixtures do
   end
 
   @doc """
-  Generate a organization fixture.
+  Generate an organization fixture.
   """
   def organization_fixture(attrs \\ %{}) do
     {:ok, organization} =
@@ -49,45 +54,27 @@ defmodule GtfsPlanner.OrganizationsFixtures do
   end
 
   @doc """
-  Generate an API key fixture for an organization.
+  Generate an API key fixture.
   """
-  def api_key_fixture(organization, attrs \\ %{}) do
+  def api_key_fixture(attrs \\ %{}, organization_fixture \\ &organization_fixture/0) do
+    organization = organization_fixture.()
+    api_key_attrs = valid_api_key_attributes(attrs)
+
     {:ok, {api_key, token}} =
-      attrs
-      |> valid_api_key_attributes()
-      |> GtfsPlanner.Organizations.create_api_key(organization.id)
+      GtfsPlanner.Organizations.create_api_key(organization.id, api_key_attrs)
 
     {api_key, token}
   end
 
   @doc """
-  Generate a user membership in an organization.
+  Generate an API key fixture for a specific organization.
   """
-  def user_org_membership_fixture(user, organization, roles \\ []) do
-    {:ok, membership} =
-      GtfsPlanner.Organizations.add_user_to_organization(
-        user.id,
-        organization.id,
-        roles
-      )
+  def api_key_fixture_for_organization(organization_id, attrs \\ %{}) do
+    api_key_attrs = valid_api_key_attributes(attrs)
 
-    membership
-  end
+    {:ok, {api_key, token}} =
+      GtfsPlanner.Organizations.create_api_key(organization_id, api_key_attrs)
 
-  @doc """
-  Generate a complete test setup with user, organization, and API key.
-  """
-  def complete_fixture(roles \\ ["administrator"]) do
-    user = AccountsFixtures.user_fixture()
-    organization = organization_fixture()
-    user_org_membership_fixture(user, organization, roles)
-    {api_key, token} = api_key_fixture(organization)
-
-    %{
-      user: user,
-      organization: organization,
-      api_key: api_key,
-      api_key_token: token
-    }
+    {api_key, token}
   end
 end
