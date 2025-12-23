@@ -121,7 +121,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
     socket
     |> assign(:trigger_submit, true)
     |> assign(:current_action, "update_email")
-    |> assign_email_form(params)
+    |> then(&assign_email_form(&1, params))
     |> assign_password_form()
   end
 
@@ -129,7 +129,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
     socket
     |> assign(:trigger_submit, true)
     |> assign(:current_action, "update_password")
-    |> assign_email_form()
+    |> assign_email_form(%{})
     |> assign_password_form(params)
   end
 
@@ -137,7 +137,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
     socket
     |> assign(:trigger_submit, false)
     |> assign(:current_action, nil)
-    |> assign_email_form()
+    |> assign_email_form(%{})
     |> assign_password_form()
   end
 

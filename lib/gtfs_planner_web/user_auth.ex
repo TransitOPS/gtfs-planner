@@ -12,7 +12,6 @@ defmodule GtfsPlannerWeb.UserAuth do
 
   import Plug.Conn
   import Phoenix.Controller
-  import Phoenix.LiveView
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.User
@@ -24,8 +23,7 @@ defmodule GtfsPlannerWeb.UserAuth do
   Logs the user in.
 
   It renews the session ID and clears the whole session
-  to avoid fixation attacks. See the `RenewSession`
-  plug for more details.
+  to avoid fixation attacks.
   """
   def log_in_user(conn, user, params \\ %{}) do
     token = Accounts.generate_user_session_token(user)
@@ -36,18 +34,17 @@ defmodule GtfsPlannerWeb.UserAuth do
     |> put_session(:user_token, token)
     |> maybe_write_remember_me_cookie(token, params)
     |> assign(:current_user, user)
-    |> redirect(to: user_return_to || signed_in_path(conn))
+    |> Phoenix.Controller.redirect(to: user_return_to || signed_in_path(conn))
   end
 
   @doc """
   Logs the user out.
 
-  It clears all session data for safety. See the `RenewSession`
-  plug for more details.
+  It clears all session data for safety.
   """
   def log_out_user(conn) do
     user_token = get_session(conn, :user_token)
-    user_token && Accounts.delete_session_token(user)
+    user_token && Accounts.delete_session_token(user_token)
 
     if live_socket_id = get_session(conn, :live_socket_id) do
       GtfsPlannerWeb.Endpoint.broadcast(live_socket_id, "disconnect", %{})
@@ -56,7 +53,7 @@ defmodule GtfsPlannerWeb.UserAuth do
     conn
     |> renew_session()
     |> delete_resp_cookie("user_remember_me")
-    |> redirect(to: ~p"/users/log_in")
+    |> Phoenix.Controller.redirect(to: "/users/log_in")
   end
 
   @doc """
@@ -76,7 +73,7 @@ defmodule GtfsPlannerWeb.UserAuth do
   def redirect_if_user_is_authenticated(conn, _opts) do
     if conn.assigns[:current_user] do
       conn
-      |> redirect(to: signed_in_path(conn))
+      |> Phoenix.Controller.redirect(to: signed_in_path(conn))
       |> halt()
     else
       conn
@@ -85,9 +82,6 @@ defmodule GtfsPlannerWeb.UserAuth do
 
   @doc """
   Used for routes that require the user to be authenticated.
-
-  If you want to enforce the user email is confirmed before
-  they use the application at all, here would be a good place.
   """
   def require_authenticated_user(conn, _opts) do
     if conn.assigns[:current_user] do
@@ -95,7 +89,7 @@ defmodule GtfsPlannerWeb.UserAuth do
     else
       conn
       |> maybe_store_return_to()
-      |> redirect(to: ~p"/users/log_in")
+      |> Phoenix.Controller.redirect(to: "/users/log_in")
       |> halt()
     end
   end
@@ -108,35 +102,14 @@ defmodule GtfsPlannerWeb.UserAuth do
       conn
     else
       conn
-      |> put_flash(:error, "You must log in to access this page.")
-      |> redirect(to: ~p"/users/log_in")
+      |> Phoenix.Controller.put_flash(:error, "You must log in to access this page.")
+      |> Phoenix.Controller.redirect(to: "/users/log_in")
       |> halt()
     end
   end
 
   @doc """
   Handles mounting and authenticating the current_user in LiveViews.
-
-  ## `on_mount` arguments
-
-    * `:mount_current_user` - Assigns current_user to socket assigns based on user_token,
-      or nil if no user_token or no session.
-
-    * `:ensure_authenticated` - Authenticates the user from the session, and assigns
-      current_user to socket assigns. Redirects to login page if there's no valid
-      user_token or if the user_token is invalid.
-
-    * `:redirect_if_user_is_authenticated` - Authenticates the user from the session.
-      Redirects to the signed_in_path if the user is authenticated.
-
-  ## Examples
-
-    use GtfsPlannerWeb, :live_view
-
-    on_mount {GtfsPlannerWeb.UserAuth, :mount_current_user}
-    on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
-    on_mount {GtfsPlannerWeb.UserAuth, :redirect_if_user_is_authenticated}
-
   """
   def on_mount(:mount_current_user, _params, session, socket) do
     {:cont, mount_current_user(socket, session)}
@@ -150,8 +123,8 @@ defmodule GtfsPlannerWeb.UserAuth do
     else
       socket =
         socket
-        |> put_flash(:error, "You must log in to access this page.")
-        |> redirect(to: ~p"/users/log_in")
+        |> Phoenix.LiveView.put_flash(:error, "You must log in to access this page.")
+        |> Phoenix.LiveView.redirect(to: "/users/log_in")
 
       {:halt, socket}
     end
@@ -161,7 +134,7 @@ defmodule GtfsPlannerWeb.UserAuth do
     socket = mount_current_user(socket, session)
 
     if socket.assigns[:current_user] do
-      {:halt, redirect(socket, to: signed_in_path(socket))}
+      {:halt, Phoenix.LiveView.redirect(socket, to: signed_in_path(socket))}
     else
       {:cont, socket}
     end
@@ -172,14 +145,12 @@ defmodule GtfsPlannerWeb.UserAuth do
     {:cont, socket}
   end
 
-  # Private functions
-
   defp mount_current_user(socket, session) do
     if user_token = session["user_token"] do
       user = Accounts.get_user_by_session_token(user_token)
-      assign_new(socket, :current_user, fn -> user end)
+      Phoenix.LiveView.assign_new(socket, :current_user, fn -> user end)
     else
-      assign_new(socket, :current_user, fn -> nil end)
+      Phoenix.LiveView.assign_new(socket, :current_user, fn -> nil end)
     end
   end
 
@@ -225,6 +196,6 @@ defmodule GtfsPlannerWeb.UserAuth do
 
   defp maybe_store_return_to(conn), do: conn
 
-  defp signed_in_path(_conn), do: ~p"/organizations"
-  defp signed_in_path(socket), do: ~p"/organizations"
+  defp signed_in_path(_conn), do: "/organizations"
+  defp signed_in_path(_socket), do: "/organizations"
 end

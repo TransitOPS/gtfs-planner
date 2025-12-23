@@ -1,13 +1,17 @@
 defmodule GtfsPlannerWeb.UserSessionController do
   use GtfsPlannerWeb, :controller
+  import Phoenix.Component
 
   alias GtfsPlanner.Accounts
   alias GtfsPlannerWeb.UserAuth
 
   plug :fetch_current_user when action in [:new]
 
+  defp fetch_current_user(conn, opts), do: UserAuth.fetch_current_user(conn, opts)
+
   def new(conn, _params) do
-    render(conn, :new, error_message: nil)
+    form = to_form(%{}, as: :user)
+    render(conn, :new, error_message: nil, form: form)
   end
 
   def create(conn, %{"user" => user_params}) do
@@ -19,7 +23,8 @@ defmodule GtfsPlannerWeb.UserSessionController do
       |> UserAuth.log_in_user(user, user_params)
     else
       # In order to prevent user enumeration attacks, don't disclose whether the email is registered.
-      render(conn, :new, error_message: "Invalid email or password")
+      form = to_form(%{"email" => email}, as: :user)
+      render(conn, :new, error_message: "Invalid email or password", form: form)
     end
   end
 

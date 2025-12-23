@@ -59,7 +59,7 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
           |> redirect(to: ~p"/")
       end
 
-    {:ok, socket, temporary_assigns: [form: form]}
+    {:ok, socket, temporary_assigns: [form: socket.assigns.form]}
   end
 
   def handle_event("reset_password", %{"user" => user_params}, socket) do

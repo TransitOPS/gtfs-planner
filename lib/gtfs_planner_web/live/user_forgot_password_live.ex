@@ -43,7 +43,8 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
   end
 
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, form: to_form(%{}, as: "user")), temporary_assigns: [form: form]}
+    socket = assign(socket, form: to_form(%{}, as: "user"))
+    {:ok, socket, temporary_assigns: [form: socket.assigns.form]}
   end
 
   def handle_event("send_instructions", %{"user" => %{"email" => email}}, socket) do
