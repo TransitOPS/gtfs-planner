@@ -66,7 +66,8 @@ defmodule GtfsPlanner.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
-      {:argon2_elixir, "~> 4.1"}
+      {:argon2_elixir, "~> 4.1"},
+      {:ex_cldr_plugs, "~> 1.3"}
     ]
   end
 
