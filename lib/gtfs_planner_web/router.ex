@@ -74,6 +74,15 @@ defmodule GtfsPlannerWeb.Router do
     end
   end
 
+  scope "/organizations/:org_alias", GtfsPlannerWeb do
+    pipe_through [:browser, :require_authenticated_user]
+
+    live_session :require_authenticated_user_and_org,
+      on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}, GtfsPlannerWeb.AssignOrganization] do
+      # Organization-specific routes will be added here
+    end
+  end
+
   # Other scopes may use custom stacks.
   # scope "/api", GtfsPlannerWeb do
   #   pipe_through :api
