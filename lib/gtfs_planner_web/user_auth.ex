@@ -14,8 +14,6 @@ defmodule GtfsPlannerWeb.UserAuth do
   import Phoenix.Controller
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.User
-  alias GtfsPlannerWeb.Router.Helpers, as: Routes
 
   @max_age 60 * 60 * 24 * 60
 
@@ -57,10 +55,11 @@ defmodule GtfsPlannerWeb.UserAuth do
   end
 
   @doc """
-  Authenticates the user by looking into the session
+  Authenticates user by looking into the session
   and remember me token.
   """
   def fetch_current_user(conn, _opts) do
+    conn = fetch_session(conn)
     {user_token, conn} = ensure_user_token(conn)
     user = user_token && Accounts.get_user_by_session_token(user_token)
 
@@ -146,21 +145,18 @@ defmodule GtfsPlannerWeb.UserAuth do
   end
 
   defp mount_current_user(socket, session) do
-    if user_token = session["user_token"] do
-      user = Accounts.get_user_by_session_token(user_token)
-      Phoenix.LiveView.assign_new(socket, :current_user, fn -> user end)
-    else
-      Phoenix.LiveView.assign_new(socket, :current_user, fn -> nil end)
-    end
+    user = session["user_token"] && Accounts.get_user_by_session_token(session["user_token"])
+    Phoenix.Component.assign(socket, :current_user, user)
   end
 
   defp ensure_user_token(conn) do
     if user_token = get_session(conn, :user_token) do
       {user_token, conn}
     else
-      conn = fetch_cookies(conn, signed: ~w(user_remember_me))
+      conn = fetch_cookies(conn, [])
+      cookie = conn.cookies["user_remember_me"]
 
-      if user_token = conn.cookies["user_remember_me"] do
+      if user_token = cookie do
         {user_token, put_session(conn, :user_token, user_token)}
       else
         {nil, conn}
@@ -185,9 +181,9 @@ defmodule GtfsPlannerWeb.UserAuth do
   end
 
   defp renew_session(conn) do
-    Phoenix.LiveView.configure_session(conn, &(&1))
-    delete_csrf_token()
     conn
+    |> configure_session(renew: true)
+    |> clear_session()
   end
 
   defp maybe_store_return_to(%{method: "GET"} = conn) do

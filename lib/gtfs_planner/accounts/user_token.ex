@@ -11,6 +11,8 @@ defmodule GtfsPlanner.Accounts.UserToken do
   use Ecto.Schema
   import Ecto.Query
 
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
   @rand_size 32
 
   @session_validity_in_days 60
@@ -21,19 +23,22 @@ defmodule GtfsPlanner.Accounts.UserToken do
     field :sent_to, :string
     belongs_to :user, GtfsPlanner.Accounts.User
 
-    timestamps(type: :utc_datetime_usec)
+    timestamps(type: :utc_datetime_usec, updated_at: false)
   end
 
   @doc """
   Builds a token and token struct to be stored in the database.
 
   The token is generated using cryptographically secure random bytes
-  and is returned as a binary that should be sent to the user (e.g., in an email).
+  and is returned as a Base64 encoded string that should be sent to the user (e.g., in a session).
   The token struct contains the hashed version for database storage.
   """
   def build_session_token(user) do
     token = :crypto.strong_rand_bytes(@rand_size)
-    {token, %GtfsPlanner.Accounts.UserToken{token: token, context: "session", user_id: user.id}}
+    hashed_token = :crypto.hash(:sha256, token)
+
+    {Base.url_encode64(token, padding: false),
+     %GtfsPlanner.Accounts.UserToken{token: hashed_token, context: "session", user_id: user.id}}
   end
 
   @doc """
@@ -62,56 +67,127 @@ defmodule GtfsPlanner.Accounts.UserToken do
   end
 
   @doc """
-  Verifies a session token and returns a query to fetch the user.
+  Verifies a session token and returns a query to fetch user.
 
   Returns `:error` if the token is invalid or expired.
   Returns `{:ok, query}` if the token is valid.
   """
-  def verify_session_token_query(token) do
-    hashed_token = :crypto.hash(:sha256, token)
+  def verify_session_token_query(token) when is_binary(token) do
+    with {:ok, decoded_token} <- Base.url_decode64(token, padding: false),
+         hashed_token = :crypto.hash(:sha256, decoded_token) do
+      query =
+        from token_record in by_token_and_context_query(hashed_token, "session"),
+          where: token_record.inserted_at > ago(@session_validity_in_days, "day"),
+          join: user in assoc(token_record, :user),
+          select: user
 
-    query =
-      from token in by_token_and_context_query(hashed_token, "session"),
-        where: token.inserted_at > ago(@session_validity_in_days, "day"),
-        select: token.user_id
-
-    {:ok, query}
+      {:ok, query}
+    else
+      _ -> :error
+    end
   end
 
   @doc """
-  Verifies an email token and returns a query to fetch the user.
+  Verifies an email token and returns a query to fetch user.
 
   Returns `:error` if the token is invalid.
   Returns `{:ok, query}` if the token is valid.
   """
   def verify_email_token_query(token, context) do
-    hashed_token = :crypto.hash(:sha256, token)
+    with {:ok, decoded_token} <- Base.url_decode64(token, padding: false),
+         hashed_token = :crypto.hash(:sha256, decoded_token) do
+      days = days_for_context(context)
 
-    query =
-      from token in by_token_and_context_query(hashed_token, context),
-        select: token.user_id
+      query =
+        from token_record in by_token_and_context_query(hashed_token, context),
+          join: user in assoc(token_record, :user),
+          where: token_record.inserted_at > ago(^days, "day"),
+          select: user
 
-    {:ok, query}
+      {:ok, query}
+    else
+      _ -> :error
+    end
   end
+
+  def verify_change_email_token_query(token, context) do
+    with {:ok, decoded_token} <- Base.url_decode64(token, padding: false),
+         hashed_token = :crypto.hash(:sha256, decoded_token) do
+      days = days_for_context(context)
+
+      query =
+        from token_record in by_token_and_context_query(hashed_token, context),
+          where: token_record.inserted_at > ago(^days, "day")
+
+      {:ok, query}
+    else
+      _ -> :error
+    end
+  end
+
+  defp days_for_context("invite"), do: 7
+  defp days_for_context("reset_password"), do: 1
+  defp days_for_context("confirm"), do: 7
+  defp days_for_context("change:" <> _), do: 7
 
   @doc """
   Checks if the token is associated with the given user and context.
   """
   def valid_token?(token, context) do
-    hashed_token = :crypto.hash(:sha256, token)
+    with {:ok, decoded_token} <- Base.url_decode64(token, padding: false),
+         hashed_token = :crypto.hash(:sha256, decoded_token) do
+      query =
+        from t in by_token_and_context_query(hashed_token, context),
+          select: t.token
 
-    query =
-      from t in by_token_and_context_query(hashed_token, context),
-        select: t.token
+      GtfsPlanner.Repo.exists?(query)
+    else
+      _ -> false
+    end
+  end
 
-    GtfsPlanner.Repo.exists?(query)
+  @doc """
+  Gets all tokens for the given user by context(s).
+
+  ## Examples
+
+      iex> user_and_contexts_query(user, :all)
+      #Ecto.Query<...>
+
+      iex> user_and_contexts_query(user, ["session", "reset_password"])
+      #Ecto.Query<...>
+
+  """
+  def user_and_contexts_query(user, :all) do
+    from t in GtfsPlanner.Accounts.UserToken, where: t.user_id == ^user.id
+  end
+
+  def user_and_contexts_query(user, contexts) when is_list(contexts) do
+    from t in GtfsPlanner.Accounts.UserToken,
+      where: t.user_id == ^user.id and t.context in ^contexts
+  end
+
+  @doc """
+  Gets a token query by token value and context.
+
+  ## Examples
+
+      iex> token_and_context_query(token, "session")
+      #Ecto.Query<...>
+
+  """
+  def token_and_context_query(token, context) do
+    from t in GtfsPlanner.Accounts.UserToken,
+      where: t.token == ^token and t.context == ^context
   end
 
   @doc """
   Deletes a token by context and user.
   """
   def delete_user_token(%GtfsPlanner.Accounts.User{} = user, context) do
-    from(t in GtfsPlanner.Accounts.UserToken, where: t.user_id == ^user.id and t.context == ^context)
+    from(t in GtfsPlanner.Accounts.UserToken,
+      where: t.user_id == ^user.id and t.context == ^context
+    )
     |> GtfsPlanner.Repo.delete_all()
   end
 
@@ -119,7 +195,9 @@ defmodule GtfsPlanner.Accounts.UserToken do
   Deletes all session tokens for the given user.
   """
   def delete_session_tokens(%GtfsPlanner.Accounts.User{} = user) do
-    from(t in GtfsPlanner.Accounts.UserToken, where: t.user_id == ^user.id and t.context == "session")
+    from(t in GtfsPlanner.Accounts.UserToken,
+      where: t.user_id == ^user.id and t.context == "session"
+    )
     |> GtfsPlanner.Repo.delete_all()
   end
 
@@ -136,10 +214,5 @@ defmodule GtfsPlanner.Accounts.UserToken do
   defp by_token_and_context_query(token, context) do
     from t in GtfsPlanner.Accounts.UserToken,
       where: t.token == ^token and t.context == ^context
-  end
-
-  defp by_email_and_context_query(email, context) do
-    from t in GtfsPlanner.Accounts.UserToken,
-      where: t.sent_to == ^email and t.context == ^context
   end
 end

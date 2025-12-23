@@ -4,8 +4,6 @@ defmodule GtfsPlanner.OrganizationsFixtures do
   entities via the `GtfsPlanner.Organizations` context.
   """
 
-  alias GtfsPlanner.AccountsFixtures
-
   @doc """
   Generate a unique organization alias.
   """
@@ -56,12 +54,22 @@ defmodule GtfsPlanner.OrganizationsFixtures do
   @doc """
   Generate an API key fixture.
   """
-  def api_key_fixture(attrs \\ %{}, organization_fixture \\ &organization_fixture/0) do
-    organization = organization_fixture.()
+  def api_key_fixture(organization, attrs \\ %{})
+
+  def api_key_fixture(%GtfsPlanner.Organizations.Organization{id: id}, attrs) do
     api_key_attrs = valid_api_key_attributes(attrs)
 
     {:ok, {api_key, token}} =
-      GtfsPlanner.Organizations.create_api_key(organization.id, api_key_attrs)
+      GtfsPlanner.Organizations.create_api_key(id, api_key_attrs)
+
+    {api_key, token}
+  end
+
+  def api_key_fixture(organization_id, attrs) when is_binary(organization_id) do
+    api_key_attrs = valid_api_key_attributes(attrs)
+
+    {:ok, {api_key, token}} =
+      GtfsPlanner.Organizations.create_api_key(organization_id, api_key_attrs)
 
     {api_key, token}
   end
@@ -76,5 +84,16 @@ defmodule GtfsPlanner.OrganizationsFixtures do
       GtfsPlanner.Organizations.create_api_key(organization_id, api_key_attrs)
 
     {api_key, token}
+  end
+
+  @doc """
+  Generate a complete fixture with organization and API key.
+  Returns a map with :api_key and :api_key_token keys.
+  """
+  def complete_fixture(attrs \\ %{}) do
+    organization = organization_fixture(attrs)
+    {api_key, token} = api_key_fixture_for_organization(organization.id)
+
+    %{api_key: api_key, api_key_token: token}
   end
 end

@@ -9,7 +9,10 @@ defmodule GtfsPlannerWeb.ApiKeyAuthTest do
       %{api_key: api_key, api_key_token: token}
     end
 
-    test "assigns current_api_key with valid Bearer token", %{api_key: api_key, api_key_token: token} do
+    test "assigns current_api_key with valid Bearer token", %{
+      api_key: api_key,
+      api_key_token: token
+    } do
       conn =
         build_conn()
         |> put_req_header("authorization", "Bearer #{token}")
@@ -19,10 +22,11 @@ defmodule GtfsPlannerWeb.ApiKeyAuthTest do
       assert conn.assigns[:current_api_key].organization_id == api_key.organization_id
     end
 
-    test "assigns current_api_key with valid token in compatibility mode (without Bearer prefix)", %{
-      api_key: api_key,
-      api_key_token: token
-    } do
+    test "assigns current_api_key with valid token in compatibility mode (without Bearer prefix)",
+         %{
+           api_key: api_key,
+           api_key_token: token
+         } do
       conn =
         build_conn()
         |> put_req_header("authorization", token)
@@ -84,7 +88,9 @@ defmodule GtfsPlannerWeb.ApiKeyAuthTest do
 
       assert conn.halted
       assert conn.status == 401
-      assert conn.resp_body == Jason.encode!(%{error: "Unauthorized", message: "Invalid or missing API key"})
+
+      assert conn.resp_body ==
+               Jason.encode!(%{error: "Unauthorized", message: "Invalid or missing API key"})
     end
 
     test "halts and returns 401 with invalid API key" do
@@ -96,7 +102,9 @@ defmodule GtfsPlannerWeb.ApiKeyAuthTest do
 
       assert conn.halted
       assert conn.status == 401
-      assert conn.resp_body == Jason.encode!(%{error: "Unauthorized", message: "Invalid or missing API key"})
+
+      assert conn.resp_body ==
+               Jason.encode!(%{error: "Unauthorized", message: "Invalid or missing API key"})
     end
 
     test "returns JSON content type on unauthorized" do

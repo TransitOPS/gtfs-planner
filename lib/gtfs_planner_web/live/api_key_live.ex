@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.ApiKeyLive do
 
   alias GtfsPlanner.Organizations
 
+  @impl true
   def render(assigns) do
     ~H"""
     <div class="space-y-12">
@@ -73,8 +74,7 @@ defmodule GtfsPlannerWeb.ApiKeyLive do
                   phx-click="copy_api_key"
                   phx-value-token={@api_key_token}
                 >
-                  <.icon name="hero-document-duplicate" class="w-5 h-5" />
-                  Copy
+                  <.icon name="hero-document-duplicate" class="w-5 h-5" /> Copy
                 </button>
               </div>
             </div>
@@ -110,8 +110,7 @@ defmodule GtfsPlannerWeb.ApiKeyLive do
                       phx-value-api-key-id={api_key.id}
                       phx-confirm="Are you sure you want to delete this API key? This action cannot be undone."
                     >
-                      <.icon name="hero-trash" class="w-4 h-4" />
-                      Delete
+                      <.icon name="hero-trash" class="w-4 h-4" /> Delete
                     </button>
                   </div>
                 </div>
@@ -162,8 +161,11 @@ defmodule GtfsPlannerWeb.ApiKeyLive do
     # Convert roles list to array
     roles_array = if is_list(roles), do: roles, else: []
 
-    case Organizations.create_api_key(organization, %{description: description, roles: roles_array}) do
-      {:ok, {api_key, token}} ->
+    case Organizations.create_api_key(organization, %{
+           description: description,
+           roles: roles_array
+         }) do
+      {:ok, {_api_key, token}} ->
         # Refresh the API key list
         api_keys = Organizations.list_api_keys(organization.id)
 

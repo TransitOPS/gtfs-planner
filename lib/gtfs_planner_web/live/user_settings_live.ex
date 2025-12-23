@@ -47,7 +47,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
               id="password_form"
               phx-submit="update_password"
               phx-change="validate_password"
-              action={~p"/users/settings/password"}
+              action={~p"/users/settings"}
             >
               <.input
                 field={@password_form[:current_password]}
@@ -90,7 +90,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
           rows={@email_token}
           row_click={false}
         >
-          <:col :let={token} label="Address"><%= token.sent_to %></:col>
+          <:col :let={token} label="Address">{token.sent_to}</:col>
           <:col :let={token} label="Status">
             <%= if token.context == "change:#{@current_user.email}" do %>
               Pending
@@ -99,7 +99,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
             <% end %>
           </:col>
           <:col :let={token} label="Updated At">
-            <%= token.inserted_at |> Calendar.strftime("%B %d, %Y %H:%M") %>
+            {token.inserted_at |> Calendar.strftime("%B %d, %Y %H:%M")}
           </:col>
         </.table>
       </div>
@@ -190,7 +190,10 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
           )
 
           socket
-          |> put_flash(:info, "A link to confirm your email change has been sent to the new address.")
+          |> put_flash(
+            :info,
+            "A link to confirm your email change has been sent to the new address."
+          )
           |> assign(:current_user, applied_user)
 
         {:error, changeset} ->

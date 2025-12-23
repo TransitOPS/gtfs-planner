@@ -4,7 +4,6 @@ defmodule GtfsPlanner.Accounts.User do
   """
   use Ecto.Schema
   import Ecto.Changeset
-  import Argon2
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,
@@ -12,6 +11,7 @@ defmodule GtfsPlanner.Accounts.User do
           hashed_password: String.t() | nil,
           password: String.t() | nil,
           current_password: String.t() | nil,
+          confirmed_at: DateTime.t() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -23,6 +23,7 @@ defmodule GtfsPlanner.Accounts.User do
     field :hashed_password, :string, redact: true
     field :password, :string, virtual: true, redact: true
     field :current_password, :string, virtual: true, redact: true
+    field :confirmed_at, :naive_datetime
 
     has_many :tokens, GtfsPlanner.Accounts.UserToken
     has_many :memberships, GtfsPlanner.Accounts.UserOrgMembership
@@ -77,6 +78,25 @@ defmodule GtfsPlanner.Accounts.User do
   end
 
   @doc """
+  A user changeset for confirming the email.
+  """
+  def confirm_changeset(user) do
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+    change(user, confirmed_at: now)
+  end
+
+  @doc """
+  A user changeset for inviting a user.
+  """
+  def invite_changeset(user, attrs \\ %{}) do
+    user
+    |> cast(attrs, [:email])
+    |> validate_email()
+    |> validate_required([:email])
+    |> unique_constraint(:email)
+  end
+
+  @doc """
   A generic changeset for users.
   """
   def changeset(user, attrs, opts \\ []) do
@@ -85,7 +105,24 @@ defmodule GtfsPlanner.Accounts.User do
     |> validate_email(opts)
   end
 
-  defp validate_email(changeset, opts \\ []) do
+  @doc """
+  Validates the current password.
+
+  Accepts either a password string or an options keyword list with :user.
+  """
+  def validate_current_password(changeset, password) when is_binary(password) do
+    validate_current_password(changeset, password, [])
+  end
+
+  def validate_current_password(changeset, password, opts)
+      when is_binary(password) and is_list(opts) do
+    changeset
+    |> put_change(:current_password, password)
+    |> validate_required([:current_password])
+    |> maybe_validate_current_password(Keyword.put(opts, :password, password))
+  end
+
+  defp validate_email(changeset, _opts \\ []) do
     changeset
     |> validate_required([:email])
     |> validate_format(:email, ~r/^[^\s]+@[^\s]+$/, message: "must have the @ sign and no spaces")
@@ -99,12 +136,6 @@ defmodule GtfsPlanner.Accounts.User do
     |> validate_required([:password])
     |> validate_length(:password, min: 12, max: 72)
     |> maybe_hash_password(opts)
-  end
-
-  defp validate_current_password(changeset, opts) do
-    changeset
-    |> validate_required([:current_password])
-    |> maybe_validate_current_password(opts)
   end
 
   defp maybe_hash_password(changeset, opts) do
@@ -121,8 +152,9 @@ defmodule GtfsPlanner.Accounts.User do
   end
 
   defp maybe_validate_current_password(changeset, opts) do
-    current_password = get_change(changeset, :current_password)
     user = Keyword.get(opts, :user)
+    password = Keyword.get(opts, :password)
+    current_password = get_change(changeset, :current_password) || password
 
     cond do
       !user ->
