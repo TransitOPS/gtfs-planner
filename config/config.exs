@@ -20,7 +20,8 @@ config :gtfs_planner, GtfsPlannerWeb.Endpoint,
     layout: false
   ],
   pubsub_server: GtfsPlanner.PubSub,
-  live_view: [signing_salt: "mj9kAsLh"]
+  live_view: [signing_salt: "mj9kAsLh"],
+  secret_key_base: "lP7H3l9d5mK2qR8wT4vZ6yX1nC0jF4sG8hB2kM5qR9wT3vY7zA1cD4eF8gH2jK5lP"
 
 # Configure the mailer
 #
