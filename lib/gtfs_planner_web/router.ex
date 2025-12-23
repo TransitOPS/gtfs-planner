@@ -51,6 +51,13 @@ defmodule GtfsPlannerWeb.Router do
   end
 
   scope "/", GtfsPlannerWeb do
+    pipe_through :browser
+
+    post "/users/log_in", UserSessionController, :create
+    delete "/users/log_out", UserSessionController, :delete
+  end
+
+  scope "/", GtfsPlannerWeb do
     pipe_through [:browser, :redirect_if_user_is_authenticated]
 
     live_session :redirect_if_user_is_authenticated,

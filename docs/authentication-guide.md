@@ -12,6 +12,221 @@ The authentication system is organized into three primary layers:
 2. **Web Layer** (`GtfsPlannerWeb.UserAuth`, `GtfsPlannerWeb.ApiKeyAuth`, etc.): Provides authentication plugs, LiveView hooks, and HTTP controllers
 3. **Database Layer**: PostgreSQL tables for users, tokens, organizations, memberships, and API keys with proper constraints and indexes
 
+## Creating the First Admin Account
+
+Since user registration requires an invitation from an existing organization administrator, you'll need to create the first admin account directly via the Elixir console (`iex`) to bootstrap the system.
+
+### Step-by-Step Guide
+
+#### 1. Start the application with the database
+
+```bash
+# Start the Phoenix app with iex
+iex -S mix phx.server
+
+# Or start just the shell (if the server is already running)
+iex -S mix
+```
+
+#### 2. Create the first organization
+
+```elixir
+# Create an initial organization
+alias GtfsPlanner.Organizations
+
+{:ok, organization} = Organizations.create_organization(%{
+  alias: "admin",
+  name: "GTFS Planner Administration"
+})
+```
+
+This returns:
+
+```elixir
+%GtfsPlanner.Organizations.Organization{
+  id: 1,
+  alias: "admin",
+  name: "GTFS Planner Administration",
+  ...
+}
+```
+
+#### 3. Create the first admin user
+
+```elixir
+# Create the admin user with a password
+alias GtfsPlanner.Accounts
+
+{:ok, admin_user} = Accounts.register_user(%{
+  email: "admin@example.com",
+  password: "YourSecurePassword123!"
+})
+```
+
+This returns:
+
+```elixir
+%GtfsPlanner.Accounts.User{
+  id: 1,
+  email: "admin@example.com",
+  password_hash: "$argon2id$v=19$m=65536,t=3,p=4...",
+  confirmed_at: ~U[2025-12-23 20:00:00Z],
+  ...
+}
+```
+
+**Important**: The user is automatically confirmed (`confirmed_at` is set) so they can immediately log in.
+
+#### 4. Add the admin user to the organization with admin role
+
+```elixir
+# Add the user to the organization with administrator role
+{:ok, membership} = Organizations.add_user_to_organization(
+  admin_user.id,
+  organization.id,
+  ["administrator"]
+)
+```
+
+This returns:
+
+```elixir
+%GtfsPlanner.Accounts.UserOrgMembership{
+  id: 1,
+  user_id: 1,
+  organization_id: 1,
+  roles: ["administrator"],
+  ...
+}
+```
+
+#### 5. (Optional) Create an API key for programmatic access
+
+```elixir
+# Create an API key for the admin user
+{:ok, api_key} = Organizations.create_api_key(organization, %{
+  description: "Admin API Key",
+  roles: ["administrator"]
+})
+
+# The token is only returned once - save it securely!
+token = api_key.token
+# Returns: "GtfsPlanner.V1.abc123def456..."
+```
+
+**Important**: The unhashed API token is only returned when creating the key. Save it securely as you won't be able to retrieve it again. If lost, you'll need to create a new API key and delete the old one.
+
+#### 6. Verify the setup
+
+```elixir
+# Verify the user exists and has the admin role
+admin_user = Accounts.get_user_by_email("admin@example.com")
+organization = Organizations.get_organization_by_alias("admin")
+
+# Check membership
+memberships = Organizations.list_users_in_organization(organization)
+# Should return a list containing the admin_user with ["administrator"] roles
+```
+
+#### 7. Log in via the web interface
+
+Now you can:
+
+1. Navigate to `http://localhost:4000/users/log_in`
+2. Enter the email: `admin@example.com`
+3. Enter the password: `YourSecurePassword123!`
+4. You'll be logged in and redirected to `/organizations`
+
+### Complete Script Example
+
+Here's a complete script you can copy and paste into iex:
+
+```elixir
+alias GtfsPlanner.Organizations
+alias GtfsPlanner.Accounts
+
+# 1. Create organization
+{:ok, organization} = Organizations.create_organization(%{
+  alias: "admin",
+  name: "GTFS Planner Administration"
+})
+
+# 2. Create admin user
+{:ok, admin_user} = Accounts.register_user(%{
+  email: "admin@example.com",
+  password: "YourSecurePassword123!"
+})
+
+# 3. Add user to organization with admin role
+{:ok, _membership} = Organizations.add_user_to_organization(
+  admin_user,
+  organization,
+  ["administrator"]
+)
+
+# 4. (Optional) Create API key
+{:ok, api_key} = Organizations.create_api_key(organization, %{
+  description: "Admin API Key",
+  roles: ["administrator"]
+})
+
+# Display the API token (save this securely!)
+IO.puts("API Key: #{api_key.token}")
+
+IO.puts("\n✓ Setup complete!")
+IO.puts("✓ Admin user: admin@example.com")
+IO.puts("✓ Organization: admin")
+IO.puts("✓ API Token: #{api_key.token}")
+```
+
+### Security Notes
+
+- **Password Requirements**: Passwords must be 12-72 characters. Use a strong, unique password.
+- **API Token Storage**: Save the API token securely (password manager, secrets vault, etc.). It cannot be retrieved after creation.
+- **Email Configuration**: In production, ensure your email is configured so invitation emails can be sent to new users.
+- **Initial User Confirmation**: The `register_user/1` function automatically confirms the user (sets `confirmed_at`), so no email verification is needed for this initial admin account.
+
+### Troubleshooting
+
+**Email not set up yet?**
+
+If you don't have email configured yet, you can still create users via iex. The `register_user/1` function automatically confirms users, so they can log in immediately without email verification.
+
+**Need to verify user creation?**
+
+```elixir
+# Check if user exists
+user = Accounts.get_user_by_email("admin@example.com")
+# Returns %User{} or nil
+
+# Verify password works
+Accounts.User.valid_password?(user, "YourSecurePassword123!")
+# Returns true or false
+```
+
+**Need to reset the admin password?**
+
+```elixir
+# Get the user
+user = Accounts.get_user_by_email("admin@example.com")
+
+# Reset password
+{:ok, user} = Accounts.update_user_password(user, %{
+  "password" => "NewSecurePassword456!",
+  "current_password" => "YourSecurePassword123!"
+})
+```
+
+### Next Steps
+
+After creating the first admin account:
+
+1. **Log in** via the web interface at `/users/log_in`
+2. **Create additional organizations** for different tenants
+3. **Invite other users** via the user management interface
+4. **Set up role-based permissions** for different access levels
+5. **Create additional API keys** for programmatic access as needed
+
 ## User Authentication
 
 ### Password-Based Authentication
