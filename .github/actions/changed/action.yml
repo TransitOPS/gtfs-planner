@@ -1,0 +1,44 @@
+name: Detect Changed Files
+
+outputs:
+  elixir-changed:
+    value: ${{ fromJSON(steps.changes.outputs.elixir) || fromJSON(steps.changes.outputs.shared) }}
+  js-changed:
+    value: ${{ fromJSON(steps.changes.outputs.js) || fromJSON(steps.changes.outputs.shared) }}
+  infra-changed:
+    value: ${{ fromJSON(steps.changes.outputs.infra) || fromJSON(steps.changes.outputs.docker) || fromJSON(steps.changes.outputs.shared) }}
+  docker-changed:
+    value: ${{ fromJSON(steps.changes.outputs.docker) || fromJSON(steps.changes.outputs.elixir) || fromJSON(steps.changes.outputs.js) || fromJSON(steps.changes.outputs.shared) }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Detect Changed Files
+      id: changes
+      uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+      with:
+        filters: |
+          elixir:
+            - 'mix.lock'
+            - '**/*.ex'
+            - '**/*.exs'
+            - '.credo.exs'
+            - '.formatter.exs'
+            - '.sobelow-conf'
+            - 'coveralls.json'
+          js:
+            - 'assets/**/*.js'
+            - 'assets/**/*.css'
+            - 'assets/*.json'
+            - 'assets/.postcssrc'
+            - 'assets/.prettier*'
+            - 'assets/eslint.config.mjs'
+          infra:
+            - 'infra/**/*.tf'
+          docker:
+            - 'Dockerfile'
+            - '.dockerignore'
+          shared:
+            - '.tool-versions'
+            - '.github/**/*'
+
