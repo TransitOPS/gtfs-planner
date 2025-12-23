@@ -49,10 +49,4 @@ To avoid shell escaping issues and conflicts with bash/zsh when creating PRs, us
    rm "$TEMP_FILE"
    ```
 
-4. **Prevent accidental commits** of temporary files by adding patterns to `.gitignore`:
-   ```
-   /tmp/pr-desc-*.md
-   *.tmp
-   ```
-
-This approach handles multi-line descriptions, special characters, and avoids shell interpretation problems. The temporary file should be deleted immediately after the PR is created and never committed to the repository.
+4. **Prevent accidental commits** of temporary files created *inside the repository* by adding patterns to `.gitignore` (note: files created in `/tmp` are outside the repo and do not need to be ignored):
