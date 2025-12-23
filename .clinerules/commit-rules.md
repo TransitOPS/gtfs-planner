@@ -44,9 +44,12 @@ To avoid shell escaping issues and conflicts with bash/zsh when writing commit m
    rm "$TEMP_FILE"
    ```
 
-4. **Prevent accidental commits** of temporary files by adding patterns to `.gitignore`:
-   ```
-   /tmp/commit-msg-*.txt
+4. **Prevent accidental commits** of temporary files created *inside the repo* by adding patterns to `.gitignore`:
+
+   For the example above, `mktemp /tmp/commit-msg-XXXXXX.txt` writes into the system `/tmp` directory, which is **outside** the repository, so those files are never tracked and do not need a `.gitignore` rule. If you instead create temp files in the repo (for example, `mktemp commit-msg-XXXXXX.txt`), you can add:
+
+   ```gitignore
+   commit-msg-*.txt
    *.tmp
    ```
 
