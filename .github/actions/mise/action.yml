@@ -1,0 +1,19 @@
+name: "Install Mise"
+description: "Installs Mise and any tools"
+inputs:
+  install:
+    type: boolean
+    default: true
+    description: "Whether to install any tools"
+  install_args:
+    default: ""
+    description: "Which tools to install (space-separated)"
+runs:
+  using: "composite"
+  steps:
+    - name: Install Mise
+      uses: jdx/mise-action@d16887ba50704baed7de72bd1e82e04391e4457a # 3.5.0
+      with:
+        install: ${{ inputs.install }}
+        install_args: ${{ inputs.install_args }}
+        cache: true

@@ -1,0 +1,276 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Check for Changes
+    runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check for changes
+        id: changes
+        uses: ./.github/actions/changed
+      - run: |
+          echo elixir-changed: ${{ steps.changes.outputs.elixir-changed }}
+          echo js-changed: ${{ steps.changes.outputs.js-changed }}
+          echo docker-changed: ${{ steps.changes.outputs.docker-changed }}
+          echo infra-changed: ${{ steps.changes.outputs.infra-changed }}
+    outputs:
+      elixir-changed: ${{ steps.changes.outputs.elixir-changed }}
+      js-changed: ${{ steps.changes.outputs.js-changed }}
+      docker-changed: ${{ steps.changes.outputs.docker-changed }}
+      infra-changed: ${{ steps.changes.outputs.infra-changed }}
+
+  elixir_deps:
+    name: Build Elixir dependencies
+    runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
+    needs: [changes]
+    if: ${{ needs.changes.outputs.elixir-changed == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Elixir
+        uses: ./.github/actions/elixir
+        id: beam
+      - name: Restore dependencies cache
+        id: deps_cache
+        uses: actions/cache/restore@v5
+        with:
+          # Cache key based on Erlang/Elixir version and the mix.lock hash
+          key: |
+            deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            deps-${{ runner.os }}-${{ runner.arch }}-{{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+          path: |
+            deps
+            _build
+      - name: Build dependencies (if needed)
+        if: steps.deps_cache.outputs.cache-hit != 'true'
+        run: |
+          mise run elixir:deps -f
+          mix deps.compile
+          MIX_ENV=test mix deps.compile
+      - name: Save dependencies cache
+        uses: actions/cache/save@v5
+        if: steps.deps_cache.outputs.cache-hit != 'true'
+        with:
+          key: |
+            deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
+          path: |
+            deps
+            _build
+
+  elixir_test:
+    name: Elixir (test)
+    runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
+    needs: [changes, elixir_deps]
+    if: ${{ needs.changes.outputs.elixir-changed == 'true' }}
+
+    services:
+      postgres:
+        image: kartoza/postgis:17-3.5
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_PASS: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: pathways_test
+        # memory limit is 3GB
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5 --memory 3000000000
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Elixir
+        uses: ./.github/actions/elixir
+        id: beam
+      - name: Restore dependencies cache
+        id: deps_cache
+        uses: actions/cache/restore@v5
+        with:
+          # Cache key based on Erlang/Elixir version and the mix.lock hash
+          key: |
+            deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            deps-${{ runner.os }}-${{ runner.arch }}-{{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+          path: |
+            deps
+            _build
+      - name: Run tests with coverage
+        run: mise run test:elixir --cover
+
+  elixir_dev:
+    name: Elixir (dev)
+    runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
+    needs: [changes, elixir_deps]
+    if: ${{ needs.changes.outputs.elixir-changed == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Elixir
+        uses: ./.github/actions/elixir
+        id: beam
+      - name: Restore dependencies cache
+        id: deps_cache
+        uses: actions/cache/restore@v5
+        with:
+          # Cache key based on Erlang/Elixir version and the mix.lock hash
+          key: |
+            deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+          path: |
+            deps
+            _build
+      - name: Check formatting
+        run: mise run lint:elixir:format
+      - name: Run credo
+        run: mise run lint:elixir:credo
+      - name: Run sobelow
+        run: mise run lint:elixir:sobelow
+      - name: Restore PLT cache
+        id: plt_cache
+        uses: actions/cache/restore@v5
+        with:
+          # Cache key based on Erlang/Elixir version and the mix.lock hash
+          key: |
+            plt-${{ runner.os }}-${{ runner.arch }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            plt-${{ runner.os }}-${{ runner.arch }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+          path: priv/plts
+      - name: Build PLTs (if needed)
+        if: steps.plt_cache.outputs.cache-hit != 'true'
+        run: mix dialyzer --plt
+      - name: Save PLT cache
+        uses: actions/cache/save@v5
+        if: steps.plt_cache.outputs.cache-hit != 'true'
+        with:
+          key: |
+            plt-${{ runner.os }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
+          path: priv/plts
+      - name: Run dialyzer
+        run: mix dialyzer --format github --format dialyxir
+
+  js:
+    name: JS
+    runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
+    needs: [changes, elixir_deps]
+    if: ${{ needs.changes.outputs.js-changed == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Elixir
+        uses: ./.github/actions/elixir
+        id: beam
+      - name: Set up Node
+        id: node
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version-file: .tool-versions
+          cache: npm
+          cache-dependency-path: "assets/package-lock.json"
+      - name: Restore Elixir dependencies cache
+        id: mix_deps_cache
+        uses: actions/cache/restore@v5
+        with:
+          # Cache key based on Erlang/Elixir version and the mix.lock hash
+          key: |
+            deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+          path: |
+            deps
+            _build
+      - name: Compile Elixir application to pick up colocated hooks
+        run: mix compile
+      - name: Run lints
+        run: mise run lint:nodejs:*
+      - name: Run tests
+        run: mise run test:nodejs
+
+  docker:
+    name: Build Docker image
+    runs-on: ${{ fromJSON(vars.GH_DOCKER_RUNNER_LABEL) }}
+    needs: [changes]
+    if: ${{ needs.changes.outputs.docker-changed == 'true' || github.event_name == 'schedule' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Set cache parameters
+        id: cache-outputs
+        run: |
+          if [ "${{ github.run_attempt }}" -eq "1" ]; then
+            echo cache-from="type=gha" >> "$GITHUB_OUTPUT"
+          else
+            echo cache-from= >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          cache-to: type=gha,mode=max
+          cache-from: ${{ steps.cache-outputs.outputs.cache-from }}
+          tags: pathways
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: pathways
+          trivy-config: trivy.yml
+        env:
+          TRIVY_SKIP_JAVA_DB_UPDATE: true
+
+  infra:
+    name: Lint/scan infrastructure
+    runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
+    needs: [changes]
+    if: ${{ needs.changes.outputs.infra-changed == 'true' }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v3
+        with:
+          install: true
+          install_args: "opentofu shellcheck uv"
+          cache: true
+      - name: Install checkov
+        run: |
+          # this works around not being able to install Checkov from GitHub due
+          # to IP limiting from bridgecrewio
+          checkov_version=$(grep -E "^checkov\s" ".tool-versions" | head -n 1 | awk '{print $2}')
+          uv tool install "checkov@$checkov_version"
+          echo "PATH=$HOME/.local/bin:$PATH" >> $GITHUB_ENV
+      - name: Run linting/scanning
+        run: mise run 'lint:infra:*'
+
+  ci_passed:
+    name: CI Passed?
+    runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
+    needs: [elixir_dev, elixir_test, js, docker, infra]
+    if: ${{ always() }}
+    steps:
+      - run: |
+          echo "CI failed :("
+          exit 1
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+      - run: echo "CI passed!"

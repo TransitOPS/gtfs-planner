@@ -308,13 +308,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
   @doc """
   Renders a header with title.
   """
+  attr :class, :string, default: nil
   slot :inner_block, required: true
   slot :subtitle
   slot :actions
 
   def header(assigns) do
     ~H"""
-    <header class={[@actions != [] && "flex items-center justify-between gap-6", "pb-4"]}>
+    <header class={[@class, @actions != [] && "flex items-center justify-between gap-6", "pb-4"]}>
       <div>
         <h1 class="text-lg font-semibold leading-8">
           {render_slot(@inner_block)}
@@ -466,6 +467,40 @@ defmodule GtfsPlannerWeb.CoreComponents do
         {"transition-all ease-in duration-200", "opacity-100 translate-y-0 sm:scale-100",
          "opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"}
     )
+  end
+
+  @doc """
+  Renders a simple form.
+
+  ## Examples
+
+      <.simple_form for={@form} phx-submit="save">
+        <.input field={@form[:email]} type="email" />
+        <.input field={@form[:username]} type="text" />
+      </.simple_form>
+
+  """
+  attr :for, :any, default: nil, doc: "the data structure for the form"
+  attr :as, :any, default: nil, doc: "the server side parameter to collect all input under"
+
+  attr :rest, :global,
+    include: ~w(autocomplete name rel action enctype method novalidate target multipart),
+    doc: "the arbitrary HTML attributes to apply to the form tag"
+
+  slot :inner_block, required: true
+  slot :actions, doc: "the slot for form actions, such as a submit button"
+
+  def simple_form(assigns) do
+    ~H"""
+    <.form :let={_f} for={@for} as={@as} {@rest}>
+      <div class="space-y-6">
+        {render_slot(@inner_block)}
+      </div>
+      <div :if={@actions != []} class="mt-8 flex items-center justify-between gap-6">
+        {render_slot(@actions)}
+      </div>
+    </.form>
+    """
   end
 
   @doc """

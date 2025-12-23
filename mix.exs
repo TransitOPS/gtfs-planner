@@ -59,13 +59,16 @@ defmodule GtfsPlanner.MixProject do
        compile: false,
        depth: 1},
       {:swoosh, "~> 1.16"},
+      {:phoenix_swoosh, "~> 1.2"},
       {:req, "~> 0.5"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
-      {:bandit, "~> 1.5"}
+      {:bandit, "~> 1.5"},
+      {:argon2_elixir, "~> 4.1"},
+      {:ex_cldr_plugs, "~> 1.3"}
     ]
   end
 

@@ -24,6 +24,7 @@ defmodule GtfsPlanner.DataCase do
       import Ecto.Changeset
       import Ecto.Query
       import GtfsPlanner.DataCase
+      import GtfsPlanner.AccountsFixtures
     end
   end
 
