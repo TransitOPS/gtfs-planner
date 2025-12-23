@@ -1,0 +1,41 @@
+<Layouts.app flash={@flash}>
+  <div class="mx-auto max-w-sm">
+    <.header class="text-center">
+      Log in to account
+      <:subtitle>
+        Don't have an account?
+        <.link navigate={~p"/users/register"} class="font-semibold text-brand hover:underline">
+          Sign up
+        </.link>
+      </:subtitle>
+    </.header>
+
+    <.form
+      let={f}
+      for={%{}}
+      as={:user}
+      action={~p"/users/log_in"}
+      class="mt-12 space-y-6"
+    >
+      <.input field={f[:email]} type="email" label="Email" required />
+      <.input field={f[:password]} type="password" label="Password" required />
+
+      <.label class="flex items-center gap-2">
+        <input type="checkbox" name="user[remember_me]" class="checkbox checkbox-sm" />
+        <span>Keep me logged in for 60 days</span>
+      </.label>
+
+      <:actions>
+        <.button type="submit" phx-disable-with="Logging in..." class="w-full">
+          Log in <span aria-hidden="true">→</span>
+        </.button>
+      </:actions>
+    </.form>
+
+    <div class="mt-6 text-center text-sm">
+      <.link navigate={~p"/users/reset_password"} class="font-semibold text-brand hover:underline">
+        Forgot your password?
+      </.link>
+    </div>
+  </div>
+</Layouts.app>
