@@ -62,17 +62,21 @@ defmodule GtfsPlanner.Organizations.ApiKey do
   end
 
   @doc """
-  Verifies an API key token and returns the key information if valid.
+  Verifies an API key token by extracting the ID, fetching from the database,
+  and comparing hashes using constant-time comparison to prevent timing attacks.
+
+  Returns {:ok, api_key} if valid, or {:error, :invalid} otherwise.
   """
-  def verify_token(token, %__MODULE__{} = api_key) do
+  def verify_token(token, repo) when is_atom(repo) do
     with [^@prefix, "V1", encoded] <- String.split(token, "."),
-         <<api_key_id::binary-size(16), _secret::binary-size(@secret_size)>> <-
+         <<api_key_id::binary-size(16), secret::binary-size(@secret_size)>> <-
            Base.decode32!(encoded, case: :lower, padding: false),
-         api_key_id_uuid <- Ecto.UUID.cast!(api_key_id) do
-      hash = hash_api_key(api_key_id_uuid, 1, api_key.organization_id, <<_::binary-size(@secret_size)>>)
+         api_key_id_uuid <- Ecto.UUID.cast!(api_key_id),
+         %__MODULE__{} = api_key <- repo.get(__MODULE__, api_key_id_uuid) do
+      hash = hash_api_key(api_key_id_uuid, 1, api_key.organization_id, secret)
 
       if Plug.Crypto.secure_compare(hash, api_key.secret_hash) do
-        {:ok, api_key_id_uuid}
+        {:ok, api_key}
       else
         {:error, :invalid}
       end
