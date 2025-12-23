@@ -1,0 +1,20 @@
+name: Set up Elixir
+
+outputs:
+  otp-version:
+    value: ${{ steps.beam.outputs.otp-version }}
+  elixir-version:
+    value: ${{ steps.beam.outputs.elixir-version }}
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Elixir
+      id: beam
+      uses: erlef/setup-beam@e6d7c94229049569db56a7ad5a540c051a010af9 # v1.20.4
+      with:
+        version-file: ".tool-versions"
+        version-type: "strict"
+    - name: Set up other tools with Mise
+      uses: ./.github/actions/mise
+      with:
+        install_args: "protoc"

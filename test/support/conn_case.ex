@@ -33,6 +33,11 @@ defmodule GtfsPlannerWeb.ConnCase do
 
   setup tags do
     GtfsPlanner.DataCase.setup_sandbox(tags)
-    {:ok, conn: Phoenix.ConnTest.build_conn()}
+
+    conn =
+      Phoenix.ConnTest.build_conn()
+      |> Plug.Conn.put_private(:phoenix_endpoint, GtfsPlannerWeb.Endpoint)
+
+    {:ok, conn: conn}
   end
 end
