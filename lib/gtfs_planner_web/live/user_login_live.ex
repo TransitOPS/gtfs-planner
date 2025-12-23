@@ -1,7 +1,6 @@
 defmodule GtfsPlannerWeb.UserLoginLive do
   use GtfsPlannerWeb, :live_view
 
-  alias GtfsPlanner.Accounts
 
   def render(assigns) do
     ~H"""
@@ -20,7 +19,6 @@ defmodule GtfsPlannerWeb.UserLoginLive do
       <.simple_form
         for={@form}
         id="login_form"
-        phx-submit="save"
         phx-change="validate"
         action={~p"/users/log_in"}
       >
@@ -52,22 +50,6 @@ defmodule GtfsPlannerWeb.UserLoginLive do
     {:ok, assign(socket, form: form), temporary_assigns: [form: form]}
   end
 
-  def handle_event("save", %{"user" => user_params}, socket) do
-    %{"email" => email, "password" => password} = user_params
-
-    if user = Accounts.get_user_by_email_and_password(email, password) do
-      _token = Accounts.generate_user_session_token(user)
-
-      socket
-      |> put_flash(:info, "Welcome back!")
-      |> redirect(to: ~p"/organizations")
-    else
-      {:noreply,
-       socket
-       |> put_flash(:error, "Invalid email or password")
-       |> assign(form: to_form(user_params, as: "user"))}
-    end
-  end
 
   def handle_event("validate", %{"user" => user_params}, socket) do
     {:noreply, assign(socket, form: to_form(user_params, as: "user"))}
