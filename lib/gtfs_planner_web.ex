@@ -87,9 +87,14 @@ defmodule GtfsPlannerWeb do
       # Core UI components
       import GtfsPlannerWeb.CoreComponents
 
+      # Authentication imports
+      import GtfsPlannerWeb.UserAuth
+
       # Common modules used in templates
       alias Phoenix.LiveView.JS
       alias GtfsPlannerWeb.Layouts
+      alias GtfsPlanner.Accounts
+      alias GtfsPlanner.Organizations
 
       # Routes generation with the ~p sigil
       unquote(verified_routes())
