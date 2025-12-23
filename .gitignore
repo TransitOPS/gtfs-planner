@@ -40,5 +40,3 @@ git_commit_message.txt
 
 # Ignore log files
 logfile
-
-/warbler
