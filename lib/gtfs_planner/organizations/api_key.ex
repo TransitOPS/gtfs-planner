@@ -68,7 +68,7 @@ defmodule GtfsPlanner.Organizations.ApiKey do
   Returns {:ok, api_key} if valid, or {:error, :invalid} otherwise.
   """
   def verify_token(token, repo) when is_atom(repo) do
-    with [^@prefix, "V1", encoded] <- String.split(token, "."),
+    with [@prefix, "V1", encoded] <- String.split(token, "."),
          <<api_key_id::binary-size(16), secret::binary-size(@secret_size)>> <-
            Base.decode32!(encoded, case: :lower, padding: false),
          api_key_id_uuid <- Ecto.UUID.cast!(api_key_id),

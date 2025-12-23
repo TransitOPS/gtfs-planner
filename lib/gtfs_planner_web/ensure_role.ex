@@ -39,10 +39,6 @@ defmodule GtfsPlannerWeb.EnsureRole do
       end
   """
 
-  import Phoenix.LiveView
-  import Plug.Conn
-  import Phoenix.Controller
-
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Organizations
 
@@ -67,12 +63,18 @@ defmodule GtfsPlannerWeb.EnsureRole do
     on_mount({__MODULE__, :require}, params, session, socket)
   end
 
-  def on_mount(:require, _params, session, socket) do
+  def on_mount(:require, _params, _session, socket) do
     role_spec = socket.assigns[:role_spec] || :administrator
 
     # Ensure we have current_user and current_organization
-    user_id = socket.assigns[:current_user]&.id
-    organization_id = socket.assigns[:current_organization]&.id
+    user_id = case socket.assigns[:current_user] do
+      nil -> nil
+      user -> user.id
+    end
+    organization_id = case socket.assigns[:current_organization] do
+      nil -> nil
+      org -> org.id
+    end
 
     with {:ok, _user} when not is_nil(user_id) <- {:ok, user_id},
          {:ok, _org} when not is_nil(organization_id) <- {:ok, organization_id},
@@ -84,8 +86,8 @@ defmodule GtfsPlannerWeb.EnsureRole do
       _ ->
         socket =
           socket
-          |> put_flash(:error, "You do not have permission to access this page.")
-          |> redirect(to: ~p"/organizations")
+          |> Phoenix.LiveView.put_flash(:error, "You do not have permission to access this page.")
+          |> Phoenix.LiveView.redirect(to: "/organizations")
 
         {:halt, socket}
     end
@@ -118,9 +120,18 @@ defmodule GtfsPlannerWeb.EnsureRole do
   """
   def ensure_role(conn, role_spec) do
     # Get user or API key from conn
-    user_id = conn.assigns[:current_user]&.id
-    api_key_id = conn.assigns[:current_api_key]&.id
-    organization_id = conn.assigns[:current_organization]&.id
+    user_id = case conn.assigns[:current_user] do
+      nil -> nil
+      user -> user.id
+    end
+    api_key_id = case conn.assigns[:current_api_key] do
+      nil -> nil
+      api_key -> api_key.id
+    end
+    organization_id = case conn.assigns[:current_organization] do
+      nil -> nil
+      org -> org.id
+    end
 
     cond do
       is_nil(organization_id) ->
@@ -203,8 +214,8 @@ defmodule GtfsPlannerWeb.EnsureRole do
 
   defp unauthorized(conn) do
     conn
-    |> put_status(:forbidden)
-    |> json(%{error: "You do not have permission to access this resource."})
-    |> halt()
+    |> Phoenix.Controller.put_status(:forbidden)
+    |> Phoenix.Controller.json(%{error: "You do not have permission to access this resource."})
+    |> Plug.Conn.halt()
   end
 end

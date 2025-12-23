@@ -3,7 +3,7 @@ defmodule GtfsPlanner.Accounts.Emails.EmailConfirmationEmail do
   Module for sending email confirmation emails.
   """
 
-  use Swoosh.Email
+  import Swoosh.Email
 
   alias GtfsPlanner.Mailer
 
@@ -21,14 +21,14 @@ defmodule GtfsPlanner.Accounts.Emails.EmailConfirmationEmail do
     |> to({user.email})
     |> from({"GTFS Planner", "no-reply@gtfsplanner.com"})
     |> subject("Confirm your GTFS Planner email")
-    |> html_body(html_body(user, url))
-    |> text_body(text_body(user, url))
+    |> html_body(html_template(user, url))
+    |> text_body(text_template(user, url))
     |> Mailer.deliver()
   end
 
   # Private functions
 
-  defp html_body(user, url) do
+  defp html_template(_user, url) do
     """
     <!DOCTYPE html>
     <html>
@@ -109,7 +109,7 @@ defmodule GtfsPlanner.Accounts.Emails.EmailConfirmationEmail do
     """
   end
 
-  defp text_body(user, url) do
+  defp text_template(_user, url) do
     """
     Confirm your GTFS Planner email
 

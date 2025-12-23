@@ -59,7 +59,7 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLive do
           |> redirect(to: ~p"/")
       end
 
-    {:ok, socket, temporary_assigns: [form: form]}
+    {:ok, socket, temporary_assigns: [form: socket.assigns.form]}
   end
 
   def handle_event("accept_invite", %{"user" => user_params}, socket) do
