@@ -10,10 +10,40 @@ defmodule GtfsPlannerWeb.Router do
     plug :put_root_layout, html: {GtfsPlannerWeb.Layouts, :root}
     plug :protect_from_forgery
     plug :put_secure_browser_headers
+    plug :fetch_current_user
+  end
+
+  pipeline :redirect_if_user_is_authenticated do
+    plug :accepts, ["html"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :put_root_layout, html: {GtfsPlannerWeb.Layouts, :root}
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+    plug :fetch_current_user
+    plug :redirect_if_user_is_authenticated
+  end
+
+  pipeline :require_authenticated_user do
+    plug :accepts, ["html"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :put_root_layout, html: {GtfsPlannerWeb.Layouts, :root}
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+    plug :fetch_current_user
+    plug :require_authenticated_user
   end
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug :fetch_current_api_key
+  end
+
+  pipeline :api_organization do
+    plug :accepts, ["json"]
+    plug :fetch_current_api_key
+    plug GtfsPlannerWeb.AssignOrganization
   end
 
   scope "/", GtfsPlannerWeb do
