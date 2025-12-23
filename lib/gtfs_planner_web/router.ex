@@ -64,6 +64,16 @@ defmodule GtfsPlannerWeb.Router do
     end
   end
 
+  scope "/", GtfsPlannerWeb do
+    pipe_through [:browser, :require_authenticated_user]
+
+    live_session :require_authenticated_user,
+      on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do
+      live "/users/settings", UserSettingsLive, :edit
+      live "/organizations", OrganizationsListLive, :index
+    end
+  end
+
   # Other scopes may use custom stacks.
   # scope "/api", GtfsPlannerWeb do
   #   pipe_through :api
