@@ -163,7 +163,7 @@ defmodule GtfsPlanner.AccountsTest do
 
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_update_email_instructions(%{user | email: email}, user.email, &url)
+          Accounts.deliver_user_update_email_instructions(%{user | email: email}, user.email, url)
         end)
 
       %{user: user, token: token, email: email}
@@ -318,7 +318,7 @@ defmodule GtfsPlanner.AccountsTest do
     test "sends token through notification", %{user: user} do
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_confirmation_instructions(user, &url)
+          Accounts.deliver_user_confirmation_instructions(user, url)
         end)
 
       {:ok, token} = Base.url_decode64(token, padding: false)
@@ -334,7 +334,7 @@ defmodule GtfsPlanner.AccountsTest do
 
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_confirmation_instructions(%{user | email: email}, &url)
+          Accounts.deliver_user_confirmation_instructions(%{user | email: email}, url)
         end)
 
       %{user: user, token: token, email: email}
@@ -369,7 +369,7 @@ defmodule GtfsPlanner.AccountsTest do
     test "sends token through notification", %{user: user} do
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_reset_password_instructions(user, &url)
+          Accounts.deliver_user_reset_password_instructions(user, url)
         end)
 
       {:ok, token} = Base.url_decode64(token, padding: false)
@@ -383,7 +383,7 @@ defmodule GtfsPlanner.AccountsTest do
 
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_reset_password_instructions(user, &url)
+          Accounts.deliver_user_reset_password_instructions(user, url)
         end)
 
       %{user: user, token: token}
@@ -497,7 +497,7 @@ defmodule GtfsPlanner.AccountsTest do
     test "sends token through notification", %{user: user} do
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, &url)
+          Accounts.deliver_user_invite(user, url)
         end)
 
       {:ok, token} = Base.url_decode64(token, padding: false)
@@ -511,7 +511,7 @@ defmodule GtfsPlanner.AccountsTest do
 
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, &url)
+          Accounts.deliver_user_invite(user, url)
         end)
 
       %{user: user, token: token}
@@ -534,7 +534,7 @@ defmodule GtfsPlanner.AccountsTest do
 
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, &url)
+          Accounts.deliver_user_invite(user, url)
         end)
 
       %{user: user, token: token, org_id: org_id}
@@ -570,7 +570,7 @@ defmodule GtfsPlanner.AccountsTest do
     test "deletes invite token after acceptance", %{user: user, org_id: org_id} do
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, &url)
+          Accounts.deliver_user_invite(user, url)
         end)
 
       Accounts.accept_invite_set_password(user, %{
