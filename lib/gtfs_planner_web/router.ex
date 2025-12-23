@@ -1,5 +1,7 @@
 defmodule GtfsPlannerWeb.Router do
   use GtfsPlannerWeb, :router
+  import GtfsPlannerWeb.UserAuth
+  import GtfsPlannerWeb.ApiKeyAuth
 
   pipeline :browser do
     plug :accepts, ["html"]
