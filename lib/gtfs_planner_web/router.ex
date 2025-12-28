@@ -47,12 +47,6 @@ defmodule GtfsPlannerWeb.Router do
   scope "/", GtfsPlannerWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
-  end
-
-  scope "/", GtfsPlannerWeb do
-    pipe_through :browser
-
     post "/users/log_in", UserSessionController, :create
     delete "/users/log_out", UserSessionController, :delete
   end
@@ -76,6 +70,7 @@ defmodule GtfsPlannerWeb.Router do
 
     live_session :require_authenticated_user,
       on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do
+      live "/", DashboardLive, :index
       live "/users/settings", UserSettingsLive, :edit
       live "/organizations", OrganizationsListLive, :index
     end
