@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <div class="space-y-12">
-      <div>
+        <div>
         <.header>
           Account Settings
           <:subtitle>Manage your account email address and password settings.</:subtitle>
