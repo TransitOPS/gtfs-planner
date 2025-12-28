@@ -376,12 +376,7 @@ defmodule GtfsPlannerWeb.UserAuthTest do
 
   defp register_and_log_in_user(attrs) do
     user = AccountsFixtures.user_fixture(attrs)
-    token = Accounts.generate_user_session_token(user)
-
-    conn =
-      build_conn()
-      |> init_test_session(%{user_token: token})
-      |> Plug.Conn.assign(:current_user, user)
+    conn = build_conn() |> log_in_user(user)
 
     %{conn: conn, user: user}
   end

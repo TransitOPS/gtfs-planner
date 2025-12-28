@@ -40,4 +40,21 @@ defmodule GtfsPlannerWeb.ConnCase do
 
     {:ok, conn: conn}
   end
+
+  @doc """
+  Logs in the given user by generating a session token and setting up the connection.
+  This is a test helper that should be used in tests that require an authenticated user.
+
+  ## Examples
+
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+  """
+  def log_in_user(conn, user) do
+    token = GtfsPlanner.Accounts.generate_user_session_token(user)
+
+    conn
+    |> Phoenix.ConnTest.init_test_session(%{user_token: token})
+    |> Plug.Conn.assign(:current_user, user)
+  end
 end
