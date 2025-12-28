@@ -37,7 +37,7 @@ defmodule GtfsPlannerWeb.Layouts do
     ~H"""
     <header class="navbar px-4 sm:px-6 lg:px-8">
       <div class="flex-1">
-        <a href="/" class="text-xl font-bold tracking-tight">GTFS Planner</a>
+        <.link href={~p"/"} class="text-xl font-bold tracking-tight">GTFS Planner</.link>
       </div>
       <%= if @current_user do %>
         <div class="flex-none flex items-center gap-4">
