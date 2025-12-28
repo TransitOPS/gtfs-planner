@@ -376,7 +376,7 @@ defmodule GtfsPlannerWeb.UserAuthTest do
 
   defp register_and_log_in_user(attrs) do
     user = AccountsFixtures.user_fixture(attrs)
-    conn = build_conn() |> init_test_session(%{}) |> log_in_user(user)
+    conn = build_conn() |> log_in_user(user)
 
     %{conn: conn, user: user}
   end
