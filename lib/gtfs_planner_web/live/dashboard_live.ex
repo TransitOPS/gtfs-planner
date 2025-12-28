@@ -9,7 +9,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash}>
+    <Layouts.app flash={@flash} current_user={@current_user}>
       <div class="card bg-base-100 shadow-xl">
         <div class="card-body">
           <h2 class="card-title">Welcome to GTFS Planner</h2>

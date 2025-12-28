@@ -5,7 +5,8 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
 
   def render(assigns) do
     ~H"""
-    <div class="space-y-12">
+    <Layouts.app flash={@flash} current_user={@current_user}>
+      <div class="space-y-12">
       <div>
         <.header>
           Account Settings
@@ -103,7 +104,8 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
           </:col>
         </.table>
       </div>
-    </div>
+      </div>
+    </Layouts.app>
     """
   end
 
