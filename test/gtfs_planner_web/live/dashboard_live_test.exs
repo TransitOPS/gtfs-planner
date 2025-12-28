@@ -38,12 +38,4 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       assert has_element?(view, "a[href=\"/organizations\"]", "View Organizations")
     end
   end
-
-  defp log_in_user(conn, user) do
-    token = GtfsPlanner.Accounts.generate_user_session_token(user)
-
-    conn
-    |> Phoenix.ConnTest.init_test_session(%{user_token: token})
-    |> Plug.Conn.assign(:current_user, user)
-  end
 end
