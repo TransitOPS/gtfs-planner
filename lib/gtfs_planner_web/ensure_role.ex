@@ -40,6 +40,7 @@ defmodule GtfsPlannerWeb.EnsureRole do
   """
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Organizations
 
   @doc """
@@ -83,6 +84,21 @@ defmodule GtfsPlannerWeb.EnsureRole do
     on_mount(:require, params, session, socket)
   end
 
+  def on_mount(:require_system_administrator, _params, _session, socket) do
+    user = socket.assigns[:current_user]
+
+    if user && has_administrator_role?(user.id) do
+      {:cont, socket}
+    else
+      socket =
+        socket
+        |> Phoenix.LiveView.put_flash(:error, "You are not authorized to access this page.")
+        |> Phoenix.LiveView.redirect(to: "/")
+
+      {:halt, socket}
+    end
+  end
+
   def on_mount(:require, _params, _session, socket) do
     role_spec = socket.assigns[:role_spec] || :administrator
 
@@ -101,7 +117,7 @@ defmodule GtfsPlannerWeb.EnsureRole do
 
     with {:ok, _user} when not is_nil(user_id) <- {:ok, user_id},
          {:ok, _org} when not is_nil(organization_id) <- {:ok, organization_id},
-         {:ok, membership} <-
+         %UserOrgMembership{} = membership <-
            Accounts.get_user_org_membership(user_id, organization_id),
          true <- has_role?(membership.roles, role_spec) do
       {:cont, socket}
@@ -109,7 +125,7 @@ defmodule GtfsPlannerWeb.EnsureRole do
       _ ->
         socket =
           socket
-          |> Phoenix.LiveView.put_flash(:error, "You do not have permission to access this page.")
+          |> Phoenix.LiveView.put_flash(:error, "You are not authorized to access this page.")
           |> Phoenix.LiveView.redirect(to: "/organizations")
 
         {:halt, socket}
@@ -230,7 +246,7 @@ defmodule GtfsPlannerWeb.EnsureRole do
   defp roles_match_spec(nil, _), do: false
 
   defp roles_match_spec(roles, nil) when is_list(roles), do: true
-  defp roles_match_spec(roles, role) when is_atom(role), do: role in roles
+  defp roles_match_spec(roles, role) when is_atom(role), do: Atom.to_string(role) in roles
 
   defp roles_match_spec(roles, any: spec) when is_list(spec) do
     Enum.any?(spec, &roles_match_spec(roles, &1))
@@ -238,6 +254,14 @@ defmodule GtfsPlannerWeb.EnsureRole do
 
   defp roles_match_spec(roles, all: spec) when is_list(spec) do
     Enum.all?(spec, &roles_match_spec(roles, &1))
+  end
+
+  defp has_administrator_role?(user_id) do
+    user_id
+    |> Accounts.list_user_org_memberships()
+    |> Enum.any?(fn membership ->
+      "administrator" in membership.roles
+    end)
   end
 
   defp unauthorized(conn) do

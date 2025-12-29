@@ -1,7 +1,7 @@
 defmodule GtfsPlannerWeb.OrganizationsListLive do
   use GtfsPlannerWeb, :live_view
 
-  on_mount {GtfsPlannerWeb.EnsureRole, :require}
+  on_mount {GtfsPlannerWeb.EnsureRole, :require_system_administrator}
 
   @impl true
   def mount(_params, _session, socket) do

@@ -68,7 +68,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
       assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
                live(conn, ~p"/organizations")
 
-      assert redirect_path != "/organizations"
+      assert redirect_path == "/"
       assert flash["error"] =~ "authorized"
     end
   end

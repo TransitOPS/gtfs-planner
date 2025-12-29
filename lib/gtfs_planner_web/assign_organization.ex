@@ -9,7 +9,9 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   """
 
   import Plug.Conn
+  import Phoenix.LiveView, only: [put_flash: 3, redirect: 2]
   alias GtfsPlanner.Organizations
+  alias GtfsPlanner.Organizations.Organization
 
   @behaviour Plug
 
@@ -31,10 +33,10 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   @impl true
   def call(%Plug.Conn{params: %{"org_alias" => org_alias}} = conn, _opts) do
     case Organizations.get_organization_by_alias(org_alias) do
-      {:ok, organization} ->
+      %Organization{} = organization ->
         assign(conn, :current_organization, organization)
 
-      {:error, :not_found} ->
+      nil ->
         conn
         |> put_status(:not_found)
         |> Phoenix.Controller.html({GtfsPlannerWeb.ErrorHTML, :render_template, "404.html", %{}})
@@ -43,4 +45,39 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   end
 
   def call(conn, _opts), do: conn
+
+  @doc """
+  LiveView mount hook to assign organization from URL parameters.
+
+  ## Parameters
+    - :default: The hook name
+    - params: The route parameters
+    - _session: The session (unused)
+    - socket: The LiveView socket
+
+  ## Returns
+    - `{:cont, socket}` with `:current_organization` assigned if found
+    - `{:cont, socket}` unchanged if `org_alias` is not in params
+    - `{:halt, socket}` with flash error and redirect if organization not found
+  """
+  @spec on_mount(:default, map(), map(), Phoenix.LiveView.Socket.t()) ::
+          {:cont, Phoenix.LiveView.Socket.t()} | {:halt, Phoenix.LiveView.Socket.t()}
+  def on_mount(:default, %{"org_alias" => org_alias} = _params, _session, socket) do
+    case Organizations.get_organization_by_alias(org_alias) do
+      %Organization{} = organization ->
+        {:cont, Phoenix.Component.assign(socket, :current_organization, organization)}
+
+      nil ->
+        socket =
+          socket
+          |> put_flash(:error, "Organization not found")
+          |> redirect(to: "/")
+
+        {:halt, socket}
+    end
+  end
+
+  def on_mount(:default, _params, _session, socket) do
+    {:cont, socket}
+  end
 end

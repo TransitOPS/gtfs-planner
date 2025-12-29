@@ -5,11 +5,20 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlanner.Accounts.UserOrgMembership
+
+  on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
+  on_mount GtfsPlannerWeb.AssignOrganization
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, :page_title, "Station Details")}
+    user_roles = get_user_roles(socket)
+
+    {:ok,
+     socket
+     |> assign(:page_title, "Station Details")
+     |> assign(:user_roles, user_roles)}
   end
 
   @impl true
@@ -20,7 +29,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user}>
+    <Layouts.app flash={@flash} current_user={@current_user} current_organization={@current_organization} user_roles={@user_roles}>
       <.header>
         Station Details
         <:subtitle>Viewing details for station: {@stop_id}</:subtitle>
@@ -31,5 +40,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       </div>
     </Layouts.app>
     """
+  end
+
+  defp get_user_roles(socket) do
+    user = socket.assigns[:current_user]
+    organization = socket.assigns[:current_organization]
+
+    case GtfsPlanner.Accounts.get_user_org_membership(user.id, organization.id) do
+      %UserOrgMembership{roles: roles} when is_list(roles) -> roles
+      _ -> []
+    end
   end
 end
