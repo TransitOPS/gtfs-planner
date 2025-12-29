@@ -14,7 +14,6 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   import Phoenix.LiveView, only: [put_flash: 3, redirect: 2]
   import Phoenix.Component, only: [assign: 3]
   alias GtfsPlanner.Organizations
-  alias GtfsPlanner.Accounts
   alias GtfsPlannerWeb.UserAuth
 
   @doc """
