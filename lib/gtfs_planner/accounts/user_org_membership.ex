@@ -8,6 +8,8 @@ defmodule GtfsPlanner.Accounts.UserOrgMembership do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias GtfsPlanner.Authorization.Roles
+
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,
           user_id: Ecto.UUID.t() | nil,
@@ -36,5 +38,25 @@ defmodule GtfsPlanner.Accounts.UserOrgMembership do
     |> cast(attrs, [:user_id, :organization_id, :roles])
     |> validate_required([:user_id, :organization_id])
     |> unique_constraint([:user_id, :organization_id])
+    |> validate_roles()
+  end
+
+  defp validate_roles(changeset) do
+    roles = get_field(changeset, :roles)
+
+    if roles == nil or roles == [] do
+      changeset
+    else
+      invalid_roles =
+        Enum.reject(roles, fn role -> Roles.valid?(role) end)
+
+      if invalid_roles == [] do
+        changeset
+      else
+        Enum.reduce(invalid_roles, changeset, fn role, acc ->
+          add_error(acc, :roles, "contains invalid role: #{role}")
+        end)
+      end
+    end
   end
 end
