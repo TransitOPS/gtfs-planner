@@ -52,4 +52,24 @@ defmodule GtfsPlannerWeb.AccessControlTest do
         membership
     end
   end
+
+  describe "administrator role" do
+    test "administrator can access /organizations", %{conn: conn, user: user, organization: organization} do
+      add_role(user, organization, [:administrator])
+
+      {:ok, _view, html} = live(conn, ~p"/organizations")
+
+      assert html =~ "Organizations"
+    end
+
+    test "non-administrator cannot access /organizations", %{conn: conn, user: user, organization: organization} do
+      add_role(user, organization, [:pathways_studio_viewer])
+
+      assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
+               live(conn, ~p"/organizations")
+
+      assert redirect_path != "/organizations"
+      assert flash["error"] =~ "authorized"
+    end
+  end
 end
