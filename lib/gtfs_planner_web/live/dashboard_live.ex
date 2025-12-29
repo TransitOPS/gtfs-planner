@@ -1,10 +1,12 @@
 defmodule GtfsPlannerWeb.DashboardLive do
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlannerWeb.UserAuth
+
   @impl true
   def mount(_params, _session, socket) do
     user = socket.assigns[:current_user]
-    is_admin = is_administrator?(user)
+    is_admin = UserAuth.is_administrator?(user)
 
     user_roles =
       case user do
