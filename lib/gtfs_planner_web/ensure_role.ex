@@ -119,9 +119,36 @@ defmodule GtfsPlannerWeb.EnsureRole do
          {:ok, _org} when not is_nil(organization_id) <- {:ok, organization_id},
          %UserOrgMembership{} = membership <-
            Accounts.get_user_org_membership(user_id, organization_id),
-         true <- has_role?(membership.roles, role_spec) do
+         {:authorized, true} <- {:authorized, has_role?(membership.roles, role_spec)} do
       {:cont, socket}
     else
+      {:ok, nil} ->
+        socket =
+          socket
+          |> Phoenix.LiveView.put_flash(:error, "You are not authorized to access this page.")
+          |> Phoenix.LiveView.redirect(to: "/organizations")
+
+        {:halt, socket}
+
+      nil ->
+        socket =
+          socket
+          |> Phoenix.LiveView.put_flash(:error, "You do not have access to this organization.")
+          |> Phoenix.LiveView.redirect(to: "/organizations")
+
+        {:halt, socket}
+
+      {:authorized, false} ->
+        socket =
+          socket
+          |> Phoenix.LiveView.put_flash(
+            :error,
+            "You do not have the required permissions to access this page."
+          )
+          |> Phoenix.LiveView.redirect(to: "/organizations")
+
+        {:halt, socket}
+
       _ ->
         socket =
           socket
