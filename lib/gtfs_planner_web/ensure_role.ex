@@ -122,14 +122,16 @@ defmodule GtfsPlannerWeb.EnsureRole do
          {:authorized, true} <- {:authorized, has_role?(membership.roles, role_spec)} do
       {:cont, socket}
     else
+      # User is not logged in or organization context is missing
       {:ok, nil} ->
         socket =
           socket
-          |> Phoenix.LiveView.put_flash(:error, "You are not authorized to access this page.")
+          |> Phoenix.LiveView.put_flash(:error, "You must be logged in to access this page.")
           |> Phoenix.LiveView.redirect(to: "/organizations")
 
         {:halt, socket}
 
+      # No membership record found - user is not a member of this organization
       nil ->
         socket =
           socket
@@ -138,6 +140,7 @@ defmodule GtfsPlannerWeb.EnsureRole do
 
         {:halt, socket}
 
+      # Membership exists but user lacks the required role(s)
       {:authorized, false} ->
         socket =
           socket
@@ -149,6 +152,7 @@ defmodule GtfsPlannerWeb.EnsureRole do
 
         {:halt, socket}
 
+      # Catch-all for unexpected failures
       _ ->
         socket =
           socket
