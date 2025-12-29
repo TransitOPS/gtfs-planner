@@ -1,0 +1,55 @@
+defmodule GtfsPlannerWeb.AccessControlTest do
+  @moduledoc """
+  Tests for role-based access control across LiveViews.
+  """
+  use GtfsPlannerWeb.ConnCase
+
+  import Phoenix.LiveViewTest
+  import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.OrganizationsFixtures
+
+  alias GtfsPlanner.Accounts
+
+  setup %{conn: conn} do
+    # Create organization and user fixtures
+    organization = organization_fixture()
+    user = user_fixture()
+
+    # Log in the user
+    conn = log_in_user(conn, user)
+
+    %{conn: conn, user: user, organization: organization}
+  end
+
+  @doc """
+  Helper function to add roles to a user for an organization.
+
+  Creates a new membership if one doesn't exist, or updates the existing one.
+
+  ## Examples
+
+      add_role(user, organization, [:pathways_studio_admin])
+      add_role(user, organization, [:pathways_studio_editor, :pathways_studio_viewer])
+  """
+  def add_role(user, organization, roles) when is_list(roles) do
+    role_strings = Enum.map(roles, &Atom.to_string/1)
+
+    case Accounts.get_user_org_membership(user.id, organization.id) do
+      nil ->
+        {:ok, membership} =
+          Accounts.create_user_org_membership(%{
+            user_id: user.id,
+            organization_id: organization.id,
+            roles: role_strings
+          })
+
+        membership
+
+      membership ->
+        {:ok, membership} =
+          Accounts.update_user_org_membership(membership, %{roles: role_strings})
+
+        membership
+    end
+  end
+end
