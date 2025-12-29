@@ -3,7 +3,13 @@ defmodule GtfsPlannerWeb.DashboardLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, page_title: "Dashboard")}
+    user = socket.assigns[:current_user]
+    is_admin = is_administrator?(user)
+
+    {:ok,
+     socket
+     |> assign(:page_title, "Dashboard")
+     |> assign(:is_administrator, is_admin)}
   end
 
   @impl true
@@ -14,11 +20,25 @@ defmodule GtfsPlannerWeb.DashboardLive do
         <div class="card-body">
           <h2 class="card-title">Welcome to GTFS Planner</h2>
           <p>You are logged in as {@current_user.email}</p>
-          <div class="card-actions justify-end">
-            <.link navigate={~p"/organizations"} class="btn btn-primary">
-              View Organizations
-            </.link>
-          </div>
+
+          <%= if @is_administrator do %>
+            <div class="mt-4">
+              <p class="text-sm text-gray-600">You are an administrator.</p>
+            </div>
+            <div class="card-actions justify-end">
+              <.link navigate={~p"/admin/organizations"} class="btn btn-primary">
+                Manage Organizations
+              </.link>
+            </div>
+          <% else %>
+            <%= if assigns[:current_organization] do %>
+              <div class="mt-4">
+                <p class="text-sm text-gray-600">
+                  Organization: <span class="font-medium">{@current_organization.name}</span>
+                </p>
+              </div>
+            <% end %>
+          <% end %>
         </div>
       </div>
     </Layouts.app>

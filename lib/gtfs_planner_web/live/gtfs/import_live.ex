@@ -24,7 +24,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user} current_organization={@current_organization} user_roles={@user_roles}>
+    <Layouts.app flash={@flash} current_user={@current_user} user_roles={@user_roles}>
       <.header>
         Import GTFS
         <:subtitle>GTFS import functionality coming soon.</:subtitle>

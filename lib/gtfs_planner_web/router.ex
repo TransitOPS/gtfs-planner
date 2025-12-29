@@ -38,12 +38,6 @@ defmodule GtfsPlannerWeb.Router do
     plug :fetch_current_api_key
   end
 
-  pipeline :api_organization do
-    plug :accepts, ["json"]
-    plug :fetch_current_api_key
-    plug GtfsPlannerWeb.AssignOrganization
-  end
-
   scope "/", GtfsPlannerWeb do
     pipe_through :browser
 
@@ -72,11 +66,10 @@ defmodule GtfsPlannerWeb.Router do
       on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do
       live "/", DashboardLive, :index
       live "/users/settings", UserSettingsLive, :edit
-      live "/organizations", OrganizationsListLive, :index
     end
   end
 
-  scope "/organizations/:org_alias", GtfsPlannerWeb do
+  scope "/admin", GtfsPlannerWeb do
     pipe_through [:browser, :require_authenticated_user]
 
     live_session :require_authenticated_user_and_org,
@@ -85,16 +78,41 @@ defmodule GtfsPlannerWeb.Router do
         GtfsPlannerWeb.AssignOrganization
       ] do
       # Admin routes (pathways_studio_admin role required)
-      live "/admin/users", Admin.UsersLive, :index
-      live "/admin/users/new", Admin.UsersLive, :new
-      live "/admin/users/:user_id", Admin.UsersLive, :show
+      live "/users", Admin.UsersLive, :index
+      live "/users/new", Admin.UsersLive, :new
+      live "/users/:user_id", Admin.UsersLive, :show
+    end
+  end
 
+  scope "/admin/organizations", GtfsPlannerWeb do
+    pipe_through [:browser, :require_authenticated_user]
+
+    live_session :administrator_only,
+      on_mount: [
+        {GtfsPlannerWeb.UserAuth, :ensure_authenticated},
+        {GtfsPlannerWeb.EnsureRole, :require_system_administrator}
+      ] do
+      # Organization management routes (administrator role required)
+      live "/", Admin.OrganizationsLive, :index
+      live "/new", Admin.OrganizationsLive, :new
+      live "/:org_id", Admin.OrganizationsLive, :show
+    end
+  end
+
+  scope "/gtfs/:version", GtfsPlannerWeb do
+    pipe_through [:browser, :require_authenticated_user]
+
+    live_session :gtfs_routes,
+      on_mount: [
+        {GtfsPlannerWeb.UserAuth, :ensure_authenticated},
+        GtfsPlannerWeb.AssignOrganization
+      ] do
       # GTFS routes (viewer or editor roles required)
-      live "/gtfs/:version/stops", Gtfs.StopsLive, :index
-      live "/gtfs/:version/stops/:stop_id", Gtfs.StopDetailLive, :show
-      live "/gtfs/:version/import", Gtfs.ImportLive, :index
-      live "/gtfs/:version/export", Gtfs.ExportLive, :index
-      live "/gtfs/:version/validate", Gtfs.ValidateLive, :index
+      live "/stops", Gtfs.StopsLive, :index
+      live "/stops/:stop_id", Gtfs.StopDetailLive, :show
+      live "/import", Gtfs.ImportLive, :index
+      live "/export", Gtfs.ExportLive, :index
+      live "/validate", Gtfs.ValidateLive, :index
     end
   end
 

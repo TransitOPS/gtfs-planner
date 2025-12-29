@@ -29,7 +29,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user} current_organization={@current_organization} user_roles={@user_roles}>
+    <Layouts.app flash={@flash} current_user={@current_user} user_roles={@user_roles}>
       <.header>
         Station Details
         <:subtitle>Viewing details for station: {@stop_id}</:subtitle>

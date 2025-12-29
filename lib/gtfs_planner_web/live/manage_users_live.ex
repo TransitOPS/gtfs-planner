@@ -115,7 +115,7 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
 
       {:ok, socket}
     else
-      {:ok, redirect(socket, to: ~p"/organizations")}
+      {:ok, redirect(socket, to: ~p"/")}
     end
   end
 

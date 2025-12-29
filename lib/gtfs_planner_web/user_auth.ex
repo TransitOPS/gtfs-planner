@@ -21,18 +21,102 @@ defmodule GtfsPlannerWeb.UserAuth do
   Logs the user in.
 
   It renews the session ID and clears the whole session
-  to avoid fixation attacks.
+  to avoid fixation attacks. Automatically fetches and sets
+  the user's organization in the session if they have one.
   """
   def log_in_user(conn, user, params \\ %{}) do
     token = Accounts.generate_user_session_token(user)
     user_return_to = get_session(conn, :user_return_to)
 
-    conn
-    |> renew_session()
-    |> put_session(:user_token, token)
-    |> maybe_write_remember_me_cookie(token, params)
-    |> assign(:current_user, user)
-    |> Phoenix.Controller.redirect(to: user_return_to || signed_in_path(conn))
+    conn =
+      conn
+      |> renew_session()
+      |> put_session(:user_token, token)
+      |> maybe_set_organization_in_session(user)
+      |> maybe_write_remember_me_cookie(token, params)
+      |> assign(:current_user, user)
+
+    Phoenix.Controller.redirect(conn, to: user_return_to || signed_in_path(conn, user))
+  end
+
+  @doc """
+  Puts the organization_id in the session.
+
+  Used to set the active organization context for a user session.
+  """
+  def put_organization_in_session(conn, organization_id) do
+    put_session(conn, :organization_id, organization_id)
+  end
+
+  @doc """
+  Fetches the user's single organization membership.
+
+  Returns the organization_id if the user has exactly one membership,
+  or nil if the user has no memberships or is an administrator.
+  """
+  def fetch_user_organization(user) do
+    case Accounts.list_user_org_memberships(user.id) do
+      [] ->
+        nil
+
+      [membership | _rest] ->
+        if is_administrator?(membership) do
+          nil
+        else
+          membership.organization_id
+        end
+    end
+  end
+
+  @doc """
+  Checks if a user is an administrator (system-scoped).
+
+  Returns true if the user has the administrator role, false otherwise.
+  """
+  def is_administrator?(user) when is_map(user) and is_map_key(user, :__struct__) do
+    case user.__struct__ do
+      GtfsPlanner.Accounts.User ->
+        memberships = Accounts.list_user_org_memberships(user.id)
+
+        Enum.any?(memberships, fn membership ->
+          "administrator" in membership.roles
+        end)
+
+      GtfsPlanner.Accounts.UserOrgMembership ->
+        "administrator" in user.roles
+
+      _ ->
+        false
+    end
+  end
+
+  def is_administrator?(_), do: false
+
+  defp maybe_set_organization_in_session(conn, user) do
+    if is_administrator?(user) do
+      conn
+    else
+      case fetch_user_organization(user) do
+        nil -> conn
+        organization_id -> put_organization_in_session(conn, organization_id)
+      end
+    end
+  end
+
+  @doc """
+  Redirects to / (dashboard) if no organization is set in session.
+
+  Used as a plug to ensure organization context is present.
+  """
+  def redirect_if_no_organization(conn, _opts) do
+    if get_session(conn, :organization_id) do
+      conn
+    else
+      conn
+      |> Phoenix.Controller.put_flash(:error, "Please select an organization to continue.")
+      |> Phoenix.Controller.redirect(to: "/")
+      |> halt()
+    end
   end
 
   @doc """
@@ -192,6 +276,18 @@ defmodule GtfsPlannerWeb.UserAuth do
 
   defp maybe_store_return_to(conn), do: conn
 
-  defp signed_in_path(_conn), do: "/organizations"
-  defp signed_in_path(_socket), do: "/organizations"
+  defp signed_in_path(_conn, user) when is_map(user) do
+    if is_administrator?(user) do
+      "/admin/organizations"
+    else
+      "/"
+    end
+  end
+
+  defp signed_in_path(conn) do
+    case conn.assigns[:current_user] do
+      nil -> "/"
+      user -> signed_in_path(conn, user)
+    end
+  end
 end

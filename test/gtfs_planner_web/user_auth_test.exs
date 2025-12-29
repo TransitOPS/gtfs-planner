@@ -6,7 +6,7 @@ defmodule GtfsPlannerWeb.UserAuthTest do
   alias GtfsPlannerWeb.UserAuth
 
   describe "log_in_user/3" do
-    test "logs user in and redirects to organizations page" do
+    test "logs user in and redirects to dashboard page" do
       user = AccountsFixtures.user_fixture()
 
       conn =
@@ -16,7 +16,7 @@ defmodule GtfsPlannerWeb.UserAuthTest do
         |> UserAuth.fetch_current_user([])
 
       assert conn.assigns.current_user.id == user.id
-      assert redirected_to(conn) == ~p"/organizations"
+      assert redirected_to(conn) == ~p"/"
     end
 
     test "stores user token in that session" do
@@ -179,7 +179,7 @@ defmodule GtfsPlannerWeb.UserAuthTest do
       %{conn: conn} = register_and_log_in_user(%{})
 
       conn = UserAuth.redirect_if_user_is_authenticated(conn, [])
-      assert redirected_to(conn) == ~p"/organizations"
+      assert redirected_to(conn) == ~p"/"
       assert conn.halted
     end
 
@@ -337,7 +337,7 @@ defmodule GtfsPlannerWeb.UserAuthTest do
                )
 
       assert socket.assigns.current_user.id == user.id
-      assert socket.redirected == {:redirect, %{status: 302, to: "/organizations"}}
+      assert socket.redirected == {:redirect, %{status: 302, to: "/"}}
     end
 
     test "continues for unauthenticated user" do

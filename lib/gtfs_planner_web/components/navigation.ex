@@ -35,7 +35,7 @@ defmodule GtfsPlannerWeb.Navigation do
       <ul>
         <%= if has_role?(@user_roles, :administrator) do %>
           <li>
-            <.link navigate="/organizations" class="menu-item">
+            <.link navigate="/admin/organizations" class="menu-item">
               <.icon name="hero-building-office" class="w-5 h-5" />
               Organizations
             </.link>
@@ -44,7 +44,7 @@ defmodule GtfsPlannerWeb.Navigation do
 
         <%= if has_role?(@user_roles, :pathways_studio_admin) && @current_organization do %>
           <li>
-            <.link navigate={"/organizations/#{@current_organization.alias}/admin/users"} class="menu-item">
+            <.link navigate="/admin/users" class="menu-item">
               <.icon name="hero-user-group" class="w-5 h-5" />
               Users
             </.link>
@@ -53,7 +53,7 @@ defmodule GtfsPlannerWeb.Navigation do
 
         <%= if (has_role?(@user_roles, :pathways_studio_editor) || has_role?(@user_roles, :pathways_studio_viewer)) && @current_organization do %>
           <li>
-            <.link navigate={"/organizations/#{@current_organization.alias}/gtfs/v1/stops"} class="menu-item">
+            <.link navigate="/gtfs/v1/stops" class="menu-item">
               <.icon name="hero-map-pin" class="w-5 h-5" />
               Stations
             </.link>
@@ -62,7 +62,7 @@ defmodule GtfsPlannerWeb.Navigation do
 
         <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization do %>
           <li>
-            <.link navigate={"/organizations/#{@current_organization.alias}/gtfs/v1/import"} class="menu-item">
+            <.link navigate="/gtfs/v1/import" class="menu-item">
               <.icon name="hero-arrow-down-tray" class="w-5 h-5" />
               Import
             </.link>
@@ -71,13 +71,13 @@ defmodule GtfsPlannerWeb.Navigation do
 
         <%= if (has_role?(@user_roles, :pathways_studio_editor) || has_role?(@user_roles, :pathways_studio_viewer)) && @current_organization do %>
           <li>
-            <.link navigate={"/organizations/#{@current_organization.alias}/gtfs/v1/export"} class="menu-item">
+            <.link navigate="/gtfs/v1/export" class="menu-item">
               <.icon name="hero-arrow-up-tray" class="w-5 h-5" />
               Export
             </.link>
           </li>
           <li>
-            <.link navigate={"/organizations/#{@current_organization.alias}/gtfs/v1/validate"} class="menu-item">
+            <.link navigate="/gtfs/v1/validate" class="menu-item">
               <.icon name="hero-shield-check" class="w-5 h-5" />
               Validate
             </.link>

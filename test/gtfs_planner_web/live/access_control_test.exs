@@ -15,8 +15,18 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     organization = organization_fixture()
     user = user_fixture()
 
-    # Log in the user
-    conn = log_in_user(conn, user)
+    # Create initial membership (will be updated by individual tests)
+    Accounts.create_user_org_membership(%{
+      user_id: user.id,
+      organization_id: organization.id,
+      roles: []
+    })
+
+    # Log in the user and set organization in session
+    conn =
+      conn
+      |> log_in_user(user)
+      |> Plug.Conn.put_session(:organization_id, organization.id)
 
     %{conn: conn, user: user, organization: organization}
   end
@@ -54,19 +64,19 @@ defmodule GtfsPlannerWeb.AccessControlTest do
   end
 
   describe "administrator role" do
-    test "administrator can access /organizations", %{conn: conn, user: user, organization: organization} do
+    test "administrator can access /admin/organizations", %{conn: conn, user: user, organization: organization} do
       add_role(user, organization, [:administrator])
 
-      {:ok, _view, html} = live(conn, ~p"/organizations")
+      {:ok, _view, html} = live(conn, ~p"/admin/organizations")
 
       assert html =~ "Organizations"
     end
 
-    test "non-administrator cannot access /organizations", %{conn: conn, user: user, organization: organization} do
+    test "non-administrator cannot access /admin/organizations", %{conn: conn, user: user, organization: organization} do
       add_role(user, organization, [:pathways_studio_viewer])
 
       assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
-               live(conn, ~p"/organizations")
+               live(conn, ~p"/admin/organizations")
 
       assert redirect_path == "/"
       assert flash["error"] =~ "authorized"
@@ -74,21 +84,21 @@ defmodule GtfsPlannerWeb.AccessControlTest do
   end
 
   describe "pathways_studio_admin role" do
-    test "admin can access /organizations/:org/admin/users", %{conn: conn, user: user, organization: organization} do
+    test "admin can access /admin/users", %{conn: conn, user: user, organization: organization} do
       add_role(user, organization, [:pathways_studio_admin])
 
-      {:ok, _view, html} = live(conn, ~p"/organizations/#{organization.alias}/admin/users")
+      {:ok, _view, html} = live(conn, ~p"/admin/users")
 
       assert html =~ "Manage Users"
     end
 
-    test "viewer cannot access /organizations/:org/admin/users", %{conn: conn, user: user, organization: organization} do
+    test "viewer cannot access /admin/users", %{conn: conn, user: user, organization: organization} do
       add_role(user, organization, [:pathways_studio_viewer])
 
       assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
-               live(conn, ~p"/organizations/#{organization.alias}/admin/users")
+               live(conn, ~p"/admin/users")
 
-      assert redirect_path != "/organizations/#{organization.alias}/admin/users"
+      assert redirect_path != "/admin/users"
       assert flash["error"] =~ "authorized"
     end
   end
@@ -97,7 +107,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     test "editor can access import", %{conn: conn, user: user, organization: organization} do
       add_role(user, organization, [:pathways_studio_editor])
 
-      {:ok, _view, html} = live(conn, ~p"/organizations/#{organization.alias}/gtfs/v1/import")
+      {:ok, _view, html} = live(conn, ~p"/gtfs/v1/import")
 
       assert html =~ "Import GTFS"
     end
@@ -106,9 +116,9 @@ defmodule GtfsPlannerWeb.AccessControlTest do
       add_role(user, organization, [:pathways_studio_viewer])
 
       assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
-               live(conn, ~p"/organizations/#{organization.alias}/gtfs/v1/import")
+               live(conn, ~p"/gtfs/v1/import")
 
-      assert redirect_path != "/organizations/#{organization.alias}/gtfs/v1/import"
+      assert redirect_path != "/gtfs/v1/import"
       assert flash["error"] =~ "authorized"
     end
   end
@@ -117,7 +127,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     test "viewer can access stops", %{conn: conn, user: user, organization: organization} do
       add_role(user, organization, [:pathways_studio_viewer])
 
-      {:ok, _view, html} = live(conn, ~p"/organizations/#{organization.alias}/gtfs/v1/stops")
+      {:ok, _view, html} = live(conn, ~p"/gtfs/v1/stops")
 
       assert html =~ "Stations"
     end
@@ -125,7 +135,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     test "viewer can access export", %{conn: conn, user: user, organization: organization} do
       add_role(user, organization, [:pathways_studio_viewer])
 
-      {:ok, _view, html} = live(conn, ~p"/organizations/#{organization.alias}/gtfs/v1/export")
+      {:ok, _view, html} = live(conn, ~p"/gtfs/v1/export")
 
       assert html =~ "Export GTFS"
     end
@@ -133,7 +143,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     test "editor can also access stops", %{conn: conn, user: user, organization: organization} do
       add_role(user, organization, [:pathways_studio_editor])
 
-      {:ok, _view, html} = live(conn, ~p"/organizations/#{organization.alias}/gtfs/v1/stops")
+      {:ok, _view, html} = live(conn, ~p"/gtfs/v1/stops")
 
       assert html =~ "Stations"
     end
@@ -151,7 +161,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     test "viewer does not see Import link", %{conn: conn, user: user, organization: organization} do
       add_role(user, organization, [:pathways_studio_viewer])
 
-      {:ok, view, _html} = live(conn, ~p"/organizations/#{organization.alias}/gtfs/v1/stops")
+      {:ok, view, _html} = live(conn, ~p"/gtfs/v1/stops")
 
       refute has_element?(view, "a", "Import")
     end
@@ -159,7 +169,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     test "editor sees Import link", %{conn: conn, user: user, organization: organization} do
       add_role(user, organization, [:pathways_studio_editor])
 
-      {:ok, view, _html} = live(conn, ~p"/organizations/#{organization.alias}/gtfs/v1/stops")
+      {:ok, view, _html} = live(conn, ~p"/gtfs/v1/stops")
 
       assert has_element?(view, "a", "Import")
     end

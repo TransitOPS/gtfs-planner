@@ -1,83 +1,77 @@
 defmodule GtfsPlannerWeb.AssignOrganization do
   @moduledoc """
-  Plug to assign the organization from URL parameters.
+  LiveView mount hook to assign organization from session.
 
-  This plug extracts the `org_alias` parameter from the connection,
+  This hook extracts the `organization_id` from the user's session,
   fetches the corresponding organization, and assigns it to the
-  connection as `:current_organization`. If the organization is
-  not found, it returns a 404 Not Found response.
+  LiveView socket as `:current_organization`. If no organization
+  is in the session or the organization is not found, it redirects
+  to the login page with an error.
+
+  Administrators (system-scoped users) bypass the organization requirement.
   """
 
-  import Plug.Conn
   import Phoenix.LiveView, only: [put_flash: 3, redirect: 2]
+  import Phoenix.Component, only: [assign: 3]
   alias GtfsPlanner.Organizations
-  alias GtfsPlanner.Organizations.Organization
-
-  @behaviour Plug
-
-  @impl true
-  def init(opts), do: opts
+  alias GtfsPlanner.Accounts
 
   @doc """
-  Extracts organization from URL params and assigns it to the connection.
-
-  ## Parameters
-    - conn: The Plug connection struct
-    - opts: Options (currently unused)
-
-  ## Returns
-    - The connection with `:current_organization` assigned if found
-    - A 404 Not Found response if the organization doesn't exist
-  """
-  @spec call(Plug.Conn.t(), keyword()) :: Plug.Conn.t()
-  @impl true
-  def call(%Plug.Conn{params: %{"org_alias" => org_alias}} = conn, _opts) do
-    case Organizations.get_organization_by_alias(org_alias) do
-      %Organization{} = organization ->
-        assign(conn, :current_organization, organization)
-
-      nil ->
-        conn
-        |> put_status(:not_found)
-        |> Phoenix.Controller.html({GtfsPlannerWeb.ErrorHTML, :render_template, "404.html", %{}})
-        |> halt()
-    end
-  end
-
-  def call(conn, _opts), do: conn
-
-  @doc """
-  LiveView mount hook to assign organization from URL parameters.
+  LiveView mount hook to assign organization from session.
 
   ## Parameters
     - :default: The hook name
-    - params: The route parameters
-    - _session: The session (unused)
+    - _params: The route parameters (unused)
+    - session: The session containing the organization_id
     - socket: The LiveView socket
 
   ## Returns
     - `{:cont, socket}` with `:current_organization` assigned if found
-    - `{:cont, socket}` unchanged if `org_alias` is not in params
-    - `{:halt, socket}` with flash error and redirect if organization not found
+    - `{:cont, socket}` without organization if user is administrator
+    - `{:halt, socket}` with flash error and redirect if organization not in session or not found
   """
   @spec on_mount(:default, map(), map(), Phoenix.LiveView.Socket.t()) ::
           {:cont, Phoenix.LiveView.Socket.t()} | {:halt, Phoenix.LiveView.Socket.t()}
-  def on_mount(:default, %{"org_alias" => org_alias} = _params, _session, socket) do
-    case Organizations.get_organization_by_alias(org_alias) do
-      %Organization{} = organization ->
-        {:cont, Phoenix.Component.assign(socket, :current_organization, organization)}
+  def on_mount(:default, _params, session, socket) do
+    current_user = socket.assigns[:current_user]
+
+    # Administrator bypass - administrators don't need organization context
+    if current_user && is_administrator?(current_user) do
+      {:cont, socket}
+    else
+      assign_organization_from_session(session, socket)
+    end
+  end
+
+  defp assign_organization_from_session(%{"organization_id" => organization_id}, socket) do
+    case Organizations.get_organization!(organization_id) do
+      %Organizations.Organization{} = organization ->
+        {:cont, assign(socket, :current_organization, organization)}
 
       nil ->
         socket =
           socket
           |> put_flash(:error, "Organization not found")
-          |> redirect(to: "/")
+          |> redirect(to: "/users/log_in")
 
         {:halt, socket}
     end
   end
 
-  def on_mount(:default, _params, _session, socket) do
-    {:cont, socket}
+  defp assign_organization_from_session(_session, socket) do
+    socket =
+      socket
+      |> put_flash(:error, "Your account has no organization assigned. Contact an administrator.")
+      |> redirect(to: "/users/log_in")
+
+    {:halt, socket}
+  end
+
+  defp is_administrator?(user) do
+    memberships = Accounts.list_user_org_memberships(user.id)
+
+    Enum.any?(memberships, fn membership ->
+      "administrator" in membership.roles
+    end)
   end
 end

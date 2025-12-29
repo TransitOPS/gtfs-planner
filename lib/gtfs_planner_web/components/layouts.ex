@@ -68,11 +68,11 @@ defmodule GtfsPlannerWeb.Layouts do
       <% end %>
     </header>
 
-    <%= if @current_user && @current_organization do %>
+    <%= if @current_user do %>
       <div class="flex">
         <Navigation.sidebar
           current_user={@current_user}
-          current_organization={@current_organization}
+          current_organization={assigns[:current_organization]}
           user_roles={@user_roles}
         />
         <main id="main-content" class="flex-1 px-4 py-20 sm:px-6 lg:px-8">
