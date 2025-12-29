@@ -126,7 +126,7 @@ defmodule GtfsPlannerWeb.EnsureRole do
         socket =
           socket
           |> Phoenix.LiveView.put_flash(:error, "You are not authorized to access this page.")
-          |> Phoenix.LiveView.redirect(to: "/organizations")
+          |> Phoenix.LiveView.redirect(to: "/admin/organizations")
 
         {:halt, socket}
     end
