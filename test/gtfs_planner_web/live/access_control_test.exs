@@ -32,16 +32,17 @@ defmodule GtfsPlannerWeb.AccessControlTest do
   end
 
   @doc """
-  Helper function to add roles to a user for an organization.
+  Helper function to set roles for a user in an organization.
 
-  Creates a new membership if one doesn't exist, or updates the existing one.
+  Creates a new membership if one doesn't exist, or updates the existing one
+  with the provided roles, replacing any existing roles.
 
   ## Examples
 
-      add_role(user, organization, [:pathways_studio_admin])
-      add_role(user, organization, [:pathways_studio_editor, :pathways_studio_viewer])
+      set_roles(user, organization, [:pathways_studio_admin])
+      set_roles(user, organization, [:pathways_studio_editor, :pathways_studio_viewer])
   """
-  def add_role(user, organization, roles) when is_list(roles) do
+  def set_roles(user, organization, roles) when is_list(roles) do
     role_strings = Enum.map(roles, &Atom.to_string/1)
 
     case Accounts.get_user_org_membership(user.id, organization.id) do
@@ -65,7 +66,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
 
   describe "administrator role" do
     test "administrator can access /admin/organizations", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:administrator])
+      set_roles(user, organization, [:administrator])
 
       {:ok, _view, html} = live(conn, ~p"/admin/organizations")
 
@@ -73,7 +74,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     end
 
     test "non-administrator cannot access /admin/organizations", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:pathways_studio_viewer])
+      set_roles(user, organization, [:pathways_studio_viewer])
 
       assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
                live(conn, ~p"/admin/organizations")
@@ -85,7 +86,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
 
   describe "pathways_studio_admin role" do
     test "admin can access /admin/users", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:pathways_studio_admin])
+      set_roles(user, organization, [:pathways_studio_admin])
 
       {:ok, _view, html} = live(conn, ~p"/admin/users")
 
@@ -93,7 +94,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     end
 
     test "viewer cannot access /admin/users", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:pathways_studio_viewer])
+      set_roles(user, organization, [:pathways_studio_viewer])
 
       assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
                live(conn, ~p"/admin/users")
@@ -105,7 +106,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
 
   describe "GTFS editor role" do
     test "editor can access import", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:pathways_studio_editor])
+      set_roles(user, organization, [:pathways_studio_editor])
 
       {:ok, _view, html} = live(conn, ~p"/gtfs/v1/import")
 
@@ -113,7 +114,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     end
 
     test "viewer cannot access import", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:pathways_studio_viewer])
+      set_roles(user, organization, [:pathways_studio_viewer])
 
       assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
                live(conn, ~p"/gtfs/v1/import")
@@ -125,7 +126,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
 
   describe "GTFS viewer role" do
     test "viewer can access stops", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:pathways_studio_viewer])
+      set_roles(user, organization, [:pathways_studio_viewer])
 
       {:ok, _view, html} = live(conn, ~p"/gtfs/v1/stops")
 
@@ -133,7 +134,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     end
 
     test "viewer can access export", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:pathways_studio_viewer])
+      set_roles(user, organization, [:pathways_studio_viewer])
 
       {:ok, _view, html} = live(conn, ~p"/gtfs/v1/export")
 
@@ -141,7 +142,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     end
 
     test "editor can also access stops", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:pathways_studio_editor])
+      set_roles(user, organization, [:pathways_studio_editor])
 
       {:ok, _view, html} = live(conn, ~p"/gtfs/v1/stops")
 
@@ -151,7 +152,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
 
   describe "navigation visibility" do
     test "administrator sees Organizations link", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:administrator])
+      set_roles(user, organization, [:administrator])
 
       {:ok, view, _html} = live(conn, ~p"/")
 
@@ -159,7 +160,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     end
 
     test "viewer does not see Import link", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:pathways_studio_viewer])
+      set_roles(user, organization, [:pathways_studio_viewer])
 
       {:ok, view, _html} = live(conn, ~p"/gtfs/v1/stops")
 
@@ -167,7 +168,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     end
 
     test "editor sees Import link", %{conn: conn, user: user, organization: organization} do
-      add_role(user, organization, [:pathways_studio_editor])
+      set_roles(user, organization, [:pathways_studio_editor])
 
       {:ok, view, _html} = live(conn, ~p"/gtfs/v1/stops")
 
