@@ -40,11 +40,11 @@
 
 ### Organization Administration Routes
 
-| Route                   | Description                      | Access                  |
-| ----------------------- | -------------------------------- | ----------------------- |
-| `/admin/users`          | List users in organization       | `pathways_studio_admin` |
-| `/admin/users/new`      | Invite new user                  | `pathways_studio_admin` |
-| `/admin/users/:user_id` | View/edit user details and roles | `pathways_studio_admin` |
+| Route                                      | Description                      | Access                  |
+| ------------------------------------------ | -------------------------------- | ----------------------- |
+| `/organizations/:org_alias/admin/users`          | List users in organization       | `pathways_studio_admin` |
+| `/organizations/:org_alias/admin/users/new`      | Invite new user                  | `pathways_studio_admin` |
+| `/organizations/:org_alias/admin/users/:user_id` | View/edit user details and roles | `pathways_studio_admin` |
 
 ---
 
