@@ -138,4 +138,30 @@ defmodule GtfsPlannerWeb.AccessControlTest do
       assert html =~ "Stations"
     end
   end
+
+  describe "navigation visibility" do
+    test "administrator sees Organizations link", %{conn: conn, user: user, organization: organization} do
+      add_role(user, organization, [:administrator])
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      assert has_element?(view, "a", "Organizations")
+    end
+
+    test "viewer does not see Import link", %{conn: conn, user: user, organization: organization} do
+      add_role(user, organization, [:pathways_studio_viewer])
+
+      {:ok, view, _html} = live(conn, ~p"/organizations/#{organization.alias}/gtfs/v1/stops")
+
+      refute has_element?(view, "a", "Import")
+    end
+
+    test "editor sees Import link", %{conn: conn, user: user, organization: organization} do
+      add_role(user, organization, [:pathways_studio_editor])
+
+      {:ok, view, _html} = live(conn, ~p"/organizations/#{organization.alias}/gtfs/v1/stops")
+
+      assert has_element?(view, "a", "Import")
+    end
+  end
 end
