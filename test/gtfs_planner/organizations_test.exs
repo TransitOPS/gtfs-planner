@@ -21,6 +21,17 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
+  describe "get_organization/1" do
+    test "returns nil if id does not exist" do
+      refute Organizations.get_organization(Ecto.UUID.generate())
+    end
+
+    test "returns the organization with the given id" do
+      organization = organization_fixture()
+      assert Organizations.get_organization(organization.id) == organization
+    end
+  end
+
   describe "get_organization!/1" do
     test "raises if id does not exist" do
       assert_raise Ecto.NoResultsError, fn ->
@@ -279,10 +290,10 @@ defmodule GtfsPlanner.OrganizationsTest do
       {:ok, {%ApiKey{} = api_key, _token}} =
         Organizations.create_api_key(organization.id, %{
           description: "Admin Key",
-          roles: ["administrator", "read", "write"]
+          roles: ["pathways_studio_admin", "pathways_studio_editor"]
         })
 
-      assert api_key.roles == ["administrator", "read", "write"]
+      assert api_key.roles == ["pathways_studio_admin", "pathways_studio_editor"]
     end
 
     test "creates API key with empty roles" do
@@ -317,7 +328,7 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
 
     test "updates API key roles", %{api_key: api_key} do
-      new_roles = ["administrator", "editor"]
+      new_roles = ["pathways_studio_admin", "pathways_studio_editor"]
 
       assert {:ok, %ApiKey{} = updated} =
                Organizations.update_api_key(api_key, %{roles: new_roles})
@@ -447,14 +458,14 @@ defmodule GtfsPlanner.OrganizationsTest do
         Organizations.add_user_to_organization(
           user.id,
           organization.id,
-          ["member"]
+          ["pathways_studio_viewer"]
         )
 
       %{user: user, organization: organization}
     end
 
     test "updates user roles", %{user: user, organization: organization} do
-      new_roles = ["administrator", "editor"]
+      new_roles = ["pathways_studio_admin", "pathways_studio_editor"]
 
       assert {:ok, membership} =
                Organizations.update_user_roles(user.id, organization.id, new_roles)
@@ -485,10 +496,10 @@ defmodule GtfsPlanner.OrganizationsTest do
       org2 = organization_fixture()
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, org1.id, ["admin"])
+        Organizations.add_user_to_organization(user.id, org1.id, ["pathways_studio_admin"])
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, org2.id, ["member"])
+        Organizations.add_user_to_organization(user.id, org2.id, ["pathways_studio_viewer"])
 
       orgs = Organizations.list_organizations_for_user(user.id)
 
@@ -497,8 +508,8 @@ defmodule GtfsPlanner.OrganizationsTest do
       org1_result = Enum.find(orgs, &(&1.id == org1.id))
       org2_result = Enum.find(orgs, &(&1.id == org2.id))
 
-      assert org1_result.user_roles == ["admin"]
-      assert org2_result.user_roles == ["member"]
+      assert org1_result.user_roles == ["pathways_studio_admin"]
+      assert org2_result.user_roles == ["pathways_studio_viewer"]
     end
 
     test "returns empty list for user with no organizations" do
@@ -516,8 +527,8 @@ defmodule GtfsPlanner.OrganizationsTest do
       user1 = user_fixture()
       user2 = user_fixture()
 
-      {:ok, _} = Organizations.add_user_to_organization(user1.id, org.id, ["admin"])
-      {:ok, _} = Organizations.add_user_to_organization(user2.id, org.id, ["member"])
+      {:ok, _} = Organizations.add_user_to_organization(user1.id, org.id, ["pathways_studio_admin"])
+      {:ok, _} = Organizations.add_user_to_organization(user2.id, org.id, ["pathways_studio_viewer"])
 
       users = Organizations.list_users_in_organization(org.id)
 
@@ -526,8 +537,8 @@ defmodule GtfsPlanner.OrganizationsTest do
       user1_result = Enum.find(users, &(&1.user.id == user1.id))
       user2_result = Enum.find(users, &(&1.user.id == user2.id))
 
-      assert user1_result.roles == ["admin"]
-      assert user2_result.roles == ["member"]
+      assert user1_result.roles == ["pathways_studio_admin"]
+      assert user2_result.roles == ["pathways_studio_viewer"]
     end
 
     test "returns empty list for organization with no users" do

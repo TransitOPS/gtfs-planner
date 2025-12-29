@@ -612,14 +612,14 @@ defmodule GtfsPlanner.AccountsTest do
         Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org1.id,
-          roles: ["admin"]
+          roles: ["pathways_studio_admin"]
         })
 
       {:ok, _} =
         Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org2.id,
-          roles: ["member"]
+          roles: ["pathways_studio_viewer"]
         })
 
       memberships = Accounts.list_user_org_memberships(user.id)
@@ -642,7 +642,7 @@ defmodule GtfsPlanner.AccountsTest do
         Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org.id,
-          roles: ["admin"]
+          roles: ["pathways_studio_admin"]
         })
 
       %{user: user, org: org, membership: membership}
@@ -665,13 +665,13 @@ defmodule GtfsPlanner.AccountsTest do
       attrs = %{
         user_id: user.id,
         organization_id: org.id,
-        roles: ["admin", "editor"]
+        roles: ["pathways_studio_admin", "pathways_studio_editor"]
       }
 
       assert {:ok, %UserOrgMembership{} = membership} = Accounts.create_user_org_membership(attrs)
       assert membership.user_id == user.id
       assert membership.organization_id == org.id
-      assert membership.roles == ["admin", "editor"]
+      assert membership.roles == ["pathways_studio_admin", "pathways_studio_editor"]
     end
 
     test "returns error with invalid attributes" do
@@ -689,7 +689,7 @@ defmodule GtfsPlanner.AccountsTest do
         Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org.id,
-          roles: ["admin"]
+          roles: ["pathways_studio_admin"]
         })
 
       %{membership: membership}
@@ -697,9 +697,9 @@ defmodule GtfsPlanner.AccountsTest do
 
     test "updates membership with valid attributes", %{membership: membership} do
       assert {:ok, %UserOrgMembership{} = updated} =
-               Accounts.update_user_org_membership(membership, %{roles: ["member"]})
+               Accounts.update_user_org_membership(membership, %{roles: ["pathways_studio_viewer"]})
 
-      assert updated.roles == ["member"]
+      assert updated.roles == ["pathways_studio_viewer"]
     end
 
     test "returns error with invalid attributes", %{membership: membership} do
@@ -718,7 +718,7 @@ defmodule GtfsPlanner.AccountsTest do
         Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org.id,
-          roles: ["admin"]
+          roles: ["pathways_studio_admin"]
         })
 
       %{membership: membership}
@@ -744,7 +744,7 @@ defmodule GtfsPlanner.AccountsTest do
 
       changeset =
         Accounts.change_user_org_membership(membership, %{
-          roles: ["admin", "editor"]
+          roles: ["pathways_studio_admin", "pathways_studio_editor"]
         })
 
       assert changeset.valid?
