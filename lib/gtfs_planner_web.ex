@@ -52,6 +52,8 @@ defmodule GtfsPlannerWeb do
     quote do
       use Phoenix.LiveView
 
+      import GtfsPlannerWeb.LiveHelpers
+
       unquote(html_helpers())
     end
   end

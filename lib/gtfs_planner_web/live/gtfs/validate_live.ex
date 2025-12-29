@@ -5,8 +5,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidateLive do
   """
   use GtfsPlannerWeb, :live_view
 
-  alias GtfsPlanner.Accounts.UserOrgMembership
-
   on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
   on_mount GtfsPlannerWeb.AssignOrganization
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -31,15 +29,5 @@ defmodule GtfsPlannerWeb.Gtfs.ValidateLive do
       </div>
     </Layouts.app>
     """
-  end
-
-  defp get_user_roles(socket) do
-    user = socket.assigns[:current_user]
-    organization = socket.assigns[:current_organization]
-
-    case GtfsPlanner.Accounts.get_user_org_membership(user.id, organization.id) do
-      %UserOrgMembership{roles: roles} when is_list(roles) -> roles
-      _ -> []
-    end
   end
 end
