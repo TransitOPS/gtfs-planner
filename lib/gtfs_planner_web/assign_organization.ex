@@ -15,6 +15,7 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   import Phoenix.Component, only: [assign: 3]
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Accounts
+  alias GtfsPlannerWeb.UserAuth
 
   @doc """
   LiveView mount hook to assign organization from session.
@@ -36,7 +37,7 @@ defmodule GtfsPlannerWeb.AssignOrganization do
     current_user = socket.assigns[:current_user]
 
     # Administrator bypass - administrators don't need organization context
-    if current_user && is_administrator?(current_user) do
+    if current_user && UserAuth.is_administrator?(current_user) do
       {:cont, socket}
     else
       assign_organization_from_session(session, socket)
@@ -65,13 +66,5 @@ defmodule GtfsPlannerWeb.AssignOrganization do
       |> redirect(to: "/users/log_in")
 
     {:halt, socket}
-  end
-
-  defp is_administrator?(user) do
-    memberships = Accounts.list_user_org_memberships(user.id)
-
-    Enum.any?(memberships, fn membership ->
-      "administrator" in membership.roles
-    end)
   end
 end
