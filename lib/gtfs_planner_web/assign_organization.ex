@@ -45,7 +45,7 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   end
 
   defp assign_organization_from_session(%{"organization_id" => organization_id}, socket) do
-    case Organizations.get_organization!(organization_id) do
+    case Organizations.get_organization(organization_id) do
       %Organizations.Organization{} = organization ->
         {:cont, assign(socket, :current_organization, organization)}
 

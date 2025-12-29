@@ -21,6 +21,17 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
+  describe "get_organization/1" do
+    test "returns nil if id does not exist" do
+      refute Organizations.get_organization(Ecto.UUID.generate())
+    end
+
+    test "returns the organization with the given id" do
+      organization = organization_fixture()
+      assert Organizations.get_organization(organization.id) == organization
+    end
+  end
+
   describe "get_organization!/1" do
     test "raises if id does not exist" do
       assert_raise Ecto.NoResultsError, fn ->
