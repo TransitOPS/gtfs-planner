@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Navigation do
 
   use Phoenix.Component
   import GtfsPlannerWeb.CoreComponents
+  import GtfsPlannerWeb.UserAuth, only: [is_administrator?: 1]
 
   @doc """
   Renders a role-aware sidebar navigation component.
@@ -33,7 +34,7 @@ defmodule GtfsPlannerWeb.Navigation do
     ~H"""
     <nav class="menu bg-base-200 w-64 min-h-screen p-4">
       <ul>
-        <%= if has_role?(@user_roles, :administrator) do %>
+        <%= if is_administrator?(@current_user) do %>
           <li>
             <.link navigate="/admin/organizations" class="menu-item">
               <.icon name="hero-building-office" class="w-5 h-5" />
