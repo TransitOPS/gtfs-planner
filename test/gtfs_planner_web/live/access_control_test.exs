@@ -26,6 +26,13 @@ defmodule GtfsPlannerWeb.AccessControlTest do
 
   Creates a new membership if one doesn't exist, or updates the existing one.
 
+  ## Role Format
+
+  Roles should be passed as atoms (e.g., `:pathways_studio_admin`, `:administrator`)
+  even though they are stored as strings in the database. This helper function automatically
+  converts the atom roles to strings to align with the storage format used by the
+  `GtfsPlanner.Authorization.Roles` module.
+
   ## Examples
 
       add_role(user, organization, [:pathways_studio_admin])
