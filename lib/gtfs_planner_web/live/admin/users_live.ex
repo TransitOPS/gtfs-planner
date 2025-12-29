@@ -9,7 +9,17 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, :page_title, "Manage Users")}
+    socket =
+      socket
+      |> assign(:page_title, "Manage Users")
+      |> assign_new(:user_roles, fn ->
+        case socket.assigns do
+          %{current_user: %{roles: roles}} -> roles
+          _ -> []
+        end
+      end)
+
+    {:ok, socket}
   end
 
   @impl true
