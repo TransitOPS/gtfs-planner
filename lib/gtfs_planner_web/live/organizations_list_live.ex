@@ -1,6 +1,8 @@
 defmodule GtfsPlannerWeb.OrganizationsListLive do
   use GtfsPlannerWeb, :live_view
 
+  on_mount {GtfsPlannerWeb.EnsureRole, :require}
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok, assign(socket, page_title: "Organizations")}
