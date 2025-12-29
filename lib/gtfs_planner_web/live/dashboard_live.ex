@@ -6,10 +6,17 @@ defmodule GtfsPlannerWeb.DashboardLive do
     user = socket.assigns[:current_user]
     is_admin = is_administrator?(user)
 
+    user_roles =
+      case user do
+        %{roles: roles} when is_list(roles) -> roles
+        _ -> []
+      end
+
     {:ok,
      socket
      |> assign(:page_title, "Dashboard")
-     |> assign(:is_administrator, is_admin)}
+     |> assign(:is_administrator, is_admin)
+     |> assign(:user_roles, user_roles)}
   end
 
   @impl true
