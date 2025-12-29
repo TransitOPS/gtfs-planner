@@ -84,7 +84,17 @@ defmodule GtfsPlannerWeb.Router do
         {GtfsPlannerWeb.UserAuth, :ensure_authenticated},
         GtfsPlannerWeb.AssignOrganization
       ] do
-      # Organization-specific routes will be added here
+      # Admin routes (pathways_studio_admin role required)
+      live "/admin/users", Admin.UsersLive, :index
+      live "/admin/users/new", Admin.UsersLive, :new
+      live "/admin/users/:user_id", Admin.UsersLive, :show
+
+      # GTFS routes (viewer or editor roles required)
+      live "/gtfs/:version/stops", Gtfs.StopsLive, :index
+      live "/gtfs/:version/stops/:stop_id", Gtfs.StopDetailLive, :show
+      live "/gtfs/:version/import", Gtfs.ImportLive, :index
+      live "/gtfs/:version/export", Gtfs.ExportLive, :index
+      live "/gtfs/:version/validate", Gtfs.ValidateLive, :index
     end
   end
 
