@@ -18,9 +18,20 @@ defmodule GtfsPlannerWeb.UserSessionController do
     %{"email" => email, "password" => password} = user_params
 
     if user = Accounts.get_user_by_email_and_password(email, password) do
-      conn
-      |> put_flash(:info, "Welcome back!")
-      |> UserAuth.log_in_user(user, user_params)
+      # Check if user has organization membership or is administrator
+      if UserAuth.is_administrator?(user) || UserAuth.fetch_user_organization(user) do
+        conn
+        |> put_flash(:info, "Welcome back!")
+        |> UserAuth.log_in_user(user, user_params)
+      else
+        # User has no organization membership and is not an administrator
+        form = to_form(%{"email" => email}, as: :user)
+
+        render(conn, :new,
+          error_message: "Your account has no organization assigned. Contact an administrator.",
+          form: form
+        )
+      end
     else
       # In order to prevent user enumeration attacks, don't disclose whether the email is registered.
       form = to_form(%{"email" => email}, as: :user)

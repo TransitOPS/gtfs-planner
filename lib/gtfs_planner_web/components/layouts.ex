@@ -5,6 +5,8 @@ defmodule GtfsPlannerWeb.Layouts do
   """
   use GtfsPlannerWeb, :html
 
+  alias GtfsPlannerWeb.Navigation
+
   # Embed all files in layouts/* within this module.
   # The default root.html.heex file contains the HTML
   # skeleton of your application, namely HTML headers
@@ -30,6 +32,14 @@ defmodule GtfsPlannerWeb.Layouts do
   attr :current_user, :map,
     default: nil,
     doc: "the current user"
+
+  attr :current_organization, :map,
+    default: nil,
+    doc: "the current organization context"
+
+  attr :user_roles, :list,
+    default: [],
+    doc: "list of role strings for the current user in the current organization"
 
   slot :inner_block, required: true
 
@@ -58,11 +68,26 @@ defmodule GtfsPlannerWeb.Layouts do
       <% end %>
     </header>
 
-    <main id="main-content" class="px-4 py-20 sm:px-6 lg:px-8">
-      <div class="mx-auto max-w-2xl space-y-4">
-        {render_slot(@inner_block)}
+    <%= if @current_user do %>
+      <div class="flex">
+        <Navigation.sidebar
+          current_user={@current_user}
+          current_organization={assigns[:current_organization]}
+          user_roles={@user_roles}
+        />
+        <main id="main-content" class="flex-1 px-4 py-20 sm:px-6 lg:px-8">
+          <div class="mx-auto max-w-2xl space-y-4">
+            {render_slot(@inner_block)}
+          </div>
+        </main>
       </div>
-    </main>
+    <% else %>
+      <main id="main-content" class="px-4 py-20 sm:px-6 lg:px-8">
+        <div class="mx-auto max-w-2xl space-y-4">
+          {render_slot(@inner_block)}
+        </div>
+      </main>
+    <% end %>
 
     <.flash_group flash={@flash} />
     """

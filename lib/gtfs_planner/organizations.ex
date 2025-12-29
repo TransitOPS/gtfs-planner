@@ -24,6 +24,21 @@ defmodule GtfsPlanner.Organizations do
   @doc """
   Gets a single organization.
 
+  Returns nil if the Organization does not exist.
+
+  ## Examples
+
+      iex> get_organization(123)
+      %Organization{}
+
+      iex> get_organization(456)
+      nil
+  """
+  def get_organization(id), do: Repo.get(Organization, id)
+
+  @doc """
+  Gets a single organization.
+
   Raises `Ecto.NoResultsError` if the Organization does not exist.
 
   ## Examples
