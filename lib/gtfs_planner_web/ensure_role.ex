@@ -63,6 +63,26 @@ defmodule GtfsPlannerWeb.EnsureRole do
     on_mount({__MODULE__, :require}, params, session, socket)
   end
 
+  def on_mount(:require_administrator, params, session, socket) do
+    socket = Phoenix.Component.assign(socket, :role_spec, :administrator)
+    on_mount(:require, params, session, socket)
+  end
+
+  def on_mount(:require_pathways_studio_admin, params, session, socket) do
+    socket = Phoenix.Component.assign(socket, :role_spec, :pathways_studio_admin)
+    on_mount(:require, params, session, socket)
+  end
+
+  def on_mount(:require_gtfs_access, params, session, socket) do
+    socket = Phoenix.Component.assign(socket, :role_spec, any: [:pathways_studio_editor, :pathways_studio_viewer])
+    on_mount(:require, params, session, socket)
+  end
+
+  def on_mount(:require_gtfs_editor, params, session, socket) do
+    socket = Phoenix.Component.assign(socket, :role_spec, :pathways_studio_editor)
+    on_mount(:require, params, session, socket)
+  end
+
   def on_mount(:require, _params, _session, socket) do
     role_spec = socket.assigns[:role_spec] || :administrator
 
