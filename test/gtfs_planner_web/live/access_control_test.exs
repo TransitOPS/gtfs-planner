@@ -92,4 +92,24 @@ defmodule GtfsPlannerWeb.AccessControlTest do
       assert flash["error"] =~ "authorized"
     end
   end
+
+  describe "GTFS editor role" do
+    test "editor can access import", %{conn: conn, user: user, organization: organization} do
+      add_role(user, organization, [:pathways_studio_editor])
+
+      {:ok, _view, html} = live(conn, ~p"/organizations/#{organization.alias}/gtfs/v1/import")
+
+      assert html =~ "Import GTFS"
+    end
+
+    test "viewer cannot access import", %{conn: conn, user: user, organization: organization} do
+      add_role(user, organization, [:pathways_studio_viewer])
+
+      assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
+               live(conn, ~p"/organizations/#{organization.alias}/gtfs/v1/import")
+
+      assert redirect_path != "/organizations/#{organization.alias}/gtfs/v1/import"
+      assert flash["error"] =~ "authorized"
+    end
+  end
 end
