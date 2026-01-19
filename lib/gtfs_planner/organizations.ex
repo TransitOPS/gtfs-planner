@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Organizations do
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Organizations.ApiKey
   alias GtfsPlanner.Accounts.{User, UserOrgMembership}
+  alias GtfsPlanner.Versions
 
   @doc """
   Returns the list of organizations.
@@ -80,9 +81,14 @@ defmodule GtfsPlanner.Organizations do
       {:error, %Ecto.Changeset{}}
   """
   def create_organization(attrs \\ %{}) do
-    %Organization{}
-    |> Organization.changeset(attrs)
-    |> Repo.insert()
+    Repo.transaction(fn ->
+      with {:ok, org} <- insert_organization(attrs),
+           {:ok, _version} <- Versions.create_default_version(org.id) do
+        org
+      else
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
     |> broadcast([:organizations, :created])
   end
 
@@ -374,6 +380,12 @@ defmodule GtfsPlanner.Organizations do
   end
 
   # Private helper functions
+
+  defp insert_organization(attrs) do
+    %Organization{}
+    |> Organization.changeset(attrs)
+    |> Repo.insert()
+  end
 
   defp broadcast({:ok, result}, event_topic) do
     Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "organizations", {event_topic, result})
