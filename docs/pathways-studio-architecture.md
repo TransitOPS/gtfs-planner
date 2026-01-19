@@ -66,8 +66,10 @@ gtfs_planner/
 │   │   ├── gtfs/                   # GTFS Context
 │   │   │   ├── stop.ex
 │   │   │   ├── level.ex
-│   │   │   ├── pathway.ex
-│   │   │   └── version.ex
+│   │   │   └── pathway.ex
+│   │   ├── versions/               # Versions Context
+│   │   │   └── gtfs_version.ex
+│   │   ├── versions.ex             # Versions Context module
 │   │   ├── import/                 # Import Context
 │   │   ├── export/                 # Export Context
 │   │   ├── validation/             # Validation Context
@@ -167,7 +169,7 @@ defmodule GtfsPlannerWeb.AuthHooks do
       nil -> assign(socket, :current_scope, nil)
       user ->
         org = Accounts.get_user_organization(user)
-        version = GtfsPlanner.Gtfs.get_or_create_active_version(org)
+        [version | _] = GtfsPlanner.Versions.list_gtfs_versions(org.id)
         scope = Scope.new(user, org, version)
         assign(socket, :current_scope, scope)
     end
@@ -290,7 +292,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
 
     belongs_to :organization, GtfsPlanner.Accounts.Organization,
       foreign_key: :org_id
-    belongs_to :gtfs_version, GtfsPlanner.Gtfs.Version
+    belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
     belongs_to :parent_station, __MODULE__,
       foreign_key: :parent_station_id
     belongs_to :level, GtfsPlanner.Gtfs.Level
@@ -349,7 +351,7 @@ defmodule GtfsPlanner.Gtfs.Pathway do
 
     belongs_to :organization, GtfsPlanner.Accounts.Organization,
       foreign_key: :org_id
-    belongs_to :gtfs_version, GtfsPlanner.Gtfs.Version
+    belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
     belongs_to :from_stop, GtfsPlanner.Gtfs.Stop
     belongs_to :to_stop, GtfsPlanner.Gtfs.Stop
 
@@ -551,7 +553,7 @@ Contexts encapsulate business logic with scope as the first parameter for all da
 defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Accounts.Scope
-  alias GtfsPlanner.Gtfs.{Stop, Level, Pathway, Version}
+  alias GtfsPlanner.Gtfs.{Stop, Level, Pathway}
 
   # All functions take scope as first argument
 
@@ -601,58 +603,75 @@ defmodule GtfsPlanner.Gtfs do
 end
 ```
 
-### Versioning Context
+### Versions Context
+
+The Versions context manages GTFS versions scoped to organizations. A default version is automatically created when an organization is created.
 
 ```elixir
-# lib/gtfs_planner/gtfs/versioning.ex
-defmodule GtfsPlanner.Gtfs.Versioning do
+# lib/gtfs_planner/versions.ex
+defmodule GtfsPlanner.Versions do
+  @moduledoc """
+  The Versions context for managing GTFS versions scoped to organizations.
+  """
+
+  import Ecto.Query, warn: false
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Gtfs.Version
+  alias GtfsPlanner.Versions.GtfsVersion
 
-  @doc "Get or create initial version for organization"
-  def get_or_create_initial_version(organization) do
-    case get_active_version(organization) do
-      nil -> create_initial_version(organization)
-      version -> {:ok, version}
-    end
-  end
-
-  defp create_initial_version(organization) do
-    %Version{}
-    |> Version.changeset(%{
-      org_id: organization.id,
-      name: "Initial version",
-      status: :active
-    })
+  @doc "Creates a GTFS version for an organization."
+  def create_gtfs_version(organization_id, attrs) do
+    %GtfsVersion{organization_id: organization_id}
+    |> GtfsVersion.changeset(attrs)
     |> Repo.insert()
   end
 
-  def get_active_version(organization) do
-    Version
-    |> where([v], v.status == :active)
-    |> Repo.one(org_id: organization.id)
+  @doc "Creates a default 'First Version' GTFS version for an organization."
+  def create_default_version(organization_id) do
+    create_gtfs_version(organization_id, %{name: "First Version"})
   end
 
-  @doc "Create new version from existing (branch)"
-  def create_version_from(%Scope{} = scope, source_version, attrs) do
-    Repo.transaction(fn ->
-      # Create new version
-      {:ok, new_version} = %Version{}
-        |> Version.changeset(Map.merge(attrs, %{
-          org_id: Scope.org_id(scope),
-          parent_version_id: source_version.id,
-          status: :draft
-        }))
-        |> Repo.insert()
+  @doc "Returns the list of GTFS versions for an organization."
+  def list_gtfs_versions(organization_id) do
+    from(v in GtfsVersion,
+      where: v.organization_id == ^organization_id,
+      order_by: [asc: v.inserted_at]
+    )
+    |> Repo.all()
+  end
 
-      # Copy stops, levels, pathways...
-      copy_gtfs_data(source_version, new_version)
+  @doc "Gets a single GTFS version. Raises if not found."
+  def get_gtfs_version!(id), do: Repo.get!(GtfsVersion, id)
+end
+```
 
-      new_version
-    end)
+The `GtfsVersion` schema is minimal, storing only the essential fields:
+
+```elixir
+# lib/gtfs_planner/versions/gtfs_version.ex
+defmodule GtfsPlanner.Versions.GtfsVersion do
+  use Ecto.Schema
+  import Ecto.Changeset
+
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+
+  schema "gtfs_versions" do
+    field :organization_id, Ecto.UUID
+    field :name, :string
+
+    timestamps(type: :utc_datetime_usec)
+  end
+
+  def changeset(gtfs_version, attrs) do
+    gtfs_version
+    |> cast(attrs, [:name])
+    |> validate_required([:name])
+    |> validate_length(:name, min: 1, max: 255)
   end
 end
 ```
+
+**Note:** Version branching and status tracking are planned future enhancements. The current implementation focuses on basic version management with automatic creation during organization setup.
 
 ### Import Context
 
@@ -794,7 +813,8 @@ defmodule GtfsPlanner.GtfsFixtures do
   def scope_fixture do
     org = GtfsPlanner.AccountsFixtures.organization_fixture()
     user = GtfsPlanner.AccountsFixtures.user_fixture(org)
-    {:ok, version} = Gtfs.Versioning.get_or_create_initial_version(org)
+    # Organization creation auto-creates a "First Version"
+    [version | _] = GtfsPlanner.Versions.list_gtfs_versions(org.id)
     GtfsPlanner.Accounts.Scope.new(user, org, version)
   end
 end
@@ -946,9 +966,9 @@ end
 Users always operate within a selected GTFS version. The version is part of the Scope and maintained in the socket assigns:
 
 - Version selector in header/navigation
-- Automatic "Initial version" creation for new organizations
-- Version branching capability (create new version from existing)
+- Automatic "First Version" creation for new organizations (via `GtfsPlanner.Versions.create_default_version/1` called during organization creation)
 - Version stored in session for persistence across page loads
+- Version branching capability planned for future enhancement
 
 ### Stops Management
 
@@ -1104,3 +1124,11 @@ LiveView Streams, PubSub integration, and function components provide a responsi
 - Rigorous scope enforcement in all data operations
 - Comprehensive testing with fixtures
 - Clean separation between LiveView UI logic and Context business logic
+
+---
+
+## Change Log
+
+| Date | Version | Changes |
+|------|---------|---------|
+| 2026-01-19 | 2.1 | Updated to reflect implementation from GitHub Issue #50 / PR #51: Changed Versioning Context from `GtfsPlanner.Gtfs.Versioning` to `GtfsPlanner.Versions`; Updated schema location from `lib/gtfs_planner/gtfs/version.ex` to `lib/gtfs_planner/versions/gtfs_version.ex`; Changed default version name from "Initial version" to "First Version"; Removed references to `status` and `parent_version_id` fields (noted as future enhancements); Updated function references from `get_or_create_initial_version/1` to `create_default_version/1` and `list_gtfs_versions/1`; Updated all `GtfsPlanner.Gtfs.Version` references to `GtfsPlanner.Versions.GtfsVersion`. |
