@@ -14,10 +14,14 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    # user_roles is empty for administrators (they don't have org-scoped roles)
+    user_roles = socket.assigns[:user_roles] || []
+
     {:ok,
      socket
      |> assign(:page_title, "Organizations")
      |> assign(:invite_form, nil)
+     |> assign(:user_roles, user_roles)
      |> stream(:organizations, Organizations.list_organizations())}
   end
 
@@ -184,10 +188,13 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          |> push_patch(to: ~p"/admin/organizations")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
+        # Ensure action is set so form errors display
+        changeset = Map.put(changeset, :action, :validate)
         {:noreply, assign(socket, :form, to_form(changeset))}
     end
   end
 
+  @impl true
   def handle_event(
         "save",
         %{"organization" => org_params},
@@ -201,6 +208,8 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          |> push_patch(to: ~p"/admin/organizations")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
+        # Ensure action is set so form errors display
+        changeset = Map.put(changeset, :action, :validate)
         {:noreply, assign(socket, :form, to_form(changeset))}
     end
   end
@@ -354,7 +363,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path}>
+    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path} user_roles={@user_roles}>
       <%= if @live_action == :show && @organization do %>
         <.header>
           {@organization.name}

@@ -27,6 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     <Layouts.app
       flash={@flash}
       current_user={@current_user}
+      current_organization={@current_organization}
       user_roles={@user_roles}
       current_path={@current_path}
     >

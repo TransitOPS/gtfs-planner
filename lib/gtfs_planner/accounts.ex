@@ -261,6 +261,23 @@ defmodule GtfsPlanner.Accounts do
     :ok
   end
 
+  @doc """
+  Deletes all session tokens for a user.
+
+  This is used when deactivating a user to force them to log out.
+
+  ## Examples
+
+      iex> delete_user_sessions(user_id)
+      :ok
+
+  """
+  def delete_user_sessions(user_id) do
+    user = get_user!(user_id)
+    Repo.delete_all(UserToken.user_and_contexts_query(user, ["session"]))
+    :ok
+  end
+
   ## Confirmation
 
   @doc ~S"""

@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Accounts.UserOrgMembership do
           user_id: Ecto.UUID.t() | nil,
           organization_id: Ecto.UUID.t() | nil,
           roles: [String.t()],
+          deactivated_at: DateTime.t() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -23,6 +24,7 @@ defmodule GtfsPlanner.Accounts.UserOrgMembership do
   @foreign_key_type :binary_id
   schema "user_org_memberships" do
     field :roles, {:array, :string}, default: []
+    field :deactivated_at, :utc_datetime
 
     belongs_to :user, GtfsPlanner.Accounts.User
     belongs_to :organization, GtfsPlanner.Organizations.Organization
