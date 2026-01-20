@@ -2,6 +2,17 @@ defmodule GtfsPlanner.Gtfs.Level do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @type t :: %__MODULE__{
+          id: Ecto.UUID.t(),
+          organization_id: Ecto.UUID.t(),
+          gtfs_version_id: Ecto.UUID.t(),
+          level_id: String.t(),
+          level_index: float(),
+          level_name: String.t() | nil,
+          inserted_at: DateTime.t(),
+          updated_at: DateTime.t()
+        }
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 

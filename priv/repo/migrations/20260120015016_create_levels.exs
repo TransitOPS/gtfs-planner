@@ -1,7 +1,7 @@
 defmodule GtfsPlanner.Repo.Migrations.CreateLevels do
   use Ecto.Migration
 
-  def change do
+  def up do
     create table(:levels, primary_key: false) do
       add :id, :binary_id, primary_key: true
       add :organization_id, references(:organizations, type: :binary_id), null: false
@@ -13,6 +13,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateLevels do
     end
 
     create unique_index(:levels, [:organization_id, :gtfs_version_id, :level_id], name: :levels_organization_id_gtfs_version_id_level_id_index)
+    create unique_index(:levels, [:id, :organization_id, :gtfs_version_id])
 
     alter table(:levels) do
       modify :gtfs_version_id,
@@ -23,5 +24,9 @@ defmodule GtfsPlanner.Repo.Migrations.CreateLevels do
           type: :binary_id
         )
     end
+  end
+
+  def down do
+    drop table(:levels)
   end
 end

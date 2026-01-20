@@ -6,6 +6,7 @@ defmodule GtfsPlanner.Gtfs do
   import Ecto.Query, warn: false
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Level
+  alias GtfsPlanner.Gtfs.Stop
 
   @doc """
   Returns the list of levels for an organization and GTFS version.
@@ -137,10 +138,145 @@ defmodule GtfsPlanner.Gtfs do
     Level.changeset(level, attrs)
   end
 
+  @doc """
+  Returns the list of stops for an organization and GTFS version.
+
+  ## Examples
+
+      iex> list_stops(organization_id, gtfs_version_id)
+      [%Stop{}, ...]
+  """
+  def list_stops(organization_id, gtfs_version_id) do
+    from(s in Stop,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: s.stop_name]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single stop.
+
+  Returns nil if the Stop does not exist.
+
+  ## Examples
+
+      iex> get_stop(id)
+      %Stop{}
+
+      iex> get_stop(456)
+      nil
+  """
+  def get_stop(id), do: Repo.get(Stop, id)
+
+  @doc """
+  Gets a single stop.
+
+  Raises `Ecto.NoResultsError` if the Stop does not exist.
+
+  ## Examples
+
+      iex> get_stop!(id)
+      %Stop{}
+
+      iex> get_stop!(456)
+      ** (Ecto.NoResultsError)
+  """
+  def get_stop!(id), do: Repo.get!(Stop, id)
+
+  @doc """
+  Gets a stop by its stop_id within an organization and GTFS version.
+
+  Returns nil if the stop does not exist.
+
+  ## Examples
+
+      iex> get_stop_by_stop_id(organization_id, gtfs_version_id, "stop_123")
+      %Stop{}
+
+      iex> get_stop_by_stop_id(organization_id, gtfs_version_id, "nonexistent")
+      nil
+  """
+  def get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id) do
+    from(s in Stop,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and s.stop_id == ^stop_id
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Creates a stop.
+
+  ## Examples
+
+      iex> create_stop(%{organization_id: org_id, gtfs_version_id: version_id, stop_id: "stop_123", stop_name: "Central Station"})
+      {:ok, %Stop{}}
+
+      iex> create_stop(%{stop_id: nil})
+      {:error, %Ecto.Changeset{}}
+  """
+  def create_stop(attrs \\ %{}) do
+    %Stop{}
+    |> Stop.changeset(attrs)
+    |> Repo.insert()
+    |> broadcast([:stops, :created])
+  end
+
+  @doc """
+  Updates a stop.
+
+  ## Examples
+
+      iex> update_stop(stop, %{stop_name: "Updated Station Name"})
+      {:ok, %Stop{}}
+
+      iex> update_stop(stop, %{stop_id: nil})
+      {:error, %Ecto.Changeset{}}
+  """
+  def update_stop(%Stop{} = stop, attrs) do
+    stop
+    |> Stop.changeset(attrs)
+    |> Repo.update()
+    |> broadcast([:stops, :updated])
+  end
+
+  @doc """
+  Deletes a stop.
+
+  ## Examples
+
+      iex> delete_stop(stop)
+      {:ok, %Stop{}}
+
+      iex> delete_stop(stop)
+      {:error, %Ecto.Changeset{}}
+  """
+  def delete_stop(%Stop{} = stop) do
+    Repo.delete(stop)
+    |> broadcast([:stops, :deleted])
+  end
+
+  @doc """
+  Returns an `%Ecto.Changeset{}` for tracking stop changes.
+
+  ## Examples
+
+      iex> change_stop(stop)
+      %Ecto.Changeset{data: %Stop{}}
+  """
+  def change_stop(%Stop{} = stop, attrs \\ %{}) do
+    Stop.changeset(stop, attrs)
+  end
+
   # Private helper functions
 
   defp broadcast({:ok, result}, event_topic) do
-    Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "levels", {event_topic, result})
+    case event_topic do
+      [:levels, _] ->
+        Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "levels", {event_topic, result})
+      [:stops, _] ->
+        Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "stops", {event_topic, result})
+    end
     {:ok, result}
   end
 
