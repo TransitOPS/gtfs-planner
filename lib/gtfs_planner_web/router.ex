@@ -96,6 +96,7 @@ defmodule GtfsPlannerWeb.Router do
       live "/", Admin.OrganizationsLive, :index
       live "/new", Admin.OrganizationsLive, :new
       live "/:org_id", Admin.OrganizationsLive, :show
+      live "/:org_id/edit", Admin.OrganizationsLive, :edit
     end
   end
 

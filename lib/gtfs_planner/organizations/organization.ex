@@ -31,7 +31,24 @@ defmodule GtfsPlanner.Organizations.Organization do
   def changeset(organization, attrs) do
     organization
     |> cast(attrs, [:alias, :name])
+    |> normalize_alias()
     |> validate_required([:alias, :name])
+    |> validate_length(:alias, max: 255)
+    |> validate_length(:name, max: 255)
     |> unique_constraint(:alias)
+  end
+
+  defp normalize_alias(changeset) do
+    case get_change(changeset, :alias) do
+      nil -> changeset
+      value ->
+        normalized =
+          value
+          |> String.trim()
+          |> String.downcase()
+          |> String.replace(~r/[^a-z0-9\s-]/, "")
+          |> String.replace(~r/\s+/, "-")
+        put_change(changeset, :alias, normalized)
+    end
   end
 end
