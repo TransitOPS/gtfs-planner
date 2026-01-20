@@ -10,9 +10,19 @@ defmodule GtfsPlannerWeb.UserSessionController do
     if user = Accounts.get_user_by_email_and_password(email, password) do
       # Check if user has organization membership or is administrator
       if UserAuth.is_administrator?(user) || UserAuth.fetch_user_organization(user) do
-        conn
-        |> put_flash(:info, "Welcome back!")
-        |> UserAuth.log_in_user(user, user_params)
+        case UserAuth.log_in_user(conn, user, user_params) do
+          {:error, :deactivated} ->
+            conn
+            |> put_flash(
+              :error,
+              "Your account has been deactivated. Contact your administrator."
+            )
+            |> redirect(to: ~p"/users/log_in")
+
+          conn ->
+            conn
+            |> put_flash(:info, "Welcome back!")
+        end
       else
         # User has no organization membership and is not an administrator
         conn

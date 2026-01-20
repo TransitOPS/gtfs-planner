@@ -366,17 +366,107 @@ defmodule GtfsPlanner.Organizations do
   ## Examples
 
       iex> list_users_in_organization(organization_id)
-      [%{user: %User{}, roles: ["administrator"]}, ...]
+      [%{user: %User{}, roles: ["administrator"], deactivated_at: nil}, ...]
   """
   def list_users_in_organization(organization_id) do
     from(u in User,
       join: m in UserOrgMembership,
       on: m.user_id == u.id,
       where: m.organization_id == ^organization_id,
-      select: %{user: u, roles: m.roles},
+      select: %{user: u, roles: m.roles, deactivated_at: m.deactivated_at},
       order_by: [asc: u.email]
     )
     |> Repo.all()
+  end
+
+  @doc """
+  Deactivates a user in an organization by setting deactivated_at timestamp.
+
+  ## Examples
+
+      iex> deactivate_user_in_organization(user_id, organization_id)
+      {:ok, %UserOrgMembership{}}
+
+      iex> deactivate_user_in_organization(user_id, organization_id)
+      {:error, :not_found}
+  """
+  def deactivate_user_in_organization(user_id, organization_id) do
+    from(m in UserOrgMembership,
+      where: m.user_id == ^user_id and m.organization_id == ^organization_id
+    )
+    |> Repo.one()
+    |> case do
+      nil ->
+        {:error, :not_found}
+
+      membership ->
+        result =
+          membership
+          |> Ecto.Changeset.change(%{deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)})
+          |> Repo.update()
+
+        case result do
+          {:ok, _membership} = success ->
+            # Invalidate all user sessions
+            GtfsPlanner.Accounts.delete_user_sessions(user_id)
+            broadcast(success, [:memberships, :deactivated])
+
+          error ->
+            error
+        end
+    end
+  end
+
+  @doc """
+  Activates a user in an organization by clearing deactivated_at timestamp.
+
+  ## Examples
+
+      iex> activate_user_in_organization(user_id, organization_id)
+      {:ok, %UserOrgMembership{}}
+
+      iex> activate_user_in_organization(user_id, organization_id)
+      {:error, :not_found}
+  """
+  def activate_user_in_organization(user_id, organization_id) do
+    from(m in UserOrgMembership,
+      where: m.user_id == ^user_id and m.organization_id == ^organization_id
+    )
+    |> Repo.one()
+    |> case do
+      nil ->
+        {:error, :not_found}
+
+      membership ->
+        membership
+        |> Ecto.Changeset.change(%{deactivated_at: nil})
+        |> Repo.update()
+        |> broadcast([:memberships, :activated])
+    end
+  end
+
+  @doc """
+  Checks if a user is deactivated in an organization.
+
+  ## Examples
+
+      iex> user_deactivated_in_organization?(user_id, organization_id)
+      true
+
+      iex> user_deactivated_in_organization?(user_id, organization_id)
+      false
+  """
+  def user_deactivated_in_organization?(user_id, organization_id) do
+    from(m in UserOrgMembership,
+      where: m.user_id == ^user_id and m.organization_id == ^organization_id,
+      select: m.deactivated_at
+    )
+    |> Repo.one()
+    |> case do
+      nil -> false
+      deactivated_at when is_struct(deactivated_at, DateTime) -> true
+      _ -> false
+    end
   end
 
   # Private helper functions

@@ -23,8 +23,27 @@ defmodule GtfsPlannerWeb.UserAuth do
   It renews the session ID and clears the whole session
   to avoid fixation attacks. Automatically fetches and sets
   the user's organization in the session if they have one.
+
+  Returns {:error, :deactivated} if the user is deactivated in their organization.
   """
   def log_in_user(conn, user, params \\ %{}) do
+    # Check if user is deactivated in their organization
+    case fetch_user_organization(user) do
+      nil ->
+        # Administrator or no organization - proceed with login
+        perform_login(conn, user, params)
+
+      organization_id ->
+        # Check if user is deactivated in this organization
+        if GtfsPlanner.Organizations.user_deactivated_in_organization?(user.id, organization_id) do
+          {:error, :deactivated}
+        else
+          perform_login(conn, user, params)
+        end
+    end
+  end
+
+  defp perform_login(conn, user, params) do
     token = Accounts.generate_user_session_token(user)
     user_return_to = get_session(conn, :user_return_to)
 

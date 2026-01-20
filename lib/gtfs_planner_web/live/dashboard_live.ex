@@ -1,30 +1,53 @@
 defmodule GtfsPlannerWeb.DashboardLive do
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Organizations
   alias GtfsPlannerWeb.UserAuth
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
     user = socket.assigns[:current_user]
     is_admin = UserAuth.is_administrator?(user)
 
-    user_roles =
-      case user do
-        %{roles: roles} when is_list(roles) -> roles
-        _ -> []
-      end
+    # Fetch user's organization and roles from their membership
+    {current_organization, user_roles} = get_user_org_context(user, session, is_admin)
 
     {:ok,
      socket
      |> assign(:page_title, "Dashboard")
      |> assign(:is_administrator, is_admin)
+     |> assign(:current_organization, current_organization)
      |> assign(:user_roles, user_roles)}
+  end
+
+  defp get_user_org_context(_user, _session, true = _is_admin) do
+    # Administrators don't have org-scoped roles
+    {nil, []}
+  end
+
+  defp get_user_org_context(user, session, false = _is_admin) do
+    organization_id = session["organization_id"]
+
+    if organization_id do
+      organization = Organizations.get_organization(organization_id)
+
+      user_roles =
+        case Accounts.get_user_org_membership(user.id, organization_id) do
+          %Accounts.UserOrgMembership{roles: roles} -> roles
+          nil -> []
+        end
+
+      {organization, user_roles}
+    else
+      {nil, []}
+    end
   end
 
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path}>
+    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path} user_roles={@user_roles} current_organization={@current_organization}>
       <.header>
         Welcome to GTFS Planner
         <:subtitle>You are logged in as {@current_user.email}</:subtitle>
