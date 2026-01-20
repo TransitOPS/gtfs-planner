@@ -5,105 +5,105 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
 
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user}>
+    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path}>
       <div class="space-y-12">
         <div>
-        <.header>
-          Account Settings
-          <:subtitle>Manage your account email address and password settings.</:subtitle>
-        </.header>
+          <.header>
+            Account Settings
+            <:subtitle>Manage your account email address and password settings.</:subtitle>
+          </.header>
 
-        <div class="space-y-12 max-w-3xl">
-          <div>
-            <.simple_form
-              for={@email_form}
-              id="email_form"
-              phx-submit="update_email"
-              phx-change="validate_email"
-            >
-              <.input
-                field={@email_form[:email]}
-                type="email"
-                label="Email"
-                required
-              />
+          <div class="space-y-12 max-w-3xl">
+            <div>
+              <.simple_form
+                for={@email_form}
+                id="email_form"
+                phx-submit="update_email"
+                phx-change="validate_email"
+              >
+                <.input
+                  field={@email_form[:email]}
+                  type="email"
+                  label="Email"
+                  required
+                />
 
-              <.input
-                field={@email_form[:current_password]}
-                type="password"
-                label="Current password"
-                value={@email_form_current_password}
-                required
-              />
+                <.input
+                  field={@email_form[:current_password]}
+                  type="password"
+                  label="Current password"
+                  value={@email_form_current_password}
+                  required
+                />
 
-              <:actions>
-                <.button phx-disable-with="Changing...">Change Email</.button>
-              </:actions>
-            </.simple_form>
-          </div>
+                <:actions>
+                  <.button phx-disable-with="Changing...">Change Email</.button>
+                </:actions>
+              </.simple_form>
+            </div>
 
-          <div>
-            <.simple_form
-              for={@password_form}
-              id="password_form"
-              phx-submit="update_password"
-              phx-change="validate_password"
-              action={~p"/users/settings"}
-            >
-              <.input
-                field={@password_form[:current_password]}
-                type="password"
-                label="Current password"
-                value={@current_password}
-                required
-              />
+            <div>
+              <.simple_form
+                for={@password_form}
+                id="password_form"
+                phx-submit="update_password"
+                phx-change="validate_password"
+                action={~p"/users/settings"}
+              >
+                <.input
+                  field={@password_form[:current_password]}
+                  type="password"
+                  label="Current password"
+                  value={@current_password}
+                  required
+                />
 
-              <.input
-                field={@password_form[:password]}
-                type="password"
-                label="New password"
-                required
-              />
+                <.input
+                  field={@password_form[:password]}
+                  type="password"
+                  label="New password"
+                  required
+                />
 
-              <.input
-                field={@password_form[:password_confirmation]}
-                type="password"
-                label="Confirm new password"
-                required
-              />
+                <.input
+                  field={@password_form[:password_confirmation]}
+                  type="password"
+                  label="Confirm new password"
+                  required
+                />
 
-              <:actions>
-                <.button phx-disable-with="Changing...">Change Password</.button>
-              </:actions>
-            </.simple_form>
+                <:actions>
+                  <.button phx-disable-with="Changing...">Change Password</.button>
+                </:actions>
+              </.simple_form>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div>
-        <.header>
-          Email Change History
-          <:subtitle>A list of all recent email changes in your account.</:subtitle>
-        </.header>
+        <div>
+          <.header>
+            Email Change History
+            <:subtitle>A list of all recent email changes in your account.</:subtitle>
+          </.header>
 
-        <.table
-          id="emails"
-          rows={@email_token}
-          row_click={false}
-        >
-          <:col :let={token} label="Address">{token.sent_to}</:col>
-          <:col :let={token} label="Status">
-            <%= if token.context == "change:#{@current_user.email}" do %>
-              Pending
-            <% else %>
-              Changed
-            <% end %>
-          </:col>
-          <:col :let={token} label="Updated At">
-            {token.inserted_at |> Calendar.strftime("%B %d, %Y %H:%M")}
-          </:col>
-        </.table>
-      </div>
+          <.table
+            id="emails"
+            rows={@email_token}
+            row_click={false}
+          >
+            <:col :let={token} label="Address">{token.sent_to}</:col>
+            <:col :let={token} label="Status">
+              <%= if token.context == "change:#{@current_user.email}" do %>
+                Pending
+              <% else %>
+                Changed
+              <% end %>
+            </:col>
+            <:col :let={token} label="Updated At">
+              {token.inserted_at |> Calendar.strftime("%B %d, %Y %H:%M")}
+            </:col>
+          </.table>
+        </div>
       </div>
     </Layouts.app>
     """

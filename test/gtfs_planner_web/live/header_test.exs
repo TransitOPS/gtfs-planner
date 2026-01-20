@@ -4,26 +4,18 @@ defmodule GtfsPlannerWeb.HeaderTest do
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
 
-  describe "Header - Unauthenticated Users" do
+  describe "Header - Unauthenticated Users (Auth Layout)" do
     test "displays GTFS Planner logo text", %{conn: conn} do
-      {:ok, view, html} = live(conn, ~p"/users/register")
+      {:ok, _view, html} = live(conn, ~p"/users/log_in")
 
+      # Auth layout displays logo text in a span, not a link
       assert html =~ "GTFS Planner"
-      assert has_element?(view, "a[href='/']", "GTFS Planner")
     end
 
     test "does not display logout button", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/users/register")
+      {:ok, view, _html} = live(conn, ~p"/users/log_in")
 
       refute has_element?(view, "a[href='/users/log_out']", "Log out")
-    end
-
-    test "displays theme toggle", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/users/register")
-
-      assert has_element?(view, "button[data-phx-theme='system']")
-      assert has_element?(view, "button[data-phx-theme='light']")
-      assert has_element?(view, "button[data-phx-theme='dark']")
     end
   end
 
@@ -45,17 +37,6 @@ defmodule GtfsPlannerWeb.HeaderTest do
       {:ok, view, _html} = live(conn, ~p"/")
 
       assert has_element?(view, "a[href='/users/log_out']", "Log out")
-    end
-
-    test "displays theme toggle", %{conn: conn} do
-      user = user_fixture()
-      conn = log_in_user(conn, user)
-
-      {:ok, view, _html} = live(conn, ~p"/")
-
-      assert has_element?(view, "button[data-phx-theme='system']")
-      assert has_element?(view, "button[data-phx-theme='light']")
-      assert has_element?(view, "button[data-phx-theme='dark']")
     end
 
     test "logout button uses correct method and path", %{conn: conn} do

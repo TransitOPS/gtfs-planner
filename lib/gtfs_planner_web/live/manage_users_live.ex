@@ -62,10 +62,20 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
                       </p>
                     </div>
 
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-2 flex-wrap">
                       <button
+                        :if={is_nil(user_data.user.hashed_password)}
                         type="button"
                         class="btn btn-sm"
+                        phx-click="resend_invite"
+                        phx-value-user-id={user_data.user.id}
+                      >
+                        <.icon name="hero-envelope" class="w-4 h-4" /> Resend Invite
+                      </button>
+
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-active"
                         phx-click="update_roles"
                         phx-value-user-id={user_data.user.id}
                       >
@@ -74,7 +84,16 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
 
                       <button
                         type="button"
-                        class="btn btn-sm btn-error"
+                        class="btn btn-sm btn-disabled"
+                        disabled
+                        title="Coming soon"
+                      >
+                        <.icon name="hero-no-symbol" class="w-4 h-4" /> De-activate
+                      </button>
+
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-error btn-active"
                         phx-click="remove_user"
                         phx-value-user-id={user_data.user.id}
                         phx-confirm="Are you sure you want to remove this user from the organization?"
@@ -156,6 +175,29 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
         socket =
           socket
           |> put_flash(:error, "Failed to invite user: #{inspect(changeset.errors)}")
+
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("resend_invite", %{"user-id" => user_id}, socket) do
+    user = Accounts.get_user!(user_id)
+
+    case Accounts.resend_user_invite(user, fn token ->
+           url(~p"/users/accept_invite/#{token}")
+         end) do
+      {:ok, _email} ->
+        socket =
+          socket
+          |> put_flash(:info, "Invitation resent to #{user.email}")
+
+        {:noreply, socket}
+
+      {:error, :already_accepted} ->
+        socket =
+          socket
+          |> put_flash(:error, "User has already accepted their invitation")
 
         {:noreply, socket}
     end

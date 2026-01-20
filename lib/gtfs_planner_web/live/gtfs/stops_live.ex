@@ -1,7 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   @moduledoc """
   LiveView for managing GTFS stations (stops).
-  Requires the pathways_studio_editor or pathways_studio_viewer role.
+  Requires pathways_studio_editor or pathways_studio_viewer role.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -24,7 +24,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user} current_organization={@current_organization} user_roles={@user_roles}>
+    <Layouts.app
+      flash={@flash}
+      current_user={@current_user}
+      current_organization={@current_organization}
+      user_roles={@user_roles}
+      current_path={@current_path}
+    >
       <.header>
         Stations
         <:subtitle>GTFS station management coming soon.</:subtitle>

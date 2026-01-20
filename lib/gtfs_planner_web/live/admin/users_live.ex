@@ -1,7 +1,7 @@
 defmodule GtfsPlannerWeb.Admin.UsersLive do
   @moduledoc """
   LiveView for managing users within an organization.
-  Requires the pathways_studio_admin role.
+  Requires pathways_studio_admin role.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -25,7 +25,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user}>
+    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path}>
       <.header>
         Manage Users
         <:subtitle>User management coming soon.</:subtitle>

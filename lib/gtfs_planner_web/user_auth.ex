@@ -230,7 +230,33 @@ defmodule GtfsPlannerWeb.UserAuth do
 
   defp mount_current_user(socket, session) do
     user = session["user_token"] && Accounts.get_user_by_session_token(session["user_token"])
-    Phoenix.Component.assign(socket, :current_user, user)
+
+    socket
+    |> Phoenix.Component.assign(:current_user, user)
+    |> Phoenix.Component.assign(:current_path, "/")
+    |> maybe_attach_path_hook()
+  end
+
+  defp maybe_attach_path_hook(socket) do
+    # Only attach the hook if not already attached and if the socket supports hooks
+    # (some test sockets may not support hooks)
+    if Map.get(socket.private, :__current_path_hook_attached__) do
+      socket
+    else
+      try do
+        socket
+        |> Phoenix.LiveView.attach_hook(:set_current_path, :handle_params, fn _params,
+                                                                              uri,
+                                                                              socket ->
+          path = URI.parse(uri).path || "/"
+          {:cont, Phoenix.Component.assign(socket, :current_path, path)}
+        end)
+        |> put_in([Access.key(:private), :__current_path_hook_attached__], true)
+      rescue
+        # Handle cases where the socket doesn't support hooks (e.g., test sockets)
+        _ -> socket
+      end
+    end
   end
 
   defp ensure_user_token(conn) do
