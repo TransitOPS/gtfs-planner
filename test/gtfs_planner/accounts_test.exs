@@ -697,7 +697,9 @@ defmodule GtfsPlanner.AccountsTest do
 
     test "updates membership with valid attributes", %{membership: membership} do
       assert {:ok, %UserOrgMembership{} = updated} =
-               Accounts.update_user_org_membership(membership, %{roles: ["pathways_studio_viewer"]})
+               Accounts.update_user_org_membership(membership, %{
+                 roles: ["pathways_studio_viewer"]
+               })
 
       assert updated.roles == ["pathways_studio_viewer"]
     end

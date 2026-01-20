@@ -3,6 +3,8 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
   Module for sending authentication-related emails to users.
   """
 
+  require Logger
+
   alias GtfsPlanner.Mailer
   import Swoosh.Email
 
@@ -76,6 +78,8 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
 
   """
   def deliver_user_invite(user, url) when is_binary(url) do
+    Logger.info("User invite for #{user.email}: #{url}")
+
     email_body = user_invite_html(user, url)
 
     new()

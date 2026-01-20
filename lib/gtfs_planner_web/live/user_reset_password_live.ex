@@ -5,7 +5,7 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
 
   def render(assigns) do
     ~H"""
-    <div class="mx-auto max-w-sm">
+    <Layouts.auth flash={@flash}>
       <.header class="text-center">
         Reset password
         <:subtitle>Enter your new password below</:subtitle>
@@ -32,18 +32,18 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
         />
 
         <:actions>
-          <.button phx-disable-with="Resetting..." class="w-full">
+          <.button phx-disable-with="Resetting..." class="w-full" variant="primary">
             Reset password
           </.button>
         </:actions>
       </.simple_form>
 
-      <p class="text-center mt-4 text-sm leading-6 text-zinc-600">
-        <.link navigate={~p"/users/log_in"} class="font-semibold text-brand hover:underline">
+      <p class="text-center mt-4 text-sm leading-6 text-base-content/70">
+        <.link navigate={~p"/users/log_in"} class="font-semibold link link-primary">
           Log in
         </.link>
       </p>
-    </div>
+    </Layouts.auth>
     """
   end
 
