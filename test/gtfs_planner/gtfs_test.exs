@@ -192,5 +192,81 @@ defmodule GtfsPlanner.GtfsTest do
       assert Enum.all?(stops, fn s -> s.organization_id == org.id end)
       assert Enum.all?(stops, fn s -> s.gtfs_version_id == version.id end)
     end
+
+    test "create_stop/1 enforces unique stop_id within organization and version", %{organization: org, gtfs_version: version} do
+      attrs = valid_stop_attrs()
+      |> Map.put(:organization_id, org.id)
+      |> Map.put(:gtfs_version_id, version.id)
+
+      assert {:ok, _stop1} = Gtfs.create_stop(attrs)
+      assert {:error, changeset} = Gtfs.create_stop(attrs)
+      # Composite unique constraint error appears on organization_id field
+      assert "has already been taken" in errors_on(changeset).organization_id
+    end
+
+    test "get_stop!/1 returns the stop with the given id", %{organization: org, gtfs_version: version} do
+      stop = stop_fixture(org.id, version.id)
+
+      fetched_stop = Gtfs.get_stop!(stop.id)
+      assert fetched_stop.id == stop.id
+      assert fetched_stop.stop_id == stop.stop_id
+    end
+
+    test "get_stop!/1 raises for non-existent id" do
+      assert_raise Ecto.NoResultsError, fn ->
+        Gtfs.get_stop!(Ecto.UUID.generate())
+      end
+    end
+
+    test "get_stop/1 returns nil for non-existent id" do
+      assert Gtfs.get_stop(Ecto.UUID.generate()) == nil
+    end
+
+    test "get_stop_by_stop_id/3 returns the stop within organization and version", %{organization: org, gtfs_version: version} do
+      stop = stop_fixture(org.id, version.id, %{stop_id: "SPECIAL"})
+
+      # Should find the stop
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "SPECIAL").id == stop.id
+
+      # Should not find with wrong stop_id
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "NONEXISTENT") == nil
+
+      # Should not find with wrong organization
+      other_org = organization_fixture()
+      assert Gtfs.get_stop_by_stop_id(other_org.id, version.id, "SPECIAL") == nil
+
+      # Should not find with wrong version
+      other_version = gtfs_version_fixture(org.id)
+      assert Gtfs.get_stop_by_stop_id(org.id, other_version.id, "SPECIAL") == nil
+    end
+
+    test "update_stop/2 updates a stop with valid attrs", %{organization: org, gtfs_version: version} do
+      stop = stop_fixture(org.id, version.id)
+
+      update_attrs = %{stop_name: "Updated Station Name", stop_lat: Decimal.new("40.7128")}
+      assert {:ok, updated_stop} = Gtfs.update_stop(stop, update_attrs)
+      assert updated_stop.stop_name == "Updated Station Name"
+      assert updated_stop.stop_lat == Decimal.new("40.7128")
+      assert updated_stop.id == stop.id
+    end
+
+    test "update_stop/2 returns error with invalid attrs", %{organization: org, gtfs_version: version} do
+      stop = stop_fixture(org.id, version.id)
+
+      assert {:error, changeset} = Gtfs.update_stop(stop, %{stop_id: nil})
+      assert %{stop_id: ["can't be blank"]} = errors_on(changeset)
+    end
+
+    test "delete_stop/1 deletes the stop", %{organization: org, gtfs_version: version} do
+      stop = stop_fixture(org.id, version.id)
+
+      assert {:ok, %GtfsPlanner.Gtfs.Stop{}} = Gtfs.delete_stop(stop)
+      assert Gtfs.get_stop(stop.id) == nil
+    end
+
+    test "change_stop/2 returns a stop changeset", %{organization: org, gtfs_version: version} do
+      stop = stop_fixture(org.id, version.id)
+      assert %Ecto.Changeset{} = Gtfs.change_stop(stop)
+    end
   end
 end

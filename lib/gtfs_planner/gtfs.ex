@@ -8,6 +8,8 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Stop
 
+  require Logger
+
   @doc """
   Returns the list of levels for an organization and GTFS version.
 
@@ -34,7 +36,7 @@ defmodule GtfsPlanner.Gtfs do
       iex> get_level(id)
       %Level{}
 
-      iex> get_level(456)
+      iex> get_level(Ecto.UUID.generate())
       nil
   """
   def get_level(id), do: Repo.get(Level, id)
@@ -49,7 +51,7 @@ defmodule GtfsPlanner.Gtfs do
       iex> get_level!(id)
       %Level{}
 
-      iex> get_level!(456)
+      iex> get_level!(Ecto.UUID.generate())
       ** (Ecto.NoResultsError)
   """
   def get_level!(id), do: Repo.get!(Level, id)
@@ -164,7 +166,7 @@ defmodule GtfsPlanner.Gtfs do
       iex> get_stop(id)
       %Stop{}
 
-      iex> get_stop(456)
+      iex> get_stop(Ecto.UUID.generate())
       nil
   """
   def get_stop(id), do: Repo.get(Stop, id)
@@ -179,7 +181,7 @@ defmodule GtfsPlanner.Gtfs do
       iex> get_stop!(id)
       %Stop{}
 
-      iex> get_stop!(456)
+      iex> get_stop!(Ecto.UUID.generate())
       ** (Ecto.NoResultsError)
   """
   def get_stop!(id), do: Repo.get!(Stop, id)
@@ -271,12 +273,21 @@ defmodule GtfsPlanner.Gtfs do
   # Private helper functions
 
   defp broadcast({:ok, result}, event_topic) do
-    case event_topic do
-      [:levels, _] ->
-        Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "levels", {event_topic, result})
-      [:stops, _] ->
-        Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "stops", {event_topic, result})
+    broadcast_result =
+      case event_topic do
+        [:levels, _] ->
+          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "levels", {event_topic, result})
+        [:stops, _] ->
+          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "stops", {event_topic, result})
+      end
+
+    case broadcast_result do
+      :ok ->
+        :ok
+      {:error, reason} ->
+        Logger.error("Failed to broadcast #{inspect(event_topic)} event: #{inspect(reason)}")
     end
+
     {:ok, result}
   end
 
