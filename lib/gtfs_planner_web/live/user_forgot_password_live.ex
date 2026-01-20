@@ -5,7 +5,7 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
 
   def render(assigns) do
     ~H"""
-    <div class="mx-auto max-w-sm">
+    <Layouts.auth flash={@flash}>
       <.header class="text-center">
         Forgot your password?
         <:subtitle>We'll send a password reset link to your inbox</:subtitle>
@@ -26,19 +26,19 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
         />
 
         <:actions>
-          <.button phx-disable-with="Sending..." class="w-full">
+          <.button phx-disable-with="Sending..." variant="primary">
             Send password reset instructions
           </.button>
         </:actions>
       </.simple_form>
 
-      <p class="text-center mt-4 text-sm leading-6 text-zinc-600">
-        <.link navigate={~p"/users/log_in"} class="font-semibold text-brand hover:underline">
+      <p class="text-center mt-4 text-sm leading-6 text-base-content/70">
+        <.link navigate={~p"/users/log_in"} class="font-semibold link link-primary">
           Log in
         </.link>
         to your account
       </p>
-    </div>
+    </Layouts.auth>
     """
   end
 

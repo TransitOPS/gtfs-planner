@@ -379,20 +379,23 @@ defmodule GtfsPlanner.OrganizationsTest do
 
   describe "organization changeset" do
     test "normalizes alias to lowercase with hyphens" do
-      changeset = Organization.changeset(%Organization{}, %{
-        name: "Test Org",
-        alias: "  My Test Org!@#  "
-      })
+      changeset =
+        Organization.changeset(%Organization{}, %{
+          name: "Test Org",
+          alias: "  My Test Org!@#  "
+        })
 
       assert changeset.changes.alias == "my-test-org"
     end
 
     test "validates alias and name length" do
       long_string = String.duplicate("a", 256)
-      changeset = Organization.changeset(%Organization{}, %{
-        name: long_string,
-        alias: long_string
-      })
+
+      changeset =
+        Organization.changeset(%Organization{}, %{
+          name: long_string,
+          alias: long_string
+        })
 
       assert "should be at most 255 character(s)" in errors_on(changeset).name
       assert "should be at most 255 character(s)" in errors_on(changeset).alias
@@ -551,8 +554,11 @@ defmodule GtfsPlanner.OrganizationsTest do
       user1 = user_fixture()
       user2 = user_fixture()
 
-      {:ok, _} = Organizations.add_user_to_organization(user1.id, org.id, ["pathways_studio_admin"])
-      {:ok, _} = Organizations.add_user_to_organization(user2.id, org.id, ["pathways_studio_viewer"])
+      {:ok, _} =
+        Organizations.add_user_to_organization(user1.id, org.id, ["pathways_studio_admin"])
+
+      {:ok, _} =
+        Organizations.add_user_to_organization(user2.id, org.id, ["pathways_studio_viewer"])
 
       users = Organizations.list_users_in_organization(org.id)
 

@@ -39,18 +39,12 @@ defmodule GtfsPlannerWeb.Router do
   end
 
   scope "/", GtfsPlannerWeb do
-    pipe_through :browser
+    pipe_through [:browser, :redirect_if_user_is_authenticated]
 
     post "/users/log_in", UserSessionController, :create
-    delete "/users/log_out", UserSessionController, :delete
-  end
-
-  scope "/", GtfsPlannerWeb do
-    pipe_through [:browser, :redirect_if_user_is_authenticated]
 
     live_session :redirect_if_user_is_authenticated,
       on_mount: [{GtfsPlannerWeb.UserAuth, :redirect_if_user_is_authenticated}] do
-      live "/users/register", UserRegistrationLive, :new
       live "/users/log_in", UserLoginLive, :new
       live "/users/reset_password", UserForgotPasswordLive, :new
       live "/users/reset_password/:token", UserResetPasswordLive, :edit
@@ -61,6 +55,8 @@ defmodule GtfsPlannerWeb.Router do
 
   scope "/", GtfsPlannerWeb do
     pipe_through [:browser, :require_authenticated_user]
+
+    delete "/users/log_out", UserSessionController, :delete
 
     live_session :require_authenticated_user,
       on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do
@@ -97,6 +93,7 @@ defmodule GtfsPlannerWeb.Router do
       live "/new", Admin.OrganizationsLive, :new
       live "/:org_id", Admin.OrganizationsLive, :show
       live "/:org_id/edit", Admin.OrganizationsLive, :edit
+      live "/:org_id/invite", Admin.OrganizationsLive, :invite
     end
   end
 

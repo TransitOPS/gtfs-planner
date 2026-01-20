@@ -64,7 +64,11 @@ defmodule GtfsPlannerWeb.AccessControlTest do
   end
 
   describe "administrator role" do
-    test "administrator can access /admin/organizations", %{conn: conn, user: user, organization: organization} do
+    test "administrator can access /admin/organizations", %{
+      conn: conn,
+      user: user,
+      organization: organization
+    } do
       add_role(user, organization, [:administrator])
 
       {:ok, _view, html} = live(conn, ~p"/admin/organizations")
@@ -72,7 +76,11 @@ defmodule GtfsPlannerWeb.AccessControlTest do
       assert html =~ "Organizations"
     end
 
-    test "non-administrator cannot access /admin/organizations", %{conn: conn, user: user, organization: organization} do
+    test "non-administrator cannot access /admin/organizations", %{
+      conn: conn,
+      user: user,
+      organization: organization
+    } do
       add_role(user, organization, [:pathways_studio_viewer])
 
       assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
@@ -92,7 +100,11 @@ defmodule GtfsPlannerWeb.AccessControlTest do
       assert html =~ "Manage Users"
     end
 
-    test "viewer cannot access /admin/users", %{conn: conn, user: user, organization: organization} do
+    test "viewer cannot access /admin/users", %{
+      conn: conn,
+      user: user,
+      organization: organization
+    } do
       add_role(user, organization, [:pathways_studio_viewer])
 
       assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
@@ -150,7 +162,11 @@ defmodule GtfsPlannerWeb.AccessControlTest do
   end
 
   describe "navigation visibility" do
-    test "administrator sees Organizations link", %{conn: conn, user: user, organization: organization} do
+    test "administrator sees Organizations link", %{
+      conn: conn,
+      user: user,
+      organization: organization
+    } do
       add_role(user, organization, [:administrator])
 
       {:ok, view, _html} = live(conn, ~p"/")

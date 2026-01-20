@@ -412,6 +412,28 @@ defmodule GtfsPlanner.Accounts do
     UserNotifier.deliver_user_invite(user, invite_url_fun.(encoded_token))
   end
 
+  @doc ~S"""
+  Resends an invitation to a user who hasn't set a password yet.
+
+  Returns {:error, :already_accepted} if user has already set a password.
+
+  ## Examples
+
+      iex> resend_user_invite(user, &url(~p"/users/accept_invite/#{&1}"))
+      {:ok, %{to: ..., body: ...}}
+
+      iex> resend_user_invite(accepted_user, &url(~p"/users/accept_invite/#{&1}"))
+      {:error, :already_accepted}
+
+  """
+  def resend_user_invite(%User{} = user, invite_url_fun) when is_function(invite_url_fun, 1) do
+    if user.hashed_password do
+      {:error, :already_accepted}
+    else
+      deliver_user_invite(user, invite_url_fun)
+    end
+  end
+
   @doc """
   Gets the user by invite token.
 
@@ -446,16 +468,18 @@ defmodule GtfsPlanner.Accounts do
 
   """
   def accept_invite_set_password(user, attrs) do
+    organization_id = attrs[:organization_id] || attrs["organization_id"]
+
     Ecto.Multi.new()
     |> Ecto.Multi.update(:user, User.password_changeset(user, attrs))
-    |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, ["invite"]))
-    |> Ecto.Multi.insert(:membership, fn %{user: user} ->
-      %UserOrgMembership{
+    |> Ecto.Multi.insert(:membership, fn _changes ->
+      UserOrgMembership.changeset(%UserOrgMembership{}, %{
         user_id: user.id,
-        organization_id: attrs[:organization_id] || attrs["organization_id"],
-        roles: attrs[:roles] || attrs["roles"] || []
-      }
+        organization_id: organization_id,
+        roles: ["pathways_studio_viewer"]
+      })
     end)
+    |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, ["invite"]))
     |> Repo.transaction()
     |> case do
       {:ok, %{user: user}} -> {:ok, user}

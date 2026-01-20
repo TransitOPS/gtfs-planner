@@ -24,31 +24,35 @@ defmodule GtfsPlannerWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user}>
-      <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-          <h2 class="card-title">Welcome to GTFS Planner</h2>
-          <p>You are logged in as {@current_user.email}</p>
-
+    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path}>
+      <.header>
+        Welcome to GTFS Planner
+        <:subtitle>You are logged in as {@current_user.email}</:subtitle>
+        <:actions>
           <%= if @is_administrator do %>
-            <div class="mt-4">
-              <p class="text-sm text-gray-600">You are an administrator.</p>
-            </div>
-            <div class="card-actions justify-end">
-              <.link navigate={~p"/admin/organizations"} class="btn btn-primary">
-                Manage Organizations
-              </.link>
-            </div>
-          <% else %>
-            <%= if assigns[:current_organization] do %>
-              <div class="mt-4">
-                <p class="text-sm text-gray-600">
-                  Organization: <span class="font-medium">{@current_organization.name}</span>
-                </p>
-              </div>
-            <% end %>
+            <.link navigate={~p"/admin/organizations"} class="btn btn-primary btn-active">
+              Manage Organizations
+            </.link>
           <% end %>
-        </div>
+        </:actions>
+      </.header>
+
+      <div class="mt-8 space-y-6">
+        <%= if @is_administrator do %>
+          <div class="bg-base-100 border border-base-300 rounded-lg p-6">
+            <.list>
+              <:item title="Role">Administrator</:item>
+            </.list>
+          </div>
+        <% else %>
+          <%= if assigns[:current_organization] do %>
+            <div class="bg-base-100 border border-base-300 rounded-lg p-6">
+              <.list>
+                <:item title="Organization">{@current_organization.name}</:item>
+              </.list>
+            </div>
+          <% end %>
+        <% end %>
       </div>
     </Layouts.app>
     """

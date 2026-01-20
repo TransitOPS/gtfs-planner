@@ -94,12 +94,18 @@ defmodule GtfsPlannerWeb.CoreComponents do
   slot :inner_block, required: true
 
   def button(%{rest: rest} = assigns) do
-    variants = %{"primary" => "btn-primary", nil => "btn-primary btn-soft"}
+    # Using btn-active removes the shadow/glow effect that causes visual misalignment
+    variants = %{"primary" => "btn-primary btn-active", nil => "btn-primary btn-soft btn-active"}
 
     assigns =
       assign_new(assigns, :class, fn ->
-        ["btn", Map.fetch!(variants, assigns[:variant])]
+        []
       end)
+
+    classes =
+      ["btn", Map.fetch!(variants, assigns[:variant]), List.wrap(assigns[:class])]
+
+    assigns = assign(assigns, :class, classes)
 
     if rest[:href] || rest[:navigate] || rest[:patch] do
       ~H"""
@@ -214,14 +220,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
           disabled={@rest[:disabled]}
           form={@rest[:form]}
         />
-        <span class="label">
+        <span class="label text-base">
           <input
             type="checkbox"
             id={@id}
             name={@name}
             value="true"
             checked={@checked}
-            class={@class || "checkbox checkbox-sm"}
+            class={@class || "checkbox"}
             {@rest}
           />{@label}
         </span>
@@ -235,11 +241,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
     ~H"""
     <div class="fieldset mb-2">
       <label>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="label text-base mb-1">{@label}</span>
         <select
           id={@id}
           name={@name}
-          class={[@class || "w-full select", @errors != [] && (@error_class || "select-error")]}
+          class={[
+            @class || "w-full select select-lg",
+            @errors != [] && (@error_class || "select-error")
+          ]}
           multiple={@multiple}
           {@rest}
         >
@@ -256,12 +265,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
     ~H"""
     <div class="fieldset mb-2">
       <label>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="label text-base mb-1">{@label}</span>
         <textarea
           id={@id}
           name={@name}
           class={[
-            @class || "w-full textarea",
+            @class || "w-full textarea textarea-lg",
             @errors != [] && (@error_class || "textarea-error")
           ]}
           {@rest}
@@ -277,14 +286,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
     ~H"""
     <div class="fieldset mb-2">
       <label>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="label text-base mb-1">{@label}</span>
         <input
           type={@type}
           name={@name}
           id={@id}
           value={Phoenix.HTML.Form.normalize_value(@type, @value)}
           class={[
-            @class || "w-full input",
+            @class || "w-full input input-lg",
             @errors != [] && (@error_class || "input-error")
           ]}
           {@rest}
@@ -361,7 +370,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       end
 
     ~H"""
-    <table class="table table-zebra">
+    <table class="table">
       <thead>
         <tr>
           <th :for={col <- @col}>{col[:label]}</th>
