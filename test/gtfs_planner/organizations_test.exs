@@ -56,11 +56,13 @@ defmodule GtfsPlanner.OrganizationsTest do
       assert id == organization.id
     end
 
-    test "handles case-sensitive aliases" do
+    test "normalizes aliases to lowercase" do
+      # Alias "MyOrg" is normalized to "myorg" during creation
       _organization = organization_fixture(%{alias: "MyOrg"})
 
-      assert Organizations.get_organization_by_alias("MyOrg")
-      refute Organizations.get_organization_by_alias("myorg")
+      # Only lowercase lookup works because aliases are normalized
+      assert Organizations.get_organization_by_alias("myorg")
+      refute Organizations.get_organization_by_alias("MyOrg")
       refute Organizations.get_organization_by_alias("MYORG")
     end
   end
@@ -372,6 +374,28 @@ defmodule GtfsPlanner.OrganizationsTest do
         })
 
       assert changeset.valid?
+    end
+  end
+
+  describe "organization changeset" do
+    test "normalizes alias to lowercase with hyphens" do
+      changeset = Organization.changeset(%Organization{}, %{
+        name: "Test Org",
+        alias: "  My Test Org!@#  "
+      })
+
+      assert changeset.changes.alias == "my-test-org"
+    end
+
+    test "validates alias and name length" do
+      long_string = String.duplicate("a", 256)
+      changeset = Organization.changeset(%Organization{}, %{
+        name: long_string,
+        alias: long_string
+      })
+
+      assert "should be at most 255 character(s)" in errors_on(changeset).name
+      assert "should be at most 255 character(s)" in errors_on(changeset).alias
     end
   end
 
