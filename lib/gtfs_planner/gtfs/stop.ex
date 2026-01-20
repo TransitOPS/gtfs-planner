@@ -39,7 +39,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
     has_many :child_stops, __MODULE__,
       foreign_key: :parent_station_id
 
-    timestamps()
+    timestamps(type: :utc_datetime_usec)
   end
 
   @doc "Creates a changeset for a stop."
