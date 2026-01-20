@@ -9,7 +9,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateLevels do
       add :level_id, :string, null: false
       add :level_index, :float, null: false
       add :level_name, :string
-      timestamps()
+      timestamps(type: :utc_datetime_usec)
     end
 
     create unique_index(:levels, [:organization_id, :gtfs_version_id, :level_id], name: :levels_organization_id_gtfs_version_id_level_id_index)
