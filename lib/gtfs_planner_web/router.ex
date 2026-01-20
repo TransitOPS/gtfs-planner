@@ -75,7 +75,7 @@ defmodule GtfsPlannerWeb.Router do
       ] do
       # Admin routes (pathways_studio_admin role required)
       live "/users", Admin.UsersLive, :index
-      live "/users/new", Admin.UsersLive, :new
+      live "/users/invite", Admin.UsersLive, :invite
       live "/users/:user_id", Admin.UsersLive, :show
     end
   end

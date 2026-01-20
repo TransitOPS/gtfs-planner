@@ -19,6 +19,38 @@ defmodule GtfsPlannerWeb.UserAuthTest do
       assert redirected_to(conn) == ~p"/"
     end
 
+    test "prevents login for deactivated user in organization" do
+      user = AccountsFixtures.user_fixture()
+      organization = GtfsPlanner.OrganizationsFixtures.organization_fixture()
+
+      # Create membership
+      {:ok, _membership} =
+        GtfsPlanner.Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: ["pathways_studio_viewer"]
+        })
+
+      # Deactivate user in organization
+      {:ok, _membership} =
+        GtfsPlanner.Organizations.deactivate_user_in_organization(user.id, organization.id)
+
+      # Attempt to log in
+      result =
+        build_conn()
+        |> init_test_session(%{})
+        |> UserAuth.log_in_user(user)
+
+      # Verify login returns error for deactivated users
+      assert result == {:error, :deactivated}
+
+      # Verify the user is marked as deactivated in the organization
+      assert GtfsPlanner.Organizations.user_deactivated_in_organization?(
+               user.id,
+               organization.id
+             )
+    end
+
     test "stores user token in that session" do
       %{conn: conn, user: user} =
         register_and_log_in_user(%{password: "valid password"})

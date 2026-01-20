@@ -4,15 +4,17 @@ defmodule GtfsPlannerWeb.AssignOrganization do
 
   This hook extracts the `organization_id` from the user's session,
   fetches the corresponding organization, and assigns it to the
-  LiveView socket as `:current_organization`. If no organization
-  is in the session or the organization is not found, it redirects
-  to the login page with an error.
+  LiveView socket as `:current_organization`. It also fetches the
+  user's roles for that organization and assigns them as `:user_roles`.
+  If no organization is in the session or the organization is not found,
+  it redirects to the login page with an error.
 
   Administrators (system-scoped users) bypass the organization requirement.
   """
 
   import Phoenix.LiveView, only: [put_flash: 3, redirect: 2]
   import Phoenix.Component, only: [assign: 3]
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Organizations
   alias GtfsPlannerWeb.UserAuth
 
@@ -46,7 +48,34 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   defp assign_organization_from_session(%{"organization_id" => organization_id}, socket) do
     case Organizations.get_organization(organization_id) do
       %Organizations.Organization{} = organization ->
-        {:cont, assign(socket, :current_organization, organization)}
+        current_user = socket.assigns[:current_user]
+
+        # Check if user is deactivated in this organization
+        if current_user && Organizations.user_deactivated_in_organization?(current_user.id, organization_id) do
+          # Delete session token to force re-authentication
+          if user_token = socket.private[:connect_params]["user_token"] do
+            GtfsPlanner.Accounts.delete_session_token(user_token)
+          end
+
+          socket =
+            socket
+            |> put_flash(:error, "Your account has been deactivated in this organization.")
+            |> redirect(to: "/users/log_in")
+
+          {:halt, socket}
+        else
+          # Fetch user's roles for this organization
+          user_roles =
+            case Accounts.get_user_org_membership(current_user.id, organization_id) do
+              %Accounts.UserOrgMembership{roles: roles} -> roles
+              nil -> []
+            end
+
+          {:cont,
+           socket
+           |> assign(:current_organization, organization)
+           |> assign(:user_roles, user_roles)}
+        end
 
       nil ->
         socket =

@@ -5,7 +5,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
 
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path}>
+    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path} user_roles={@user_roles}>
       <div class="space-y-12">
         <div>
           <.header>
@@ -110,10 +110,14 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
   end
 
   def mount(params, _session, socket) do
+    # user_roles will be empty for this view as it doesn't use AssignOrganization hook
+    user_roles = socket.assigns[:user_roles] || []
+
     socket =
       socket
       |> assign(:current_password, nil)
       |> assign(:email_form_current_password, nil)
+      |> assign(:user_roles, user_roles)
       |> assign_forms(params)
 
     {:ok, socket}
