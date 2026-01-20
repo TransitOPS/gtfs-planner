@@ -25,7 +25,7 @@ defmodule GtfsPlanner.Gtfs.Level do
       foreign_key: :organization_id
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
 
-    timestamps()
+    timestamps(type: :utc_datetime_usec)
   end
 
   @doc "Creates a changeset for a level."
