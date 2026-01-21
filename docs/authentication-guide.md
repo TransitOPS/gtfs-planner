@@ -104,14 +104,13 @@ This returns:
 
 ```elixir
 # Create an API key for the admin user
-{:ok, api_key} = Organizations.create_api_key(organization, %{
+{:ok, {api_key, token}} = Organizations.create_api_key(organization.id, %{
   description: "Admin API Key",
   roles: ["administrator"]
 })
 
 # The token is only returned once - save it securely!
-token = api_key.token
-# Returns: "GtfsPlanner.V1.abc123def456..."
+# token is: "GtfsPlanner.V1.abc123def456..."
 ```
 
 **Important**: The unhashed API token is only returned when creating the key. Save it securely as you won't be able to retrieve it again. If lost, you'll need to create a new API key and delete the old one.
@@ -124,7 +123,7 @@ admin_user = Accounts.get_user_by_email("admin@example.com")
 organization = Organizations.get_organization_by_alias("admin")
 
 # Check membership
-memberships = Organizations.list_users_in_organization(organization)
+memberships = Organizations.list_users_in_organization(organization.id)
 # Should return a list containing the admin_user with ["administrator"] roles
 ```
 
@@ -159,24 +158,24 @@ alias GtfsPlanner.Accounts
 
 # 3. Add user to organization with admin role
 {:ok, _membership} = Organizations.add_user_to_organization(
-  admin_user,
-  organization,
+  admin_user.id,
+  organization.id,
   ["administrator"]
 )
 
 # 4. (Optional) Create API key
-{:ok, api_key} = Organizations.create_api_key(organization, %{
+{:ok, {api_key, token}} = Organizations.create_api_key(organization.id, %{
   description: "Admin API Key",
   roles: ["administrator"]
 })
 
 # Display the API token (save this securely!)
-IO.puts("API Key: #{api_key.token}")
+IO.puts("API Key: #{token}")
 
 IO.puts("\n✓ Setup complete!")
 IO.puts("✓ Admin user: admin@example.com")
 IO.puts("✓ Organization: admin")
-IO.puts("✓ API Token: #{api_key.token}")
+IO.puts("✓ API Token: #{token}")
 ```
 
 ### Security Notes
@@ -394,12 +393,12 @@ Authorization: GtfsPlanner.V1.abcdefg12345
 
 ```elixir
 # Create API key
-{:ok, api_key} = Organizations.create_api_key(organization, %{
+{:ok, {api_key, token}} = Organizations.create_api_key(organization.id, %{
   description: "Production API Key",
   roles: ["read", "write"]
 })
 
-# Token returned: "GtfsPlanner.V1.abc123..."
+# token is: "GtfsPlanner.V1.abc123..."
 # This is the only time the unhashed token is visible
 ```
 
@@ -540,20 +539,20 @@ Users can belong to multiple organizations with different roles in each:
 ```elixir
 # Add user to organization with roles
 {:ok, membership} = Organizations.add_user_to_organization(
-  user,
-  organization,
+  user.id,
+  organization.id,
   ["read", "write"]
 )
 
 # Update user roles in organization
 {:ok, membership} = Organizations.update_user_roles(
-  user,
-  organization,
+  user.id,
+  organization.id,
   ["read", "write", "admin"]
 )
 
 # Remove user from organization
-{:ok, _} = Organizations.remove_user_from_organization(user, organization)
+{:ok, _} = Organizations.remove_user_from_organization(user.id, organization.id)
 ```
 
 **Constraints**:
@@ -577,10 +576,10 @@ Users can belong to multiple organizations with different roles in each:
 org = Organizations.get_organization_by_alias("transit-ops")
 
 # List organizations for user
-organizations = Organizations.list_organizations_for_user(user)
+organizations = Organizations.list_organizations_for_user(user.id)
 
 # List users in organization
-users = Organizations.list_users_in_organization(organization)
+users = Organizations.list_users_in_organization(organization.id)
 ```
 
 ## Security Features
@@ -695,13 +694,12 @@ end
 
 ```elixir
 # Create API key
-{:ok, api_key} = Organizations.create_api_key(organization, %{
+{:ok, {api_key, token}} = Organizations.create_api_key(organization.id, %{
   description: "Production API",
   roles: ["read", "write"]
 })
 
-# Display token once to user
-token = api_key.token  # "GtfsPlanner.V1.abc123..."
+# token is: "GtfsPlanner.V1.abc123..."
 
 # Client makes request with Authorization header
 curl -H "Authorization: Bearer GtfsPlanner.V1.abc123..." \
@@ -730,15 +728,15 @@ Accounts.deliver_user_reset_password_instructions(user, reset_url)
 
 # Add user with roles
 {:ok, membership} = Organizations.add_user_to_organization(
-  user,
-  org,
+  user.id,
+  org.id,
   ["read", "write"]
 )
 
 # Update roles
 {:ok, membership} = Organizations.update_user_roles(
-  user,
-  org,
+  user.id,
+  org.id,
   ["read", "write", "admin"]
 )
 ```
