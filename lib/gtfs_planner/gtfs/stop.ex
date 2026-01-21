@@ -8,10 +8,12 @@ defmodule GtfsPlanner.Gtfs.Stop do
           gtfs_version_id: Ecto.UUID.t(),
           stop_id: String.t(),
           stop_name: String.t() | nil,
+          stop_desc: String.t() | nil,
           stop_lat: Decimal.t() | nil,
           stop_lon: Decimal.t() | nil,
           location_type: integer(),
           wheelchair_boarding: integer() | nil,
+          platform_code: String.t() | nil,
           parent_station_id: Ecto.UUID.t() | nil,
           level_id: Ecto.UUID.t() | nil,
           inserted_at: DateTime.t(),
@@ -24,10 +26,12 @@ defmodule GtfsPlanner.Gtfs.Stop do
   schema "stops" do
     field :stop_id, :string
     field :stop_name, :string
+    field :stop_desc, :string
     field :stop_lat, :decimal
     field :stop_lon, :decimal
     field :location_type, :integer, default: 0
     field :wheelchair_boarding, :integer
+    field :platform_code, :string
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
       foreign_key: :organization_id
@@ -45,7 +49,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
   @doc "Creates a changeset for a stop."
   def changeset(stop, attrs) do
     stop
-    |> cast(attrs, [:stop_id, :stop_name, :stop_lat, :stop_lon, :location_type, :wheelchair_boarding, :organization_id, :gtfs_version_id, :parent_station_id, :level_id])
+    |> cast(attrs, [:stop_id, :stop_name, :stop_desc, :stop_lat, :stop_lon, :location_type, :wheelchair_boarding, :platform_code, :organization_id, :gtfs_version_id, :parent_station_id, :level_id])
     |> validate_required([:stop_id, :organization_id, :gtfs_version_id])
     |> validate_inclusion(:location_type, 0..4)
     |> validate_inclusion(:wheelchair_boarding, 0..2)
