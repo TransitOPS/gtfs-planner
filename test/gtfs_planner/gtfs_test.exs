@@ -76,7 +76,10 @@ defmodule GtfsPlanner.GtfsTest do
 
       levels = Gtfs.list_levels(org.id, version.id)
 
-      assert [^level1, ^level2, ^level3] = levels
+      # Check ordering by level_index
+      assert Enum.map(levels, & &1.level_index) == [0.0, 1.0, 2.0]
+      # Verify the correct IDs are present
+      assert Enum.map(levels, & &1.id) == [level1.id, level2.id, level3.id]
     end
 
     test "get_level!/1 returns the level with the given id", %{organization: org, gtfs_version: version} do
