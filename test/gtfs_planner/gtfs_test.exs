@@ -272,4 +272,66 @@ defmodule GtfsPlanner.GtfsTest do
       assert %Ecto.Changeset{} = Gtfs.change_stop(stop)
     end
   end
+
+  describe "list_stations/2" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "returns only stations (stops with no parent)", %{organization: org, gtfs_version: version} do
+      # Create a station (no parent)
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION1", stop_name: "Main Station", parent_station_id: nil})
+
+      # Create a child stop (has parent)
+      _child = stop_fixture(org.id, version.id, %{stop_id: "CHILD1", stop_name: "Platform 1", parent_station_id: station.id})
+
+      stations = Gtfs.list_stations(org.id, version.id)
+
+      assert length(stations) == 1
+      assert hd(stations).id == station.id
+      assert hd(stations).parent_station_id == nil
+    end
+
+    test "does not return stations from other organizations", %{organization: org, gtfs_version: version} do
+      # Create station for this org
+      _station = stop_fixture(org.id, version.id, %{stop_id: "STATION1", parent_station_id: nil})
+
+      # Create another org with its own station
+      other_org = organization_fixture()
+      other_version = gtfs_version_fixture(other_org.id)
+      _other_station = stop_fixture(other_org.id, other_version.id, %{stop_id: "STATION2", parent_station_id: nil})
+
+      stations = Gtfs.list_stations(org.id, version.id)
+
+      assert length(stations) == 1
+      assert Enum.all?(stations, fn s -> s.organization_id == org.id end)
+    end
+
+    test "does not return stations from other versions", %{organization: org, gtfs_version: version} do
+      # Create station for this version
+      _station = stop_fixture(org.id, version.id, %{stop_id: "STATION1", parent_station_id: nil})
+
+      # Create another version with its own station
+      other_version = gtfs_version_fixture(org.id)
+      _other_station = stop_fixture(org.id, other_version.id, %{stop_id: "STATION2", parent_station_id: nil})
+
+      stations = Gtfs.list_stations(org.id, version.id)
+
+      assert length(stations) == 1
+      assert Enum.all?(stations, fn s -> s.gtfs_version_id == version.id end)
+    end
+
+    test "orders stations by stop_name ascending", %{organization: org, gtfs_version: version} do
+      station_c = stop_fixture(org.id, version.id, %{stop_id: "STATION_C", stop_name: "Charlie Station", parent_station_id: nil})
+      station_a = stop_fixture(org.id, version.id, %{stop_id: "STATION_A", stop_name: "Alpha Station", parent_station_id: nil})
+      station_b = stop_fixture(org.id, version.id, %{stop_id: "STATION_B", stop_name: "Bravo Station", parent_station_id: nil})
+
+      stations = Gtfs.list_stations(org.id, version.id)
+
+      assert length(stations) == 3
+      assert Enum.map(stations, & &1.id) == [station_a.id, station_b.id, station_c.id]
+    end
+  end
 end

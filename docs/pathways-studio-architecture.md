@@ -53,14 +53,13 @@ The project resides in the GTFS Planner repository with access controls determin
 
 ### Application Structure
 
-The application follows Phoenix 1.8 conventions with the Context pattern and Scopes:
+The application follows Phoenix 1.8 conventions with the Context pattern and on_mount hooks for scope assignment:
 
 ```
 gtfs_planner/
 ├── lib/
 │   ├── gtfs_planner/
 │   │   ├── accounts/
-│   │   │   ├── scope.ex            # Phoenix 1.8 Scope struct
 │   │   │   ├── user.ex
 │   │   │   └── organization.ex
 │   │   ├── gtfs/                   # GTFS Context
@@ -75,16 +74,25 @@ gtfs_planner/
 │   │   ├── validation/             # Validation Context
 │   │   └── repo.ex                 # With prepare_query/3
 │   └── gtfs_planner_web/
+│       ├── assign_organization.ex  # on_mount hook for org context
+│       ├── assign_gtfs_version.ex  # on_mount hook for version context
 │       ├── live/
-│       │   ├── stop_live/
-│       │   │   ├── index.ex
-│       │   │   ├── show.ex
-│       │   │   └── form_component.ex
+│       │   ├── gtfs/
+│       │   │   ├── stops_live.ex
+│       │   │   ├── stop_detail_live.ex
+│       │   │   ├── import_live.ex
+│       │   │   ├── export_live.ex
+│       │   │   └── validate_live.ex
 │       │   └── floorplan_live/
 │       ├── components/
 │       │   ├── core_components.ex
+│       │   ├── gtfs_version_switcher.ex  # Version dropdown component
 │       │   └── slide_panel.ex
 │       └── router.ex
+├── assets/
+│   └── js/
+│       ├── app.js
+│       └── gtfs_version_hook.js    # localStorage persistence
 ├── test/
 │   ├── support/
 │   │   ├── fixtures/
@@ -141,41 +149,103 @@ config :gtfs_planner, :scopes,
   ]
 ```
 
-### Scope in LiveView Lifecycle
+### Scope Assignment via on_mount Hooks
 
-Use `on_mount` hooks to establish scope before any LiveView renders:
+The application uses a chain of `on_mount` hooks to establish context for LiveViews. This approach assigns organization and GTFS version as separate socket assigns rather than a combined Scope struct:
+
+1. **AssignOrganization** - Assigns `@current_organization` from user session
+2. **AssignGtfsVersion** - Validates URL `:version` param and assigns `@current_gtfs_version`
+
+#### AssignOrganization Hook
 
 ```elixir
-# lib/gtfs_planner_web/live/auth_hooks.ex
-defmodule GtfsPlannerWeb.AuthHooks do
+# lib/gtfs_planner_web/assign_organization.ex
+defmodule GtfsPlannerWeb.AssignOrganization do
   import Phoenix.LiveView
   import Phoenix.Component
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.Scope
 
-  def on_mount(:require_authenticated, _params, session, socket) do
-    socket = assign_current_scope(socket, session)
-
-    if socket.assigns.current_scope do
-      {:cont, socket}
-    else
-      {:halt, redirect(socket, to: "/login")}
-    end
-  end
-
-  defp assign_current_scope(socket, session) do
+  def on_mount(:default, _params, session, socket) do
     case Accounts.get_user_by_session_token(session["user_token"]) do
-      nil -> assign(socket, :current_scope, nil)
+      nil ->
+        {:halt, redirect(socket, to: "/login")}
+
       user ->
         org = Accounts.get_user_organization(user)
-        [version | _] = GtfsPlanner.Versions.list_gtfs_versions(org.id)
-        scope = Scope.new(user, org, version)
-        assign(socket, :current_scope, scope)
+        {:cont, assign(socket, :current_organization, org)}
     end
   end
 end
 ```
+
+#### AssignGtfsVersion Hook
+
+The `AssignGtfsVersion` hook extracts the GTFS version ID from URL parameters, validates it belongs to the current organization, and assigns it to the socket:
+
+```elixir
+# lib/gtfs_planner_web/assign_gtfs_version.ex
+defmodule GtfsPlannerWeb.AssignGtfsVersion do
+  import Phoenix.LiveView
+  import Phoenix.Component
+
+  alias GtfsPlanner.Versions
+
+  def on_mount(:default, params, _session, socket) do
+    case params do
+      %{"version" => version_id} ->
+        validate_and_assign_version(socket, version_id)
+
+      _ ->
+        # No version in URL - assign pending state for redirect
+        handle_missing_version(socket)
+    end
+  end
+
+  defp validate_and_assign_version(socket, version_id) do
+    org = socket.assigns.current_organization
+
+    case Versions.get_gtfs_version(version_id) do
+      nil ->
+        {:halt,
+         socket
+         |> put_flash(:error, "GTFS version not found")
+         |> redirect(to: "/")}
+
+      version when version.organization_id == org.id ->
+        available_versions = Versions.list_gtfs_versions_for_dropdown(org.id)
+        {:cont,
+         socket
+         |> assign(:current_gtfs_version, version)
+         |> assign(:available_versions, available_versions)}
+
+      _version ->
+        {:halt,
+         socket
+         |> put_flash(:error, "GTFS version not found")
+         |> redirect(to: "/")}
+    end
+  end
+
+  defp handle_missing_version(socket) do
+    org = socket.assigns.current_organization
+    latest = Versions.get_latest_gtfs_version(org.id)
+    available = Versions.list_gtfs_versions_for_dropdown(org.id)
+
+    {:cont,
+     socket
+     |> assign(:gtfs_version_pending, true)
+     |> assign(:latest_gtfs_version, latest)
+     |> assign(:available_versions, available)}
+  end
+end
+```
+
+**Key Responsibilities:**
+- Validates version UUID from URL belongs to user's organization
+- Redirects with error flash for invalid/missing versions
+- Populates `@available_versions` for the version switcher dropdown
+- Sets `@gtfs_version_pending` when no version in URL (for redirect handling)
 
 ---
 
@@ -429,6 +499,8 @@ end
 
 ### Router Configuration
 
+GTFS routes use URL-based version routing with the pattern `/gtfs/:version/*`. This keeps version IDs in URLs for bookmarkable/shareable links. Versionless routes (`/gtfs/stops`) redirect to the appropriate versioned URL.
+
 ```elixir
 # lib/gtfs_planner_web/router.ex
 defmodule GtfsPlannerWeb.Router do
@@ -444,29 +516,42 @@ defmodule GtfsPlannerWeb.Router do
     plug :fetch_current_user
   end
 
-  # Authenticated routes with scope
-  live_session :authenticated,
+  # GTFS routes with version in URL
+  live_session :gtfs_routes,
     on_mount: [
-      {GtfsPlannerWeb.AuthHooks, :require_authenticated},
-      {GtfsPlannerWeb.AuthHooks, :ensure_gtfs_version}
+      {GtfsPlannerWeb.UserAuth, :require_authenticated},
+      GtfsPlannerWeb.AssignOrganization,
+      GtfsPlannerWeb.AssignGtfsVersion
     ] do
 
-    scope "/", GtfsPlannerWeb do
+    # Versioned routes - version UUID in URL
+    scope "/gtfs/:version", GtfsPlannerWeb.Gtfs do
       pipe_through [:browser, :require_authenticated_user]
 
-      live "/stops", StopLive.Index, :index
-      live "/stops/new", StopLive.Index, :new
-      live "/stops/:id", StopLive.Show, :show
-      live "/stops/:id/edit", StopLive.Show, :edit
-      live "/stops/:id/levels/:level_id", FloorplanLive.Show, :show
+      live "/stops", StopsLive, :index
+      live "/stops/:id", StopDetailLive, :show
+      live "/import", ImportLive, :index
+      live "/export", ExportLive, :index
+      live "/validate", ValidateLive, :index
+    end
 
-      live "/import", ImportLive.Index, :index
-      live "/export", ExportLive.Index, :index
-      live "/validation", ValidationLive.Index, :index
+    # Versionless routes - redirect to versioned URL
+    scope "/gtfs", GtfsPlannerWeb.Gtfs do
+      pipe_through [:browser, :require_authenticated_user]
+
+      live "/stops", StopsLive, :index_default
+      live "/import", ImportLive, :index_default
+      live "/export", ExportLive, :index_default
+      live "/validate", ValidateLive, :index_default
     end
   end
 end
 ```
+
+**URL Routing Pattern:**
+- `/gtfs/:version/stops` - Versioned route with explicit GTFS version UUID
+- `/gtfs/stops` - Versionless route that redirects to user's last-used or latest version
+- Version switcher component updates URL when user changes version
 
 ---
 
@@ -641,6 +726,35 @@ defmodule GtfsPlanner.Versions do
 
   @doc "Gets a single GTFS version. Raises if not found."
   def get_gtfs_version!(id), do: Repo.get!(GtfsVersion, id)
+
+  @doc "Gets a single GTFS version. Returns nil if not found."
+  def get_gtfs_version(id), do: Repo.get(GtfsVersion, id)
+
+  @doc """
+  Returns the most recent GTFS version for an organization.
+  Used for default version selection when no version is specified.
+  """
+  def get_latest_gtfs_version(organization_id) do
+    from(v in GtfsVersion,
+      where: v.organization_id == ^organization_id,
+      order_by: [desc: v.inserted_at],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Returns GTFS versions as {id, name} tuples for dropdown components.
+  Ordered by most recent first.
+  """
+  def list_gtfs_versions_for_dropdown(organization_id) do
+    from(v in GtfsVersion,
+      where: v.organization_id == ^organization_id,
+      order_by: [desc: v.inserted_at],
+      select: {v.id, v.name}
+    )
+    |> Repo.all()
+  end
 end
 ```
 
@@ -963,12 +1077,82 @@ end
 
 ### GTFS Version Context
 
-Users always operate within a selected GTFS version. The version is part of the Scope and maintained in the socket assigns:
+Users always operate within a selected GTFS version. The version is maintained in socket assigns and the URL:
 
-- Version selector in header/navigation
+- Version UUID included in URL path (`/gtfs/:version/stops`) for bookmarkable links
+- Version selector dropdown in header/navigation for switching versions
 - Automatic "First Version" creation for new organizations (via `GtfsPlanner.Versions.create_default_version/1` called during organization creation)
-- Version stored in session for persistence across page loads
+- User's last-selected version persisted in browser localStorage (scoped by organization)
 - Version branching capability planned for future enhancement
+
+### GTFS Version Switcher Component
+
+The `GtfsVersionSwitcher` component renders a dropdown for switching between GTFS versions. It integrates with a JavaScript hook for localStorage persistence:
+
+```elixir
+# lib/gtfs_planner_web/components/gtfs_version_switcher.ex
+defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
+  use Phoenix.Component
+
+  attr :current_version, :map, required: true
+  attr :versions, :list, required: true  # List of {id, name} tuples
+  attr :organization_id, :string, required: true
+
+  def gtfs_version_switcher(assigns) do
+    ~H"""
+    <div
+      id="gtfs-version-switcher"
+      phx-hook="GtfsVersionHook"
+      phx-update="ignore"
+      data-organization-id={@organization_id}
+    >
+      <select
+        class="select select-bordered select-sm"
+        phx-change="switch_gtfs_version"
+      >
+        <option
+          :for={{id, name} <- @versions}
+          value={id}
+          selected={id == @current_version.id}
+        >
+          {name}
+        </option>
+      </select>
+    </div>
+    """
+  end
+end
+```
+
+The companion JavaScript hook manages localStorage persistence:
+
+```javascript
+// assets/js/gtfs_version_hook.js
+const GtfsVersionHook = {
+  mounted() {
+    const orgId = this.el.dataset.organizationId
+    const storageKey = `gtfs_version_${orgId}`
+    
+    // On mount, read stored version and notify server
+    const storedVersion = localStorage.getItem(storageKey)
+    this.pushEvent("gtfs_version_loaded", { version_id: storedVersion })
+    
+    // Handle server events to persist version selection
+    this.handleEvent("gtfs_version_selected", ({ version_id }) => {
+      localStorage.setItem(storageKey, version_id)
+    })
+    
+    // Handle redirect events for versionless URLs
+    this.handleEvent("gtfs_version_redirect", ({ url }) => {
+      window.location.href = url
+    })
+  }
+}
+
+export default GtfsVersionHook
+```
+
+**localStorage Key Pattern:** `gtfs_version_{organization_id}` ensures version selection is scoped per organization for users with access to multiple organizations.
 
 ### Stops Management
 
@@ -1131,4 +1315,5 @@ LiveView Streams, PubSub integration, and function components provide a responsi
 
 | Date | Version | Changes |
 |------|---------|---------|
+| 2026-01-21 | 2.2 | Updated to reflect implementation patterns from GitHub Issues #59 and #73: Added `AssignGtfsVersion` on_mount hook documentation for URL-based version validation; Updated router configuration to show `/gtfs/:version/*` URL pattern and versionless route redirects; Added `GtfsVersionSwitcher` component and `gtfs_version_hook.js` for localStorage-based version persistence; Added new Versions context functions: `get_gtfs_version/1` (non-raising), `get_latest_gtfs_version/1`, and `list_gtfs_versions_for_dropdown/1`; Updated application structure to reflect actual file locations including `assign_organization.ex`, `assign_gtfs_version.ex`, and `gtfs_version_switcher.ex`; Documented separate socket assigns approach (`@current_organization`, `@current_gtfs_version`) alongside the Scope struct pattern. |
 | 2026-01-19 | 2.1 | Updated to reflect implementation from GitHub Issue #50 / PR #51: Changed Versioning Context from `GtfsPlanner.Gtfs.Versioning` to `GtfsPlanner.Versions`; Updated schema location from `lib/gtfs_planner/gtfs/version.ex` to `lib/gtfs_planner/versions/gtfs_version.ex`; Changed default version name from "Initial version" to "First Version"; Removed references to `status` and `parent_version_id` fields (noted as future enhancements); Updated function references from `get_or_create_initial_version/1` to `create_default_version/1` and `list_gtfs_versions/1`; Updated all `GtfsPlanner.Gtfs.Version` references to `GtfsPlanner.Versions.GtfsVersion`. |

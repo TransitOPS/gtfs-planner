@@ -157,6 +157,22 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns the list of stations (stops with no parent) for an organization and GTFS version.
+
+  ## Examples
+
+      iex> list_stations(organization_id, gtfs_version_id)
+      [%Stop{}, ...]
+  """
+  def list_stations(organization_id, gtfs_version_id) do
+    from(s in Stop,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and is_nil(s.parent_station_id),
+      order_by: [asc: s.stop_name]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
   Gets a single stop.
 
   Returns nil if the Stop does not exist.
