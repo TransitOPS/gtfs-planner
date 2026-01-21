@@ -25,12 +25,13 @@ defmodule GtfsPlanner.VersionsTest do
 
     test "create_default_version/1 creates a version named 'First Version'" do
       # Create an organization directly without using the fixture to avoid auto-created version
-      {:ok, org} = %GtfsPlanner.Organizations.Organization{}
-                   |> GtfsPlanner.Organizations.Organization.changeset(%{
-                     alias: "test-org-#{System.unique_integer()}",
-                     name: "Test Org"
-                   })
-                   |> GtfsPlanner.Repo.insert()
+      {:ok, org} =
+        %GtfsPlanner.Organizations.Organization{}
+        |> GtfsPlanner.Organizations.Organization.changeset(%{
+          alias: "test-org-#{System.unique_integer()}",
+          name: "Test Org"
+        })
+        |> GtfsPlanner.Repo.insert()
 
       assert {:ok, version} = Versions.create_default_version(org.id)
       assert version.name == "First Version"

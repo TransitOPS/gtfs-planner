@@ -23,8 +23,27 @@ defmodule GtfsPlannerWeb.UserAuth do
   It renews the session ID and clears the whole session
   to avoid fixation attacks. Automatically fetches and sets
   the user's organization in the session if they have one.
+
+  Returns {:error, :deactivated} if the user is deactivated in their organization.
   """
   def log_in_user(conn, user, params \\ %{}) do
+    # Check if user is deactivated in their organization
+    case fetch_user_organization(user) do
+      nil ->
+        # Administrator or no organization - proceed with login
+        perform_login(conn, user, params)
+
+      organization_id ->
+        # Check if user is deactivated in this organization
+        if GtfsPlanner.Organizations.user_deactivated_in_organization?(user.id, organization_id) do
+          {:error, :deactivated}
+        else
+          perform_login(conn, user, params)
+        end
+    end
+  end
+
+  defp perform_login(conn, user, params) do
     token = Accounts.generate_user_session_token(user)
     user_return_to = get_session(conn, :user_return_to)
 
@@ -230,7 +249,33 @@ defmodule GtfsPlannerWeb.UserAuth do
 
   defp mount_current_user(socket, session) do
     user = session["user_token"] && Accounts.get_user_by_session_token(session["user_token"])
-    Phoenix.Component.assign(socket, :current_user, user)
+
+    socket
+    |> Phoenix.Component.assign(:current_user, user)
+    |> Phoenix.Component.assign(:current_path, "/")
+    |> maybe_attach_path_hook()
+  end
+
+  defp maybe_attach_path_hook(socket) do
+    # Only attach the hook if not already attached and if the socket supports hooks
+    # (some test sockets may not support hooks)
+    if Map.get(socket.private, :__current_path_hook_attached__) do
+      socket
+    else
+      try do
+        socket
+        |> Phoenix.LiveView.attach_hook(:set_current_path, :handle_params, fn _params,
+                                                                              uri,
+                                                                              socket ->
+          path = URI.parse(uri).path || "/"
+          {:cont, Phoenix.Component.assign(socket, :current_path, path)}
+        end)
+        |> put_in([Access.key(:private), :__current_path_hook_attached__], true)
+      rescue
+        # Handle cases where the socket doesn't support hooks (e.g., test sockets)
+        _ -> socket
+      end
+    end
   end
 
   defp ensure_user_token(conn) do

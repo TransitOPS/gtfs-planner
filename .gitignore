@@ -42,3 +42,5 @@ git_commit_message.txt
 logfile
 
 /test-failures-output.txt
+
+.DS_Store

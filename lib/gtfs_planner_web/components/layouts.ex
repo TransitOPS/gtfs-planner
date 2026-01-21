@@ -41,46 +41,60 @@ defmodule GtfsPlannerWeb.Layouts do
     default: [],
     doc: "list of role strings for the current user in the current organization"
 
+  attr :current_path, :string,
+    default: "/",
+    doc: "the current URL path for tab highlighting"
+
   slot :inner_block, required: true
 
   def app(assigns) do
     ~H"""
-    <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-base-100">
+    <a
+      href="#main-content"
+      class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-base-100"
+    >
       Skip to main content
     </a>
-    <header class="navbar px-4 sm:px-6 lg:px-8">
-      <div class="flex-1">
-        <.link href={~p"/"} class="text-xl font-bold tracking-tight" aria-label="GTFS Planner - Go to homepage">
-          GTFS Planner
+    <header class="navbar bg-base-100 px-4 sm:px-6 lg:px-8 pb-0 border-b border-base-300 items-end">
+      <div class="flex-none pb-3">
+        <.link href={~p"/"} class="flex items-center gap-2" aria-label="GTFS Planner - Go to homepage">
+          <div class="bg-emerald-600 p-2 rounded-lg">
+            <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
+          </div>
+          <span class="text-xl font-semibold tracking-tight text-emerald-700">GTFS Planner</span>
         </.link>
       </div>
+
       <%= if @current_user do %>
-        <div class="flex-none flex items-center gap-4">
-          <.theme_toggle />
-          <.link href={~p"/users/log_out"} method="delete" class="btn btn-ghost" aria-label="Log out of your account">
+        <div class="flex-1 flex justify-center">
+          <Navigation.top_nav
+            current_user={@current_user}
+            current_organization={assigns[:current_organization]}
+            user_roles={@user_roles}
+            current_path={@current_path}
+          />
+        </div>
+        <div class="flex-none pb-3">
+          <.link
+            href={~p"/users/log_out"}
+            method="delete"
+            class="link link-hover"
+            aria-label="Log out of your account"
+          >
             Log out
           </.link>
         </div>
       <% else %>
-        <div class="flex-none">
-          <.theme_toggle />
-        </div>
+        <div class="flex-1"></div>
       <% end %>
     </header>
 
     <%= if @current_user do %>
-      <div class="flex">
-        <Navigation.sidebar
-          current_user={@current_user}
-          current_organization={assigns[:current_organization]}
-          user_roles={@user_roles}
-        />
-        <main id="main-content" class="flex-1 px-4 py-20 sm:px-6 lg:px-8">
-          <div class="mx-auto max-w-2xl space-y-4">
-            {render_slot(@inner_block)}
-          </div>
-        </main>
-      </div>
+      <main id="main-content" class="px-4 py-8 sm:px-6 lg:px-8">
+        <div class="mx-auto max-w-4xl space-y-4">
+          {render_slot(@inner_block)}
+        </div>
+      </main>
     <% else %>
       <main id="main-content" class="px-4 py-20 sm:px-6 lg:px-8">
         <div class="mx-auto max-w-2xl space-y-4">
@@ -133,6 +147,53 @@ defmodule GtfsPlannerWeb.Layouts do
         <.icon name="hero-arrow-path" class="ml-1 size-3 motion-safe:animate-spin" />
       </.flash>
     </div>
+    """
+  end
+
+  @doc """
+  Renders the auth layout for unauthenticated pages like login, registration, etc.
+
+  This layout provides a centered card with logo branding, suitable for authentication flows.
+
+  ## Examples
+
+      <Layouts.auth flash={@flash}>
+        <.header>Log in</.header>
+        <.simple_form ...>
+        </.simple_form>
+      </Layouts.auth>
+
+  """
+  attr :flash, :map, required: true, doc: "the map of flash messages"
+  slot :inner_block, required: true
+
+  def auth(assigns) do
+    ~H"""
+    <a
+      href="#main-content"
+      class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-base-100"
+    >
+      Skip to main content
+    </a>
+
+    <main id="main-content" class="min-h-screen flex items-start justify-center px-4 py-12 sm:py-16">
+      <div class="w-full max-w-md">
+        <div class="card bg-base-100 card-border shadow-sm">
+          <div class="card-body">
+            <div class="flex items-center justify-center gap-3 mb-6">
+              <div class="bg-emerald-600 p-2 rounded-lg">
+                <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
+              </div>
+              <span class="text-xl font-semibold tracking-tight text-emerald-700">GTFS Planner</span>
+            </div>
+
+            {render_slot(@inner_block)}
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <.flash_group flash={@flash} />
     """
   end
 

@@ -70,7 +70,7 @@ defmodule GtfsPlannerWeb.ApiKeyLive do
                 />
                 <button
                   type="button"
-                  class="btn"
+                  class="btn btn-active"
                   phx-click="copy_api_key"
                   phx-value-token={@api_key_token}
                 >
@@ -105,7 +105,7 @@ defmodule GtfsPlannerWeb.ApiKeyLive do
 
                     <button
                       type="button"
-                      class="btn btn-sm btn-error"
+                      class="btn btn-sm btn-error btn-active"
                       phx-click="delete"
                       phx-value-api-key-id={api_key.id}
                       phx-confirm="Are you sure you want to delete this API key? This action cannot be undone."

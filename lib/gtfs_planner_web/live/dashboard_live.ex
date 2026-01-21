@@ -1,54 +1,81 @@
 defmodule GtfsPlannerWeb.DashboardLive do
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Organizations
   alias GtfsPlannerWeb.UserAuth
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
     user = socket.assigns[:current_user]
     is_admin = UserAuth.is_administrator?(user)
 
-    user_roles =
-      case user do
-        %{roles: roles} when is_list(roles) -> roles
-        _ -> []
-      end
+    # Fetch user's organization and roles from their membership
+    {current_organization, user_roles} = get_user_org_context(user, session, is_admin)
 
     {:ok,
      socket
      |> assign(:page_title, "Dashboard")
      |> assign(:is_administrator, is_admin)
+     |> assign(:current_organization, current_organization)
      |> assign(:user_roles, user_roles)}
+  end
+
+  defp get_user_org_context(_user, _session, true = _is_admin) do
+    # Administrators don't have org-scoped roles
+    {nil, []}
+  end
+
+  defp get_user_org_context(user, session, false = _is_admin) do
+    organization_id = session["organization_id"]
+
+    if organization_id do
+      organization = Organizations.get_organization(organization_id)
+
+      user_roles =
+        case Accounts.get_user_org_membership(user.id, organization_id) do
+          %Accounts.UserOrgMembership{roles: roles} -> roles
+          nil -> []
+        end
+
+      {organization, user_roles}
+    else
+      {nil, []}
+    end
   end
 
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user}>
-      <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-          <h2 class="card-title">Welcome to GTFS Planner</h2>
-          <p>You are logged in as {@current_user.email}</p>
-
+    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path} user_roles={@user_roles} current_organization={@current_organization}>
+      <.header>
+        Welcome to GTFS Planner
+        <:subtitle>You are logged in as {@current_user.email}</:subtitle>
+        <:actions>
           <%= if @is_administrator do %>
-            <div class="mt-4">
-              <p class="text-sm text-gray-600">You are an administrator.</p>
-            </div>
-            <div class="card-actions justify-end">
-              <.link navigate={~p"/admin/organizations"} class="btn btn-primary">
-                Manage Organizations
-              </.link>
-            </div>
-          <% else %>
-            <%= if assigns[:current_organization] do %>
-              <div class="mt-4">
-                <p class="text-sm text-gray-600">
-                  Organization: <span class="font-medium">{@current_organization.name}</span>
-                </p>
-              </div>
-            <% end %>
+            <.link navigate={~p"/admin/organizations"} class="btn btn-primary btn-active">
+              Manage Organizations
+            </.link>
           <% end %>
-        </div>
+        </:actions>
+      </.header>
+
+      <div class="mt-8 space-y-6">
+        <%= if @is_administrator do %>
+          <div class="bg-base-100 border border-base-300 rounded-lg p-6">
+            <.list>
+              <:item title="Role">Administrator</:item>
+            </.list>
+          </div>
+        <% else %>
+          <%= if assigns[:current_organization] do %>
+            <div class="bg-base-100 border border-base-300 rounded-lg p-6">
+              <.list>
+                <:item title="Organization">{@current_organization.name}</:item>
+              </.list>
+            </div>
+          <% end %>
+        <% end %>
       </div>
     </Layouts.app>
     """

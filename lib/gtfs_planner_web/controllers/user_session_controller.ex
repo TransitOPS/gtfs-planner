@@ -1,18 +1,8 @@
 defmodule GtfsPlannerWeb.UserSessionController do
   use GtfsPlannerWeb, :controller
-  import Phoenix.Component
 
   alias GtfsPlanner.Accounts
   alias GtfsPlannerWeb.UserAuth
-
-  plug :fetch_current_user when action in [:new]
-
-  defp fetch_current_user(conn, opts), do: UserAuth.fetch_current_user(conn, opts)
-
-  def new(conn, _params) do
-    form = to_form(%{}, as: :user)
-    render(conn, :new, error_message: nil, form: form)
-  end
 
   def create(conn, %{"user" => user_params}) do
     %{"email" => email, "password" => password} = user_params
@@ -20,22 +10,34 @@ defmodule GtfsPlannerWeb.UserSessionController do
     if user = Accounts.get_user_by_email_and_password(email, password) do
       # Check if user has organization membership or is administrator
       if UserAuth.is_administrator?(user) || UserAuth.fetch_user_organization(user) do
-        conn
-        |> put_flash(:info, "Welcome back!")
-        |> UserAuth.log_in_user(user, user_params)
+        case UserAuth.log_in_user(conn, user, user_params) do
+          {:error, :deactivated} ->
+            conn
+            |> put_flash(
+              :error,
+              "Your account has been deactivated. Contact your administrator."
+            )
+            |> redirect(to: ~p"/users/log_in")
+
+          conn ->
+            conn
+            |> put_flash(:info, "Welcome back!")
+        end
       else
         # User has no organization membership and is not an administrator
-        form = to_form(%{"email" => email}, as: :user)
-
-        render(conn, :new,
-          error_message: "Your account has no organization assigned. Contact an administrator.",
-          form: form
+        conn
+        |> put_flash(
+          :error,
+          "Your account has no organization assigned. Contact an administrator."
         )
+        |> redirect(to: ~p"/users/log_in")
       end
     else
       # In order to prevent user enumeration attacks, don't disclose whether the email is registered.
-      form = to_form(%{"email" => email}, as: :user)
-      render(conn, :new, error_message: "Invalid email or password", form: form)
+      conn
+      |> put_flash(:error, "Invalid email or password")
+      |> put_flash(:email, String.slice(email, 0, 160))
+      |> redirect(to: ~p"/users/log_in")
     end
   end
 

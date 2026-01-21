@@ -82,5 +82,41 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       # Assert error messages are visible
       assert html =~ "can&#39;t be blank"
     end
+
+    test "renders invite member form for administrator", %{conn: conn, organization: organization} do
+      {:ok, _view, html} = live(conn, ~p"/admin/organizations/#{organization.id}/invite")
+
+      # Assert page contains expected content
+      assert html =~ "Invite Member"
+      assert html =~ "Email"
+
+      # Assert form element exists
+      assert html =~ "invite-form"
+    end
+
+    test "invites new user to organization", %{conn: conn, organization: organization} do
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{organization.id}/invite")
+
+      # Fill and submit the invite form
+      assert view
+             |> form("#invite-form",
+               invite: %{email: "newuser@example.com", roles: ["pathways_studio_viewer"]}
+             )
+             |> render_submit()
+
+      # Assert patched to organization show page
+      assert_patch(view, ~p"/admin/organizations/#{organization.id}")
+
+      # Verify user was created
+      user = Accounts.get_user_by_email("newuser@example.com")
+      assert user
+      assert user.email == "newuser@example.com"
+
+      # Verify membership exists with correct roles
+      memberships = Accounts.list_user_org_memberships(user.id)
+      membership = Enum.find(memberships, &(&1.organization_id == organization.id))
+      assert membership
+      assert "pathways_studio_viewer" in membership.roles
+    end
   end
 end

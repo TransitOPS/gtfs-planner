@@ -24,7 +24,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidateLive do
   @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user} user_roles={@user_roles}>
+    <Layouts.app
+      flash={@flash}
+      current_user={@current_user}
+      current_organization={@current_organization}
+      user_roles={@user_roles}
+      current_path={@current_path}
+    >
       <div class="container mx-auto px-4 py-8">
         <h1 class="text-3xl font-bold mb-4">Validate GTFS</h1>
         <p class="text-gray-600">GTFS validation functionality coming soon.</p>
