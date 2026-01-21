@@ -115,27 +115,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
           No stations found
         </div>
 
-        <div :if={not @stations_empty?} class="overflow-x-auto">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Station ID</th>
-                <th>Station Name</th>
-                <th>Location Type</th>
-                <th>Lat</th>
-                <th>Lon</th>
-              </tr>
-            </thead>
-            <tbody id="stations" phx-update="stream">
-              <tr :for={{dom_id, station} <- @streams.stations} id={dom_id}>
-                <td>{station.stop_id}</td>
-                <td>{station.stop_name}</td>
-                <td>{station.location_type}</td>
-                <td>{station.stop_lat}</td>
-                <td>{station.stop_lon}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div :if={not @stations_empty?} class="mt-8 bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+          <.table id="stations" rows={@streams.stations}>
+            <:col :let={{_id, station}} label="Station ID">{station.stop_id}</:col>
+            <:col :let={{_id, station}} label="Station Name">{station.stop_name}</:col>
+            <:col :let={{_id, station}} label="Location Type">{station.location_type}</:col>
+            <:col :let={{_id, station}} label="Lat">{station.stop_lat}</:col>
+            <:col :let={{_id, station}} label="Lon">{station.stop_lon}</:col>
+          </.table>
         </div>
       </Layouts.app>
     <% end %>
