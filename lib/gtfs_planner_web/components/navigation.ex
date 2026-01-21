@@ -58,9 +58,9 @@ defmodule GtfsPlannerWeb.Navigation do
 
       <%= if (has_role?(@user_roles, :pathways_studio_editor) || has_role?(@user_roles, :pathways_studio_viewer)) && @current_organization do %>
         <.link
-          navigate="/gtfs/v1/stops"
+          navigate="/gtfs/stops"
           role="tab"
-          class={["tab", active_tab?(@current_path, "/gtfs/v1/stops") && "tab-active"]}
+          class={["tab", gtfs_tab_active?(@current_path, "stops") && "tab-active"]}
         >
           <.icon name="hero-map-pin" class="w-4 h-4 mr-1" /> Stations
         </.link>
@@ -68,9 +68,9 @@ defmodule GtfsPlannerWeb.Navigation do
 
       <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization do %>
         <.link
-          navigate="/gtfs/v1/import"
+          navigate="/gtfs/import"
           role="tab"
-          class={["tab", active_tab?(@current_path, "/gtfs/v1/import") && "tab-active"]}
+          class={["tab", gtfs_tab_active?(@current_path, "import") && "tab-active"]}
         >
           <.icon name="hero-arrow-down-tray" class="w-4 h-4 mr-1" /> Import
         </.link>
@@ -78,16 +78,16 @@ defmodule GtfsPlannerWeb.Navigation do
 
       <%= if (has_role?(@user_roles, :pathways_studio_editor) || has_role?(@user_roles, :pathways_studio_viewer)) && @current_organization do %>
         <.link
-          navigate="/gtfs/v1/export"
+          navigate="/gtfs/export"
           role="tab"
-          class={["tab", active_tab?(@current_path, "/gtfs/v1/export") && "tab-active"]}
+          class={["tab", gtfs_tab_active?(@current_path, "export") && "tab-active"]}
         >
           <.icon name="hero-arrow-up-tray" class="w-4 h-4 mr-1" /> Export
         </.link>
         <.link
-          navigate="/gtfs/v1/validate"
+          navigate="/gtfs/validate"
           role="tab"
-          class={["tab", active_tab?(@current_path, "/gtfs/v1/validate") && "tab-active"]}
+          class={["tab", gtfs_tab_active?(@current_path, "validate") && "tab-active"]}
         >
           <.icon name="hero-shield-check" class="w-4 h-4 mr-1" /> Validate
         </.link>
@@ -98,6 +98,13 @@ defmodule GtfsPlannerWeb.Navigation do
 
   defp active_tab?(current_path, tab_path) do
     String.starts_with?(current_path, tab_path)
+  end
+
+  # Checks if a GTFS tab is active. Handles both versionless (/gtfs/stops)
+  # and versioned (/gtfs/{uuid}/stops) routes.
+  defp gtfs_tab_active?(current_path, tab_name) do
+    String.starts_with?(current_path, "/gtfs") &&
+      String.contains?(current_path, tab_name)
   end
 
   defp has_role?(user_roles, role) when is_atom(role) do

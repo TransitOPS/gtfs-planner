@@ -49,12 +49,23 @@ defmodule GtfsPlannerWeb.ConnCase do
 
       user = user_fixture()
       conn = log_in_user(conn, user)
+      
+      # With organization context
+      conn = log_in_user(conn, user, organization: organization)
+
+  ## Options
+    * `:organization` - Optional organization to set in the session. Required for LiveViews
+      that use the `AssignOrganization` on_mount hook.
   """
-  def log_in_user(conn, user) do
+  def log_in_user(conn, user, opts \\ []) do
     token = GtfsPlanner.Accounts.generate_user_session_token(user)
+    organization = Keyword.get(opts, :organization)
+    
+    session = %{user_token: token}
+    session = if organization, do: Map.put(session, :organization_id, organization.id), else: session
 
     conn
-    |> Phoenix.ConnTest.init_test_session(%{user_token: token})
+    |> Phoenix.ConnTest.init_test_session(session)
     |> Plug.Conn.assign(:current_user, user)
   end
 end

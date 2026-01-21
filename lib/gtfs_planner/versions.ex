@@ -53,6 +53,71 @@ defmodule GtfsPlanner.Versions do
   end
 
   @doc """
+  Returns a list of GTFS version tuples for dropdown/select components.
+
+  Returns a list of `{id, name}` tuples ordered by most recent first.
+
+  ## Examples
+
+      iex> list_gtfs_versions_for_dropdown(organization_id)
+      [{1, "Spring 2024"}, {2, "Winter 2024"}]
+
+      iex> list_gtfs_versions_for_dropdown(organization_id_with_no_versions)
+      []
+  """
+  def list_gtfs_versions_for_dropdown(organization_id) do
+    from(v in GtfsVersion,
+      where: v.organization_id == ^organization_id,
+      order_by: [desc: v.inserted_at],
+      select: {v.id, v.name}
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets the latest GTFS version for an organization.
+
+  Returns `{:ok, %GtfsVersion{}}` if a version exists, or `{:error, :no_versions}` if none exist.
+
+  ## Examples
+
+      iex> get_latest_gtfs_version(organization_id)
+      {:ok, %GtfsVersion{}}
+
+      iex> get_latest_gtfs_version(organization_id_with_no_versions)
+      {:error, :no_versions}
+  """
+  def get_latest_gtfs_version(organization_id) do
+    result =
+      from(v in GtfsVersion,
+        where: v.organization_id == ^organization_id,
+        order_by: [desc: v.inserted_at],
+        limit: 1
+      )
+      |> Repo.one()
+
+    case result do
+      nil -> {:error, :no_versions}
+      version -> {:ok, version}
+    end
+  end
+
+  @doc """
+  Gets a single GTFS version.
+
+  Returns nil if the GtfsVersion does not exist.
+
+  ## Examples
+
+      iex> get_gtfs_version(123)
+      %GtfsVersion{}
+
+      iex> get_gtfs_version(456)
+      nil
+  """
+  def get_gtfs_version(id), do: Repo.get(GtfsVersion, id)
+
+  @doc """
   Gets a single GTFS version.
 
   Raises `Ecto.NoResultsError` if the GtfsVersion does not exist.
