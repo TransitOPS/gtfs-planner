@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
 
@@ -14,6 +15,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     # Create organization and user fixtures
     organization = organization_fixture()
     user = user_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
 
     # Create initial membership (will be updated by individual tests)
     Accounts.create_user_org_membership(%{
@@ -28,7 +30,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
       |> log_in_user(user)
       |> Plug.Conn.put_session(:organization_id, organization.id)
 
-    %{conn: conn, user: user, organization: organization}
+    %{conn: conn, user: user, organization: organization, gtfs_version: gtfs_version}
   end
 
   @doc """
@@ -116,46 +118,46 @@ defmodule GtfsPlannerWeb.AccessControlTest do
   end
 
   describe "GTFS editor role" do
-    test "editor can access import", %{conn: conn, user: user, organization: organization} do
+    test "editor can access import", %{conn: conn, user: user, organization: organization, gtfs_version: gtfs_version} do
       add_role(user, organization, [:pathways_studio_editor])
 
-      {:ok, _view, html} = live(conn, ~p"/gtfs/v1/import")
+      {:ok, _view, html} = live(conn, ~p"/gtfs/#{gtfs_version.id}/import")
 
       assert html =~ "Import GTFS"
     end
 
-    test "viewer cannot access import", %{conn: conn, user: user, organization: organization} do
+    test "viewer cannot access import", %{conn: conn, user: user, organization: organization, gtfs_version: gtfs_version} do
       add_role(user, organization, [:pathways_studio_viewer])
 
       assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
-               live(conn, ~p"/gtfs/v1/import")
+               live(conn, ~p"/gtfs/#{gtfs_version.id}/import")
 
-      assert redirect_path != "/gtfs/v1/import"
+      assert redirect_path != "/gtfs/#{gtfs_version.id}/import"
       assert flash["error"] =~ "authorized"
     end
   end
 
   describe "GTFS viewer role" do
-    test "viewer can access stops", %{conn: conn, user: user, organization: organization} do
+    test "viewer can access stops", %{conn: conn, user: user, organization: organization, gtfs_version: gtfs_version} do
       add_role(user, organization, [:pathways_studio_viewer])
 
-      {:ok, _view, html} = live(conn, ~p"/gtfs/v1/stops")
+      {:ok, _view, html} = live(conn, ~p"/gtfs/#{gtfs_version.id}/stops")
 
       assert html =~ "Stations"
     end
 
-    test "viewer can access export", %{conn: conn, user: user, organization: organization} do
+    test "viewer can access export", %{conn: conn, user: user, organization: organization, gtfs_version: gtfs_version} do
       add_role(user, organization, [:pathways_studio_viewer])
 
-      {:ok, _view, html} = live(conn, ~p"/gtfs/v1/export")
+      {:ok, _view, html} = live(conn, ~p"/gtfs/#{gtfs_version.id}/export")
 
       assert html =~ "Export GTFS"
     end
 
-    test "editor can also access stops", %{conn: conn, user: user, organization: organization} do
+    test "editor can also access stops", %{conn: conn, user: user, organization: organization, gtfs_version: gtfs_version} do
       add_role(user, organization, [:pathways_studio_editor])
 
-      {:ok, _view, html} = live(conn, ~p"/gtfs/v1/stops")
+      {:ok, _view, html} = live(conn, ~p"/gtfs/#{gtfs_version.id}/stops")
 
       assert html =~ "Stations"
     end
@@ -174,18 +176,18 @@ defmodule GtfsPlannerWeb.AccessControlTest do
       assert has_element?(view, "a", "Organizations")
     end
 
-    test "viewer does not see Import link", %{conn: conn, user: user, organization: organization} do
+    test "viewer does not see Import link", %{conn: conn, user: user, organization: organization, gtfs_version: gtfs_version} do
       add_role(user, organization, [:pathways_studio_viewer])
 
-      {:ok, view, _html} = live(conn, ~p"/gtfs/v1/stops")
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{gtfs_version.id}/stops")
 
       refute has_element?(view, "a", "Import")
     end
 
-    test "editor sees Import link", %{conn: conn, user: user, organization: organization} do
+    test "editor sees Import link", %{conn: conn, user: user, organization: organization, gtfs_version: gtfs_version} do
       add_role(user, organization, [:pathways_studio_editor])
 
-      {:ok, view, _html} = live(conn, ~p"/gtfs/v1/stops")
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{gtfs_version.id}/stops")
 
       assert has_element?(view, "a", "Import")
     end

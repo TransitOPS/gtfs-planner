@@ -86,6 +86,7 @@ defmodule GtfsPlannerWeb do
       import Phoenix.HTML
       # Core UI components
       import GtfsPlannerWeb.CoreComponents
+      import GtfsPlannerWeb.Components.GtfsVersionSwitcher
 
       # Authentication imports
       import GtfsPlannerWeb.UserAuth
