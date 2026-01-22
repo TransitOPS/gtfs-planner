@@ -271,6 +271,68 @@ defmodule GtfsPlanner.GtfsTest do
       stop = stop_fixture(org.id, version.id)
       assert %Ecto.Changeset{} = Gtfs.change_stop(stop)
     end
+
+    test "create_stop/1 accepts optional stop_desc field", %{organization: org, gtfs_version: version} do
+      attrs = valid_stop_attrs()
+      |> Map.put(:organization_id, org.id)
+      |> Map.put(:gtfs_version_id, version.id)
+      |> Map.put(:stop_desc, "A test stop description")
+
+      assert {:ok, stop} = Gtfs.create_stop(attrs)
+      assert stop.stop_desc == "A test stop description"
+    end
+
+    test "create_stop/1 accepts optional platform_code field", %{organization: org, gtfs_version: version} do
+      attrs = valid_stop_attrs()
+      |> Map.put(:organization_id, org.id)
+      |> Map.put(:gtfs_version_id, version.id)
+      |> Map.put(:platform_code, "Platform A")
+
+      assert {:ok, stop} = Gtfs.create_stop(attrs)
+      assert stop.platform_code == "Platform A"
+    end
+
+    test "create_stop/1 allows nil for stop_desc and platform_code", %{organization: org, gtfs_version: version} do
+      attrs = valid_stop_attrs()
+      |> Map.put(:organization_id, org.id)
+      |> Map.put(:gtfs_version_id, version.id)
+
+      assert {:ok, stop} = Gtfs.create_stop(attrs)
+      assert stop.stop_desc == nil
+      assert stop.platform_code == nil
+    end
+
+    test "update_stop/2 can set stop_desc", %{organization: org, gtfs_version: version} do
+      stop = stop_fixture(org.id, version.id)
+      assert stop.stop_desc == nil
+
+      update_attrs = %{stop_desc: "Updated description"}
+      assert {:ok, updated_stop} = Gtfs.update_stop(stop, update_attrs)
+      assert updated_stop.stop_desc == "Updated description"
+    end
+
+    test "update_stop/2 can set platform_code", %{organization: org, gtfs_version: version} do
+      stop = stop_fixture(org.id, version.id)
+      assert stop.platform_code == nil
+
+      update_attrs = %{platform_code: "Platform B"}
+      assert {:ok, updated_stop} = Gtfs.update_stop(stop, update_attrs)
+      assert updated_stop.platform_code == "Platform B"
+    end
+
+    test "get_stop!/1 retrieves stop with stop_desc and platform_code", %{organization: org, gtfs_version: version} do
+      attrs = valid_stop_attrs()
+      |> Map.put(:organization_id, org.id)
+      |> Map.put(:gtfs_version_id, version.id)
+      |> Map.put(:stop_desc, "Test description")
+      |> Map.put(:platform_code, "Platform C")
+
+      assert {:ok, stop} = Gtfs.create_stop(attrs)
+
+      fetched_stop = Gtfs.get_stop!(stop.id)
+      assert fetched_stop.stop_desc == "Test description"
+      assert fetched_stop.platform_code == "Platform C"
+    end
   end
 
   describe "list_stations/2" do

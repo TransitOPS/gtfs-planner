@@ -2,7 +2,9 @@
 
 ## Branch & PR Title
 
-- Branch name: `type/scope/short-desc` (e.g., `feat/ui/pathway-slider`)
+- Branch name: `type/scope/ISSUE_NUMBER-short-desc` (e.g., `feat/ui/76-pathway-slider`)
+  - **MUST include GitHub issue number** to enable automatic linking and context tracking
+  - The issue number helps GitHub, AI assistants, and team members connect branches to issues and PRs
 - PR title: Conventional Commit style — `type(scope): summary`
 
 ## Focus

@@ -1,5 +1,12 @@
 # Git Rules
 
+- **Branch naming with issue numbers**
+
+  - Branch name format: `type/scope/ISSUE_NUMBER-short-desc` (e.g., `feat/gtfs/76-route-to-single-stop-page`)
+  - **MUST include GitHub issue number** to enable automatic linking and context tracking
+  - The issue number helps GitHub, AI assistants, and team members connect branches to issues and PRs
+  - When references are made to "the current GitHub issue", deduce it from the current branch name
+
 - **Conventional commits only**
 
   - All commit messages MUST follow the Conventional Commit style for the subject line.
