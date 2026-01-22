@@ -115,7 +115,8 @@ defmodule GtfsPlanner.VersionsTest do
 
       # Should return list of {id, name} tuples
       assert is_list(versions)
-      assert length(versions) == 4  # 3 created + 1 from fixture
+      # 3 created + 1 from fixture
+      assert length(versions) == 4
 
       # Should be ordered by most recent first (DESC)
       assert [{id1, name1}, {id2, name2}, {id3, name3} | _rest] = versions

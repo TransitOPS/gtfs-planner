@@ -72,7 +72,9 @@ defmodule GtfsPlanner.Gtfs do
   """
   def get_level_by_level_id(organization_id, gtfs_version_id, level_id) do
     from(l in Level,
-      where: l.organization_id == ^organization_id and l.gtfs_version_id == ^gtfs_version_id and l.level_id == ^level_id
+      where:
+        l.organization_id == ^organization_id and l.gtfs_version_id == ^gtfs_version_id and
+          l.level_id == ^level_id
     )
     |> Repo.one()
   end
@@ -109,6 +111,24 @@ defmodule GtfsPlanner.Gtfs do
   def update_level(%Level{} = level, attrs) do
     level
     |> Level.changeset(attrs)
+    |> Repo.update()
+    |> broadcast([:levels, :updated])
+  end
+
+  @doc """
+  Updates a level's diagram filename.
+
+  ## Examples
+
+      iex> update_level_diagram(level, "floor_plan.png")
+      {:ok, %Level{}}
+
+      iex> update_level_diagram(level, nil)
+      {:ok, %Level{}}
+  """
+  def update_level_diagram(%Level{} = level, filename) do
+    level
+    |> Level.changeset(%{diagram_filename: filename})
     |> Repo.update()
     |> broadcast([:levels, :updated])
   end
@@ -167,7 +187,9 @@ defmodule GtfsPlanner.Gtfs do
   """
   def list_stations(organization_id, gtfs_version_id) do
     from(s in Stop,
-      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and is_nil(s.parent_station_id),
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          is_nil(s.parent_station_id),
       order_by: [asc: s.stop_name]
     )
     |> Repo.all()
@@ -218,7 +240,9 @@ defmodule GtfsPlanner.Gtfs do
   """
   def get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id) do
     from(s in Stop,
-      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and s.stop_id == ^stop_id
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.stop_id == ^stop_id
     )
     |> Repo.one()
   end
@@ -335,6 +359,62 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Updates a stop's diagram coordinate.
+
+  ## Examples
+
+      iex> update_stop_diagram_coordinate(stop, %{x: 50.5, y: 25.0})
+      {:ok, %Stop{}}
+  """
+  def update_stop_diagram_coordinate(%Stop{} = stop, %{x: _, y: _} = coordinate) do
+    stop
+    |> Stop.changeset(%{diagram_coordinate: coordinate})
+    |> Repo.update()
+    |> broadcast([:stops, :updated])
+  end
+
+  @doc """
+  Returns child stops for a parent station filtered by level.
+
+  ## Examples
+
+      iex> list_child_stops_for_level(parent_station_id, level_id)
+      [%Stop{}, ...]
+  """
+  def list_child_stops_for_level(parent_station_id, level_id) do
+    from(s in Stop,
+      where: s.parent_station_id == ^parent_station_id and s.level_id == ^level_id,
+      order_by: [asc: s.stop_name]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Returns pathways where both from_stop and to_stop have the specified level_id.
+
+  ## Examples
+
+      iex> list_pathways_for_level(org_id, version_id, level_id)
+      [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
+  """
+  def list_pathways_for_level(organization_id, gtfs_version_id, level_id) do
+    from(p in Pathway,
+      join: from_stop in Stop,
+      on: p.from_stop_id == from_stop.id,
+      join: to_stop in Stop,
+      on: p.to_stop_id == to_stop.id,
+      where:
+        p.organization_id == ^organization_id and
+          p.gtfs_version_id == ^gtfs_version_id and
+          from_stop.level_id == ^level_id and
+          to_stop.level_id == ^level_id,
+      order_by: [asc: p.pathway_id],
+      preload: [:from_stop, :to_stop]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
   Returns pathways where from_stop or to_stop is a child of the given station.
 
   ## Examples
@@ -377,6 +457,37 @@ defmodule GtfsPlanner.Gtfs do
     |> Pathway.changeset(attrs)
     |> Repo.insert()
     |> broadcast([:pathways, :created])
+  end
+
+  @doc """
+  Gets a single pathway.
+
+  Raises `Ecto.NoResultsError` if the Pathway does not exist.
+
+  ## Examples
+
+      iex> get_pathway!(id)
+      %Pathway{}
+
+      iex> get_pathway!(Ecto.UUID.generate())
+      ** (Ecto.NoResultsError)
+  """
+  def get_pathway!(id), do: Repo.get!(Pathway, id)
+
+  @doc """
+  Deletes a pathway.
+
+  ## Examples
+
+      iex> delete_pathway(pathway)
+      {:ok, %Pathway{}}
+
+      iex> delete_pathway(pathway)
+      {:error, %Ecto.Changeset{}}
+  """
+  def delete_pathway(%Pathway{} = pathway) do
+    Repo.delete(pathway)
+    |> broadcast([:pathways, :deleted])
   end
 
   # Private helper functions

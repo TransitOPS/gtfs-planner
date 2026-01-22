@@ -109,7 +109,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
   @impl true
   def handle_event("send_invite", %{"invite" => invite_params}, socket) do
     email = Map.get(invite_params, "email", "")
-    
+
     # Normalize roles to list, filter empty strings
     roles =
       invite_params
@@ -141,7 +141,8 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
               Accounts.deliver_user_invite(user, &url(~p"/users/accept_invite/#{&1}"))
 
               # Refresh members list and close drawer
-              members = Organizations.list_users_in_organization(socket.assigns.current_organization.id)
+              members =
+                Organizations.list_users_in_organization(socket.assigns.current_organization.id)
 
               socket =
                 socket
@@ -157,11 +158,12 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
           end
 
         {:error, reason} ->
-          error_message = 
+          error_message =
             case reason do
               :invalid_email -> "Invalid email address"
               _ -> "Failed to invite user"
             end
+
           params_with_error = Map.put(invite_params, "error", error_message)
           {:noreply, assign_invite_form(socket, params_with_error)}
       end
@@ -171,10 +173,11 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
   @impl true
   def handle_event("resend_invite", %{"user-id" => user_id}, socket) do
     user = Accounts.get_user!(user_id)
-    
+
     case Accounts.deliver_user_invite(user, &url(~p"/users/accept_invite/#{&1}")) do
       {:ok, _} ->
         {:noreply, put_flash(socket, :info, "Invitation email resent")}
+
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Failed to resend invitation")}
     end
@@ -182,7 +185,10 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
 
   @impl true
   def handle_event("deactivate", %{"user-id" => user_id}, socket) do
-    case Organizations.deactivate_user_in_organization(user_id, socket.assigns.current_organization.id) do
+    case Organizations.deactivate_user_in_organization(
+           user_id,
+           socket.assigns.current_organization.id
+         ) do
       {:ok, _} ->
         # Refresh members list
         members = Organizations.list_users_in_organization(socket.assigns.current_organization.id)
@@ -201,7 +207,10 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
 
   @impl true
   def handle_event("activate", %{"user-id" => user_id}, socket) do
-    case Organizations.activate_user_in_organization(user_id, socket.assigns.current_organization.id) do
+    case Organizations.activate_user_in_organization(
+           user_id,
+           socket.assigns.current_organization.id
+         ) do
       {:ok, _} ->
         # Refresh members list
         members = Organizations.list_users_in_organization(socket.assigns.current_organization.id)
@@ -259,7 +268,9 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
             />
 
             <fieldset class="fieldset" aria-describedby="roles-error">
-              <legend class="fieldset-legend text-base">Roles <span class="text-error">*</span></legend>
+              <legend class="fieldset-legend text-base">
+                Roles <span class="text-error">*</span>
+              </legend>
               <div class="space-y-2" role="group" aria-label="Select roles">
                 <label
                   :for={{label, value} <- @available_roles}
@@ -295,7 +306,13 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path} user_roles={@user_roles} current_organization={@current_organization}>
+    <Layouts.app
+      flash={@flash}
+      current_user={@current_user}
+      current_path={@current_path}
+      user_roles={@user_roles}
+      current_organization={@current_organization}
+    >
       <.header>
         Users
         <:subtitle>Manage users in {@current_organization.name}</:subtitle>

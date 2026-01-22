@@ -15,8 +15,12 @@ defmodule GtfsPlanner.Repo.Migrations.CreatePathways do
       add :signposted_as, :string
       add :reversed_signposted_as, :string
 
-      add :organization_id, references(:organizations, type: :binary_id, on_delete: :delete_all), null: false
-      add :gtfs_version_id, references(:gtfs_versions, type: :binary_id, on_delete: :delete_all), null: false
+      add :organization_id, references(:organizations, type: :binary_id, on_delete: :delete_all),
+        null: false
+
+      add :gtfs_version_id, references(:gtfs_versions, type: :binary_id, on_delete: :delete_all),
+        null: false
+
       add :from_stop_id, references(:stops, type: :binary_id, on_delete: :delete_all), null: false
       add :to_stop_id, references(:stops, type: :binary_id, on_delete: :delete_all), null: false
 

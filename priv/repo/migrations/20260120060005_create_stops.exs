@@ -17,33 +17,36 @@ defmodule GtfsPlanner.Repo.Migrations.CreateStops do
       timestamps()
     end
 
-    create unique_index(:stops, [:organization_id, :gtfs_version_id, :stop_id], name: :stops_organization_id_gtfs_version_id_stop_id_index)
+    create unique_index(:stops, [:organization_id, :gtfs_version_id, :stop_id],
+             name: :stops_organization_id_gtfs_version_id_stop_id_index
+           )
+
     create unique_index(:stops, [:id, :organization_id, :gtfs_version_id])
 
     alter table(:stops) do
       modify :gtfs_version_id,
-        references(:gtfs_versions,
-          column: :id,
-          with: [organization_id: :organization_id],
-          match: :full,
-          type: :binary_id
-        )
+             references(:gtfs_versions,
+               column: :id,
+               with: [organization_id: :organization_id],
+               match: :full,
+               type: :binary_id
+             )
 
       modify :level_id,
-        references(:levels,
-          column: :id,
-          with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
-          match: :full,
-          type: :binary_id
-        )
+             references(:levels,
+               column: :id,
+               with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
+               match: :full,
+               type: :binary_id
+             )
 
       modify :parent_station_id,
-        references(:stops,
-          column: :id,
-          with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
-          match: :full,
-          type: :binary_id
-        )
+             references(:stops,
+               column: :id,
+               with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
+               match: :full,
+               type: :binary_id
+             )
     end
   end
 
