@@ -32,22 +32,28 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
 
   @impl true
   def handle_params(%{"stop_id" => stop_id} = _params, _uri, socket) do
-    # Fetch the stop data
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    # If version resolution is still pending, do not attempt to access
+    # current_organization/current_gtfs_version yet.
+    if socket.assigns[:pending_version_resolution] do
+      {:noreply, socket}
+    else
+      # Fetch the stop data
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-    case GtfsPlanner.Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id) do
-      nil ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Station not found")
-         |> push_navigate(to: "/gtfs/#{gtfs_version_id}/stops")}
+      case GtfsPlanner.Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id) do
+        nil ->
+          {:noreply,
+           socket
+           |> put_flash(:error, "Station not found")
+           |> push_navigate(to: "/gtfs/#{gtfs_version_id}/stops")}
 
-      stop ->
-        {:noreply,
-         socket
-         |> assign(:stop_id, stop_id)
-         |> assign(:stop, stop)}
+        stop ->
+          {:noreply,
+           socket
+           |> assign(:stop_id, stop_id)
+           |> assign(:stop, stop)}
+      end
     end
   end
 
