@@ -21,11 +21,13 @@ defmodule GtfsPlanner.GtfsFixtures do
   Generate a level fixture.
   """
   def level_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
-    {:ok, level} = Gtfs.create_level(
-      valid_level_attrs(attrs)
-      |> Map.put(:organization_id, organization_id)
-      |> Map.put(:gtfs_version_id, gtfs_version_id)
-    )
+    {:ok, level} =
+      Gtfs.create_level(
+        valid_level_attrs(attrs)
+        |> Map.put(:organization_id, organization_id)
+        |> Map.put(:gtfs_version_id, gtfs_version_id)
+      )
+
     level
   end
 
@@ -47,11 +49,13 @@ defmodule GtfsPlanner.GtfsFixtures do
   Generate a stop fixture.
   """
   def stop_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
-    {:ok, stop} = Gtfs.create_stop(
-      valid_stop_attrs(attrs)
-      |> Map.put(:organization_id, organization_id)
-      |> Map.put(:gtfs_version_id, gtfs_version_id)
-    )
+    {:ok, stop} =
+      Gtfs.create_stop(
+        valid_stop_attrs(attrs)
+        |> Map.put(:organization_id, organization_id)
+        |> Map.put(:gtfs_version_id, gtfs_version_id)
+      )
+
     stop
   end
 

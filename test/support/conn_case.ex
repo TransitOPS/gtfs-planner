@@ -60,9 +60,11 @@ defmodule GtfsPlannerWeb.ConnCase do
   def log_in_user(conn, user, opts \\ []) do
     token = GtfsPlanner.Accounts.generate_user_session_token(user)
     organization = Keyword.get(opts, :organization)
-    
+
     session = %{user_token: token}
-    session = if organization, do: Map.put(session, :organization_id, organization.id), else: session
+
+    session =
+      if organization, do: Map.put(session, :organization_id, organization.id), else: session
 
     conn
     |> Phoenix.ConnTest.init_test_session(session)

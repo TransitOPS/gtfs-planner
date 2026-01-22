@@ -12,17 +12,20 @@ defmodule GtfsPlanner.Repo.Migrations.CreateLevels do
       timestamps(type: :utc_datetime_usec)
     end
 
-    create unique_index(:levels, [:organization_id, :gtfs_version_id, :level_id], name: :levels_organization_id_gtfs_version_id_level_id_index)
+    create unique_index(:levels, [:organization_id, :gtfs_version_id, :level_id],
+             name: :levels_organization_id_gtfs_version_id_level_id_index
+           )
+
     create unique_index(:levels, [:id, :organization_id, :gtfs_version_id])
 
     alter table(:levels) do
       modify :gtfs_version_id,
-        references(:gtfs_versions,
-          column: :id,
-          with: [organization_id: :organization_id],
-          match: :full,
-          type: :binary_id
-        )
+             references(:gtfs_versions,
+               column: :id,
+               with: [organization_id: :organization_id],
+               match: :full,
+               type: :binary_id
+             )
     end
   end
 

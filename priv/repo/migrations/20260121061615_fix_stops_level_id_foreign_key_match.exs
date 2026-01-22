@@ -9,12 +9,12 @@ defmodule GtfsPlanner.Repo.Migrations.FixStopsLevelIdForeignKeyMatch do
     # when organization_id and gtfs_version_id are set
     alter table(:stops) do
       modify :level_id,
-        references(:levels,
-          column: :id,
-          with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
-          match: :simple,
-          type: :binary_id
-        )
+             references(:levels,
+               column: :id,
+               with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
+               match: :simple,
+               type: :binary_id
+             )
     end
   end
 
@@ -23,12 +23,12 @@ defmodule GtfsPlanner.Repo.Migrations.FixStopsLevelIdForeignKeyMatch do
 
     alter table(:stops) do
       modify :level_id,
-        references(:levels,
-          column: :id,
-          with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
-          match: :full,
-          type: :binary_id
-        )
+             references(:levels,
+               column: :id,
+               with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
+               match: :full,
+               type: :binary_id
+             )
     end
   end
 end

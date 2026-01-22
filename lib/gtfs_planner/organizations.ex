@@ -402,7 +402,9 @@ defmodule GtfsPlanner.Organizations do
       membership ->
         result =
           membership
-          |> Ecto.Changeset.change(%{deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)})
+          |> Ecto.Changeset.change(%{
+            deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          })
           |> Repo.update()
 
         case result do

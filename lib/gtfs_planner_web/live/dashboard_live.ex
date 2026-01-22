@@ -47,7 +47,13 @@ defmodule GtfsPlannerWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path} user_roles={@user_roles} current_organization={@current_organization}>
+    <Layouts.app
+      flash={@flash}
+      current_user={@current_user}
+      current_path={@current_path}
+      user_roles={@user_roles}
+      current_organization={@current_organization}
+    >
       <.header>
         Welcome to GTFS Planner
         <:subtitle>You are logged in as {@current_user.email}</:subtitle>

@@ -25,7 +25,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       %{user: user, organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "displays stations page with valid version", %{conn: conn, user: user, organization: organization, gtfs_version: version} do
+    test "displays stations page with valid version", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -33,7 +38,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       assert html =~ "Stations"
     end
 
-    test "redirects with error for invalid version UUID", %{conn: conn, user: user, organization: organization} do
+    test "redirects with error for invalid version UUID", %{
+      conn: conn,
+      user: user,
+      organization: organization
+    } do
       conn = log_in_user(conn, user, organization: organization)
       invalid_uuid = Ecto.UUID.generate()
 
@@ -41,7 +50,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
                live(conn, "/gtfs/#{invalid_uuid}/stops")
     end
 
-    test "redirects with error for version from different organization", %{conn: conn, user: user, organization: organization} do
+    test "redirects with error for version from different organization", %{
+      conn: conn,
+      user: user,
+      organization: organization
+    } do
       conn = log_in_user(conn, user, organization: organization)
 
       # Create another organization with its own version

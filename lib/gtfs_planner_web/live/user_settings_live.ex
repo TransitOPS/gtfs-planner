@@ -5,7 +5,12 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
 
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path} user_roles={@user_roles}>
+    <Layouts.app
+      flash={@flash}
+      current_user={@current_user}
+      current_path={@current_path}
+      user_roles={@user_roles}
+    >
       <div class="space-y-12">
         <div>
           <.header>
