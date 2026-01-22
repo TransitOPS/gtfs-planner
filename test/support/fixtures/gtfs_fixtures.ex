@@ -54,4 +54,32 @@ defmodule GtfsPlanner.GtfsFixtures do
     )
     stop
   end
+
+  @doc """
+  Generate valid pathway attributes for testing.
+  """
+  def valid_pathway_attrs(attrs \\ %{}) do
+    Enum.into(attrs, %{
+      pathway_id: "pathway_#{System.unique_integer()}",
+      pathway_mode: 1,
+      is_bidirectional: true,
+      traversal_time: 60,
+      length: Decimal.new("10.5"),
+      stair_count: 12
+    })
+  end
+
+  @doc """
+  Generate a pathway fixture.
+  """
+  def pathway_fixture(organization_id, gtfs_version_id, from_stop_id, to_stop_id, attrs \\ %{}) do
+    {:ok, pathway} = Gtfs.create_pathway(
+      valid_pathway_attrs(attrs)
+      |> Map.put(:organization_id, organization_id)
+      |> Map.put(:gtfs_version_id, gtfs_version_id)
+      |> Map.put(:from_stop_id, from_stop_id)
+      |> Map.put(:to_stop_id, to_stop_id)
+    )
+    pathway
+  end
 end

@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.Pathway
 
   require Logger
 
@@ -286,6 +287,136 @@ defmodule GtfsPlanner.Gtfs do
     Stop.changeset(stop, attrs)
   end
 
+  @doc """
+  Returns the list of pathways for an organization and GTFS version.
+
+  ## Examples
+
+      iex> list_pathways(organization_id, gtfs_version_id)
+      [%Pathway{}, ...]
+  """
+  def list_pathways(organization_id, gtfs_version_id) do
+    from(p in Pathway,
+      where: p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: p.pathway_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single pathway.
+
+  Returns nil if the Pathway does not exist.
+
+  ## Examples
+
+      iex> get_pathway(id)
+      %Pathway{}
+
+      iex> get_pathway(Ecto.UUID.generate())
+      nil
+  """
+  def get_pathway(id), do: Repo.get(Pathway, id)
+
+  @doc """
+  Gets a single pathway.
+
+  Raises `Ecto.NoResultsError` if the Pathway does not exist.
+
+  ## Examples
+
+      iex> get_pathway!(id)
+      %Pathway{}
+
+      iex> get_pathway!(Ecto.UUID.generate())
+      ** (Ecto.NoResultsError)
+  """
+  def get_pathway!(id), do: Repo.get!(Pathway, id)
+
+  @doc """
+  Gets a pathway by its pathway_id within an organization and GTFS version.
+
+  Returns nil if the pathway does not exist.
+
+  ## Examples
+
+      iex> get_pathway_by_pathway_id(organization_id, gtfs_version_id, "pathway_123")
+      %Pathway{}
+
+      iex> get_pathway_by_pathway_id(organization_id, gtfs_version_id, "nonexistent")
+      nil
+  """
+  def get_pathway_by_pathway_id(organization_id, gtfs_version_id, pathway_id) do
+    from(p in Pathway,
+      where: p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id and p.pathway_id == ^pathway_id
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Creates a pathway.
+
+  ## Examples
+
+      iex> create_pathway(%{organization_id: org_id, gtfs_version_id: version_id, pathway_id: "pathway_123", from_stop_id: stop1_id, to_stop_id: stop2_id, pathway_mode: 1, is_bidirectional: true})
+      {:ok, %Pathway{}}
+
+      iex> create_pathway(%{pathway_id: nil})
+      {:error, %Ecto.Changeset{}}
+  """
+  def create_pathway(attrs \\ %{}) do
+    %Pathway{}
+    |> Pathway.changeset(attrs)
+    |> Repo.insert()
+    |> broadcast([:pathways, :created])
+  end
+
+  @doc """
+  Updates a pathway.
+
+  ## Examples
+
+      iex> update_pathway(pathway, %{pathway_id: "updated_pathway_id"})
+      {:ok, %Pathway{}}
+
+      iex> update_pathway(pathway, %{pathway_id: nil})
+      {:error, %Ecto.Changeset{}}
+  """
+  def update_pathway(%Pathway{} = pathway, attrs) do
+    pathway
+    |> Pathway.changeset(attrs)
+    |> Repo.update()
+    |> broadcast([:pathways, :updated])
+  end
+
+  @doc """
+  Deletes a pathway.
+
+  ## Examples
+
+      iex> delete_pathway(pathway)
+      {:ok, %Pathway{}}
+
+      iex> delete_pathway(pathway)
+      {:error, %Ecto.Changeset{}}
+  """
+  def delete_pathway(%Pathway{} = pathway) do
+    Repo.delete(pathway)
+    |> broadcast([:pathways, :deleted])
+  end
+
+  @doc """
+  Returns an `%Ecto.Changeset{}` for tracking pathway changes.
+
+  ## Examples
+
+      iex> change_pathway(pathway)
+      %Ecto.Changeset{data: %Pathway{}}
+  """
+  def change_pathway(%Pathway{} = pathway, attrs \\ %{}) do
+    Pathway.changeset(pathway, attrs)
+  end
+
   # Private helper functions
 
   defp broadcast({:ok, result}, event_topic) do
@@ -295,6 +426,8 @@ defmodule GtfsPlanner.Gtfs do
           Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "levels", {event_topic, result})
         [:stops, _] ->
           Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "stops", {event_topic, result})
+        [:pathways, _] ->
+          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "pathways", {event_topic, result})
       end
 
     case broadcast_result do
