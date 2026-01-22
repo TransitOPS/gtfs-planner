@@ -1,7 +1,7 @@
 defmodule GtfsPlanner.Repo.Migrations.CreatePathways do
   use Ecto.Migration
 
-  def change do
+  def up do
     create table(:pathways, primary_key: false) do
       add :id, :binary_id, primary_key: true
       add :pathway_id, :string, null: false
@@ -27,5 +27,9 @@ defmodule GtfsPlanner.Repo.Migrations.CreatePathways do
     create index(:pathways, [:organization_id, :gtfs_version_id])
     create index(:pathways, [:from_stop_id])
     create index(:pathways, [:to_stop_id])
+  end
+
+  def down do
+    drop table(:pathways)
   end
 end
