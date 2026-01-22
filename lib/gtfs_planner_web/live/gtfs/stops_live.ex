@@ -39,27 +39,53 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
   @impl true
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
-    current_organization = socket.assigns.current_organization
+    # Guard clause: if pending version resolution, we need to redirect to a version
+    if socket.assigns[:pending_version_resolution] do
+      current_organization = socket.assigns.current_organization
 
-    # Try to use the stored version_id from localStorage
-    version_to_use =
-      if version_id && valid_version_for_org?(version_id, current_organization.id) do
-        version_id
-      else
-        # Fall back to latest version
-        case socket.assigns[:latest_gtfs_version] do
-          {:ok, version} -> to_string(version.id)
-          {:error, :no_versions} -> nil
+      # Use the version from localStorage if valid, otherwise fetch latest
+      version_to_use =
+        if version_id && valid_version_for_org?(version_id, current_organization.id) do
+          version_id
+        else
+          # Fetch latest version for the organization
+          case Versions.get_latest_gtfs_version(current_organization.id) do
+            {:ok, version} -> to_string(version.id)
+            {:error, :no_versions} -> nil
+          end
         end
-      end
 
-    if version_to_use do
-      {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/stops")}
+      if version_to_use do
+        {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/stops")}
+      else
+        # No versions available, stay on pending page
+        {:noreply, socket}
+      end
     else
-      {:noreply,
-       socket
-       |> put_flash(:error, "No GTFS versions available for your organization")
-       |> push_navigate(to: "/")}
+      # Normal flow: we already have a current version
+      current_organization = socket.assigns.current_organization
+      current_version_id = to_string(socket.assigns.current_gtfs_version.id)
+
+      # Try to use the stored version_id from localStorage
+      version_to_use =
+        if version_id && valid_version_for_org?(version_id, current_organization.id) do
+          version_id
+        else
+          # Fall back to latest version or current version
+          case socket.assigns[:latest_gtfs_version] do
+            {:ok, version} -> to_string(version.id)
+            {:error, :no_versions} -> nil
+            nil -> current_version_id  # Already on a valid route
+          end
+        end
+
+      # Only navigate if switching to a different version
+      if version_to_use && version_to_use != current_version_id do
+        {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/stops")}
+      else
+        # Already on correct version, do nothing
+        {:noreply, socket}
+      end
     end
   end
 
@@ -115,27 +141,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
           No stations found
         </div>
 
-        <div :if={not @stations_empty?} class="overflow-x-auto">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Station ID</th>
-                <th>Station Name</th>
-                <th>Location Type</th>
-                <th>Lat</th>
-                <th>Lon</th>
-              </tr>
-            </thead>
-            <tbody id="stations" phx-update="stream">
-              <tr :for={{dom_id, station} <- @streams.stations} id={dom_id}>
-                <td>{station.stop_id}</td>
-                <td>{station.stop_name}</td>
-                <td>{station.location_type}</td>
-                <td>{station.stop_lat}</td>
-                <td>{station.stop_lon}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div :if={not @stations_empty?} class="mt-8 bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+          <.table id="stations" rows={@streams.stations}>
+            <:col :let={{_id, station}} label="Station ID">
+              <.link navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{station.stop_id}"} class="link link-primary">
+                {station.stop_id}
+              </.link>
+            </:col>
+            <:col :let={{_id, station}} label="Station Name">{station.stop_name}</:col>
+            <:col :let={{_id, station}} label="Location Type">{station.location_type}</:col>
+            <:col :let={{_id, station}} label="Lat">{station.stop_lat}</:col>
+            <:col :let={{_id, station}} label="Lon">{station.stop_lon}</:col>
+          </.table>
         </div>
       </Layouts.app>
     <% end %>

@@ -32,12 +32,35 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
 
   @impl true
   def handle_params(%{"stop_id" => stop_id} = _params, _uri, socket) do
-    {:noreply, assign(socket, :stop_id, stop_id)}
+    # If version resolution is still pending, do not attempt to access
+    # current_organization/current_gtfs_version yet.
+    if socket.assigns[:pending_version_resolution] do
+      {:noreply, socket}
+    else
+      # Fetch the stop data
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+      case GtfsPlanner.Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id) do
+        nil ->
+          {:noreply,
+           socket
+           |> put_flash(:error, "Station not found")
+           |> push_navigate(to: "/gtfs/#{gtfs_version_id}/stops")}
+
+        stop ->
+          {:noreply,
+           socket
+           |> assign(:stop_id, stop_id)
+           |> assign(:stop, stop)}
+      end
+    end
   end
 
   @impl true
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
     current_organization = socket.assigns.current_organization
+    current_version_id = to_string(socket.assigns.current_gtfs_version.id)
     stop_id = socket.assigns[:stop_id]
 
     # Try to use the stored version_id from localStorage
@@ -45,21 +68,21 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       if version_id && valid_version_for_org?(version_id, current_organization.id) do
         version_id
       else
-        # Fall back to latest version
+        # Fall back to latest version or current version
         case socket.assigns[:latest_gtfs_version] do
           {:ok, version} -> to_string(version.id)
           {:error, :no_versions} -> nil
+          nil -> current_version_id  # Already on a valid route
         end
       end
 
-    if version_to_use do
+    # Only navigate if switching to a different version
+    if version_to_use && version_to_use != current_version_id do
       path = if stop_id, do: "/gtfs/#{version_to_use}/stops/#{stop_id}", else: "/gtfs/#{version_to_use}/stops"
       {:noreply, push_navigate(socket, to: path)}
     else
-      {:noreply,
-       socket
-       |> put_flash(:error, "No GTFS versions available for your organization")
-       |> push_navigate(to: "/")}
+      # Already on correct version, do nothing
+      {:noreply, socket}
     end
   end
 
@@ -101,9 +124,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         current_path={@current_path}
       >
         <.header>
-          Station Details
-          <:subtitle>Viewing details for station: {@stop_id}</:subtitle>
+          {@stop.stop_name || @stop_id}
+          <:subtitle>Station ID: {@stop_id}</:subtitle>
           <:actions>
+            <.link navigate={"/gtfs/#{@current_gtfs_version.id}/stops"} class="btn btn-ghost btn-sm">
+              Back to Stations
+            </.link>
             <%= if assigns[:current_gtfs_version] && assigns[:available_versions] do %>
               <.gtfs_version_switcher
                 current_version={@current_gtfs_version}
@@ -114,8 +140,48 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           </:actions>
         </.header>
 
-        <div class="mt-8">
-          <p class="text-gray-500">Station details view coming soon.</p>
+        <div class="mt-8 bg-base-100 border border-base-300 rounded-lg p-6">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <h3 class="text-sm font-medium text-base-content/60">Station ID</h3>
+              <p class="mt-1 text-base">{@stop.stop_id}</p>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-medium text-base-content/60">Station Name</h3>
+              <p class="mt-1 text-base">{@stop.stop_name || ""}</p>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-medium text-base-content/60">Location Type</h3>
+              <p class="mt-1 text-base">{@stop.location_type || ""}</p>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-medium text-base-content/60">Description</h3>
+              <p class="mt-1 text-base">{@stop.stop_desc || ""}</p>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-medium text-base-content/60">Latitude</h3>
+              <p class="mt-1 text-base">{@stop.stop_lat || ""}</p>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-medium text-base-content/60">Longitude</h3>
+              <p class="mt-1 text-base">{@stop.stop_lon || ""}</p>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-medium text-base-content/60">Level ID</h3>
+              <p class="mt-1 text-base">{@stop.level_id || ""}</p>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-medium text-base-content/60">Platform Code</h3>
+              <p class="mt-1 text-base">{@stop.platform_code || ""}</p>
+            </div>
+          </div>
         </div>
       </Layouts.app>
     <% end %>
