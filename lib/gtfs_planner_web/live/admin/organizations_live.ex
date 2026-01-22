@@ -363,7 +363,12 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_user={@current_user} current_path={@current_path} user_roles={@user_roles}>
+    <Layouts.app
+      flash={@flash}
+      current_user={@current_user}
+      current_path={@current_path}
+      user_roles={@user_roles}
+    >
       <%= if @live_action == :show && @organization do %>
         <.header>
           {@organization.name}

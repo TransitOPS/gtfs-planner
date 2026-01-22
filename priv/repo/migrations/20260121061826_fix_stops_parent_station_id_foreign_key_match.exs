@@ -9,12 +9,12 @@ defmodule GtfsPlanner.Repo.Migrations.FixStopsParentStationIdForeignKeyMatch do
     # when organization_id and gtfs_version_id are set
     alter table(:stops) do
       modify :parent_station_id,
-        references(:stops,
-          column: :id,
-          with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
-          match: :simple,
-          type: :binary_id
-        )
+             references(:stops,
+               column: :id,
+               with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
+               match: :simple,
+               type: :binary_id
+             )
     end
   end
 
@@ -23,12 +23,12 @@ defmodule GtfsPlanner.Repo.Migrations.FixStopsParentStationIdForeignKeyMatch do
 
     alter table(:stops) do
       modify :parent_station_id,
-        references(:stops,
-          column: :id,
-          with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
-          match: :full,
-          type: :binary_id
-        )
+             references(:stops,
+               column: :id,
+               with: [organization_id: :organization_id, gtfs_version_id: :gtfs_version_id],
+               match: :full,
+               type: :binary_id
+             )
     end
   end
 end

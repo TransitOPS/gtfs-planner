@@ -15,10 +15,14 @@ defmodule GtfsPlanner.GtfsTest do
       %{organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "create_level/1 creates a level with valid attrs", %{organization: org, gtfs_version: version} do
-      attrs = valid_level_attrs()
-      |> Map.put(:organization_id, org.id)
-      |> Map.put(:gtfs_version_id, version.id)
+    test "create_level/1 creates a level with valid attrs", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      attrs =
+        valid_level_attrs()
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
 
       assert {:ok, level} = Gtfs.create_level(attrs)
       assert level.level_id == attrs.level_id
@@ -27,7 +31,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert level.gtfs_version_id == version.id
     end
 
-    test "create_level/1 returns error with invalid attrs", %{organization: org, gtfs_version: version} do
+    test "create_level/1 returns error with invalid attrs", %{
+      organization: org,
+      gtfs_version: version
+    } do
       attrs = %{
         organization_id: org.id,
         gtfs_version_id: version.id,
@@ -36,13 +43,19 @@ defmodule GtfsPlanner.GtfsTest do
       }
 
       assert {:error, changeset} = Gtfs.create_level(attrs)
-      assert %{level_id: ["can't be blank"], level_index: ["can't be blank"]} = errors_on(changeset)
+
+      assert %{level_id: ["can't be blank"], level_index: ["can't be blank"]} =
+               errors_on(changeset)
     end
 
-    test "create_level/1 enforces unique level_id within organization and version", %{organization: org, gtfs_version: version} do
-      attrs = valid_level_attrs()
-      |> Map.put(:organization_id, org.id)
-      |> Map.put(:gtfs_version_id, version.id)
+    test "create_level/1 enforces unique level_id within organization and version", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      attrs =
+        valid_level_attrs()
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
 
       assert {:ok, _level1} = Gtfs.create_level(attrs)
       assert {:error, changeset} = Gtfs.create_level(attrs)
@@ -50,7 +63,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert "has already been taken" in errors_on(changeset).organization_id
     end
 
-    test "list_levels/2 returns levels for the given organization and version", %{organization: org, gtfs_version: version} do
+    test "list_levels/2 returns levels for the given organization and version", %{
+      organization: org,
+      gtfs_version: version
+    } do
       # Create levels for this org/version
       level1 = level_fixture(org.id, version.id, %{level_id: "L1", level_index: 0.0})
       level2 = level_fixture(org.id, version.id, %{level_id: "L2", level_index: 1.0})
@@ -58,7 +74,9 @@ defmodule GtfsPlanner.GtfsTest do
       # Create another org/version with its own levels
       other_org = organization_fixture()
       other_version = gtfs_version_fixture(other_org.id)
-      _other_level = level_fixture(other_org.id, other_version.id, %{level_id: "L1", level_index: 0.0})
+
+      _other_level =
+        level_fixture(other_org.id, other_version.id, %{level_id: "L1", level_index: 0.0})
 
       levels = Gtfs.list_levels(org.id, version.id)
 
@@ -69,7 +87,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert Enum.all?(levels, fn l -> l.gtfs_version_id == version.id end)
     end
 
-    test "list_levels/2 orders by level_index ascending", %{organization: org, gtfs_version: version} do
+    test "list_levels/2 orders by level_index ascending", %{
+      organization: org,
+      gtfs_version: version
+    } do
       level3 = level_fixture(org.id, version.id, %{level_id: "L3", level_index: 2.0})
       level1 = level_fixture(org.id, version.id, %{level_id: "L1", level_index: 0.0})
       level2 = level_fixture(org.id, version.id, %{level_id: "L2", level_index: 1.0})
@@ -82,7 +103,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert Enum.map(levels, & &1.id) == [level1.id, level2.id, level3.id]
     end
 
-    test "get_level!/1 returns the level with the given id", %{organization: org, gtfs_version: version} do
+    test "get_level!/1 returns the level with the given id", %{
+      organization: org,
+      gtfs_version: version
+    } do
       level = level_fixture(org.id, version.id)
 
       fetched_level = Gtfs.get_level!(level.id)
@@ -100,7 +124,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert Gtfs.get_level(Ecto.UUID.generate()) == nil
     end
 
-    test "get_level_by_level_id/3 returns the level within organization and version", %{organization: org, gtfs_version: version} do
+    test "get_level_by_level_id/3 returns the level within organization and version", %{
+      organization: org,
+      gtfs_version: version
+    } do
       level = level_fixture(org.id, version.id, %{level_id: "SPECIAL"})
 
       # Should find the level
@@ -118,7 +145,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert Gtfs.get_level_by_level_id(org.id, other_version.id, "SPECIAL") == nil
     end
 
-    test "update_level/2 updates a level with valid attrs", %{organization: org, gtfs_version: version} do
+    test "update_level/2 updates a level with valid attrs", %{
+      organization: org,
+      gtfs_version: version
+    } do
       level = level_fixture(org.id, version.id)
 
       update_attrs = %{level_name: "Updated Name", level_index: 5.0}
@@ -128,7 +158,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert updated_level.id == level.id
     end
 
-    test "update_level/2 returns error with invalid attrs", %{organization: org, gtfs_version: version} do
+    test "update_level/2 returns error with invalid attrs", %{
+      organization: org,
+      gtfs_version: version
+    } do
       level = level_fixture(org.id, version.id)
 
       assert {:error, changeset} = Gtfs.update_level(level, %{level_id: nil})
@@ -155,10 +188,14 @@ defmodule GtfsPlanner.GtfsTest do
       %{organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "create_stop/1 creates a stop with valid attrs", %{organization: org, gtfs_version: version} do
-      attrs = valid_stop_attrs()
-      |> Map.put(:organization_id, org.id)
-      |> Map.put(:gtfs_version_id, version.id)
+    test "create_stop/1 creates a stop with valid attrs", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      attrs =
+        valid_stop_attrs()
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
 
       assert {:ok, stop} = Gtfs.create_stop(attrs)
       assert stop.stop_id == attrs.stop_id
@@ -167,7 +204,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert stop.gtfs_version_id == version.id
     end
 
-    test "create_stop/1 returns error with invalid attrs", %{organization: org, gtfs_version: version} do
+    test "create_stop/1 returns error with invalid attrs", %{
+      organization: org,
+      gtfs_version: version
+    } do
       attrs = %{
         organization_id: org.id,
         gtfs_version_id: version.id,
@@ -178,7 +218,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert %{stop_id: ["can't be blank"]} = errors_on(changeset)
     end
 
-    test "list_stops/2 returns stops for the given organization and version", %{organization: org, gtfs_version: version} do
+    test "list_stops/2 returns stops for the given organization and version", %{
+      organization: org,
+      gtfs_version: version
+    } do
       stop1 = stop_fixture(org.id, version.id, %{stop_id: "stop1"})
       stop2 = stop_fixture(org.id, version.id, %{stop_id: "stop2"})
 
@@ -196,10 +239,14 @@ defmodule GtfsPlanner.GtfsTest do
       assert Enum.all?(stops, fn s -> s.gtfs_version_id == version.id end)
     end
 
-    test "create_stop/1 enforces unique stop_id within organization and version", %{organization: org, gtfs_version: version} do
-      attrs = valid_stop_attrs()
-      |> Map.put(:organization_id, org.id)
-      |> Map.put(:gtfs_version_id, version.id)
+    test "create_stop/1 enforces unique stop_id within organization and version", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      attrs =
+        valid_stop_attrs()
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
 
       assert {:ok, _stop1} = Gtfs.create_stop(attrs)
       assert {:error, changeset} = Gtfs.create_stop(attrs)
@@ -207,7 +254,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert "has already been taken" in errors_on(changeset).organization_id
     end
 
-    test "get_stop!/1 returns the stop with the given id", %{organization: org, gtfs_version: version} do
+    test "get_stop!/1 returns the stop with the given id", %{
+      organization: org,
+      gtfs_version: version
+    } do
       stop = stop_fixture(org.id, version.id)
 
       fetched_stop = Gtfs.get_stop!(stop.id)
@@ -225,7 +275,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert Gtfs.get_stop(Ecto.UUID.generate()) == nil
     end
 
-    test "get_stop_by_stop_id/3 returns the stop within organization and version", %{organization: org, gtfs_version: version} do
+    test "get_stop_by_stop_id/3 returns the stop within organization and version", %{
+      organization: org,
+      gtfs_version: version
+    } do
       stop = stop_fixture(org.id, version.id, %{stop_id: "SPECIAL"})
 
       # Should find the stop
@@ -243,7 +296,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert Gtfs.get_stop_by_stop_id(org.id, other_version.id, "SPECIAL") == nil
     end
 
-    test "update_stop/2 updates a stop with valid attrs", %{organization: org, gtfs_version: version} do
+    test "update_stop/2 updates a stop with valid attrs", %{
+      organization: org,
+      gtfs_version: version
+    } do
       stop = stop_fixture(org.id, version.id)
 
       update_attrs = %{stop_name: "Updated Station Name", stop_lat: Decimal.new("40.7128")}
@@ -253,7 +309,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert updated_stop.id == stop.id
     end
 
-    test "update_stop/2 returns error with invalid attrs", %{organization: org, gtfs_version: version} do
+    test "update_stop/2 returns error with invalid attrs", %{
+      organization: org,
+      gtfs_version: version
+    } do
       stop = stop_fixture(org.id, version.id)
 
       assert {:error, changeset} = Gtfs.update_stop(stop, %{stop_id: nil})
@@ -272,30 +331,42 @@ defmodule GtfsPlanner.GtfsTest do
       assert %Ecto.Changeset{} = Gtfs.change_stop(stop)
     end
 
-    test "create_stop/1 accepts optional stop_desc field", %{organization: org, gtfs_version: version} do
-      attrs = valid_stop_attrs()
-      |> Map.put(:organization_id, org.id)
-      |> Map.put(:gtfs_version_id, version.id)
-      |> Map.put(:stop_desc, "A test stop description")
+    test "create_stop/1 accepts optional stop_desc field", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      attrs =
+        valid_stop_attrs()
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
+        |> Map.put(:stop_desc, "A test stop description")
 
       assert {:ok, stop} = Gtfs.create_stop(attrs)
       assert stop.stop_desc == "A test stop description"
     end
 
-    test "create_stop/1 accepts optional platform_code field", %{organization: org, gtfs_version: version} do
-      attrs = valid_stop_attrs()
-      |> Map.put(:organization_id, org.id)
-      |> Map.put(:gtfs_version_id, version.id)
-      |> Map.put(:platform_code, "Platform A")
+    test "create_stop/1 accepts optional platform_code field", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      attrs =
+        valid_stop_attrs()
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
+        |> Map.put(:platform_code, "Platform A")
 
       assert {:ok, stop} = Gtfs.create_stop(attrs)
       assert stop.platform_code == "Platform A"
     end
 
-    test "create_stop/1 allows nil for stop_desc and platform_code", %{organization: org, gtfs_version: version} do
-      attrs = valid_stop_attrs()
-      |> Map.put(:organization_id, org.id)
-      |> Map.put(:gtfs_version_id, version.id)
+    test "create_stop/1 allows nil for stop_desc and platform_code", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      attrs =
+        valid_stop_attrs()
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
 
       assert {:ok, stop} = Gtfs.create_stop(attrs)
       assert stop.stop_desc == nil
@@ -320,12 +391,16 @@ defmodule GtfsPlanner.GtfsTest do
       assert updated_stop.platform_code == "Platform B"
     end
 
-    test "get_stop!/1 retrieves stop with stop_desc and platform_code", %{organization: org, gtfs_version: version} do
-      attrs = valid_stop_attrs()
-      |> Map.put(:organization_id, org.id)
-      |> Map.put(:gtfs_version_id, version.id)
-      |> Map.put(:stop_desc, "Test description")
-      |> Map.put(:platform_code, "Platform C")
+    test "get_stop!/1 retrieves stop with stop_desc and platform_code", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      attrs =
+        valid_stop_attrs()
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
+        |> Map.put(:stop_desc, "Test description")
+        |> Map.put(:platform_code, "Platform C")
 
       assert {:ok, stop} = Gtfs.create_stop(attrs)
 
@@ -342,12 +417,25 @@ defmodule GtfsPlanner.GtfsTest do
       %{organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "returns only stations (stops with no parent)", %{organization: org, gtfs_version: version} do
+    test "returns only stations (stops with no parent)", %{
+      organization: org,
+      gtfs_version: version
+    } do
       # Create a station (no parent)
-      station = stop_fixture(org.id, version.id, %{stop_id: "STATION1", stop_name: "Main Station", parent_station_id: nil})
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "STATION1",
+          stop_name: "Main Station",
+          parent_station_id: nil
+        })
 
       # Create a child stop (has parent)
-      _child = stop_fixture(org.id, version.id, %{stop_id: "CHILD1", stop_name: "Platform 1", parent_station_id: station.id})
+      _child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD1",
+          stop_name: "Platform 1",
+          parent_station_id: station.id
+        })
 
       stations = Gtfs.list_stations(org.id, version.id)
 
@@ -356,14 +444,22 @@ defmodule GtfsPlanner.GtfsTest do
       assert hd(stations).parent_station_id == nil
     end
 
-    test "does not return stations from other organizations", %{organization: org, gtfs_version: version} do
+    test "does not return stations from other organizations", %{
+      organization: org,
+      gtfs_version: version
+    } do
       # Create station for this org
       _station = stop_fixture(org.id, version.id, %{stop_id: "STATION1", parent_station_id: nil})
 
       # Create another org with its own station
       other_org = organization_fixture()
       other_version = gtfs_version_fixture(other_org.id)
-      _other_station = stop_fixture(other_org.id, other_version.id, %{stop_id: "STATION2", parent_station_id: nil})
+
+      _other_station =
+        stop_fixture(other_org.id, other_version.id, %{
+          stop_id: "STATION2",
+          parent_station_id: nil
+        })
 
       stations = Gtfs.list_stations(org.id, version.id)
 
@@ -371,13 +467,18 @@ defmodule GtfsPlanner.GtfsTest do
       assert Enum.all?(stations, fn s -> s.organization_id == org.id end)
     end
 
-    test "does not return stations from other versions", %{organization: org, gtfs_version: version} do
+    test "does not return stations from other versions", %{
+      organization: org,
+      gtfs_version: version
+    } do
       # Create station for this version
       _station = stop_fixture(org.id, version.id, %{stop_id: "STATION1", parent_station_id: nil})
 
       # Create another version with its own station
       other_version = gtfs_version_fixture(org.id)
-      _other_station = stop_fixture(org.id, other_version.id, %{stop_id: "STATION2", parent_station_id: nil})
+
+      _other_station =
+        stop_fixture(org.id, other_version.id, %{stop_id: "STATION2", parent_station_id: nil})
 
       stations = Gtfs.list_stations(org.id, version.id)
 
@@ -386,9 +487,26 @@ defmodule GtfsPlanner.GtfsTest do
     end
 
     test "orders stations by stop_name ascending", %{organization: org, gtfs_version: version} do
-      station_c = stop_fixture(org.id, version.id, %{stop_id: "STATION_C", stop_name: "Charlie Station", parent_station_id: nil})
-      station_a = stop_fixture(org.id, version.id, %{stop_id: "STATION_A", stop_name: "Alpha Station", parent_station_id: nil})
-      station_b = stop_fixture(org.id, version.id, %{stop_id: "STATION_B", stop_name: "Bravo Station", parent_station_id: nil})
+      station_c =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "STATION_C",
+          stop_name: "Charlie Station",
+          parent_station_id: nil
+        })
+
+      station_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "STATION_A",
+          stop_name: "Alpha Station",
+          parent_station_id: nil
+        })
+
+      station_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "STATION_B",
+          stop_name: "Bravo Station",
+          parent_station_id: nil
+        })
 
       stations = Gtfs.list_stations(org.id, version.id)
 
@@ -407,7 +525,13 @@ defmodule GtfsPlanner.GtfsTest do
     test "returns child stops for a parent station", %{organization: org, gtfs_version: version} do
       level = level_fixture(org.id, version.id, %{level_id: "L1", level_index: 0.0})
       parent = stop_fixture(org.id, version.id, %{stop_id: "PARENT", location_type: 1})
-      child = stop_fixture(org.id, version.id, %{stop_id: "CHILD", parent_station_id: parent.id, level_id: level.id})
+
+      child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD",
+          parent_station_id: parent.id,
+          level_id: level.id
+        })
 
       result = Gtfs.list_child_stops_for_parent(org.id, version.id, parent.id)
 
@@ -424,11 +548,32 @@ defmodule GtfsPlanner.GtfsTest do
       %{organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "returns levels with stop counts for a station", %{organization: org, gtfs_version: version} do
-      level = level_fixture(org.id, version.id, %{level_id: "L1", level_index: 0.0, level_name: "Ground"})
+    test "returns levels with stop counts for a station", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L1",
+          level_index: 0.0,
+          level_name: "Ground"
+        })
+
       parent = stop_fixture(org.id, version.id, %{stop_id: "PARENT", location_type: 1})
-      _child1 = stop_fixture(org.id, version.id, %{stop_id: "C1", parent_station_id: parent.id, level_id: level.id})
-      _child2 = stop_fixture(org.id, version.id, %{stop_id: "C2", parent_station_id: parent.id, level_id: level.id})
+
+      _child1 =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "C1",
+          parent_station_id: parent.id,
+          level_id: level.id
+        })
+
+      _child2 =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "C2",
+          parent_station_id: parent.id,
+          level_id: level.id
+        })
 
       result = Gtfs.list_levels_for_station(org.id, version.id, parent.id)
 
@@ -445,11 +590,19 @@ defmodule GtfsPlanner.GtfsTest do
       %{organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "returns pathways for child stops of a station", %{organization: org, gtfs_version: version} do
+    test "returns pathways for child stops of a station", %{
+      organization: org,
+      gtfs_version: version
+    } do
       parent = stop_fixture(org.id, version.id, %{stop_id: "PARENT", location_type: 1})
       child1 = stop_fixture(org.id, version.id, %{stop_id: "C1", parent_station_id: parent.id})
       child2 = stop_fixture(org.id, version.id, %{stop_id: "C2", parent_station_id: parent.id})
-      pathway = pathway_fixture(org.id, version.id, child1.id, child2.id, %{pathway_id: "P1", pathway_mode: 1})
+
+      pathway =
+        pathway_fixture(org.id, version.id, child1.id, child2.id, %{
+          pathway_id: "P1",
+          pathway_mode: 1
+        })
 
       result = Gtfs.list_pathways_for_station(org.id, version.id, parent.id)
 

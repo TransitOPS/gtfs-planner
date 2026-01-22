@@ -51,17 +51,20 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
            |> push_navigate(to: "/gtfs/#{gtfs_version_id}/stops")}
 
         stop ->
-          child_stops = Gtfs.list_child_stops_for_parent(organization_id, gtfs_version_id, stop.id)
+          child_stops =
+            Gtfs.list_child_stops_for_parent(organization_id, gtfs_version_id, stop.id)
+
           levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, stop.id)
           pathways = Gtfs.list_pathways_for_station(organization_id, gtfs_version_id, stop.id)
 
           # Group child stops by level
-          child_stops_by_level = Enum.group_by(child_stops, fn s ->
-            case s.level do
-              nil -> "No Level"
-              level -> level.level_name || level.level_id
-            end
-          end)
+          child_stops_by_level =
+            Enum.group_by(child_stops, fn s ->
+              case s.level do
+                nil -> "No Level"
+                level -> level.level_name || level.level_id
+              end
+            end)
 
           {:noreply,
            socket
@@ -90,13 +93,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         case socket.assigns[:latest_gtfs_version] do
           {:ok, version} -> to_string(version.id)
           {:error, :no_versions} -> nil
-          nil -> current_version_id  # Already on a valid route
+          # Already on a valid route
+          nil -> current_version_id
         end
       end
 
     # Only navigate if switching to a different version
     if version_to_use && version_to_use != current_version_id do
-      path = if stop_id, do: "/gtfs/#{version_to_use}/stops/#{stop_id}", else: "/gtfs/#{version_to_use}/stops"
+      path =
+        if stop_id,
+          do: "/gtfs/#{version_to_use}/stops/#{stop_id}",
+          else: "/gtfs/#{version_to_use}/stops"
+
       {:noreply, push_navigate(socket, to: path)}
     else
       # Already on correct version, do nothing
@@ -112,7 +120,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
 
     # Navigate to new version
-    path = if stop_id, do: "/gtfs/#{version_id}/stops/#{stop_id}", else: "/gtfs/#{version_id}/stops"
+    path =
+      if stop_id, do: "/gtfs/#{version_id}/stops/#{stop_id}", else: "/gtfs/#{version_id}/stops"
+
     {:noreply, push_navigate(socket, to: path)}
   end
 
@@ -145,6 +155,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           {@stop.stop_name || @stop_id}
           <:subtitle>Station ID: {@stop_id}</:subtitle>
           <:actions>
+            <%= if @stop.location_type == 1 do %>
+              <.link
+                navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop_id}/diagram"}
+                class="btn btn-primary btn-sm"
+              >
+                Open Diagram Editor
+              </.link>
+            <% end %>
             <.link navigate={"/gtfs/#{@current_gtfs_version.id}/stops"} class="btn btn-ghost btn-sm">
               Back to Stations
             </.link>
@@ -223,7 +241,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                           <span class="font-medium">{stop.stop_name || stop.stop_id}</span>
                           <span class="text-sm text-base-content/60 ml-2">{stop.stop_id}</span>
                         </div>
-                        <span class="badge badge-outline">{Stop.location_type_label(stop.location_type)}</span>
+                        <span class="badge badge-outline">
+                          {Stop.location_type_label(stop.location_type)}
+                        </span>
                       </li>
                     <% end %>
                   </ul>
@@ -289,8 +309,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                       <td>{pathway.pathway_id}</td>
                       <td>{pathway.from_stop.stop_name || pathway.from_stop.stop_id}</td>
                       <td>{pathway.to_stop.stop_name || pathway.to_stop.stop_id}</td>
-                      <td><span class="badge badge-outline">{Pathway.mode_label(pathway.pathway_mode)}</span></td>
-                      <td>{if pathway.traversal_time, do: "#{pathway.traversal_time}s", else: ""}</td>
+                      <td>
+                        <span class="badge badge-outline">
+                          {Pathway.mode_label(pathway.pathway_mode)}
+                        </span>
+                      </td>
+                      <td>
+                        {if pathway.traversal_time, do: "#{pathway.traversal_time}s", else: ""}
+                      </td>
                     </tr>
                   <% end %>
                 </tbody>

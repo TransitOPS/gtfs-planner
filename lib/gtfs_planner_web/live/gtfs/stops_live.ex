@@ -75,7 +75,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
           case socket.assigns[:latest_gtfs_version] do
             {:ok, version} -> to_string(version.id)
             {:error, :no_versions} -> nil
-            nil -> current_version_id  # Already on a valid route
+            # Already on a valid route
+            nil -> current_version_id
           end
         end
 
@@ -141,10 +142,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
           No stations found
         </div>
 
-        <div :if={not @stations_empty?} class="mt-8 bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+        <div
+          :if={not @stations_empty?}
+          class="mt-8 bg-base-100 border border-base-300 rounded-lg overflow-hidden"
+        >
           <.table id="stations" rows={@streams.stations}>
             <:col :let={{_id, station}} label="Station ID">
-              <.link navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{station.stop_id}"} class="link link-primary">
+              <.link
+                navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{station.stop_id}"}
+                class="link link-primary"
+              >
                 {station.stop_id}
               </.link>
             </:col>

@@ -51,7 +51,8 @@ defmodule GtfsPlannerWeb.AssignOrganization do
         current_user = socket.assigns[:current_user]
 
         # Check if user is deactivated in this organization
-        if current_user && Organizations.user_deactivated_in_organization?(current_user.id, organization_id) do
+        if current_user &&
+             Organizations.user_deactivated_in_organization?(current_user.id, organization_id) do
           # Delete session token to force re-authentication
           if user_token = socket.private[:connect_params]["user_token"] do
             GtfsPlanner.Accounts.delete_session_token(user_token)

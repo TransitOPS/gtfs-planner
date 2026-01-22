@@ -9,6 +9,7 @@ defmodule GtfsPlanner.Gtfs.Level do
           level_id: String.t(),
           level_index: float(),
           level_name: String.t() | nil,
+          diagram_filename: String.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -20,9 +21,11 @@ defmodule GtfsPlanner.Gtfs.Level do
     field :level_id, :string
     field :level_index, :float
     field :level_name, :string
+    field :diagram_filename, :string
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
       foreign_key: :organization_id
+
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
 
     timestamps(type: :utc_datetime_usec)
@@ -31,9 +34,18 @@ defmodule GtfsPlanner.Gtfs.Level do
   @doc "Creates a changeset for a level."
   def changeset(level, attrs) do
     level
-    |> cast(attrs, [:level_id, :level_index, :level_name, :organization_id, :gtfs_version_id])
+    |> cast(attrs, [
+      :level_id,
+      :level_index,
+      :level_name,
+      :diagram_filename,
+      :organization_id,
+      :gtfs_version_id
+    ])
     |> validate_required([:level_id, :level_index, :organization_id, :gtfs_version_id])
-    |> unique_constraint([:organization_id, :gtfs_version_id, :level_id], name: :levels_organization_id_gtfs_version_id_level_id_index)
+    |> unique_constraint([:organization_id, :gtfs_version_id, :level_id],
+      name: :levels_organization_id_gtfs_version_id_level_id_index
+    )
     |> foreign_key_constraint(:organization_id)
     |> foreign_key_constraint(:gtfs_version_id)
   end
