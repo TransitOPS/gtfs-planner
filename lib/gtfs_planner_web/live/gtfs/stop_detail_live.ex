@@ -6,6 +6,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.{Stop, Pathway}
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
@@ -49,10 +51,26 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
            |> push_navigate(to: "/gtfs/#{gtfs_version_id}/stops")}
 
         stop ->
+          child_stops = Gtfs.list_child_stops_for_parent(organization_id, gtfs_version_id, stop.id)
+          levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, stop.id)
+          pathways = Gtfs.list_pathways_for_station(organization_id, gtfs_version_id, stop.id)
+
+          # Group child stops by level
+          child_stops_by_level = Enum.group_by(child_stops, fn s ->
+            case s.level do
+              nil -> "No Level"
+              level -> level.level_name || level.level_id
+            end
+          end)
+
           {:noreply,
            socket
            |> assign(:stop_id, stop_id)
-           |> assign(:stop, stop)}
+           |> assign(:stop, stop)
+           |> assign(:child_stops, child_stops)
+           |> assign(:child_stops_by_level, child_stops_by_level)
+           |> assign(:levels, levels)
+           |> assign(:pathways, pathways)}
       end
     end
   end
@@ -182,6 +200,103 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
               <p class="mt-1 text-base">{@stop.platform_code || ""}</p>
             </div>
           </div>
+        </div>
+
+        <div class="mt-8">
+          <h2 class="text-lg font-semibold mb-4">Child Stops</h2>
+          <%= if @child_stops == [] do %>
+            <div class="bg-base-100 border border-base-300 rounded-lg p-6 text-center text-base-content/60">
+              No child stops
+            </div>
+          <% else %>
+            <div class="space-y-4">
+              <%= for {level_name, stops} <- @child_stops_by_level do %>
+                <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+                  <div class="bg-base-200 px-4 py-2 font-medium flex justify-between">
+                    <span>{level_name}</span>
+                    <span class="badge badge-ghost">{length(stops)}</span>
+                  </div>
+                  <ul class="divide-y divide-base-300">
+                    <%= for stop <- stops do %>
+                      <li class="px-4 py-3 flex justify-between">
+                        <div>
+                          <span class="font-medium">{stop.stop_name || stop.stop_id}</span>
+                          <span class="text-sm text-base-content/60 ml-2">{stop.stop_id}</span>
+                        </div>
+                        <span class="badge badge-outline">{Stop.location_type_label(stop.location_type)}</span>
+                      </li>
+                    <% end %>
+                  </ul>
+                </div>
+              <% end %>
+            </div>
+          <% end %>
+        </div>
+
+        <div class="mt-8">
+          <h2 class="text-lg font-semibold mb-4">Levels</h2>
+          <%= if @levels == [] do %>
+            <div class="bg-base-100 border border-base-300 rounded-lg p-6 text-center text-base-content/60">
+              No levels
+            </div>
+          <% else %>
+            <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Level ID</th>
+                    <th>Name</th>
+                    <th>Index</th>
+                    <th>Stops</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <%= for %{level: level, stop_count: count} <- @levels do %>
+                    <tr>
+                      <td>{level.level_id}</td>
+                      <td>{level.level_name || ""}</td>
+                      <td>{level.level_index}</td>
+                      <td><span class="badge badge-ghost">{count}</span></td>
+                    </tr>
+                  <% end %>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </div>
+
+        <div class="mt-8">
+          <h2 class="text-lg font-semibold mb-4">Pathways</h2>
+          <%= if @pathways == [] do %>
+            <div class="bg-base-100 border border-base-300 rounded-lg p-6 text-center text-base-content/60">
+              No pathways
+            </div>
+          <% else %>
+            <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Pathway ID</th>
+                    <th>From</th>
+                    <th>To</th>
+                    <th>Mode</th>
+                    <th>Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <%= for pathway <- @pathways do %>
+                    <tr>
+                      <td>{pathway.pathway_id}</td>
+                      <td>{pathway.from_stop.stop_name || pathway.from_stop.stop_id}</td>
+                      <td>{pathway.to_stop.stop_name || pathway.to_stop.stop_id}</td>
+                      <td><span class="badge badge-outline">{Pathway.mode_label(pathway.pathway_mode)}</span></td>
+                      <td>{if pathway.traversal_time, do: "#{pathway.traversal_time}s", else: ""}</td>
+                    </tr>
+                  <% end %>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
         </div>
       </Layouts.app>
     <% end %>

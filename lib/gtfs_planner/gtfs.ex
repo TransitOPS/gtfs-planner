@@ -6,6 +6,7 @@ defmodule GtfsPlanner.Gtfs do
   import Ecto.Query, warn: false
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Level
+  alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
 
   require Logger
@@ -286,6 +287,98 @@ defmodule GtfsPlanner.Gtfs do
     Stop.changeset(stop, attrs)
   end
 
+  @doc """
+  Returns child stops for a parent station, preloading level association.
+
+  ## Examples
+
+      iex> list_child_stops_for_parent(org_id, version_id, parent_id)
+      [%Stop{level: %Level{}}, ...]
+  """
+  def list_child_stops_for_parent(organization_id, gtfs_version_id, parent_station_id) do
+    from(s in Stop,
+      where:
+        s.organization_id == ^organization_id and
+          s.gtfs_version_id == ^gtfs_version_id and
+          s.parent_station_id == ^parent_station_id,
+      order_by: [asc: s.stop_name],
+      preload: [:level]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Returns levels used by child stops of a station.
+
+  ## Examples
+
+      iex> list_levels_for_station(org_id, version_id, parent_id)
+      [%{level: %Level{}, stop_count: 3}, ...]
+  """
+  def list_levels_for_station(organization_id, gtfs_version_id, parent_station_id) do
+    from(s in Stop,
+      where:
+        s.organization_id == ^organization_id and
+          s.gtfs_version_id == ^gtfs_version_id and
+          s.parent_station_id == ^parent_station_id and
+          not is_nil(s.level_id),
+      join: l in Level,
+      on: l.id == s.level_id,
+      group_by: [l.id, l.level_id, l.level_name, l.level_index],
+      select: %{
+        level: l,
+        stop_count: count(s.id)
+      },
+      order_by: [asc: l.level_index]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Returns pathways where from_stop or to_stop is a child of the given station.
+
+  ## Examples
+
+      iex> list_pathways_for_station(org_id, version_id, parent_id)
+      [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
+  """
+  def list_pathways_for_station(organization_id, gtfs_version_id, parent_station_id) do
+    child_stop_ids =
+      from(s in Stop,
+        where:
+          s.organization_id == ^organization_id and
+            s.gtfs_version_id == ^gtfs_version_id and
+            s.parent_station_id == ^parent_station_id,
+        select: s.id
+      )
+
+    from(p in Pathway,
+      where:
+        p.organization_id == ^organization_id and
+          p.gtfs_version_id == ^gtfs_version_id and
+          (p.from_stop_id in subquery(child_stop_ids) or
+             p.to_stop_id in subquery(child_stop_ids)),
+      order_by: [asc: p.pathway_id],
+      preload: [:from_stop, :to_stop]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Creates a pathway.
+
+  ## Examples
+
+      iex> create_pathway(%{pathway_id: "P1", pathway_mode: 1, ...})
+      {:ok, %Pathway{}}
+  """
+  def create_pathway(attrs \\ %{}) do
+    %Pathway{}
+    |> Pathway.changeset(attrs)
+    |> Repo.insert()
+    |> broadcast([:pathways, :created])
+  end
+
   # Private helper functions
 
   defp broadcast({:ok, result}, event_topic) do
@@ -293,13 +386,18 @@ defmodule GtfsPlanner.Gtfs do
       case event_topic do
         [:levels, _] ->
           Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "levels", {event_topic, result})
+
         [:stops, _] ->
           Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "stops", {event_topic, result})
+
+        [:pathways, _] ->
+          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "pathways", {event_topic, result})
       end
 
     case broadcast_result do
       :ok ->
         :ok
+
       {:error, reason} ->
         Logger.error("Failed to broadcast #{inspect(event_topic)} event: #{inspect(reason)}")
     end

@@ -396,4 +396,67 @@ defmodule GtfsPlanner.GtfsTest do
       assert Enum.map(stations, & &1.id) == [station_a.id, station_b.id, station_c.id]
     end
   end
+
+  describe "list_child_stops_for_parent/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "returns child stops for a parent station", %{organization: org, gtfs_version: version} do
+      level = level_fixture(org.id, version.id, %{level_id: "L1", level_index: 0.0})
+      parent = stop_fixture(org.id, version.id, %{stop_id: "PARENT", location_type: 1})
+      child = stop_fixture(org.id, version.id, %{stop_id: "CHILD", parent_station_id: parent.id, level_id: level.id})
+
+      result = Gtfs.list_child_stops_for_parent(org.id, version.id, parent.id)
+
+      assert length(result) == 1
+      assert hd(result).id == child.id
+      assert hd(result).level.id == level.id
+    end
+  end
+
+  describe "list_levels_for_station/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "returns levels with stop counts for a station", %{organization: org, gtfs_version: version} do
+      level = level_fixture(org.id, version.id, %{level_id: "L1", level_index: 0.0, level_name: "Ground"})
+      parent = stop_fixture(org.id, version.id, %{stop_id: "PARENT", location_type: 1})
+      _child1 = stop_fixture(org.id, version.id, %{stop_id: "C1", parent_station_id: parent.id, level_id: level.id})
+      _child2 = stop_fixture(org.id, version.id, %{stop_id: "C2", parent_station_id: parent.id, level_id: level.id})
+
+      result = Gtfs.list_levels_for_station(org.id, version.id, parent.id)
+
+      assert length(result) == 1
+      assert hd(result).level.id == level.id
+      assert hd(result).stop_count == 2
+    end
+  end
+
+  describe "list_pathways_for_station/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "returns pathways for child stops of a station", %{organization: org, gtfs_version: version} do
+      parent = stop_fixture(org.id, version.id, %{stop_id: "PARENT", location_type: 1})
+      child1 = stop_fixture(org.id, version.id, %{stop_id: "C1", parent_station_id: parent.id})
+      child2 = stop_fixture(org.id, version.id, %{stop_id: "C2", parent_station_id: parent.id})
+      pathway = pathway_fixture(org.id, version.id, child1.id, child2.id, %{pathway_id: "P1", pathway_mode: 1})
+
+      result = Gtfs.list_pathways_for_station(org.id, version.id, parent.id)
+
+      assert length(result) == 1
+      assert hd(result).id == pathway.id
+      assert hd(result).from_stop.id == child1.id
+      assert hd(result).to_stop.id == child2.id
+    end
+  end
 end
