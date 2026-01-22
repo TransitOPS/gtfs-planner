@@ -59,4 +59,16 @@ defmodule GtfsPlanner.Gtfs.Stop do
     |> foreign_key_constraint(:parent_station_id)
     |> foreign_key_constraint(:level_id)
   end
+
+  @doc "Returns human-readable label for location_type."
+  def location_type_label(location_type) do
+    case location_type do
+      0 -> "Stop/Platform"
+      1 -> "Station"
+      2 -> "Entrance/Exit"
+      3 -> "Generic Node"
+      4 -> "Boarding Area"
+      _ -> "Unknown"
+    end
+  end
 end
