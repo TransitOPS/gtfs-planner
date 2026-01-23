@@ -105,7 +105,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   def diagram_canvas(assigns) do
     ~H"""
-    <div class="mt-6 relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-video">
+    <div class="relative bg-base-200 border border-base-300 rounded-lg overflow-hidden">
       <%= if @active_level && @active_level.diagram_filename do %>
         <svg
           id="diagram-canvas"
@@ -113,7 +113,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           phx-update="ignore"
           viewBox="0 0 100 100"
           preserveAspectRatio="xMidYMid meet"
-          class="w-full h-full cursor-crosshair"
+          class="w-full block cursor-crosshair"
         >
           <image
             href={"/uploads/diagrams/#{@station.stop_id}/#{@active_level.diagram_filename}"}
@@ -121,7 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             y="0"
             width="100"
             height="100"
-            preserveAspectRatio="xMidYMid meet"
+            preserveAspectRatio="xMidYMid slice"
           />
         </svg>
         <.diagram_overlay

@@ -10,14 +10,14 @@ defmodule GtfsPlannerWeb.Navigation do
   import GtfsPlannerWeb.UserAuth, only: [is_administrator?: 1]
 
   @doc """
-  Renders a role-aware top navigation component using Daisy UI tabs with border style.
+  Renders a role-aware top navigation component using left-aligned pill-style links.
 
   ## Attributes
 
     * `:current_user` - The currently authenticated user
     * `:current_organization` - The user's current organization context
     * `:user_roles` - List of role strings for the current user in the current organization
-    * `:current_path` - The current URL path for highlighting active tab
+    * `:current_path` - The current URL path for highlighting active pill
 
   ## Examples
 
@@ -35,12 +35,11 @@ defmodule GtfsPlannerWeb.Navigation do
 
   def top_nav(assigns) do
     ~H"""
-    <nav role="tablist" class="tabs tabs-border">
+    <nav role="navigation" aria-label="Main navigation" class="flex items-center gap-2">
       <%= if is_administrator?(@current_user) do %>
         <.link
           navigate="/admin/organizations"
-          role="tab"
-          class={["tab", active_tab?(@current_path, "/admin/organizations") && "tab-active"]}
+          class={pill_class(active_tab?(@current_path, "/admin/organizations"))}
         >
           Organizations
         </.link>
@@ -49,51 +48,62 @@ defmodule GtfsPlannerWeb.Navigation do
       <%= if has_role?(@user_roles, :pathways_studio_admin) && @current_organization do %>
         <.link
           navigate="/admin/users"
-          role="tab"
-          class={["tab", active_tab?(@current_path, "/admin/users") && "tab-active"]}
+          class={pill_class(active_tab?(@current_path, "/admin/users"))}
         >
-          <.icon name="hero-user-group" class="w-4 h-4 mr-1" /> Users
+          <.icon name="hero-user-group" class="w-4 h-4" /> Users
         </.link>
       <% end %>
 
       <%= if (has_role?(@user_roles, :pathways_studio_editor) || has_role?(@user_roles, :pathways_studio_viewer)) && @current_organization do %>
         <.link
           navigate="/gtfs/stops"
-          role="tab"
-          class={["tab", gtfs_tab_active?(@current_path, "stops") && "tab-active"]}
+          class={pill_class(gtfs_tab_active?(@current_path, "stops"))}
         >
-          <.icon name="hero-map-pin" class="w-4 h-4 mr-1" /> Stations
+          <.icon name="hero-map-pin" class="w-4 h-4" /> Stations
         </.link>
       <% end %>
 
       <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization do %>
         <.link
           navigate="/gtfs/import"
-          role="tab"
-          class={["tab", gtfs_tab_active?(@current_path, "import") && "tab-active"]}
+          class={pill_class(gtfs_tab_active?(@current_path, "import"))}
         >
-          <.icon name="hero-arrow-down-tray" class="w-4 h-4 mr-1" /> Import
+          <.icon name="hero-arrow-down-tray" class="w-4 h-4" /> Import
         </.link>
       <% end %>
 
       <%= if (has_role?(@user_roles, :pathways_studio_editor) || has_role?(@user_roles, :pathways_studio_viewer)) && @current_organization do %>
         <.link
           navigate="/gtfs/export"
-          role="tab"
-          class={["tab", gtfs_tab_active?(@current_path, "export") && "tab-active"]}
+          class={pill_class(gtfs_tab_active?(@current_path, "export"))}
         >
-          <.icon name="hero-arrow-up-tray" class="w-4 h-4 mr-1" /> Export
+          <.icon name="hero-arrow-up-tray" class="w-4 h-4" /> Export
         </.link>
         <.link
           navigate="/gtfs/validate"
-          role="tab"
-          class={["tab", gtfs_tab_active?(@current_path, "validate") && "tab-active"]}
+          class={pill_class(gtfs_tab_active?(@current_path, "validate"))}
         >
-          <.icon name="hero-shield-check" class="w-4 h-4 mr-1" /> Validate
+          <.icon name="hero-shield-check" class="w-4 h-4" /> Validate
         </.link>
       <% end %>
     </nav>
     """
+  end
+
+  # Returns pill classes based on active state
+  # Uses literal class strings for Tailwind JIT compatibility
+  defp pill_class(is_active) do
+    base =
+      "inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-base font-medium transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-600"
+
+    state =
+      if is_active do
+        "bg-[#009966] text-white hover:bg-[#008855]"
+      else
+        "bg-emerald-50 text-gray-700 hover:bg-emerald-100 hover:text-emerald-700"
+      end
+
+    [base, state]
   end
 
   defp active_tab?(current_path, tab_path) do

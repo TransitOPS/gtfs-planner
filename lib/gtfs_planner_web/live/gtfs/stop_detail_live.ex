@@ -150,31 +150,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         current_organization={@current_organization}
         user_roles={@user_roles}
         current_path={@current_path}
+        current_gtfs_version={assigns[:current_gtfs_version]}
+        available_versions={assigns[:available_versions] || []}
       >
-        <.header>
-          {@stop.stop_name || @stop_id}
-          <:subtitle>Station ID: {@stop_id}</:subtitle>
-          <:actions>
-            <.link
-              navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop_id}/diagram"}
-              class="btn btn-ghost btn-sm"
-            >
-              Manage station layout
-            </.link>
-            <.link navigate={"/gtfs/#{@current_gtfs_version.id}/stops"} class="btn btn-ghost btn-sm">
-              Back to Stations
-            </.link>
-            <%= if assigns[:current_gtfs_version] && assigns[:available_versions] do %>
-              <.gtfs_version_switcher
-                current_version={@current_gtfs_version}
-                versions={@available_versions}
-                organization_id={@current_organization.id}
-              />
-            <% end %>
-          </:actions>
-        </.header>
+        <:sub_header>
+          <.station_sub_nav
+            station={@stop}
+            gtfs_version_id={@current_gtfs_version.id}
+            active_tab={:details}
+          />
+        </:sub_header>
 
-        <div class="mt-8 bg-base-100 border border-base-300 rounded-lg p-6">
+        <div class="bg-base-100 border border-base-300 rounded-lg p-6">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <h3 class="text-sm font-medium text-base-content/60">Station ID</h3>

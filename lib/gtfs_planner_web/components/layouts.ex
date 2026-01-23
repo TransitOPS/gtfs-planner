@@ -45,7 +45,16 @@ defmodule GtfsPlannerWeb.Layouts do
     default: "/",
     doc: "the current URL path for tab highlighting"
 
+  attr :current_gtfs_version, :map,
+    default: nil,
+    doc: "the current GTFS version (for GTFS pages)"
+
+  attr :available_versions, :list,
+    default: [],
+    doc: "list of {id, name} tuples for GTFS version dropdown"
+
   slot :inner_block, required: true
+  slot :sub_header, doc: "optional full-width sub-header rendered between header and main content"
 
   def app(assigns) do
     ~H"""
@@ -55,8 +64,8 @@ defmodule GtfsPlannerWeb.Layouts do
     >
       Skip to main content
     </a>
-    <header class="navbar bg-base-100 px-4 sm:px-6 lg:px-8 pb-0 border-b border-base-300 items-end">
-      <div class="flex-none pb-3">
+    <header class="navbar bg-base-100 px-4 sm:px-6 lg:px-8 py-3 border-b border-base-300 items-center">
+      <div class="flex-none">
         <.link href={~p"/"} class="flex items-center gap-2" aria-label="GTFS Planner - Go to homepage">
           <div class="bg-emerald-600 p-2 rounded-lg">
             <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
@@ -66,7 +75,7 @@ defmodule GtfsPlannerWeb.Layouts do
       </div>
 
       <%= if @current_user do %>
-        <div class="flex-1 flex justify-center">
+        <div class="flex-1 flex justify-start items-center pl-8">
           <Navigation.top_nav
             current_user={@current_user}
             current_organization={assigns[:current_organization]}
@@ -74,20 +83,34 @@ defmodule GtfsPlannerWeb.Layouts do
             current_path={@current_path}
           />
         </div>
-        <div class="flex-none pb-3">
+        <div class="flex-none flex items-center gap-4">
+          <%= if @current_gtfs_version && @available_versions != [] do %>
+            <.gtfs_version_switcher
+              current_version={@current_gtfs_version}
+              versions={@available_versions}
+              organization_id={@current_organization.id}
+            />
+          <% end %>
           <.link
             href={~p"/users/log_out"}
             method="delete"
-            class="link link-hover"
+            class="inline-flex items-center gap-1.5 text-gray-600 hover:text-gray-900 transition-colors"
             aria-label="Log out of your account"
           >
-            Log out
+            <.icon name="hero-arrow-right-on-rectangle" class="w-5 h-5" />
+            <span class="text-sm font-medium">Log out</span>
           </.link>
         </div>
       <% else %>
         <div class="flex-1"></div>
       <% end %>
     </header>
+
+    <%= if @sub_header != [] do %>
+      <div class="bg-base-100 border-b border-base-300">
+        {render_slot(@sub_header)}
+      </div>
+    <% end %>
 
     <%= if @current_user do %>
       <main id="main-content" class="px-4 py-8 sm:px-6 lg:px-8">
