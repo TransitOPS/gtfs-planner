@@ -166,6 +166,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :name, :any
   attr :label, :string, default: nil
   attr :value, :any
+  attr :help, :string, default: nil, doc: "help text displayed below the input"
 
   attr :type, :string,
     default: "text",
@@ -238,6 +239,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   def input(%{type: "select"} = assigns) do
+    assigns = assign_new(assigns, :help_id, fn -> if assigns.help, do: "#{assigns.id}-help" end)
+
     ~H"""
     <div class="fieldset mb-2">
       <label>
@@ -250,18 +253,22 @@ defmodule GtfsPlannerWeb.CoreComponents do
             @errors != [] && (@error_class || "select-error")
           ]}
           multiple={@multiple}
+          aria-describedby={@help_id}
           {@rest}
         >
           <option :if={@prompt} value="">{@prompt}</option>
           {Phoenix.HTML.Form.options_for_select(@options, @value)}
         </select>
       </label>
+      <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
       <.error :for={msg <- @errors}>{msg}</.error>
     </div>
     """
   end
 
   def input(%{type: "textarea"} = assigns) do
+    assigns = assign_new(assigns, :help_id, fn -> if assigns.help, do: "#{assigns.id}-help" end)
+
     ~H"""
     <div class="fieldset mb-2">
       <label>
@@ -273,9 +280,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
             @class || "w-full textarea textarea-lg",
             @errors != [] && (@error_class || "textarea-error")
           ]}
+          aria-describedby={@help_id}
           {@rest}
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
       </label>
+      <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
       <.error :for={msg <- @errors}>{msg}</.error>
     </div>
     """
@@ -283,6 +292,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   # All other inputs text, datetime-local, url, password, etc. are handled here...
   def input(assigns) do
+    # Generate a unique ID for aria-describedby when help text is present
+    assigns = assign_new(assigns, :help_id, fn -> if assigns.help, do: "#{assigns.id}-help" end)
+
     ~H"""
     <div class="fieldset mb-2">
       <label>
@@ -296,11 +308,68 @@ defmodule GtfsPlannerWeb.CoreComponents do
             @class || "w-full input input-lg",
             @errors != [] && (@error_class || "input-error")
           ]}
+          aria-describedby={@help_id}
           {@rest}
         />
       </label>
+      <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
       <.error :for={msg <- @errors}>{msg}</.error>
     </div>
+    """
+  end
+
+  @doc """
+  Renders a group of checkboxes for multi-select options.
+
+  ## Examples
+
+      <.checkbox_group
+        name="invite[roles][]"
+        label="Roles"
+        options={[{"Admin", "admin"}, {"Editor", "editor"}]}
+        selected={@selected_roles}
+        required
+      />
+  """
+  attr :name, :string, required: true, doc: "the input name for the checkbox group"
+  attr :label, :string, required: true, doc: "the label for the checkbox group"
+  attr :options, :list, required: true, doc: "list of {label, value} tuples"
+  attr :selected, :list, default: [], doc: "list of currently selected values"
+  attr :required, :boolean, default: false, doc: "whether at least one option must be selected"
+  attr :error, :string, default: nil, doc: "error message to display"
+  attr :help, :string, default: nil, doc: "help text displayed below the checkboxes"
+
+  def checkbox_group(assigns) do
+    ~H"""
+    <fieldset class="fieldset mb-2" aria-describedby={@error && "#{@name}-error"}>
+      <legend class="fieldset-legend text-base">
+        {@label}
+        <span :if={@required} class="text-error">*</span>
+      </legend>
+      <div class="space-y-2 mt-2" role="group" aria-label={@label}>
+        <label :for={{label, value} <- @options} class="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            name={@name}
+            value={value}
+            checked={value in @selected}
+            class="checkbox checkbox-sm"
+          />
+          <span class="label">{label}</span>
+        </label>
+      </div>
+      <p :if={@help} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
+      <p
+        :if={@error}
+        id={"#{@name}-error"}
+        role="alert"
+        aria-live="polite"
+        class="mt-1.5 flex gap-2 items-center text-sm text-error"
+      >
+        <.icon name="hero-exclamation-circle" class="size-5" />
+        {@error}
+      </p>
+    </fieldset>
     """
   end
 
@@ -509,6 +578,75 @@ defmodule GtfsPlannerWeb.CoreComponents do
         {render_slot(@actions)}
       </div>
     </.form>
+    """
+  end
+
+  @doc """
+  Renders a slide-in drawer panel from the right side of the screen.
+
+  The drawer provides a consistent slide-in-from-right behavior with an overlay
+  that can be clicked to close. It uses CSS transitions for smooth animations
+  and integrates reliably with LiveView's server-driven state model.
+
+  ## Examples
+
+      <.drawer id="user-form" open={@show_form} on_close="close_form" title="Edit User">
+        <.simple_form for={@form} phx-submit="save">
+          <.input field={@form[:name]} type="text" label="Name" />
+        </.simple_form>
+      </.drawer>
+
+  """
+  attr :id, :string, required: true
+  attr :open, :boolean, default: false
+  attr :on_close, :string, default: "close_drawer"
+  attr :title, :string, default: nil
+  attr :class, :string, default: nil
+  slot :inner_block, required: true
+
+  def drawer(assigns) do
+    ~H"""
+    <%!-- Overlay --%>
+    <div
+      class={[
+        "fixed inset-0 bg-black/30 z-40 transition-opacity duration-300",
+        @open && "opacity-100",
+        !@open && "opacity-0 pointer-events-none"
+      ]}
+      phx-click={@on_close}
+    />
+    <%!-- Drawer Panel --%>
+    <aside
+      id={@id}
+      class={[
+        "fixed top-0 right-0 h-full w-full max-w-[480px] min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 z-50 transition-transform duration-300",
+        @open && "translate-x-0",
+        !@open && "translate-x-full",
+        @class
+      ]}
+    >
+      <div class="flex flex-col h-full p-6">
+        <%!-- Header --%>
+        <header class="flex items-center justify-between mb-6">
+          <h2 :if={@title} class="text-lg font-semibold">
+            {@title}
+          </h2>
+          <div :if={!@title} class="flex-1" />
+          <button
+            type="button"
+            phx-click={@on_close}
+            class="btn btn-ghost btn-sm btn-circle"
+            aria-label={gettext("close")}
+          >
+            <.icon name="hero-x-mark" class="size-5" />
+          </button>
+        </header>
+        <%!-- Content --%>
+        <div class="flex-1 overflow-y-auto px-0.5 -mx-0.5">
+          {render_slot(@inner_block)}
+        </div>
+      </div>
+    </aside>
     """
   end
 
