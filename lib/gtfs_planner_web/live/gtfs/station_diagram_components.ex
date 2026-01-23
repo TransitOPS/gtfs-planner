@@ -209,10 +209,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             id={dom_id <> "-circle"}
             cx={stop.diagram_coordinate["x"]}
             cy={stop.diagram_coordinate["y"]}
-            r="1.5"
+            r="0.75"
             fill={if @active_point_id == stop.id, do: "#1e40af", else: "#06b6d4"}
             stroke="#fff"
-            stroke-width="0.3"
+            stroke-width="0.15"
           />
         <% end %>
       <% end %>
@@ -225,10 +225,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp pending_marker(assigns) do
     ~H"""
     <polygon
-      points={"#{@pending_xy.x},#{@pending_xy.y - 2} #{@pending_xy.x - 1.5},#{@pending_xy.y + 1} #{@pending_xy.x + 1.5},#{@pending_xy.y + 1}"}
+      points={"#{@pending_xy.x},#{@pending_xy.y - 1} #{@pending_xy.x - 0.75},#{@pending_xy.y + 0.5} #{@pending_xy.x + 0.75},#{@pending_xy.y + 0.5}"}
       fill="#f97316"
       stroke="#fff"
-      stroke-width="0.3"
+      stroke-width="0.15"
     />
     """
   end
