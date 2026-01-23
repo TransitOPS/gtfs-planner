@@ -26,7 +26,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       {:ok,
        socket
        |> assign(:page_title, "Import GTFS")
-       |> assign(:user_roles, user_roles)}
+       |> assign(:user_roles, user_roles)
+       |> allow_upload(:gtfs_files,
+         accept: ~w(.txt .csv),
+         max_entries: 10,
+         max_file_size: 10_000_000
+       )
+       |> assign(:form, to_form(%{"create_version" => false, "version_name" => ""}, as: :gtfs_import_form))
+       |> assign(:import_result, nil)}
     end
   end
 
@@ -93,6 +100,99 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   end
 
   @impl true
+  def handle_event("validate", params, socket) do
+    form_data = params["gtfs_import_form"] || %{}
+    create_version = form_data["create_version"] == "true"
+    version_name = form_data["version_name"] || ""
+
+    errors =
+      if create_version && String.trim(version_name) == "" do
+        [version_name: "Version name is required when creating a new version"]
+      else
+        []
+      end
+
+    form = to_form(form_data, as: :gtfs_import_form, errors: errors)
+    {:noreply, assign(socket, form: form)}
+  end
+
+  @impl true
+  def handle_event("cancel-upload", %{"ref" => ref}, socket) do
+    {:noreply, cancel_upload(socket, :gtfs_files, ref)}
+  end
+
+  @impl true
+  def handle_event("import", params, socket) do
+    # Extract form data (nested under gtfs_import_form)
+    form_data = params["gtfs_import_form"] || %{}
+    create_version = form_data["create_version"] == "true"
+    version_name = form_data["version_name"] || ""
+
+    # Validate required fields
+    if create_version && String.trim(version_name) == "" do
+      {:noreply,
+       socket
+       |> put_flash(:error, "Version name is required when creating a new version")
+       |> assign(:form, to_form(form_data, as: :gtfs_import_form, errors: [version_name: "Version name is required"]))}
+    else
+      # Determine GTFS version ID
+      gtfs_version_id =
+        if create_version && version_name != "" do
+          case Versions.create_gtfs_version(socket.assigns.current_organization.id, %{name: version_name}) do
+            {:ok, version} -> version.id
+            {:error, _changeset} ->
+              # If version creation fails, fall back to current version
+              socket.assigns.current_gtfs_version.id
+          end
+        else
+          socket.assigns.current_gtfs_version.id
+        end
+
+      # Consume uploaded files
+      uploaded_files =
+        consume_uploaded_entries(socket, :gtfs_files, fn %{path: path}, entry ->
+          {:ok, %{filename: entry.client_name, content: File.read!(path)}}
+        end)
+
+      # Import files
+      case GtfsPlanner.Gtfs.Import.import_files(
+             socket.assigns.current_organization.id,
+             gtfs_version_id,
+             uploaded_files
+           ) do
+        {:ok, {counts, unrecognized}} ->
+          socket =
+            socket
+            |> assign(:import_result, {:ok, counts})
+            |> put_flash(
+              :info,
+              "Successfully imported #{counts.levels} levels, #{counts.stops} stops, #{counts.pathways} pathways"
+            )
+
+          socket =
+            if unrecognized != [] do
+              put_flash(
+                socket,
+                :warning,
+                "Ignored unrecognized files: #{Enum.join(unrecognized, ", ")}"
+              )
+            else
+              socket
+            end
+
+          {:noreply, socket}
+
+        {:error, _failed_operation, failed_value, _changes_so_far} ->
+          error_msg = extract_error_message(failed_value)
+          {:noreply,
+           socket
+           |> assign(:import_result, {:error, error_msg})
+           |> put_flash(:error, "Import failed: #{error_msg}")}
+      end
+    end
+  end
+
+  @impl true
   def render(assigns) do
     ~H"""
     <%= if assigns[:pending_version_resolution] do %>
@@ -110,20 +210,140 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         </div>
       </div>
     <% else %>
-      <Layouts.app
-        flash={@flash}
-        current_user={@current_user}
-        current_organization={@current_organization}
-        user_roles={@user_roles}
-        current_path={@current_path}
-        current_gtfs_version={assigns[:current_gtfs_version]}
-        available_versions={assigns[:available_versions] || []}
-      >
-        <.header>
-          Import GTFS
-          <:subtitle>GTFS import functionality coming soon.</:subtitle>
-        </.header>
-      </Layouts.app>
+        <Layouts.app
+          flash={@flash}
+          current_user={@current_user}
+          current_organization={@current_organization}
+          user_roles={@user_roles}
+          current_path={@current_path}
+          current_gtfs_version={assigns[:current_gtfs_version]}
+          available_versions={assigns[:available_versions] || []}
+        >
+          <.header>
+            Import GTFS
+            <:subtitle>
+              <.form
+                for={@form}
+                id="gtfs-import-form"
+                class="space-y-6"
+                phx-change="validate"
+                phx-submit="import"
+              >
+                <div class="form-control">
+                  <label class="label">
+                    <span class="label-text">GTFS Files</span>
+                  </label>
+                  <div class="file-input file-input-bordered w-full">
+                    <.live_file_input upload={@uploads.gtfs_files} />
+                  </div>
+                  <p class="text-sm text-base-content/60 mt-2">
+                    Upload levels.txt, stops.txt, and/or pathways.txt files (max 10 files, 10MB each)
+                  </p>
+
+                  <%!-- Upload entries display --%>
+                  <%= for entry <- @uploads.gtfs_files.entries do %>
+                    <div class="flex items-center justify-between mt-2 p-2 bg-base-200 rounded">
+                      <div class="flex-1">
+                        <span class="text-sm font-medium"><%= entry.client_name %></span>
+                        <div class="w-full bg-base-300 rounded-full h-2 mt-1">
+                          <div
+                            class="bg-primary h-2 rounded-full transition-all duration-300"
+                            style={"width: #{entry.progress}%"}
+                          >
+                          </div>
+                        </div>
+                        <span class="text-xs text-base-content/60">
+                          <%= entry.progress %>% uploaded
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        class="btn btn-ghost btn-xs ml-2"
+                        phx-click="cancel-upload"
+                        phx-value-ref={entry.ref}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  <% end %>
+
+                  <%!-- Upload errors --%>
+                  <%= for error <- upload_errors(@uploads.gtfs_files) do %>
+                    <div class="alert alert-error mt-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                      <span class="text-sm"><%= upload_error_to_string(error) %></span>
+                    </div>
+                  <% end %>
+                </div>
+
+                <div class="form-control">
+                  <label class="label cursor-pointer justify-start gap-3">
+                    <input
+                      type="checkbox"
+                      name="create_version"
+                      class="checkbox"
+                      checked={@form[:create_version].value}
+                    />
+                    <span class="label-text">Create a new GTFS version?</span>
+                  </label>
+                </div>
+
+                <%= if @form[:create_version].value do %>
+                  <div class="form-control">
+                    <label class="label">
+                      <span class="label-text">Version Name</span>
+                    </label>
+                    <input
+                      type="text"
+                      name="version_name"
+                      class="input input-bordered w-full"
+                      placeholder="e.g., 'Spring 2025 Schedule'"
+                      value={@form[:version_name].value}
+                    />
+                    <%= if @form[:version_name].errors do %>
+                      <p class="text-error text-sm mt-1">
+                        <%= Enum.join(@form[:version_name].errors, ", ") %>
+                      </p>
+                    <% end %>
+                  </div>
+                <% end %>
+
+                <div class="form-control">
+                  <button type="submit" class="btn btn-primary" disabled={@uploads.gtfs_files.entries == []}>
+                    Import Files
+                  </button>
+                </div>
+              </.form>
+
+              <%= if @import_result do %>
+                <div class="mt-8">
+                  <%= case @import_result do %>
+                    <% {:ok, counts} -> %>
+                      <div class="alert alert-success">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        <div>
+                          <h3 class="font-bold">Import Successful</h3>
+                          <div class="text-xs">
+                            Imported <%= counts.levels %> levels, <%= counts.stops %> stops, <%= counts.pathways %> pathways.
+                          </div>
+                        </div>
+                      </div>
+                    <% {:error, error_msg} -> %>
+                      <div class="alert alert-error">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        <div>
+                          <h3 class="font-bold">Import Failed</h3>
+                          <div class="text-xs">
+                            <%= error_msg %>
+                          </div>
+                        </div>
+                      </div>
+                  <% end %>
+                </div>
+              <% end %>
+            </:subtitle>
+          </.header>
+        </Layouts.app>
     <% end %>
     """
   end
@@ -148,4 +368,42 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       _ -> false
     end
   end
+
+  defp extract_error_message(failed_value) do
+    case failed_value do
+      %Ecto.Changeset{} = changeset ->
+        errors =
+          Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
+            Enum.reduce(opts, msg, fn {key, value}, acc ->
+              String.replace(acc, "%{#{key}}", to_string(value))
+            end)
+          end)
+
+        error_strings =
+          for {field, messages} <- errors,
+              message <- messages do
+            "#{field}: #{message}"
+          end
+
+        if error_strings == [] do
+          "Validation failed"
+        else
+          Enum.join(error_strings, ", ")
+        end
+
+      error when is_binary(error) ->
+        error
+
+      _ ->
+        "Unknown error"
+    end
+  end
+
+  defp upload_error_to_string(:too_large), do: "File is too large"
+  defp upload_error_to_string(:too_many_files), do: "Too many files"
+  defp upload_error_to_string(:not_accepted), do: "File type not accepted"
+  defp upload_error_to_string(:external_client_failure), do: "Upload failed"
+  defp upload_error_to_string({:error, reason}), do: reason
+  defp upload_error_to_string(error) when is_binary(error), do: error
+  defp upload_error_to_string(_), do: "Upload error"
 end

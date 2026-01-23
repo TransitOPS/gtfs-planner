@@ -56,7 +56,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   """
   def import_files(organization_id, gtfs_version_id, files) do
     # Categorize files by filename (case-insensitive)
-    categorized = categorize_files(files)
+    {categorized, unrecognized_files} = categorize_files(files)
 
     # Build Ecto.Multi transaction processing levels → stops → pathways
     multi =
@@ -72,10 +72,10 @@ defmodule GtfsPlanner.Gtfs.Import do
         counts = %{
           levels: count_category(results, "level_"),
           stops: count_category(results, "stop_"),
-          pathways: count_category(results, "pathway_")
+          pathways: results[:pathways] || 0
         }
 
-        {:ok, counts}
+        {:ok, {counts, unrecognized_files}}
 
       {:error, failed_operation, failed_value, changes_so_far} ->
         {:error, failed_operation, failed_value, changes_so_far}
@@ -84,23 +84,27 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   # Categorizes files by filename into :levels, :stops, :pathways buckets
   defp categorize_files(files) do
-    Enum.reduce(files, %{levels: [], stops: [], pathways: []}, fn file, acc ->
-      case String.downcase(file.filename) do
-        "levels.txt" ->
-          Map.update!(acc, :levels, &[file | &1])
+    initial_acc = {%{levels: [], stops: [], pathways: []}, []}
 
-        "stops.txt" ->
-          Map.update!(acc, :stops, &[file | &1])
+    {categorized, unrecognized} =
+      Enum.reduce(files, initial_acc, fn file, {acc, unrecognized_acc} ->
+        case String.downcase(file.filename) do
+          "levels.txt" ->
+            {Map.update!(acc, :levels, &[file | &1]), unrecognized_acc}
 
-        "pathways.txt" ->
-          Map.update!(acc, :pathways, &[file | &1])
+          "stops.txt" ->
+            {Map.update!(acc, :stops, &[file | &1]), unrecognized_acc}
 
-        _ ->
-          # Ignore unrecognized files
-          acc
-      end
-    end)
-    |> Map.new(fn {key, files_list} -> {key, Enum.reverse(files_list)} end)
+          "pathways.txt" ->
+            {Map.update!(acc, :pathways, &[file | &1]), unrecognized_acc}
+
+          _ ->
+            {acc, [file.filename | unrecognized_acc]}
+        end
+      end)
+
+    categorized = Map.new(categorized, fn {key, files_list} -> {key, Enum.reverse(files_list)} end)
+    {categorized, Enum.reverse(unrecognized)}
   end
 
   # Adds level imports to Ecto.Multi
@@ -125,15 +129,35 @@ defmodule GtfsPlanner.Gtfs.Import do
     end)
   end
 
-  # Adds pathway imports to Ecto.Multi
+  # Adds pathway imports to Ecto.Multi using Multi.run to solve intra-transaction dependencies
   defp add_pathway_imports(multi, files, organization_id, gtfs_version_id) do
-    Enum.reduce(files, multi, fn file, multi_acc ->
-      operations = import_pathways_from_content(organization_id, gtfs_version_id, file.content)
+    if files == [] do
+      multi
+    else
+      Multi.run(multi, :pathways, fn repo, _changes ->
+        pathway_rows =
+          files
+          |> Enum.flat_map(&(&1.content |> parse_csv_content()))
 
-      Enum.reduce(operations, multi_acc, fn {:insert, name, changeset}, multi_inner ->
-        Multi.insert(multi_inner, name, changeset)
+        result =
+          Enum.reduce_while(pathway_rows, [], fn row_map, acc ->
+            changeset = pathway_row_to_changeset(row_map, organization_id, gtfs_version_id)
+
+            case repo.insert(changeset) do
+              {:ok, pathway} -> {:cont, [pathway | acc]}
+              {:error, failed_changeset} -> {:halt, {:error, failed_changeset}}
+            end
+          end)
+
+        case result do
+          {:error, failed_changeset} ->
+            {:error, failed_changeset}
+
+          inserted_pathways ->
+            {:ok, length(inserted_pathways)}
+        end
       end)
-    end)
+    end
   end
 
   # Counts successful operations for a category by operation name prefix
@@ -439,39 +463,6 @@ defmodule GtfsPlanner.Gtfs.Import do
     Gtfs.Stop.changeset(%Gtfs.Stop{}, attrs)
   end
 
-  @doc """
-  Imports pathways from CSV content and returns changeset tuples for Ecto.Multi.
-
-  Parses pathways.txt CSV content and creates changesets for each valid pathway.
-  Resolves stop references (from_stop_id, to_stop_id) to internal UUIDs.
-  Returns a list of `{:insert, name, changeset}` tuples that can be added
-  to an Ecto.Multi transaction.
-
-  ## Parameters
-
-    - `organization_id` - UUID of the organization
-    - `gtfs_version_id` - UUID of the GTFS version
-    - `content` - Binary CSV content with header row
-
-  ## Returns
-
-  List of `{:insert, name, changeset}` tuples for Ecto.Multi.
-
-  ## Examples
-
-      iex> content = "pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional\\nP1,S1,S2,1,1"
-      iex> import_pathways_from_content(org_id, version_id, content)
-      [{:insert, :pathway_0, %Ecto.Changeset{}}]
-  """
-  def import_pathways_from_content(organization_id, gtfs_version_id, content) do
-    content
-    |> parse_csv_content()
-    |> Stream.with_index()
-    |> Enum.map(fn {row_map, index} ->
-      changeset = pathway_row_to_changeset(row_map, organization_id, gtfs_version_id)
-      {:insert, :"pathway_#{index}", changeset}
-    end)
-  end
 
   # Converts a CSV row map to a Pathway changeset
   defp pathway_row_to_changeset(row_map, organization_id, gtfs_version_id) do
