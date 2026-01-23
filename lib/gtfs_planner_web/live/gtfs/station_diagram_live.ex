@@ -236,6 +236,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("canvas_click", %{"x" => x, "y" => y}, socket) do
+    IO.inspect({x, y}, label: "DEBUG: canvas_click received")
+    IO.inspect(socket.assigns.mode, label: "DEBUG: current mode")
+
     case socket.assigns.mode do
       :add ->
         form = to_form(%{"stop_id" => "", "stop_name" => "", "location_type" => "0"})
@@ -542,20 +545,45 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp handle_connect_click(socket, x, y) do
     child_stops = get_child_stops_with_coordinates(socket)
-    clicked_stop = find_stop_near_point(child_stops, x, y, 3.0)
+    IO.inspect(length(child_stops), label: "DEBUG: child_stops with coords count")
+
+    Enum.each(child_stops, fn stop ->
+      coord = stop.diagram_coordinate
+      coord_x = to_float(coord["x"])
+      coord_y = to_float(coord["y"])
+      distance = :math.sqrt((coord_x - x) * (coord_x - x) + (coord_y - y) * (coord_y - y))
+      IO.inspect({stop.stop_id, coord, {coord_x, coord_y}, {x, y}, distance}, label: "DEBUG: stop info")
+    end)
+
+    clicked_stop = find_stop_near_point(child_stops, x, y, 5.0)
+    IO.inspect(clicked_stop && clicked_stop.stop_id, label: "DEBUG: clicked_stop")
 
     case {socket.assigns.active_point_id, clicked_stop} do
       {nil, nil} ->
         {:noreply, socket}
 
       {nil, stop} ->
-        {:noreply, assign(socket, :active_point_id, stop.id)}
+        # Re-stream the stop to force UI re-render with new active_point_id
+        {:noreply,
+         socket
+         |> stream_insert(:child_stops, stop)
+         |> assign(:active_point_id, stop.id)}
 
       {_first_id, nil} ->
-        {:noreply, assign(socket, :active_point_id, nil)}
+        # Re-stream the previously selected stop to remove highlight
+        prev_stop = Gtfs.get_stop!(socket.assigns.active_point_id)
+
+        {:noreply,
+         socket
+         |> stream_insert(:child_stops, prev_stop)
+         |> assign(:active_point_id, nil)}
 
       {first_id, stop} when first_id == stop.id ->
-        {:noreply, assign(socket, :active_point_id, nil)}
+        # Clicking same stop deselects it - re-stream to update UI
+        {:noreply,
+         socket
+         |> stream_insert(:child_stops, stop)
+         |> assign(:active_point_id, nil)}
 
       {first_id, stop} ->
         create_pathway_between_stops(socket, first_id, stop.id)
@@ -577,11 +605,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp find_stop_near_point(stops, x, y, radius) do
     Enum.find(stops, fn stop ->
       coord = stop.diagram_coordinate
-      dx = coord["x"] - x
-      dy = coord["y"] - y
+      # Ensure floats for consistent arithmetic (JSONB may return integers)
+      coord_x = to_float(coord["x"])
+      coord_y = to_float(coord["y"])
+      dx = coord_x - x
+      dy = coord_y - y
       :math.sqrt(dx * dx + dy * dy) <= radius
     end)
   end
+
+  defp to_float(val) when is_float(val), do: val
+  defp to_float(val) when is_integer(val), do: val / 1
+  defp to_float(val) when is_binary(val), do: String.to_float(val)
+  defp to_float(nil), do: 0.0
 
   defp create_pathway_between_stops(socket, from_stop_id, to_stop_id) do
     organization_id = socket.assigns.current_organization.id
@@ -597,7 +633,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       from_stop_id: from_stop.id,
       to_stop_id: to_stop.id,
       pathway_mode: 1,
-      is_bidirectional: 1,
+      is_bidirectional: true,
       organization_id: organization_id,
       gtfs_version_id: gtfs_version_id
     }
@@ -609,10 +645,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> stream_insert(:pathways, pathway)
+         |> stream_insert(:child_stops, from_stop)  # Re-stream to remove highlight
          |> assign(:active_point_id, nil)
          |> assign(:pathway_error, nil)}
 
-      {:error, _changeset} ->
+      {:error, changeset} ->
+        IO.inspect(changeset, label: "DEBUG: pathway creation FAILED")
         {:noreply,
          socket
          |> assign(:active_point_id, nil)
