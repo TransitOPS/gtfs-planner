@@ -46,6 +46,7 @@ defmodule GtfsPlannerWeb.Layouts do
     doc: "the current URL path for tab highlighting"
 
   slot :inner_block, required: true
+  slot :sub_header, doc: "optional full-width sub-header rendered between header and main content"
 
   def app(assigns) do
     ~H"""
@@ -88,6 +89,12 @@ defmodule GtfsPlannerWeb.Layouts do
         <div class="flex-1"></div>
       <% end %>
     </header>
+
+    <%= if @sub_header != [] do %>
+      <div class="bg-base-100 border-b border-base-300">
+        {render_slot(@sub_header)}
+      </div>
+    <% end %>
 
     <%= if @current_user do %>
       <main id="main-content" class="px-4 py-8 sm:px-6 lg:px-8">

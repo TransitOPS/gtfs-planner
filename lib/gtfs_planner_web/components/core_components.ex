@@ -651,6 +651,88 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   @doc """
+  Renders a full-width sub-navigation bar for station pages.
+
+  Provides a back button, prominent station name, underline-style tabs for
+  switching between views, and a slot for contextual action buttons.
+
+  ## Examples
+
+      <.station_sub_nav
+        station={@station}
+        gtfs_version_id={@current_gtfs_version.id}
+        active_tab={:details}
+      >
+        <:actions>
+          <.link navigate={...} class="btn btn-ghost btn-sm">Action</.link>
+        </:actions>
+      </.station_sub_nav>
+  """
+  attr :station, :map, required: true, doc: "the station stop record"
+  attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
+  attr :active_tab, :atom, values: [:details, :diagram], default: :details
+  slot :actions, doc: "contextual action buttons"
+
+  def station_sub_nav(assigns) do
+    ~H"""
+    <nav
+      class="w-full px-4 sm:px-6 lg:px-8"
+      aria-label="Station navigation"
+    >
+      <%!-- Top row: Back button, station name, actions --%>
+      <div class="flex items-center justify-between py-3">
+        <div class="flex items-center gap-4">
+          <.link
+            navigate={"/gtfs/#{@gtfs_version_id}/stops"}
+            class="btn btn-ghost btn-sm btn-square"
+            aria-label="Back to stations list"
+          >
+            <.icon name="hero-chevron-left" class="size-5" />
+          </.link>
+          <h1 class="text-xl font-semibold leading-tight">
+            {@station.stop_name || @station.stop_id}
+          </h1>
+        </div>
+        <div class="flex items-center gap-2">
+          {render_slot(@actions)}
+        </div>
+      </div>
+      <%!-- Bottom row: Underline tabs --%>
+      <div class="flex items-center gap-6" role="tablist">
+        <.link
+          navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}"}
+          class={[
+            "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+            @active_tab == :details && "border-primary text-base-content",
+            @active_tab != :details &&
+              "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
+          ]}
+          role="tab"
+          aria-selected={@active_tab == :details}
+          aria-current={@active_tab == :details && "page"}
+        >
+          Details
+        </.link>
+        <.link
+          navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/diagram"}
+          class={[
+            "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+            @active_tab == :diagram && "border-primary text-base-content",
+            @active_tab != :diagram &&
+              "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
+          ]}
+          role="tab"
+          aria-selected={@active_tab == :diagram}
+          aria-current={@active_tab == :diagram && "page"}
+        >
+          Diagram
+        </.link>
+      </div>
+    </nav>
+    """
+  end
+
+  @doc """
   Translates an error message using gettext.
   """
   def translate_error({msg, opts}) do

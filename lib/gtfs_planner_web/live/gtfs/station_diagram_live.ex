@@ -127,18 +127,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         user_roles={@user_roles}
         current_path={@current_path}
       >
-        <.header>
-          {@station.stop_name || @stop_id}
-          <:subtitle>Station ID: {@stop_id}</:subtitle>
-          <:actions>
-            <.link
-              navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop_id}"}
-              class="btn btn-ghost btn-sm"
-            >
-              Back to Details
-            </.link>
-          </:actions>
-        </.header>
+        <:sub_header>
+          <.station_sub_nav
+            station={@station}
+            gtfs_version_id={@current_gtfs_version.id}
+            active_tab={:diagram}
+          />
+        </:sub_header>
 
         <.toolbar
           levels={@levels}

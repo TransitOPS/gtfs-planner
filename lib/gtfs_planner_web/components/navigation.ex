@@ -93,7 +93,8 @@ defmodule GtfsPlannerWeb.Navigation do
   # Returns pill classes based on active state
   # Uses literal class strings for Tailwind JIT compatibility
   defp pill_class(is_active) do
-    base = "inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-base font-medium transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-600"
+    base =
+      "inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-base font-medium transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-600"
 
     state =
       if is_active do
