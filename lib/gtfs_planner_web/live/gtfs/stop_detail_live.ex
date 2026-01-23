@@ -155,14 +155,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           {@stop.stop_name || @stop_id}
           <:subtitle>Station ID: {@stop_id}</:subtitle>
           <:actions>
-            <%= if @stop.location_type == 1 do %>
-              <.link
-                navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop_id}/diagram"}
-                class="btn btn-primary btn-sm"
-              >
-                Open Diagram Editor
-              </.link>
-            <% end %>
+            <.link
+              navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop_id}/diagram"}
+              class="btn btn-ghost btn-sm"
+            >
+              Manage station layout
+            </.link>
             <.link navigate={"/gtfs/#{@current_gtfs_version.id}/stops"} class="btn btn-ghost btn-sm">
               Back to Stations
             </.link>

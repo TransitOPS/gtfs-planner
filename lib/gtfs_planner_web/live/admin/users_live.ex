@@ -74,11 +74,12 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
     assign(socket, :invite_form, form)
   end
 
-  defp drawer_open?(live_action) do
-    live_action == :invite
-  end
-
   # Event handlers (Steps 11-15)
+
+  @impl true
+  def handle_event("close_drawer", _params, socket) do
+    {:noreply, push_patch(socket, to: ~p"/admin/users")}
+  end
 
   @impl true
   def handle_event("validate_invite", %{"invite" => invite_params}, socket) do
@@ -234,72 +235,53 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
   attr :organization, :map, required: true
 
   defp invite_form(assigns) do
+    # Get currently selected roles from the form
+    selected_roles = assigns.form[:roles].value || []
+    roles_error = assigns.form[:error].value
+
+    assigns =
+      assigns
+      |> assign(:selected_roles, selected_roles)
+      |> assign(:roles_error, roles_error)
+
     ~H"""
-    <div class="drawer-side z-50">
-      <label for="invite-drawer" aria-label="close sidebar" class="drawer-overlay"></label>
-      <div class="bg-base-100 min-h-full max-w-3xl w-full">
-        <header class="flex items-center justify-between bg-base-200 px-4 py-3 border-b border-base-300">
-          <h3 class="text-lg font-bold">Invite User</h3>
-          <.link
-            patch={~p"/admin/users"}
-            class="btn btn-sm btn-circle btn-ghost btn-active"
-            aria-label="Close"
-          >
-            <.icon name="hero-x-mark" class="size-5" />
-          </.link>
-        </header>
-        <div class="p-4">
-          <p class="text-sm text-base-content/70 mb-6">
-            Send an invitation to join {@organization.name}
-          </p>
+    <p class="text-sm text-base-content/70 mb-6">
+      Send an invitation to join {@organization.name}
+    </p>
 
-          <.simple_form
-            for={@form}
-            id="invite-form"
-            phx-change="validate_invite"
-            phx-submit="send_invite"
-          >
-            <.input
-              field={@form[:email]}
-              type="email"
-              label="Email"
-              placeholder="user@example.com"
-              required
-            />
+    <.simple_form
+      for={@form}
+      id="invite-form"
+      phx-change="validate_invite"
+      phx-submit="send_invite"
+    >
+      <.input
+        field={@form[:email]}
+        type="email"
+        label="Email"
+        placeholder="user@example.com"
+        required
+      />
 
-            <fieldset class="fieldset" aria-describedby="roles-error">
-              <legend class="fieldset-legend text-base">
-                Roles <span class="text-error">*</span>
-              </legend>
-              <div class="space-y-2" role="group" aria-label="Select roles">
-                <label
-                  :for={{label, value} <- @available_roles}
-                  class="flex items-center gap-2 cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    name="invite[roles][]"
-                    value={value}
-                    class="checkbox checkbox-sm"
-                  />
-                  <span class="label">{label}</span>
-                </label>
-              </div>
-            </fieldset>
+      <.checkbox_group
+        name="invite[roles][]"
+        label="Roles"
+        options={@available_roles}
+        selected={@selected_roles}
+        required
+        error={@roles_error}
+      />
 
-            <:actions>
-              <div class="flex-1"></div>
-              <.link patch={~p"/admin/users"} class="btn btn-outline">
-                Cancel
-              </.link>
-              <.button phx-disable-with="Sending..." class="btn btn-primary btn-active">
-                Send Invite
-              </.button>
-            </:actions>
-          </.simple_form>
-        </div>
-      </div>
-    </div>
+      <:actions>
+        <div class="flex-1"></div>
+        <.link patch={~p"/admin/users"} class="btn btn-ghost">
+          Cancel
+        </.link>
+        <.button phx-disable-with="Sending..." class="btn btn-primary">
+          Send Invite
+        </.button>
+      </:actions>
+    </.simple_form>
     """
   end
 
@@ -390,15 +372,12 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
         </div>
       </div>
 
-      <%!-- Drawer for invite form --%>
-      <div class="drawer drawer-end">
-        <input
-          type="checkbox"
-          id="invite-drawer"
-          class="drawer-toggle"
-          checked={drawer_open?(@live_action)}
-        />
-        <div class="drawer-content"></div>
+      <.drawer
+        id="invite-drawer"
+        open={@live_action == :invite}
+        on_close="close_drawer"
+        title="Invite User"
+      >
         <%= if @invite_form do %>
           <.invite_form
             form={@invite_form}
@@ -406,7 +385,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
             organization={@current_organization}
           />
         <% end %>
-      </div>
+      </.drawer>
     </Layouts.app>
     """
   end
