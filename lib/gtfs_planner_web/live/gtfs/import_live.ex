@@ -89,19 +89,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         current_organization={@current_organization}
         user_roles={@user_roles}
         current_path={@current_path}
+        current_gtfs_version={assigns[:current_gtfs_version]}
+        available_versions={assigns[:available_versions] || []}
       >
         <.header>
           Import GTFS
           <:subtitle>GTFS import functionality coming soon.</:subtitle>
-          <:actions>
-            <%= if assigns[:current_gtfs_version] && assigns[:available_versions] do %>
-              <.gtfs_version_switcher
-                current_version={@current_gtfs_version}
-                versions={@available_versions}
-                organization_id={@current_organization.id}
-              />
-            <% end %>
-          </:actions>
         </.header>
       </Layouts.app>
     <% end %>
