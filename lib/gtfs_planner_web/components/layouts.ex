@@ -55,8 +55,8 @@ defmodule GtfsPlannerWeb.Layouts do
     >
       Skip to main content
     </a>
-    <header class="navbar bg-base-100 px-4 sm:px-6 lg:px-8 pb-0 border-b border-base-300 items-end">
-      <div class="flex-none pb-3">
+    <header class="navbar bg-base-100 px-4 sm:px-6 lg:px-8 py-3 border-b border-base-300 items-center">
+      <div class="flex-none">
         <.link href={~p"/"} class="flex items-center gap-2" aria-label="GTFS Planner - Go to homepage">
           <div class="bg-emerald-600 p-2 rounded-lg">
             <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
@@ -66,7 +66,7 @@ defmodule GtfsPlannerWeb.Layouts do
       </div>
 
       <%= if @current_user do %>
-        <div class="flex-1 flex justify-center">
+        <div class="flex-1 flex justify-start items-center pl-8">
           <Navigation.top_nav
             current_user={@current_user}
             current_organization={assigns[:current_organization]}
@@ -74,7 +74,7 @@ defmodule GtfsPlannerWeb.Layouts do
             current_path={@current_path}
           />
         </div>
-        <div class="flex-none pb-3">
+        <div class="flex-none">
           <.link
             href={~p"/users/log_out"}
             method="delete"
