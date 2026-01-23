@@ -32,27 +32,54 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
-    current_organization = socket.assigns.current_organization
+    # Guard clause: if pending version resolution, we need to redirect to a version
+    if socket.assigns[:pending_version_resolution] do
+      current_organization = socket.assigns.current_organization
 
-    # Try to use the stored version_id from localStorage
-    version_to_use =
-      if version_id && valid_version_for_org?(version_id, current_organization.id) do
-        version_id
-      else
-        # Fall back to latest version
-        case socket.assigns[:latest_gtfs_version] do
-          {:ok, version} -> to_string(version.id)
-          {:error, :no_versions} -> nil
+      # Use the version from localStorage if valid, otherwise fetch latest
+      version_to_use =
+        if version_id && valid_version_for_org?(version_id, current_organization.id) do
+          version_id
+        else
+          # Fetch latest version for the organization
+          case Versions.get_latest_gtfs_version(current_organization.id) do
+            {:ok, version} -> to_string(version.id)
+            {:error, :no_versions} -> nil
+          end
         end
-      end
 
-    if version_to_use do
-      {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/export")}
+      if version_to_use do
+        {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/export")}
+      else
+        # No versions available, stay on pending page
+        {:noreply, socket}
+      end
     else
-      {:noreply,
-       socket
-       |> put_flash(:error, "No GTFS versions available for your organization")
-       |> push_navigate(to: "/")}
+      # Normal flow: we already have a current version
+      current_organization = socket.assigns.current_organization
+      current_version_id = to_string(socket.assigns.current_gtfs_version.id)
+
+      # Try to use the stored version_id from localStorage
+      version_to_use =
+        if version_id && valid_version_for_org?(version_id, current_organization.id) do
+          version_id
+        else
+          # Fall back to latest version or current version
+          case socket.assigns[:latest_gtfs_version] do
+            {:ok, version} -> to_string(version.id)
+            {:error, :no_versions} -> nil
+            # Already on a valid route
+            nil -> current_version_id
+          end
+        end
+
+      # Only navigate if switching to a different version
+      if version_to_use && version_to_use != current_version_id do
+        {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/export")}
+      else
+        # Already on correct version, do nothing
+        {:noreply, socket}
+      end
     end
   end
 

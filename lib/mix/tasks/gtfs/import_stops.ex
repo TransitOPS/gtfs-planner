@@ -102,7 +102,11 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
 
             {:error, changeset} ->
               errors = Enum.map(changeset.errors, fn {field, {msg, _}} -> "#{field}: #{msg}" end)
-              Mix.shell().error("  ✗ Failed to create stop #{row_map["stop_id"] || "unknown"}: #{Enum.join(errors, ", ")}")
+
+              Mix.shell().error(
+                "  ✗ Failed to create stop #{row_map["stop_id"] || "unknown"}: #{Enum.join(errors, ", ")}"
+              )
+
               {total + 1, success, failure + 1}
           end
         end)
@@ -154,7 +158,10 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
             {[row_map], {:has_header, header}}
 
           {:ok, fields} ->
-            Mix.shell().error("  ⚠ Skipping malformed line: expected #{length(header)} fields, got #{length(fields)}")
+            Mix.shell().error(
+              "  ⚠ Skipping malformed line: expected #{length(header)} fields, got #{length(fields)}"
+            )
+
             {[], {:has_header, header}}
 
           {:error, reason} ->
@@ -190,6 +197,7 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
         case rest do
           <<?", rest2::binary>> ->
             parse_csv_fields(rest2, fields, current <> <<?">>, true, pos + 2)
+
           _ ->
             parse_csv_fields(rest, fields, current, false, pos + 1)
         end
@@ -212,8 +220,10 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
          {:ok, stop_lon} <- parse_decimal(row_map["stop_lon"]),
          {:ok, location_type} <- parse_location_type(row_map["location_type"]),
          {:ok, wheelchair_boarding} <- parse_wheelchair_boarding(row_map["wheelchair_boarding"]),
-         {:ok, level_id} <- resolve_level_id(row_map["level_id"], organization_id, gtfs_version_id),
-         {:ok, parent_station_id} <- resolve_parent_station_id(row_map["parent_station"], organization_id, gtfs_version_id) do
+         {:ok, level_id} <-
+           resolve_level_id(row_map["level_id"], organization_id, gtfs_version_id),
+         {:ok, parent_station_id} <-
+           resolve_parent_station_id(row_map["parent_station"], organization_id, gtfs_version_id) do
       attrs = %{
         stop_id: stop_id,
         stop_name: empty_to_nil(row_map["stop_name"]),
@@ -252,6 +262,7 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
   # Updated to handle ArgumentError as suggested by Copilot
   defp parse_decimal(nil), do: {:ok, nil}
   defp parse_decimal(""), do: {:ok, nil}
+
   defp parse_decimal(string) do
     try do
       case Decimal.new(string) do
@@ -266,6 +277,7 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
 
   defp parse_location_type(nil), do: {:ok, 0}
   defp parse_location_type(""), do: {:ok, 0}
+
   defp parse_location_type(string) do
     case Integer.parse(string) do
       {int, ""} when int in 0..4 -> {:ok, int}
@@ -278,6 +290,7 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
 
   defp parse_wheelchair_boarding(nil), do: {:ok, nil}
   defp parse_wheelchair_boarding(""), do: {:ok, nil}
+
   defp parse_wheelchair_boarding(string) do
     case Integer.parse(string) do
       {int, ""} when int in 0..2 -> {:ok, int}
@@ -291,11 +304,13 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
   # Step 6: Implement foreign key resolution for level_id
   defp resolve_level_id(nil, _organization_id, _gtfs_version_id), do: {:ok, nil}
   defp resolve_level_id("", _organization_id, _gtfs_version_id), do: {:ok, nil}
+
   defp resolve_level_id(level_id_string, organization_id, gtfs_version_id) do
     case GtfsPlanner.Gtfs.get_level_by_level_id(organization_id, gtfs_version_id, level_id_string) do
       nil ->
         Mix.shell().info("  ⚠ Level not found: #{level_id_string}, setting level_id to nil")
         {:ok, nil}
+
       level ->
         {:ok, level.id}
     end
@@ -304,11 +319,20 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
   # Step 7: Implement foreign key resolution for parent_station
   defp resolve_parent_station_id(nil, _organization_id, _gtfs_version_id), do: {:ok, nil}
   defp resolve_parent_station_id("", _organization_id, _gtfs_version_id), do: {:ok, nil}
+
   defp resolve_parent_station_id(parent_station_string, organization_id, gtfs_version_id) do
-    case GtfsPlanner.Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, parent_station_string) do
+    case GtfsPlanner.Gtfs.get_stop_by_stop_id(
+           organization_id,
+           gtfs_version_id,
+           parent_station_string
+         ) do
       nil ->
-        Mix.shell().info("  ⚠ Parent station not found: #{parent_station_string}, setting parent_station_id to nil")
+        Mix.shell().info(
+          "  ⚠ Parent station not found: #{parent_station_string}, setting parent_station_id to nil"
+        )
+
         {:ok, nil}
+
       stop ->
         {:ok, stop.id}
     end
