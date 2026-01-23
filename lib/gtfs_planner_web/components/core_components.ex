@@ -783,12 +783,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
           <%!-- Canvas actions --%>
           <div :if={@active_level && @uploads} class="flex items-center gap-2">
-            <form
-              id="diagram-upload-form"
-              phx-change="upload_diagram"
-              phx-submit="save_diagram"
-              phx-hook=".AutoSubmitUpload"
-            >
+        <form
+          id="diagram-upload-form"
+          phx-change="upload_diagram"
+          phx-submit="save_diagram"
+          phx-hook="AutoSubmitUpload"
+        >
               <label class="btn btn-sm btn-outline cursor-pointer">
                 Upload Diagram <.live_file_input upload={@uploads.diagram} class="hidden" />
               </label>

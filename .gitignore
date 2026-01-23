@@ -31,6 +31,13 @@ gtfs_planner-*.tar
 # Ignore digested assets cache.
 /priv/static/cache_manifest.json
 
+# Ignore Phoenix digested static files (files with content hashes)
+# Pattern: filename-[32-char-hex-hash].ext
+/priv/static/**/*-[a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9].*
+
+# Ignore all gzipped static files
+/priv/static/**/*.gz
+
 # In case you use Node.js/npm, you want to ignore these.
 npm-debug.log
 /assets/node_modules/
