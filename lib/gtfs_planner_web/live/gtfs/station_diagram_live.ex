@@ -10,6 +10,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
   on_mount GtfsPlannerWeb.AssignOrganization
@@ -126,22 +127,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         current_organization={@current_organization}
         user_roles={@user_roles}
         current_path={@current_path}
+        current_gtfs_version={assigns[:current_gtfs_version]}
+        available_versions={assigns[:available_versions] || []}
       >
         <:sub_header>
           <.station_sub_nav
             station={@station}
             gtfs_version_id={@current_gtfs_version.id}
             active_tab={:diagram}
+            levels={@levels}
+            active_level={@active_level}
+            mode={@mode}
+            uploads={@uploads}
+            diagram_error={@diagram_error}
           />
         </:sub_header>
-
-        <.toolbar
-          levels={@levels}
-          active_level={@active_level}
-          mode={@mode}
-          uploads={@uploads}
-          diagram_error={@diagram_error}
-        />
 
         <.diagram_canvas
           station={@station}
@@ -283,6 +283,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # ============================================================================
   # Event Handlers
   # ============================================================================
+
+  @impl true
+  def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
+    current_organization = socket.assigns.current_organization
+    current_version_id = to_string(socket.assigns.current_gtfs_version.id)
+    stop_id = socket.assigns[:stop_id]
+
+    # Try to use the stored version_id from localStorage
+    version_to_use =
+      if version_id && valid_version_for_org?(version_id, current_organization.id) do
+        version_id
+      else
+        # Fall back to latest version or current version
+        case socket.assigns[:latest_gtfs_version] do
+          {:ok, version} -> to_string(version.id)
+          {:error, :no_versions} -> nil
+          # Already on a valid route
+          nil -> current_version_id
+        end
+      end
+
+    # Only navigate if switching to a different version
+    if version_to_use && version_to_use != current_version_id do
+      path = "/gtfs/#{version_to_use}/stops/#{stop_id}/diagram"
+      {:noreply, push_navigate(socket, to: path)}
+    else
+      # Already on correct version, do nothing
+      {:noreply, socket}
+    end
+  end
 
   @impl true
   def handle_event("switch_level", params, socket) do
@@ -701,6 +731,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     case GtfsPlanner.Accounts.get_user_org_membership(user.id, organization.id) do
       %UserOrgMembership{roles: roles} when is_list(roles) -> roles
       _ -> []
+    end
+  end
+
+  defp valid_version_for_org?(version_id, organization_id) do
+    try do
+      case Versions.get_gtfs_version(version_id) do
+        nil -> false
+        version -> version.organization_id == organization_id
+      end
+    rescue
+      _ -> false
     end
   end
 end

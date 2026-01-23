@@ -45,6 +45,14 @@ defmodule GtfsPlannerWeb.Layouts do
     default: "/",
     doc: "the current URL path for tab highlighting"
 
+  attr :current_gtfs_version, :map,
+    default: nil,
+    doc: "the current GTFS version (for GTFS pages)"
+
+  attr :available_versions, :list,
+    default: [],
+    doc: "list of {id, name} tuples for GTFS version dropdown"
+
   slot :inner_block, required: true
   slot :sub_header, doc: "optional full-width sub-header rendered between header and main content"
 
@@ -75,14 +83,22 @@ defmodule GtfsPlannerWeb.Layouts do
             current_path={@current_path}
           />
         </div>
-        <div class="flex-none">
+        <div class="flex-none flex items-center gap-4">
+          <%= if @current_gtfs_version && @available_versions != [] do %>
+            <.gtfs_version_switcher
+              current_version={@current_gtfs_version}
+              versions={@available_versions}
+              organization_id={@current_organization.id}
+            />
+          <% end %>
           <.link
             href={~p"/users/log_out"}
             method="delete"
-            class="link link-hover"
+            class="inline-flex items-center gap-1.5 text-gray-600 hover:text-gray-900 transition-colors"
             aria-label="Log out of your account"
           >
-            Log out
+            <.icon name="hero-arrow-right-on-rectangle" class="w-5 h-5" />
+            <span class="text-sm font-medium">Log out</span>
           </.link>
         </div>
       <% else %>

@@ -89,19 +89,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         current_organization={@current_organization}
         user_roles={@user_roles}
         current_path={@current_path}
+        current_gtfs_version={assigns[:current_gtfs_version]}
+        available_versions={assigns[:available_versions] || []}
       >
         <.header>
           Export GTFS
           <:subtitle>GTFS export functionality coming soon.</:subtitle>
-          <:actions>
-            <%= if assigns[:current_gtfs_version] && assigns[:available_versions] do %>
-              <.gtfs_version_switcher
-                current_version={@current_gtfs_version}
-                versions={@available_versions}
-                organization_id={@current_organization.id}
-              />
-            <% end %>
-          </:actions>
         </.header>
         <div class="container mx-auto px-4 py-8">
           <p class="text-gray-600">GTFS export functionality coming soon.</p>

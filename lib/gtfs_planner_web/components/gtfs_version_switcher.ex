@@ -5,12 +5,14 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
   This component displays a dropdown that allows users to switch between
   different GTFS versions for their organization. The selected version is
   persisted to localStorage via the GtfsVersionHook JavaScript hook.
+
+  Designed as a labeled pill for placement in the top navigation bar.
   """
 
   use Phoenix.Component
 
   @doc """
-  Renders a GTFS version switcher dropdown.
+  Renders a GTFS version switcher as a labeled pill for the navigation bar.
 
   ## Attributes
     - current_version: The currently selected GTFS version (map)
@@ -35,12 +37,20 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
       id="gtfs-version-switcher"
       phx-hook="GtfsVersionHook"
       data-organization-id={@organization_id}
-      class="inline-block"
+      class="flex items-center gap-2 bg-base-200 rounded-full pl-3 pr-1 py-1"
     >
+      <label
+        for="gtfs-version-select"
+        class="text-sm font-medium text-base-content/70 whitespace-nowrap"
+      >
+        GTFS Version:
+      </label>
       <select
+        id="gtfs-version-select"
         name="version"
         phx-change="switch_gtfs_version"
-        class="select select-bordered select-sm"
+        aria-label="Select GTFS version"
+        class="select select-sm select-ghost rounded-full bg-base-100 min-w-[120px] focus:outline-none focus:ring-2 focus:ring-primary"
       >
         <option :for={{id, name} <- @versions} value={id} selected={id == @current_version.id}>
           {name}

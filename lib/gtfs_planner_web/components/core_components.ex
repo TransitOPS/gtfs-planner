@@ -656,21 +656,36 @@ defmodule GtfsPlannerWeb.CoreComponents do
   Provides a back button, prominent station name, underline-style tabs for
   switching between views, and a slot for contextual action buttons.
 
+  When `active_tab` is `:diagram`, displays a third row with level controls
+  and canvas mode toggle.
+
   ## Examples
 
       <.station_sub_nav
         station={@station}
         gtfs_version_id={@current_gtfs_version.id}
         active_tab={:details}
-      >
-        <:actions>
-          <.link navigate={...} class="btn btn-ghost btn-sm">Action</.link>
-        </:actions>
-      </.station_sub_nav>
+      />
+
+      <.station_sub_nav
+        station={@station}
+        gtfs_version_id={@current_gtfs_version.id}
+        active_tab={:diagram}
+        levels={@levels}
+        active_level={@active_level}
+        mode={@mode}
+        uploads={@uploads}
+        diagram_error={@diagram_error}
+      />
   """
   attr :station, :map, required: true, doc: "the station stop record"
   attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
   attr :active_tab, :atom, values: [:details, :diagram], default: :details
+  attr :levels, :list, default: [], doc: "list of levels for the station (diagram tab)"
+  attr :active_level, :any, default: nil, doc: "the currently selected level (diagram tab)"
+  attr :mode, :atom, default: :add, doc: "canvas mode - :add or :connect (diagram tab)"
+  attr :uploads, :any, default: nil, doc: "uploads struct for diagram upload (diagram tab)"
+  attr :diagram_error, :string, default: nil, doc: "error message for diagram upload"
   slot :actions, doc: "contextual action buttons"
 
   def station_sub_nav(assigns) do
@@ -697,36 +712,109 @@ defmodule GtfsPlannerWeb.CoreComponents do
           {render_slot(@actions)}
         </div>
       </div>
-      <%!-- Bottom row: Underline tabs --%>
-      <div class="flex items-center gap-6" role="tablist">
-        <.link
-          navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}"}
-          class={[
-            "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-            @active_tab == :details && "border-primary text-base-content",
-            @active_tab != :details &&
-              "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-          ]}
-          role="tab"
-          aria-selected={@active_tab == :details}
-          aria-current={@active_tab == :details && "page"}
-        >
-          Details
-        </.link>
-        <.link
-          navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/diagram"}
-          class={[
-            "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-            @active_tab == :diagram && "border-primary text-base-content",
-            @active_tab != :diagram &&
-              "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-          ]}
-          role="tab"
-          aria-selected={@active_tab == :diagram}
-          aria-current={@active_tab == :diagram && "page"}
-        >
-          Diagram
-        </.link>
+      <%!-- Bottom row: Underline tabs + diagram controls --%>
+      <div class="flex items-end justify-between border-b border-base-300">
+        <%!-- Left: Tabs --%>
+        <div class="flex items-end gap-6" role="tablist">
+          <.link
+            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}"}
+            class={[
+              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+              @active_tab == :details && "border-primary text-base-content",
+              @active_tab != :details &&
+                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
+            ]}
+            role="tab"
+            aria-selected={@active_tab == :details}
+            aria-current={@active_tab == :details && "page"}
+          >
+            Details
+          </.link>
+          <.link
+            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/diagram"}
+            class={[
+              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+              @active_tab == :diagram && "border-primary text-base-content",
+              @active_tab != :diagram &&
+                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
+            ]}
+            role="tab"
+            aria-selected={@active_tab == :diagram}
+            aria-current={@active_tab == :diagram && "page"}
+          >
+            Diagram
+          </.link>
+        </div>
+
+        <%!-- Right: Diagram controls (only on diagram tab) --%>
+        <div :if={@active_tab == :diagram} class="flex items-center gap-4 pb-2">
+          <%!-- Level context --%>
+          <div class="flex items-center gap-2">
+            <form phx-change="switch_level" class="flex items-center gap-2">
+              <label class="text-sm font-medium">Level:</label>
+              <select class="select select-sm select-bordered" name="level_id">
+                <%= for level <- @levels do %>
+                  <option value={level.id} selected={@active_level && level.id == @active_level.id}>
+                    {level.level_name || level.level_id} ({trunc(level.level_index)})
+                  </option>
+                <% end %>
+              </select>
+            </form>
+
+            <button
+              type="button"
+              class="btn btn-sm btn-outline btn-square"
+              phx-click="open_add_level"
+              aria-label="Add level"
+            >
+              <.icon name="hero-plus" class="size-4" />
+            </button>
+
+            <button
+              :if={@active_level}
+              type="button"
+              class="btn btn-sm btn-outline btn-square"
+              phx-click="open_edit_level"
+              aria-label="Edit level"
+            >
+              <.icon name="hero-pencil" class="size-4" />
+            </button>
+          </div>
+
+          <%!-- Canvas actions --%>
+          <div :if={@active_level && @uploads} class="flex items-center gap-2">
+            <form
+              id="diagram-upload-form"
+              phx-change="upload_diagram"
+              phx-submit="save_diagram"
+              phx-hook=".AutoSubmitUpload"
+            >
+              <label class="btn btn-sm btn-outline cursor-pointer">
+                Upload Diagram <.live_file_input upload={@uploads.diagram} class="hidden" />
+              </label>
+            </form>
+            <span :if={@diagram_error} class="text-error text-sm">{@diagram_error}</span>
+          </div>
+
+          <div class="join" role="group" aria-label="Canvas mode">
+            <button
+              type="button"
+              class={["btn btn-sm join-item", @mode == :add && "btn-active"]}
+              phx-click="switch_mode"
+              phx-value-mode="add"
+            >
+              Add child stop
+            </button>
+            <button
+              type="button"
+              class={["btn btn-sm join-item", @mode == :connect && "btn-active"]}
+              phx-click="switch_mode"
+              phx-value-mode="connect"
+            >
+              Connect pathways
+            </button>
+          </div>
+        </div>
       </div>
     </nav>
     """
