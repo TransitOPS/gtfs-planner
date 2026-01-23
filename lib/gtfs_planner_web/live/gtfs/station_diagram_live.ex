@@ -141,17 +141,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             uploads={@uploads}
             diagram_error={@diagram_error}
           />
+          <div class="w-full px-4 sm:px-6 lg:px-8 py-4">
+            <.diagram_canvas
+              station={@station}
+              active_level={@active_level}
+              streams={@streams}
+              active_point_id={@active_point_id}
+              pending_xy={@pending_xy}
+              mode={@mode}
+              uploads={@uploads}
+            />
+          </div>
         </:sub_header>
-
-        <.diagram_canvas
-          station={@station}
-          active_level={@active_level}
-          streams={@streams}
-          active_point_id={@active_point_id}
-          pending_xy={@pending_xy}
-          mode={@mode}
-          uploads={@uploads}
-        />
 
         <.child_stop_drawer
           pending_xy={@pending_xy}
@@ -191,12 +192,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           export default {
             mounted() {
               const svg = this.el;
+              const imageEl = svg.querySelector("image");
+              let baseW = 100;
+              let baseH = 100;
               let viewBox = { x: 0, y: 0, w: 100, h: 100 };
               let scale = 1;
               const minScale = 0.5;
               const maxScale = 5;
               let isPanning = false;
               let panStart = { x: 0, y: 0 };
+
+              // Load image to get natural dimensions and set viewBox accordingly
+              if (imageEl) {
+                const img = new Image();
+                img.onload = () => {
+                  const naturalW = img.naturalWidth;
+                  const naturalH = img.naturalHeight;
+                  // Normalize to width 100, height proportional
+                  baseW = 100;
+                  baseH = (naturalH / naturalW) * 100;
+                  viewBox = { x: 0, y: 0, w: baseW, h: baseH };
+                  svg.setAttribute("viewBox", `0 0 ${baseW} ${baseH}`);
+                  // Update the image element dimensions to match
+                  imageEl.setAttribute("width", baseW);
+                  imageEl.setAttribute("height", baseH);
+                  // Update the overlay SVG if it exists
+                  const overlay = svg.parentElement.querySelector("svg:not(#diagram-canvas)");
+                  if (overlay) {
+                    overlay.setAttribute("viewBox", `0 0 ${baseW} ${baseH}`);
+                  }
+                };
+                img.src = imageEl.getAttribute("href");
+              }
 
               svg.addEventListener("wheel", (e) => {
                 e.preventDefault();
@@ -209,8 +236,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                     const mouseX = (e.clientX - rect.left) / rect.width * viewBox.w + viewBox.x;
                     const mouseY = (e.clientY - rect.top) / rect.height * viewBox.h + viewBox.y;
 
-                    const newW = 100 / newScale;
-                    const newH = 100 / newScale;
+                    const newW = baseW / newScale;
+                    const newH = baseH / newScale;
 
                     viewBox.x = mouseX - (mouseX - viewBox.x) * (newW / viewBox.w);
                     viewBox.y = mouseY - (mouseY - viewBox.y) * (newH / viewBox.h);
@@ -219,12 +246,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                     scale = newScale;
 
                     svg.setAttribute("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+                    // Keep overlay in sync
+                    const overlay = svg.parentElement.querySelector("svg:not(#diagram-canvas)");
+                    if (overlay) {
+                      overlay.setAttribute("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+                    }
                   }
                 } else {
                   const panSpeed = 0.5;
                   viewBox.x += e.deltaX * panSpeed / scale;
                   viewBox.y += e.deltaY * panSpeed / scale;
                   svg.setAttribute("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+                  const overlay = svg.parentElement.querySelector("svg:not(#diagram-canvas)");
+                  if (overlay) {
+                    overlay.setAttribute("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+                  }
                 }
               }, { passive: false });
 
@@ -246,6 +282,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   viewBox.y -= dy;
                   panStart = { x: e.clientX, y: e.clientY };
                   svg.setAttribute("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+                  const overlay = svg.parentElement.querySelector("svg:not(#diagram-canvas)");
+                  if (overlay) {
+                    overlay.setAttribute("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+                  }
                 }
               });
 
