@@ -4,17 +4,16 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
 
   ## Usage
 
-      mix gtfs.import_levels <organization_id> <gtfs_version_id> <path/to/levels.txt>
+      mix gtfs.import_levels <organization_id> <path/to/levels.txt>
 
   ## Arguments
 
   - `organization_id`: UUID of the organization
-  - `gtfs_version_id`: UUID of the GTFS version
   - `file_path`: Path to the levels.txt CSV file
 
   ## Examples
 
-      mix gtfs.import_levels 123e4567-e89b-12d3-a456-426614174000 123e4567-e89b-12d3-a456-426614174001 /path/to/levels.txt
+      mix gtfs.import_levels 123e4567-e89b-12d3-a456-426614174000 /path/to/levels.txt
 
   ## CSV Format
 
@@ -32,8 +31,8 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
     Mix.Task.run("app.start")
 
     case parse_args(args) do
-      {:ok, organization_id, gtfs_version_id, file_path} ->
-        import_levels(organization_id, gtfs_version_id, file_path)
+      {:ok, organization_id, file_path} ->
+        import_levels(organization_id, file_path)
 
       {:error, reason} ->
         Mix.shell().error("Error: #{reason}")
@@ -42,18 +41,17 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
     end
   end
 
-  defp parse_args([organization_id, gtfs_version_id, file_path]) do
+  defp parse_args([organization_id, file_path]) do
     with {:ok, org_uuid} <- validate_uuid(organization_id),
-         {:ok, version_uuid} <- validate_uuid(gtfs_version_id),
          :ok <- validate_file(file_path) do
-      {:ok, org_uuid, version_uuid, file_path}
+      {:ok, org_uuid, file_path}
     else
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp parse_args(_) do
-    {:error, "Expected 3 arguments: organization_id, gtfs_version_id, file_path"}
+    {:error, "Expected 2 arguments: organization_id, file_path"}
   end
 
   defp validate_uuid(string) do
@@ -71,11 +69,24 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
     end
   end
 
-  defp import_levels(organization_id, gtfs_version_id, file_path) do
+  defp import_levels(organization_id, file_path) do
     Mix.shell().info("Starting import of #{file_path}")
     Mix.shell().info("Organization: #{organization_id}")
-    Mix.shell().info("GTFS Version: #{gtfs_version_id}")
 
+    # Get the latest GTFS version for this organization
+    case GtfsPlanner.Versions.get_latest_gtfs_version(organization_id) do
+      {:ok, gtfs_version} ->
+        Mix.shell().info("GTFS Version: #{gtfs_version.id} (#{gtfs_version.name})")
+        do_import_levels(organization_id, gtfs_version.id, file_path)
+
+      {:error, :no_versions} ->
+        Mix.shell().error("Error: No GTFS versions found for organization #{organization_id}")
+        Mix.shell().info("Please create a GTFS version first using the web interface or API.")
+        System.halt(1)
+    end
+  end
+
+  defp do_import_levels(organization_id, gtfs_version_id, file_path) do
     stream = parse_csv_file(file_path)
 
     {total, success, failure} =
@@ -87,7 +98,10 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
             {total + 1, success + 1, failure}
 
           {:error, changeset} ->
-            Mix.shell().error("  ✗ Failed to create level: #{inspect(changeset.errors)}")
+            # Improved error formatting to match stops importer style
+            errors = Enum.map(changeset.errors, fn {field, {msg, _}} -> "#{field}: #{msg}" end)
+            level_id = if row_data, do: row_data[:level_id] || "unknown", else: "unknown"
+            Mix.shell().error("  ✗ Failed to create level #{level_id}: #{Enum.join(errors, ", ")}")
             {total + 1, success, failure + 1}
         end
       end)
@@ -117,18 +131,26 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
 
   defp parse_csv_line(line) do
     case parse_csv_fields(line) do
-      {:ok, [level_id, level_index_str | rest]} ->
-        level_name =
-          case rest do
-            [name | _] -> if name == "", do: nil, else: String.trim(name, "\"")
-            [] -> nil
-          end
+      {:ok, fields} ->
+        # Handle rows with insufficient fields
+        case fields do
+          [level_id, level_index_str | rest] ->
+            level_name =
+              case rest do
+                [name | _] -> if name == "", do: nil, else: String.trim(name, "\"")
+                [] -> nil
+              end
 
-        %{
-          level_id: String.trim(level_id, "\""),
-          level_index_str: String.trim(level_index_str, "\""),
-          level_name: level_name
-        }
+            %{
+              level_id: String.trim(level_id, "\""),
+              level_index_str: String.trim(level_index_str, "\""),
+              level_name: level_name
+            }
+
+          _ ->
+            Mix.shell().error("  ⚠ Skipping malformed line: expected at least 2 fields, got #{length(fields)}")
+            nil
+        end
 
       {:error, reason} ->
         Mix.shell().error("  ⚠ Skipping malformed line: #{reason}")

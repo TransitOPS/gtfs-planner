@@ -4,17 +4,16 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
 
   ## Usage
 
-      mix gtfs.import_stops <organization_id> <gtfs_version_id> <path/to/stops.txt>
+      mix gtfs.import_stops <organization_id> <path/to/stops.txt>
 
   ## Arguments
 
   - `organization_id`: UUID of the organization
-  - `gtfs_version_id`: UUID of the GTFS version
   - `file_path`: Path to the stops.txt CSV file
 
   ## Examples
 
-      mix gtfs.import_stops 123e4567-e89b-12d3-a456-426614174000 123e4567-e89b-12d3-a456-426614174001 /path/to/stops.txt
+      mix gtfs.import_stops 123e4567-e89b-12d3-a456-426614174000 /path/to/stops.txt
 
   ## CSV Format
 
@@ -32,8 +31,8 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
     Mix.Task.run("app.start")
 
     case parse_args(args) do
-      {:ok, organization_id, gtfs_version_id, file_path} ->
-        import_stops(organization_id, gtfs_version_id, file_path)
+      {:ok, organization_id, file_path} ->
+        import_stops(organization_id, file_path)
 
       {:error, reason} ->
         Mix.shell().error("Error: #{reason}")
@@ -43,18 +42,17 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
   end
 
   # Step 2: Implement argument parsing
-  defp parse_args([organization_id, gtfs_version_id, file_path]) do
+  defp parse_args([organization_id, file_path]) do
     with {:ok, org_uuid} <- validate_uuid(organization_id),
-         {:ok, version_uuid} <- validate_uuid(gtfs_version_id),
          :ok <- validate_file(file_path) do
-      {:ok, org_uuid, version_uuid, file_path}
+      {:ok, org_uuid, file_path}
     else
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp parse_args(_) do
-    {:error, "Expected 3 arguments: organization_id, gtfs_version_id, file_path"}
+    {:error, "Expected 2 arguments: organization_id, file_path"}
   end
 
   defp validate_uuid(string) do
@@ -73,11 +71,24 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
   end
 
   # Step 3: Create main import function
-  defp import_stops(organization_id, gtfs_version_id, file_path) do
+  defp import_stops(organization_id, file_path) do
     Mix.shell().info("Starting import of #{file_path}")
     Mix.shell().info("Organization: #{organization_id}")
-    Mix.shell().info("GTFS Version: #{gtfs_version_id}")
 
+    # Get the latest GTFS version for this organization
+    case GtfsPlanner.Versions.get_latest_gtfs_version(organization_id) do
+      {:ok, gtfs_version} ->
+        Mix.shell().info("GTFS Version: #{gtfs_version.id} (#{gtfs_version.name})")
+        do_import_stops(organization_id, gtfs_version.id, file_path)
+
+      {:error, :no_versions} ->
+        Mix.shell().error("Error: No GTFS versions found for organization #{organization_id}")
+        Mix.shell().info("Please create a GTFS version first using the web interface or API.")
+        System.halt(1)
+    end
+  end
+
+  defp do_import_stops(organization_id, gtfs_version_id, file_path) do
     try do
       stream = parse_csv_file(file_path)
 
@@ -238,15 +249,19 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
   defp empty_to_nil(value), do: value
 
   # Step 10: Add comprehensive error handling for type conversions
+  # Updated to handle ArgumentError as suggested by Copilot
   defp parse_decimal(nil), do: {:ok, nil}
   defp parse_decimal(""), do: {:ok, nil}
   defp parse_decimal(string) do
-    case Decimal.new(string) do
-      %Decimal{} = decimal -> {:ok, decimal}
-      _ -> {:error, "invalid decimal: #{string}"}
+    try do
+      case Decimal.new(string) do
+        %Decimal{} = decimal -> {:ok, decimal}
+        _ -> {:error, "invalid decimal: #{string}"}
+      end
+    rescue
+      Decimal.Error -> {:error, "invalid decimal format: #{string}"}
+      ArgumentError -> {:error, "invalid decimal value: #{string}"}
     end
-  rescue
-    Decimal.Error -> {:error, "invalid decimal format: #{string}"}
   end
 
   defp parse_location_type(nil), do: {:ok, 0}
