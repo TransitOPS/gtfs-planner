@@ -52,7 +52,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           id="diagram-upload-form"
           phx-change="upload_diagram"
           phx-submit="save_diagram"
-          phx-hook=".AutoSubmitUpload"
+          phx-hook="AutoSubmitUpload"
         >
           <label class="btn btn-sm btn-ghost cursor-pointer">
             Upload Diagram <.live_file_input upload={@uploads.diagram} class="hidden" />
@@ -109,7 +109,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <%= if @active_level && @active_level.diagram_filename do %>
         <svg
           id="diagram-canvas"
-          phx-hook=".DiagramCanvas"
+          phx-hook="DiagramCanvas"
           phx-update="ignore"
           viewBox="0 0 100 100"
           preserveAspectRatio="xMidYMid meet"
@@ -145,6 +145,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp diagram_overlay(assigns) do
     ~H"""
     <svg
+      id="diagram-overlay"
       class="absolute inset-0 w-full h-full pointer-events-none"
       viewBox="0 0 100 100"
       preserveAspectRatio="xMidYMid meet"
@@ -242,7 +243,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         id="diagram-upload-form-empty"
         phx-change="upload_diagram"
         phx-submit="save_diagram"
-        phx-hook=".AutoSubmitUpload"
+        phx-hook="AutoSubmitUpload"
       >
         <label class="btn btn-primary btn-sm">
           Upload Diagram <.live_file_input upload={@uploads.diagram} class="hidden" />
