@@ -90,9 +90,6 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
     ]
   end
 
-  defp drawer_open?(live_action) when live_action in [:new, :edit, :invite], do: true
-  defp drawer_open?(_), do: false
-
   defp humanize_role(role) when is_binary(role) do
     role
     |> String.replace("_", " ")
@@ -102,6 +99,18 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   end
 
   defp humanize_role(role) when is_atom(role), do: humanize_role(Atom.to_string(role))
+
+  @impl true
+  def handle_event("close_drawer", _params, socket) do
+    path =
+      if socket.assigns.live_action == :invite do
+        ~p"/admin/organizations/#{socket.assigns.organization.id}"
+      else
+        ~p"/admin/organizations"
+      end
+
+    {:noreply, push_patch(socket, to: path)}
+  end
 
   @impl true
   def handle_event("validate", %{"organization" => org_params}, socket) do
@@ -261,25 +270,20 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         maxlength="255"
         required
       />
-      <div class="fieldset mb-2">
-        <.input
-          field={@form[:alias]}
-          type="text"
-          label="Alias"
-          maxlength="255"
-          required
-          aria-describedby="alias-help"
-        />
-        <p id="alias-help" class="mt-1.5 text-sm text-base-content/70">
-          Alias will be auto-formatted: lowercase, spaces become hyphens
-        </p>
-      </div>
+      <.input
+        field={@form[:alias]}
+        type="text"
+        label="Alias"
+        maxlength="255"
+        required
+        help="Alias will be auto-formatted: lowercase, spaces become hyphens"
+      />
       <:actions>
         <div class="flex-1"></div>
-        <.link patch={~p"/admin/organizations"} class="btn btn-outline">
+        <.link patch={~p"/admin/organizations"} class="btn btn-ghost">
           Cancel
         </.link>
-        <.button phx-disable-with="Saving..." class="btn btn-primary btn-active">
+        <.button phx-disable-with="Saving..." class="btn btn-primary">
           {if @live_action == :new, do: "Create Organization", else: "Update Organization"}
         </.button>
       </:actions>
@@ -294,8 +298,12 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   defp invite_form(assigns) do
     # Get currently selected roles from the form
     selected_roles = assigns.form[:roles].value || []
+    roles_error = get_in(assigns.form[:errors].value, ["roles"]) |> List.wrap() |> List.first()
 
-    assigns = assign(assigns, :selected_roles, selected_roles)
+    assigns =
+      assigns
+      |> assign(:selected_roles, selected_roles)
+      |> assign(:roles_error, roles_error)
 
     ~H"""
     <.simple_form
@@ -304,55 +312,28 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       phx-change="validate_invite"
       phx-submit="send_invite"
     >
-      <div class="fieldset mb-2">
-        <label>
-          <span class="label text-base mb-1">Email <span class="text-error">*</span></span>
-          <input
-            type="email"
-            name={@form[:email].name}
-            id={@form[:email].id}
-            value={@form[:email].value}
-            required
-            class="w-full input input-lg"
-          />
-        </label>
-      </div>
+      <.input
+        field={@form[:email]}
+        type="email"
+        label="Email"
+        required
+      />
 
-      <fieldset class="fieldset" aria-describedby="roles-error">
-        <legend class="fieldset-legend text-base">Roles <span class="text-error">*</span></legend>
-        <div class="space-y-2" role="group" aria-label="Select roles">
-          <label
-            :for={{label, value} <- @available_roles}
-            class="flex items-center gap-2 cursor-pointer"
-          >
-            <input
-              type="checkbox"
-              name="invite[roles][]"
-              value={value}
-              checked={value in @selected_roles}
-              class="checkbox checkbox-sm"
-            />
-            <span class="label">{label}</span>
-          </label>
-        </div>
-        <p
-          :if={@form[:errors].value["roles"]}
-          id="roles-error"
-          role="alert"
-          aria-live="polite"
-          class="mt-1.5 flex gap-2 items-center text-sm text-error"
-        >
-          <.icon name="hero-exclamation-circle" class="size-5" />
-          {hd(@form[:errors].value["roles"])}
-        </p>
-      </fieldset>
+      <.checkbox_group
+        name="invite[roles][]"
+        label="Roles"
+        options={@available_roles}
+        selected={@selected_roles}
+        required
+        error={@roles_error}
+      />
 
       <:actions>
         <div class="flex-1"></div>
-        <.link patch={~p"/admin/organizations/#{@organization.id}"} class="btn btn-outline">
+        <.link patch={~p"/admin/organizations/#{@organization.id}"} class="btn btn-ghost">
           Cancel
         </.link>
-        <.button phx-disable-with="Sending..." class="btn btn-primary btn-active">
+        <.button phx-disable-with="Sending..." class="btn btn-primary">
           Send Invite
         </.button>
       </:actions>
@@ -447,75 +428,50 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
           </section>
         </div>
       <% else %>
-        <div class="drawer drawer-end">
-          <input
-            id="org-drawer"
-            type="checkbox"
-            class="drawer-toggle"
-            checked={drawer_open?(@live_action)}
-          />
+        <.header>
+          Organizations
+          <:subtitle>Manage organizations and their members</:subtitle>
+          <:actions>
+            <.link patch={~p"/admin/organizations/new"} class="btn btn-primary btn-active">
+              Create Organization
+            </.link>
+          </:actions>
+        </.header>
 
-          <div class="drawer-content">
-            <.header>
-              Organizations
-              <:subtitle>Manage organizations and their members</:subtitle>
-              <:actions>
-                <.link patch={~p"/admin/organizations/new"} class="btn btn-primary btn-active">
-                  Create Organization
-                </.link>
-              </:actions>
-            </.header>
-
-            <div class="mt-8 bg-base-100 border border-base-300 rounded-lg overflow-hidden">
-              <.table id="organizations" rows={@streams.organizations}>
-                <:col :let={{_id, org}} label="Name">{org.name}</:col>
-                <:col :let={{_id, org}} label="Alias">{org.alias}</:col>
-                <:action :let={{_id, org}}>
-                  <.link patch={~p"/admin/organizations/#{org.id}/edit"} class="link link-primary">
-                    Edit
-                  </.link>
-                </:action>
-                <:action :let={{_id, org}}>
-                  <.link navigate={~p"/admin/organizations/#{org.id}"} class="link link-primary">
-                    View
-                  </.link>
-                </:action>
-              </.table>
-            </div>
-          </div>
-
-          <div class="drawer-side">
-            <label for="org-drawer" aria-label="close sidebar" class="drawer-overlay"></label>
-            <div class="bg-base-100 min-h-full max-w-3xl w-full">
-              <header class="flex items-center justify-between bg-base-200 px-4 py-3 border-b border-base-300">
-                <h3 class="text-lg font-bold">{@page_title}</h3>
-                <.link
-                  patch={
-                    if @live_action == :invite,
-                      do: ~p"/admin/organizations/#{@organization.id}",
-                      else: ~p"/admin/organizations"
-                  }
-                  class="btn btn-sm btn-circle btn-ghost btn-active"
-                  aria-label="Close"
-                >
-                  <.icon name="hero-x-mark" class="size-5" />
-                </.link>
-              </header>
-              <div class="p-4">
-                <%= if @live_action in [:new, :edit] do %>
-                  <.org_form form={@form} live_action={@live_action} />
-                <% end %>
-                <%= if @live_action == :invite do %>
-                  <.invite_form
-                    form={@invite_form}
-                    available_roles={available_roles()}
-                    organization={@organization}
-                  />
-                <% end %>
-              </div>
-            </div>
-          </div>
+        <div class="mt-8 bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+          <.table id="organizations" rows={@streams.organizations}>
+            <:col :let={{_id, org}} label="Name">{org.name}</:col>
+            <:col :let={{_id, org}} label="Alias">{org.alias}</:col>
+            <:action :let={{_id, org}}>
+              <.link patch={~p"/admin/organizations/#{org.id}/edit"} class="link link-primary">
+                Edit
+              </.link>
+            </:action>
+            <:action :let={{_id, org}}>
+              <.link navigate={~p"/admin/organizations/#{org.id}"} class="link link-primary">
+                View
+              </.link>
+            </:action>
+          </.table>
         </div>
+
+        <.drawer
+          id="org-drawer"
+          open={@live_action in [:new, :edit, :invite]}
+          on_close="close_drawer"
+          title={@page_title}
+        >
+          <%= if @live_action in [:new, :edit] do %>
+            <.org_form form={@form} live_action={@live_action} />
+          <% end %>
+          <%= if @live_action == :invite do %>
+            <.invite_form
+              form={@invite_form}
+              available_roles={available_roles()}
+              organization={@organization}
+            />
+          <% end %>
+        </.drawer>
       <% end %>
     </Layouts.app>
     """
