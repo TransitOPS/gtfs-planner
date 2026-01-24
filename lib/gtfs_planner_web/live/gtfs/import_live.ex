@@ -115,7 +115,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       end
 
     form = to_form(form_data, as: :gtfs_import_form, errors: errors)
-    {:noreply, assign(socket, form: form)}
+
+    # Reset version_name_touched when not creating a new version, so that
+    # re-enabling "Create a new GTFS version" doesn't immediately show errors.
+    socket =
+      socket
+      |> assign(:form, form)
+      |> assign(:version_name_touched, if(create_version, do: socket.assigns.version_name_touched, else: false))
+
+    {:noreply, socket}
   end
 
   @impl true
