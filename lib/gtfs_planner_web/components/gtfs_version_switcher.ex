@@ -48,7 +48,6 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
       <select
         id="gtfs-version-select"
         name="version"
-        phx-change="switch_gtfs_version"
         aria-label="Select GTFS version"
         class="select select-sm select-ghost rounded-full bg-base-100 min-w-[120px] focus:outline-none focus:ring-2 focus:ring-primary"
       >
