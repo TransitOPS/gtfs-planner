@@ -22,7 +22,8 @@ const GtfsVersionHook = {
     // Handle select change directly in JS to avoid race condition with LiveView re-render
     const select = this.el.querySelector('select');
     if (select) {
-      select.addEventListener('change', (e) => {
+      // Store handler reference for cleanup
+      this.changeHandler = (e) => {
         const versionId = e.target.value;
         
         // Update localStorage immediately
@@ -32,7 +33,8 @@ const GtfsVersionHook = {
         const currentPath = window.location.pathname;
         const newPath = currentPath.replace(/\/gtfs\/[^\/]+/, `/gtfs/${versionId}`);
         window.location.href = newPath;
-      });
+      };
+      select.addEventListener('change', this.changeHandler);
     }
     
     // Handle version selection events from server
@@ -48,6 +50,13 @@ const GtfsVersionHook = {
         window.location.href = url;
       }
     });
+  },
+  
+  destroyed() {
+    const select = this.el.querySelector('select');
+    if (select && this.changeHandler) {
+      select.removeEventListener('change', this.changeHandler);
+    }
   }
 };
 
