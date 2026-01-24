@@ -457,26 +457,64 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       reversed_signposted_as: params["reversed_signposted_as"]
     }
 
-    case Gtfs.update_pathway(editing_pathway, attrs) do
-      {:ok, updated_pathway} ->
-        updated_pathway = Gtfs.get_pathway_with_stops!(updated_pathway.id)
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
 
-        updated_list =
-          Enum.map(socket.assigns.pathways_list, fn p ->
-            if p.id == updated_pathway.id, do: updated_pathway, else: p
-          end)
+    pathway =
+      case editing_pathway do
+        nil -> nil
+        _ -> GtfsPlanner.Repo.preload(editing_pathway, [:from_stop, :to_stop])
+      end
 
+    cond do
+      is_nil(pathway) ->
         {:noreply,
          socket
-         |> stream_insert(:pathways, updated_pathway)
-         |> assign(:pathways_list, updated_list)
-         |> assign(:show_pathway_drawer, false)
-         |> assign(:editing_pathway, nil)
-         |> assign(:pathway_form, to_form(%{}))
-         |> assign(:pathway_error, nil)}
+         |> assign(:pathway_error, "Pathway not found.")
+         |> assign(:pathway_form, to_form(%{}))}
 
-      {:error, changeset} ->
-        {:noreply, assign(socket, :pathway_form, to_form(changeset))}
+      pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
+        {:noreply,
+         socket
+         |> assign(:pathway_error, "Unauthorized pathway access.")
+         |> assign(:pathway_form, to_form(%{}))}
+
+      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
+        {:noreply,
+         socket
+         |> assign(:pathway_error, "Pathway is not fully associated with stops.")
+         |> assign(:pathway_form, to_form(%{}))}
+
+      pathway.from_stop.parent_station_id != station.id or
+        pathway.to_stop.parent_station_id != station.id ->
+        {:noreply,
+         socket
+         |> assign(:pathway_error, "Unauthorized pathway access.")
+         |> assign(:pathway_form, to_form(%{}))}
+
+      true ->
+        case Gtfs.update_pathway(pathway, attrs) do
+          {:ok, updated_pathway} ->
+            updated_pathway = GtfsPlanner.Repo.preload(updated_pathway, [:from_stop, :to_stop])
+
+            updated_list =
+              Enum.map(socket.assigns.pathways_list, fn p ->
+                if p.id == updated_pathway.id, do: updated_pathway, else: p
+              end)
+
+            {:noreply,
+             socket
+             |> stream_insert(:pathways, updated_pathway)
+             |> assign(:pathways_list, updated_list)
+             |> assign(:show_pathway_drawer, false)
+             |> assign(:editing_pathway, nil)
+             |> assign(:pathway_form, to_form(%{}))
+             |> assign(:pathway_error, nil)}
+
+          {:error, changeset} ->
+            {:noreply, assign(socket, :pathway_form, to_form(changeset))}
+        end
     end
   end
 
