@@ -478,12 +478,38 @@ defmodule GtfsPlanner.Gtfs.Import do
            {:ok, pathway_mode} <- parse_pathway_mode(row_map["pathway_mode"]),
            {:ok, is_bidirectional} <- parse_is_bidirectional(row_map["is_bidirectional"]),
            {:ok, from_stop} <- resolve_stop_id(from_stop_id_str, organization_id, gtfs_version_id),
-           {:ok, to_stop} <- resolve_stop_id(to_stop_id_str, organization_id, gtfs_version_id),
-           {:ok, traversal_time} <- parse_integer(row_map["traversal_time"]),
-           {:ok, length} <- parse_decimal(row_map["length"]),
-           {:ok, stair_count} <- parse_integer(row_map["stair_count"]),
-           {:ok, max_slope} <- parse_decimal(row_map["max_slope"]),
-           {:ok, min_width} <- parse_decimal(row_map["min_width"]) do
+           {:ok, to_stop} <- resolve_stop_id(to_stop_id_str, organization_id, gtfs_version_id) do
+        # Parse optional fields individually, defaulting to nil on error
+        traversal_time =
+          case parse_integer(row_map["traversal_time"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        length =
+          case parse_decimal(row_map["length"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        stair_count =
+          case parse_integer(row_map["stair_count"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        max_slope =
+          case parse_decimal(row_map["max_slope"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        min_width =
+          case parse_decimal(row_map["min_width"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
         %{
           pathway_id: pathway_id,
           pathway_mode: pathway_mode,
