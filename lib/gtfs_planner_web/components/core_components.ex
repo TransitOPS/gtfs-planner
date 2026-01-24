@@ -685,6 +685,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :active_level, :any, default: nil, doc: "the currently selected level (diagram tab)"
   attr :mode, :atom, default: :add, doc: "canvas mode - :add or :connect (diagram tab)"
   attr :uploads, :any, default: nil, doc: "uploads struct for diagram upload (diagram tab)"
+  attr :has_diagram, :boolean, default: false, doc: "whether the active level has a diagram uploaded"
   attr :diagram_error, :string, default: nil, doc: "error message for diagram upload"
   slot :actions, doc: "contextual action buttons"
 
@@ -782,7 +783,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           </div>
 
           <%!-- Canvas actions --%>
-          <div :if={@active_level && @uploads} class="flex items-center gap-2">
+          <div :if={@active_level && @uploads && @has_diagram} class="flex items-center gap-2">
             <form
               id="diagram-upload-form"
               phx-change="upload_diagram"

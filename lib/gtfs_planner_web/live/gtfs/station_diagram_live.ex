@@ -40,6 +40,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:level_id_manually_edited, false)
        |> assign(:pathway_error, nil)
        |> assign(:diagram_error, nil)
+       |> assign(:editing_child_stop, nil)
+       |> assign(:show_pathway_drawer, false)
+       |> assign(:editing_pathway, nil)
+       |> assign(:pathway_form, to_form(%{}))
        |> allow_upload(:diagram,
          accept: ~w(.png .jpg .jpeg .svg),
          max_file_size: 10_000_000
@@ -137,6 +141,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             active_level={@active_level}
             mode={@mode}
             uploads={@uploads}
+            has_diagram={@active_level && @active_level.diagram_filename}
             diagram_error={@diagram_error}
           />
           <div class="w-full px-4 sm:px-6 lg:px-8 py-4">
@@ -146,6 +151,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               streams={@streams}
               active_point_id={@active_point_id}
               pending_xy={@pending_xy}
+              selected_stop_id={@selected_stop_id}
               mode={@mode}
               uploads={@uploads}
             />
@@ -156,6 +162,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pending_xy={@pending_xy}
           selected_stop_id={@selected_stop_id}
           child_stop_form={@child_stop_form}
+        />
+
+        <.pathway_drawer
+          open={@show_pathway_drawer}
+          pathway_form={@pathway_form}
+          editing_pathway={@editing_pathway}
         />
 
         <.level_sidebar
@@ -238,13 +250,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     case socket.assigns.mode do
       :add ->
-        form = to_form(%{"stop_id" => "", "stop_name" => "", "location_type" => "0"})
+        child_stops = get_child_stops_with_coordinates(socket)
+        clicked_stop = find_stop_near_point(child_stops, x, y, 5.0)
 
-        {:noreply,
-         socket
-         |> assign(:pending_xy, %{x: x, y: y})
-         |> assign(:selected_stop_id, nil)
-         |> assign(:child_stop_form, form)}
+        case clicked_stop do
+          nil ->
+            # No stop found - create new stop
+            form = to_form(%{"stop_id" => "", "stop_name" => "", "location_type" => "0"})
+
+            {:noreply,
+             socket
+             |> assign(:pending_xy, %{x: x, y: y})
+             |> assign(:selected_stop_id, nil)
+             |> assign(:child_stop_form, form)}
+
+          stop ->
+            # Stop found - edit existing stop
+            coord = stop.diagram_coordinate
+            pending_xy = %{x: to_float(coord["x"]), y: to_float(coord["y"])}
+
+            form =
+              to_form(%{
+                "stop_id" => stop.stop_id,
+                "stop_name" => stop.stop_name,
+                "location_type" => to_string(stop.location_type)
+              })
+
+            {:noreply,
+             socket
+             |> assign(:pending_xy, pending_xy)
+             |> assign(:selected_stop_id, stop.id)
+             |> assign(:child_stop_form, form)}
+        end
 
       :connect ->
         handle_connect_click(socket, x, y)
@@ -258,6 +295,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:pending_xy, nil)
      |> assign(:selected_stop_id, nil)
      |> assign(:child_stop_form, to_form(%{}))}
+  end
+
+  @impl true
+  def handle_event("edit_child_stop", %{"id" => id}, socket) do
+    stop = Gtfs.get_stop!(id)
+    coord = stop.diagram_coordinate
+    pending_xy = %{x: to_float(coord["x"]), y: to_float(coord["y"])}
+
+    form =
+      to_form(%{
+        "stop_id" => stop.stop_id,
+        "stop_name" => stop.stop_name,
+        "location_type" => to_string(stop.location_type)
+      })
+
+    {:noreply,
+     socket
+     |> assign(:pending_xy, pending_xy)
+     |> assign(:selected_stop_id, stop.id)
+     |> assign(:child_stop_form, form)}
   end
 
   @impl true
@@ -342,10 +399,122 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          socket
          |> stream_delete(:pathways, deleted_pathway)
          |> assign(:pathways_list, updated_list)
-         |> assign(:pathway_error, nil)}
+         |> assign(:pathway_error, nil)
+         |> assign(:show_pathway_drawer, false)
+         |> assign(:editing_pathway, nil)
+         |> assign(:pathway_form, to_form(%{}))}
 
       {:error, _changeset} ->
         {:noreply, assign(socket, :pathway_error, "Failed to delete pathway")}
+    end
+  end
+
+  @impl true
+  def handle_event("edit_pathway", %{"id" => id}, socket) do
+    pathway = Gtfs.get_pathway_with_stops!(id)
+
+    form =
+      to_form(%{
+        "pathway_id" => pathway.pathway_id,
+        "pathway_mode" => to_string(pathway.pathway_mode),
+        "is_bidirectional" => pathway.is_bidirectional,
+        "traversal_time" => pathway.traversal_time,
+        "length" => pathway.length,
+        "stair_count" => pathway.stair_count,
+        "min_width" => pathway.min_width,
+        "signposted_as" => pathway.signposted_as,
+        "reversed_signposted_as" => pathway.reversed_signposted_as
+      })
+
+    {:noreply,
+     socket
+     |> assign(:editing_pathway, pathway)
+     |> assign(:pathway_form, form)
+     |> assign(:show_pathway_drawer, true)}
+  end
+
+  @impl true
+  def handle_event("close_pathway_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_pathway_drawer, false)
+     |> assign(:editing_pathway, nil)
+     |> assign(:pathway_form, to_form(%{}))}
+  end
+
+  @impl true
+  def handle_event("save_pathway", params, socket) do
+    editing_pathway = socket.assigns.editing_pathway
+
+    attrs = %{
+      pathway_mode: parse_int(params["pathway_mode"]),
+      is_bidirectional: params["is_bidirectional"] == "true",
+      traversal_time: parse_optional_int(params["traversal_time"]),
+      length: parse_optional_decimal(params["length"]),
+      stair_count: parse_optional_int(params["stair_count"]),
+      min_width: parse_optional_decimal(params["min_width"]),
+      signposted_as: params["signposted_as"],
+      reversed_signposted_as: params["reversed_signposted_as"]
+    }
+
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    pathway =
+      case editing_pathway do
+        nil -> nil
+        _ -> GtfsPlanner.Repo.preload(editing_pathway, [:from_stop, :to_stop])
+      end
+
+    cond do
+      is_nil(pathway) ->
+        {:noreply,
+         socket
+         |> assign(:pathway_error, "Pathway not found.")
+         |> assign(:pathway_form, to_form(%{}))}
+
+      pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
+        {:noreply,
+         socket
+         |> assign(:pathway_error, "Unauthorized pathway access.")
+         |> assign(:pathway_form, to_form(%{}))}
+
+      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
+        {:noreply,
+         socket
+         |> assign(:pathway_error, "Pathway is not fully associated with stops.")
+         |> assign(:pathway_form, to_form(%{}))}
+
+      pathway.from_stop.parent_station_id != station.id or
+        pathway.to_stop.parent_station_id != station.id ->
+        {:noreply,
+         socket
+         |> assign(:pathway_error, "Unauthorized pathway access.")
+         |> assign(:pathway_form, to_form(%{}))}
+
+      true ->
+        case Gtfs.update_pathway(pathway, attrs) do
+          {:ok, updated_pathway} ->
+            updated_pathway = GtfsPlanner.Repo.preload(updated_pathway, [:from_stop, :to_stop])
+
+            updated_list =
+              Enum.map(socket.assigns.pathways_list, fn p ->
+                if p.id == updated_pathway.id, do: updated_pathway, else: p
+              end)
+
+            {:noreply,
+             socket
+             |> stream_insert(:pathways, updated_pathway)
+             |> assign(:pathways_list, updated_list)
+             |> assign(:show_pathway_drawer, false)
+             |> assign(:editing_pathway, nil)
+             |> assign(:pathway_form, to_form(%{}))
+             |> assign(:pathway_error, nil)}
+
+          {:error, changeset} ->
+            {:noreply, assign(socket, :pathway_form, to_form(changeset))}
+        end
     end
   end
 
@@ -541,6 +710,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp parse_int(_), do: 0
+
+  defp parse_optional_int(nil), do: nil
+  defp parse_optional_int(""), do: nil
+
+  defp parse_optional_int(str) when is_binary(str) do
+    case Integer.parse(str) do
+      {val, _} -> val
+      :error -> nil
+    end
+  end
+
+  defp parse_optional_int(val) when is_integer(val), do: val
+  defp parse_optional_int(_), do: nil
+
+  defp parse_optional_decimal(nil), do: nil
+  defp parse_optional_decimal(""), do: nil
+
+  defp parse_optional_decimal(str) when is_binary(str) do
+    case Float.parse(str) do
+      {val, _} -> Decimal.from_float(val)
+      :error -> nil
+    end
+  end
+
+  defp parse_optional_decimal(val) when is_float(val), do: Decimal.from_float(val)
+  defp parse_optional_decimal(%Decimal{} = val), do: val
+  defp parse_optional_decimal(_), do: nil
 
   defp to_snakecase_id(name) when is_binary(name) do
     name

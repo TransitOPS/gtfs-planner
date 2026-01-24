@@ -653,4 +653,119 @@ defmodule GtfsPlanner.GtfsTest do
       assert hd(result).to_stop.id == child2.id
     end
   end
+
+  describe "update_pathway/2" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      parent = stop_fixture(organization.id, gtfs_version.id, %{stop_id: "PARENT", location_type: 1})
+      child1 = stop_fixture(organization.id, gtfs_version.id, %{stop_id: "C1", parent_station_id: parent.id})
+      child2 = stop_fixture(organization.id, gtfs_version.id, %{stop_id: "C2", parent_station_id: parent.id})
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, child1.id, child2.id, %{
+          pathway_id: "P1",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          traversal_time: 60
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        parent: parent,
+        child1: child1,
+        child2: child2,
+        pathway: pathway
+      }
+    end
+
+    test "updates a pathway with valid attrs", %{pathway: pathway} do
+      update_attrs = %{
+        pathway_mode: 2,
+        is_bidirectional: false,
+        traversal_time: 120,
+        stair_count: 15
+      }
+
+      assert {:ok, updated_pathway} = Gtfs.update_pathway(pathway, update_attrs)
+      assert updated_pathway.id == pathway.id
+      assert updated_pathway.pathway_mode == 2
+      assert updated_pathway.is_bidirectional == false
+      assert updated_pathway.traversal_time == 120
+      assert updated_pathway.stair_count == 15
+    end
+
+    test "updates pathway_mode to different types", %{pathway: pathway} do
+      # Test each valid pathway mode
+      for mode <- 1..7 do
+        assert {:ok, updated} = Gtfs.update_pathway(pathway, %{pathway_mode: mode})
+        assert updated.pathway_mode == mode
+      end
+    end
+
+    test "updates optional fields to non-nil values", %{pathway: pathway} do
+      update_attrs = %{
+        length: Decimal.new("10.5"),
+        max_slope: Decimal.new("0.15"),
+        min_width: Decimal.new("1.2"),
+        signposted_as: "To Platform A",
+        reversed_signposted_as: "From Platform A"
+      }
+
+      assert {:ok, updated} = Gtfs.update_pathway(pathway, update_attrs)
+      assert Decimal.equal?(updated.length, Decimal.new("10.5"))
+      assert Decimal.equal?(updated.max_slope, Decimal.new("0.15"))
+      assert Decimal.equal?(updated.min_width, Decimal.new("1.2"))
+      assert updated.signposted_as == "To Platform A"
+      assert updated.reversed_signposted_as == "From Platform A"
+    end
+
+    test "returns error with invalid pathway_mode", %{pathway: pathway} do
+      # pathway_mode must be between 1 and 7
+      for invalid_mode <- [0, 8, 99] do
+        assert {:error, changeset} = Gtfs.update_pathway(pathway, %{pathway_mode: invalid_mode})
+        assert %{pathway_mode: ["is invalid"]} = errors_on(changeset)
+      end
+    end
+
+    test "returns error when pathway_mode is nil", %{pathway: pathway} do
+      assert {:error, changeset} = Gtfs.update_pathway(pathway, %{pathway_mode: nil})
+      assert %{pathway_mode: ["can't be blank"]} = errors_on(changeset)
+    end
+
+    test "returns error when pathway_id is set to nil", %{pathway: pathway} do
+      assert {:error, changeset} = Gtfs.update_pathway(pathway, %{pathway_id: nil})
+      assert %{pathway_id: ["can't be blank"]} = errors_on(changeset)
+    end
+
+    test "does not change immutable fields like id", %{pathway: pathway} do
+      original_id = pathway.id
+
+      assert {:ok, updated} = Gtfs.update_pathway(pathway, %{pathway_mode: 3})
+      assert updated.id == original_id
+    end
+
+    test "broadcasts update event on successful update", %{pathway: pathway} do
+      # Subscribe to the pathways PubSub topic
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "pathways")
+
+      update_attrs = %{pathway_mode: 5}
+      assert {:ok, updated_pathway} = Gtfs.update_pathway(pathway, update_attrs)
+
+      # Assert that we received the broadcast message
+      assert_receive {[:pathways, :updated], ^updated_pathway}
+    end
+
+    test "does not broadcast on validation failure", %{pathway: pathway} do
+      # Subscribe to the pathways PubSub topic
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "pathways")
+
+      # Attempt to update with invalid data
+      assert {:error, _changeset} = Gtfs.update_pathway(pathway, %{pathway_mode: nil})
+
+      # Assert that no broadcast message was received
+      refute_receive {[:pathways, :updated], _}, 100
+    end
+  end
 end
