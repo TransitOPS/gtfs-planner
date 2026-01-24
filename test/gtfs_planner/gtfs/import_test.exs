@@ -372,5 +372,39 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert pathway.pathway_id == "P1"
       assert pathway.length == nil
     end
+
+    test "rolls back transaction if pathway references unknown stop_id", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      levels_content = """
+      level_id,level_index,level_name
+      L1,0.0,Ground Floor
+      """
+
+      stops_content = """
+      stop_id,stop_name,stop_lat,stop_lon,level_id
+      S1,Stop 1,40.7,-74.0,L1
+      """
+
+      pathways_content = """
+      pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional
+      P1,S1,S2_UNKNOWN,1,1
+      """
+
+      files = [
+        %{filename: "levels.txt", content: levels_content},
+        %{filename: "stops.txt", content: stops_content},
+        %{filename: "pathways.txt", content: pathways_content}
+      ]
+
+      assert {:error, :pathways, {_changeset, 1}, _changes_so_far} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      # Verify no pathways, stops, or levels were created
+      assert Gtfs.list_pathways(organization.id, gtfs_version.id) == []
+      assert Gtfs.list_stops(organization.id, gtfs_version.id) == []
+      assert Gtfs.list_levels(organization.id, gtfs_version.id) == []
+    end
   end
 end
