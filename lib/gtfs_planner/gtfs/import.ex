@@ -139,24 +139,44 @@ defmodule GtfsPlanner.Gtfs.Import do
     if files == [] do
       multi
     else
-      Multi.run(multi, :pathways, fn repo, _changes ->
+      Multi.run(multi, :pathways, fn repo, changes ->
+        # Create a map of stop_id -> Stop struct from the transaction changes
+        stop_map =
+          changes
+          |> Enum.filter(fn {key, _value} ->
+            key |> Atom.to_string() |> String.starts_with?("stop_")
+          end)
+          |> Enum.map(fn {_key, stop} -> {stop.stop_id, stop} end)
+          |> Map.new()
+
         pathway_rows =
           files
           |> Enum.flat_map(&(&1.content |> parse_csv_content()))
 
         result =
-          Enum.reduce_while(pathway_rows, [], fn row_map, acc ->
-            changeset = pathway_row_to_changeset(row_map, organization_id, gtfs_version_id)
+          pathway_rows
+          |> Stream.with_index(1)
+          |> Enum.reduce_while([], fn {row_map, line_number}, acc ->
+            changeset =
+              pathway_row_to_changeset(
+                row_map,
+                organization_id,
+                gtfs_version_id,
+                stop_map
+              )
 
             case repo.insert(changeset) do
-              {:ok, pathway} -> {:cont, [pathway | acc]}
-              {:error, failed_changeset} -> {:halt, {:error, failed_changeset}}
+              {:ok, pathway} ->
+                {:cont, [pathway | acc]}
+
+              {:error, failed_changeset} ->
+                {:halt, {:error, {failed_changeset, line_number}}}
             end
           end)
 
         case result do
-          {:error, failed_changeset} ->
-            {:error, failed_changeset}
+          {:error, {failed_changeset, line_number}} ->
+            {:error, {failed_changeset, line_number}}
 
           inserted_pathways ->
             {:ok, length(inserted_pathways)}
@@ -470,15 +490,15 @@ defmodule GtfsPlanner.Gtfs.Import do
 
 
   # Converts a CSV row map to a Pathway changeset
-  defp pathway_row_to_changeset(row_map, organization_id, gtfs_version_id) do
+  defp pathway_row_to_changeset(row_map, organization_id, gtfs_version_id, stop_map) do
     attrs =
       with {:ok, pathway_id} <- extract_required(row_map, "pathway_id"),
            {:ok, from_stop_id_str} <- extract_required(row_map, "from_stop_id"),
            {:ok, to_stop_id_str} <- extract_required(row_map, "to_stop_id"),
            {:ok, pathway_mode} <- parse_pathway_mode(row_map["pathway_mode"]),
            {:ok, is_bidirectional} <- parse_is_bidirectional(row_map["is_bidirectional"]),
-           {:ok, from_stop} <- resolve_stop_id(from_stop_id_str, organization_id, gtfs_version_id),
-           {:ok, to_stop} <- resolve_stop_id(to_stop_id_str, organization_id, gtfs_version_id) do
+           {:ok, from_stop} <- {:ok, Map.get(stop_map, from_stop_id_str)},
+           {:ok, to_stop} <- {:ok, Map.get(stop_map, to_stop_id_str)} do
         # Parse optional fields individually, defaulting to nil on error
         traversal_time =
           case parse_integer(row_map["traversal_time"]) do
@@ -527,6 +547,15 @@ defmodule GtfsPlanner.Gtfs.Import do
           to_stop_id: to_stop.id
         }
       else
+        # Handle cases where stops are not found in the map
+        :error ->
+          %{
+            pathway_id: row_map["pathway_id"] || "",
+            organization_id: organization_id,
+            gtfs_version_id: gtfs_version_id,
+            from_stop_id: nil, # Explicitly set to nil to trigger validation
+            to_stop_id: nil
+          }
         {:error, _reason} ->
           # Invalid data will be caught by changeset validation
           %{
@@ -655,11 +684,4 @@ defmodule GtfsPlanner.Gtfs.Import do
     _ -> {:error, "invalid integer: #{string}"}
   end
 
-  # Resolves a stop_id string to the Stop struct
-  defp resolve_stop_id(stop_id_string, organization_id, gtfs_version_id) do
-    case Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id_string) do
-      nil -> {:error, "stop not found: #{stop_id_string}"}
-      stop -> {:ok, stop}
-    end
-  end
 end
