@@ -548,38 +548,79 @@ defmodule GtfsPlanner.GtfsTest do
       %{organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "returns levels with stop counts for a station", %{
+    test "returns levels scoped to a specific station", %{
       organization: org,
       gtfs_version: version
     } do
-      level =
+      # Create two stations
+      station_a = stop_fixture(org.id, version.id, %{stop_id: "STATION_A", location_type: 1})
+      station_b = stop_fixture(org.id, version.id, %{stop_id: "STATION_B", location_type: 1})
+
+      # Create levels for station A
+      level1 =
         level_fixture(org.id, version.id, %{
           level_id: "L1",
           level_index: 0.0,
-          level_name: "Ground"
+          level_name: "Ground",
+          parent_station_id: station_a.id
         })
 
-      parent = stop_fixture(org.id, version.id, %{stop_id: "PARENT", location_type: 1})
-
-      _child1 =
-        stop_fixture(org.id, version.id, %{
-          stop_id: "C1",
-          parent_station_id: parent.id,
-          level_id: level.id
+      level2 =
+        level_fixture(org.id, version.id, %{
+          level_id: "L2",
+          level_index: 1.0,
+          level_name: "Platform",
+          parent_station_id: station_a.id
         })
 
-      _child2 =
-        stop_fixture(org.id, version.id, %{
-          stop_id: "C2",
-          parent_station_id: parent.id,
-          level_id: level.id
+      # Create a level without parent_station_id (orphaned)
+      _orphaned_level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_ORPHAN",
+          level_index: 0.0
         })
 
-      result = Gtfs.list_levels_for_station(org.id, version.id, parent.id)
+      # Verify station A gets its levels
+      result_a = Gtfs.list_levels_for_station(org.id, version.id, station_a.id)
 
-      assert length(result) == 1
-      assert hd(result).level.id == level.id
-      assert hd(result).stop_count == 2
+      assert length(result_a) == 2
+      assert Enum.any?(result_a, fn l -> l.id == level1.id end)
+      assert Enum.any?(result_a, fn l -> l.id == level2.id end)
+      assert Enum.all?(result_a, fn l -> l.parent_station_id == station_a.id end)
+
+      # Verify station B returns empty list (no levels assigned)
+      result_b = Gtfs.list_levels_for_station(org.id, version.id, station_b.id)
+      assert result_b == []
+    end
+
+    test "orders levels by level_index ascending", %{organization: org, gtfs_version: version} do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION", location_type: 1})
+
+      level2 =
+        level_fixture(org.id, version.id, %{
+          level_id: "L2",
+          level_index: 2.0,
+          parent_station_id: station.id
+        })
+
+      level0 =
+        level_fixture(org.id, version.id, %{
+          level_id: "L0",
+          level_index: 0.0,
+          parent_station_id: station.id
+        })
+
+      level1 =
+        level_fixture(org.id, version.id, %{
+          level_id: "L1",
+          level_index: 1.0,
+          parent_station_id: station.id
+        })
+
+      result = Gtfs.list_levels_for_station(org.id, version.id, station.id)
+
+      assert Enum.map(result, & &1.level_index) == [0.0, 1.0, 2.0]
+      assert Enum.map(result, & &1.id) == [level0.id, level1.id, level2.id]
     end
   end
 

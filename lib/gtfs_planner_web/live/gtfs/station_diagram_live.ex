@@ -60,9 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:noreply, push_navigate(socket, to: "/gtfs/#{gtfs_version_id}/stops")}
 
         station ->
-          levels =
-            Gtfs.list_levels(organization_id, gtfs_version_id)
-            |> Enum.sort_by(& &1.level_index)
+          levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
 
           active_level =
             Enum.find(levels, List.first(levels), fn l -> l.level_index == 0.0 end)
@@ -465,22 +463,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_event("save_level", params, socket) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
 
     level_attrs = %{
       level_id: params["level_id"],
       level_name: params["level_name"],
       level_index: parse_int(params["level_index"]),
       organization_id: organization_id,
-      gtfs_version_id: gtfs_version_id
+      gtfs_version_id: gtfs_version_id,
+      parent_station_id: station.id
     }
 
     case socket.assigns.show_level_modal do
       :add ->
         case Gtfs.create_level(level_attrs) do
           {:ok, new_level} ->
-            levels =
-              Gtfs.list_levels(organization_id, gtfs_version_id)
-              |> Enum.sort_by(& &1.level_index)
+            station = socket.assigns.station
+            levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
 
             {:noreply,
              socket
@@ -499,9 +498,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         case Gtfs.update_level(level, level_attrs) do
           {:ok, updated_level} ->
-            levels =
-              Gtfs.list_levels(organization_id, gtfs_version_id)
-              |> Enum.sort_by(& &1.level_index)
+            station = socket.assigns.station
+            levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
 
             {:noreply,
              socket

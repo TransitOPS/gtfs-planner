@@ -332,27 +332,19 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Returns levels used by child stops of a station.
+  Returns the list of levels for a specific station.
 
   ## Examples
 
-      iex> list_levels_for_station(org_id, version_id, parent_id)
-      [%{level: %Level{}, stop_count: 3}, ...]
+      iex> list_levels_for_station(organization_id, gtfs_version_id, parent_station_id)
+      [%Level{}, ...]
   """
   def list_levels_for_station(organization_id, gtfs_version_id, parent_station_id) do
-    from(s in Stop,
+    from(l in Level,
       where:
-        s.organization_id == ^organization_id and
-          s.gtfs_version_id == ^gtfs_version_id and
-          s.parent_station_id == ^parent_station_id and
-          not is_nil(s.level_id),
-      join: l in Level,
-      on: l.id == s.level_id,
-      group_by: [l.id, l.level_id, l.level_name, l.level_index],
-      select: %{
-        level: l,
-        stop_count: count(s.id)
-      },
+        l.organization_id == ^organization_id and
+          l.gtfs_version_id == ^gtfs_version_id and
+          l.parent_station_id == ^parent_station_id,
       order_by: [asc: l.level_index]
     )
     |> Repo.all()

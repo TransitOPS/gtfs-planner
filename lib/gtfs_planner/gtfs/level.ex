@@ -6,6 +6,7 @@ defmodule GtfsPlanner.Gtfs.Level do
           id: Ecto.UUID.t(),
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
+          parent_station_id: Ecto.UUID.t() | nil,
           level_id: String.t(),
           level_index: float(),
           level_name: String.t() | nil,
@@ -28,6 +29,10 @@ defmodule GtfsPlanner.Gtfs.Level do
 
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
 
+    belongs_to :parent_station, GtfsPlanner.Gtfs.Stop,
+      foreign_key: :parent_station_id,
+      type: :binary_id
+
     timestamps(type: :utc_datetime_usec)
   end
 
@@ -40,7 +45,8 @@ defmodule GtfsPlanner.Gtfs.Level do
       :level_name,
       :diagram_filename,
       :organization_id,
-      :gtfs_version_id
+      :gtfs_version_id,
+      :parent_station_id
     ])
     |> validate_required([:level_id, :level_index, :organization_id, :gtfs_version_id])
     |> unique_constraint([:organization_id, :gtfs_version_id, :level_id],
@@ -48,5 +54,6 @@ defmodule GtfsPlanner.Gtfs.Level do
     )
     |> foreign_key_constraint(:organization_id)
     |> foreign_key_constraint(:gtfs_version_id)
+    |> foreign_key_constraint(:parent_station_id)
   end
 end
