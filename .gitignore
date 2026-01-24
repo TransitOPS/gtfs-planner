@@ -55,3 +55,13 @@ logfile
 pathway-studio
 
 priv/static/uploads
+
+# Infra
+.terraform
+.envrc
+.external_modules
+*.tfstate
+*.tfstate.backup
+infra/modules/rds-database/db_admin/vendor
+infra/modules/rds-database/db_admin/.python-version
+infra/modules/rds-database/db_admin.zip

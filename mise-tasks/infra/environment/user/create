@@ -1,0 +1,19 @@
+#!/bin/bash
+#USAGE arg "<environment_name>" help="Environment name to migrate"
+#USAGE arg "<email>" help="Email address to invite"
+
+mise run infra:environment:run-eval "${usage_environment_name?}" <<EOF
+email = "${usage_email?}"
+IO.puts("Sending invite to #{email}…")
+Application.ensure_all_started(:gtfs_planner)
+user = try do
+  GtfsPlanner.Repo.insert!(%GtfsPlanner.Accounts.User{email: email})
+rescue
+  _ -> GtfsPlanner.Repo.get_by!(GtfsPlanner.Accounts.User, email: email)
+end
+
+{:ok, mail} =
+  GtfsPlanner.Accounts.deliver_user_invite(user, &"#{GtfsPlannerWeb.Endpoint.url()}/users/accept_invite/#{&1}")
+
+IO.puts(mail.text_body)
+EOF

@@ -1,0 +1,23 @@
+#!/bin/bash
+#USAGE arg "<environment_name>"
+#USAGE flag "--image-tag <image_tag>" help="Tag to use for the image (default is the Git SHA)"
+#USAGE flag "--build-dir <build_dir>" help="Optional directory to use for the Git SHA"
+set -euo pipefail
+
+environment="${usage_environment_name:?}"
+source mise-tasks/infra/account-information "$environment"
+
+image_tag="${usage_image_tag:-}"
+if [ -z "$image_tag" ]; then
+	[[ -n "${usage_build_dir:-}" ]] && cd "$usage_build_dir"
+	image_tag=${repository_url}:$(git rev-parse HEAD)
+fi
+
+echo "image_tag=$image_tag"
+
+if [[ -z "$host" ]]; then
+	mise run infra:environment:update "$environment" --image_tag="$image_tag" -auto-approve -target module.service[0].aws_ecs_task_definition.this
+	mise run infra:environment:migrate-database "$environment"
+fi
+mise run infra:environment:update "$environment" --image_tag="$image_tag" -auto-approve -target module.service[0].aws_ecs_service.this -target module.docker_service[0].terraform_data.service
+[[ -z "$host" ]] && mise run infra:environment:wait "$environment" || true

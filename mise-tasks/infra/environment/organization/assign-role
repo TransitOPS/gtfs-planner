@@ -1,0 +1,17 @@
+#!/bin/bash
+#USAGE arg "<environment_name>" help="Environment name to use"
+#USAGE arg "<alias>" help="Alias of the organization to use"
+#USAGE arg "<email>" help="E-mail address to invite to the organization"
+#USAGE arg "<role>" help="Role to assign to the user"
+mise run infra:environment:run-eval "${usage_environment_name?}" <<EOF
+Application.ensure_all_started(:gtfs_planner)
+roles = String.split("${usage_role?}", ",")
+user = GtfsPlanner.Accounts.get_user_by_email("${usage_email?}")
+org = GtfsPlanner.Organizations.get_organization_by_alias("${usage_alias?}")
+case GtfsPlanner.Organizations.add_user_to_organization(user.id, org.id, roles) do
+  {:ok, r} ->
+    IO.inspect(r)
+  _ ->
+    GtfsPlanner.Organizations.update_user_roles(user.id, org.id, roles) |> IO.inspect()
+end
+EOF
