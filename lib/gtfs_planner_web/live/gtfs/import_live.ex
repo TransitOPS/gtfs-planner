@@ -280,7 +280,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   <label class="label cursor-pointer justify-start gap-3">
                     <input
                       type="checkbox"
-                      name="create_version"
+                      name="gtfs_import_form[create_version]"
+                      value="true"
                       class="checkbox"
                       checked={@form[:create_version].value}
                     />
@@ -295,7 +296,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                     </label>
                     <input
                       type="text"
-                      name="version_name"
+                      name="gtfs_import_form[version_name]"
                       class="input input-bordered w-full"
                       placeholder="e.g., 'Spring 2025 Schedule'"
                       value={@form[:version_name].value}
