@@ -265,7 +265,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         levels.txt, stops.txt, pathways.txt (max 10 files, 10MB each)
                       </p>
                     </div>
-                    <.live_file_input upload={@uploads.gtfs_files} class="hidden" />
+                    <.live_file_input upload={@uploads.gtfs_files} class="sr-only" />
                   </label>
 
                   <%!-- Upload entries display --%>
