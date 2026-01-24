@@ -1,0 +1,43 @@
+#!/bin/bash
+#USAGE arg "<environment_name>" help="Environment name to run the command in"
+#USAGE arg "[command]" help="Elixir script to evaluate (uses STDIN if not present)"
+
+if [[ -z "${usage_command:-}" ]]; then
+  read -r -d "" usage_command
+fi
+
+read -r -d "" container_overrides <<EOT
+{
+  "cpu": "256",
+  "memory": "512",
+  "containerOverrides": [
+    {
+	  "name": "app",
+	  "environment": [
+	    {"name": "PHX_SERVER"}
+	  ],
+	  "command": ["eval", $(echo "$usage_command" | jq -Rsa .)]
+	}
+  ]
+}
+EOT
+
+set -euo pipefail
+
+environment="${usage_environment_name?}"
+source mise-tasks/infra/account-information "$environment"
+
+if [[ -z "$host" ]]; then
+  network_configuration=$(tofu -chdir=infra/environments output -var "name=$environment" -json task_network_configuration)
+
+  output=$(aws ecs run-task --cluster "$project_name" --task-definition "$project_name"-"$environment" --network-configuration "$network_configuration" --capacity-provider-strategy "capacityProvider=FARGATE_SPOT,base=1" --overrides "$container_overrides" --started-by="${USER}@$(hostname)")
+
+  task_arn=$(echo "$output" | jq -r .tasks[].taskArn)
+  echo "Waiting for task $task_arn..."
+
+  aws ecs wait tasks-stopped --cluster "$project_name" --tasks "$task_arn"
+  task_id=$(echo "$task_arn" | awk -F'/' '{print $NF}')
+  aws logs tail /aws/ecs/"$project_name"-"$environment" --log-stream-names ecs/app/"$task_id"
+else
+  echo "$usage_command" | ssh ubuntu@"$host" docker compose -f ".compose-$project_name-service-$environment.yml" run -e PHX_SERVER=false --rm "$project_name-service-$environment" eval "'Code.eval_string(IO.read(:stdio, :eof))'"
+fi

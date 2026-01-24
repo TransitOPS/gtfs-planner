@@ -1,0 +1,13 @@
+#!/bin/bash
+#USAGE arg "<environment_name>" help="Environment name to manage"
+#MISE sources=["priv/repo/migrations/*"]
+set -euo pipefail
+
+environment="${usage_environment_name?}"
+source mise-tasks/infra/account-information "$environment"
+
+if [[ -z "$host" ]]; then
+  mise run infra:environment:run-eval "$environment" "GtfsPlanner.Release.migrate()"
+else
+  echo "Migration for Docker hosts happens at update time."
+fi

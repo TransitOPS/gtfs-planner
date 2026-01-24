@@ -1,0 +1,150 @@
+# High level tasks
+[tasks.setup]
+depends = ["setup:*"]
+
+[tasks.test]
+depends = ["test:*"]
+
+[tasks.lint]
+depends = ["lint:*"]
+
+[tasks.format]
+depends = ["format:*"]
+
+# Setup
+[tasks."setup:tools"]
+sources = ["mise.toml", ".tool-versions"]
+depends_post = ["setuppost:jq"]
+run = "mise install"
+
+[tasks."setuppost:jq"]
+wait_for = ["setup:tools"]
+quiet = true
+hide = true
+run = """
+if ! which jq >/dev/null; then
+  echo ----------------------------------------------------------------
+  echo 'Please install `jq` manually (apt install jq, brew install jq)'
+  echo ----------------------------------------------------------------
+  exit 1
+fi
+"""
+
+# Tests
+[tasks."test:elixir"]
+depends = ["elixir:deps"]
+run = "mix test"
+
+# Linting
+[tasks."lint:elixir:format"]
+depends = ["elixir:deps"]
+run = "mix format --check-formatted"
+
+[tasks."lint:elixir:credo"]
+depends = ["elixir:deps"]
+run = "mix credo"
+
+[tasks."lint:elixir:sobelow"]
+depends = ["elixir:deps"]
+run = "mix sobelow --config"
+
+[tasks."lint:elixir:dialyzer"]
+depends = ["elixir:deps"]
+run = "mix dialyzer"
+
+[tasks."lint:infra:tf"]
+run = "tofu fmt -recursive -check infra"
+
+[tasks."lint:infra:shellcheck"]
+sources = ["mise-tasks/**/*"]
+run = '''
+shellcheck -ax -P bin -s bash {% for path in task_source_files() %}{% if path is file %}{{ path }} {% endif %}{% endfor %}
+'''
+
+[tasks."lint:infra:tf:validate"]
+sources = ["infra/modules/**/*"]
+run = '''
+for mod in infra/modules/*; do
+  tofu -chdir=${mod} init -backend=false
+  tofu -chdir=${mod} validate
+done
+'''
+
+[tasks."lint:infra:checkov:tf"]
+run = "checkov -d infra --skip-path infra/modules/rds-database/db_admin/vendor --quiet"
+
+[tasks."lint:infra:checkov:dockerfile"]
+run = "checkov -f Dockerfile --quiet"
+
+# Formatting
+[tasks."format:elixir"]
+depends = ["elixir:deps"]
+run = "mix format"
+
+[tasks."format:infra"]
+run = "tofu fmt -recursive infra"
+
+# Infrastructure
+[tasks."infra:account:update"]
+usage = '''
+arg "<account_name>" help="Account name to update"
+arg "[flags]" var=#true help="Additional arguments to tofu apply"
+'''
+raw = true
+run = '''
+cd infra/accounts
+tofu init -input=false -reconfigure -backend-config="${usage_account_name}.s3.tfbackend"
+tofu apply ${usage_flags} -var "name=${usage_account_name}"
+'''
+
+[tasks."infra:network:update"]
+usage = '''
+arg "<network_name>" help="Network name to update"
+arg "[flags]" var=#true help="Additional arguments to tofu apply"
+'''
+raw = true
+run = '''
+cd infra/networks
+tofu init -input=false -reconfigure -backend-config="${usage_network_name}.s3.tfbackend"
+tofu apply ${usage_flags} -var "name=${usage_network_name}"
+'''
+
+[tasks."infra:database:update"]
+usage = '''
+arg "<database_name>" help="Database name to update"
+arg "[flags]" var=#true help="Additional arguments to tofu apply"
+'''
+raw = true
+run = '''
+cd infra/databases
+tofu init -input=false -reconfigure -backend-config="${usage_database_name}.s3.tfbackend"
+tofu apply ${usage_flags} -var "name=${usage_database_name}"
+'''
+
+[tasks."infra:environment:update"]
+usage = '''
+arg "<environment_name>" help="Environment name to update"
+flag "--image_tag <image_tag>" help="If provided, the image tag to update"
+arg "[flags]" var=#true help="Additional arguments to tofu apply"
+'''
+raw = true
+run = '''
+cd infra/environments
+tofu init -input=false -reconfigure -backend-config="${usage_environment_name}.s3.tfbackend"
+tofu apply $(echo "$usage_flags" | tr -d \') ${usage_image_tag:+-var "image_tag=$usage_image_tag"} -var "name=${usage_environment_name}"
+'''
+
+[tasks."infra:environment:wait"]
+usage = '''
+arg "<environment_name>" help="Environment name to wait for"
+'''
+run = '''
+echo "Waiting for service gtfs-planner-${usage_environment_name?} to stabilize..."
+aws ecs wait services-stable --cluster gtfs-planner --services gtfs-planner-"$usage_environment_name"
+'''
+
+# Elixir subtasks
+[tasks."elixir:deps"]
+sources = ["mix.*"]
+run = "mix deps.get"
+hide = true

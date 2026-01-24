@@ -1,0 +1,3 @@
+bucket = "gtfs-planner-915644995943-us-east-1-tf"
+key = "infra/environments/dev.tfstate"
+region = "us-east-1"
