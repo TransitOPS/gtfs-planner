@@ -332,27 +332,19 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Returns levels used by child stops of a station.
+  Returns the list of levels for a specific station.
 
   ## Examples
 
-      iex> list_levels_for_station(org_id, version_id, parent_id)
-      [%{level: %Level{}, stop_count: 3}, ...]
+      iex> list_levels_for_station(organization_id, gtfs_version_id, parent_station_id)
+      [%Level{}, ...]
   """
   def list_levels_for_station(organization_id, gtfs_version_id, parent_station_id) do
-    from(s in Stop,
+    from(l in Level,
       where:
-        s.organization_id == ^organization_id and
-          s.gtfs_version_id == ^gtfs_version_id and
-          s.parent_station_id == ^parent_station_id and
-          not is_nil(s.level_id),
-      join: l in Level,
-      on: l.id == s.level_id,
-      group_by: [l.id, l.level_id, l.level_name, l.level_index],
-      select: %{
-        level: l,
-        stop_count: count(s.id)
-      },
+        l.organization_id == ^organization_id and
+          l.gtfs_version_id == ^gtfs_version_id and
+          l.parent_station_id == ^parent_station_id,
       order_by: [asc: l.level_index]
     )
     |> Repo.all()
@@ -390,14 +382,15 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Returns pathways where both from_stop and to_stop have the specified level_id.
+  Returns pathways where both from_stop and to_stop have the specified level_id
+  and belong to the specified parent station.
 
   ## Examples
 
-      iex> list_pathways_for_level(org_id, version_id, level_id)
+      iex> list_pathways_for_level(org_id, version_id, level_id, parent_station_id)
       [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
   """
-  def list_pathways_for_level(organization_id, gtfs_version_id, level_id) do
+  def list_pathways_for_level(organization_id, gtfs_version_id, level_id, parent_station_id) do
     from(p in Pathway,
       join: from_stop in Stop,
       on: p.from_stop_id == from_stop.id,
@@ -407,7 +400,9 @@ defmodule GtfsPlanner.Gtfs do
         p.organization_id == ^organization_id and
           p.gtfs_version_id == ^gtfs_version_id and
           from_stop.level_id == ^level_id and
-          to_stop.level_id == ^level_id,
+          to_stop.level_id == ^level_id and
+          from_stop.parent_station_id == ^parent_station_id and
+          to_stop.parent_station_id == ^parent_station_id,
       order_by: [asc: p.pathway_id],
       preload: [:from_stop, :to_stop]
     )
