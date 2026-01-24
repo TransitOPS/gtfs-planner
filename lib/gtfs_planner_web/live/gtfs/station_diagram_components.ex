@@ -479,8 +479,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <div :if={@editing_pathway} class="mt-4 p-4 bg-base-200 rounded">
         <div class="text-sm font-medium mb-2">Connected Stops</div>
         <div class="text-sm">
-          <div>From: {@editing_pathway.from_stop.stop_name || @editing_pathway.from_stop.stop_id}</div>
-          <div>To: {@editing_pathway.to_stop.stop_name || @editing_pathway.to_stop.stop_id}</div>
+          <div>
+            From:
+            {case @editing_pathway.from_stop do
+               %Stop{} = stop -> stop.stop_name || stop.stop_id
+               _ -> "Unknown stop"
+             end}
+          </div>
+          <div>
+            To:
+            {case @editing_pathway.to_stop do
+               %Stop{} = stop -> stop.stop_name || stop.stop_id
+               _ -> "Unknown stop"
+             end}
+          </div>
         </div>
       </div>
 
