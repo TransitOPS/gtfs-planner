@@ -41,7 +41,8 @@ const DiagramCanvasHook = {
     svg.addEventListener("wheel", (e) => {
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
-        const delta = e.deltaY > 0 ? 1.1 : 0.9;
+        // Scroll up (negative deltaY) = zoom in, scroll down = zoom out
+        const delta = e.deltaY > 0 ? 0.95 : 1.05;
         const newScale = Math.min(this.maxScale, Math.max(this.minScale, this.scale * delta));
 
         if (newScale !== this.scale) {
@@ -61,9 +62,10 @@ const DiagramCanvasHook = {
           this.updateViewBox();
         }
       } else {
-        const panSpeed = 0.5;
+        const panSpeed = 0.3;
         this.viewBox.x += e.deltaX * panSpeed / this.scale;
         this.viewBox.y += e.deltaY * panSpeed / this.scale;
+        this.clampViewBox();
         this.updateViewBox();
       }
     }, { passive: false });
@@ -85,6 +87,7 @@ const DiagramCanvasHook = {
         this.viewBox.x -= dx;
         this.viewBox.y -= dy;
         this.panStart = { x: e.clientX, y: e.clientY };
+        this.clampViewBox();
         this.updateViewBox();
       }
     });
@@ -142,6 +145,19 @@ const DiagramCanvasHook = {
       childList: true,
       subtree: true
     });
+  },
+
+  clampViewBox() {
+    // Constrain panning to prevent drifting too far from image bounds
+    // Allow up to 50% of the viewBox dimensions outside the image
+    const margin = 0.5;
+    const minX = -this.viewBox.w * margin;
+    const maxX = this.baseW - this.viewBox.w * (1 - margin);
+    const minY = -this.viewBox.h * margin;
+    const maxY = this.baseH - this.viewBox.h * (1 - margin);
+
+    this.viewBox.x = Math.max(minX, Math.min(maxX, this.viewBox.x));
+    this.viewBox.y = Math.max(minY, Math.min(maxY, this.viewBox.y));
   },
 
   syncOverlayViewBox() {

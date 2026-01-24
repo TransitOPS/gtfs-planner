@@ -283,9 +283,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       nil ->
         case Gtfs.create_stop(stop_attrs) do
           {:ok, stop} ->
+            updated_list = [stop | socket.assigns.child_stops_list]
+
             {:noreply,
              socket
              |> stream_insert(:child_stops, stop)
+             |> assign(:child_stops_list, updated_list)
              |> assign(:pending_xy, nil)
              |> assign(:selected_stop_id, nil)
              |> assign(:child_stop_form, to_form(%{}))}
@@ -299,9 +302,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         case Gtfs.update_stop(stop, stop_attrs) do
           {:ok, updated_stop} ->
+            updated_list =
+              Enum.map(socket.assigns.child_stops_list, fn s ->
+                if s.id == updated_stop.id, do: updated_stop, else: s
+              end)
+
             {:noreply,
              socket
              |> stream_insert(:child_stops, updated_stop)
+             |> assign(:child_stops_list, updated_list)
              |> assign(:pending_xy, nil)
              |> assign(:selected_stop_id, nil)
              |> assign(:child_stop_form, to_form(%{}))}
@@ -327,9 +336,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     case Gtfs.delete_pathway(pathway) do
       {:ok, deleted_pathway} ->
+        updated_list = Enum.reject(socket.assigns.pathways_list, &(&1.id == deleted_pathway.id))
+
         {:noreply,
          socket
          |> stream_delete(:pathways, deleted_pathway)
+         |> assign(:pathways_list, updated_list)
          |> assign(:pathway_error, nil)}
 
       {:error, _changeset} ->
@@ -641,10 +653,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     case Gtfs.create_pathway(attrs) do
       {:ok, pathway} ->
         pathway = %{pathway | from_stop: from_stop, to_stop: to_stop}
+        updated_list = [pathway | socket.assigns.pathways_list]
 
         {:noreply,
          socket
          |> stream_insert(:pathways, pathway)
+         |> assign(:pathways_list, updated_list)
          # Re-stream to remove highlight
          |> stream_insert(:child_stops, from_stop)
          |> assign(:active_point_id, nil)
