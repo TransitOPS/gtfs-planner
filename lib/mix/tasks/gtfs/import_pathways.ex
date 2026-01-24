@@ -110,7 +110,11 @@ defmodule Mix.Tasks.Gtfs.ImportPathways do
 
         {:error, operation, changeset, _changes_so_far} ->
           errors = Enum.map(changeset.errors, fn {field, {msg, _}} -> "#{field}: #{msg}" end)
-          log_error("Failed to import pathway at operation #{operation}: #{Enum.join(errors, ", ")}")
+
+          log_error(
+            "Failed to import pathway at operation #{operation}: #{Enum.join(errors, ", ")}"
+          )
+
           System.halt(1)
       end
     rescue
@@ -150,7 +154,10 @@ defmodule Mix.Tasks.Gtfs.ImportPathways do
             {[row_map], {:has_header, header}}
 
           {:ok, fields} ->
-            Mix.shell().error("  ⚠ Skipping malformed line: expected #{length(header)} fields, got #{length(fields)}")
+            Mix.shell().error(
+              "  ⚠ Skipping malformed line: expected #{length(header)} fields, got #{length(fields)}"
+            )
+
             {[], {:has_header, header}}
 
           {:error, reason} ->
@@ -185,6 +192,7 @@ defmodule Mix.Tasks.Gtfs.ImportPathways do
         case rest do
           <<?", rest2::binary>> ->
             parse_csv_fields(rest2, fields, current <> <<?">>, true, pos + 2)
+
           _ ->
             parse_csv_fields(rest, fields, current, false, pos + 1)
         end
@@ -250,6 +258,7 @@ defmodule Mix.Tasks.Gtfs.ImportPathways do
 
   defp parse_pathway_mode(nil), do: {:error, "pathway_mode is required"}
   defp parse_pathway_mode(""), do: {:error, "pathway_mode is required"}
+
   defp parse_pathway_mode(string) do
     case Integer.parse(string) do
       {int, ""} when int in 1..7 -> {:ok, int}
@@ -264,6 +273,7 @@ defmodule Mix.Tasks.Gtfs.ImportPathways do
   defp parse_is_bidirectional(""), do: {:ok, true}
   defp parse_is_bidirectional("1"), do: {:ok, true}
   defp parse_is_bidirectional("0"), do: {:ok, false}
+
   defp parse_is_bidirectional(string) do
     case String.downcase(string) do
       "true" -> {:ok, true}
@@ -274,6 +284,7 @@ defmodule Mix.Tasks.Gtfs.ImportPathways do
 
   defp parse_integer(nil), do: {:ok, nil}
   defp parse_integer(""), do: {:ok, nil}
+
   defp parse_integer(string) do
     case Integer.parse(string) do
       {int, ""} -> {:ok, int}
@@ -285,6 +296,7 @@ defmodule Mix.Tasks.Gtfs.ImportPathways do
 
   defp parse_decimal(nil), do: {:ok, nil}
   defp parse_decimal(""), do: {:ok, nil}
+
   defp parse_decimal(string) do
     try do
       case Decimal.new(string) do

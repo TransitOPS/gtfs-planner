@@ -101,7 +101,11 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
             # Improved error formatting to match stops importer style
             errors = Enum.map(changeset.errors, fn {field, {msg, _}} -> "#{field}: #{msg}" end)
             level_id = if row_data, do: row_data[:level_id] || "unknown", else: "unknown"
-            Mix.shell().error("  ✗ Failed to create level #{level_id}: #{Enum.join(errors, ", ")}")
+
+            Mix.shell().error(
+              "  ✗ Failed to create level #{level_id}: #{Enum.join(errors, ", ")}"
+            )
+
             {total + 1, success, failure + 1}
         end
       end)
@@ -122,7 +126,8 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
   defp parse_csv_file(file_path) do
     file_path
     |> File.stream!()
-    |> Stream.drop(1) # Skip header
+    # Skip header
+    |> Stream.drop(1)
     |> Stream.map(&String.trim/1)
     |> Stream.filter(&(&1 != ""))
     |> Stream.map(&parse_csv_line/1)
@@ -148,7 +153,10 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
             }
 
           _ ->
-            Mix.shell().error("  ⚠ Skipping malformed line: expected at least 2 fields, got #{length(fields)}")
+            Mix.shell().error(
+              "  ⚠ Skipping malformed line: expected at least 2 fields, got #{length(fields)}"
+            )
+
             nil
         end
 
@@ -178,6 +186,7 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
           <<?", rest2::binary>> ->
             # Escaped quote: add quote and skip next char
             parse_csv_fields(rest2, fields, current <> <<?">>, true, pos + 2)
+
           _ ->
             # End of quoted field
             parse_csv_fields(rest, fields, current, false, pos + 1)
@@ -197,8 +206,11 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
     end
   end
 
-  defp process_row(%{level_id: level_id, level_index_str: level_index_str, level_name: level_name},
-        organization_id, gtfs_version_id) do
+  defp process_row(
+         %{level_id: level_id, level_index_str: level_index_str, level_name: level_name},
+         organization_id,
+         gtfs_version_id
+       ) do
     with {:ok, level_index} <- parse_float(level_index_str) do
       attrs = %{
         level_id: level_id,

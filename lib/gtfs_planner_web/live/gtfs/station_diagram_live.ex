@@ -170,7 +170,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pathways_list={@pathways_list}
           pathway_error={@pathway_error}
         />
-
       </Layouts.app>
     <% end %>
     """
@@ -552,7 +551,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       coord_x = to_float(coord["x"])
       coord_y = to_float(coord["y"])
       distance = :math.sqrt((coord_x - x) * (coord_x - x) + (coord_y - y) * (coord_y - y))
-      IO.inspect({stop.stop_id, coord, {coord_x, coord_y}, {x, y}, distance}, label: "DEBUG: stop info")
+
+      IO.inspect({stop.stop_id, coord, {coord_x, coord_y}, {x, y}, distance},
+        label: "DEBUG: stop info"
+      )
     end)
 
     clicked_stop = find_stop_near_point(child_stops, x, y, 5.0)
@@ -645,12 +647,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> stream_insert(:pathways, pathway)
-         |> stream_insert(:child_stops, from_stop)  # Re-stream to remove highlight
+         # Re-stream to remove highlight
+         |> stream_insert(:child_stops, from_stop)
          |> assign(:active_point_id, nil)
          |> assign(:pathway_error, nil)}
 
       {:error, changeset} ->
         IO.inspect(changeset, label: "DEBUG: pathway creation FAILED")
+
         {:noreply,
          socket
          |> assign(:active_point_id, nil)
