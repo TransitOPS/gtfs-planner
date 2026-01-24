@@ -95,7 +95,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
     child_stops = Gtfs.list_child_stops_for_level(station.id, level.id)
-    pathways = Gtfs.list_pathways_for_level(organization_id, gtfs_version_id, level.id)
+    pathways = Gtfs.list_pathways_for_level(organization_id, gtfs_version_id, level.id, station.id)
 
     socket
     |> stream(:child_stops, child_stops, reset: true)

@@ -390,14 +390,15 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Returns pathways where both from_stop and to_stop have the specified level_id.
+  Returns pathways where both from_stop and to_stop have the specified level_id
+  and belong to the specified parent station.
 
   ## Examples
 
-      iex> list_pathways_for_level(org_id, version_id, level_id)
+      iex> list_pathways_for_level(org_id, version_id, level_id, parent_station_id)
       [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
   """
-  def list_pathways_for_level(organization_id, gtfs_version_id, level_id) do
+  def list_pathways_for_level(organization_id, gtfs_version_id, level_id, parent_station_id) do
     from(p in Pathway,
       join: from_stop in Stop,
       on: p.from_stop_id == from_stop.id,
@@ -407,7 +408,9 @@ defmodule GtfsPlanner.Gtfs do
         p.organization_id == ^organization_id and
           p.gtfs_version_id == ^gtfs_version_id and
           from_stop.level_id == ^level_id and
-          to_stop.level_id == ^level_id,
+          to_stop.level_id == ^level_id and
+          from_stop.parent_station_id == ^parent_station_id and
+          to_stop.parent_station_id == ^parent_station_id,
       order_by: [asc: p.pathway_id],
       preload: [:from_stop, :to_stop]
     )
