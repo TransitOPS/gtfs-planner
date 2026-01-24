@@ -411,7 +411,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("edit_pathway", %{"id" => id}, socket) do
-    pathway = Gtfs.get_pathway!(id) |> GtfsPlanner.Repo.preload([:from_stop, :to_stop])
+    pathway = Gtfs.get_pathway_with_stops!(id)
 
     form =
       to_form(%{
