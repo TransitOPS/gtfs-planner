@@ -444,6 +444,14 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.all()
   end
 
+  def list_pathways(organization_id, gtfs_version_id) do
+    from(p in Pathway,
+      where: p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: p.pathway_id]
+    )
+    |> Repo.all()
+  end
+
   @doc """
   Creates a pathway.
 
