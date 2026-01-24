@@ -723,14 +723,10 @@ defmodule GtfsPlanner.GtfsTest do
 
     test "returns error with invalid pathway_mode", %{pathway: pathway} do
       # pathway_mode must be between 1 and 7
-      assert {:error, changeset} = Gtfs.update_pathway(pathway, %{pathway_mode: 0})
-      assert %{pathway_mode: ["is invalid"]} = errors_on(changeset)
-
-      assert {:error, changeset} = Gtfs.update_pathway(pathway, %{pathway_mode: 8})
-      assert %{pathway_mode: ["is invalid"]} = errors_on(changeset)
-
-      assert {:error, changeset} = Gtfs.update_pathway(pathway, %{pathway_mode: 99})
-      assert %{pathway_mode: ["is invalid"]} = errors_on(changeset)
+      for invalid_mode <- [0, 8, 99] do
+        assert {:error, changeset} = Gtfs.update_pathway(pathway, %{pathway_mode: invalid_mode})
+        assert %{pathway_mode: ["is invalid"]} = errors_on(changeset)
+      end
     end
 
     test "returns error when pathway_mode is nil", %{pathway: pathway} do
