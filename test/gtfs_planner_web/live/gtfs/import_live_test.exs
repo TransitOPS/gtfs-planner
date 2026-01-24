@@ -182,6 +182,100 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # We're testing that the form can display errors, not triggering validation
       assert html =~ "gtfs-import-form"
     end
+
+    test "validation errors don't appear until version_name field is blurred", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      # Enable "Create a new GTFS version" toggle
+      view
+      |> element("#gtfs-import-form")
+      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}})
+
+      html = render(view)
+
+      # Version name field should be visible
+      assert html =~ "Version Name"
+      # But error should NOT appear yet (field hasn't been touched)
+      refute html =~ "Version name is required"
+    end
+
+    test "version_name_blur event correctly sets the touched state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      # Enable "Create a new GTFS version" toggle
+      view
+      |> element("#gtfs-import-form")
+      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}})
+
+      # Trigger blur event on version_name field
+      view
+      |> element("input[name='gtfs_import_form[version_name]']")
+      |> render_blur()
+
+      # Now trigger validation again
+      view
+      |> element("#gtfs-import-form")
+      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}})
+
+      html = render(view)
+
+      # After blur, the error should appear
+      assert html =~ "Version name is required"
+    end
+
+    test "errors appear appropriately after field has been touched", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      # Enable "Create a new GTFS version" toggle
+      view
+      |> element("#gtfs-import-form")
+      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}})
+
+      # Verify no error yet
+      refute render(view) =~ "Version name is required"
+
+      # Trigger blur event
+      view
+      |> element("input[name='gtfs_import_form[version_name]']")
+      |> render_blur()
+
+      # Trigger validation with empty value
+      view
+      |> element("#gtfs-import-form")
+      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}})
+
+      # Error should now appear
+      assert render(view) =~ "Version name is required"
+
+      # Now provide a valid value
+      view
+      |> element("#gtfs-import-form")
+      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => "Spring 2025"}})
+
+      # Error should disappear
+      refute render(view) =~ "Version name is required"
+    end
   end
 
   describe "ImportLive file upload" do
