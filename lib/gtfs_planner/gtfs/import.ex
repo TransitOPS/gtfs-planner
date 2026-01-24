@@ -22,7 +22,7 @@ defmodule GtfsPlanner.Gtfs.Import do
       case Import.import_files(org_id, version_id, files) do
         {:ok, %{levels: 5, stops: 20, pathways: 15}} ->
           # Import successful
-        {:error, reason} ->
+        {:error, failed_operation, failed_value, changes_so_far} ->
           # Import failed, transaction rolled back
       end
   """
@@ -46,7 +46,10 @@ defmodule GtfsPlanner.Gtfs.Import do
   ## Returns
 
     - `{:ok, %{levels: n, stops: n, pathways: n}}` on success with record counts
-    - `{:error, reason}` on failure (transaction is rolled back)
+    - `{:error, failed_operation, failed_value, changes_so_far}` on failure (transaction is rolled back)
+      - `failed_operation` - atom name of the operation that failed
+      - `failed_value` - the error value (typically an Ecto.Changeset)
+      - `changes_so_far` - map of successful operations before the failure
 
   ## Examples
 
