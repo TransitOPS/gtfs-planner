@@ -459,7 +459,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     case Gtfs.update_pathway(editing_pathway, attrs) do
       {:ok, updated_pathway} ->
-        updated_pathway = GtfsPlanner.Repo.preload(updated_pathway, [:from_stop, :to_stop])
+        updated_pathway = Gtfs.get_pathway_with_stops!(updated_pathway.id)
 
         updated_list =
           Enum.map(socket.assigns.pathways_list, fn p ->
