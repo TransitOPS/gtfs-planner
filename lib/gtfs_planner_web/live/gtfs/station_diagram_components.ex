@@ -100,6 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :streams, :any, required: true
   attr :active_point_id, :any
   attr :pending_xy, :any
+  attr :selected_stop_id, :any
   attr :mode, :atom, required: true
   attr :uploads, :any, required: true
 
@@ -129,6 +130,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             streams={@streams}
             active_point_id={@active_point_id}
             pending_xy={@pending_xy}
+            selected_stop_id={@selected_stop_id}
             mode={@mode}
           />
         <% @active_level -> %>
@@ -143,6 +145,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :streams, :any, required: true
   attr :active_point_id, :any
   attr :pending_xy, :any
+  attr :selected_stop_id, :any
   attr :mode, :atom, required: true
 
   defp diagram_overlay(assigns) do
@@ -154,8 +157,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       preserveAspectRatio="xMidYMid meet"
     >
       <.pathways_layer streams={@streams} />
-      <.stops_layer streams={@streams} active_point_id={@active_point_id} />
-      <.pending_marker :if={@pending_xy && @mode == :add} pending_xy={@pending_xy} />
+      <.stops_layer streams={@streams} active_point_id={@active_point_id} mode={@mode} />
+      <.pending_marker :if={@pending_xy && @mode == :add && @selected_stop_id == nil} pending_xy={@pending_xy} />
     </svg>
     """
   end
@@ -170,7 +173,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <g
             id={dom_id}
             class="cursor-pointer pointer-events-auto"
-            phx-click="delete_pathway"
+            phx-click="edit_pathway"
             phx-value-id={pathway.id}
           >
             <%!-- Invisible wider line for easier clicking --%>
@@ -202,6 +205,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :streams, :any, required: true
   attr :active_point_id, :any
+  attr :mode, :atom, required: true
 
   defp stops_layer(assigns) do
     ~H"""
@@ -216,6 +220,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             fill={if @active_point_id == stop.id, do: "#1e40af", else: "#06b6d4"}
             stroke="#fff"
             stroke-width="0.15"
+            class={if @mode != :connect, do: "cursor-pointer pointer-events-auto", else: ""}
+            phx-click={if @mode != :connect, do: "edit_child_stop", else: nil}
+            phx-value-id={if @mode != :connect, do: stop.id, else: nil}
           />
         <% end %>
       <% end %>
@@ -372,6 +379,134 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   # ============================================================================
+  # Pathway Drawer
+  # ============================================================================
+
+  attr :open, :boolean, required: true
+  attr :pathway_form, :any, required: true
+  attr :editing_pathway, :any
+
+  def pathway_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="pathway-drawer"
+      open={@open}
+      on_close="close_pathway_drawer"
+      title="Edit Pathway"
+    >
+      <.pathway_form :if={@open} pathway_form={@pathway_form} editing_pathway={@editing_pathway} />
+    </.drawer>
+    """
+  end
+
+  attr :pathway_form, :any, required: true
+  attr :editing_pathway, :any
+
+  defp pathway_form(assigns) do
+    # Build pathway mode options using Pathway module functions
+    pathway_mode_options =
+      Pathway.pathway_modes()
+      |> Enum.map(fn {_name, mode_value} -> {Pathway.mode_label(mode_value), to_string(mode_value)} end)
+
+    assigns = assign(assigns, :pathway_mode_options, pathway_mode_options)
+
+    ~H"""
+    <.simple_form for={@pathway_form} id="pathway-form" phx-submit="save_pathway">
+      <.input
+        field={@pathway_form[:pathway_id]}
+        type="text"
+        label="Pathway ID"
+        readonly
+        class="w-full input input-lg bg-base-200"
+      />
+
+      <.input
+        field={@pathway_form[:pathway_mode]}
+        type="select"
+        label="Pathway Mode"
+        options={@pathway_mode_options}
+        required
+      />
+
+      <.input
+        field={@pathway_form[:is_bidirectional]}
+        type="checkbox"
+        label="Bidirectional"
+      />
+
+      <.input
+        field={@pathway_form[:traversal_time]}
+        type="number"
+        label="Traversal Time (seconds)"
+        step="1"
+      />
+
+      <.input
+        field={@pathway_form[:length]}
+        type="number"
+        label="Length (meters)"
+        step="0.01"
+      />
+
+      <.input
+        :if={@pathway_form[:pathway_mode].value == "2"}
+        field={@pathway_form[:stair_count]}
+        type="number"
+        label="Stair Count"
+        step="1"
+      />
+
+      <.input
+        field={@pathway_form[:min_width]}
+        type="number"
+        label="Minimum Width (meters)"
+        step="0.01"
+      />
+
+      <.input
+        field={@pathway_form[:signposted_as]}
+        type="text"
+        label="Signposted As"
+      />
+
+      <.input
+        :if={@pathway_form[:is_bidirectional].value == true}
+        field={@pathway_form[:reversed_signposted_as]}
+        type="text"
+        label="Reversed Signposted As"
+      />
+
+      <div :if={@editing_pathway} class="mt-4 p-4 bg-base-200 rounded">
+        <div class="text-sm font-medium mb-2">Connected Stops</div>
+        <div class="text-sm">
+          <div>From: {@editing_pathway.from_stop.stop_name || @editing_pathway.from_stop.stop_id}</div>
+          <div>To: {@editing_pathway.to_stop.stop_name || @editing_pathway.to_stop.stop_id}</div>
+        </div>
+      </div>
+
+      <:actions>
+        <button type="button" class="btn btn-ghost" phx-click="close_pathway_drawer">
+          Cancel
+        </button>
+        <button
+          :if={@editing_pathway}
+          type="button"
+          class="btn btn-error"
+          phx-click="delete_pathway"
+          phx-value-id={@editing_pathway.id}
+        >
+          Delete
+        </button>
+        <div class="flex-1"></div>
+        <button type="submit" class="btn btn-primary">
+          Save Pathway
+        </button>
+      </:actions>
+    </.simple_form>
+    """
+  end
+
+  # ============================================================================
   # Level Sidebar
   # ============================================================================
 
@@ -480,7 +615,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <div
             :for={stop <- @child_stops_list}
             id={"child-stop-list-#{stop.id}"}
-            class="px-4 py-2 flex justify-between items-center"
+            class="px-4 py-2 flex justify-between items-center cursor-pointer hover:bg-base-200"
+            phx-click="edit_child_stop"
+            phx-value-id={stop.id}
           >
             <span class="font-medium">{stop.stop_name || stop.stop_id}</span>
             <span class="badge badge-ghost badge-sm">
@@ -515,7 +652,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <div
             :for={pathway <- @pathways_list}
             id={"pathway-list-#{pathway.id}"}
-            class="px-4 py-2 flex justify-between items-center"
+            class="px-4 py-2 flex justify-between items-center cursor-pointer hover:bg-base-200"
+            phx-click="edit_pathway"
+            phx-value-id={pathway.id}
           >
             <span>
               {pathway.from_stop.stop_name || pathway.from_stop.stop_id} → {pathway.to_stop.stop_name ||

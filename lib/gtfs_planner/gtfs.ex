@@ -478,6 +478,41 @@ defmodule GtfsPlanner.Gtfs do
   def get_pathway!(id), do: Repo.get!(Pathway, id)
 
   @doc """
+  Gets a single pathway with preloaded from_stop and to_stop associations.
+
+  Raises `Ecto.NoResultsError` if the Pathway does not exist.
+
+  ## Examples
+
+      iex> get_pathway_with_stops!(id)
+      %Pathway{from_stop: %Stop{}, to_stop: %Stop{}}
+
+      iex> get_pathway_with_stops!(Ecto.UUID.generate())
+      ** (Ecto.NoResultsError)
+  """
+  def get_pathway_with_stops!(id) do
+    Repo.get!(Pathway, id) |> Repo.preload([:from_stop, :to_stop])
+  end
+
+  @doc """
+  Updates a pathway.
+
+  ## Examples
+
+      iex> update_pathway(pathway, %{pathway_mode: 2})
+      {:ok, %Pathway{}}
+
+      iex> update_pathway(pathway, %{pathway_mode: nil})
+      {:error, %Ecto.Changeset{}}
+  """
+  def update_pathway(%Pathway{} = pathway, attrs) do
+    pathway
+    |> Pathway.changeset(attrs)
+    |> Repo.update()
+    |> broadcast([:pathways, :updated])
+  end
+
+  @doc """
   Deletes a pathway.
 
   ## Examples
