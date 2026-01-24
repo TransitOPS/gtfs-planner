@@ -33,7 +33,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
          max_file_size: 10_000_000
        )
        |> assign(:form, to_form(%{"create_version" => false, "version_name" => ""}, as: :gtfs_import_form))
-       |> assign(:import_result, nil)}
+       |> assign(:import_result, nil)
+       |> assign(:version_name_touched, false)}
     end
   end
 
@@ -105,15 +106,29 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     create_version = form_data["create_version"] == "true"
     version_name = form_data["version_name"] || ""
 
+    # Only show validation errors if user has touched the field
     errors =
-      if create_version && String.trim(version_name) == "" do
-        [version_name: "Version name is required when creating a new version"]
+      if create_version && String.trim(version_name) == "" && socket.assigns.version_name_touched do
+        [version_name: "Version name is required"]
       else
         []
       end
 
     form = to_form(form_data, as: :gtfs_import_form, errors: errors)
-    {:noreply, assign(socket, form: form)}
+
+    # Reset version_name_touched when not creating a new version, so that
+    # re-enabling "Create a new GTFS version" doesn't immediately show errors.
+    socket =
+      socket
+      |> assign(:form, form)
+      |> assign(:version_name_touched, if(create_version, do: socket.assigns.version_name_touched, else: false))
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("version_name_blur", _params, socket) do
+    {:noreply, assign(socket, :version_name_touched, true)}
   end
 
   @impl true
@@ -133,6 +148,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       {:noreply,
        socket
        |> put_flash(:error, "Version name is required when creating a new version")
+       |> assign(:version_name_touched, true)
        |> assign(:form, to_form(form_data, as: :gtfs_import_form, errors: [version_name: "Version name is required"]))}
     else
       # Determine GTFS version ID
@@ -222,6 +238,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           <.header>
             Import GTFS
             <:subtitle>
+              Upload GTFS files to import levels, stops, and pathways
+            </:subtitle>
+          </.header>
+
+          <div class="mt-8">
+            <div class="bg-base-100 rounded-lg p-6">
               <.form
                 for={@form}
                 id="gtfs-import-form"
@@ -233,12 +255,18 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   <label class="label">
                     <span class="label-text">GTFS Files</span>
                   </label>
-                  <div class="file-input file-input-bordered w-full">
-                    <.live_file_input upload={@uploads.gtfs_files} />
-                  </div>
-                  <p class="text-sm text-base-content/60 mt-2">
-                    Upload levels.txt, stops.txt, and/or pathways.txt files (max 10 files, 10MB each)
-                  </p>
+                  <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-base-300 rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
+                    <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                      <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/60" />
+                      <p class="mb-2 text-sm font-medium">
+                        <span class="text-primary">Click to upload</span> or drag and drop
+                      </p>
+                      <p class="text-xs text-base-content/60">
+                        levels.txt, stops.txt, pathways.txt (max 10 files, 10MB each)
+                      </p>
+                    </div>
+                    <.live_file_input upload={@uploads.gtfs_files} class="sr-only" />
+                  </label>
 
                   <%!-- Upload entries display --%>
                   <%= for entry <- @uploads.gtfs_files.entries do %>
@@ -277,33 +305,46 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                 </div>
 
                 <div class="form-control">
-                  <label class="label cursor-pointer justify-start gap-3">
+                  <label class="label cursor-pointer justify-start gap-4">
                     <input
                       type="checkbox"
                       name="gtfs_import_form[create_version]"
                       value="true"
-                      class="checkbox"
+                      class="toggle toggle-primary"
                       checked={@form[:create_version].value}
                     />
-                    <span class="label-text">Create a new GTFS version?</span>
+                    <div>
+                      <span class="label-text font-medium">Create a new GTFS version</span>
+                      <p class="text-xs text-base-content/60 mt-0.5">
+                        Import into a new version instead of the current one
+                      </p>
+                    </div>
                   </label>
                 </div>
 
                 <%= if @form[:create_version].value do %>
-                  <div class="form-control">
+                  <div class="form-control pl-14">
                     <label class="label">
                       <span class="label-text">Version Name</span>
                     </label>
                     <input
                       type="text"
                       name="gtfs_import_form[version_name]"
-                      class="input input-bordered w-full"
-                      placeholder="e.g., 'Spring 2025 Schedule'"
+                      class={[
+                        "input input-bordered w-full",
+                        @form[:version_name].errors != [] && "input-error"
+                      ]}
+                      placeholder="e.g., Spring 2025 Schedule"
                       value={@form[:version_name].value}
+                      phx-blur="version_name_blur"
                     />
-                    <%= if @form[:version_name].errors do %>
+                    <%= if @form[:version_name].errors != [] do %>
                       <p class="text-error text-sm mt-1">
                         <%= Enum.join(@form[:version_name].errors, ", ") %>
+                      </p>
+                    <% else %>
+                      <p class="text-base-content/50 text-xs mt-1">
+                        Give this version a descriptive name
                       </p>
                     <% end %>
                   </div>
@@ -317,7 +358,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               </.form>
 
               <%= if @import_result do %>
-                <div class="mt-8">
+                <div class="mt-6 pt-6 border-t border-base-300">
                   <%= case @import_result do %>
                     <% {:ok, counts} -> %>
                       <div class="alert alert-success">
@@ -342,8 +383,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   <% end %>
                 </div>
               <% end %>
-            </:subtitle>
-          </.header>
+            </div>
+          </div>
         </Layouts.app>
     <% end %>
     """
