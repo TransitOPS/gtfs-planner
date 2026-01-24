@@ -20,7 +20,7 @@ defmodule GtfsPlanner.Gtfs.Import do
       ]
 
       case Import.import_files(org_id, version_id, files) do
-        {:ok, %{levels: 5, stops: 20, pathways: 15}} ->
+        {:ok, {%{levels: 5, stops: 20, pathways: 15}, _unrecognized}} ->
           # Import successful
         {:error, failed_operation, failed_value, changes_so_far} ->
           # Import failed, transaction rolled back
@@ -45,7 +45,9 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   ## Returns
 
-    - `{:ok, %{levels: n, stops: n, pathways: n}}` on success with record counts
+    - `{:ok, {counts, unrecognized_files}}` on success
+      - `counts` - map with keys `:levels`, `:stops`, `:pathways` containing import counts
+      - `unrecognized_files` - list of unrecognized filenames
     - `{:error, failed_operation, failed_value, changes_so_far}` on failure (transaction is rolled back)
       - `failed_operation` - atom name of the operation that failed
       - `failed_value` - the error value (typically an Ecto.Changeset)
@@ -55,7 +57,7 @@ defmodule GtfsPlanner.Gtfs.Import do
 
       iex> files = [%{filename: "levels.txt", content: "level_id,level_name\\nL1,Ground"}]
       iex> import_files(org_id, version_id, files)
-      {:ok, %{levels: 1, stops: 0, pathways: 0}}
+      {:ok, {%{levels: 1, stops: 0, pathways: 0}, []}}
   """
   def import_files(organization_id, gtfs_version_id, files) do
     # Categorize files by filename (case-insensitive)
