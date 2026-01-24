@@ -32,27 +32,35 @@ defmodule GtfsPlannerWeb.Gtfs.ValidateLive do
 
   @impl Phoenix.LiveView
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
-    current_organization = socket.assigns.current_organization
+    # Only handle this event when we're in pending version resolution mode
+    # This prevents an infinite loop when the GtfsVersionSwitcher component
+    # also uses the same hook and fires this event on mount
+    if socket.assigns[:pending_version_resolution] do
+      current_organization = socket.assigns.current_organization
 
-    # Try to use the stored version_id from localStorage
-    version_to_use =
-      if version_id && valid_version_for_org?(version_id, current_organization.id) do
-        version_id
-      else
-        # Fall back to latest version
-        case socket.assigns[:latest_gtfs_version] do
-          {:ok, version} -> to_string(version.id)
-          {:error, :no_versions} -> nil
+      # Try to use the stored version_id from localStorage
+      version_to_use =
+        if version_id && valid_version_for_org?(version_id, current_organization.id) do
+          version_id
+        else
+          # Fall back to latest version
+          case socket.assigns[:latest_gtfs_version] do
+            {:ok, version} -> to_string(version.id)
+            {:error, :no_versions} -> nil
+          end
         end
-      end
 
-    if version_to_use do
-      {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/validate")}
+      if version_to_use do
+        {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/validate")}
+      else
+        {:noreply,
+         socket
+         |> put_flash(:error, "No GTFS versions available for your organization")
+         |> push_navigate(to: "/")}
+      end
     else
-      {:noreply,
-       socket
-       |> put_flash(:error, "No GTFS versions available for your organization")
-       |> push_navigate(to: "/")}
+      # Already on a versioned route, ignore this event
+      {:noreply, socket}
     end
   end
 

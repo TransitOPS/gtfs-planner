@@ -37,7 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       assert html =~ "Import GTFS"
       assert html =~ "GTFS Files"
-      assert html =~ "Upload levels.txt, stops.txt, and/or pathways.txt files"
+      assert html =~ "levels.txt, stops.txt, pathways.txt"
     end
 
     test "redirects with error for invalid version UUID", %{
@@ -163,7 +163,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/import")
 
       # Checkbox should be unchecked by default
-      assert html =~ "Create a new GTFS version?"
+      assert html =~ "Create a new GTFS version"
       # version_name input should not be visible initially
       refute html =~ "Version Name"
     end

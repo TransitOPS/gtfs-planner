@@ -210,6 +210,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
+    stop_id = socket.assigns[:stop_id]
+
+    # Push event to JS hook to update localStorage
+    socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
+
+    # Navigate to new version, preserving the stop_id
+    {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/stops/#{stop_id}/diagram")}
+  end
+
+  @impl true
   def handle_event("switch_level", params, socket) do
     level_id = params["level_id"]
     level = Enum.find(socket.assigns.levels, fn l -> to_string(l.id) == level_id end)
