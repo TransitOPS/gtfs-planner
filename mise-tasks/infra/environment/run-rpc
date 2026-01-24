@@ -1,0 +1,20 @@
+#!/bin/bash
+#USAGE arg "<environment_name>" help="Environment name to run the command in"
+#USAGE arg "[command]" help="Elixir script to evaluate (uses STDIN if not present)"
+
+if [[ -z "${usage_command:-}" ]]; then
+  read -r -d "" usage_command
+fi
+
+set -euo pipefail
+
+environment="${usage_environment_name?}"
+source mise-tasks/infra/account-information "$environment"
+
+if [[ -z "$host" ]]; then
+  echo "TODO run-rpc not written for AWS hosts, exiting"
+  exit 1
+else
+  b64_command=$(echo "$usage_command" | base64 -w0)
+  ssh ubuntu@"$host" docker exec "ubuntu-$project_name-service-$environment-1" bin/gtfs_planner rpc "\"Code.eval_string(Base.decode64!(\\\"$b64_command\\\"))\""# shellcheck disable=SC2029
+fi

@@ -1,0 +1,41 @@
+#!/bin/bash
+
+environment="$1"
+echo "environment=$environment"
+
+tofu -chdir=infra/config init >/dev/null
+tofu -chdir=infra/config apply -auto-approve > /dev/null
+
+network_name=$(tofu -chdir=infra/config output -json environments | jq -r ."$environment.network_name")
+echo "network=$network_name"
+
+account_name=$(tofu -chdir=infra/config output -json networks | jq -r ."$network_name.account_name")
+echo "account_name=$account_name"
+
+backend_config=$(basename "$(ls infra/accounts/"$account_name".s3.tfbackend)")
+echo "backend_config=$backend_config"
+
+account_id=$(grep "bucket\s*=" infra/accounts/"$account_name".s3.tfbackend | sed 's/^.*=.*"[a-z]\{1,\}-\([0-9]\{1,\}\)-.*"$/\1/')
+echo "account_id=$account_id"
+
+region=$(grep "region\s*=" infra/accounts/"$account_name".s3.tfbackend | sed 's/^.*=.*"\(.*\)"$/\1/')
+echo "region=$region"
+
+github_actions_role_name=$(tofu -chdir=infra/config output -raw github_actions_role_name)
+echo "github_actions_role_name=$github_actions_role_name"
+
+github_actions_role_arn="arn:aws:iam::$account_id:role/$github_actions_role_name"
+echo "github_actions_role_arn=$github_actions_role_arn"
+
+project_name=$(tofu -chdir=infra/config output -raw project_name)
+echo "project_name=$project_name"
+
+host=$(tofu -chdir=infra/config output -json environments | jq -r ."$environment.host")
+echo "host=$host"
+
+if [[ -z "$host" ]]; then
+  repository_url="$account_id".dkr.ecr."$region".amazonaws.com/"$project_name"
+else
+  repository_url="$project_name"
+fi
+echo "repository_url=$repository_url"

@@ -1,0 +1,11 @@
+#!/bin/bash
+#USAGE arg "<environment_name>" help="Environment name to use"
+#USAGE arg "<alias>" help="Alias of the organization to create"
+#USAGE arg "<name>" help="Organization name"
+
+mise run infra:environment:run-rpc "${usage_environment_name?}" <<EOF
+GtfsPlanner.Organizations.create_organization(%{
+  alias: "${usage_alias?}",
+  name: "${usage_name?}"
+}) |> IO.inspect()
+EOF

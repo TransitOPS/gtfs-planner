@@ -1,0 +1,17 @@
+#!/bin/bash
+#USAGE arg "<database_name>" help="Database name to manage"
+set -euo pipefail
+
+database=${usage_database_name?}
+result_file=$(mktemp)
+
+result=$(aws lambda invoke --function-name db-admin-"$database" --log-type Tail "$result_file" )
+
+rm -f "$result_file"
+
+status_code=$(echo "$result" | jq -r .StatusCode)
+echo "Status: $status_code"
+
+echo "$result" | jq -r '.LogResult | @base64d'
+
+[ "$status_code" == "200" ] || exit 1
