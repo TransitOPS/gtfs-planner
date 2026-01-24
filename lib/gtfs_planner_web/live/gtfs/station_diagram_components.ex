@@ -106,32 +106,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   def diagram_canvas(assigns) do
     ~H"""
     <div class="relative bg-base-200 border border-base-300 rounded-lg overflow-hidden">
-      <%= if @active_level && @active_level.diagram_filename do %>
-        <svg
-          id="diagram-canvas"
-          phx-hook="DiagramCanvas"
-          phx-update="ignore"
-          viewBox="0 0 100 100"
-          preserveAspectRatio="xMidYMid meet"
-          class="w-full block cursor-crosshair"
-        >
-          <image
-            href={"/uploads/diagrams/#{@station.stop_id}/#{@active_level.diagram_filename}"}
-            x="0"
-            y="0"
-            width="100"
-            height="100"
-            preserveAspectRatio="xMidYMid slice"
+      <%= cond do %>
+        <% @active_level && @active_level.diagram_filename -> %>
+          <svg
+            id="diagram-canvas"
+            phx-hook="DiagramCanvas"
+            phx-update="ignore"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="xMidYMid meet"
+            class="w-full block cursor-crosshair"
+          >
+            <image
+              href={"/uploads/diagrams/#{@station.stop_id}/#{@active_level.diagram_filename}"}
+              x="0"
+              y="0"
+              width="100"
+              height="100"
+              preserveAspectRatio="xMidYMid slice"
+            />
+          </svg>
+          <.diagram_overlay
+            streams={@streams}
+            active_point_id={@active_point_id}
+            pending_xy={@pending_xy}
+            mode={@mode}
           />
-        </svg>
-        <.diagram_overlay
-          streams={@streams}
-          active_point_id={@active_point_id}
-          pending_xy={@pending_xy}
-          mode={@mode}
-        />
-      <% else %>
-        <.empty_diagram_state uploads={@uploads} />
+        <% @active_level -> %>
+          <.empty_diagram_state uploads={@uploads} />
+        <% true -> %>
+          <.no_level_state />
       <% end %>
     </div>
     """
@@ -237,8 +240,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp empty_diagram_state(assigns) do
     ~H"""
-    <div class="absolute inset-0 flex flex-col items-center justify-center text-base-content/60">
-      <p class="mb-4">No floor plan uploaded</p>
+    <div class="flex flex-col items-center justify-center py-24 px-8 text-center">
+      <div class="text-base-content/40 mb-4">
+        <.icon name="hero-map" class="h-12 w-12 mx-auto" />
+      </div>
+      <p class="text-base-content/80 font-medium mb-1">No diagram for this level</p>
+      <p class="text-base-content/50 text-sm mb-6 max-w-xs">
+        Upload a floor plan to place stops and draw pathways on this level.
+      </p>
       <form
         id="diagram-upload-form-empty"
         phx-change="upload_diagram"
@@ -249,6 +258,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           Upload Diagram <.live_file_input upload={@uploads.diagram} class="hidden" />
         </label>
       </form>
+    </div>
+    """
+  end
+
+  defp no_level_state(assigns) do
+    ~H"""
+    <div class="flex flex-col items-center justify-center py-24 px-8 text-center">
+      <div class="text-base-content/40 mb-4">
+        <.icon name="hero-squares-plus" class="h-12 w-12 mx-auto" />
+      </div>
+      <p class="text-base-content/80 font-medium mb-1">No levels defined</p>
+      <p class="text-base-content/50 text-sm max-w-xs">
+        Add a level to this station before uploading a floor plan diagram.
+      </p>
     </div>
     """
   end
