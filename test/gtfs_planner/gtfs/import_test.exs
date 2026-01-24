@@ -398,8 +398,15 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:error, :pathways, {_changeset, 1}, _changes_so_far} =
+      assert {:error, :pathways, {failed_changeset, 1}, _changes_so_far} =
                Import.import_files(organization.id, gtfs_version.id, files)
+
+      # Verify the changeset has the expected errors
+      assert errors_on(failed_changeset) == %{
+               from_stop_id: ["can't be blank"],
+               to_stop_id: ["can't be blank"],
+               pathway_mode: ["can't be blank"]
+             }
 
       # Verify no pathways, stops, or levels were created
       assert Gtfs.list_pathways(organization.id, gtfs_version.id) == []
