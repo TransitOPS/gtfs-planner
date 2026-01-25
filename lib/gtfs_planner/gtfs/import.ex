@@ -66,6 +66,7 @@ defmodule GtfsPlanner.Gtfs.Import do
     # Build Ecto.Multi transaction processing levels → stops → pathways
     multi =
       Multi.new()
+      |> add_route_imports(categorized[:routes] || [], organization_id, gtfs_version_id)
       |> add_level_imports(categorized[:levels] || [], organization_id, gtfs_version_id)
       |> add_stop_imports(categorized[:stops] || [], organization_id, gtfs_version_id)
       |> add_pathway_imports(categorized[:pathways] || [], organization_id, gtfs_version_id)
@@ -75,6 +76,7 @@ defmodule GtfsPlanner.Gtfs.Import do
       {:ok, results} ->
         # Count successful imports per category
         counts = %{
+          routes: count_category(results, "route_"),
           levels: count_category(results, "level_"),
           stops: count_category(results, "stop_"),
           pathways: results[:pathways] || 0
@@ -87,13 +89,16 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   end
 
-  # Categorizes files by filename into :levels, :stops, :pathways buckets
+  # Categorizes files by filename into :routes, :levels, :stops, :pathways buckets
   defp categorize_files(files) do
-    initial_acc = {%{levels: [], stops: [], pathways: []}, []}
+    initial_acc = {%{routes: [], levels: [], stops: [], pathways: []}, []}
 
     {categorized, unrecognized} =
       Enum.reduce(files, initial_acc, fn file, {acc, unrecognized_acc} ->
         case String.downcase(file.filename) do
+          "routes.txt" ->
+            {Map.update!(acc, :routes, &[file | &1]), unrecognized_acc}
+
           "levels.txt" ->
             {Map.update!(acc, :levels, &[file | &1]), unrecognized_acc}
 
@@ -110,6 +115,17 @@ defmodule GtfsPlanner.Gtfs.Import do
 
     categorized = Map.new(categorized, fn {key, files_list} -> {key, Enum.reverse(files_list)} end)
     {categorized, Enum.reverse(unrecognized)}
+  end
+
+  # Adds route imports to Ecto.Multi
+  defp add_route_imports(multi, files, organization_id, gtfs_version_id) do
+    Enum.reduce(files, multi, fn file, multi_acc ->
+      operations = import_routes_from_content(organization_id, gtfs_version_id, file.content)
+
+      Enum.reduce(operations, multi_acc, fn {:insert, name, changeset}, multi_inner ->
+        Multi.insert(multi_inner, name, changeset)
+      end)
+    end)
   end
 
   # Adds level imports to Ecto.Multi
@@ -329,6 +345,70 @@ defmodule GtfsPlanner.Gtfs.Import do
       {char, false} ->
         parse_csv_fields(rest, fields, current <> <<char>>, false, pos + 1)
     end
+  end
+
+  @doc """
+  Imports routes from CSV content and returns changeset tuples for Ecto.Multi.
+
+  Parses routes.txt CSV content and creates changesets for each valid route.
+  Returns a list of `{:insert, name, changeset}` tuples that can be added
+  to an Ecto.Multi transaction.
+
+  ## Parameters
+
+    - `organization_id` - UUID of the organization
+    - `gtfs_version_id` - UUID of the GTFS version
+    - `content` - Binary CSV content with header row
+
+  ## Returns
+
+  List of `{:insert, name, changeset}` tuples for Ecto.Multi.
+  """
+  def import_routes_from_content(organization_id, gtfs_version_id, content) do
+    content
+    |> parse_csv_content()
+    |> Stream.with_index()
+    |> Enum.map(fn {row_map, index} ->
+      changeset = route_row_to_changeset(row_map, organization_id, gtfs_version_id)
+      {:insert, :"route_#{index}", changeset}
+    end)
+  end
+
+  # Converts a CSV row map to a Route changeset
+  defp route_row_to_changeset(row_map, organization_id, gtfs_version_id) do
+    attrs =
+      with {:ok, route_id} <- extract_required(row_map, "route_id"),
+       {:ok, route_type} <- parse_route_type(row_map["route_type"]),
+       {:ok, route_sort_order} <- parse_integer(row_map["route_sort_order"]),
+       {:ok, continuous_pickup} <- parse_continuous_value(row_map["continuous_pickup"]),
+       {:ok, continuous_drop_off} <- parse_continuous_value(row_map["continuous_drop_off"]) do
+        %{
+          route_id: route_id,
+          route_type: route_type,
+          route_short_name: empty_to_nil(row_map["route_short_name"]),
+          route_long_name: empty_to_nil(row_map["route_long_name"]),
+          agency_id: empty_to_nil(row_map["agency_id"]),
+          route_desc: empty_to_nil(row_map["route_desc"]),
+          route_url: empty_to_nil(row_map["route_url"]),
+          route_color: empty_to_nil(row_map["route_color"]) || "FFFFFF",
+          route_text_color: empty_to_nil(row_map["route_text_color"]) || "000000",
+          route_sort_order: route_sort_order,
+          continuous_pickup: continuous_pickup || 1,
+          continuous_drop_off: continuous_drop_off || 1,
+          network_id: empty_to_nil(row_map["network_id"]),
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        }
+      else
+        {:error, _reason} ->
+          %{
+            route_id: row_map["route_id"] || "",
+            organization_id: organization_id,
+            gtfs_version_id: gtfs_version_id
+          }
+      end
+
+    Gtfs.Route.changeset(%Gtfs.Route{}, attrs)
   end
 
   @doc """
@@ -641,6 +721,30 @@ defmodule GtfsPlanner.Gtfs.Import do
     case Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, parent_station_string) do
       nil -> {:ok, nil}
       stop -> {:ok, stop.id}
+    end
+  end
+
+  # Parses route_type (0-7, 11, 12, required)
+  defp parse_route_type(nil), do: {:error, "route_type is required"}
+  defp parse_route_type(""), do: {:error, "route_type is required"}
+
+  defp parse_route_type(string) when is_binary(string) do
+    case Integer.parse(string) do
+      {int, ""} when int in [0, 1, 2, 3, 4, 5, 6, 7, 11, 12] -> {:ok, int}
+      {int, ""} -> {:error, "route_type invalid value: #{int}"}
+      _ -> {:error, "invalid route_type: #{string}"}
+    end
+  end
+
+  # Parses continuous_pickup/continuous_drop_off (0-3, optional, default 1)
+  defp parse_continuous_value(nil), do: {:ok, nil}
+  defp parse_continuous_value(""), do: {:ok, nil}
+
+  defp parse_continuous_value(string) when is_binary(string) do
+    case Integer.parse(string) do
+      {int, ""} when int in 0..3 -> {:ok, int}
+      {int, ""} -> {:error, "continuous value out of range 0-3: #{int}"}
+      _ -> {:error, "invalid continuous value: #{string}"}
     end
   end
 
