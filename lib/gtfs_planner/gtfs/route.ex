@@ -119,8 +119,14 @@ defmodule GtfsPlanner.Gtfs.Route do
   end
 
   defp validate_hex_color(changeset, field) do
-    validate_format(changeset, field, ~r/^[0-9A-Fa-f]{6}$/,
-      message: "must be a valid 6-character hex color code"
-    )
+    case get_field(changeset, field) do
+      nil ->
+        changeset
+
+      _value ->
+        validate_format(changeset, field, ~r/^[0-9A-Fa-f]{6}$/,
+          message: "must be a valid 6-character hex color code"
+        )
+    end
   end
 end
