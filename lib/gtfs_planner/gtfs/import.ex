@@ -456,38 +456,40 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   # Converts a CSV row map to a RoutePattern changeset
   defp route_pattern_row_to_changeset(row_map, organization_id, gtfs_version_id) do
-    attrs =
-      with {:ok, route_pattern_id} <- extract_required(row_map, "route_pattern_id"),
-           {:ok, route_id} <- extract_required(row_map, "route_id"),
-           {:ok, direction_id} <- parse_direction_id(row_map["direction_id"]),
-           {:ok, route_pattern_typicality} <- parse_typicality(row_map["route_pattern_typicality"]),
-           {:ok, route_pattern_sort_order} <- parse_integer(row_map["route_pattern_sort_order"]),
-           {:ok, canonical_route_pattern} <- parse_canonical_route_pattern(row_map["canonical_route_pattern"]) do
-        %{
-          route_pattern_id: route_pattern_id,
-          route_id: route_id,
-          direction_id: direction_id,
-          route_pattern_name: empty_to_nil(row_map["route_pattern_name"]),
-          route_pattern_time_desc: empty_to_nil(row_map["route_pattern_time_desc"]),
-          route_pattern_typicality: route_pattern_typicality,
-          route_pattern_sort_order: route_pattern_sort_order,
-          representative_trip_id: empty_to_nil(row_map["representative_trip_id"]),
-          canonical_route_pattern: canonical_route_pattern,
-          organization_id: organization_id,
-          gtfs_version_id: gtfs_version_id
-        }
-      else
-        {:error, _reason} ->
-          %{
-            route_pattern_id: row_map["route_pattern_id"] || "",
-            route_id: row_map["route_id"] || "",
-            organization_id: organization_id,
-            gtfs_version_id: gtfs_version_id
-          }
-      end
+    # Always parse all fields, collecting results
+    route_pattern_id_result = extract_required(row_map, "route_pattern_id")
+    route_id_result = extract_required(row_map, "route_id")
+    direction_id_result = parse_direction_id(row_map["direction_id"])
+    typicality_result = parse_typicality(row_map["route_pattern_typicality"])
+    sort_order_result = parse_integer(row_map["route_pattern_sort_order"])
+    canonical_result = parse_canonical_route_pattern(row_map["canonical_route_pattern"])
+
+    # Build attrs from successful parses or use values that will fail validation
+    attrs = %{
+      route_pattern_id: unwrap_or_default(route_pattern_id_result, ""),
+      route_id: unwrap_or_default(route_id_result, ""),
+      direction_id: unwrap_or_invalid(direction_id_result),
+      route_pattern_name: empty_to_nil(row_map["route_pattern_name"]),
+      route_pattern_time_desc: empty_to_nil(row_map["route_pattern_time_desc"]),
+      route_pattern_typicality: unwrap_or_invalid(typicality_result),
+      route_pattern_sort_order: unwrap_or_invalid(sort_order_result),
+      representative_trip_id: empty_to_nil(row_map["representative_trip_id"]),
+      canonical_route_pattern: unwrap_or_invalid(canonical_result),
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    }
 
     Gtfs.RoutePattern.changeset(%Gtfs.RoutePattern{}, attrs)
   end
+
+  # Unwraps {:ok, value} or returns the default
+  defp unwrap_or_default({:ok, value}, _default), do: value
+  defp unwrap_or_default({:error, _}, default), do: default
+
+  # Unwraps {:ok, value} or returns a value that will fail validation
+  # For integer fields with range constraints, we return a clearly invalid value
+  defp unwrap_or_invalid({:ok, value}), do: value
+  defp unwrap_or_invalid({:error, _}), do: -999
 
   @doc """
   Imports levels from CSV content and returns changeset tuples for Ecto.Multi.
@@ -866,9 +868,9 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   end
 
-  # Parses route_pattern_typicality (0-5, optional)
-  defp parse_typicality(nil), do: {:ok, nil}
-  defp parse_typicality(""), do: {:ok, nil}
+  # Parses route_pattern_typicality (0-5, blank = 0 per MBTA spec)
+  defp parse_typicality(nil), do: {:ok, 0}
+  defp parse_typicality(""), do: {:ok, 0}
 
   defp parse_typicality(string) when is_binary(string) do
     case Integer.parse(string) do
@@ -878,9 +880,9 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   end
 
-  # Parses canonical_route_pattern (0-2, optional)
-  defp parse_canonical_route_pattern(nil), do: {:ok, nil}
-  defp parse_canonical_route_pattern(""), do: {:ok, nil}
+  # Parses canonical_route_pattern (0-2, blank = 0 per MBTA spec)
+  defp parse_canonical_route_pattern(nil), do: {:ok, 0}
+  defp parse_canonical_route_pattern(""), do: {:ok, 0}
 
   defp parse_canonical_route_pattern(string) when is_binary(string) do
     case Integer.parse(string) do
