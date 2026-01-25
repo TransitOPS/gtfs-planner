@@ -510,7 +510,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     case failed_value do
       # Map error from BatchProcessor with row info
       %{file: file, row: row, reason: reason} ->
-        reason_str = if is_binary(reason), do: reason, else: inspect(reason)
+        reason_str =
+          case reason do
+            r when is_binary(r) -> r
+            r -> inspect(r)
+          end
+
         "Error in #{file} on row #{row}: #{reason_str}"
 
       # Map error from BatchProcessor with constraint violation
@@ -519,7 +524,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
       # Map error from BatchProcessor with Postgres error
       %{file: file, postgres_error: code, constraint: constraint, message: message} ->
-        constraint_part = if constraint, do: " (#{constraint})", else: ""
+        constraint_part =
+          case constraint do
+            nil -> ""
+            c -> " (#{c})"
+          end
+
         "Error in #{file}: database error #{code}#{constraint_part} - #{message}"
 
       # Map error from BatchProcessor with generic error
