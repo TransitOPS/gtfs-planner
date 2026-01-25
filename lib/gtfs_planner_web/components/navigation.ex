@@ -56,6 +56,15 @@ defmodule GtfsPlannerWeb.Navigation do
 
       <%= if (has_role?(@user_roles, :pathways_studio_editor) || has_role?(@user_roles, :pathways_studio_viewer)) && @current_organization do %>
         <.link
+          navigate="/gtfs/routes"
+          class={pill_class(gtfs_tab_active?(@current_path, "routes"))}
+        >
+          <.icon name="hero-arrow-path" class="w-4 h-4" /> Routes
+        </.link>
+      <% end %>
+
+      <%= if (has_role?(@user_roles, :pathways_studio_editor) || has_role?(@user_roles, :pathways_studio_viewer)) && @current_organization do %>
+        <.link
           navigate="/gtfs/stops"
           class={pill_class(gtfs_tab_active?(@current_path, "stops"))}
         >
