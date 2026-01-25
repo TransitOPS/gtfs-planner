@@ -58,6 +58,7 @@ defmodule GtfsPlanner.Gtfs do
     |> maybe_filter_type(opts[:route_type])
     |> maybe_filter_agency(opts[:agency_id])
     |> maybe_filter_active(opts[:active])
+    |> maybe_search(opts[:search])
     |> Repo.aggregate(:count)
   end
 
