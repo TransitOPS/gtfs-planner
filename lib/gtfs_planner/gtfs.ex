@@ -15,17 +15,50 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Returns the list of routes for an organization and GTFS version.
 
+  Accepts optional filters, search, sort, and pagination via opts keyword list.
+
   ## Examples
 
       iex> list_routes(organization_id, gtfs_version_id)
       [%Route{}, ...]
+
+      iex> list_routes(organization_id, gtfs_version_id, route_type: 3, search: "express")
+      [%Route{}, ...]
   """
-  def list_routes(organization_id, gtfs_version_id) do
+  def list_routes(organization_id, gtfs_version_id, opts \\ []) do
     from(r in Route,
-      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
-      order_by: [asc: r.route_id]
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id
     )
+    |> maybe_filter_type(opts[:route_type])
+    |> maybe_filter_agency(opts[:agency_id])
+    |> maybe_filter_active(opts[:active])
+    |> maybe_search(opts[:search])
+    |> apply_sort(opts[:sort_by], opts[:sort_dir])
+    |> paginate(opts[:page], opts[:per_page])
     |> Repo.all()
+  end
+
+  @doc """
+  Returns the count of routes for an organization and GTFS version.
+
+  Accepts optional filters via opts keyword list.
+
+  ## Examples
+
+      iex> count_routes(organization_id, gtfs_version_id)
+      42
+
+      iex> count_routes(organization_id, gtfs_version_id, route_type: 3)
+      15
+  """
+  def count_routes(organization_id, gtfs_version_id, opts \\ []) do
+    from(r in Route,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id
+    )
+    |> maybe_filter_type(opts[:route_type])
+    |> maybe_filter_agency(opts[:agency_id])
+    |> maybe_filter_active(opts[:active])
+    |> Repo.aggregate(:count)
   end
 
   @doc """
@@ -63,6 +96,61 @@ defmodule GtfsPlanner.Gtfs do
           r.route_id == ^route_id
     )
     |> Repo.one()
+  end
+
+  @doc """
+  Creates a route.
+
+  ## Examples
+
+      iex> create_route(%{organization_id: org_id, gtfs_version_id: version_id, route_id: "R1", route_type: 3, route_short_name: "1"})
+      {:ok, %Route{}}
+
+      iex> create_route(%{route_id: nil})
+      {:error, %Ecto.Changeset{}}
+  """
+  def create_route(attrs \\ %{}) do
+    %Route{}
+    |> Route.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Returns a list of distinct route types for an organization and GTFS version.
+
+  ## Examples
+
+      iex> list_distinct_route_types(organization_id, gtfs_version_id)
+      [0, 1, 3]
+  """
+  def list_distinct_route_types(organization_id, gtfs_version_id) do
+    from(r in Route,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
+      distinct: true,
+      select: r.route_type,
+      order_by: r.route_type
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Returns a list of distinct agency IDs for an organization and GTFS version.
+
+  ## Examples
+
+      iex> list_distinct_agencies(organization_id, gtfs_version_id)
+      ["agency1", "agency2"]
+  """
+  def list_distinct_agencies(organization_id, gtfs_version_id) do
+    from(r in Route,
+      where:
+        r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id and
+          not is_nil(r.agency_id),
+      distinct: true,
+      select: r.agency_id,
+      order_by: r.agency_id
+    )
+    |> Repo.all()
   end
 
   @doc """
@@ -583,6 +671,68 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   # Private helper functions
+
+  defp maybe_filter_type(query, nil), do: query
+  defp maybe_filter_type(query, ""), do: query
+
+  defp maybe_filter_type(query, route_type) do
+    where(query, [r], r.route_type == ^route_type)
+  end
+
+  defp maybe_filter_agency(query, nil), do: query
+  defp maybe_filter_agency(query, ""), do: query
+
+  defp maybe_filter_agency(query, agency_id) do
+    where(query, [r], r.agency_id == ^agency_id)
+  end
+
+  defp maybe_filter_active(query, nil), do: query
+  defp maybe_filter_active(query, "all"), do: query
+  defp maybe_filter_active(query, ""), do: query
+
+  defp maybe_filter_active(query, "true") do
+    where(query, [r], r.active == true)
+  end
+
+  defp maybe_filter_active(query, "false") do
+    where(query, [r], r.active == false)
+  end
+
+  defp maybe_search(query, nil), do: query
+  defp maybe_search(query, ""), do: query
+
+  defp maybe_search(query, term) do
+    search_pattern = "%#{term}%"
+
+    where(
+      query,
+      [r],
+      ilike(r.route_id, ^search_pattern) or
+        ilike(r.route_short_name, ^search_pattern) or
+        ilike(r.route_long_name, ^search_pattern)
+    )
+  end
+
+  defp apply_sort(query, nil, _sort_dir), do: order_by(query, [r], asc: r.route_id)
+  defp apply_sort(query, _sort_by, nil), do: order_by(query, [r], asc: r.route_id)
+
+  defp apply_sort(query, sort_by, sort_dir)
+       when sort_by in [:route_id, :route_short_name, :route_long_name, :route_type, :active] and
+              sort_dir in [:asc, :desc] do
+    order_by(query, [r], [{^sort_dir, field(r, ^sort_by)}])
+  end
+
+  defp apply_sort(query, _sort_by, _sort_dir), do: order_by(query, [r], asc: r.route_id)
+
+  defp paginate(query, nil, _per_page), do: paginate(query, 1, 25)
+  defp paginate(query, _page, nil), do: paginate(query, 1, 25)
+
+  defp paginate(query, page, per_page) when is_integer(page) and is_integer(per_page) do
+    offset = (page - 1) * per_page
+    query |> limit(^per_page) |> offset(^offset)
+  end
+
+  defp paginate(query, _page, _per_page), do: paginate(query, 1, 25)
 
   defp broadcast({:ok, result}, event_topic) do
     broadcast_result =
