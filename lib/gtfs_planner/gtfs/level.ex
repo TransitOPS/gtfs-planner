@@ -53,7 +53,5 @@ defmodule GtfsPlanner.Gtfs.Level do
       name: :levels_organization_id_gtfs_version_id_level_id_index
     )
     |> foreign_key_constraint(:organization_id)
-    |> foreign_key_constraint(:gtfs_version_id)
-    |> foreign_key_constraint(:parent_station_id)
   end
 end

@@ -101,8 +101,5 @@ defmodule GtfsPlanner.Gtfs.Pathway do
     |> validate_inclusion(:pathway_mode, 1..7)
     |> unique_constraint([:organization_id, :gtfs_version_id, :pathway_id])
     |> foreign_key_constraint(:organization_id)
-    |> foreign_key_constraint(:gtfs_version_id)
-    |> foreign_key_constraint(:from_stop_id)
-    |> foreign_key_constraint(:to_stop_id)
   end
 end

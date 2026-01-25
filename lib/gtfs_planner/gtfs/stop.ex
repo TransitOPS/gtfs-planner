@@ -70,9 +70,6 @@ defmodule GtfsPlanner.Gtfs.Stop do
     |> validate_inclusion(:wheelchair_boarding, 0..2)
     |> unique_constraint([:organization_id, :gtfs_version_id, :stop_id])
     |> foreign_key_constraint(:organization_id)
-    |> foreign_key_constraint(:gtfs_version_id)
-    |> foreign_key_constraint(:parent_station_id)
-    |> foreign_key_constraint(:level_id)
   end
 
   @doc "Returns human-readable label for location_type."
