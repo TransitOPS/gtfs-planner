@@ -364,16 +364,24 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                       </button>
                     </th>
                     <th class="w-[15%]">
-                      <div
+                      <button
+                        type="button"
                         class="flex items-center gap-1 cursor-pointer"
                         phx-click="sort"
                         phx-value-column="route_type"
+                        aria-sort={
+                          if @sort_by == :route_type do
+                            if @sort_dir == :asc, do: "ascending", else: "descending"
+                          else
+                            "none"
+                          end
+                        }
                       >
                         Type
                         <span :if={@sort_by == :route_type}>
                           {if @sort_dir == :asc, do: "▲", else: "▼"}
                         </span>
-                      </div>
+                      </button>
                     </th>
                     <th class="w-[15%]">Preview</th>
                   </tr>
