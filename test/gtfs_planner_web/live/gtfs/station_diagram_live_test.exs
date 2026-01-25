@@ -81,7 +81,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # Assert the drawer opened with populated form fields
       assert result =~ "Child Stop 1"
       assert result =~ "CHILD_STOP_1"
-      
+
       # Verify the form has the correct values in the input fields
       assert result =~ ~r/value="CHILD_STOP_1"/
       assert result =~ ~r/value="Child Stop 1"/

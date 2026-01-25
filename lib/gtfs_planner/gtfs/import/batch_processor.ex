@@ -50,14 +50,17 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     topic = Keyword.fetch!(opts, :topic)
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
 
-    # Convert stream to list to allow multiple passes
-    rows = Enum.to_list(rows_stream)
-    total_rows = length(rows)
-
-    # Process in batches
-    rows
+    # Process stream directly in chunks without materializing entire file
+    # This reduces memory pressure for large files (e.g., stop_times.txt with millions of rows)
+    rows_stream
     |> Stream.chunk_every(batch_size)
-    |> Enum.reduce_while({:ok, 0}, fn chunk, {:ok, acc_count} ->
+    |> Stream.with_index()
+    |> Enum.reduce_while({:ok, 0, 0}, fn {chunk, batch_index}, {:ok, acc_count, _} ->
+      # Calculate approximate total based on batches processed
+      # We don't know total upfront since we're streaming, so we estimate
+      processed_so_far = acc_count
+      estimated_total = max(processed_so_far + length(chunk), processed_so_far + batch_size)
+
       case process_batch(
              repo,
              schema,
@@ -68,15 +71,19 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
              file_name,
              topic,
              acc_count,
-             total_rows
+             estimated_total
            ) do
         {:ok, batch_count} ->
-          {:cont, {:ok, acc_count + batch_count}}
+          {:cont, {:ok, acc_count + batch_count, batch_index + 1}}
 
         {:error, reason} ->
           {:halt, {:error, reason}}
       end
     end)
+    |> case do
+      {:ok, total_count, _batch_count} -> {:ok, total_count}
+      {:error, _} = error -> error
+    end
   end
 
   @doc """
@@ -122,11 +129,20 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
          total_rows
        ) do
     # Convert rows to attrs (pass processed_count as batch_start for accurate row indexing)
-    case convert_rows_to_attrs(chunk, row_to_attrs_fn, organization_id, gtfs_version_id, file_name, processed_count) do
+    case convert_rows_to_attrs(
+           chunk,
+           row_to_attrs_fn,
+           organization_id,
+           gtfs_version_id,
+           file_name,
+           processed_count
+         ) do
       {:ok, attrs_list} ->
         # Add timestamps since insert_all doesn't auto-generate them
         now = DateTime.utc_now()
-        attrs_with_timestamps = Enum.map(attrs_list, &Map.merge(&1, %{inserted_at: now, updated_at: now}))
+
+        attrs_with_timestamps =
+          Enum.map(attrs_list, &Map.merge(&1, %{inserted_at: now, updated_at: now}))
 
         # Insert batch
         case insert_batch(repo, schema, attrs_with_timestamps, file_name) do
@@ -145,7 +161,14 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     end
   end
 
-  defp convert_rows_to_attrs(rows, row_to_attrs_fn, organization_id, gtfs_version_id, file_name, batch_start) do
+  defp convert_rows_to_attrs(
+         rows,
+         row_to_attrs_fn,
+         organization_id,
+         gtfs_version_id,
+         file_name,
+         batch_start
+       ) do
     rows
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, []}, fn {row, index}, {:ok, acc} ->
@@ -174,14 +197,23 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
 
       e in Postgrex.Error ->
         constraint_name = extract_constraint_name(e)
-        {:error, %{file: file_name, postgres_error: e.postgres.code, constraint: constraint_name, message: Exception.message(e)}}
+
+        {:error,
+         %{
+           file: file_name,
+           postgres_error: e.postgres.code,
+           constraint: constraint_name,
+           message: Exception.message(e)
+         }}
 
       e ->
         {:error, %{file: file_name, error: Exception.message(e)}}
     end
   end
 
-  defp extract_constraint_name(%Postgrex.Error{postgres: %{constraint: constraint}}), do: constraint
+  defp extract_constraint_name(%Postgrex.Error{postgres: %{constraint: constraint}}),
+    do: constraint
+
   defp extract_constraint_name(_), do: nil
 
   defp broadcast_progress(topic, file_name, processed, total) do

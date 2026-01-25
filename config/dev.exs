@@ -8,7 +8,11 @@ config :gtfs_planner, GtfsPlanner.Repo,
   database: "gtfs_planner_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
-  pool_size: 10
+  pool_size: 10,
+  # Increased timeouts for large GTFS imports (30+ files)
+  timeout: 300_000,
+  queue_target: 5_000,
+  queue_interval: 30_000
 
 # For development, we disable any cache and enable
 # debugging and code reloading.

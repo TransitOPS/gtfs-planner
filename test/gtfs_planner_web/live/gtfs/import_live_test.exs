@@ -198,7 +198,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # Enable "Create a new GTFS version" toggle
       view
       |> element("#gtfs-import-form")
-      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}})
+      |> render_change(%{
+        "gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}
+      })
 
       html = render(view)
 
@@ -221,7 +223,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # Enable "Create a new GTFS version" toggle
       view
       |> element("#gtfs-import-form")
-      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}})
+      |> render_change(%{
+        "gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}
+      })
 
       # Trigger blur event on version_name field
       view
@@ -231,7 +235,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # Now trigger validation again
       view
       |> element("#gtfs-import-form")
-      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}})
+      |> render_change(%{
+        "gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}
+      })
 
       html = render(view)
 
@@ -252,7 +258,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # Enable "Create a new GTFS version" toggle
       view
       |> element("#gtfs-import-form")
-      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}})
+      |> render_change(%{
+        "gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}
+      })
 
       # Verify no error yet
       refute render(view) =~ "Version name is required"
@@ -265,7 +273,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # Trigger validation with empty value
       view
       |> element("#gtfs-import-form")
-      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}})
+      |> render_change(%{
+        "gtfs_import_form" => %{"create_version" => "true", "version_name" => ""}
+      })
 
       # Error should now appear
       assert render(view) =~ "Version name is required"
@@ -273,7 +283,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # Now provide a valid value
       view
       |> element("#gtfs-import-form")
-      |> render_change(%{"gtfs_import_form" => %{"create_version" => "true", "version_name" => "Spring 2025"}})
+      |> render_change(%{
+        "gtfs_import_form" => %{"create_version" => "true", "version_name" => "Spring 2025"}
+      })
 
       # Error should disappear
       refute render(view) =~ "Version name is required"

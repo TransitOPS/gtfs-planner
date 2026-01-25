@@ -25,11 +25,12 @@ defmodule GtfsPlanner.Gtfs.Import.ProgressReporter do
     Phoenix.PubSub.broadcast(
       GtfsPlanner.PubSub,
       topic,
-      {:import_progress, %{
-        file: file_name,
-        processed: processed_count,
-        total: total_count
-      }}
+      {:import_progress,
+       %{
+         file: file_name,
+         processed: processed_count,
+         total: total_count
+       }}
     )
   end
 

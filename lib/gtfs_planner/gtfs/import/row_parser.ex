@@ -335,6 +335,741 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   end
 
   @doc """
+  Converts an agency CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def agency_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, agency_id} <- extract_required(row_map, "agency_id"),
+         {:ok, agency_name} <- extract_required(row_map, "agency_name"),
+         {:ok, agency_url} <- extract_required(row_map, "agency_url"),
+         {:ok, agency_timezone} <- extract_required(row_map, "agency_timezone") do
+      {:ok,
+       %{
+         agency_id: agency_id,
+         agency_name: agency_name,
+         agency_url: agency_url,
+         agency_timezone: agency_timezone,
+         agency_lang: empty_to_nil(row_map["agency_lang"]),
+         agency_phone: empty_to_nil(row_map["agency_phone"]),
+         agency_fare_url: empty_to_nil(row_map["agency_fare_url"]),
+         agency_email: empty_to_nil(row_map["agency_email"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts an area CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def area_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, area_id} <- extract_required(row_map, "area_id") do
+      {:ok,
+       %{
+         area_id: area_id,
+         area_name: empty_to_nil(row_map["area_name"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts an attribution CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def attribution_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, organization_name} <- extract_required(row_map, "organization_name") do
+      {:ok, is_producer} = parse_integer(row_map["is_producer"])
+      {:ok, is_operator} = parse_integer(row_map["is_operator"])
+      {:ok, is_authority} = parse_integer(row_map["is_authority"])
+
+      {:ok,
+       %{
+         attribution_id: empty_to_nil(row_map["attribution_id"]),
+         agency_id: empty_to_nil(row_map["agency_id"]),
+         route_id: empty_to_nil(row_map["route_id"]),
+         trip_id: empty_to_nil(row_map["trip_id"]),
+         organization_name: organization_name,
+         is_producer: is_producer,
+         is_operator: is_operator,
+         is_authority: is_authority,
+         attribution_url: empty_to_nil(row_map["attribution_url"]),
+         attribution_email: empty_to_nil(row_map["attribution_email"]),
+         attribution_phone: empty_to_nil(row_map["attribution_phone"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a booking_rule CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def booking_rule_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, booking_rule_id} <- extract_required(row_map, "booking_rule_id"),
+         {:ok, booking_type_str} <- extract_required(row_map, "booking_type"),
+         {:ok, booking_type} <- parse_integer(booking_type_str) do
+      {:ok, prior_notice_duration_min} = parse_integer(row_map["prior_notice_duration_min"])
+      {:ok, prior_notice_duration_max} = parse_integer(row_map["prior_notice_duration_max"])
+      {:ok, prior_notice_last_day} = parse_integer(row_map["prior_notice_last_day"])
+      {:ok, prior_notice_start_day} = parse_integer(row_map["prior_notice_start_day"])
+
+      {:ok,
+       %{
+         booking_rule_id: booking_rule_id,
+         booking_type: booking_type,
+         prior_notice_duration_min: prior_notice_duration_min,
+         prior_notice_duration_max: prior_notice_duration_max,
+         prior_notice_last_day: prior_notice_last_day,
+         prior_notice_last_time: empty_to_nil(row_map["prior_notice_last_time"]),
+         prior_notice_start_day: prior_notice_start_day,
+         prior_notice_start_time: empty_to_nil(row_map["prior_notice_start_time"]),
+         prior_notice_service_id: empty_to_nil(row_map["prior_notice_service_id"]),
+         message: empty_to_nil(row_map["message"]),
+         pickup_message: empty_to_nil(row_map["pickup_message"]),
+         drop_off_message: empty_to_nil(row_map["drop_off_message"]),
+         phone_number: empty_to_nil(row_map["phone_number"]),
+         info_url: empty_to_nil(row_map["info_url"]),
+         booking_url: empty_to_nil(row_map["booking_url"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a fare_attribute CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def fare_attribute_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, fare_id} <- extract_required(row_map, "fare_id"),
+         {:ok, price_str} <- extract_required(row_map, "price"),
+         {:ok, price} <- parse_decimal(price_str),
+         {:ok, currency_type} <- extract_required(row_map, "currency_type"),
+         {:ok, payment_method_str} <- extract_required(row_map, "payment_method"),
+         {:ok, payment_method} <- parse_integer(payment_method_str) do
+      {:ok, transfers} = parse_integer(row_map["transfers"])
+      {:ok, transfer_duration} = parse_integer(row_map["transfer_duration"])
+
+      {:ok,
+       %{
+         fare_id: fare_id,
+         price: price,
+         currency_type: currency_type,
+         payment_method: payment_method,
+         transfers: transfers,
+         agency_id: empty_to_nil(row_map["agency_id"]),
+         transfer_duration: transfer_duration,
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a fare_leg_join_rule CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+  """
+  def fare_leg_join_rule_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    {:ok,
+     %{
+       from_network_id: empty_to_nil(row_map["from_network_id"]),
+       to_network_id: empty_to_nil(row_map["to_network_id"]),
+       from_stop_id: empty_to_nil(row_map["from_stop_id"]),
+       to_stop_id: empty_to_nil(row_map["to_stop_id"]),
+       organization_id: organization_id,
+       gtfs_version_id: gtfs_version_id
+     }}
+  end
+
+  @doc """
+  Converts a fare_leg_rule CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+  """
+  def fare_leg_rule_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    {:ok, rule_priority} = parse_integer(row_map["rule_priority"])
+
+    {:ok,
+     %{
+       leg_group_id: empty_to_nil(row_map["leg_group_id"]),
+       network_id: empty_to_nil(row_map["network_id"]),
+       from_area_id: empty_to_nil(row_map["from_area_id"]),
+       to_area_id: empty_to_nil(row_map["to_area_id"]),
+       from_timeframe_group_id: empty_to_nil(row_map["from_timeframe_group_id"]),
+       to_timeframe_group_id: empty_to_nil(row_map["to_timeframe_group_id"]),
+       fare_product_id: empty_to_nil(row_map["fare_product_id"]),
+       rule_priority: rule_priority,
+       organization_id: organization_id,
+       gtfs_version_id: gtfs_version_id
+     }}
+  end
+
+  @doc """
+  Converts a fare_media CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def fare_media_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, fare_media_id} <- extract_required(row_map, "fare_media_id"),
+         {:ok, fare_media_type} <- parse_fare_media_type(row_map["fare_media_type"]) do
+      {:ok,
+       %{
+         fare_media_id: fare_media_id,
+         fare_media_name: empty_to_nil(row_map["fare_media_name"]),
+         fare_media_type: fare_media_type,
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a fare_product CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def fare_product_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, fare_product_id} <- extract_required(row_map, "fare_product_id"),
+         {:ok, fare_product_name} <- extract_required(row_map, "fare_product_name"),
+         {:ok, amount_str} <- extract_required(row_map, "amount"),
+         {:ok, amount} <- parse_decimal(amount_str),
+         {:ok, currency} <- extract_required(row_map, "currency") do
+      {:ok, bundle_amount} = parse_integer(row_map["bundle_amount"])
+      {:ok, duration_start} = parse_integer(row_map["duration_start"])
+      {:ok, duration_amount} = parse_integer(row_map["duration_amount"])
+      {:ok, duration_unit} = parse_integer(row_map["duration_unit"])
+
+      {:ok,
+       %{
+         fare_product_id: fare_product_id,
+         fare_product_name: fare_product_name,
+         fare_media_id: empty_to_nil(row_map["fare_media_id"]),
+         amount: amount,
+         currency: currency,
+         rider_category_id: empty_to_nil(row_map["rider_category_id"]),
+         bundle_amount: bundle_amount,
+         duration_start: duration_start,
+         duration_amount: duration_amount,
+         duration_unit: duration_unit,
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a fare_rule CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def fare_rule_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, fare_id} <- extract_required(row_map, "fare_id") do
+      {:ok,
+       %{
+         fare_id: fare_id,
+         route_id: empty_to_nil(row_map["route_id"]),
+         origin_id: empty_to_nil(row_map["origin_id"]),
+         destination_id: empty_to_nil(row_map["destination_id"]),
+         contains_id: empty_to_nil(row_map["contains_id"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a fare_transfer_rule CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def fare_transfer_rule_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, fare_transfer_type_str} <- extract_required(row_map, "fare_transfer_type"),
+         {:ok, fare_transfer_type} <- parse_fare_transfer_type(fare_transfer_type_str) do
+      {:ok, transfer_count} = parse_integer(row_map["transfer_count"])
+      {:ok, duration_limit} = parse_integer(row_map["duration_limit"])
+      {:ok, duration_limit_type} = parse_duration_limit_type(row_map["duration_limit_type"])
+
+      {:ok,
+       %{
+         from_leg_group_id: empty_to_nil(row_map["from_leg_group_id"]),
+         to_leg_group_id: empty_to_nil(row_map["to_leg_group_id"]),
+         transfer_count: transfer_count,
+         duration_limit: duration_limit,
+         duration_limit_type: duration_limit_type,
+         fare_transfer_type: fare_transfer_type,
+         fare_product_id: empty_to_nil(row_map["fare_product_id"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a feed_info CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def feed_info_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, feed_publisher_name} <- extract_required(row_map, "feed_publisher_name"),
+         {:ok, feed_publisher_url} <- extract_required(row_map, "feed_publisher_url"),
+         {:ok, feed_lang} <- extract_required(row_map, "feed_lang") do
+      {:ok, feed_start_date} = parse_gtfs_date(row_map["feed_start_date"])
+      {:ok, feed_end_date} = parse_gtfs_date(row_map["feed_end_date"])
+
+      {:ok,
+       %{
+         feed_publisher_name: feed_publisher_name,
+         feed_publisher_url: feed_publisher_url,
+         feed_lang: feed_lang,
+         default_lang: empty_to_nil(row_map["default_lang"]),
+         feed_start_date: feed_start_date,
+         feed_end_date: feed_end_date,
+         feed_version: empty_to_nil(row_map["feed_version"]),
+         feed_contact_email: empty_to_nil(row_map["feed_contact_email"]),
+         feed_contact_url: empty_to_nil(row_map["feed_contact_url"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a frequency CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def frequency_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, trip_id} <- extract_required(row_map, "trip_id"),
+         {:ok, start_time} <- extract_required(row_map, "start_time"),
+         {:ok, end_time} <- extract_required(row_map, "end_time"),
+         {:ok, headway_secs_str} <- extract_required(row_map, "headway_secs"),
+         {:ok, headway_secs} <- parse_headway_secs(headway_secs_str) do
+      {:ok, exact_times} = parse_exact_times(row_map["exact_times"])
+
+      {:ok,
+       %{
+         trip_id: trip_id,
+         start_time: start_time,
+         end_time: end_time,
+         headway_secs: headway_secs,
+         exact_times: exact_times,
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a location CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def location_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, location_id} <- extract_required(row_map, "location_id") do
+      {:ok, location_lat} = parse_decimal(row_map["location_lat"])
+      {:ok, location_lon} = parse_decimal(row_map["location_lon"])
+
+      {:ok,
+       %{
+         location_id: location_id,
+         location_name: empty_to_nil(row_map["location_name"]),
+         location_lat: location_lat,
+         location_lon: location_lon,
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a network CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def network_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, network_id} <- extract_required(row_map, "network_id") do
+      {:ok,
+       %{
+         network_id: network_id,
+         network_name: empty_to_nil(row_map["network_name"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a rider_category CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def rider_category_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, rider_category_id} <- extract_required(row_map, "rider_category_id"),
+         {:ok, rider_category_name} <- extract_required(row_map, "rider_category_name") do
+      {:ok, min_age} = parse_integer(row_map["min_age"])
+      {:ok, max_age} = parse_integer(row_map["max_age"])
+
+      {:ok,
+       %{
+         rider_category_id: rider_category_id,
+         rider_category_name: rider_category_name,
+         min_age: min_age,
+         max_age: max_age,
+         eligibility_url: empty_to_nil(row_map["eligibility_url"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a route_network CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def route_network_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, network_id} <- extract_required(row_map, "network_id"),
+         {:ok, route_id} <- extract_required(row_map, "route_id") do
+      {:ok,
+       %{
+         network_id: network_id,
+         route_id: route_id,
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a shape CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def shape_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, shape_id} <- extract_required(row_map, "shape_id"),
+         {:ok, shape_pt_lat_str} <- extract_required(row_map, "shape_pt_lat"),
+         {:ok, shape_pt_lat} <- parse_decimal(shape_pt_lat_str),
+         {:ok, shape_pt_lon_str} <- extract_required(row_map, "shape_pt_lon"),
+         {:ok, shape_pt_lon} <- parse_decimal(shape_pt_lon_str),
+         {:ok, shape_pt_sequence_str} <- extract_required(row_map, "shape_pt_sequence"),
+         {:ok, shape_pt_sequence} <- parse_integer(shape_pt_sequence_str) do
+      {:ok, shape_dist_traveled} = parse_decimal(row_map["shape_dist_traveled"])
+
+      if shape_pt_sequence >= 0 do
+        {:ok,
+         %{
+           shape_id: shape_id,
+           shape_pt_lat: shape_pt_lat,
+           shape_pt_lon: shape_pt_lon,
+           shape_pt_sequence: shape_pt_sequence,
+           shape_dist_traveled: shape_dist_traveled,
+           organization_id: organization_id,
+           gtfs_version_id: gtfs_version_id
+         }}
+      else
+        {:error, "shape_pt_sequence must be >= 0: #{shape_pt_sequence}"}
+      end
+    end
+  end
+
+  @doc """
+  Converts a stop_area CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def stop_area_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, area_id} <- extract_required(row_map, "area_id"),
+         {:ok, stop_id} <- extract_required(row_map, "stop_id") do
+      {:ok,
+       %{
+         area_id: area_id,
+         stop_id: stop_id,
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a timeframe CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def timeframe_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, timeframe_group_id} <- extract_required(row_map, "timeframe_group_id"),
+         {:ok, service_id} <- extract_required(row_map, "service_id") do
+      {:ok,
+       %{
+         timeframe_group_id: timeframe_group_id,
+         start_time: empty_to_nil(row_map["start_time"]),
+         end_time: empty_to_nil(row_map["end_time"]),
+         service_id: service_id,
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a transfer CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def transfer_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, from_stop_id} <- extract_required(row_map, "from_stop_id"),
+         {:ok, to_stop_id} <- extract_required(row_map, "to_stop_id"),
+         {:ok, transfer_type_str} <- extract_required(row_map, "transfer_type"),
+         {:ok, transfer_type} <- parse_transfer_type(transfer_type_str) do
+      {:ok, min_transfer_time} = parse_integer(row_map["min_transfer_time"])
+
+      {:ok,
+       %{
+         from_stop_id: from_stop_id,
+         to_stop_id: to_stop_id,
+         from_route_id: empty_to_nil(row_map["from_route_id"]),
+         to_route_id: empty_to_nil(row_map["to_route_id"]),
+         from_trip_id: empty_to_nil(row_map["from_trip_id"]),
+         to_trip_id: empty_to_nil(row_map["to_trip_id"]),
+         transfer_type: transfer_type,
+         min_transfer_time: min_transfer_time,
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
+  Converts a translation CSV row to attributes map.
+
+  ## Parameters
+
+    * `row_map` - Map of CSV column names to values
+    * `organization_id` - UUID of the organization
+    * `gtfs_version_id` - UUID of the GTFS version
+
+  ## Returns
+
+    * `{:ok, attrs}` - Valid attributes map
+    * `{:error, reason}` - Validation failure
+  """
+  def translation_row_to_attrs(row_map, organization_id, gtfs_version_id) do
+    with {:ok, table_name} <- extract_required(row_map, "table_name"),
+         {:ok, field_name} <- extract_required(row_map, "field_name"),
+         {:ok, language} <- extract_required(row_map, "language"),
+         {:ok, translation} <- extract_required(row_map, "translation") do
+      {:ok,
+       %{
+         table_name: table_name,
+         field_name: field_name,
+         language: language,
+         translation: translation,
+         record_id: empty_to_nil(row_map["record_id"]),
+         record_sub_id: empty_to_nil(row_map["record_sub_id"]),
+         field_value: empty_to_nil(row_map["field_value"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id
+       }}
+    end
+  end
+
+  @doc """
   Converts a pathway CSV row to attributes map.
 
   Uses the provided stop_map to resolve from_stop_id and to_stop_id UUIDs.
@@ -360,30 +1095,35 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
          {:ok, from_stop_uuid} <- lookup_stop_uuid(stop_map, from_stop_id_str, "from_stop_id"),
          {:ok, to_stop_uuid} <- lookup_stop_uuid(stop_map, to_stop_id_str, "to_stop_id") do
       # Parse optional fields, defaulting to nil on parse errors
-      traversal_time = case parse_integer(row_map["traversal_time"]) do
-        {:ok, val} -> val
-        {:error, _} -> nil
-      end
+      traversal_time =
+        case parse_integer(row_map["traversal_time"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-      length = case parse_decimal(row_map["length"]) do
-        {:ok, val} -> val
-        {:error, _} -> nil
-      end
+      length =
+        case parse_decimal(row_map["length"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-      stair_count = case parse_integer(row_map["stair_count"]) do
-        {:ok, val} -> val
-        {:error, _} -> nil
-      end
+      stair_count =
+        case parse_integer(row_map["stair_count"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-      max_slope = case parse_decimal(row_map["max_slope"]) do
-        {:ok, val} -> val
-        {:error, _} -> nil
-      end
+      max_slope =
+        case parse_decimal(row_map["max_slope"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-      min_width = case parse_decimal(row_map["min_width"]) do
-        {:ok, val} -> val
-        {:error, _} -> nil
-      end
+      min_width =
+        case parse_decimal(row_map["min_width"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
       {:ok,
        %{
@@ -619,6 +1359,134 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
     end
   rescue
     _ -> {:error, "invalid wheelchair_boarding: #{string}"}
+  end
+
+  @doc """
+  Parses fare_media_type (0-4, required).
+
+  ## Returns
+
+    * `{:ok, integer}` - Valid fare media type
+    * `{:error, reason}` - Parse failure
+  """
+  def parse_fare_media_type(nil), do: {:error, "fare_media_type is required"}
+  def parse_fare_media_type(""), do: {:error, "fare_media_type is required"}
+
+  def parse_fare_media_type(string) when is_binary(string) do
+    case Integer.parse(string) do
+      {int, ""} when int in 0..4 -> {:ok, int}
+      {int, ""} -> {:error, "fare_media_type out of range 0-4: #{int}"}
+      _ -> {:error, "invalid fare_media_type: #{string}"}
+    end
+  rescue
+    _ -> {:error, "invalid fare_media_type: #{string}"}
+  end
+
+  @doc """
+  Parses fare_transfer_type (0-2, required).
+
+  ## Returns
+
+    * `{:ok, integer}` - Valid fare transfer type
+    * `{:error, reason}` - Parse failure
+  """
+  def parse_fare_transfer_type(nil), do: {:error, "fare_transfer_type is required"}
+  def parse_fare_transfer_type(""), do: {:error, "fare_transfer_type is required"}
+
+  def parse_fare_transfer_type(string) when is_binary(string) do
+    case Integer.parse(string) do
+      {int, ""} when int in 0..2 -> {:ok, int}
+      {int, ""} -> {:error, "fare_transfer_type out of range 0-2: #{int}"}
+      _ -> {:error, "invalid fare_transfer_type: #{string}"}
+    end
+  rescue
+    _ -> {:error, "invalid fare_transfer_type: #{string}"}
+  end
+
+  @doc """
+  Parses duration_limit_type (0-3, optional).
+
+  ## Returns
+
+    * `{:ok, integer}` - Valid duration limit type
+    * `{:ok, nil}` - Empty or nil input
+    * `{:error, reason}` - Parse failure
+  """
+  def parse_duration_limit_type(nil), do: {:ok, nil}
+  def parse_duration_limit_type(""), do: {:ok, nil}
+
+  def parse_duration_limit_type(string) when is_binary(string) do
+    case Integer.parse(string) do
+      {int, ""} when int in 0..3 -> {:ok, int}
+      {int, ""} -> {:error, "duration_limit_type out of range 0-3: #{int}"}
+      _ -> {:error, "invalid duration_limit_type: #{string}"}
+    end
+  rescue
+    _ -> {:error, "invalid duration_limit_type: #{string}"}
+  end
+
+  @doc """
+  Parses headway_secs (> 0, required for frequencies).
+
+  ## Returns
+
+    * `{:ok, integer}` - Valid headway_secs
+    * `{:error, reason}` - Parse failure
+  """
+  def parse_headway_secs(nil), do: {:error, "headway_secs is required"}
+  def parse_headway_secs(""), do: {:error, "headway_secs is required"}
+
+  def parse_headway_secs(string) when is_binary(string) do
+    case Integer.parse(string) do
+      {int, ""} when int > 0 -> {:ok, int}
+      {int, ""} -> {:error, "headway_secs must be greater than 0: #{int}"}
+      _ -> {:error, "invalid headway_secs: #{string}"}
+    end
+  rescue
+    _ -> {:error, "invalid headway_secs: #{string}"}
+  end
+
+  @doc """
+  Parses exact_times (0-1, optional).
+
+  ## Returns
+
+    * `{:ok, integer}` - Valid exact_times
+    * `{:ok, nil}` - Empty or nil input
+    * `{:error, reason}` - Parse failure
+  """
+  def parse_exact_times(nil), do: {:ok, nil}
+  def parse_exact_times(""), do: {:ok, nil}
+
+  def parse_exact_times(string) when is_binary(string) do
+    case Integer.parse(string) do
+      {int, ""} when int in 0..1 -> {:ok, int}
+      {int, ""} -> {:error, "exact_times out of range 0-1: #{int}"}
+      _ -> {:error, "invalid exact_times: #{string}"}
+    end
+  rescue
+    _ -> {:error, "invalid exact_times: #{string}"}
+  end
+
+  @doc """
+  Parses transfer_type (0-5, required).
+
+  ## Returns
+
+    * `{:ok, integer}` - Valid transfer type
+    * `{:error, reason}` - Parse failure
+  """
+  def parse_transfer_type(nil), do: {:error, "transfer_type is required"}
+  def parse_transfer_type(""), do: {:error, "transfer_type is required"}
+
+  def parse_transfer_type(string) when is_binary(string) do
+    case Integer.parse(string) do
+      {int, ""} when int in 0..5 -> {:ok, int}
+      {int, ""} -> {:error, "transfer_type out of range 0-5: #{int}"}
+      _ -> {:error, "invalid transfer_type: #{string}"}
+    end
+  rescue
+    _ -> {:error, "invalid transfer_type: #{string}"}
   end
 
   @doc """
