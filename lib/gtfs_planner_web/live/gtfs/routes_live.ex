@@ -304,40 +304,64 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                 <thead>
                   <tr class="bg-base-300">
                     <th class="w-[15%]">
-                      <div
+                      <button
+                        type="button"
                         class="flex items-center gap-1 cursor-pointer"
                         phx-click="sort"
                         phx-value-column="route_id"
+                        aria-sort={
+                          if @sort_by == :route_id do
+                            if @sort_dir == :asc, do: "ascending", else: "descending"
+                          else
+                            "none"
+                          end
+                        }
                       >
                         Route ID
                         <span :if={@sort_by == :route_id}>
                           {if @sort_dir == :asc, do: "▲", else: "▼"}
                         </span>
-                      </div>
+                      </button>
                     </th>
                     <th class="w-[15%]">
-                      <div
+                      <button
+                        type="button"
                         class="flex items-center gap-1 cursor-pointer"
                         phx-click="sort"
                         phx-value-column="route_short_name"
+                        aria-sort={
+                          if @sort_by == :route_short_name do
+                            if @sort_dir == :asc, do: "ascending", else: "descending"
+                          else
+                            "none"
+                          end
+                        }
                       >
                         Short Name
                         <span :if={@sort_by == :route_short_name}>
                           {if @sort_dir == :asc, do: "▲", else: "▼"}
                         </span>
-                      </div>
+                      </button>
                     </th>
                     <th class="w-[40%]">
-                      <div
+                      <button
+                        type="button"
                         class="flex items-center gap-1 cursor-pointer"
                         phx-click="sort"
                         phx-value-column="route_long_name"
+                        aria-sort={
+                          if @sort_by == :route_long_name do
+                            if @sort_dir == :asc, do: "ascending", else: "descending"
+                          else
+                            "none"
+                          end
+                        }
                       >
                         Long Name
                         <span :if={@sort_by == :route_long_name}>
                           {if @sort_dir == :asc, do: "▲", else: "▼"}
                         </span>
-                      </div>
+                      </button>
                     </th>
                     <th class="w-[15%]">
                       <div
