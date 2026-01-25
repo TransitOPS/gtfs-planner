@@ -414,4 +414,97 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert Gtfs.list_levels(organization.id, gtfs_version.id) == []
     end
   end
+
+  describe "import_route_patterns_from_content/3" do
+    test "imports route patterns with blank typicality and canonical values" do
+      organization_id = Ecto.UUID.generate()
+      gtfs_version_id = Ecto.UUID.generate()
+
+      content = """
+      route_pattern_id,route_id,direction_id,route_pattern_typicality,canonical_route_pattern
+      RP1,R1,0,,
+      RP2,R2,1,1,0
+      RP3,R3,0,2,1
+      """
+
+      changesets = Import.import_route_patterns_from_content(organization_id, gtfs_version_id, content)
+
+      assert length(changesets) == 3
+
+      # First pattern has blank values which should be treated as 0
+      {_op, _name, cs1} = Enum.at(changesets, 0)
+      assert cs1.valid?
+      assert Ecto.Changeset.get_field(cs1, :route_pattern_typicality) == 0
+      assert Ecto.Changeset.get_field(cs1, :canonical_route_pattern) == 0
+
+      # Second pattern has explicit values
+      {_op, _name, cs2} = Enum.at(changesets, 1)
+      assert cs2.valid?
+      assert Ecto.Changeset.get_field(cs2, :route_pattern_typicality) == 1
+      assert Ecto.Changeset.get_field(cs2, :canonical_route_pattern) == 0
+
+      # Third pattern has different values
+      {_op, _name, cs3} = Enum.at(changesets, 2)
+      assert cs3.valid?
+      assert Ecto.Changeset.get_field(cs3, :route_pattern_typicality) == 2
+      assert Ecto.Changeset.get_field(cs3, :canonical_route_pattern) == 1
+    end
+
+    test "rejects route patterns with out-of-range typicality" do
+      organization_id = Ecto.UUID.generate()
+      gtfs_version_id = Ecto.UUID.generate()
+
+      content = """
+      route_pattern_id,route_id,direction_id,route_pattern_typicality,canonical_route_pattern
+      RP1,R1,0,10,0
+      """
+
+      changesets = Import.import_route_patterns_from_content(organization_id, gtfs_version_id, content)
+
+      assert length(changesets) == 1
+      {_op, _name, changeset} = Enum.at(changesets, 0)
+
+      # Changeset should be invalid because typicality is out of range
+      refute changeset.valid?
+      assert %{route_pattern_typicality: ["is invalid"]} = errors_on(changeset)
+    end
+
+    test "rejects route patterns with out-of-range canonical value" do
+      organization_id = Ecto.UUID.generate()
+      gtfs_version_id = Ecto.UUID.generate()
+
+      content = """
+      route_pattern_id,route_id,direction_id,route_pattern_typicality,canonical_route_pattern
+      RP1,R1,0,1,5
+      """
+
+      changesets = Import.import_route_patterns_from_content(organization_id, gtfs_version_id, content)
+
+      assert length(changesets) == 1
+      {_op, _name, changeset} = Enum.at(changesets, 0)
+
+      # Changeset should be invalid because canonical is out of range
+      refute changeset.valid?
+      assert %{canonical_route_pattern: ["is invalid"]} = errors_on(changeset)
+    end
+
+    test "rejects route patterns with invalid direction_id" do
+      organization_id = Ecto.UUID.generate()
+      gtfs_version_id = Ecto.UUID.generate()
+
+      content = """
+      route_pattern_id,route_id,direction_id,route_pattern_typicality,canonical_route_pattern
+      RP1,R1,5,1,0
+      """
+
+      changesets = Import.import_route_patterns_from_content(organization_id, gtfs_version_id, content)
+
+      assert length(changesets) == 1
+      {_op, _name, changeset} = Enum.at(changesets, 0)
+
+      # Changeset should be invalid because direction_id is out of range
+      refute changeset.valid?
+      assert %{direction_id: ["is invalid"]} = errors_on(changeset)
+    end
+  end
 end
