@@ -176,7 +176,7 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
         <.pagination page={@page} per_page={@per_page} total={@total} />
         """)
 
-      assert html =~ ~r/Previous.*disabled/s
+      assert html =~ ~r/disabled.*Previous/s
     end
 
     test "disables Next button on last page" do
@@ -187,7 +187,7 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
         <.pagination page={@page} per_page={@per_page} total={@total} />
         """)
 
-      assert html =~ ~r/Next.*disabled/s
+      assert html =~ ~r/disabled.*Next/s
     end
 
     test "enables both buttons on middle page" do
@@ -198,8 +198,8 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
         <.pagination page={@page} per_page={@per_page} total={@total} />
         """)
 
-      refute html =~ ~r/Previous.*disabled/s
-      refute html =~ ~r/Next.*disabled/s
+      refute html =~ ~r/disabled.*Previous/s
+      refute html =~ ~r/disabled.*Next/s
     end
 
     test "renders pagination controls with phx-click events" do
