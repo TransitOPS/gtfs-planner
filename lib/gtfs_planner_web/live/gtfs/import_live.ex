@@ -446,7 +446,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         <div>
                           <h3 class="font-bold">Import Successful</h3>
                           <div class="text-xs">
-                            Imported <%= counts.routes %> routes, <%= counts.calendars %> calendars, <%= counts.calendar_dates %> calendar dates, <%= counts.route_patterns %> route patterns, <%= counts.trips %> trips, <%= counts.levels %> levels, <%= counts.stops %> stops, <%= counts.stop_times %> stop times, <%= counts.pathways %> pathways.
+                            Imported <%= Map.get(counts, :routes, 0) %> routes, <%= Map.get(counts, :calendars, 0) %> calendars, <%= Map.get(counts, :calendar_dates, 0) %> calendar dates, <%= Map.get(counts, :route_patterns, 0) %> route patterns, <%= Map.get(counts, :trips, 0) %> trips, <%= Map.get(counts, :levels, 0) %> levels, <%= Map.get(counts, :stops, 0) %> stops, <%= Map.get(counts, :stop_times, 0) %> stop times, <%= Map.get(counts, :pathways, 0) %> pathways.
                           </div>
                         </div>
                       </div>
