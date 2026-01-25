@@ -498,6 +498,80 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   @doc """
+  Renders a route badge with color, text color, and short name.
+
+  ## Examples
+
+      <.route_badge route={@route} />
+  """
+  attr :route, :map, required: true
+
+  def route_badge(assigns) do
+    ~H"""
+    <span
+      class="inline-flex items-center justify-center px-2 py-0.5 text-xs font-medium rounded"
+      style={"background-color: ##{@route.route_color}; color: ##{@route.route_text_color}"}
+    >
+      {@route.route_short_name || "—"}
+    </span>
+    """
+  end
+
+  @doc """
+  Renders pagination controls with previous/next buttons and item count.
+
+  ## Examples
+
+      <.pagination page={@page} per_page={@per_page} total={@total_count} />
+  """
+  attr :page, :integer, required: true
+  attr :per_page, :integer, required: true
+  attr :total, :integer, required: true
+
+  def pagination(assigns) do
+    # Handle empty state: when total is 0, show 0-0 instead of 1-0
+    start_item = if assigns.total == 0, do: 0, else: (assigns.page - 1) * assigns.per_page + 1
+    end_item = min(assigns.page * assigns.per_page, assigns.total)
+    has_prev = assigns.page > 1
+    has_next = end_item < assigns.total
+
+    assigns =
+      assigns
+      |> assign(:start_item, start_item)
+      |> assign(:end_item, end_item)
+      |> assign(:has_prev, has_prev)
+      |> assign(:has_next, has_next)
+
+    ~H"""
+    <div class="flex items-center justify-between gap-4 py-3">
+      <div class="text-sm text-base-content/70">
+        Showing {@start_item}–{@end_item} of {@total} routes
+      </div>
+      <div class="flex gap-2">
+        <button
+          type="button"
+          class="btn btn-sm btn-ghost"
+          phx-click="paginate"
+          phx-value-page={@page - 1}
+          disabled={!@has_prev}
+        >
+          Previous
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm btn-ghost"
+          phx-click="paginate"
+          phx-value-page={@page + 1}
+          disabled={!@has_next}
+        >
+          Next
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
   Renders a [Heroicon](https://heroicons.com).
 
   Heroicons come in three styles – outline, solid, and mini.
