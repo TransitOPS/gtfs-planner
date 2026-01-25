@@ -119,4 +119,100 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert html =~ "z-50"
     end
   end
+
+  describe "pagination/1" do
+    test "renders correct range with items" do
+      assigns = %{page: 1, per_page: 10, total: 25}
+
+      html =
+        rendered_to_string(~H"""
+        <.pagination page={@page} per_page={@per_page} total={@total} />
+        """)
+
+      assert html =~ "Showing 1–10 of 25 routes"
+      assert html =~ "Previous"
+      assert html =~ "Next"
+    end
+
+    test "renders correct range on second page" do
+      assigns = %{page: 2, per_page: 10, total: 25}
+
+      html =
+        rendered_to_string(~H"""
+        <.pagination page={@page} per_page={@per_page} total={@total} />
+        """)
+
+      assert html =~ "Showing 11–20 of 25 routes"
+    end
+
+    test "renders correct range on last page with partial results" do
+      assigns = %{page: 3, per_page: 10, total: 25}
+
+      html =
+        rendered_to_string(~H"""
+        <.pagination page={@page} per_page={@per_page} total={@total} />
+        """)
+
+      assert html =~ "Showing 21–25 of 25 routes"
+    end
+
+    test "handles empty state correctly (total = 0)" do
+      assigns = %{page: 1, per_page: 10, total: 0}
+
+      html =
+        rendered_to_string(~H"""
+        <.pagination page={@page} per_page={@per_page} total={@total} />
+        """)
+
+      assert html =~ "Showing 0–0 of 0 routes"
+      refute html =~ "Showing 1–0"
+    end
+
+    test "disables Previous button on first page" do
+      assigns = %{page: 1, per_page: 10, total: 25}
+
+      html =
+        rendered_to_string(~H"""
+        <.pagination page={@page} per_page={@per_page} total={@total} />
+        """)
+
+      assert html =~ ~r/Previous.*disabled/s
+    end
+
+    test "disables Next button on last page" do
+      assigns = %{page: 3, per_page: 10, total: 25}
+
+      html =
+        rendered_to_string(~H"""
+        <.pagination page={@page} per_page={@per_page} total={@total} />
+        """)
+
+      assert html =~ ~r/Next.*disabled/s
+    end
+
+    test "enables both buttons on middle page" do
+      assigns = %{page: 2, per_page: 10, total: 50}
+
+      html =
+        rendered_to_string(~H"""
+        <.pagination page={@page} per_page={@per_page} total={@total} />
+        """)
+
+      refute html =~ ~r/Previous.*disabled/s
+      refute html =~ ~r/Next.*disabled/s
+    end
+
+    test "renders pagination controls with phx-click events" do
+      assigns = %{page: 2, per_page: 10, total: 50}
+
+      html =
+        rendered_to_string(~H"""
+        <.pagination page={@page} per_page={@per_page} total={@total} />
+        """)
+
+      assert html =~ "phx-click=\"paginate\""
+      assert html =~ "phx-value-page=\"1\""
+      assert html =~ "phx-value-page=\"3\""
+    end
+  end
 end

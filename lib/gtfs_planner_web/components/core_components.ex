@@ -529,7 +529,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :total, :integer, required: true
 
   def pagination(assigns) do
-    start_item = (assigns.page - 1) * assigns.per_page + 1
+    # Handle empty state: when total is 0, show 0-0 instead of 1-0
+    start_item = if assigns.total == 0, do: 0, else: (assigns.page - 1) * assigns.per_page + 1
     end_item = min(assigns.page * assigns.per_page, assigns.total)
     has_prev = assigns.page > 1
     has_next = end_item < assigns.total
