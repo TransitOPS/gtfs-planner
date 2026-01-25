@@ -2,25 +2,6 @@ defmodule GtfsPlanner.Gtfs.Stop do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @type t :: %__MODULE__{
-          id: Ecto.UUID.t(),
-          organization_id: Ecto.UUID.t(),
-          gtfs_version_id: Ecto.UUID.t(),
-          stop_id: String.t(),
-          stop_name: String.t() | nil,
-          stop_desc: String.t() | nil,
-          stop_lat: Decimal.t() | nil,
-          stop_lon: Decimal.t() | nil,
-          location_type: integer(),
-          wheelchair_boarding: integer() | nil,
-          platform_code: String.t() | nil,
-          diagram_coordinate: map() | nil,
-          parent_station_id: Ecto.UUID.t() | nil,
-          level_id: Ecto.UUID.t() | nil,
-          inserted_at: DateTime.t(),
-          updated_at: DateTime.t()
-        }
-
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
@@ -46,6 +27,25 @@ defmodule GtfsPlanner.Gtfs.Stop do
 
     timestamps(type: :utc_datetime_usec)
   end
+
+  @type t :: %__MODULE__{
+          id: Ecto.UUID.t(),
+          organization_id: Ecto.UUID.t(),
+          gtfs_version_id: Ecto.UUID.t(),
+          stop_id: String.t(),
+          stop_name: String.t() | nil,
+          stop_desc: String.t() | nil,
+          stop_lat: Decimal.t() | nil,
+          stop_lon: Decimal.t() | nil,
+          location_type: integer(),
+          wheelchair_boarding: integer() | nil,
+          platform_code: String.t() | nil,
+          diagram_coordinate: map() | nil,
+          parent_station_id: Ecto.UUID.t() | nil,
+          level_id: Ecto.UUID.t() | nil,
+          inserted_at: DateTime.t(),
+          updated_at: DateTime.t()
+        }
 
   @doc "Creates a changeset for a stop."
   def changeset(stop, attrs) do

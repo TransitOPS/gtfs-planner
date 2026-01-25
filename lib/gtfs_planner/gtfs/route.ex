@@ -2,28 +2,6 @@ defmodule GtfsPlanner.Gtfs.Route do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @type t :: %__MODULE__{
-          id: Ecto.UUID.t(),
-          organization_id: Ecto.UUID.t(),
-          gtfs_version_id: Ecto.UUID.t(),
-          route_id: String.t(),
-          route_type: integer(),
-          route_short_name: String.t() | nil,
-          route_long_name: String.t() | nil,
-          agency_id: String.t() | nil,
-          route_desc: String.t() | nil,
-          route_url: String.t() | nil,
-          route_color: String.t(),
-          route_text_color: String.t(),
-          route_sort_order: integer() | nil,
-          continuous_pickup: integer(),
-          continuous_drop_off: integer(),
-          network_id: String.t() | nil,
-          active: boolean(),
-          inserted_at: DateTime.t(),
-          updated_at: DateTime.t()
-        }
-
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
@@ -50,6 +28,28 @@ defmodule GtfsPlanner.Gtfs.Route do
 
     timestamps(type: :utc_datetime_usec)
   end
+
+  @type t :: %__MODULE__{
+          id: Ecto.UUID.t(),
+          organization_id: Ecto.UUID.t(),
+          gtfs_version_id: Ecto.UUID.t(),
+          route_id: String.t(),
+          route_type: integer(),
+          route_short_name: String.t() | nil,
+          route_long_name: String.t() | nil,
+          agency_id: String.t() | nil,
+          route_desc: String.t() | nil,
+          route_url: String.t() | nil,
+          route_color: String.t(),
+          route_text_color: String.t(),
+          route_sort_order: integer() | nil,
+          continuous_pickup: integer(),
+          continuous_drop_off: integer(),
+          network_id: String.t() | nil,
+          active: boolean(),
+          inserted_at: DateTime.t(),
+          updated_at: DateTime.t()
+        }
 
   @doc "Creates a changeset for a route."
   def changeset(route, attrs) do

@@ -182,7 +182,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             |> assign(:import_result, {:ok, counts})
             |> put_flash(
               :info,
-              "Successfully imported #{counts.routes} routes, #{counts.levels} levels, #{counts.stops} stops, #{counts.pathways} pathways"
+              "Successfully imported #{counts.routes} routes, #{counts.route_patterns} route patterns, #{counts.levels} levels, #{counts.stops} stops, #{counts.pathways} pathways"
             )
 
           socket =
@@ -271,7 +271,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         <span class="text-primary">Click to upload</span> or drag and drop
                       </p>
                       <p class="text-xs text-base-content/60">
-                        routes.txt, levels.txt, stops.txt, pathways.txt (max 10 files, 10MB each)
+                        routes.txt, route_patterns.txt, levels.txt, stops.txt, pathways.txt (max 10 files, 10MB each)
                       </p>
                     </div>
                     <.live_file_input upload={@uploads.gtfs_files} class="sr-only" />
@@ -375,7 +375,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         <div>
                           <h3 class="font-bold">Import Successful</h3>
                           <div class="text-xs">
-                            Imported <%= counts.routes %> routes, <%= counts.levels %> levels, <%= counts.stops %> stops, <%= counts.pathways %> pathways.
+                            Imported <%= counts.routes %> routes, <%= counts.route_patterns %> route patterns, <%= counts.levels %> levels, <%= counts.stops %> stops, <%= counts.pathways %> pathways.
                           </div>
                         </div>
                       </div>

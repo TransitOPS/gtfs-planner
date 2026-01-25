@@ -67,6 +67,7 @@ defmodule GtfsPlanner.Gtfs.Import do
     multi =
       Multi.new()
       |> add_route_imports(categorized[:routes] || [], organization_id, gtfs_version_id)
+      |> add_route_pattern_imports(categorized[:route_patterns] || [], organization_id, gtfs_version_id)
       |> add_level_imports(categorized[:levels] || [], organization_id, gtfs_version_id)
       |> add_stop_imports(categorized[:stops] || [], organization_id, gtfs_version_id)
       |> add_pathway_imports(categorized[:pathways] || [], organization_id, gtfs_version_id)
@@ -77,6 +78,7 @@ defmodule GtfsPlanner.Gtfs.Import do
         # Count successful imports per category
         counts = %{
           routes: count_category(results, "route_"),
+          route_patterns: count_category(results, "route_pattern_"),
           levels: count_category(results, "level_"),
           stops: count_category(results, "stop_"),
           pathways: results[:pathways] || 0
@@ -89,15 +91,18 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   end
 
-  # Categorizes files by filename into :routes, :levels, :stops, :pathways buckets
+  # Categorizes files by filename into :routes, :route_patterns, :levels, :stops, :pathways buckets
   defp categorize_files(files) do
-    initial_acc = {%{routes: [], levels: [], stops: [], pathways: []}, []}
+    initial_acc = {%{routes: [], route_patterns: [], levels: [], stops: [], pathways: []}, []}
 
     {categorized, unrecognized} =
       Enum.reduce(files, initial_acc, fn file, {acc, unrecognized_acc} ->
         case String.downcase(file.filename) do
           "routes.txt" ->
             {Map.update!(acc, :routes, &[file | &1]), unrecognized_acc}
+
+          "route_patterns.txt" ->
+            {Map.update!(acc, :route_patterns, &[file | &1]), unrecognized_acc}
 
           "levels.txt" ->
             {Map.update!(acc, :levels, &[file | &1]), unrecognized_acc}
@@ -121,6 +126,17 @@ defmodule GtfsPlanner.Gtfs.Import do
   defp add_route_imports(multi, files, organization_id, gtfs_version_id) do
     Enum.reduce(files, multi, fn file, multi_acc ->
       operations = import_routes_from_content(organization_id, gtfs_version_id, file.content)
+
+      Enum.reduce(operations, multi_acc, fn {:insert, name, changeset}, multi_inner ->
+        Multi.insert(multi_inner, name, changeset)
+      end)
+    end)
+  end
+
+  # Adds route pattern imports to Ecto.Multi
+  defp add_route_pattern_imports(multi, files, organization_id, gtfs_version_id) do
+    Enum.reduce(files, multi, fn file, multi_acc ->
+      operations = import_route_patterns_from_content(organization_id, gtfs_version_id, file.content)
 
       Enum.reduce(operations, multi_acc, fn {:insert, name, changeset}, multi_inner ->
         Multi.insert(multi_inner, name, changeset)
@@ -374,6 +390,33 @@ defmodule GtfsPlanner.Gtfs.Import do
     end)
   end
 
+  @doc """
+  Imports route patterns from CSV content and returns changeset tuples for Ecto.Multi.
+
+  Parses route_patterns.txt CSV content and creates changesets for each valid route pattern.
+  Returns a list of `{:insert, name, changeset}` tuples that can be added
+  to an Ecto.Multi transaction.
+
+  ## Parameters
+
+    - `organization_id` - UUID of the organization
+    - `gtfs_version_id` - UUID of the GTFS version
+    - `content` - Binary CSV content with header row
+
+  ## Returns
+
+  List of `{:insert, name, changeset}` tuples for Ecto.Multi.
+  """
+  def import_route_patterns_from_content(organization_id, gtfs_version_id, content) do
+    content
+    |> parse_csv_content()
+    |> Stream.with_index()
+    |> Enum.map(fn {row_map, index} ->
+      changeset = route_pattern_row_to_changeset(row_map, organization_id, gtfs_version_id)
+      {:insert, :"route_pattern_#{index}", changeset}
+    end)
+  end
+
   # Converts a CSV row map to a Route changeset
   defp route_row_to_changeset(row_map, organization_id, gtfs_version_id) do
     attrs =
@@ -410,6 +453,43 @@ defmodule GtfsPlanner.Gtfs.Import do
 
     Gtfs.Route.changeset(%Gtfs.Route{}, attrs)
   end
+
+  # Converts a CSV row map to a RoutePattern changeset
+  defp route_pattern_row_to_changeset(row_map, organization_id, gtfs_version_id) do
+    # Always parse all fields, collecting results
+    route_pattern_id_result = extract_required(row_map, "route_pattern_id")
+    route_id_result = extract_required(row_map, "route_id")
+    direction_id_result = parse_direction_id(row_map["direction_id"])
+    typicality_result = parse_typicality(row_map["route_pattern_typicality"])
+    sort_order_result = parse_integer(row_map["route_pattern_sort_order"])
+    canonical_result = parse_canonical_route_pattern(row_map["canonical_route_pattern"])
+
+    # Build attrs from successful parses or use values that will fail validation
+    attrs = %{
+      route_pattern_id: unwrap_or_default(route_pattern_id_result, ""),
+      route_id: unwrap_or_default(route_id_result, ""),
+      direction_id: unwrap_or_invalid(direction_id_result),
+      route_pattern_name: empty_to_nil(row_map["route_pattern_name"]),
+      route_pattern_time_desc: empty_to_nil(row_map["route_pattern_time_desc"]),
+      route_pattern_typicality: unwrap_or_invalid(typicality_result),
+      route_pattern_sort_order: unwrap_or_invalid(sort_order_result),
+      representative_trip_id: empty_to_nil(row_map["representative_trip_id"]),
+      canonical_route_pattern: unwrap_or_invalid(canonical_result),
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    }
+
+    Gtfs.RoutePattern.changeset(%Gtfs.RoutePattern{}, attrs)
+  end
+
+  # Unwraps {:ok, value} or returns the default
+  defp unwrap_or_default({:ok, value}, _default), do: value
+  defp unwrap_or_default({:error, _}, default), do: default
+
+  # Unwraps {:ok, value} or returns a value that will fail validation
+  # For integer fields with range constraints, we return a clearly invalid value
+  defp unwrap_or_invalid({:ok, value}), do: value
+  defp unwrap_or_invalid({:error, _}), do: -999
 
   @doc """
   Imports levels from CSV content and returns changeset tuples for Ecto.Multi.
@@ -773,6 +853,42 @@ defmodule GtfsPlanner.Gtfs.Import do
       "true" -> {:ok, true}
       "false" -> {:ok, false}
       _ -> {:error, "invalid is_bidirectional: #{string}"}
+    end
+  end
+
+  # Parses direction_id (0-1, required)
+  defp parse_direction_id(nil), do: {:error, "direction_id is required"}
+  defp parse_direction_id(""), do: {:error, "direction_id is required"}
+
+  defp parse_direction_id(string) when is_binary(string) do
+    case Integer.parse(string) do
+      {int, ""} when int in [0, 1] -> {:ok, int}
+      {int, ""} -> {:error, "direction_id out of range 0-1: #{int}"}
+      _ -> {:error, "invalid direction_id: #{string}"}
+    end
+  end
+
+  # Parses route_pattern_typicality (0-5, blank = 0 per MBTA spec)
+  defp parse_typicality(nil), do: {:ok, 0}
+  defp parse_typicality(""), do: {:ok, 0}
+
+  defp parse_typicality(string) when is_binary(string) do
+    case Integer.parse(string) do
+      {int, ""} when int in 0..5 -> {:ok, int}
+      {int, ""} -> {:error, "route_pattern_typicality out of range 0-5: #{int}"}
+      _ -> {:error, "invalid route_pattern_typicality: #{string}"}
+    end
+  end
+
+  # Parses canonical_route_pattern (0-2, blank = 0 per MBTA spec)
+  defp parse_canonical_route_pattern(nil), do: {:ok, 0}
+  defp parse_canonical_route_pattern(""), do: {:ok, 0}
+
+  defp parse_canonical_route_pattern(string) when is_binary(string) do
+    case Integer.parse(string) do
+      {int, ""} when int in 0..2 -> {:ok, int}
+      {int, ""} -> {:error, "canonical_route_pattern out of range 0-2: #{int}"}
+      _ -> {:error, "invalid canonical_route_pattern: #{string}"}
     end
   end
 
