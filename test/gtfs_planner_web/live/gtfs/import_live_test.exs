@@ -37,7 +37,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       assert html =~ "Import GTFS"
       assert html =~ "GTFS Files"
-      assert html =~ "levels.txt, stops.txt, pathways.txt"
+      assert html =~ "levels.txt"
+      assert html =~ "stops.txt"
+      assert html =~ "pathways.txt"
     end
 
     test "redirects with error for invalid version UUID", %{

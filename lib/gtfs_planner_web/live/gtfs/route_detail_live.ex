@@ -279,22 +279,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     """
   end
 
-  defp route_display_name(route) do
-    cond do
-      route.route_short_name && route.route_long_name ->
-        "#{route.route_short_name} - #{route.route_long_name}"
-
-      route.route_short_name ->
-        route.route_short_name
-
-      route.route_long_name ->
-        route.route_long_name
-
-      true ->
-        route.route_id
-    end
-  end
-
   defp get_user_roles(socket) do
     user = socket.assigns[:current_user]
     organization = socket.assigns[:current_organization]
