@@ -218,6 +218,9 @@ defmodule GtfsPlanner.Gtfs.Import do
             {:error, reason} -> Repo.rollback(reason)
           end
 
+        counts =
+          [:routes, :calendar, :calendar_dates, :route_patterns, :trips, :levels, :stops, :stop_times, :pathways]
+          |> Enum.reduce(counts, fn key, acc -> Map.put_new(acc, key, 0) end)
         counts
       end)
 
