@@ -172,19 +172,21 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           {:ok, %{filename: entry.client_name, content: File.read!(path)}}
         end)
 
+      # Generate unique topic for progress updates and subscribe immediately
+      # This must happen BEFORE starting the async task to ensure we receive all progress messages
+      topic = "import:#{:erlang.unique_integer()}"
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
+
       # Run import in async task to avoid blocking LiveView process
       task =
         Task.async(fn ->
           GtfsPlanner.Gtfs.Import.import_files(
             socket.assigns.current_organization.id,
             gtfs_version_id,
-            uploaded_files
+            uploaded_files,
+            topic
           )
         end)
-
-      # The import_files/3 function returns {:ok, {counts, unrecognized, topic}}
-      # We need to subscribe to the progress topic, but we'll do that in handle_info
-      # when we receive the task result, since the topic is generated inside import_files
 
       {:noreply,
        socket
@@ -207,9 +209,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     socket =
       case result do
-        {:ok, {counts, unrecognized, topic}} ->
-          # Subscribe to progress topic for future updates (though import is done)
-          Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
+        {:ok, {counts, unrecognized, _topic}} ->
+          # Note: We already subscribed to the topic before starting the task
+          # so we don't need to subscribe again here
 
           socket
           |> assign(:import_result, {:ok, counts, unrecognized})
@@ -217,15 +219,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           |> assign(:import_task, nil)
 
         {:error, error_msg} when is_binary(error_msg) ->
-          assign_import_error(socket, error_msg)
-
-        {:error, error_map} when is_map(error_map) ->
-          error_msg = extract_error_message(error_map)
-          assign_import_error(socket, error_msg)
-
-        {:error, _failed_operation, failed_value, _changes_so_far} ->
-          error_msg = extract_error_message(failed_value)
-          assign_import_error(socket, error_msg)
+          socket
+          |> assign(:import_result, {:error, error_msg})
+          |> assign(:importing, false)
+          |> assign(:import_task, nil)
       end
 
     {:noreply, socket}
@@ -496,78 +493,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       end
     rescue
       _ -> false
-    end
-  end
-
-  defp assign_import_error(socket, error_msg) do
-    socket
-    |> assign(:import_result, {:error, error_msg})
-    |> assign(:importing, false)
-    |> assign(:import_task, nil)
-  end
-
-  defp extract_error_message(failed_value) do
-    case failed_value do
-      # Map error from BatchProcessor with row info
-      %{file: file, row: row, reason: reason} ->
-        reason_str =
-          case reason do
-            binary_reason when is_binary(binary_reason) -> binary_reason
-            other_reason -> inspect(other_reason)
-          end
-
-        "Error in #{file} on row #{row}: #{reason_str}"
-
-      # Map error from BatchProcessor with constraint violation
-      %{file: file, constraint: constraint, message: message} ->
-        "Error in #{file}: constraint violation (#{constraint}) - #{message}"
-
-      # Map error from BatchProcessor with Postgres error
-      %{file: file, postgres_error: code, constraint: constraint, message: message} ->
-        constraint_part =
-          case constraint do
-            nil -> ""
-            constraint_value -> " (#{constraint_value})"
-          end
-
-        "Error in #{file}: database error #{code}#{constraint_part} - #{message}"
-
-      # Map error from BatchProcessor with generic error
-      %{file: file, error: error_message} ->
-        "Error in #{file}: #{error_message}"
-
-      # Generic map with message key
-      %{message: message} when is_binary(message) ->
-        message
-
-      {changeset, line_number} when is_integer(line_number) ->
-        "Error in pathways.txt on line #{line_number + 1}: #{extract_error_message(changeset)}"
-
-      %Ecto.Changeset{} = changeset ->
-        errors =
-          Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-            Enum.reduce(opts, msg, fn {key, value}, acc ->
-              String.replace(acc, "%{#{key}}", to_string(value))
-            end)
-          end)
-
-        error_strings =
-          for {field, messages} <- errors,
-              message <- messages do
-            "#{field}: #{message}"
-          end
-
-        if error_strings == [] do
-          "Validation failed"
-        else
-          Enum.join(error_strings, ", ")
-        end
-
-      error when is_binary(error) ->
-        error
-
-      _ ->
-        "Unknown error"
     end
   end
 
