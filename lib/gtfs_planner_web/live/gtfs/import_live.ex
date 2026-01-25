@@ -221,14 +221,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           |> assign(:import_result, {:error, error_msg})
           |> assign(:importing, false)
           |> assign(:import_task, nil)
-
-        {:error, _failed_operation, failed_value, _changes_so_far} ->
-          error_msg = extract_error_message(failed_value)
-
-          socket
-          |> assign(:import_result, {:error, error_msg})
-          |> assign(:importing, false)
-          |> assign(:import_task, nil)
       end
 
     {:noreply, socket}
@@ -499,39 +491,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       end
     rescue
       _ -> false
-    end
-  end
-
-  defp extract_error_message(failed_value) do
-    case failed_value do
-      {changeset, line_number} when is_integer(line_number) ->
-        "Error in pathways.txt on line #{line_number + 1}: #{extract_error_message(changeset)}"
-
-      %Ecto.Changeset{} = changeset ->
-        errors =
-          Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-            Enum.reduce(opts, msg, fn {key, value}, acc ->
-              String.replace(acc, "%{#{key}}", to_string(value))
-            end)
-          end)
-
-        error_strings =
-          for {field, messages} <- errors,
-              message <- messages do
-            "#{field}: #{message}"
-          end
-
-        if error_strings == [] do
-          "Validation failed"
-        else
-          Enum.join(error_strings, ", ")
-        end
-
-      error when is_binary(error) ->
-        error
-
-      _ ->
-        "Unknown error"
     end
   end
 
