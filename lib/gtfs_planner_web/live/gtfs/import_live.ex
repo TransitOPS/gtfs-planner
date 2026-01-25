@@ -222,6 +222,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           |> assign(:importing, false)
           |> assign(:import_task, nil)
 
+        {:error, error_map} when is_map(error_map) ->
+          error_msg = extract_error_message(error_map)
+
+          socket
+          |> assign(:import_result, {:error, error_msg})
+          |> assign(:importing, false)
+          |> assign(:import_task, nil)
+
         {:error, _failed_operation, failed_value, _changes_so_far} ->
           error_msg = extract_error_message(failed_value)
 
@@ -504,6 +512,27 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   defp extract_error_message(failed_value) do
     case failed_value do
+      # Map error from BatchProcessor with row info
+      %{file: file, row: row, reason: reason} ->
+        "Error in #{file} on row #{row}: #{extract_error_message(reason)}"
+
+      # Map error from BatchProcessor with constraint violation
+      %{file: file, constraint: constraint, message: message} ->
+        "Error in #{file}: constraint violation (#{constraint}) - #{message}"
+
+      # Map error from BatchProcessor with Postgres error
+      %{file: file, postgres_error: code, constraint: constraint, message: message} ->
+        constraint_part = if constraint, do: " (#{constraint})", else: ""
+        "Error in #{file}: database error #{code}#{constraint_part} - #{message}"
+
+      # Map error from BatchProcessor with generic error
+      %{file: file, error: error_message} ->
+        "Error in #{file}: #{error_message}"
+
+      # Generic map with message key
+      %{message: message} when is_binary(message) ->
+        message
+
       {changeset, line_number} when is_integer(line_number) ->
         "Error in pathways.txt on line #{line_number + 1}: #{extract_error_message(changeset)}"
 
