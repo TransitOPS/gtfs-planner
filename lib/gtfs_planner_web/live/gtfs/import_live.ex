@@ -30,11 +30,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
        |> allow_upload(:gtfs_files,
          accept: ~w(.txt .csv),
          max_entries: 10,
-         max_file_size: 10_000_000
+         max_file_size: 200_000_000
        )
        |> assign(:form, to_form(%{"create_version" => false, "version_name" => ""}, as: :gtfs_import_form))
        |> assign(:import_result, nil)
-       |> assign(:version_name_touched, false)}
+       |> assign(:version_name_touched, false)
+       |> assign(:import_task, nil)
+       |> assign(:import_progress, nil)
+       |> assign(:importing, false)}
     end
   end
 
@@ -147,7 +150,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     if create_version && String.trim(version_name) == "" do
       {:noreply,
        socket
-       |> put_flash(:error, "Version name is required when creating a new version")
        |> assign(:version_name_touched, true)
        |> assign(:form, to_form(form_data, as: :gtfs_import_form, errors: [version_name: "Version name is required"]))}
     else
@@ -170,51 +172,73 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           {:ok, %{filename: entry.client_name, content: File.read!(path)}}
         end)
 
-      # Import files
-      case GtfsPlanner.Gtfs.Import.import_files(
-             socket.assigns.current_organization.id,
-             gtfs_version_id,
-             uploaded_files
-           ) do
-        {:ok, {counts, unrecognized}} ->
-          socket =
-            socket
-            |> assign(:import_result, {:ok, counts})
-            |> put_flash(
-              :info,
-              "Successfully imported #{counts.routes} routes, #{counts.route_patterns} route patterns, #{counts.levels} levels, #{counts.stops} stops, #{counts.pathways} pathways"
-            )
+      # Generate unique topic for progress updates and subscribe immediately
+      # This must happen BEFORE starting the async task to ensure we receive all progress messages
+      topic = "import:#{:erlang.unique_integer()}"
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
 
-          socket =
-            if unrecognized != [] do
-              put_flash(
-                socket,
-                :warning,
-                "Ignored unrecognized files: #{Enum.join(unrecognized, ", ")}"
-              )
-            else
-              socket
-            end
+      # Run import in async task to avoid blocking LiveView process
+      task =
+        Task.async(fn ->
+          GtfsPlanner.Gtfs.Import.import_files(
+            socket.assigns.current_organization.id,
+            gtfs_version_id,
+            uploaded_files,
+            topic
+          )
+        end)
 
-          {:noreply, socket}
-
-        {:error, :pathways, {failed_changeset, line_number}, _changes_so_far} ->
-          error_msg = extract_error_message({failed_changeset, line_number})
-
-          {:noreply,
-           socket
-           |> assign(:import_result, {:error, error_msg})
-           |> put_flash(:error, "Import failed: #{error_msg}")}
-
-        {:error, _failed_operation, failed_value, _changes_so_far} ->
-          error_msg = extract_error_message(failed_value)
-
-          {:noreply,
-           socket
-           |> assign(:import_result, {:error, error_msg})
-           |> put_flash(:error, "Import failed: #{error_msg}")}
-      end
+      {:noreply,
+       socket
+       |> assign(:import_task, task.ref)
+       |> assign(:importing, true)
+       |> assign(:import_result, nil)
+       |> assign(:import_progress, nil)}
     end
+  end
+
+  @impl true
+  def handle_info({:import_progress, progress}, socket) do
+    {:noreply, assign(socket, :import_progress, progress)}
+  end
+
+  @impl true
+  def handle_info({ref, result}, socket) when socket.assigns.import_task == ref do
+    # Task completed successfully
+    Process.demonitor(ref, [:flush])
+
+    socket =
+      case result do
+        {:ok, {counts, unrecognized, _topic}} ->
+          # Note: We already subscribed to the topic before starting the task
+          # so we don't need to subscribe again here
+
+          socket
+          |> assign(:import_result, {:ok, counts, unrecognized})
+          |> assign(:importing, false)
+          |> assign(:import_task, nil)
+
+        {:error, error_msg} when is_binary(error_msg) ->
+          socket
+          |> assign(:import_result, {:error, error_msg})
+          |> assign(:importing, false)
+          |> assign(:import_task, nil)
+      end
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, socket)
+      when socket.assigns.import_task == ref do
+    # Task crashed or was killed
+    socket =
+      socket
+      |> assign(:import_result, {:error, "Import process failed unexpectedly"})
+      |> assign(:importing, false)
+      |> assign(:import_task, nil)
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -271,7 +295,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         <span class="text-primary">Click to upload</span> or drag and drop
                       </p>
                       <p class="text-xs text-base-content/60">
-                        routes.txt, route_patterns.txt, levels.txt, stops.txt, pathways.txt (max 10 files, 10MB each)
+                        routes.txt, route_patterns.txt, calendar.txt, calendar_dates.txt, trips.txt, levels.txt, stops.txt, stop_times.txt, pathways.txt (max 10 files, 200MB each)
                       </p>
                     </div>
                     <.live_file_input upload={@uploads.gtfs_files} class="sr-only" />
@@ -279,19 +303,32 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
                   <%!-- Upload entries display --%>
                   <%= for entry <- @uploads.gtfs_files.entries do %>
-                    <div class="flex items-center justify-between mt-2 p-2 bg-base-200 rounded">
+                    <div class={[
+                      "flex items-center justify-between mt-2 p-2 rounded",
+                      upload_errors(@uploads.gtfs_files, entry) == [] && "bg-base-200",
+                      upload_errors(@uploads.gtfs_files, entry) != [] && "bg-error/10 border border-error"
+                    ]}>
                       <div class="flex-1">
                         <span class="text-sm font-medium"><%= entry.client_name %></span>
-                        <div class="w-full bg-base-300 rounded-full h-2 mt-1">
-                          <div
-                            class="bg-primary h-2 rounded-full transition-all duration-300"
-                            style={"width: #{entry.progress}%"}
-                          >
+                        <%= if upload_errors(@uploads.gtfs_files, entry) == [] do %>
+                          <div class="w-full bg-base-300 rounded-full h-2 mt-1">
+                            <div
+                              class="bg-primary h-2 rounded-full transition-all duration-300"
+                              style={"width: #{entry.progress}%"}
+                            >
+                            </div>
                           </div>
-                        </div>
-                        <span class="text-xs text-base-content/60">
-                          <%= entry.progress %>% uploaded
-                        </span>
+                          <span class="text-xs text-base-content/60">
+                            <%= entry.progress %>% uploaded
+                          </span>
+                        <% else %>
+                          <%= for error <- upload_errors(@uploads.gtfs_files, entry) do %>
+                            <div class="flex items-center gap-2 mt-1">
+                              <.icon name="hero-exclamation-circle" class="w-4 h-4 text-error" />
+                              <span class="text-sm text-error"><%= upload_error_to_string(error) %></span>
+                            </div>
+                          <% end %>
+                        <% end %>
                       </div>
                       <button
                         type="button"
@@ -360,25 +397,64 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                 <% end %>
 
                 <div class="form-control">
-                  <button type="submit" class="btn btn-primary" disabled={@uploads.gtfs_files.entries == []}>
-                    Import Files
+                  <button type="submit" class="btn btn-primary" disabled={@uploads.gtfs_files.entries == [] || @importing}>
+                    <%= if @importing do %>
+                      <span class="loading loading-spinner loading-sm"></span>
+                      Importing...
+                    <% else %>
+                      Import Files
+                    <% end %>
                   </button>
                 </div>
               </.form>
 
+              <%= if @importing && @import_progress do %>
+                <div class="mt-6 pt-6 border-t border-base-300">
+                  <div class="space-y-4">
+                    <div>
+                      <div class="flex justify-between mb-2">
+                        <span class="text-sm font-medium">
+                          Processing: <%= @import_progress.file %>
+                        </span>
+                        <span class="text-sm text-base-content/60">
+                          <%= @import_progress.processed %> / <%= @import_progress.total %> rows
+                        </span>
+                      </div>
+                      <progress
+                        class="progress progress-primary w-full"
+                        value={@import_progress.processed}
+                        max={@import_progress.total}
+                      >
+                      </progress>
+                    </div>
+                  </div>
+                </div>
+              <% end %>
+
               <%= if @import_result do %>
                 <div class="mt-6 pt-6 border-t border-base-300">
                   <%= case @import_result do %>
-                    <% {:ok, counts} -> %>
+                    <% {:ok, counts, unrecognized} -> %>
                       <div class="alert alert-success">
                         <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                         <div>
                           <h3 class="font-bold">Import Successful</h3>
                           <div class="text-xs">
-                            Imported <%= counts.routes %> routes, <%= counts.route_patterns %> route patterns, <%= counts.levels %> levels, <%= counts.stops %> stops, <%= counts.pathways %> pathways.
+                            Imported <%= counts.routes %> routes, <%= counts.calendars %> calendars, <%= counts.calendar_dates %> calendar dates, <%= counts.route_patterns %> route patterns, <%= counts.trips %> trips, <%= counts.levels %> levels, <%= counts.stops %> stops, <%= counts.stop_times %> stop times, <%= counts.pathways %> pathways.
                           </div>
                         </div>
                       </div>
+                      <%= if unrecognized != [] do %>
+                        <div class="alert alert-warning mt-2">
+                          <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                          <div>
+                            <h3 class="font-bold">Unrecognized Files Skipped</h3>
+                            <div class="text-xs">
+                              <%= Enum.join(unrecognized, ", ") %>
+                            </div>
+                          </div>
+                        </div>
+                      <% end %>
                     <% {:error, error_msg} -> %>
                       <div class="alert alert-error">
                         <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
@@ -420,42 +496,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     end
   end
 
-  defp extract_error_message(failed_value) do
-    case failed_value do
-      {changeset, line_number} when is_integer(line_number) ->
-        "Error in pathways.txt on line #{line_number + 1}: #{extract_error_message(changeset)}"
-
-      %Ecto.Changeset{} = changeset ->
-        errors =
-          Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-            Enum.reduce(opts, msg, fn {key, value}, acc ->
-              String.replace(acc, "%{#{key}}", to_string(value))
-            end)
-          end)
-
-        error_strings =
-          for {field, messages} <- errors,
-              message <- messages do
-            "#{field}: #{message}"
-          end
-
-        if error_strings == [] do
-          "Validation failed"
-        else
-          Enum.join(error_strings, ", ")
-        end
-
-      error when is_binary(error) ->
-        error
-
-      _ ->
-        "Unknown error"
-    end
-  end
-
-  defp upload_error_to_string(:too_large), do: "File is too large"
-  defp upload_error_to_string(:too_many_files), do: "Too many files"
-  defp upload_error_to_string(:not_accepted), do: "File type not accepted"
+  defp upload_error_to_string(:too_large), do: "File exceeds 200MB limit"
+  defp upload_error_to_string(:too_many_files), do: "Maximum 10 files allowed"
+  defp upload_error_to_string(:not_accepted), do: "Only .txt and .csv files accepted"
   defp upload_error_to_string(:external_client_failure), do: "Upload failed"
   defp upload_error_to_string({:error, reason}), do: reason
   defp upload_error_to_string(error) when is_binary(error), do: error
