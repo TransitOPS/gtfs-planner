@@ -193,7 +193,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert {:ok, {counts, _unrecognized}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
-      assert counts == %{routes: 0, levels: 2, stops: 2, pathways: 0}
+      assert counts == %{routes: 0, levels: 2, stops: 2, pathways: 0, route_patterns: 0}
 
       # Verify levels were created
       levels = Gtfs.list_levels(organization.id, gtfs_version.id)
