@@ -7,9 +7,63 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
 
   require Logger
+
+  @doc """
+  Returns the list of routes for an organization and GTFS version.
+
+  ## Examples
+
+      iex> list_routes(organization_id, gtfs_version_id)
+      [%Route{}, ...]
+  """
+  def list_routes(organization_id, gtfs_version_id) do
+    from(r in Route,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: r.route_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single route.
+
+  Raises `Ecto.NoResultsError` if the Route does not exist.
+
+  ## Examples
+
+      iex> get_route!(id)
+      %Route{}
+
+      iex> get_route!(Ecto.UUID.generate())
+      ** (Ecto.NoResultsError)
+  """
+  def get_route!(id), do: Repo.get!(Route, id)
+
+  @doc """
+  Gets a route by its route_id within an organization and GTFS version.
+
+  Returns nil if the route does not exist.
+
+  ## Examples
+
+      iex> get_route_by_route_id(organization_id, gtfs_version_id, "R1")
+      %Route{}
+
+      iex> get_route_by_route_id(organization_id, gtfs_version_id, "nonexistent")
+      nil
+  """
+  def get_route_by_route_id(organization_id, gtfs_version_id, route_id) do
+    from(r in Route,
+      where:
+        r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id and
+          r.route_id == ^route_id
+    )
+    |> Repo.one()
+  end
 
   @doc """
   Returns the list of levels for an organization and GTFS version.
