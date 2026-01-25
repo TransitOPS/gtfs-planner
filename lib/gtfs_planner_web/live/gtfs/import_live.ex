@@ -217,26 +217,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           |> assign(:import_task, nil)
 
         {:error, error_msg} when is_binary(error_msg) ->
-          socket
-          |> assign(:import_result, {:error, error_msg})
-          |> assign(:importing, false)
-          |> assign(:import_task, nil)
+          assign_import_error(socket, error_msg)
 
         {:error, error_map} when is_map(error_map) ->
           error_msg = extract_error_message(error_map)
-
-          socket
-          |> assign(:import_result, {:error, error_msg})
-          |> assign(:importing, false)
-          |> assign(:import_task, nil)
+          assign_import_error(socket, error_msg)
 
         {:error, _failed_operation, failed_value, _changes_so_far} ->
           error_msg = extract_error_message(failed_value)
-
-          socket
-          |> assign(:import_result, {:error, error_msg})
-          |> assign(:importing, false)
-          |> assign(:import_task, nil)
+          assign_import_error(socket, error_msg)
       end
 
     {:noreply, socket}
@@ -508,6 +497,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     rescue
       _ -> false
     end
+  end
+
+  defp assign_import_error(socket, error_msg) do
+    socket
+    |> assign(:import_result, {:error, error_msg})
+    |> assign(:importing, false)
+    |> assign(:import_task, nil)
   end
 
   defp extract_error_message(failed_value) do
