@@ -341,7 +341,7 @@ defmodule GtfsPlanner.Gtfs.Import do
       {?", true} ->
         case rest do
           # Escaped quote (double quote)
-          <<?"::utf8, rest2::binary>> ->
+          <<?", rest2::binary>> ->
             parse_csv_fields(rest2, fields, current <> <<"\"">>, true, pos + 2)
 
           # End quote
