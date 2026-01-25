@@ -302,7 +302,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
             <div class="overflow-x-auto">
               <table class="table">
                 <thead>
-                  <tr class="bg-base-200">
+                  <tr class="bg-base-300">
                     <th class="w-[15%]">
                       <div
                         class="flex items-center gap-1 cursor-pointer"
