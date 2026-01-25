@@ -114,7 +114,7 @@ defmodule GtfsPlannerWeb.Layouts do
 
     <%= if @current_user do %>
       <main id="main-content" class="px-4 py-8 sm:px-6 lg:px-8">
-        <div class="mx-auto max-w-4xl space-y-4">
+        <div class="mx-auto max-w-7xl space-y-4">
           {render_slot(@inner_block)}
         </div>
       </main>

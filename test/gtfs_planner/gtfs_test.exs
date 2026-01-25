@@ -768,4 +768,103 @@ defmodule GtfsPlanner.GtfsTest do
       refute_receive {[:pathways, :updated], _}, 100
     end
   end
+
+  describe "routes" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "list_routes/3 filters by route_type", %{organization: org, gtfs_version: version} do
+      # Create routes with different route types
+      _tram_route = route_fixture(org.id, version.id, %{route_id: "TRAM1", route_type: 0})
+      bus_route1 = route_fixture(org.id, version.id, %{route_id: "BUS1", route_type: 3})
+      bus_route2 = route_fixture(org.id, version.id, %{route_id: "BUS2", route_type: 3})
+      _subway_route = route_fixture(org.id, version.id, %{route_id: "SUBWAY1", route_type: 1})
+
+      # Filter by bus routes (route_type: 3)
+      routes = Gtfs.list_routes(org.id, version.id, route_type: 3)
+
+      # Assert only bus routes are returned
+      assert length(routes) == 2
+      assert Enum.all?(routes, fn r -> r.route_type == 3 end)
+      route_ids = Enum.map(routes, & &1.id)
+      assert bus_route1.id in route_ids
+      assert bus_route2.id in route_ids
+    end
+
+    test "list_routes/3 searches by name", %{organization: org, gtfs_version: version} do
+      # Create routes with different names
+      express_route1 =
+        route_fixture(org.id, version.id, %{
+          route_id: "EXP1",
+          route_short_name: "Express 1",
+          route_long_name: "Downtown Express"
+        })
+
+      express_route2 =
+        route_fixture(org.id, version.id, %{
+          route_id: "EXP2",
+          route_short_name: "Express 2",
+          route_long_name: "Airport Express"
+        })
+
+      _local_route =
+        route_fixture(org.id, version.id, %{
+          route_id: "LOCAL1",
+          route_short_name: "Local 1",
+          route_long_name: "Local Service"
+        })
+
+      # Search for "express" routes
+      routes = Gtfs.list_routes(org.id, version.id, search: "express")
+
+      # Assert only routes containing "express" are returned
+      assert length(routes) == 2
+      route_ids = Enum.map(routes, & &1.id)
+      assert express_route1.id in route_ids
+      assert express_route2.id in route_ids
+    end
+
+    test "list_routes/3 sorts by column", %{organization: org, gtfs_version: version} do
+      # Create routes with specific short names
+      route_a =
+        route_fixture(org.id, version.id, %{route_id: "R1", route_short_name: "Alpha"})
+
+      route_b =
+        route_fixture(org.id, version.id, %{route_id: "R2", route_short_name: "Bravo"})
+
+      route_c =
+        route_fixture(org.id, version.id, %{route_id: "R3", route_short_name: "Charlie"})
+
+      # Sort by route_short_name descending
+      routes = Gtfs.list_routes(org.id, version.id, sort_by: :route_short_name, sort_dir: :desc)
+
+      # Assert routes are in descending order by route_short_name
+      assert length(routes) == 3
+      assert Enum.map(routes, & &1.id) == [route_c.id, route_b.id, route_a.id]
+      assert Enum.map(routes, & &1.route_short_name) == ["Charlie", "Bravo", "Alpha"]
+    end
+
+    test "list_routes/3 paginates results", %{organization: org, gtfs_version: version} do
+      # Create 5 routes
+      _route1 = route_fixture(org.id, version.id, %{route_id: "R1", route_short_name: "1"})
+      _route2 = route_fixture(org.id, version.id, %{route_id: "R2", route_short_name: "2"})
+      route3 = route_fixture(org.id, version.id, %{route_id: "R3", route_short_name: "3"})
+      route4 = route_fixture(org.id, version.id, %{route_id: "R4", route_short_name: "4"})
+      _route5 = route_fixture(org.id, version.id, %{route_id: "R5", route_short_name: "5"})
+
+      # Get page 2 with per_page: 2 (should return routes 3 and 4)
+      routes = Gtfs.list_routes(org.id, version.id, page: 2, per_page: 2)
+
+      # Assert 2 routes returned
+      assert length(routes) == 2
+
+      # Assert they are the 3rd and 4th routes (by default sort: route_id ascending)
+      route_ids = Enum.map(routes, & &1.id)
+      assert route3.id in route_ids
+      assert route4.id in route_ids
+    end
+  end
 end

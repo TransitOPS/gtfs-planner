@@ -88,4 +88,33 @@ defmodule GtfsPlanner.GtfsFixtures do
 
     pathway
   end
+
+  @doc """
+  Generate valid route attributes for testing.
+  """
+  def valid_route_attrs(attrs \\ %{}) do
+    Enum.into(attrs, %{
+      route_id: "route_#{System.unique_integer([:positive])}",
+      route_short_name: "#{System.unique_integer([:positive])}",
+      route_long_name: "Test Route",
+      route_type: 3,
+      route_color: "0000FF",
+      route_text_color: "FFFFFF",
+      active: true
+    })
+  end
+
+  @doc """
+  Generate a route fixture.
+  """
+  def route_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
+    {:ok, route} =
+      Gtfs.create_route(
+        valid_route_attrs(attrs)
+        |> Map.put(:organization_id, organization_id)
+        |> Map.put(:gtfs_version_id, gtfs_version_id)
+      )
+
+    route
+  end
 end
