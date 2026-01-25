@@ -303,9 +303,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
               <table class="table">
                 <thead>
                   <tr class="bg-base-300">
-                    <th class="w-[15%]">
-                      <div
-                        class="flex items-center gap-1 cursor-pointer"
+                    <th class="w-[15%]" aria-sort={if @sort_by == :route_id, do: (if @sort_dir == :asc, do: "ascending", else: "descending"), else: "none"}>
+                      <button
+                        type="button"
+                        class="flex items-center gap-1 cursor-pointer w-full hover:text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
                         phx-click="sort"
                         phx-value-column="route_id"
                       >
@@ -313,11 +314,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                         <span :if={@sort_by == :route_id}>
                           {if @sort_dir == :asc, do: "▲", else: "▼"}
                         </span>
-                      </div>
+                      </button>
                     </th>
-                    <th class="w-[15%]">
-                      <div
-                        class="flex items-center gap-1 cursor-pointer"
+                    <th class="w-[15%]" aria-sort={if @sort_by == :route_short_name, do: (if @sort_dir == :asc, do: "ascending", else: "descending"), else: "none"}>
+                      <button
+                        type="button"
+                        class="flex items-center gap-1 cursor-pointer w-full hover:text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
                         phx-click="sort"
                         phx-value-column="route_short_name"
                       >
@@ -325,11 +327,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                         <span :if={@sort_by == :route_short_name}>
                           {if @sort_dir == :asc, do: "▲", else: "▼"}
                         </span>
-                      </div>
+                      </button>
                     </th>
-                    <th class="w-[40%]">
-                      <div
-                        class="flex items-center gap-1 cursor-pointer"
+                    <th class="w-[40%]" aria-sort={if @sort_by == :route_long_name, do: (if @sort_dir == :asc, do: "ascending", else: "descending"), else: "none"}>
+                      <button
+                        type="button"
+                        class="flex items-center gap-1 cursor-pointer w-full hover:text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
                         phx-click="sort"
                         phx-value-column="route_long_name"
                       >
@@ -337,11 +340,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                         <span :if={@sort_by == :route_long_name}>
                           {if @sort_dir == :asc, do: "▲", else: "▼"}
                         </span>
-                      </div>
+                      </button>
                     </th>
-                    <th class="w-[15%]">
-                      <div
-                        class="flex items-center gap-1 cursor-pointer"
+                    <th class="w-[15%]" aria-sort={if @sort_by == :route_type, do: (if @sort_dir == :asc, do: "ascending", else: "descending"), else: "none"}>
+                      <button
+                        type="button"
+                        class="flex items-center gap-1 cursor-pointer w-full hover:text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
                         phx-click="sort"
                         phx-value-column="route_type"
                       >
@@ -349,7 +353,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                         <span :if={@sort_by == :route_type}>
                           {if @sort_dir == :asc, do: "▲", else: "▼"}
                         </span>
-                      </div>
+                      </button>
                     </th>
                     <th class="w-[15%]">Preview</th>
                   </tr>
