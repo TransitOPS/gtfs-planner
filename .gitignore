@@ -53,3 +53,5 @@ logfile
 .DS_Store
 
 pathway-studio
+
+priv/static/uploads
