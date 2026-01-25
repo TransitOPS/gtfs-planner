@@ -55,6 +55,7 @@ defmodule GtfsPlanner.Gtfs.Import do
     - `organization_id` - UUID of the organization
     - `gtfs_version_id` - UUID of the GTFS version to associate records with
     - `files` - List of `%{filename: string, content: binary}` maps
+    - `topic` - (optional) PubSub topic for progress updates. If not provided, one will be generated.
 
   ## Returns
 
@@ -70,12 +71,12 @@ defmodule GtfsPlanner.Gtfs.Import do
       iex> import_files(org_id, version_id, files)
       {:ok, {%{routes: 1, stops: 0, ...}, [], "import:123456"}}
   """
-  def import_files(organization_id, gtfs_version_id, files) do
+  def import_files(organization_id, gtfs_version_id, files, topic \\ nil) do
     # Categorize files by filename (case-insensitive)
     {categorized, unrecognized_files} = categorize_files(files)
 
-    # Generate unique progress topic for PubSub
-    topic = "import:#{:erlang.unique_integer()}"
+    # Generate unique progress topic for PubSub if not provided
+    topic = topic || "import:#{:erlang.unique_integer()}"
 
     # Execute all imports within a single transaction
     result =
@@ -218,6 +219,9 @@ defmodule GtfsPlanner.Gtfs.Import do
             {:error, reason} -> Repo.rollback(reason)
           end
 
+        counts =
+          [:routes, :calendar, :calendar_dates, :route_patterns, :trips, :levels, :stops, :stop_times, :pathways]
+          |> Enum.reduce(counts, fn key, acc -> Map.put_new(acc, key, 0) end)
         counts
       end)
 

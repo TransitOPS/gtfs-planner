@@ -172,19 +172,21 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           {:ok, %{filename: entry.client_name, content: File.read!(path)}}
         end)
 
+      # Generate unique topic for progress updates and subscribe immediately
+      # This must happen BEFORE starting the async task to ensure we receive all progress messages
+      topic = "import:#{:erlang.unique_integer()}"
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
+
       # Run import in async task to avoid blocking LiveView process
       task =
         Task.async(fn ->
           GtfsPlanner.Gtfs.Import.import_files(
             socket.assigns.current_organization.id,
             gtfs_version_id,
-            uploaded_files
+            uploaded_files,
+            topic
           )
         end)
-
-      # The import_files/3 function returns {:ok, {counts, unrecognized, topic}}
-      # We need to subscribe to the progress topic, but we'll do that in handle_info
-      # when we receive the task result, since the topic is generated inside import_files
 
       {:noreply,
        socket
@@ -207,9 +209,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     socket =
       case result do
-        {:ok, {counts, unrecognized, topic}} ->
-          # Subscribe to progress topic for future updates (though import is done)
-          Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
+        {:ok, {counts, unrecognized, _topic}} ->
+          # Note: We already subscribed to the topic before starting the task
+          # so we don't need to subscribe again here
 
           socket
           |> assign(:import_result, {:ok, counts, unrecognized})
@@ -217,14 +219,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           |> assign(:import_task, nil)
 
         {:error, error_msg} when is_binary(error_msg) ->
-          socket
-          |> assign(:import_result, {:error, error_msg})
-          |> assign(:importing, false)
-          |> assign(:import_task, nil)
-
-        {:error, _failed_operation, failed_value, _changes_so_far} ->
-          error_msg = extract_error_message(failed_value)
-
           socket
           |> assign(:import_result, {:error, error_msg})
           |> assign(:importing, false)
@@ -446,7 +440,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         <div>
                           <h3 class="font-bold">Import Successful</h3>
                           <div class="text-xs">
-                            Imported <%= Map.get(counts, :routes, 0) %> routes, <%= Map.get(counts, :calendars, 0) %> calendars, <%= Map.get(counts, :calendar_dates, 0) %> calendar dates, <%= Map.get(counts, :route_patterns, 0) %> route patterns, <%= Map.get(counts, :trips, 0) %> trips, <%= Map.get(counts, :levels, 0) %> levels, <%= Map.get(counts, :stops, 0) %> stops, <%= Map.get(counts, :stop_times, 0) %> stop times, <%= Map.get(counts, :pathways, 0) %> pathways.
+                            Imported <%= counts.routes %> routes, <%= counts.calendars %> calendars, <%= counts.calendar_dates %> calendar dates, <%= counts.route_patterns %> route patterns, <%= counts.trips %> trips, <%= counts.levels %> levels, <%= counts.stops %> stops, <%= counts.stop_times %> stop times, <%= counts.pathways %> pathways.
                           </div>
                         </div>
                       </div>
@@ -499,39 +493,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       end
     rescue
       _ -> false
-    end
-  end
-
-  defp extract_error_message(failed_value) do
-    case failed_value do
-      {changeset, line_number} when is_integer(line_number) ->
-        "Error in pathways.txt on line #{line_number + 1}: #{extract_error_message(changeset)}"
-
-      %Ecto.Changeset{} = changeset ->
-        errors =
-          Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-            Enum.reduce(opts, msg, fn {key, value}, acc ->
-              String.replace(acc, "%{#{key}}", to_string(value))
-            end)
-          end)
-
-        error_strings =
-          for {field, messages} <- errors,
-              message <- messages do
-            "#{field}: #{message}"
-          end
-
-        if error_strings == [] do
-          "Validation failed"
-        else
-          Enum.join(error_strings, ", ")
-        end
-
-      error when is_binary(error) ->
-        error
-
-      _ ->
-        "Unknown error"
     end
   end
 
