@@ -107,6 +107,8 @@ defmodule GtfsPlannerWeb.Router do
         GtfsPlannerWeb.AssignGtfsVersion
       ] do
       # Versionless GTFS routes - will redirect to versioned routes
+      live "/routes", Gtfs.RoutesLive, :index_default
+      live "/routes/:route_id", Gtfs.RouteDetailLive, :show_default
       live "/stops", Gtfs.StopsLive, :index_default
       live "/stops/:stop_id", Gtfs.StopDetailLive, :show_default
       live "/import", Gtfs.ImportLive, :index_default
@@ -125,6 +127,8 @@ defmodule GtfsPlannerWeb.Router do
         GtfsPlannerWeb.AssignGtfsVersion
       ] do
       # GTFS routes (viewer or editor roles required)
+      live "/routes", Gtfs.RoutesLive, :index
+      live "/routes/:route_id", Gtfs.RouteDetailLive, :show
       live "/stops", Gtfs.StopsLive, :index
       live "/stops/:stop_id", Gtfs.StopDetailLive, :show
       live "/stops/:stop_id/diagram", Gtfs.StationDiagramLive, :index
