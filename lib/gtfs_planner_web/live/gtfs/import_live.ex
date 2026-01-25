@@ -512,8 +512,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       %{file: file, row: row, reason: reason} ->
         reason_str =
           case reason do
-            r when is_binary(r) -> r
-            r -> inspect(r)
+            binary_reason when is_binary(binary_reason) -> binary_reason
+            other_reason -> inspect(other_reason)
           end
 
         "Error in #{file} on row #{row}: #{reason_str}"
@@ -527,7 +527,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         constraint_part =
           case constraint do
             nil -> ""
-            c -> " (#{c})"
+            constraint_value -> " (#{constraint_value})"
           end
 
         "Error in #{file}: database error #{code}#{constraint_part} - #{message}"
