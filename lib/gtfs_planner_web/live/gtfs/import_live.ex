@@ -172,19 +172,21 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           {:ok, %{filename: entry.client_name, content: File.read!(path)}}
         end)
 
+      # Generate unique topic for progress updates and subscribe immediately
+      # This must happen BEFORE starting the async task to ensure we receive all progress messages
+      topic = "import:#{:erlang.unique_integer()}"
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
+
       # Run import in async task to avoid blocking LiveView process
       task =
         Task.async(fn ->
           GtfsPlanner.Gtfs.Import.import_files(
             socket.assigns.current_organization.id,
             gtfs_version_id,
-            uploaded_files
+            uploaded_files,
+            topic
           )
         end)
-
-      # The import_files/3 function returns {:ok, {counts, unrecognized, topic}}
-      # We need to subscribe to the progress topic, but we'll do that in handle_info
-      # when we receive the task result, since the topic is generated inside import_files
 
       {:noreply,
        socket
@@ -207,9 +209,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     socket =
       case result do
-        {:ok, {counts, unrecognized, topic}} ->
-          # Subscribe to progress topic for future updates (though import is done)
-          Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
+        {:ok, {counts, unrecognized, _topic}} ->
+          # Note: We already subscribed to the topic before starting the task
+          # so we don't need to subscribe again here
 
           socket
           |> assign(:import_result, {:ok, counts, unrecognized})
