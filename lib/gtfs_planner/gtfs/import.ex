@@ -63,13 +63,17 @@ defmodule GtfsPlanner.Gtfs.Import do
     # Categorize files by filename (case-insensitive)
     {categorized, unrecognized_files} = categorize_files(files)
 
-    # Build Ecto.Multi transaction processing levels → stops → pathways
+    # Build Ecto.Multi transaction processing in dependency order
     multi =
       Multi.new()
       |> add_route_imports(categorized[:routes] || [], organization_id, gtfs_version_id)
+      |> add_calendar_imports(categorized[:calendars] || [], organization_id, gtfs_version_id)
+      |> add_calendar_date_imports(categorized[:calendar_dates] || [], organization_id, gtfs_version_id)
       |> add_route_pattern_imports(categorized[:route_patterns] || [], organization_id, gtfs_version_id)
+      |> add_trip_imports(categorized[:trips] || [], organization_id, gtfs_version_id)
       |> add_level_imports(categorized[:levels] || [], organization_id, gtfs_version_id)
       |> add_stop_imports(categorized[:stops] || [], organization_id, gtfs_version_id)
+      |> add_stop_time_imports(categorized[:stop_times] || [], organization_id, gtfs_version_id)
       |> add_pathway_imports(categorized[:pathways] || [], organization_id, gtfs_version_id)
 
     # Execute transaction
@@ -78,9 +82,13 @@ defmodule GtfsPlanner.Gtfs.Import do
         # Count successful imports per category
         counts = %{
           routes: count_category(results, "route_"),
+          calendars: count_calendars(results),
+          calendar_dates: count_category(results, "calendar_date_"),
           route_patterns: count_category(results, "route_pattern_"),
+          trips: count_category(results, "trip_"),
           levels: count_category(results, "level_"),
           stops: count_category(results, "stop_"),
+          stop_times: count_category(results, "stop_time_"),
           pathways: results[:pathways] || 0
         }
 
@@ -91,9 +99,9 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   end
 
-  # Categorizes files by filename into :routes, :route_patterns, :levels, :stops, :pathways buckets
+  # Categorizes files by filename into :routes, :route_patterns, :calendars, :calendar_dates, :trips, :levels, :stops, :stop_times, :pathways buckets
   defp categorize_files(files) do
-    initial_acc = {%{routes: [], route_patterns: [], levels: [], stops: [], pathways: []}, []}
+    initial_acc = {%{routes: [], route_patterns: [], calendars: [], calendar_dates: [], trips: [], levels: [], stops: [], stop_times: [], pathways: []}, []}
 
     {categorized, unrecognized} =
       Enum.reduce(files, initial_acc, fn file, {acc, unrecognized_acc} ->
@@ -104,11 +112,23 @@ defmodule GtfsPlanner.Gtfs.Import do
           "route_patterns.txt" ->
             {Map.update!(acc, :route_patterns, &[file | &1]), unrecognized_acc}
 
+          "calendar.txt" ->
+            {Map.update!(acc, :calendars, &[file | &1]), unrecognized_acc}
+
+          "calendar_dates.txt" ->
+            {Map.update!(acc, :calendar_dates, &[file | &1]), unrecognized_acc}
+
+          "trips.txt" ->
+            {Map.update!(acc, :trips, &[file | &1]), unrecognized_acc}
+
           "levels.txt" ->
             {Map.update!(acc, :levels, &[file | &1]), unrecognized_acc}
 
           "stops.txt" ->
             {Map.update!(acc, :stops, &[file | &1]), unrecognized_acc}
+
+          "stop_times.txt" ->
+            {Map.update!(acc, :stop_times, &[file | &1]), unrecognized_acc}
 
           "pathways.txt" ->
             {Map.update!(acc, :pathways, &[file | &1]), unrecognized_acc}
@@ -223,6 +243,16 @@ defmodule GtfsPlanner.Gtfs.Import do
     |> Enum.filter(fn {key, _value} ->
       key_str = Atom.to_string(key)
       String.starts_with?(key_str, prefix)
+    end)
+    |> length()
+  end
+
+  # Counts calendar operations excluding calendar_date operations
+  defp count_calendars(results) do
+    results
+    |> Enum.filter(fn {key, _value} ->
+      key_str = Atom.to_string(key)
+      String.starts_with?(key_str, "calendar_") and not String.starts_with?(key_str, "calendar_date_")
     end)
     |> length()
   end
@@ -903,6 +933,422 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   rescue
     _ -> {:error, "invalid integer: #{string}"}
+  end
+
+  # Parses GTFS date format YYYYMMDD to Date.t()
+  defp parse_gtfs_date(nil), do: {:ok, nil}
+  defp parse_gtfs_date(""), do: {:ok, nil}
+
+  defp parse_gtfs_date(string) when is_binary(string) and byte_size(string) == 8 do
+    year = String.slice(string, 0, 4)
+    month = String.slice(string, 4, 2)
+    day = String.slice(string, 6, 2)
+
+    with {year_int, ""} <- Integer.parse(year),
+         {month_int, ""} <- Integer.parse(month),
+         {day_int, ""} <- Integer.parse(day),
+         {:ok, date} <- Date.new(year_int, month_int, day_int) do
+      {:ok, date}
+    else
+      _ -> {:error, "invalid GTFS date format: #{string}"}
+    end
+  end
+
+  defp parse_gtfs_date(string) when is_binary(string) do
+    {:error, "invalid GTFS date format (expected YYYYMMDD): #{string}"}
+  end
+
+  # Parses day flag (0 or 1)
+  defp parse_day_flag(nil), do: {:error, "required"}
+  defp parse_day_flag(""), do: {:error, "required"}
+  defp parse_day_flag("0"), do: {:ok, 0}
+  defp parse_day_flag("1"), do: {:ok, 1}
+
+  defp parse_day_flag(string) when is_binary(string) do
+    {:error, "invalid day flag (expected 0 or 1): #{string}"}
+  end
+
+  # Parses exception_type (1 or 2)
+  defp parse_exception_type(nil), do: {:error, "required"}
+  defp parse_exception_type(""), do: {:error, "required"}
+  defp parse_exception_type("1"), do: {:ok, 1}
+  defp parse_exception_type("2"), do: {:ok, 2}
+
+  defp parse_exception_type(string) when is_binary(string) do
+    {:error, "invalid exception_type (expected 1 or 2): #{string}"}
+  end
+
+  # Parses GTFS time format HH:MM:SS (supports times > 24:00:00)
+  defp parse_gtfs_time(nil), do: {:ok, nil}
+  defp parse_gtfs_time(""), do: {:ok, nil}
+
+  defp parse_gtfs_time(string) when is_binary(string) do
+    if String.match?(string, ~r/^\d{1,2}:\d{2}:\d{2}$/) do
+      {:ok, string}
+    else
+      {:error, "invalid GTFS time format (expected HH:MM:SS): #{string}"}
+    end
+  end
+
+  # Converts a CSV row map to a Calendar changeset
+  defp calendar_row_to_changeset(row_map, organization_id, gtfs_version_id) do
+    attrs =
+      with {:ok, service_id} <- extract_required(row_map, "service_id"),
+           {:ok, monday} <- parse_day_flag(row_map["monday"]),
+           {:ok, tuesday} <- parse_day_flag(row_map["tuesday"]),
+           {:ok, wednesday} <- parse_day_flag(row_map["wednesday"]),
+           {:ok, thursday} <- parse_day_flag(row_map["thursday"]),
+           {:ok, friday} <- parse_day_flag(row_map["friday"]),
+           {:ok, saturday} <- parse_day_flag(row_map["saturday"]),
+           {:ok, sunday} <- parse_day_flag(row_map["sunday"]),
+           {:ok, start_date} <- parse_gtfs_date(row_map["start_date"]),
+           {:ok, end_date} <- parse_gtfs_date(row_map["end_date"]) do
+        %{
+          service_id: service_id,
+          monday: monday,
+          tuesday: tuesday,
+          wednesday: wednesday,
+          thursday: thursday,
+          friday: friday,
+          saturday: saturday,
+          sunday: sunday,
+          start_date: start_date,
+          end_date: end_date,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        }
+      else
+        {:error, _reason} ->
+          %{
+            service_id: row_map["service_id"] || "",
+            organization_id: organization_id,
+            gtfs_version_id: gtfs_version_id
+          }
+      end
+
+    Gtfs.Calendar.changeset(%Gtfs.Calendar{}, attrs)
+  end
+
+  @doc """
+  Imports calendars from CSV content and returns changeset tuples for Ecto.Multi.
+
+  Parses calendar.txt CSV content and creates changesets for each valid calendar.
+  Returns a list of `{:insert, name, changeset}` tuples that can be added
+  to an Ecto.Multi transaction.
+
+  ## Parameters
+
+    - `organization_id` - UUID of the organization
+    - `gtfs_version_id` - UUID of the GTFS version
+    - `content` - Binary CSV content with header row
+
+  ## Returns
+
+  List of `{:insert, name, changeset}` tuples for Ecto.Multi.
+  """
+  def import_calendars_from_content(organization_id, gtfs_version_id, content) do
+    content
+    |> parse_csv_content()
+    |> Stream.with_index()
+    |> Enum.map(fn {row_map, index} ->
+      changeset = calendar_row_to_changeset(row_map, organization_id, gtfs_version_id)
+      {:insert, :"calendar_#{index}", changeset}
+    end)
+  end
+
+  # Adds calendar imports to Ecto.Multi
+  defp add_calendar_imports(multi, files, organization_id, gtfs_version_id) do
+    Enum.reduce(files, multi, fn file, multi_acc ->
+      operations = import_calendars_from_content(organization_id, gtfs_version_id, file.content)
+
+      Enum.reduce(operations, multi_acc, fn {:insert, name, changeset}, multi_inner ->
+        Multi.insert(multi_inner, name, changeset)
+      end)
+    end)
+  end
+
+  # Converts a CSV row map to a CalendarDate changeset
+  defp calendar_date_row_to_changeset(row_map, organization_id, gtfs_version_id) do
+    attrs =
+      with {:ok, service_id} <- extract_required(row_map, "service_id"),
+           {:ok, date} <- parse_gtfs_date(row_map["date"]),
+           {:ok, exception_type} <- parse_exception_type(row_map["exception_type"]) do
+        %{
+          service_id: service_id,
+          date: date,
+          exception_type: exception_type,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        }
+      else
+        {:error, _reason} ->
+          %{
+            service_id: row_map["service_id"] || "",
+            organization_id: organization_id,
+            gtfs_version_id: gtfs_version_id
+          }
+      end
+
+    Gtfs.CalendarDate.changeset(%Gtfs.CalendarDate{}, attrs)
+  end
+
+  @doc """
+  Imports calendar dates from CSV content and returns changeset tuples for Ecto.Multi.
+
+  Parses calendar_dates.txt CSV content and creates changesets for each valid calendar date.
+  Returns a list of `{:insert, name, changeset}` tuples that can be added
+  to an Ecto.Multi transaction.
+
+  ## Parameters
+
+    - `organization_id` - UUID of the organization
+    - `gtfs_version_id` - UUID of the GTFS version
+    - `content` - Binary CSV content with header row
+
+  ## Returns
+
+  List of `{:insert, name, changeset}` tuples for Ecto.Multi.
+  """
+  def import_calendar_dates_from_content(organization_id, gtfs_version_id, content) do
+    content
+    |> parse_csv_content()
+    |> Stream.with_index()
+    |> Enum.map(fn {row_map, index} ->
+      changeset = calendar_date_row_to_changeset(row_map, organization_id, gtfs_version_id)
+      {:insert, :"calendar_date_#{index}", changeset}
+    end)
+  end
+
+  # Adds calendar date imports to Ecto.Multi
+  defp add_calendar_date_imports(multi, files, organization_id, gtfs_version_id) do
+    Enum.reduce(files, multi, fn file, multi_acc ->
+      operations = import_calendar_dates_from_content(organization_id, gtfs_version_id, file.content)
+
+      Enum.reduce(operations, multi_acc, fn {:insert, name, changeset}, multi_inner ->
+        Multi.insert(multi_inner, name, changeset)
+      end)
+    end)
+  end
+
+  # Converts a CSV row map to a Trip changeset
+  defp trip_row_to_changeset(row_map, organization_id, gtfs_version_id) do
+    attrs =
+      with {:ok, trip_id} <- extract_required(row_map, "trip_id"),
+           {:ok, route_id} <- extract_required(row_map, "route_id"),
+           {:ok, service_id} <- extract_required(row_map, "service_id") do
+        # Parse optional direction_id
+        direction_id =
+          case parse_direction_id(row_map["direction_id"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        # Parse optional accessibility fields
+        wheelchair_accessible =
+          case parse_integer(row_map["wheelchair_accessible"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        bikes_allowed =
+          case parse_integer(row_map["bikes_allowed"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        cars_allowed =
+          case parse_integer(row_map["cars_allowed"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        %{
+          trip_id: trip_id,
+          route_id: route_id,
+          service_id: service_id,
+          trip_headsign: empty_to_nil(row_map["trip_headsign"]),
+          trip_short_name: empty_to_nil(row_map["trip_short_name"]),
+          direction_id: direction_id,
+          block_id: empty_to_nil(row_map["block_id"]),
+          shape_id: empty_to_nil(row_map["shape_id"]),
+          wheelchair_accessible: wheelchair_accessible,
+          bikes_allowed: bikes_allowed,
+          cars_allowed: cars_allowed,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        }
+      else
+        {:error, _reason} ->
+          %{
+            trip_id: row_map["trip_id"] || "",
+            organization_id: organization_id,
+            gtfs_version_id: gtfs_version_id
+          }
+      end
+
+    Gtfs.Trip.changeset(%Gtfs.Trip{}, attrs)
+  end
+
+  @doc """
+  Imports trips from CSV content and returns changeset tuples for Ecto.Multi.
+
+  Parses trips.txt CSV content and creates changesets for each valid trip.
+  Returns a list of `{:insert, name, changeset}` tuples that can be added
+  to an Ecto.Multi transaction.
+
+  ## Parameters
+
+    - `organization_id` - UUID of the organization
+    - `gtfs_version_id` - UUID of the GTFS version
+    - `content` - Binary CSV content with header row
+
+  ## Returns
+
+  List of `{:insert, name, changeset}` tuples for Ecto.Multi.
+  """
+  def import_trips_from_content(organization_id, gtfs_version_id, content) do
+    content
+    |> parse_csv_content()
+    |> Stream.with_index()
+    |> Enum.map(fn {row_map, index} ->
+      changeset = trip_row_to_changeset(row_map, organization_id, gtfs_version_id)
+      {:insert, :"trip_#{index}", changeset}
+    end)
+  end
+
+  # Adds trip imports to Ecto.Multi
+  defp add_trip_imports(multi, files, organization_id, gtfs_version_id) do
+    Enum.reduce(files, multi, fn file, multi_acc ->
+      operations = import_trips_from_content(organization_id, gtfs_version_id, file.content)
+
+      Enum.reduce(operations, multi_acc, fn {:insert, name, changeset}, multi_inner ->
+        Multi.insert(multi_inner, name, changeset)
+      end)
+    end)
+  end
+
+  @doc """
+  Imports stop times from CSV content and returns changeset tuples for Ecto.Multi.
+
+  Parses stop_times.txt CSV content and creates changesets for each valid stop time.
+  Returns a list of `{:insert, name, changeset}` tuples that can be added
+  to an Ecto.Multi transaction.
+
+  ## Parameters
+
+    - `organization_id` - UUID of the organization
+    - `gtfs_version_id` - UUID of the GTFS version
+    - `content` - Binary CSV content with header row
+
+  ## Returns
+
+  List of `{:insert, name, changeset}` tuples for Ecto.Multi.
+  """
+  def import_stop_times_from_content(organization_id, gtfs_version_id, content) do
+    content
+    |> parse_csv_content()
+    |> Stream.with_index()
+    |> Enum.map(fn {row_map, index} ->
+      changeset = stop_time_row_to_changeset(row_map, organization_id, gtfs_version_id)
+      {:insert, :"stop_time_#{index}", changeset}
+    end)
+  end
+
+  # Adds stop time imports to Ecto.Multi
+  defp add_stop_time_imports(multi, files, organization_id, gtfs_version_id) do
+    Enum.reduce(files, multi, fn file, multi_acc ->
+      operations = import_stop_times_from_content(organization_id, gtfs_version_id, file.content)
+
+      Enum.reduce(operations, multi_acc, fn {:insert, name, changeset}, multi_inner ->
+        Multi.insert(multi_inner, name, changeset)
+      end)
+    end)
+  end
+
+  # Converts a CSV row map to a StopTime changeset
+  defp stop_time_row_to_changeset(row_map, organization_id, gtfs_version_id) do
+    attrs =
+      with {:ok, trip_id} <- extract_required(row_map, "trip_id"),
+           {:ok, stop_id} <- extract_required(row_map, "stop_id"),
+           {:ok, stop_sequence} <- parse_integer(row_map["stop_sequence"]) do
+        # Parse optional time fields
+        arrival_time =
+          case parse_gtfs_time(row_map["arrival_time"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        departure_time =
+          case parse_gtfs_time(row_map["departure_time"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        # Parse optional integer fields
+        pickup_type =
+          case parse_integer(row_map["pickup_type"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        drop_off_type =
+          case parse_integer(row_map["drop_off_type"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        continuous_pickup =
+          case parse_integer(row_map["continuous_pickup"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        continuous_drop_off =
+          case parse_integer(row_map["continuous_drop_off"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        timepoint =
+          case parse_integer(row_map["timepoint"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        # Parse optional decimal field
+        shape_dist_traveled =
+          case parse_decimal(row_map["shape_dist_traveled"]) do
+            {:ok, value} -> value
+            {:error, _} -> nil
+          end
+
+        %{
+          trip_id: trip_id,
+          stop_id: stop_id,
+          stop_sequence: stop_sequence,
+          arrival_time: arrival_time,
+          departure_time: departure_time,
+          stop_headsign: empty_to_nil(row_map["stop_headsign"]),
+          pickup_type: pickup_type,
+          drop_off_type: drop_off_type,
+          continuous_pickup: continuous_pickup,
+          continuous_drop_off: continuous_drop_off,
+          shape_dist_traveled: shape_dist_traveled,
+          timepoint: timepoint,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        }
+      else
+        {:error, _reason} ->
+          %{
+            trip_id: row_map["trip_id"] || "",
+            stop_id: row_map["stop_id"] || "",
+            organization_id: organization_id,
+            gtfs_version_id: gtfs_version_id
+          }
+      end
+
+    Gtfs.StopTime.changeset(%Gtfs.StopTime{}, attrs)
   end
 
 end
