@@ -4,7 +4,10 @@ defmodule GtfsPlanner.Repo.Migrations.CreateStopTimes do
   def change do
     create table(:stop_times, primary_key: false) do
       add :id, :binary_id, primary_key: true
-      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id), null: false
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
       add :gtfs_version_id, :binary_id, null: false
       add :trip_id, :string, null: false
       add :stop_id, :string, null: false
@@ -22,7 +25,13 @@ defmodule GtfsPlanner.Repo.Migrations.CreateStopTimes do
       timestamps(type: :utc_datetime_usec)
     end
 
-    create unique_index(:stop_times, [:organization_id, :gtfs_version_id, :trip_id, :stop_sequence])
+    create unique_index(:stop_times, [
+             :organization_id,
+             :gtfs_version_id,
+             :trip_id,
+             :stop_sequence
+           ])
+
     create index(:stop_times, [:organization_id, :gtfs_version_id])
     create index(:stop_times, [:organization_id, :gtfs_version_id, :trip_id])
     create index(:stop_times, [:organization_id, :gtfs_version_id, :stop_id])

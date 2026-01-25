@@ -52,24 +52,25 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
         route ->
           active_tab = socket.assigns[:live_action] || :details
-          
+
           socket =
             socket
             |> assign(:route_id, route_id)
             |> assign(:route, route)
             |> assign(:active_tab, active_tab)
-          
+
           socket =
             if active_tab == :patterns do
-              patterns = Gtfs.list_route_patterns_for_route(organization_id, gtfs_version_id, route_id)
-              
+              patterns =
+                Gtfs.list_route_patterns_for_route(organization_id, gtfs_version_id, route_id)
+
               socket
               |> assign(:route_patterns_empty?, patterns == [])
               |> stream(:route_patterns, patterns, reset: true)
             else
               socket
             end
-          
+
           {:noreply, socket}
       end
     end
@@ -131,7 +132,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
 
     path =
-      if route_id, do: "/gtfs/#{version_id}/routes/#{route_id}", else: "/gtfs/#{version_id}/routes"
+      if route_id,
+        do: "/gtfs/#{version_id}/routes/#{route_id}",
+        else: "/gtfs/#{version_id}/routes"
 
     {:noreply, push_navigate(socket, to: path)}
   end
@@ -163,7 +166,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         available_versions={assigns[:available_versions] || []}
       >
         <:sub_header>
-          <.route_sub_nav route={@route} gtfs_version_id={@current_gtfs_version.id} active_tab={@active_tab} />
+          <.route_sub_nav
+            route={@route}
+            gtfs_version_id={@current_gtfs_version.id}
+            active_tab={@active_tab}
+          />
         </:sub_header>
 
         <%= if @active_tab == :details do %>
@@ -265,7 +272,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                       <td>{pattern.route_pattern_name || "—"}</td>
                       <td>{RoutePattern.direction_label(pattern.direction_id)}</td>
                       <td>
-                        <span class="badge badge-sm">{RoutePattern.typicality_label(pattern.route_pattern_typicality)}</span>
+                        <span class="badge badge-sm">
+                          {RoutePattern.typicality_label(pattern.route_pattern_typicality)}
+                        </span>
                       </td>
                     </tr>
                   </tbody>

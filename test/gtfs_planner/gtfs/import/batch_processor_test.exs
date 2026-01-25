@@ -27,13 +27,14 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
       topic: topic
     } do
       # Create 10 rows with batch size of 3
-      rows = for i <- 1..10 do
-        %{
-          "level_id" => "L#{i}",
-          "level_index" => "#{i}.0",
-          "level_name" => "Level #{i}"
-        }
-      end
+      rows =
+        for i <- 1..10 do
+          %{
+            "level_id" => "L#{i}",
+            "level_index" => "#{i}.0",
+            "level_name" => "Level #{i}"
+          }
+        end
 
       row_to_attrs_fn = fn row, org_id, version_id ->
         {level_index, _} = Float.parse(row["level_index"])
@@ -77,12 +78,13 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
       topic: topic
     } do
       # 10 rows with batch size 3 = 4 batches (3+3+3+1)
-      rows = for i <- 1..10 do
-        %{
-          "level_id" => "L#{i}",
-          "level_index" => "#{i}.0"
-        }
-      end
+      rows =
+        for i <- 1..10 do
+          %{
+            "level_id" => "L#{i}",
+            "level_index" => "#{i}.0"
+          }
+        end
 
       row_to_attrs_fn = fn row, org_id, version_id ->
         {level_index, _} = Float.parse(row["level_index"])
@@ -111,10 +113,11 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
       end)
 
       # Should receive 4 progress messages (one per batch)
-      assert_receive {:import_progress, %{file: "levels.txt", processed: 3, total: 10}}
-      assert_receive {:import_progress, %{file: "levels.txt", processed: 6, total: 10}}
-      assert_receive {:import_progress, %{file: "levels.txt", processed: 9, total: 10}}
-      assert_receive {:import_progress, %{file: "levels.txt", processed: 10, total: 10}}
+      # With streaming, total is estimated per batch (processed + batch_size) since we don't know total upfront
+      assert_receive {:import_progress, %{file: "levels.txt", processed: 3, total: _}}
+      assert_receive {:import_progress, %{file: "levels.txt", processed: 6, total: _}}
+      assert_receive {:import_progress, %{file: "levels.txt", processed: 9, total: _}}
+      assert_receive {:import_progress, %{file: "levels.txt", processed: 10, total: _}}
     end
 
     test "returns error when row conversion fails", %{
@@ -158,7 +161,8 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
           batch_size: 3
         )
 
-      assert {:error, %{file: "levels.txt", row: 3, reason: "missing required field: level_id"}} = result
+      assert {:error, %{file: "levels.txt", row: 3, reason: "missing required field: level_id"}} =
+               result
     end
 
     test "returns error when database constraint is violated", %{

@@ -188,7 +188,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatternTest do
       changeset = RoutePattern.changeset(%RoutePattern{}, attrs)
 
       refute changeset.valid?
-      assert %{route_pattern_sort_order: ["must be greater than or equal to 0"]} = errors_on(changeset)
+
+      assert %{route_pattern_sort_order: ["must be greater than or equal to 0"]} =
+               errors_on(changeset)
     end
 
     test "valid changeset with route_pattern_sort_order of 0" do

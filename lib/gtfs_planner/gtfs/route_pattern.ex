@@ -60,7 +60,13 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_required([:route_pattern_id, :route_id, :direction_id, :organization_id, :gtfs_version_id])
+    |> validate_required([
+      :route_pattern_id,
+      :route_id,
+      :direction_id,
+      :organization_id,
+      :gtfs_version_id
+    ])
     |> validate_inclusion(:direction_id, [0, 1])
     |> validate_inclusion(:route_pattern_typicality, 0..5)
     |> validate_inclusion(:canonical_route_pattern, 0..2)
