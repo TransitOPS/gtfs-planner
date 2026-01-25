@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
@@ -27,7 +28,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       {:ok,
        socket
        |> assign(:page_title, "Route Details")
-       |> assign(:user_roles, user_roles)}
+       |> assign(:user_roles, user_roles)
+       |> assign(:active_tab, :details)
+       |> assign(:route_patterns_empty?, true)
+       |> stream(:route_patterns, [])}
     end
   end
 
@@ -47,10 +51,26 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
            |> push_navigate(to: "/gtfs/#{gtfs_version_id}/routes")}
 
         route ->
-          {:noreply,
-           socket
-           |> assign(:route_id, route_id)
-           |> assign(:route, route)}
+          active_tab = socket.assigns[:live_action] || :details
+          
+          socket =
+            socket
+            |> assign(:route_id, route_id)
+            |> assign(:route, route)
+            |> assign(:active_tab, active_tab)
+          
+          socket =
+            if active_tab == :patterns do
+              patterns = Gtfs.list_route_patterns_for_route(organization_id, gtfs_version_id, route_id)
+              
+              socket
+              |> assign(:route_patterns_empty?, patterns == [])
+              |> stream(:route_patterns, patterns, reset: true)
+            else
+              socket
+            end
+          
+          {:noreply, socket}
       end
     end
   end
@@ -142,84 +162,118 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         current_gtfs_version={assigns[:current_gtfs_version]}
         available_versions={assigns[:available_versions] || []}
       >
-        <.header>
-          {route_display_name(@route)}
-          <:subtitle>Route details</:subtitle>
-        </.header>
+        <:sub_header>
+          <.route_sub_nav route={@route} gtfs_version_id={@current_gtfs_version.id} active_tab={@active_tab} />
+        </:sub_header>
 
-        <div class="bg-base-100 border border-base-300 rounded-lg p-6 mt-8">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Route ID</h3>
-              <p class="mt-1 text-base">{@route.route_id}</p>
-            </div>
+        <%= if @active_tab == :details do %>
+          <div class="bg-base-100 border border-base-300 rounded-lg p-6 mt-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Route ID</h3>
+                <p class="mt-1 text-base">{@route.route_id}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Short Name</h3>
-              <p class="mt-1 text-base">{@route.route_short_name || "—"}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Short Name</h3>
+                <p class="mt-1 text-base">{@route.route_short_name || "—"}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Long Name</h3>
-              <p class="mt-1 text-base">{@route.route_long_name || "—"}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Long Name</h3>
+                <p class="mt-1 text-base">{@route.route_long_name || "—"}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Type</h3>
-              <p class="mt-1 text-base">{Route.route_type_label(@route.route_type)}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Type</h3>
+                <p class="mt-1 text-base">{Route.route_type_label(@route.route_type)}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Agency ID</h3>
-              <p class="mt-1 text-base">{@route.agency_id || "—"}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Agency ID</h3>
+                <p class="mt-1 text-base">{@route.agency_id || "—"}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Description</h3>
-              <p class="mt-1 text-base">{@route.route_desc || "—"}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Description</h3>
+                <p class="mt-1 text-base">{@route.route_desc || "—"}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">URL</h3>
-              <p class="mt-1 text-base">{@route.route_url || "—"}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">URL</h3>
+                <p class="mt-1 text-base">{@route.route_url || "—"}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Color</h3>
-              <p class="mt-1 text-base">#{@route.route_color}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Color</h3>
+                <p class="mt-1 text-base">#{@route.route_color}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Text Color</h3>
-              <p class="mt-1 text-base">#{@route.route_text_color}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Text Color</h3>
+                <p class="mt-1 text-base">#{@route.route_text_color}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Sort Order</h3>
-              <p class="mt-1 text-base">{@route.route_sort_order || "—"}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Sort Order</h3>
+                <p class="mt-1 text-base">{@route.route_sort_order || "—"}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Continuous Pickup</h3>
-              <p class="mt-1 text-base">{@route.continuous_pickup}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Continuous Pickup</h3>
+                <p class="mt-1 text-base">{@route.continuous_pickup}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Continuous Drop Off</h3>
-              <p class="mt-1 text-base">{@route.continuous_drop_off}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Continuous Drop Off</h3>
+                <p class="mt-1 text-base">{@route.continuous_drop_off}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Network ID</h3>
-              <p class="mt-1 text-base">{@route.network_id || "—"}</p>
-            </div>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Network ID</h3>
+                <p class="mt-1 text-base">{@route.network_id || "—"}</p>
+              </div>
 
-            <div>
-              <h3 class="text-sm font-medium text-base-content/60">Active</h3>
-              <p class="mt-1 text-base">{if @route.active, do: "Yes", else: "No"}</p>
+              <div>
+                <h3 class="text-sm font-medium text-base-content/60">Active</h3>
+                <p class="mt-1 text-base">{if @route.active, do: "Yes", else: "No"}</p>
+              </div>
             </div>
           </div>
-        </div>
+        <% end %>
+
+        <%= if @active_tab == :patterns do %>
+          <div class="mt-8">
+            <%= if @route_patterns_empty? do %>
+              <div class="bg-base-100 border border-base-300 rounded-lg p-6 text-center text-base-content/60">
+                No route patterns found
+              </div>
+            <% else %>
+              <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+                <table class="table w-full">
+                  <thead>
+                    <tr>
+                      <th>Pattern ID</th>
+                      <th>Name</th>
+                      <th>Direction</th>
+                      <th>Typicality</th>
+                    </tr>
+                  </thead>
+                  <tbody id="route-patterns" phx-update="stream">
+                    <tr :for={{id, pattern} <- @streams.route_patterns} id={id}>
+                      <td>{pattern.route_pattern_id}</td>
+                      <td>{pattern.route_pattern_name || "—"}</td>
+                      <td>{RoutePattern.direction_label(pattern.direction_id)}</td>
+                      <td>
+                        <span class="badge badge-sm">{RoutePattern.typicality_label(pattern.route_pattern_typicality)}</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            <% end %>
+          </div>
+        <% end %>
       </Layouts.app>
     <% end %>
     """

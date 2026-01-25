@@ -896,6 +896,97 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   @doc """
+  Renders a full-width sub-navigation bar for route pages.
+
+  Provides a back button, prominent route name, and underline-style tabs for
+  switching between views.
+
+  ## Examples
+
+      <.route_sub_nav
+        route={@route}
+        gtfs_version_id={@current_gtfs_version.id}
+        active_tab={:patterns}
+      />
+  """
+  attr :route, :map, required: true, doc: "the route record"
+  attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
+  attr :active_tab, :atom, values: [:details, :patterns], default: :details
+
+  def route_sub_nav(assigns) do
+    # Build route display name: short_name - long_name or route_id
+    route_display =
+      cond do
+        assigns.route.route_short_name && assigns.route.route_long_name ->
+          "#{assigns.route.route_short_name} - #{assigns.route.route_long_name}"
+
+        assigns.route.route_short_name ->
+          assigns.route.route_short_name
+
+        assigns.route.route_long_name ->
+          assigns.route.route_long_name
+
+        true ->
+          assigns.route.route_id
+      end
+
+    assigns = assign(assigns, :route_display, route_display)
+
+    ~H"""
+    <nav class="w-full px-4 sm:px-6 lg:px-8" aria-label="Route navigation">
+      <%!-- Top row: Back button and route name --%>
+      <div class="flex items-center justify-between py-3">
+        <div class="flex items-center gap-4">
+          <.link
+            navigate={"/gtfs/#{@gtfs_version_id}/routes"}
+            class="btn btn-ghost btn-sm btn-square"
+            aria-label="Back to routes list"
+          >
+            <.icon name="hero-chevron-left" class="size-5" />
+          </.link>
+          <h1 class="text-xl font-semibold leading-tight">
+            {@route_display}
+          </h1>
+        </div>
+      </div>
+      <%!-- Bottom row: Underline tabs --%>
+      <div class="flex items-end justify-between border-b border-base-300">
+        <div class="flex items-end gap-6" role="tablist">
+          <.link
+            navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}"}
+            class={[
+              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+              @active_tab == :details && "border-primary text-base-content",
+              @active_tab != :details &&
+                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
+            ]}
+            role="tab"
+            aria-selected={@active_tab == :details}
+            aria-current={@active_tab == :details && "page"}
+          >
+            Details
+          </.link>
+          <.link
+            navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns"}
+            class={[
+              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+              @active_tab == :patterns && "border-primary text-base-content",
+              @active_tab != :patterns &&
+                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
+            ]}
+            role="tab"
+            aria-selected={@active_tab == :patterns}
+            aria-current={@active_tab == :patterns && "page"}
+          >
+            Patterns
+          </.link>
+        </div>
+      </div>
+    </nav>
+    """
+  end
+
+  @doc """
   Translates an error message using gettext.
   """
   def translate_error({msg, opts}) do
