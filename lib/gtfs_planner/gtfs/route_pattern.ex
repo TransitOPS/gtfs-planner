@@ -77,4 +77,9 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
   def typicality_label(4), do: "Diversion"
   def typicality_label(5), do: "Canonical reference"
   def typicality_label(_), do: "Unknown"
+
+  @doc "Returns human-readable label for direction_id."
+  def direction_label(0), do: "Outbound"
+  def direction_label(1), do: "Inbound"
+  def direction_label(_), do: "Unknown"
 end

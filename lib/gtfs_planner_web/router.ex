@@ -128,7 +128,9 @@ defmodule GtfsPlannerWeb.Router do
       ] do
       # GTFS routes (viewer or editor roles required)
       live "/routes", Gtfs.RoutesLive, :index
-      live "/routes/:route_id", Gtfs.RouteDetailLive, :show
+      live "/routes/:route_id", Gtfs.RouteDetailLive, :details
+      live "/routes/:route_id/patterns", Gtfs.RouteDetailLive, :patterns
+      live "/routes/:route_id/schedules", Gtfs.RouteDetailLive, :schedules
       live "/stops", Gtfs.StopsLive, :index
       live "/stops/:stop_id", Gtfs.StopDetailLive, :show
       live "/stops/:stop_id/diagram", Gtfs.StationDiagramLive, :index
