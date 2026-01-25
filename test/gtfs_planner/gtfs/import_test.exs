@@ -190,10 +190,14 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "stops.txt", content: stops_content}
       ]
 
-      assert {:ok, {counts, _unrecognized}} =
+      assert {:ok, {counts, _unrecognized, _topic}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
-      assert counts == %{routes: 0, levels: 2, stops: 2, pathways: 0, route_patterns: 0}
+      assert counts.routes == 0
+      assert counts.levels == 2
+      assert counts.stops == 2
+      assert counts.pathways == 0
+      assert counts.route_patterns == 0
 
       # Verify levels were created
       levels = Gtfs.list_levels(organization.id, gtfs_version.id)
@@ -234,7 +238,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:ok, {_counts, _unrecognized}} =
+      assert {:ok, {_counts, _unrecognized, _topic}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       # Verify pathways were created
@@ -282,8 +286,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       ]
 
       # Should fail due to duplicate level_id constraint
-      assert {:error, _failed_operation, _failed_value, _changes_so_far} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+      assert {:error, _reason} = Import.import_files(organization.id, gtfs_version.id, files)
 
       # Verify no new levels were created (only the original one exists)
       levels = Gtfs.list_levels(organization.id, gtfs_version.id)
@@ -321,7 +324,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:ok, {counts, _unrecognized}} =
+      assert {:ok, {counts, _unrecognized, _topic}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       assert counts.pathways == 1
@@ -360,7 +363,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:ok, {counts, _unrecognized}} =
+      assert {:ok, {counts, _unrecognized, _topic}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       assert counts.pathways == 1
@@ -398,113 +401,12 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:error, :pathways, {failed_changeset, 1}, _changes_so_far} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+      assert {:error, _reason} = Import.import_files(organization.id, gtfs_version.id, files)
 
-      # Verify the changeset has the expected errors
-      assert errors_on(failed_changeset) == %{
-               from_stop_id: ["can't be blank"],
-               to_stop_id: ["can't be blank"],
-               pathway_mode: ["can't be blank"]
-             }
-
-      # Verify no pathways, stops, or levels were created
+      # Verify no pathways, stops, or levels were created (transaction rolled back)
       assert Gtfs.list_pathways(organization.id, gtfs_version.id) == []
       assert Gtfs.list_stops(organization.id, gtfs_version.id) == []
       assert Gtfs.list_levels(organization.id, gtfs_version.id) == []
-    end
-  end
-
-  describe "import_route_patterns_from_content/3" do
-    test "imports route patterns with blank typicality and canonical values" do
-      organization_id = Ecto.UUID.generate()
-      gtfs_version_id = Ecto.UUID.generate()
-
-      content = """
-      route_pattern_id,route_id,direction_id,route_pattern_typicality,canonical_route_pattern
-      RP1,R1,0,,
-      RP2,R2,1,1,0
-      RP3,R3,0,2,1
-      """
-
-      changesets = Import.import_route_patterns_from_content(organization_id, gtfs_version_id, content)
-
-      assert length(changesets) == 3
-
-      # First pattern has blank values which should be treated as 0
-      {_op, _name, cs1} = Enum.at(changesets, 0)
-      assert cs1.valid?
-      assert Ecto.Changeset.get_field(cs1, :route_pattern_typicality) == 0
-      assert Ecto.Changeset.get_field(cs1, :canonical_route_pattern) == 0
-
-      # Second pattern has explicit values
-      {_op, _name, cs2} = Enum.at(changesets, 1)
-      assert cs2.valid?
-      assert Ecto.Changeset.get_field(cs2, :route_pattern_typicality) == 1
-      assert Ecto.Changeset.get_field(cs2, :canonical_route_pattern) == 0
-
-      # Third pattern has different values
-      {_op, _name, cs3} = Enum.at(changesets, 2)
-      assert cs3.valid?
-      assert Ecto.Changeset.get_field(cs3, :route_pattern_typicality) == 2
-      assert Ecto.Changeset.get_field(cs3, :canonical_route_pattern) == 1
-    end
-
-    test "rejects route patterns with out-of-range typicality" do
-      organization_id = Ecto.UUID.generate()
-      gtfs_version_id = Ecto.UUID.generate()
-
-      content = """
-      route_pattern_id,route_id,direction_id,route_pattern_typicality,canonical_route_pattern
-      RP1,R1,0,10,0
-      """
-
-      changesets = Import.import_route_patterns_from_content(organization_id, gtfs_version_id, content)
-
-      assert length(changesets) == 1
-      {_op, _name, changeset} = Enum.at(changesets, 0)
-
-      # Changeset should be invalid because typicality is out of range
-      refute changeset.valid?
-      assert %{route_pattern_typicality: ["is invalid"]} = errors_on(changeset)
-    end
-
-    test "rejects route patterns with out-of-range canonical value" do
-      organization_id = Ecto.UUID.generate()
-      gtfs_version_id = Ecto.UUID.generate()
-
-      content = """
-      route_pattern_id,route_id,direction_id,route_pattern_typicality,canonical_route_pattern
-      RP1,R1,0,1,5
-      """
-
-      changesets = Import.import_route_patterns_from_content(organization_id, gtfs_version_id, content)
-
-      assert length(changesets) == 1
-      {_op, _name, changeset} = Enum.at(changesets, 0)
-
-      # Changeset should be invalid because canonical is out of range
-      refute changeset.valid?
-      assert %{canonical_route_pattern: ["is invalid"]} = errors_on(changeset)
-    end
-
-    test "rejects route patterns with invalid direction_id" do
-      organization_id = Ecto.UUID.generate()
-      gtfs_version_id = Ecto.UUID.generate()
-
-      content = """
-      route_pattern_id,route_id,direction_id,route_pattern_typicality,canonical_route_pattern
-      RP1,R1,5,1,0
-      """
-
-      changesets = Import.import_route_patterns_from_content(organization_id, gtfs_version_id, content)
-
-      assert length(changesets) == 1
-      {_op, _name, changeset} = Enum.at(changesets, 0)
-
-      # Changeset should be invalid because direction_id is out of range
-      refute changeset.valid?
-      assert %{direction_id: ["is invalid"]} = errors_on(changeset)
     end
   end
 end

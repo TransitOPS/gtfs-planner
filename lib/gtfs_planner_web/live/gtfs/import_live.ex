@@ -34,7 +34,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
        )
        |> assign(:form, to_form(%{"create_version" => false, "version_name" => ""}, as: :gtfs_import_form))
        |> assign(:import_result, nil)
-       |> assign(:version_name_touched, false)}
+       |> assign(:version_name_touched, false)
+       |> assign(:import_task, nil)
+       |> assign(:import_progress, nil)
+       |> assign(:importing, false)}
     end
   end
 
@@ -169,24 +172,79 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           {:ok, %{filename: entry.client_name, content: File.read!(path)}}
         end)
 
-      # Import files
-      case GtfsPlanner.Gtfs.Import.import_files(
-             socket.assigns.current_organization.id,
-             gtfs_version_id,
-             uploaded_files
-           ) do
-        {:ok, {counts, unrecognized}} ->
-          {:noreply, assign(socket, :import_result, {:ok, counts, unrecognized})}
+      # Run import in async task to avoid blocking LiveView process
+      task =
+        Task.async(fn ->
+          GtfsPlanner.Gtfs.Import.import_files(
+            socket.assigns.current_organization.id,
+            gtfs_version_id,
+            uploaded_files
+          )
+        end)
 
-        {:error, :pathways, {failed_changeset, line_number}, _changes_so_far} ->
-          error_msg = extract_error_message({failed_changeset, line_number})
-          {:noreply, assign(socket, :import_result, {:error, error_msg})}
+      # The import_files/3 function returns {:ok, {counts, unrecognized, topic}}
+      # We need to subscribe to the progress topic, but we'll do that in handle_info
+      # when we receive the task result, since the topic is generated inside import_files
+
+      {:noreply,
+       socket
+       |> assign(:import_task, task.ref)
+       |> assign(:importing, true)
+       |> assign(:import_result, nil)
+       |> assign(:import_progress, nil)}
+    end
+  end
+
+  @impl true
+  def handle_info({:import_progress, progress}, socket) do
+    {:noreply, assign(socket, :import_progress, progress)}
+  end
+
+  @impl true
+  def handle_info({ref, result}, socket) when socket.assigns.import_task == ref do
+    # Task completed successfully
+    Process.demonitor(ref, [:flush])
+
+    socket =
+      case result do
+        {:ok, {counts, unrecognized, topic}} ->
+          # Subscribe to progress topic for future updates (though import is done)
+          Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
+
+          socket
+          |> assign(:import_result, {:ok, counts, unrecognized})
+          |> assign(:importing, false)
+          |> assign(:import_task, nil)
+
+        {:error, error_msg} when is_binary(error_msg) ->
+          socket
+          |> assign(:import_result, {:error, error_msg})
+          |> assign(:importing, false)
+          |> assign(:import_task, nil)
 
         {:error, _failed_operation, failed_value, _changes_so_far} ->
           error_msg = extract_error_message(failed_value)
-          {:noreply, assign(socket, :import_result, {:error, error_msg})}
+
+          socket
+          |> assign(:import_result, {:error, error_msg})
+          |> assign(:importing, false)
+          |> assign(:import_task, nil)
       end
-    end
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, socket)
+      when socket.assigns.import_task == ref do
+    # Task crashed or was killed
+    socket =
+      socket
+      |> assign(:import_result, {:error, "Import process failed unexpectedly"})
+      |> assign(:importing, false)
+      |> assign(:import_task, nil)
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -345,11 +403,39 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                 <% end %>
 
                 <div class="form-control">
-                  <button type="submit" class="btn btn-primary" disabled={@uploads.gtfs_files.entries == []}>
-                    Import Files
+                  <button type="submit" class="btn btn-primary" disabled={@uploads.gtfs_files.entries == [] || @importing}>
+                    <%= if @importing do %>
+                      <span class="loading loading-spinner loading-sm"></span>
+                      Importing...
+                    <% else %>
+                      Import Files
+                    <% end %>
                   </button>
                 </div>
               </.form>
+
+              <%= if @importing && @import_progress do %>
+                <div class="mt-6 pt-6 border-t border-base-300">
+                  <div class="space-y-4">
+                    <div>
+                      <div class="flex justify-between mb-2">
+                        <span class="text-sm font-medium">
+                          Processing: <%= @import_progress.file %>
+                        </span>
+                        <span class="text-sm text-base-content/60">
+                          <%= @import_progress.processed %> / <%= @import_progress.total %> rows
+                        </span>
+                      </div>
+                      <progress
+                        class="progress progress-primary w-full"
+                        value={@import_progress.processed}
+                        max={@import_progress.total}
+                      >
+                      </progress>
+                    </div>
+                  </div>
+                </div>
+              <% end %>
 
               <%= if @import_result do %>
                 <div class="mt-6 pt-6 border-t border-base-300">
