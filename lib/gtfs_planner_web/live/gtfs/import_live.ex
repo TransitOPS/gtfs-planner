@@ -295,7 +295,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         <span class="text-primary">Click to upload</span> or drag and drop
                       </p>
                       <p class="text-xs text-base-content/60">
-                        routes.txt, route_patterns.txt, calendar.txt, calendar_dates.txt, trips.txt, levels.txt, stops.txt, stop_times.txt, pathways.txt (max 10 files, 200MB each)
+                        agency.txt, areas.txt, attributions.txt, booking_rules.txt, calendar.txt, calendar_dates.txt, fare_attributes.txt, fare_leg_join_rules.txt, fare_leg_rules.txt, fare_media.txt, fare_products.txt, fare_rules.txt, fare_transfer_rules.txt, feed_info.txt, frequencies.txt, levels.txt, locations.txt, networks.txt, pathways.txt, rider_categories.txt, route_networks.txt, route_patterns.txt, routes.txt, shapes.txt, stop_areas.txt, stop_times.txt, stops.txt, timeframes.txt, transfers.txt, translations.txt, trips.txt (max 10 files, 200MB each)
                       </p>
                     </div>
                     <.live_file_input upload={@uploads.gtfs_files} class="sr-only" />
@@ -440,7 +440,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         <div>
                           <h3 class="font-bold">Import Successful</h3>
                           <div class="text-xs">
-                            Imported <%= counts.routes %> routes, <%= counts.calendars %> calendars, <%= counts.calendar_dates %> calendar dates, <%= counts.route_patterns %> route patterns, <%= counts.trips %> trips, <%= counts.levels %> levels, <%= counts.stops %> stops, <%= counts.stop_times %> stop times, <%= counts.pathways %> pathways.
+                            Imported <%= counts.agencies %> agencies, <%= counts.areas %> areas, <%= counts.attributions %> attributions, <%= counts.booking_rules %> booking rules, <%= counts.calendars %> calendars, <%= counts.calendar_dates %> calendar dates, <%= counts.fare_attributes %> fare attributes, <%= counts.fare_leg_join_rules %> fare leg join rules, <%= counts.fare_leg_rules %> fare leg rules, <%= counts.fare_media %> fare media, <%= counts.fare_products %> fare products, <%= counts.fare_rules %> fare rules, <%= counts.fare_transfer_rules %> fare transfer rules, <%= counts.feed_info %> feed info, <%= counts.frequencies %> frequencies, <%= counts.levels %> levels, <%= counts.locations %> locations, <%= counts.networks %> networks, <%= counts.pathways %> pathways, <%= counts.rider_categories %> rider categories, <%= counts.route_networks %> route networks, <%= counts.route_patterns %> route patterns, <%= counts.routes %> routes, <%= counts.shapes %> shapes, <%= counts.stop_areas %> stop areas, <%= counts.stop_times %> stop times, <%= counts.stops %> stops, <%= counts.timeframes %> timeframes, <%= counts.transfers %> transfers, <%= counts.translations %> translations, <%= counts.trips %> trips.
                           </div>
                         </div>
                       </div>

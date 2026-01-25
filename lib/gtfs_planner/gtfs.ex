@@ -5,11 +5,33 @@ defmodule GtfsPlanner.Gtfs do
 
   import Ecto.Query, warn: false
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.Area
+  alias GtfsPlanner.Gtfs.Attribution
+  alias GtfsPlanner.Gtfs.BookingRule
+  alias GtfsPlanner.Gtfs.FareAttribute
+  alias GtfsPlanner.Gtfs.FareLegJoinRule
+  alias GtfsPlanner.Gtfs.FareLegRule
+  alias GtfsPlanner.Gtfs.FareMedia
+  alias GtfsPlanner.Gtfs.FareProduct
+  alias GtfsPlanner.Gtfs.FareRule
+  alias GtfsPlanner.Gtfs.FareTransferRule
+  alias GtfsPlanner.Gtfs.FeedInfo
+  alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.Level
+  alias GtfsPlanner.Gtfs.Location
+  alias GtfsPlanner.Gtfs.Network
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.RiderCategory
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopArea
+  alias GtfsPlanner.Gtfs.Timeframe
+  alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlanner.Gtfs.Translation
 
   require Logger
 
@@ -689,6 +711,492 @@ defmodule GtfsPlanner.Gtfs do
     Repo.delete(pathway)
     |> broadcast([:pathways, :deleted])
   end
+
+  # Agency functions
+
+  @doc """
+  Returns the list of agencies for an organization and GTFS version.
+  """
+  def list_agencies(organization_id, gtfs_version_id) do
+    from(a in Agency,
+      where: a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: a.agency_name]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single agency by UUID.
+  """
+  def get_agency!(id), do: Repo.get!(Agency, id)
+
+  @doc """
+  Gets an agency by its agency_id within an organization and GTFS version.
+  """
+  def get_agency_by_agency_id(organization_id, gtfs_version_id, agency_id) do
+    from(a in Agency,
+      where:
+        a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id and
+          a.agency_id == ^agency_id
+    )
+    |> Repo.one()
+  end
+
+  # Area functions
+
+  @doc """
+  Returns the list of areas for an organization and GTFS version.
+  """
+  def list_areas(organization_id, gtfs_version_id) do
+    from(a in Area,
+      where: a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: a.area_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single area by UUID.
+  """
+  def get_area!(id), do: Repo.get!(Area, id)
+
+  @doc """
+  Gets an area by its area_id within an organization and GTFS version.
+  """
+  def get_area_by_area_id(organization_id, gtfs_version_id, area_id) do
+    from(a in Area,
+      where:
+        a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id and
+          a.area_id == ^area_id
+    )
+    |> Repo.one()
+  end
+
+  # Attribution functions
+
+  @doc """
+  Returns the list of attributions for an organization and GTFS version.
+  """
+  def list_attributions(organization_id, gtfs_version_id) do
+    from(a in Attribution,
+      where: a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single attribution by UUID.
+  """
+  def get_attribution!(id), do: Repo.get!(Attribution, id)
+
+  # BookingRule functions
+
+  @doc """
+  Returns the list of booking rules for an organization and GTFS version.
+  """
+  def list_booking_rules(organization_id, gtfs_version_id) do
+    from(b in BookingRule,
+      where: b.organization_id == ^organization_id and b.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: b.booking_rule_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single booking rule by UUID.
+  """
+  def get_booking_rule!(id), do: Repo.get!(BookingRule, id)
+
+  @doc """
+  Gets a booking rule by its booking_rule_id within an organization and GTFS version.
+  """
+  def get_booking_rule_by_booking_rule_id(organization_id, gtfs_version_id, booking_rule_id) do
+    from(b in BookingRule,
+      where:
+        b.organization_id == ^organization_id and b.gtfs_version_id == ^gtfs_version_id and
+          b.booking_rule_id == ^booking_rule_id
+    )
+    |> Repo.one()
+  end
+
+  # FareAttribute functions
+
+  @doc """
+  Returns the list of fare attributes for an organization and GTFS version.
+  """
+  def list_fare_attributes(organization_id, gtfs_version_id) do
+    from(f in FareAttribute,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: f.fare_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single fare attribute by UUID.
+  """
+  def get_fare_attribute!(id), do: Repo.get!(FareAttribute, id)
+
+  @doc """
+  Gets a fare attribute by its fare_id within an organization and GTFS version.
+  """
+  def get_fare_attribute_by_fare_id(organization_id, gtfs_version_id, fare_id) do
+    from(f in FareAttribute,
+      where:
+        f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id and
+          f.fare_id == ^fare_id
+    )
+    |> Repo.one()
+  end
+
+  # FareLegJoinRule functions
+
+  @doc """
+  Returns the list of fare leg join rules for an organization and GTFS version.
+  """
+  def list_fare_leg_join_rules(organization_id, gtfs_version_id) do
+    from(f in FareLegJoinRule,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single fare leg join rule by UUID.
+  """
+  def get_fare_leg_join_rule!(id), do: Repo.get!(FareLegJoinRule, id)
+
+  # FareLegRule functions
+
+  @doc """
+  Returns the list of fare leg rules for an organization and GTFS version.
+  """
+  def list_fare_leg_rules(organization_id, gtfs_version_id) do
+    from(f in FareLegRule,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single fare leg rule by UUID.
+  """
+  def get_fare_leg_rule!(id), do: Repo.get!(FareLegRule, id)
+
+  # FareMedia functions
+
+  @doc """
+  Returns the list of fare media for an organization and GTFS version.
+  """
+  def list_fare_media(organization_id, gtfs_version_id) do
+    from(f in FareMedia,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: f.fare_media_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single fare media by UUID.
+  """
+  def get_fare_media!(id), do: Repo.get!(FareMedia, id)
+
+  @doc """
+  Gets a fare media by its fare_media_id within an organization and GTFS version.
+  """
+  def get_fare_media_by_fare_media_id(organization_id, gtfs_version_id, fare_media_id) do
+    from(f in FareMedia,
+      where:
+        f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id and
+          f.fare_media_id == ^fare_media_id
+    )
+    |> Repo.one()
+  end
+
+  # FareProduct functions
+
+  @doc """
+  Returns the list of fare products for an organization and GTFS version.
+  """
+  def list_fare_products(organization_id, gtfs_version_id) do
+    from(f in FareProduct,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: f.fare_product_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single fare product by UUID.
+  """
+  def get_fare_product!(id), do: Repo.get!(FareProduct, id)
+
+  # FareRule functions
+
+  @doc """
+  Returns the list of fare rules for an organization and GTFS version.
+  """
+  def list_fare_rules(organization_id, gtfs_version_id) do
+    from(f in FareRule,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single fare rule by UUID.
+  """
+  def get_fare_rule!(id), do: Repo.get!(FareRule, id)
+
+  # FareTransferRule functions
+
+  @doc """
+  Returns the list of fare transfer rules for an organization and GTFS version.
+  """
+  def list_fare_transfer_rules(organization_id, gtfs_version_id) do
+    from(f in FareTransferRule,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single fare transfer rule by UUID.
+  """
+  def get_fare_transfer_rule!(id), do: Repo.get!(FareTransferRule, id)
+
+  # FeedInfo functions
+
+  @doc """
+  Returns the feed info for an organization and GTFS version.
+  """
+  def get_feed_info(organization_id, gtfs_version_id) do
+    from(f in FeedInfo,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Gets a single feed info by UUID.
+  """
+  def get_feed_info!(id), do: Repo.get!(FeedInfo, id)
+
+  # Frequency functions
+
+  @doc """
+  Returns the list of frequencies for an organization and GTFS version.
+  """
+  def list_frequencies(organization_id, gtfs_version_id) do
+    from(f in Frequency,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: f.trip_id, asc: f.start_time]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single frequency by UUID.
+  """
+  def get_frequency!(id), do: Repo.get!(Frequency, id)
+
+  # Location functions
+
+  @doc """
+  Returns the list of locations for an organization and GTFS version.
+  """
+  def list_locations(organization_id, gtfs_version_id) do
+    from(l in Location,
+      where: l.organization_id == ^organization_id and l.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: l.location_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single location by UUID.
+  """
+  def get_location!(id), do: Repo.get!(Location, id)
+
+  @doc """
+  Gets a location by its location_id within an organization and GTFS version.
+  """
+  def get_location_by_location_id(organization_id, gtfs_version_id, location_id) do
+    from(l in Location,
+      where:
+        l.organization_id == ^organization_id and l.gtfs_version_id == ^gtfs_version_id and
+          l.location_id == ^location_id
+    )
+    |> Repo.one()
+  end
+
+  # Network functions
+
+  @doc """
+  Returns the list of networks for an organization and GTFS version.
+  """
+  def list_networks(organization_id, gtfs_version_id) do
+    from(n in Network,
+      where: n.organization_id == ^organization_id and n.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: n.network_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single network by UUID.
+  """
+  def get_network!(id), do: Repo.get!(Network, id)
+
+  @doc """
+  Gets a network by its network_id within an organization and GTFS version.
+  """
+  def get_network_by_network_id(organization_id, gtfs_version_id, network_id) do
+    from(n in Network,
+      where:
+        n.organization_id == ^organization_id and n.gtfs_version_id == ^gtfs_version_id and
+          n.network_id == ^network_id
+    )
+    |> Repo.one()
+  end
+
+  # RiderCategory functions
+
+  @doc """
+  Returns the list of rider categories for an organization and GTFS version.
+  """
+  def list_rider_categories(organization_id, gtfs_version_id) do
+    from(r in RiderCategory,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: r.rider_category_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single rider category by UUID.
+  """
+  def get_rider_category!(id), do: Repo.get!(RiderCategory, id)
+
+  @doc """
+  Gets a rider category by its rider_category_id within an organization and GTFS version.
+  """
+  def get_rider_category_by_rider_category_id(organization_id, gtfs_version_id, rider_category_id) do
+    from(r in RiderCategory,
+      where:
+        r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id and
+          r.rider_category_id == ^rider_category_id
+    )
+    |> Repo.one()
+  end
+
+  # RouteNetwork functions
+
+  @doc """
+  Returns the list of route networks for an organization and GTFS version.
+  """
+  def list_route_networks(organization_id, gtfs_version_id) do
+    from(r in RouteNetwork,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: r.network_id, asc: r.route_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single route network by UUID.
+  """
+  def get_route_network!(id), do: Repo.get!(RouteNetwork, id)
+
+  # Shape functions
+
+  @doc """
+  Returns the list of shapes for an organization and GTFS version.
+  """
+  def list_shapes(organization_id, gtfs_version_id) do
+    from(s in Shape,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: s.shape_id, asc: s.shape_pt_sequence]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single shape by UUID.
+  """
+  def get_shape!(id), do: Repo.get!(Shape, id)
+
+  # StopArea functions
+
+  @doc """
+  Returns the list of stop areas for an organization and GTFS version.
+  """
+  def list_stop_areas(organization_id, gtfs_version_id) do
+    from(s in StopArea,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: s.area_id, asc: s.stop_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single stop area by UUID.
+  """
+  def get_stop_area!(id), do: Repo.get!(StopArea, id)
+
+  # Timeframe functions
+
+  @doc """
+  Returns the list of timeframes for an organization and GTFS version.
+  """
+  def list_timeframes(organization_id, gtfs_version_id) do
+    from(t in Timeframe,
+      where: t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: t.timeframe_group_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single timeframe by UUID.
+  """
+  def get_timeframe!(id), do: Repo.get!(Timeframe, id)
+
+  # Transfer functions
+
+  @doc """
+  Returns the list of transfers for an organization and GTFS version.
+  """
+  def list_transfers(organization_id, gtfs_version_id) do
+    from(t in Transfer,
+      where: t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: t.from_stop_id, asc: t.to_stop_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single transfer by UUID.
+  """
+  def get_transfer!(id), do: Repo.get!(Transfer, id)
+
+  # Translation functions
+
+  @doc """
+  Returns the list of translations for an organization and GTFS version.
+  """
+  def list_translations(organization_id, gtfs_version_id) do
+    from(t in Translation,
+      where: t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: t.table_name, asc: t.field_name, asc: t.language]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single translation by UUID.
+  """
+  def get_translation!(id), do: Repo.get!(Translation, id)
 
   # Private helper functions
 
