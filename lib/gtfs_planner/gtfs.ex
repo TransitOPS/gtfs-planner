@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.Stop
 
   require Logger
@@ -150,6 +151,24 @@ defmodule GtfsPlanner.Gtfs do
       distinct: true,
       select: r.agency_id,
       order_by: r.agency_id
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Returns the list of route patterns for a specific route.
+
+  ## Examples
+
+      iex> list_route_patterns_for_route(organization_id, gtfs_version_id, route_id)
+      [%RoutePattern{}, ...]
+  """
+  def list_route_patterns_for_route(organization_id, gtfs_version_id, route_id) do
+    from(rp in RoutePattern,
+      where:
+        rp.organization_id == ^organization_id and rp.gtfs_version_id == ^gtfs_version_id and
+          rp.route_id == ^route_id,
+      order_by: [asc: rp.direction_id, asc: rp.route_pattern_sort_order]
     )
     |> Repo.all()
   end
