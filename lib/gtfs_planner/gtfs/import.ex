@@ -392,10 +392,10 @@ defmodule GtfsPlanner.Gtfs.Import do
           route_url: empty_to_nil(row_map["route_url"]),
           route_color: empty_to_nil(row_map["route_color"]) || "FFFFFF",
           route_text_color: empty_to_nil(row_map["route_text_color"]) || "000000",
-        route_sort_order: route_sort_order,
-        continuous_pickup: continuous_pickup || 1,
-        continuous_drop_off: continuous_drop_off || 1,
-        network_id: empty_to_nil(row_map["network_id"]),
+          route_sort_order: route_sort_order,
+          continuous_pickup: continuous_pickup || 1,
+          continuous_drop_off: continuous_drop_off || 1,
+          network_id: empty_to_nil(row_map["network_id"]),
           organization_id: organization_id,
           gtfs_version_id: gtfs_version_id
         }
