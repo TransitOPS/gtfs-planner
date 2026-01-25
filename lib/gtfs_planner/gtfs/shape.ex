@@ -45,7 +45,14 @@ defmodule GtfsPlanner.Gtfs.Shape do
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_required([:shape_id, :shape_pt_lat, :shape_pt_lon, :shape_pt_sequence, :organization_id, :gtfs_version_id])
+    |> validate_required([
+      :shape_id,
+      :shape_pt_lat,
+      :shape_pt_lon,
+      :shape_pt_sequence,
+      :organization_id,
+      :gtfs_version_id
+    ])
     |> validate_number(:shape_pt_sequence, greater_than_or_equal_to: 0)
     |> unique_constraint([:organization_id, :gtfs_version_id, :shape_id, :shape_pt_sequence])
     |> foreign_key_constraint(:organization_id)

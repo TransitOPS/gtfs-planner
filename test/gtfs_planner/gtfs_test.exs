@@ -658,9 +658,21 @@ defmodule GtfsPlanner.GtfsTest do
     setup do
       organization = organization_fixture()
       gtfs_version = gtfs_version_fixture(organization.id)
-      parent = stop_fixture(organization.id, gtfs_version.id, %{stop_id: "PARENT", location_type: 1})
-      child1 = stop_fixture(organization.id, gtfs_version.id, %{stop_id: "C1", parent_station_id: parent.id})
-      child2 = stop_fixture(organization.id, gtfs_version.id, %{stop_id: "C2", parent_station_id: parent.id})
+
+      parent =
+        stop_fixture(organization.id, gtfs_version.id, %{stop_id: "PARENT", location_type: 1})
+
+      child1 =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "C1",
+          parent_station_id: parent.id
+        })
+
+      child2 =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "C2",
+          parent_station_id: parent.id
+        })
 
       pathway =
         pathway_fixture(organization.id, gtfs_version.id, child1.id, child2.id, %{

@@ -158,7 +158,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     >
       <.pathways_layer streams={@streams} />
       <.stops_layer streams={@streams} active_point_id={@active_point_id} mode={@mode} />
-      <.pending_marker :if={@pending_xy && @mode == :add && @selected_stop_id == nil} pending_xy={@pending_xy} />
+      <.pending_marker
+        :if={@pending_xy && @mode == :add && @selected_stop_id == nil}
+        pending_xy={@pending_xy}
+      />
     </svg>
     """
   end
@@ -406,7 +409,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     # Build pathway mode options using Pathway module functions
     pathway_mode_options =
       Pathway.pathway_modes()
-      |> Enum.map(fn {_name, mode_value} -> {Pathway.mode_label(mode_value), to_string(mode_value)} end)
+      |> Enum.map(fn {_name, mode_value} ->
+        {Pathway.mode_label(mode_value), to_string(mode_value)}
+      end)
 
     assigns = assign(assigns, :pathway_mode_options, pathway_mode_options)
 
@@ -480,18 +485,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <div class="text-sm font-medium mb-2">Connected Stops</div>
         <div class="text-sm">
           <div>
-            From:
-            {case @editing_pathway.from_stop do
-               %Stop{} = stop -> stop.stop_name || stop.stop_id
-               _ -> "Unknown stop"
-             end}
+            From: {case @editing_pathway.from_stop do
+              %Stop{} = stop -> stop.stop_name || stop.stop_id
+              _ -> "Unknown stop"
+            end}
           </div>
           <div>
-            To:
-            {case @editing_pathway.to_stop do
-               %Stop{} = stop -> stop.stop_name || stop.stop_id
-               _ -> "Unknown stop"
-             end}
+            To: {case @editing_pathway.to_stop do
+              %Stop{} = stop -> stop.stop_name || stop.stop_id
+              _ -> "Unknown stop"
+            end}
           </div>
         </div>
       </div>

@@ -4,8 +4,10 @@ defmodule GtfsPlanner.Repo.Migrations.CreateStopAreas do
   def up do
     create table(:stop_areas, primary_key: false) do
       add :id, :binary_id, primary_key: true
+
       add :organization_id, references(:organizations, type: :binary_id, on_delete: :delete_all),
-          null: false
+        null: false
+
       add :gtfs_version_id, :binary_id, null: false
       add :area_id, :string, null: false
       add :stop_id, :string, null: false

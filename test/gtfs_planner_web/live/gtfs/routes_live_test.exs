@@ -35,9 +35,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       # Create routes with different types
-      _tram_route = route_fixture(organization.id, version.id, %{route_id: "TRAM1", route_type: 0})
+      _tram_route =
+        route_fixture(organization.id, version.id, %{route_id: "TRAM1", route_type: 0})
+
       bus_route = route_fixture(organization.id, version.id, %{route_id: "BUS1", route_type: 3})
-      _subway_route = route_fixture(organization.id, version.id, %{route_id: "SUBWAY1", route_type: 1})
+
+      _subway_route =
+        route_fixture(organization.id, version.id, %{route_id: "SUBWAY1", route_type: 1})
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 

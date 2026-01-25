@@ -43,7 +43,14 @@ defmodule GtfsPlanner.Gtfs.Timeframe do
       :gtfs_version_id
     ])
     |> validate_required([:timeframe_group_id, :service_id, :organization_id, :gtfs_version_id])
-    |> unique_constraint([:organization_id, :gtfs_version_id, :timeframe_group_id, :start_time, :end_time, :service_id])
+    |> unique_constraint([
+      :organization_id,
+      :gtfs_version_id,
+      :timeframe_group_id,
+      :start_time,
+      :end_time,
+      :service_id
+    ])
     |> foreign_key_constraint(:organization_id)
   end
 end

@@ -55,7 +55,14 @@ defmodule GtfsPlanner.Gtfs.FareLegRule do
       :gtfs_version_id
     ])
     |> validate_required([:organization_id, :gtfs_version_id])
-    |> unique_constraint([:organization_id, :gtfs_version_id, :network_id, :from_area_id, :to_area_id, :fare_product_id])
+    |> unique_constraint([
+      :organization_id,
+      :gtfs_version_id,
+      :network_id,
+      :from_area_id,
+      :to_area_id,
+      :fare_product_id
+    ])
     |> foreign_key_constraint(:organization_id)
   end
 end

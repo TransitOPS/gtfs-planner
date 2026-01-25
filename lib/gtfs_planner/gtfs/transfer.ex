@@ -54,9 +54,24 @@ defmodule GtfsPlanner.Gtfs.Transfer do
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_required([:from_stop_id, :to_stop_id, :transfer_type, :organization_id, :gtfs_version_id])
+    |> validate_required([
+      :from_stop_id,
+      :to_stop_id,
+      :transfer_type,
+      :organization_id,
+      :gtfs_version_id
+    ])
     |> validate_inclusion(:transfer_type, 0..5)
-    |> unique_constraint([:organization_id, :gtfs_version_id, :from_stop_id, :to_stop_id, :from_route_id, :to_route_id, :from_trip_id, :to_trip_id])
+    |> unique_constraint([
+      :organization_id,
+      :gtfs_version_id,
+      :from_stop_id,
+      :to_stop_id,
+      :from_route_id,
+      :to_route_id,
+      :from_trip_id,
+      :to_trip_id
+    ])
     |> foreign_key_constraint(:organization_id)
   end
 end

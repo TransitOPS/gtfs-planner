@@ -107,7 +107,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       |> maybe_put("search", socket.assigns.search)
       |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
 
-    {:noreply, push_patch(socket, to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{query_params}")}
+    {:noreply,
+     push_patch(socket,
+       to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{query_params}"
+     )}
   end
 
   @impl true
@@ -121,7 +124,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       |> maybe_put("sort_by", socket.assigns.sort_by)
       |> maybe_put("sort_dir", socket.assigns.sort_dir)
 
-    {:noreply, push_patch(socket, to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{query_params}")}
+    {:noreply,
+     push_patch(socket,
+       to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{query_params}"
+     )}
   end
 
   @impl true
@@ -148,7 +154,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       |> maybe_put("search", socket.assigns.search)
       |> maybe_put_sort(new_sort_by, new_sort_dir)
 
-    {:noreply, push_patch(socket, to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{query_params}")}
+    {:noreply,
+     push_patch(socket,
+       to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{query_params}"
+     )}
   end
 
   @impl true
@@ -165,7 +174,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       |> maybe_put("sort_dir", socket.assigns.sort_dir)
       |> Map.put("page", page_num)
 
-    {:noreply, push_patch(socket, to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{query_params}")}
+    {:noreply,
+     push_patch(socket,
+       to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?#{query_params}"
+     )}
   end
 
   @impl true
@@ -250,14 +262,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
         <%!-- Filter bar --%>
         <div class="mt-6 bg-base-100 border border-base-300 rounded-lg p-4">
-          <.form for={@filter_form} id="route-filter-form" phx-change="filter" class="flex flex-wrap gap-4 items-end">
+          <.form
+            for={@filter_form}
+            id="route-filter-form"
+            phx-change="filter"
+            class="flex flex-wrap gap-4 items-end"
+          >
             <div class="flex-1 min-w-[200px]">
               <.input
                 field={@filter_form[:route_type]}
                 type="select"
                 label="Mode"
                 prompt="All modes"
-                options={Enum.map(@available_route_types || [], fn type -> {Route.route_type_label(type), type} end)}
+                options={
+                  Enum.map(@available_route_types || [], fn type ->
+                    {Route.route_type_label(type), type}
+                  end)
+                }
               />
             </div>
             <div class="flex-1 min-w-[200px]">
@@ -461,6 +482,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   defp parse_route_type(nil), do: nil
   defp parse_route_type(""), do: nil
+
   defp parse_route_type(value) when is_binary(value) do
     case Integer.parse(value) do
       {int, ""} -> int
@@ -474,6 +496,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   defp parse_atom(nil, default), do: default
   defp parse_atom("", default), do: default
+
   defp parse_atom(value, _default) when is_binary(value) do
     try do
       String.to_existing_atom(value)
@@ -484,6 +507,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   defp parse_integer(nil, default), do: default
   defp parse_integer("", default), do: default
+
   defp parse_integer(value, default) when is_binary(value) do
     case Integer.parse(value) do
       {int, ""} when int > 0 -> int
@@ -496,6 +520,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp maybe_put_sort(map, :route_id, :asc), do: map
+
   defp maybe_put_sort(map, sort_by, sort_dir) do
     map
     |> Map.put("sort_by", sort_by)

@@ -46,7 +46,15 @@ defmodule GtfsPlanner.Gtfs.FareRule do
       :gtfs_version_id
     ])
     |> validate_required([:fare_id, :organization_id, :gtfs_version_id])
-    |> unique_constraint([:organization_id, :gtfs_version_id, :fare_id, :route_id, :origin_id, :destination_id, :contains_id])
+    |> unique_constraint([
+      :organization_id,
+      :gtfs_version_id,
+      :fare_id,
+      :route_id,
+      :origin_id,
+      :destination_id,
+      :contains_id
+    ])
     |> foreign_key_constraint(:organization_id)
   end
 end

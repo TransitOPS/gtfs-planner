@@ -97,7 +97,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
     child_stops = Gtfs.list_child_stops_for_level(station.id, level.id)
-    pathways = Gtfs.list_pathways_for_level(organization_id, gtfs_version_id, level.id, station.id)
+
+    pathways =
+      Gtfs.list_pathways_for_level(organization_id, gtfs_version_id, level.id, station.id)
 
     socket
     |> stream(:child_stops, child_stops, reset: true)
@@ -487,7 +489,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pathway_form, to_form(%{}))}
 
       pathway.from_stop.parent_station_id != station.id or
-        pathway.to_stop.parent_station_id != station.id ->
+          pathway.to_stop.parent_station_id != station.id ->
         {:noreply,
          socket
          |> assign(:pathway_error, "Unauthorized pathway access.")

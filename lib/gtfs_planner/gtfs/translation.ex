@@ -51,8 +51,24 @@ defmodule GtfsPlanner.Gtfs.Translation do
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_required([:table_name, :field_name, :language, :translation, :organization_id, :gtfs_version_id])
-    |> unique_constraint([:organization_id, :gtfs_version_id, :table_name, :field_name, :language, :record_id, :record_sub_id, :field_value])
+    |> validate_required([
+      :table_name,
+      :field_name,
+      :language,
+      :translation,
+      :organization_id,
+      :gtfs_version_id
+    ])
+    |> unique_constraint([
+      :organization_id,
+      :gtfs_version_id,
+      :table_name,
+      :field_name,
+      :language,
+      :record_id,
+      :record_sub_id,
+      :field_value
+    ])
     |> foreign_key_constraint(:organization_id)
   end
 end

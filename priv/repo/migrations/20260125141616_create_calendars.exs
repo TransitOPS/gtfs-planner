@@ -4,7 +4,10 @@ defmodule GtfsPlanner.Repo.Migrations.CreateCalendars do
   def change do
     create table(:calendars, primary_key: false) do
       add :id, :binary_id, primary_key: true
-      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id), null: false
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
       add :gtfs_version_id, :binary_id, null: false
       add :service_id, :string, null: false
       add :monday, :integer, null: false

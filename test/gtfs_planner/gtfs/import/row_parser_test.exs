@@ -11,7 +11,10 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
   end
 
   describe "route_row_to_attrs/3" do
-    test "converts valid route row to attrs", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "converts valid route row to attrs", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       row = %{
         "route_id" => "R1",
         "route_type" => "3",
@@ -32,7 +35,10 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       assert attrs.gtfs_version_id == version_id
     end
 
-    test "uses default colors when not provided", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "uses default colors when not provided", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       row = %{"route_id" => "R1", "route_type" => "3"}
 
       assert {:ok, attrs} = RowParser.route_row_to_attrs(row, org_id, version_id)
@@ -40,19 +46,30 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       assert attrs.route_text_color == "000000"
     end
 
-    test "returns error for missing route_id", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "returns error for missing route_id", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       row = %{"route_type" => "3"}
-      assert {:error, "missing required field: route_id"} = RowParser.route_row_to_attrs(row, org_id, version_id)
+
+      assert {:error, "missing required field: route_id"} =
+               RowParser.route_row_to_attrs(row, org_id, version_id)
     end
 
-    test "returns error for invalid route_type", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "returns error for invalid route_type", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       row = %{"route_id" => "R1", "route_type" => "99"}
       assert {:error, _} = RowParser.route_row_to_attrs(row, org_id, version_id)
     end
   end
 
   describe "calendar_row_to_attrs/3" do
-    test "converts valid calendar row to attrs", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "converts valid calendar row to attrs", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       row = %{
         "service_id" => "WEEKDAY",
         "monday" => "1",
@@ -76,7 +93,10 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       assert attrs.end_date == ~D[2026-12-31]
     end
 
-    test "returns error for invalid day flag", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "returns error for invalid day flag", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       row = %{
         "service_id" => "WEEKDAY",
         "monday" => "2",
@@ -93,7 +113,10 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       assert {:error, _} = RowParser.calendar_row_to_attrs(row, org_id, version_id)
     end
 
-    test "returns error for invalid date format", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "returns error for invalid date format", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       row = %{
         "service_id" => "WEEKDAY",
         "monday" => "1",
@@ -112,7 +135,10 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
   end
 
   describe "stop_time_row_to_attrs/3" do
-    test "converts valid stop_time row to attrs", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "converts valid stop_time row to attrs", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       row = %{
         "trip_id" => "T1",
         "stop_id" => "S1",
@@ -142,14 +168,20 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       assert attrs.pickup_type == nil
     end
 
-    test "returns error for missing required field", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "returns error for missing required field", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       row = %{"trip_id" => "T1", "stop_id" => "S1"}
       assert {:error, _} = RowParser.stop_time_row_to_attrs(row, org_id, version_id)
     end
   end
 
   describe "pathway_row_to_attrs/4" do
-    test "converts valid pathway row to attrs", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "converts valid pathway row to attrs", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       stop_uuid_1 = Ecto.UUID.generate()
       stop_uuid_2 = Ecto.UUID.generate()
       stop_map = %{"S1" => stop_uuid_1, "S2" => stop_uuid_2}
@@ -170,7 +202,10 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       assert attrs.is_bidirectional == true
     end
 
-    test "returns error when from_stop_id not found", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "returns error when from_stop_id not found", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       stop_map = %{"S2" => Ecto.UUID.generate()}
 
       row = %{
@@ -181,10 +216,14 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
         "is_bidirectional" => "1"
       }
 
-      assert {:error, "from_stop_id not found: S1"} = RowParser.pathway_row_to_attrs(row, org_id, version_id, stop_map)
+      assert {:error, "from_stop_id not found: S1"} =
+               RowParser.pathway_row_to_attrs(row, org_id, version_id, stop_map)
     end
 
-    test "returns error when to_stop_id not found", %{organization_id: org_id, gtfs_version_id: version_id} do
+    test "returns error when to_stop_id not found", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
       stop_map = %{"S1" => Ecto.UUID.generate()}
 
       row = %{
@@ -195,7 +234,8 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
         "is_bidirectional" => "1"
       }
 
-      assert {:error, "to_stop_id not found: S2"} = RowParser.pathway_row_to_attrs(row, org_id, version_id, stop_map)
+      assert {:error, "to_stop_id not found: S2"} =
+               RowParser.pathway_row_to_attrs(row, org_id, version_id, stop_map)
     end
   end
 
@@ -411,7 +451,8 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
     end
 
     test "returns error for empty field" do
-      assert {:error, "empty required field: field"} = RowParser.extract_required(%{"field" => ""}, "field")
+      assert {:error, "empty required field: field"} =
+               RowParser.extract_required(%{"field" => ""}, "field")
     end
   end
 

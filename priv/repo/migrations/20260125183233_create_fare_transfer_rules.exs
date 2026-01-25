@@ -4,8 +4,10 @@ defmodule GtfsPlanner.Repo.Migrations.CreateFareTransferRules do
   def up do
     create table(:fare_transfer_rules, primary_key: false) do
       add :id, :binary_id, primary_key: true
+
       add :organization_id, references(:organizations, type: :binary_id, on_delete: :delete_all),
-          null: false
+        null: false
+
       add :gtfs_version_id, :binary_id, null: false
       add :from_leg_group_id, :string
       add :to_leg_group_id, :string
@@ -18,9 +20,16 @@ defmodule GtfsPlanner.Repo.Migrations.CreateFareTransferRules do
       timestamps(type: :utc_datetime_usec)
     end
 
-    create unique_index(:fare_transfer_rules, [:organization_id, :gtfs_version_id, :from_leg_group_id, :to_leg_group_id, :fare_product_id, :transfer_count],
-             name: :fare_transfer_rules_org_version_groups_product_count_index
-           )
+    create unique_index(
+             :fare_transfer_rules,
+             [
+               :organization_id,
+               :gtfs_version_id,
+               :from_leg_group_id,
+               :to_leg_group_id,
+               :fare_product_id,
+               :transfer_count
+             ], name: :fare_transfer_rules_org_version_groups_product_count_index)
 
     create index(:fare_transfer_rules, [:organization_id, :gtfs_version_id])
   end

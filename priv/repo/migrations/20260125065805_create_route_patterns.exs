@@ -4,8 +4,10 @@ defmodule GtfsPlanner.Repo.Migrations.CreateRoutePatterns do
   def up do
     create table(:route_patterns, primary_key: false) do
       add :id, :binary_id, primary_key: true
+
       add :organization_id, references(:organizations, type: :binary_id, on_delete: :delete_all),
         null: false
+
       add :gtfs_version_id, :binary_id, null: false
       add :route_pattern_id, :string, null: false
       add :route_id, :string, null: false

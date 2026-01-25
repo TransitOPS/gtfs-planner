@@ -54,7 +54,14 @@ defmodule GtfsPlanner.Gtfs.FareTransferRule do
     |> validate_required([:fare_transfer_type, :organization_id, :gtfs_version_id])
     |> validate_inclusion(:fare_transfer_type, 0..2)
     |> validate_inclusion(:duration_limit_type, 0..3)
-    |> unique_constraint([:organization_id, :gtfs_version_id, :from_leg_group_id, :to_leg_group_id, :fare_product_id, :transfer_count])
+    |> unique_constraint([
+      :organization_id,
+      :gtfs_version_id,
+      :from_leg_group_id,
+      :to_leg_group_id,
+      :fare_product_id,
+      :transfer_count
+    ])
     |> foreign_key_constraint(:organization_id)
   end
 end

@@ -45,7 +45,12 @@ defmodule GtfsPlanner.Gtfs.RiderCategory do
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_required([:rider_category_id, :rider_category_name, :organization_id, :gtfs_version_id])
+    |> validate_required([
+      :rider_category_id,
+      :rider_category_name,
+      :organization_id,
+      :gtfs_version_id
+    ])
     |> unique_constraint([:organization_id, :gtfs_version_id, :rider_category_id])
     |> foreign_key_constraint(:organization_id)
   end

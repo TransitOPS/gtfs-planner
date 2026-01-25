@@ -45,7 +45,14 @@ defmodule GtfsPlanner.Gtfs.Frequency do
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_required([:trip_id, :start_time, :end_time, :headway_secs, :organization_id, :gtfs_version_id])
+    |> validate_required([
+      :trip_id,
+      :start_time,
+      :end_time,
+      :headway_secs,
+      :organization_id,
+      :gtfs_version_id
+    ])
     |> validate_number(:headway_secs, greater_than: 0)
     |> validate_inclusion(:exact_times, 0..1)
     |> unique_constraint([:organization_id, :gtfs_version_id, :trip_id, :start_time])

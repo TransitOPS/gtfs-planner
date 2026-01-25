@@ -54,7 +54,13 @@ defmodule GtfsPlanner.Gtfs.Agency do
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_required([:agency_name, :agency_url, :agency_timezone, :organization_id, :gtfs_version_id])
+    |> validate_required([
+      :agency_name,
+      :agency_url,
+      :agency_timezone,
+      :organization_id,
+      :gtfs_version_id
+    ])
     |> unique_constraint([:organization_id, :gtfs_version_id, :agency_id])
     |> foreign_key_constraint(:organization_id)
   end

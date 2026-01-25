@@ -1095,30 +1095,35 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
          {:ok, from_stop_uuid} <- lookup_stop_uuid(stop_map, from_stop_id_str, "from_stop_id"),
          {:ok, to_stop_uuid} <- lookup_stop_uuid(stop_map, to_stop_id_str, "to_stop_id") do
       # Parse optional fields, defaulting to nil on parse errors
-      traversal_time = case parse_integer(row_map["traversal_time"]) do
-        {:ok, val} -> val
-        {:error, _} -> nil
-      end
+      traversal_time =
+        case parse_integer(row_map["traversal_time"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-      length = case parse_decimal(row_map["length"]) do
-        {:ok, val} -> val
-        {:error, _} -> nil
-      end
+      length =
+        case parse_decimal(row_map["length"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-      stair_count = case parse_integer(row_map["stair_count"]) do
-        {:ok, val} -> val
-        {:error, _} -> nil
-      end
+      stair_count =
+        case parse_integer(row_map["stair_count"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-      max_slope = case parse_decimal(row_map["max_slope"]) do
-        {:ok, val} -> val
-        {:error, _} -> nil
-      end
+      max_slope =
+        case parse_decimal(row_map["max_slope"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-      min_width = case parse_decimal(row_map["min_width"]) do
-        {:ok, val} -> val
-        {:error, _} -> nil
-      end
+      min_width =
+        case parse_decimal(row_map["min_width"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
       {:ok,
        %{

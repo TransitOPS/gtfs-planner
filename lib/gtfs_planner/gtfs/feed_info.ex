@@ -57,7 +57,13 @@ defmodule GtfsPlanner.Gtfs.FeedInfo do
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_required([:feed_publisher_name, :feed_publisher_url, :feed_lang, :organization_id, :gtfs_version_id])
+    |> validate_required([
+      :feed_publisher_name,
+      :feed_publisher_url,
+      :feed_lang,
+      :organization_id,
+      :gtfs_version_id
+    ])
     |> unique_constraint([:organization_id, :gtfs_version_id])
     |> foreign_key_constraint(:organization_id)
   end

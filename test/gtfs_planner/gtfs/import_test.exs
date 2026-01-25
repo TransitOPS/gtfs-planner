@@ -14,9 +14,9 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       result = Import.parse_csv_content(content) |> Enum.to_list()
 
       assert result == [
-        %{"level_id" => "L1", "level_index" => "0.0", "level_name" => "Ground Floor"},
-        %{"level_id" => "L2", "level_index" => "1.0", "level_name" => "Platform"}
-      ]
+               %{"level_id" => "L1", "level_index" => "0.0", "level_name" => "Ground Floor"},
+               %{"level_id" => "L2", "level_index" => "1.0", "level_name" => "Platform"}
+             ]
     end
 
     test "handles quoted fields with embedded commas" do
@@ -29,40 +29,40 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       result = Import.parse_csv_content(content) |> Enum.to_list()
 
       assert result == [
-        %{
-          "stop_id" => "S1",
-          "stop_name" => "Main Station, North Entrance",
-          "stop_desc" => "Bus terminal with indoor waiting area"
-        },
-        %{
-          "stop_id" => "S2",
-          "stop_name" => "Secondary",
-          "stop_desc" => "Train platform, track 2"
-        }
-      ]
+               %{
+                 "stop_id" => "S1",
+                 "stop_name" => "Main Station, North Entrance",
+                 "stop_desc" => "Bus terminal with indoor waiting area"
+               },
+               %{
+                 "stop_id" => "S2",
+                 "stop_name" => "Secondary",
+                 "stop_desc" => "Train platform, track 2"
+               }
+             ]
     end
 
     test "handles escaped quotes within quoted fields" do
       content = """
       field1,field2,field3
       value1,"quoted ""value"" with escaped quotes",value3
-      "another ""example""",normal,test
+      "another ""example\""",normal,test
       """
 
       result = Import.parse_csv_content(content) |> Enum.to_list()
 
       assert result == [
-        %{
-          "field1" => "value1",
-          "field2" => "quoted \"value\" with escaped quotes",
-          "field3" => "value3"
-        },
-        %{
-          "field1" => "another \"example\"",
-          "field2" => "normal",
-          "field3" => "test"
-        }
-      ]
+               %{
+                 "field1" => "value1",
+                 "field2" => "quoted \"value\" with escaped quotes",
+                 "field3" => "value3"
+               },
+               %{
+                 "field1" => "another \"example\"",
+                 "field2" => "normal",
+                 "field3" => "test"
+               }
+             ]
     end
 
     test "handles empty fields" do
@@ -76,10 +76,10 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       result = Import.parse_csv_content(content) |> Enum.to_list()
 
       assert result == [
-        %{"level_id" => "L1", "level_index" => "0.0", "level_name" => ""},
-        %{"level_id" => "L2", "level_index" => "", "level_name" => "Second Floor"},
-        %{"level_id" => "", "level_index" => "2.0", "level_name" => "Third"}
-      ]
+               %{"level_id" => "L1", "level_index" => "0.0", "level_name" => ""},
+               %{"level_id" => "L2", "level_index" => "", "level_name" => "Second Floor"},
+               %{"level_id" => "", "level_index" => "2.0", "level_name" => "Third"}
+             ]
     end
 
     test "handles trailing newlines and whitespace" do
@@ -88,8 +88,8 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       result = Import.parse_csv_content(content) |> Enum.to_list()
 
       assert result == [
-        %{"field1" => "value1", "field2" => "value2"}
-      ]
+               %{"field1" => "value1", "field2" => "value2"}
+             ]
     end
 
     test "returns empty list for empty content" do
@@ -113,8 +113,8 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       # Only the properly formed line should be included
       assert result == [
-        %{"field1" => "value7", "field2" => "value8", "field3" => "value9"}
-      ]
+               %{"field1" => "value7", "field2" => "value8", "field3" => "value9"}
+             ]
     end
 
     test "handles mixed quoted and unquoted fields" do
@@ -127,9 +127,9 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       result = Import.parse_csv_content(content) |> Enum.to_list()
 
       assert result == [
-        %{"id" => "1", "name" => "normal", "description" => "quoted, description"},
-        %{"id" => "2", "name" => "quoted name", "description" => "normal desc"}
-      ]
+               %{"id" => "1", "name" => "normal", "description" => "quoted, description"},
+               %{"id" => "2", "name" => "quoted name", "description" => "normal desc"}
+             ]
     end
   end
 

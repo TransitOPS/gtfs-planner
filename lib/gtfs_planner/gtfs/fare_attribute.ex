@@ -51,7 +51,14 @@ defmodule GtfsPlanner.Gtfs.FareAttribute do
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_required([:fare_id, :price, :currency_type, :payment_method, :organization_id, :gtfs_version_id])
+    |> validate_required([
+      :fare_id,
+      :price,
+      :currency_type,
+      :payment_method,
+      :organization_id,
+      :gtfs_version_id
+    ])
     |> validate_number(:price, greater_than: 0)
     |> validate_inclusion(:payment_method, 0..1)
     |> validate_inclusion(:transfers, [0, 1, 2])

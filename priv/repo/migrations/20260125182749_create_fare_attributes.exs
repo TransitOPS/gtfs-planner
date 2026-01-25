@@ -4,8 +4,10 @@ defmodule GtfsPlanner.Repo.Migrations.CreateFareAttributes do
   def up do
     create table(:fare_attributes, primary_key: false) do
       add :id, :binary_id, primary_key: true
+
       add :organization_id, references(:organizations, type: :binary_id, on_delete: :delete_all),
-          null: false
+        null: false
+
       add :gtfs_version_id, :binary_id, null: false
       add :fare_id, :string, null: false
       add :price, :decimal, null: false

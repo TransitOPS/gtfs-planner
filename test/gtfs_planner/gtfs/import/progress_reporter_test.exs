@@ -6,10 +6,10 @@ defmodule GtfsPlanner.Gtfs.Import.ProgressReporterTest do
   setup do
     # Generate unique topic for each test to avoid cross-test interference
     topic = "test_import:#{:erlang.unique_integer()}"
-    
+
     # Subscribe to the test topic to receive broadcasts
     Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
-    
+
     {:ok, topic: topic}
   end
 
@@ -20,11 +20,12 @@ defmodule GtfsPlanner.Gtfs.Import.ProgressReporterTest do
       total_count = 5000
 
       # Broadcast progress
-      assert :ok = ProgressReporter.broadcast_progress(topic, file_name, processed_count, total_count)
+      assert :ok =
+               ProgressReporter.broadcast_progress(topic, file_name, processed_count, total_count)
 
       # Assert we receive the correct message
       assert_receive {:import_progress, progress_data}
-      
+
       assert progress_data.file == file_name
       assert progress_data.processed == processed_count
       assert progress_data.total == total_count
@@ -33,7 +34,7 @@ defmodule GtfsPlanner.Gtfs.Import.ProgressReporterTest do
     test "broadcasts multiple progress updates", %{topic: topic} do
       # Broadcast first update
       ProgressReporter.broadcast_progress(topic, "routes.txt", 500, 1000)
-      
+
       # Broadcast second update
       ProgressReporter.broadcast_progress(topic, "routes.txt", 1000, 1000)
 
@@ -64,7 +65,7 @@ defmodule GtfsPlanner.Gtfs.Import.ProgressReporterTest do
 
       # Assert we receive the correct message
       assert_receive {:import_complete, received_counts}
-      
+
       assert received_counts == counts
       assert received_counts.routes == 10
       assert received_counts.stops == 100
@@ -89,7 +90,7 @@ defmodule GtfsPlanner.Gtfs.Import.ProgressReporterTest do
 
       # Assert we receive the correct message
       assert_receive {:import_error, error_data}
-      
+
       assert error_data.file == file_name
       assert error_data.error == error
     end
@@ -101,7 +102,7 @@ defmodule GtfsPlanner.Gtfs.Import.ProgressReporterTest do
       ProgressReporter.broadcast_error(topic, file_name, error)
 
       assert_receive {:import_error, error_data}
-      
+
       assert error_data.file == file_name
       assert error_data.error == error
     end
@@ -112,12 +113,12 @@ defmodule GtfsPlanner.Gtfs.Import.ProgressReporterTest do
       ProgressReporter.broadcast_progress(topic, "test.txt", 10, 20)
 
       assert_receive {:import_progress, data}
-      
+
       # Verify all required keys are present
       assert Map.has_key?(data, :file)
       assert Map.has_key?(data, :processed)
       assert Map.has_key?(data, :total)
-      
+
       # Verify keys have correct types
       assert is_binary(data.file)
       assert is_integer(data.processed)
@@ -128,7 +129,7 @@ defmodule GtfsPlanner.Gtfs.Import.ProgressReporterTest do
       ProgressReporter.broadcast_error(topic, "test.txt", "error")
 
       assert_receive {:import_error, data}
-      
+
       # Verify all required keys are present
       assert Map.has_key?(data, :file)
       assert Map.has_key?(data, :error)

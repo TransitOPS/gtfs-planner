@@ -60,7 +60,14 @@ defmodule GtfsPlanner.Gtfs.FareProduct do
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_required([:fare_product_id, :fare_product_name, :amount, :currency, :organization_id, :gtfs_version_id])
+    |> validate_required([
+      :fare_product_id,
+      :fare_product_name,
+      :amount,
+      :currency,
+      :organization_id,
+      :gtfs_version_id
+    ])
     |> validate_number(:amount, greater_than_or_equal_to: 0)
     |> unique_constraint([:organization_id, :gtfs_version_id, :fare_product_id, :fare_media_id])
     |> foreign_key_constraint(:organization_id)
