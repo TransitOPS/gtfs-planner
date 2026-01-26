@@ -32,7 +32,9 @@ defmodule GtfsPlanner.Repo.Migrations.CreateTransfers do
                :to_route_id,
                :from_trip_id,
                :to_trip_id
-             ], name: :transfers_org_id_version_id_from_to_stop_route_trip_index)
+             ],
+             name: :transfers_org_id_version_id_from_to_stop_route_trip_index
+           )
 
     create index(:transfers, [:organization_id, :gtfs_version_id])
   end

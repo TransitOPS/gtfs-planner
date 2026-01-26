@@ -31,7 +31,9 @@ defmodule GtfsPlanner.Repo.Migrations.CreateTranslations do
                :record_id,
                :record_sub_id,
                :field_value
-             ], name: :translations_org_version_table_field_lang_record_index)
+             ],
+             name: :translations_org_version_table_field_lang_record_index
+           )
 
     create index(:translations, [:organization_id, :gtfs_version_id])
   end

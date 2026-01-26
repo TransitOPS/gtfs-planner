@@ -220,8 +220,19 @@ defmodule GtfsPlanner.Gtfs.Import do
           end
 
         counts =
-          [:routes, :calendar, :calendar_dates, :route_patterns, :trips, :levels, :stops, :stop_times, :pathways]
+          [
+            :routes,
+            :calendar,
+            :calendar_dates,
+            :route_patterns,
+            :trips,
+            :levels,
+            :stops,
+            :stop_times,
+            :pathways
+          ]
           |> Enum.reduce(counts, fn key, acc -> Map.put_new(acc, key, 0) end)
+
         counts
       end)
 
@@ -359,7 +370,9 @@ defmodule GtfsPlanner.Gtfs.Import do
         end
       end)
 
-    categorized = Map.new(categorized, fn {key, files_list} -> {key, Enum.reverse(files_list)} end)
+    categorized =
+      Map.new(categorized, fn {key, files_list} -> {key, Enum.reverse(files_list)} end)
+
     {categorized, Enum.reverse(unrecognized)}
   end
 

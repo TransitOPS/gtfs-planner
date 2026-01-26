@@ -29,7 +29,9 @@ defmodule GtfsPlanner.Repo.Migrations.CreateFareTransferRules do
                :to_leg_group_id,
                :fare_product_id,
                :transfer_count
-             ], name: :fare_transfer_rules_org_version_groups_product_count_index)
+             ],
+             name: :fare_transfer_rules_org_version_groups_product_count_index
+           )
 
     create index(:fare_transfer_rules, [:organization_id, :gtfs_version_id])
   end

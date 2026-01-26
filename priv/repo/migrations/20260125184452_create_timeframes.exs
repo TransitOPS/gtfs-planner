@@ -26,7 +26,9 @@ defmodule GtfsPlanner.Repo.Migrations.CreateTimeframes do
                :start_time,
                :end_time,
                :service_id
-             ], name: :timeframes_org_id_version_id_group_id_start_end_service_id_index)
+             ],
+             name: :timeframes_org_id_version_id_group_id_start_end_service_id_index
+           )
 
     create index(:timeframes, [:organization_id, :gtfs_version_id])
   end
