@@ -113,6 +113,20 @@ defmodule GtfsPlanner.Gtfs.Validator do
   end
 
   @doc false
+  # Executes a database operation and handles any errors gracefully.
+  #
+  # This function ensures that validation can proceed even if database
+  # operations fail due to connection issues or other errors. It logs
+  # all failures but always returns :ok to allow the validation flow
+  # to continue.
+  #
+  # ## Parameters
+  #   - operation_name: A descriptive name for the operation (used in logs)
+  #   - operation_fn: A zero-arity function that performs the database operation
+  #
+  # ## Returns
+  #   Always returns :ok, regardless of success or failure
+  #
   defp handle_db_operation(operation_name, operation_fn) when is_function(operation_fn, 0) do
     try do
       case operation_fn.() do
