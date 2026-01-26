@@ -322,23 +322,29 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               # Result is now persisted in DB, just show success and keep validation_result for display
               run = Validations.get_validation_run!(socket.assigns.validation_run_id)
 
-              # Refresh recent validation runs list
-              recent_validation_runs =
-                Validations.list_recent_validation_runs(
-                  socket.assigns.current_organization.id,
-                  socket.assigns.current_gtfs_version.id,
-                  5
-                )
+              # Verify authorization: ensure the run belongs to the current organization
+              if run.organization_id != socket.assigns.current_organization.id do
+                socket
+                |> assign(:validation_error, "Unauthorized access to validation run")
+              else
+                # Refresh recent validation runs list
+                recent_validation_runs =
+                  Validations.list_recent_validation_runs(
+                    socket.assigns.current_organization.id,
+                    socket.assigns.current_gtfs_version.id,
+                    5
+                  )
 
-              socket
-              |> assign(:validation_result, %{
-                summary: %{
-                  errors: run.errors_count,
-                  warnings: run.warnings_count,
-                  infos: run.infos_count
-                }
-              })
-              |> assign(:recent_validation_runs, recent_validation_runs)
+                socket
+                |> assign(:validation_result, %{
+                  summary: %{
+                    errors: run.errors_count,
+                    warnings: run.warnings_count,
+                    infos: run.infos_count
+                  }
+                })
+                |> assign(:recent_validation_runs, recent_validation_runs)
+              end
 
             {:error, reason} ->
               error_message = "Validation failed: #{inspect(reason)}"

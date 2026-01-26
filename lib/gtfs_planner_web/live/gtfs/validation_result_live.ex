@@ -37,13 +37,21 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
       organization_id = socket.assigns.current_organization.id
       gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-      validation_runs_history = Validations.list_validation_runs(organization_id, gtfs_version_id)
+      # Verify authorization: ensure the run belongs to the current organization
+      if run.organization_id != organization_id do
+        {:noreply,
+         socket
+         |> put_flash(:error, "Unauthorized access to validation run")
+         |> push_navigate(to: ~p"/gtfs/#{gtfs_version_id}/export")}
+      else
+        validation_runs_history = Validations.list_validation_runs(organization_id, gtfs_version_id)
 
-      {:noreply,
-       socket
-       |> assign(:validation_id, validation_id)
-       |> assign(:run, run)
-       |> stream(:validation_runs, validation_runs_history)}
+        {:noreply,
+         socket
+         |> assign(:validation_id, validation_id)
+         |> assign(:run, run)
+         |> stream(:validation_runs, validation_runs_history)}
+      end
     end
   end
 
