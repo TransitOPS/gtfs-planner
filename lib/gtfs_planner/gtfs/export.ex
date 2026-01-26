@@ -162,9 +162,13 @@ defmodule GtfsPlanner.Gtfs.Export do
         {filename, file_content}
       end)
 
-    # Create ZIP in memory
-    {:ok, {_zip_name, zip_binary}} = :zip.create(~c"gtfs.zip", files, [:memory])
+    # Create ZIP in memory, with explicit error handling
+    case :zip.create(~c"gtfs.zip", files, [:memory]) do
+      {:ok, {_zip_name, zip_binary}} ->
+        zip_binary
 
-    zip_binary
+      {:error, reason} ->
+        raise "Failed to create GTFS ZIP archive: #{inspect(reason)}"
+    end
   end
 end
