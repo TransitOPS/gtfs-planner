@@ -47,14 +47,10 @@ defmodule GtfsPlanner.Gtfs.Validator do
     temp_dir_ref = make_ref()
 
     try do
-      case Validations.mark_running(run) do
-        {:ok, _} ->
-          :ok
-
-        {:error, reason} ->
-          Logger.error("Failed to mark validation run as running: #{inspect(reason)}")
-          # Continue anyway - validation can proceed even if DB update fails
-      end
+      handle_db_operation(
+        "mark validation run as running",
+        Validations.mark_running(run)
+      )
 
       broadcast_progress(run.id, :exporting, 10, "Generating GTFS export...")
 
@@ -84,39 +80,27 @@ defmodule GtfsPlanner.Gtfs.Validator do
 
       case result do
         {:ok, validation_result} ->
-          case Validations.mark_completed(run, validation_result) do
-            {:ok, _} ->
-              :ok
-
-            {:error, reason} ->
-              Logger.error("Failed to mark validation run as completed: #{inspect(reason)}")
-              # Continue anyway - validation succeeded even if DB update fails
-          end
+          handle_db_operation(
+            "mark validation run as completed",
+            Validations.mark_completed(run, validation_result)
+          )
 
           {:ok, validation_result}
 
         {:error, _reason} = error ->
-          case Validations.mark_failed(run, error) do
-            {:ok, _} ->
-              :ok
-
-            {:error, reason} ->
-              Logger.error("Failed to mark validation run as failed: #{inspect(reason)}")
-              # Continue anyway - we still want to return the error
-          end
+          handle_db_operation(
+            "mark validation run as failed",
+            Validations.mark_failed(run, error)
+          )
 
           error
       end
     rescue
       exception ->
-        case Validations.mark_failed(run, exception) do
-          {:ok, _} ->
-            :ok
-
-          {:error, reason} ->
-            Logger.error("Failed to mark validation run as failed: #{inspect(reason)}")
-            # Continue anyway - we still want to reraise the original exception
-        end
+        handle_db_operation(
+          "mark validation run as failed",
+          Validations.mark_failed(run, exception)
+        )
 
         reraise exception, __STACKTRACE__
     after
@@ -125,6 +109,18 @@ defmodule GtfsPlanner.Gtfs.Validator do
         nil -> :ok
         temp_dir -> File.rm_rf(temp_dir)
       end
+    end
+  end
+
+  @doc false
+  defp handle_db_operation(operation_name, result) do
+    case result do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("Failed to #{operation_name}: #{inspect(reason)}")
+        :ok
     end
   end
 
