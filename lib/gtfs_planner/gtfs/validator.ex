@@ -49,7 +49,7 @@ defmodule GtfsPlanner.Gtfs.Validator do
     try do
       handle_db_operation(
         "mark validation run as running",
-        Validations.mark_running(run)
+        fn -> Validations.mark_running(run) end
       )
 
       broadcast_progress(run.id, :exporting, 10, "Generating GTFS export...")
@@ -82,7 +82,7 @@ defmodule GtfsPlanner.Gtfs.Validator do
         {:ok, validation_result} ->
           handle_db_operation(
             "mark validation run as completed",
-            Validations.mark_completed(run, validation_result)
+            fn -> Validations.mark_completed(run, validation_result) end
           )
 
           {:ok, validation_result}
@@ -90,7 +90,7 @@ defmodule GtfsPlanner.Gtfs.Validator do
         {:error, _reason} = error ->
           handle_db_operation(
             "mark validation run as failed",
-            Validations.mark_failed(run, error)
+            fn -> Validations.mark_failed(run, error) end
           )
 
           error
@@ -99,7 +99,7 @@ defmodule GtfsPlanner.Gtfs.Validator do
       exception ->
         handle_db_operation(
           "mark validation run as failed",
-          Validations.mark_failed(run, exception)
+          fn -> Validations.mark_failed(run, exception) end
         )
 
         reraise exception, __STACKTRACE__
@@ -113,13 +113,19 @@ defmodule GtfsPlanner.Gtfs.Validator do
   end
 
   @doc false
-  defp handle_db_operation(operation_name, result) do
-    case result do
-      {:ok, _} ->
-        :ok
+  defp handle_db_operation(operation_name, operation_fn) when is_function(operation_fn, 0) do
+    try do
+      case operation_fn.() do
+        {:ok, _} ->
+          :ok
 
-      {:error, reason} ->
-        Logger.error("Failed to #{operation_name}: #{inspect(reason)}")
+        {:error, reason} ->
+          Logger.error("Failed to #{operation_name}: #{inspect(reason)}")
+          :ok
+      end
+    rescue
+      exception ->
+        Logger.error("Exception while trying to #{operation_name}: #{inspect(exception)}")
         :ok
     end
   end
