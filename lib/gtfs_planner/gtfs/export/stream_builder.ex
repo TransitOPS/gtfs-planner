@@ -69,11 +69,11 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
     cond do
       # StopTime must be ordered by trip_id, then stop_sequence
       schema == GtfsPlanner.Gtfs.StopTime ->
-        order_by(query, [s], [asc: s.trip_id, asc: s.stop_sequence])
+        order_by(query, [s], asc: s.trip_id, asc: s.stop_sequence)
 
       # Shape must be ordered by shape_id, then shape_pt_sequence
       schema == GtfsPlanner.Gtfs.Shape ->
-        order_by(query, [s], [asc: s.shape_id, asc: s.shape_pt_sequence])
+        order_by(query, [s], asc: s.shape_id, asc: s.shape_pt_sequence)
 
       # Most schemas can be ordered by their primary GTFS ID field
       # This provides deterministic output

@@ -23,19 +23,21 @@ end
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
-config :gtfs_planner, :gtfs_validator_path,
-  System.get_env("GTFS_VALIDATOR_JAR") ||
-    if(config_env() == :prod,
-      do: "/opt/gtfs-validator/gtfs-validator-cli.jar",
-      else: Path.expand("../priv/gtfs_validator/gtfs-validator-cli.jar", __DIR__)
-    )
+config :gtfs_planner,
+       :gtfs_validator_path,
+       System.get_env("GTFS_VALIDATOR_JAR") ||
+         if(config_env() == :prod,
+           do: "/opt/gtfs-validator/gtfs-validator-cli.jar",
+           else: Path.expand("../priv/gtfs_validator/gtfs-validator-cli.jar", __DIR__)
+         )
 
-config :gtfs_planner, :java_path,
-  System.get_env("JAVA_PATH") ||
-    if(config_env() == :prod,
-      do: "java",
-      else: "/opt/homebrew/opt/openjdk@21/bin/java"
-    )
+config :gtfs_planner,
+       :java_path,
+       System.get_env("JAVA_PATH") ||
+         if(config_env() == :prod,
+           do: "java",
+           else: "/opt/homebrew/opt/openjdk@21/bin/java"
+         )
 
 if config_env() == :prod do
   database_url =
