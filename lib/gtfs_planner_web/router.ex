@@ -39,6 +39,12 @@ defmodule GtfsPlannerWeb.Router do
   end
 
   scope "/", GtfsPlannerWeb do
+    pipe_through :api
+
+    get "/health", HealthController, :index
+  end
+
+  scope "/", GtfsPlannerWeb do
     pipe_through [:browser, :redirect_if_user_is_authenticated]
 
     post "/users/log_in", UserSessionController, :create
