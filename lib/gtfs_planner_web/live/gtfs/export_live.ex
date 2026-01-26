@@ -118,12 +118,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_event("select_export_type", %{"type" => type}, socket) do
-    # Whitelist allowed export types to prevent unbounded atom creation
+    # Use whitelist mapping to prevent atom exhaustion from user input
     export_type =
       case type do
         "full" -> :full
         "pathways" -> :pathways
-        _ -> :full  # default to full if unknown type provided
+        _ -> :full
       end
 
     organization_id = socket.assigns.current_organization.id
