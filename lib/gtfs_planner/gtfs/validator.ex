@@ -47,7 +47,10 @@ defmodule GtfsPlanner.Gtfs.Validator do
     temp_dir_ref = make_ref()
 
     try do
-      Validations.mark_running(run)
+      handle_db_operation(
+        "mark validation run as running",
+        fn -> Validations.mark_running(run) end
+      )
 
       broadcast_progress(run.id, :exporting, 10, "Generating GTFS export...")
 
@@ -77,16 +80,28 @@ defmodule GtfsPlanner.Gtfs.Validator do
 
       case result do
         {:ok, validation_result} ->
-          Validations.mark_completed(run, validation_result)
+          handle_db_operation(
+            "mark validation run as completed",
+            fn -> Validations.mark_completed(run, validation_result) end
+          )
+
           {:ok, validation_result}
 
         {:error, _reason} = error ->
-          Validations.mark_failed(run, error)
+          handle_db_operation(
+            "mark validation run as failed",
+            fn -> Validations.mark_failed(run, error) end
+          )
+
           error
       end
     rescue
       exception ->
-        Validations.mark_failed(run, exception)
+        handle_db_operation(
+          "mark validation run as failed",
+          fn -> Validations.mark_failed(run, exception) end
+        )
+
         reraise exception, __STACKTRACE__
     after
       # Cleanup temp directory if it was created
@@ -94,6 +109,45 @@ defmodule GtfsPlanner.Gtfs.Validator do
         nil -> :ok
         temp_dir -> File.rm_rf(temp_dir)
       end
+    end
+  end
+
+  @doc false
+  # Executes a database operation and handles any errors gracefully.
+  #
+  # This function ensures that validation can proceed even if database
+  # operations fail due to connection issues or other errors. It logs
+  # all failures but always returns :ok to allow the validation flow
+  # to continue.
+  #
+  # ## Parameters
+  #   - operation_name: A descriptive name for the operation (used in logs)
+  #   - operation_fn: A zero-arity function that performs the database operation
+  #
+  # ## Returns
+  #   Always returns :ok, regardless of success or failure
+  #
+  defp handle_db_operation(operation_name, operation_fn) when is_function(operation_fn, 0) do
+    try do
+      case operation_fn.() do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.error("Failed to #{operation_name}: #{inspect(reason)}")
+          :ok
+
+        unexpected ->
+          Logger.warning(
+            "Unexpected return value while trying to #{operation_name}: #{inspect(unexpected)}"
+          )
+
+          :ok
+      end
+    rescue
+      exception ->
+        Logger.error("Exception while trying to #{operation_name}: #{inspect(exception)}")
+        :ok
     end
   end
 
