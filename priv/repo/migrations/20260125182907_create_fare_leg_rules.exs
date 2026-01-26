@@ -30,7 +30,9 @@ defmodule GtfsPlanner.Repo.Migrations.CreateFareLegRules do
                :from_area_id,
                :to_area_id,
                :fare_product_id
-             ], name: :fare_leg_rules_org_version_network_areas_product_index)
+             ],
+             name: :fare_leg_rules_org_version_network_areas_product_index
+           )
 
     create index(:fare_leg_rules, [:organization_id, :gtfs_version_id])
   end
