@@ -9,6 +9,8 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.Attribution
   alias GtfsPlanner.Gtfs.BookingRule
+  alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareLegJoinRule
   alias GtfsPlanner.Gtfs.FareLegRule
@@ -29,9 +31,11 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopArea
+  alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Timeframe
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Translation
+  alias GtfsPlanner.Gtfs.Trip
 
   require Logger
 
@@ -196,6 +200,16 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns the count of levels for an organization and GTFS version.
+  """
+  def count_levels(organization_id, gtfs_version_id) do
+    from(l in Level,
+      where: l.organization_id == ^organization_id and l.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  @doc """
   Returns the list of levels for an organization and GTFS version.
 
   ## Examples
@@ -346,12 +360,17 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns the count of stops for an organization and GTFS version.
+  """
+  def count_stops(organization_id, gtfs_version_id) do
+    from(s in Stop,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  @doc """
   Returns the list of stops for an organization and GTFS version.
-
-  ## Examples
-
-      iex> list_stops(organization_id, gtfs_version_id)
-      [%Stop{}, ...]
   """
   def list_stops(organization_id, gtfs_version_id) do
     from(s in Stop,
@@ -623,6 +642,16 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.all()
   end
 
+  @doc """
+  Returns the count of pathways for an organization and GTFS version.
+  """
+  def count_pathways(organization_id, gtfs_version_id) do
+    from(p in Pathway,
+      where: p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
   def list_pathways(organization_id, gtfs_version_id) do
     from(p in Pathway,
       where: p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id,
@@ -715,6 +744,16 @@ defmodule GtfsPlanner.Gtfs do
   # Agency functions
 
   @doc """
+  Returns the count of agencies for an organization and GTFS version.
+  """
+  def count_agencies(organization_id, gtfs_version_id) do
+    from(a in Agency,
+      where: a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  @doc """
   Returns the list of agencies for an organization and GTFS version.
   """
   def list_agencies(organization_id, gtfs_version_id) do
@@ -775,6 +814,16 @@ defmodule GtfsPlanner.Gtfs do
   # Attribution functions
 
   @doc """
+  Returns the count of attributions for an organization and GTFS version.
+  """
+  def count_attributions(organization_id, gtfs_version_id) do
+    from(a in Attribution,
+      where: a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  @doc """
   Returns the list of attributions for an organization and GTFS version.
   """
   def list_attributions(organization_id, gtfs_version_id) do
@@ -820,6 +869,16 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   # FareAttribute functions
+
+  @doc """
+  Returns the count of fare attributes for an organization and GTFS version.
+  """
+  def count_fare_attributes(organization_id, gtfs_version_id) do
+    from(f in FareAttribute,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
 
   @doc """
   Returns the list of fare attributes for an organization and GTFS version.
@@ -934,6 +993,16 @@ defmodule GtfsPlanner.Gtfs do
   # FareRule functions
 
   @doc """
+  Returns the count of fare rules for an organization and GTFS version.
+  """
+  def count_fare_rules(organization_id, gtfs_version_id) do
+    from(f in FareRule,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  @doc """
   Returns the list of fare rules for an organization and GTFS version.
   """
   def list_fare_rules(organization_id, gtfs_version_id) do
@@ -968,6 +1037,16 @@ defmodule GtfsPlanner.Gtfs do
   # FeedInfo functions
 
   @doc """
+  Returns the count of feed info for an organization and GTFS version.
+  """
+  def count_feed_info(organization_id, gtfs_version_id) do
+    from(f in FeedInfo,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  @doc """
   Returns the feed info for an organization and GTFS version.
   """
   def get_feed_info(organization_id, gtfs_version_id) do
@@ -983,6 +1062,16 @@ defmodule GtfsPlanner.Gtfs do
   def get_feed_info!(id), do: Repo.get!(FeedInfo, id)
 
   # Frequency functions
+
+  @doc """
+  Returns the count of frequencies for an organization and GTFS version.
+  """
+  def count_frequencies(organization_id, gtfs_version_id) do
+    from(f in Frequency,
+      where: f.organization_id == ^organization_id and f.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
 
   @doc """
   Returns the list of frequencies for an organization and GTFS version.
@@ -1111,6 +1200,16 @@ defmodule GtfsPlanner.Gtfs do
   # Shape functions
 
   @doc """
+  Returns the count of shapes for an organization and GTFS version.
+  """
+  def count_shapes(organization_id, gtfs_version_id) do
+    from(s in Shape,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  @doc """
   Returns the list of shapes for an organization and GTFS version.
   """
   def list_shapes(organization_id, gtfs_version_id) do
@@ -1165,6 +1264,16 @@ defmodule GtfsPlanner.Gtfs do
   # Transfer functions
 
   @doc """
+  Returns the count of transfers for an organization and GTFS version.
+  """
+  def count_transfers(organization_id, gtfs_version_id) do
+    from(t in Transfer,
+      where: t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  @doc """
   Returns the list of transfers for an organization and GTFS version.
   """
   def list_transfers(organization_id, gtfs_version_id) do
@@ -1197,6 +1306,83 @@ defmodule GtfsPlanner.Gtfs do
   Gets a single translation by UUID.
   """
   def get_translation!(id), do: Repo.get!(Translation, id)
+
+  # Trip functions
+
+  @doc """
+  Returns the count of trips for an organization and GTFS version.
+  """
+  def count_trips(organization_id, gtfs_version_id) do
+    from(t in Trip,
+      where: t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  # StopTime functions
+
+  @doc """
+  Returns the count of stop times for an organization and GTFS version.
+  """
+  def count_stop_times(organization_id, gtfs_version_id) do
+    from(s in StopTime,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  # Calendar functions
+
+  @doc """
+  Returns the count of calendars for an organization and GTFS version.
+  """
+  def count_calendars(organization_id, gtfs_version_id) do
+    from(c in Calendar,
+      where: c.organization_id == ^organization_id and c.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  # CalendarDate functions
+
+  @doc """
+  Returns the count of calendar dates for an organization and GTFS version.
+  """
+  def count_calendar_dates(organization_id, gtfs_version_id) do
+    from(c in CalendarDate,
+      where: c.organization_id == ^organization_id and c.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
+  end
+
+  def get_file_inventory(organization_id, gtfs_version_id, export_type) do
+    if export_type == :pathways do
+      [
+        {"stops.txt", count_stops(organization_id, gtfs_version_id)},
+        {"levels.txt", count_levels(organization_id, gtfs_version_id)},
+        {"pathways.txt", count_pathways(organization_id, gtfs_version_id)}
+      ]
+    else
+      [
+        {"agency.txt", count_agencies(organization_id, gtfs_version_id)},
+        {"stops.txt", count_stops(organization_id, gtfs_version_id)},
+        {"routes.txt", count_routes(organization_id, gtfs_version_id)},
+        {"trips.txt", count_trips(organization_id, gtfs_version_id)},
+        {"stop_times.txt", count_stop_times(organization_id, gtfs_version_id)},
+        {"calendar.txt", count_calendars(organization_id, gtfs_version_id)},
+        {"calendar_dates.txt", count_calendar_dates(organization_id, gtfs_version_id)},
+        {"fare_attributes.txt", count_fare_attributes(organization_id, gtfs_version_id)},
+        {"fare_rules.txt", count_fare_rules(organization_id, gtfs_version_id)},
+        {"shapes.txt", count_shapes(organization_id, gtfs_version_id)},
+        {"frequencies.txt", count_frequencies(organization_id, gtfs_version_id)},
+        {"transfers.txt", count_transfers(organization_id, gtfs_version_id)},
+        {"pathways.txt", count_pathways(organization_id, gtfs_version_id)},
+        {"levels.txt", count_levels(organization_id, gtfs_version_id)},
+        {"feed_info.txt", count_feed_info(organization_id, gtfs_version_id)},
+        {"attributions.txt", count_attributions(organization_id, gtfs_version_id)}
+      ]
+    end
+  end
 
   # Private helper functions
 
