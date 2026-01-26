@@ -118,7 +118,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_event("select_export_type", %{"type" => type}, socket) do
-    export_type = String.to_atom(type)
+    # Whitelist allowed export types to prevent unbounded atom creation
+    export_type =
+      case type do
+        "full" -> :full
+        "pathways" -> :pathways
+        _ -> :full  # default to full if unknown type provided
+      end
+
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
@@ -135,14 +142,26 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_event("toggle_validation", %{"validation" => validation}, socket) do
-    validation_atom = String.to_atom(validation)
+    # Whitelist allowed validation types to prevent unbounded atom creation
+    validation_atom =
+      case validation do
+        "mobility_data" -> :mobility_data
+        "pathways_tests" -> :pathways_tests
+        _ -> nil  # ignore unknown validation types
+      end
+
     current_validations = socket.assigns.selected_validations
 
     updated_validations =
-      if validation_atom in current_validations do
-        List.delete(current_validations, validation_atom)
+      if validation_atom do
+        if validation_atom in current_validations do
+          List.delete(current_validations, validation_atom)
+        else
+          [validation_atom | current_validations]
+        end
       else
-        [validation_atom | current_validations]
+        # If validation_atom is nil (unknown type), don't modify the list
+        current_validations
       end
 
     {:noreply, assign(socket, :selected_validations, updated_validations)}
