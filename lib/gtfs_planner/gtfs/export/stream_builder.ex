@@ -104,9 +104,17 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
       has_field?(schema, :attribution_id) ->
         order_by(query, [s], asc: s.attribution_id)
 
-      # Default: order by inserted_at for consistent output
-      true ->
+      # Default: order by inserted_at for consistent output when timestamps are present
+      has_field?(schema, :inserted_at) ->
         order_by(query, [s], asc: s.inserted_at)
+
+      # Fallback: order by primary key id if available
+      has_field?(schema, :id) ->
+        order_by(query, [s], asc: s.id)
+
+      # Final fallback: leave query order unchanged if no known ordering field exists
+      true ->
+        query
     end
   end
 
