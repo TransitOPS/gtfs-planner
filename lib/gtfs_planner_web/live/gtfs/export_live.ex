@@ -222,7 +222,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 _ -> "Export failed: #{inspect(reason)}"
               end
 
-            assign(socket, :export_error, error_message)
+            socket
+            |> put_flash(:error, error_message)
+            |> assign(:export_error, error_message)
         end
 
       {:noreply,
@@ -242,6 +244,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
       {:noreply,
        socket
+       |> put_flash(:error, "Export failed unexpectedly")
        |> assign(:export_error, "Export failed unexpectedly")
        |> assign(:exporting, false)
        |> assign(:export_task, nil)}
