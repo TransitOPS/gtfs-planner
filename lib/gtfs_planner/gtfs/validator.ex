@@ -136,6 +136,13 @@ defmodule GtfsPlanner.Gtfs.Validator do
         {:error, reason} ->
           Logger.error("Failed to #{operation_name}: #{inspect(reason)}")
           :ok
+
+        unexpected ->
+          Logger.warning(
+            "Unexpected return value while trying to #{operation_name}: #{inspect(unexpected)}"
+          )
+
+          :ok
       end
     rescue
       exception ->
