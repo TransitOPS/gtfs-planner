@@ -47,7 +47,14 @@ defmodule GtfsPlanner.Gtfs.Validator do
     temp_dir_ref = make_ref()
 
     try do
-      Validations.mark_running(run)
+      case Validations.mark_running(run) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.error("Failed to mark validation run as running: #{inspect(reason)}")
+          # Continue anyway - validation can proceed even if DB update fails
+      end
 
       broadcast_progress(run.id, :exporting, 10, "Generating GTFS export...")
 
@@ -77,16 +84,40 @@ defmodule GtfsPlanner.Gtfs.Validator do
 
       case result do
         {:ok, validation_result} ->
-          Validations.mark_completed(run, validation_result)
+          case Validations.mark_completed(run, validation_result) do
+            {:ok, _} ->
+              :ok
+
+            {:error, reason} ->
+              Logger.error("Failed to mark validation run as completed: #{inspect(reason)}")
+              # Continue anyway - validation succeeded even if DB update fails
+          end
+
           {:ok, validation_result}
 
         {:error, _reason} = error ->
-          Validations.mark_failed(run, error)
+          case Validations.mark_failed(run, error) do
+            {:ok, _} ->
+              :ok
+
+            {:error, reason} ->
+              Logger.error("Failed to mark validation run as failed: #{inspect(reason)}")
+              # Continue anyway - we still want to return the error
+          end
+
           error
       end
     rescue
       exception ->
-        Validations.mark_failed(run, exception)
+        case Validations.mark_failed(run, exception) do
+          {:ok, _} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.error("Failed to mark validation run as failed: #{inspect(reason)}")
+            # Continue anyway - we still want to reraise the original exception
+        end
+
         reraise exception, __STACKTRACE__
     after
       # Cleanup temp directory if it was created
