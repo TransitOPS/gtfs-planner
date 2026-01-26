@@ -117,4 +117,30 @@ defmodule GtfsPlanner.GtfsFixtures do
 
     route
   end
+
+  @doc """
+  Generate valid agency attributes for testing.
+  """
+  def valid_agency_attrs(attrs \\ %{}) do
+    Enum.into(attrs, %{
+      agency_id: "agency_#{System.unique_integer([:positive])}",
+      agency_name: "Test Agency",
+      agency_url: "http://example.com",
+      agency_timezone: "America/Los_Angeles"
+    })
+  end
+
+  @doc """
+  Generate an agency fixture.
+  """
+  def agency_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
+    {:ok, agency} =
+      Gtfs.create_agency(
+        valid_agency_attrs(attrs)
+        |> Map.put(:organization_id, organization_id)
+        |> Map.put(:gtfs_version_id, gtfs_version_id)
+      )
+
+    agency
+  end
 end
