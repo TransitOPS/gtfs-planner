@@ -13,6 +13,9 @@ config :gtfs_planner, GtfsPlanner.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
+# Use mock validator in tests
+config :gtfs_planner, :validator_module, GtfsPlanner.Gtfs.ValidatorMock
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,

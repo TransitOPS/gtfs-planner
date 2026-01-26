@@ -30,6 +30,13 @@ config :gtfs_planner, :gtfs_validator_path,
       else: Path.expand("../priv/gtfs_validator/gtfs-validator-cli.jar", __DIR__)
     )
 
+config :gtfs_planner, :java_path,
+  System.get_env("JAVA_PATH") ||
+    if(config_env() == :prod,
+      do: "java",
+      else: "/opt/homebrew/opt/openjdk@21/bin/java"
+    )
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
