@@ -52,5 +52,5 @@ validator_path = Application.get_env(:gtfs_planner, :gtfs_validator_path)
 
 To execute the validator:
 ```elixir
-System.cmd("java", ["-jar", validator_path, "--input", "path/to/gtfs.zip", "--output", "path/to/output"])
+System.cmd("java", ["-jar", validator_path, "-i", "path/to/gtfs.zip", "-o", "path/to/output"])
 ```
