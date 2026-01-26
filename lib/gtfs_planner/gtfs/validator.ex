@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Gtfs.Validator do
   @behaviour GtfsPlanner.Gtfs.ValidatorBehaviour
 
   alias GtfsPlanner.Gtfs.{Export, Validator.Result}
+  alias GtfsPlanner.Validations
 
   require Logger
 
@@ -27,7 +28,7 @@ defmodule GtfsPlanner.Gtfs.Validator do
   ## Parameters
     - `organization_id` - The organization ID
     - `gtfs_version_id` - The GTFS version ID to validate
-    - `opts` - Options keyword list, must include `:validation_id` for PubSub topic
+    - `opts` - Options keyword list, must include `:validation_run_id` for PubSub topic
 
   ## Returns
     - `{:ok, %Result{}}` on successful validation
@@ -35,34 +36,37 @@ defmodule GtfsPlanner.Gtfs.Validator do
 
   ## Examples
 
-      iex> validate(1, 2, validation_id: 12345)
+      iex> validate(1, 2, validation_run_id: "uuid-here")
       {:ok, %Result{summary: %{errors: 0, warnings: 5, infos: 10}, ...}}
 
   """
   def validate(organization_id, gtfs_version_id, opts \\ []) do
-    validation_id = Keyword.fetch!(opts, :validation_id)
+    validation_run_id = Keyword.fetch!(opts, :validation_run_id)
+    run = Validations.get_validation_run!(validation_run_id)
     start_time = System.monotonic_time(:millisecond)
     temp_dir_ref = make_ref()
 
-    result =
-      try do
-        broadcast_progress(validation_id, :exporting, 10, "Generating GTFS export...")
+    try do
+      Validations.mark_running(run)
 
+      broadcast_progress(run.id, :exporting, 10, "Generating GTFS export...")
+
+      result =
         with {:ok, zip_path, temp_dir} <- export_to_temp_file(organization_id, gtfs_version_id) do
           # Store temp_dir for cleanup
           Process.put(temp_dir_ref, temp_dir)
 
-          broadcast_progress(validation_id, :exporting, 30, "Export complete")
-          broadcast_progress(validation_id, :validating, 50, "Running MobilityData validator...")
+          broadcast_progress(run.id, :exporting, 30, "Export complete")
+          broadcast_progress(run.id, :validating, 50, "Running MobilityData validator...")
 
           case run_validator_cli(zip_path, temp_dir) do
             {:ok, output_dir} ->
-              broadcast_progress(validation_id, :validating, 90, "Validation complete")
-              broadcast_progress(validation_id, :processing, 95, "Processing results...")
+              broadcast_progress(run.id, :validating, 90, "Validation complete")
+              broadcast_progress(run.id, :processing, 95, "Processing results...")
 
               result = parse_report(output_dir, start_time)
 
-              broadcast_progress(validation_id, :processing, 100, "Done")
+              broadcast_progress(run.id, :processing, 100, "Done")
               {:ok, result}
 
             {:error, reason} = error ->
@@ -70,15 +74,27 @@ defmodule GtfsPlanner.Gtfs.Validator do
               error
           end
         end
-      after
-        # Cleanup temp directory if it was created
-        case Process.get(temp_dir_ref) do
-          nil -> :ok
-          temp_dir -> File.rm_rf(temp_dir)
-        end
-      end
 
-    result
+      case result do
+        {:ok, validation_result} ->
+          Validations.mark_completed(run, validation_result)
+          {:ok, validation_result}
+
+        {:error, _reason} = error ->
+          Validations.mark_failed(run, error)
+          error
+      end
+    rescue
+      exception ->
+        Validations.mark_failed(run, exception)
+        reraise exception, __STACKTRACE__
+    after
+      # Cleanup temp directory if it was created
+      case Process.get(temp_dir_ref) do
+        nil -> :ok
+        temp_dir -> File.rm_rf(temp_dir)
+      end
+    end
   end
 
   @doc false

@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Validator
+  alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
@@ -35,11 +36,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
        |> assign(:exporting, false)
        |> assign(:export_task, nil)
        |> assign(:export_error, nil)
-       |> assign(:validation_id, nil)
+       |> assign(:validation_run_id, nil)
        |> assign(:validation_task, nil)
        |> assign(:validating, false)
        |> assign(:validation_progress, nil)
-       |> assign(:validation_result, nil)}
+       |> assign(:validation_result, nil)
+       |> assign(:validation_error, nil)
+       |> assign(:recent_validation_runs, [])}
     end
   end
 
@@ -59,7 +62,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         |> Gtfs.get_file_inventory(gtfs_version_id, export_type)
         |> Enum.sort_by(fn {filename, _count} -> filename end)
 
-      {:noreply, assign(socket, :file_inventory, file_inventory)}
+      recent_validation_runs =
+        Validations.list_recent_validation_runs(organization_id, gtfs_version_id, 5)
+
+      {:noreply,
+       socket
+       |> assign(:file_inventory, file_inventory)
+       |> assign(:recent_validation_runs, recent_validation_runs)}
     end
   end
 
@@ -156,7 +165,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       case validation do
         "mobility_data" -> :mobility_data
         "pathways_tests" -> :pathways_tests
-        _ -> nil  # ignore unknown validation types
+        # ignore unknown validation types
+        _ -> nil
       end
 
     current_validations = socket.assigns.selected_validations
@@ -183,48 +193,61 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         {:noreply, put_flash(socket, :error, "Validation already in progress")}
 
       :mobility_data not in socket.assigns.selected_validations ->
-        {:noreply, put_flash(socket, :info, "Select 'MobilityData GTFS Validator' to run validation")}
+        {:noreply,
+         put_flash(socket, :info, "Select 'MobilityData GTFS Validator' to run validation")}
 
       true ->
         organization_id = socket.assigns.current_organization.id
         gtfs_version_id = socket.assigns.current_gtfs_version.id
-        validation_id = :erlang.unique_integer([:positive])
 
-        # Subscribe to PubSub topic for progress updates
-        if connected?(socket) do
-          Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "validation:#{validation_id}")
+        case Validations.create_validation_run(organization_id, gtfs_version_id, "mobility_data") do
+          {:ok, run} ->
+            # Subscribe to PubSub topic for progress updates
+            if connected?(socket) do
+              Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "validation:#{run.id}")
+            end
+
+            validator_module = Application.get_env(:gtfs_planner, :validator_module)
+
+            task =
+              Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
+                validator_module.validate(organization_id, gtfs_version_id,
+                  validation_run_id: run.id
+                )
+              end)
+
+            {:noreply,
+             socket
+             |> assign(:validation_run_id, run.id)
+             |> assign(:validation_task, task)
+             |> assign(:validating, true)
+             |> assign(:validation_progress, %{phase: :starting, percent: 0})
+             |> assign(:validation_result, nil)
+             |> assign(:validation_error, nil)}
+
+          {:error, _changeset} ->
+            {:noreply, put_flash(socket, :error, "Failed to create validation run")}
         end
-
-        validator_module = Application.get_env(:gtfs_planner, :validator_module)
-
-        task =
-          Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-            validator_module.validate(organization_id, gtfs_version_id, validation_id: validation_id)
-          end)
-
-        {:noreply,
-         socket
-         |> assign(:validation_id, validation_id)
-         |> assign(:validation_task, task)
-         |> assign(:validating, true)
-         |> assign(:validation_progress, %{phase: :starting, percent: 0})
-         |> assign(:validation_result, nil)}
     end
   end
 
   @impl Phoenix.LiveView
   def handle_event("reset_validation", _params, socket) do
-    if socket.assigns.validation_id do
-      Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, "validation:#{socket.assigns.validation_id}")
+    if socket.assigns.validation_run_id do
+      Phoenix.PubSub.unsubscribe(
+        GtfsPlanner.PubSub,
+        "validation:#{socket.assigns.validation_run_id}"
+      )
     end
 
     {:noreply,
      socket
-     |> assign(:validation_id, nil)
+     |> assign(:validation_run_id, nil)
      |> assign(:validation_task, nil)
      |> assign(:validating, false)
      |> assign(:validation_progress, nil)
-     |> assign(:validation_result, nil)}
+     |> assign(:validation_result, nil)
+     |> assign(:validation_error, nil)}
   end
 
   @impl Phoenix.LiveView
@@ -295,14 +318,33 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
         socket =
           case result do
-            {:ok, %Validator.Result{} = validation_result} ->
+            {:ok, %Validator.Result{} = _validation_result} ->
+              # Result is now persisted in DB, just show success and keep validation_result for display
+              run = Validations.get_validation_run!(socket.assigns.validation_run_id)
+
+              # Refresh recent validation runs list
+              recent_validation_runs =
+                Validations.list_recent_validation_runs(
+                  socket.assigns.current_organization.id,
+                  socket.assigns.current_gtfs_version.id,
+                  5
+                )
+
               socket
-              |> assign(:validation_result, validation_result)
-              |> put_flash(:info, "Validation completed successfully")
+              |> assign(:validation_result, %{
+                summary: %{
+                  errors: run.errors_count,
+                  warnings: run.warnings_count,
+                  infos: run.infos_count
+                }
+              })
+              |> assign(:recent_validation_runs, recent_validation_runs)
 
             {:error, reason} ->
+              error_message = "Validation failed: #{inspect(reason)}"
+
               socket
-              |> put_flash(:error, "Validation failed: #{inspect(reason)}")
+              |> assign(:validation_error, error_message)
           end
 
         {:noreply,
@@ -335,7 +377,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
         {:noreply,
          socket
-         |> put_flash(:error, "Validation failed unexpectedly")
+         |> assign(:validation_error, "Validation failed unexpectedly")
          |> assign(:validating, false)
          |> assign(:validation_task, nil)
          |> assign(:validation_progress, nil)}
@@ -393,7 +435,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           </div>
         </div>
 
-        <div id="export-download-container" phx-hook=".DownloadHook" class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8">
+        <div
+          id="export-download-container"
+          phx-hook=".DownloadHook"
+          class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8"
+        >
           <%!-- Export Column --%>
           <div class="bg-base-100 rounded-lg p-6 border border-base-300">
             <h2 class="text-lg font-semibold mb-2">Export</h2>
@@ -443,15 +489,26 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             </div>
             <%= if @export_error do %>
               <div role="alert" class="alert alert-error mt-6">
-                <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="stroke-current shrink-0 h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
                 <span>{@export_error}</span>
               </div>
             <% end %>
 
             <%= if @exporting do %>
               <button class="btn btn-primary mt-6 w-full" disabled>
-                <span class="loading loading-spinner"></span>
-                Exporting...
+                <span class="loading loading-spinner"></span> Exporting...
               </button>
             <% else %>
               <button class="btn btn-primary mt-6 w-full" phx-click="download_export">
@@ -466,6 +523,25 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             <p class="text-sm text-base-content/70 mb-6">
               Run industry-standard validation checks to ensure data correctness before publishing. Includes MobilityData GTFS Validator and custom pathways trip tests.
             </p>
+
+            <%= if @validation_error do %>
+              <div role="alert" class="alert alert-error mb-6">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="stroke-current shrink-0 h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <span>{@validation_error}</span>
+              </div>
+            <% end %>
 
             <%= cond do %>
               <% @validating -> %>
@@ -506,7 +582,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   <div class="flex flex-col gap-2">
                     <.link
                       navigate={
-                        ~p"/gtfs/#{@current_gtfs_version.id}/validation/#{@validation_id}"
+                        ~p"/gtfs/#{@current_gtfs_version.id}/validation/#{@validation_run_id}"
                       }
                       class="btn btn-primary btn-sm w-full"
                     >
@@ -556,6 +632,53 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   Run Validation
                 </button>
             <% end %>
+
+            <%!-- Recent Validations --%>
+            <%= if @recent_validation_runs != [] do %>
+              <div class="mt-8 pt-8 border-t border-base-300">
+                <h3 class="text-sm font-semibold mb-4">Recent Validations</h3>
+                <div class="overflow-x-auto">
+                  <table class="table table-sm">
+                    <thead>
+                      <tr>
+                        <th>Type</th>
+                        <th>Date</th>
+                        <th class="text-right">Errors</th>
+                        <th class="text-right">Warnings</th>
+                        <th class="text-right">Infos</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr :for={run <- @recent_validation_runs}>
+                        <td>
+                          <.link
+                            navigate={~p"/gtfs/#{@current_gtfs_version.id}/validation/#{run.id}"}
+                            class="link link-primary"
+                          >
+                            {format_run_type(run.run_type)}
+                          </.link>
+                        </td>
+                        <td class="text-sm text-base-content/70">
+                          {format_date(run.started_at)}
+                        </td>
+                        <td class={["text-right", run.errors_count > 0 && "text-error font-medium"]}>
+                          {run.errors_count}
+                        </td>
+                        <td class={[
+                          "text-right",
+                          run.warnings_count > 0 && "text-warning font-medium"
+                        ]}>
+                          {run.warnings_count}
+                        </td>
+                        <td class={["text-right", run.infos_count > 0 && "text-info font-medium"]}>
+                          {run.infos_count}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            <% end %>
           </div>
         </div>
       </Layouts.app>
@@ -604,4 +727,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_label(:validating), do: "Running validator..."
   defp phase_label(:processing), do: "Processing results..."
   defp phase_label(_), do: "Preparing..."
+
+  defp format_run_type("mobility_data"), do: "MobilityData"
+  defp format_run_type("pathways_tests"), do: "Pathways Tests"
+  defp format_run_type(type), do: type
+
+  defp format_date(datetime) do
+    Calendar.strftime(datetime, "%b %d, %Y %I:%M %p")
+  end
 end
