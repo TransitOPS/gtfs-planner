@@ -239,5 +239,55 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert has_element?(view, "button", "Run Validation")
       refute render(view) =~ "View Full Results"
     end
+
+    test "denies access when validation run belongs to different organization", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      # Create a different organization
+      other_organization = organization_fixture()
+      other_version = gtfs_version_fixture(other_organization.id)
+
+      # Mock validator to succeed
+      result = %GtfsPlanner.Gtfs.Validator.Result{
+        summary: %{errors: 0, warnings: 0, infos: 0},
+        notices: [],
+        duration_ms: 100,
+        validated_at: DateTime.utc_now()
+      }
+
+      stub(ValidatorMock, :validate, fn _org_id, _version_id, _opts ->
+        {:ok, result}
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      # Select and run validation
+      view |> element("input[phx-value-validation='mobility_data']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      # Get the validation_run_id from the view
+      validation_run_id = view.assigns.validation_run_id
+
+      # Update the validation run to belong to a different organization
+      # This simulates a malicious attempt to access another org's validation run
+      run = GtfsPlanner.Validations.get_validation_run!(validation_run_id)
+
+      GtfsPlanner.Repo.update!(
+        GtfsPlanner.Validations.ValidationRun.changeset(run, %{
+          organization_id: other_organization.id
+        })
+      )
+
+      # Wait for async task to complete
+      Process.sleep(100)
+
+      # Should show unauthorized error
+      html = render(view)
+      assert html =~ "Unauthorized access to validation run"
+    end
   end
 end
