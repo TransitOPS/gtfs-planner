@@ -147,48 +147,70 @@ defmodule GtfsPlanner.Gtfs.Validator do
   defp parse_report(output_dir, start_time) do
     report_path = Path.join(output_dir, "report.json")
 
-    report_data =
-      report_path
-      |> File.read!()
-      |> Jason.decode!()
-
-    # Group notices by code and severity
-    notices_by_code =
-      report_data["notices"]
-      |> Enum.group_by(& &1["code"])
-      |> Enum.map(fn {code, code_notices} ->
-        # All notices with same code should have same severity
-        severity = hd(code_notices)["severity"]
-
-        %{
-          code: code,
-          severity: severity,
-          total_notices: length(code_notices),
-          notices: code_notices
-        }
-      end)
-
-    # Calculate summary by severity
-    summary =
-      notices_by_code
-      |> Enum.reduce(%{errors: 0, warnings: 0, infos: 0}, fn notice_group, acc ->
-        count = notice_group.total_notices
-
-        case String.downcase(notice_group.severity) do
-          "error" -> %{acc | errors: acc.errors + count}
-          "warning" -> %{acc | warnings: acc.warnings + count}
-          "info" -> %{acc | infos: acc.infos + count}
-          _ -> acc
+    with {:ok, report_json} <- File.read(report_path),
+         {:ok, report_data} <- Jason.decode(report_json) do
+      notices =
+        case report_data do
+          %{} -> Map.get(report_data, "notices", [])
+          _ -> []
         end
-      end)
 
-    duration_ms = System.monotonic_time(:millisecond) - start_time
+      notices =
+        case notices do
+          list when is_list(list) -> list
+          _ -> []
+        end
 
-    %Result{
-      summary: summary,
-      notices: notices_by_code,
-      duration_ms: duration_ms,
-      validated_at: DateTime.utc_now()
-    }
+      # Group notices by code and severity
+      notices_by_code =
+        notices
+        |> Enum.group_by(& &1["code"])
+        |> Enum.reduce([], fn {code, code_notices}, acc ->
+          case code_notices do
+            [%{} = first | _] ->
+              # All notices with same code should have same severity
+              severity = first["severity"]
+
+              notice_group = %{
+                code: code,
+                severity: severity,
+                total_notices: length(code_notices),
+                notices: code_notices
+              }
+
+              [notice_group | acc]
+
+            _ ->
+              acc
+          end
+        end)
+        |> Enum.reverse()
+
+      # Calculate summary by severity
+      summary =
+        notices_by_code
+        |> Enum.reduce(%{errors: 0, warnings: 0, infos: 0}, fn notice_group, acc ->
+          count = notice_group.total_notices
+
+          case String.downcase(notice_group.severity) do
+            "error" -> %{acc | errors: acc.errors + count}
+            "warning" -> %{acc | warnings: acc.warnings + count}
+            "info" -> %{acc | infos: acc.infos + count}
+            _ -> acc
+          end
+        end)
+
+      duration_ms = System.monotonic_time(:millisecond) - start_time
+
+      %Result{
+        summary: summary,
+        notices: notices_by_code,
+        duration_ms: duration_ms,
+        validated_at: DateTime.utc_now()
+      }
+    else
+      {:error, reason} ->
+        {:error, {:invalid_report, reason}}
+    end
   end
 end
