@@ -12,6 +12,7 @@ defmodule GtfsPlanner.Application do
       GtfsPlanner.Repo,
       {DNSCluster, query: Application.get_env(:gtfs_planner, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: GtfsPlanner.PubSub},
+      {Task.Supervisor, name: GtfsPlanner.TaskSupervisor},
       # Start a worker by calling: GtfsPlanner.Worker.start_link(arg)
       # {GtfsPlanner.Worker, arg},
       # Start to serve requests, typically the last entry

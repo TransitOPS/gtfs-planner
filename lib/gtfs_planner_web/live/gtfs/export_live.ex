@@ -30,7 +30,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
        |> assign(:user_roles, user_roles)
        |> assign(:export_type, :full)
        |> assign(:selected_validations, [])
-       |> assign(:file_inventory, [])}
+       |> assign(:file_inventory, [])
+       |> assign(:exporting, false)
+       |> assign(:export_task, nil)
+       |> assign(:export_error, nil)}
     end
   end
 
@@ -174,7 +177,80 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_event("download_export", _params, socket) do
-    {:noreply, put_flash(socket, :info, "Export functionality coming soon")}
+    if socket.assigns.exporting do
+      {:noreply, put_flash(socket, :error, "Export already in progress")}
+    else
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
+      export_type = socket.assigns.export_type
+
+      task =
+        Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
+          GtfsPlanner.Gtfs.Export.export_to_zip(organization_id, gtfs_version_id, export_type)
+        end)
+
+      {:noreply,
+       socket
+       |> assign(:export_task, task)
+       |> assign(:exporting, true)
+       |> assign(:export_error, nil)}
+    end
+  end
+
+  @impl Phoenix.LiveView
+  def handle_info({ref, result}, socket) do
+    if socket.assigns.export_task && socket.assigns.export_task.ref == ref do
+      Process.demonitor(ref, [:flush])
+
+      socket =
+        case result do
+          {:ok, zip_binary} ->
+            version_name = socket.assigns.current_gtfs_version.name
+            filename = "gtfs_#{version_name}_#{Date.utc_today()}.zip"
+
+            socket
+            |> push_event("download-file", %{
+              data: Base.encode64(zip_binary),
+              filename: filename
+            })
+            |> put_flash(:info, "Export completed successfully")
+
+          {:error, reason} ->
+            error_message =
+              case reason do
+                :no_data -> "No data available to export"
+                _ -> "Export failed: #{inspect(reason)}"
+              end
+
+            socket
+            |> put_flash(:error, error_message)
+            |> assign(:export_error, error_message)
+        end
+
+      {:noreply,
+       socket
+       |> assign(:exporting, false)
+       |> assign(:export_task, nil)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl Phoenix.LiveView
+  def handle_info({:DOWN, ref, :process, _pid, reason}, socket) do
+    if socket.assigns.export_task && socket.assigns.export_task.ref == ref do
+      require Logger
+      Logger.error("Export task crashed: #{inspect(reason)}")
+
+      {:noreply,
+       socket
+       |> put_flash(:error, "Export failed unexpectedly")
+       |> assign(:export_error, "Export failed unexpectedly")
+       |> assign(:exporting, false)
+       |> assign(:export_task, nil)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl Phoenix.LiveView
@@ -225,7 +301,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           </div>
         </div>
 
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8">
+        <div id="export-download-container" phx-hook=".DownloadHook" class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8">
           <%!-- Export Column --%>
           <div class="bg-base-100 rounded-lg p-6 border border-base-300">
             <h2 class="text-lg font-semibold mb-2">Export</h2>
@@ -273,9 +349,23 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 </tbody>
               </table>
             </div>
-            <button class="btn btn-primary mt-6 w-full" phx-click="download_export">
-              Export GTFS
-            </button>
+            <%= if @export_error do %>
+              <div role="alert" class="alert alert-error mt-6">
+                <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                <span>{@export_error}</span>
+              </div>
+            <% end %>
+
+            <%= if @exporting do %>
+              <button class="btn btn-primary mt-6 w-full" disabled>
+                <span class="loading loading-spinner"></span>
+                Exporting...
+              </button>
+            <% else %>
+              <button class="btn btn-primary mt-6 w-full" phx-click="download_export">
+                Export GTFS
+              </button>
+            <% end %>
           </div>
 
           <%!-- Validate Column --%>
@@ -325,6 +415,22 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           </div>
         </div>
       </Layouts.app>
+
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".DownloadHook">
+        export default {
+          mounted() {
+            this.handleEvent("download-file", ({data, filename}) => {
+              const blob = new Blob([Uint8Array.from(atob(data), c => c.charCodeAt(0))], {type: "application/zip"});
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = filename;
+              a.click();
+              URL.revokeObjectURL(url);
+            });
+          }
+        }
+      </script>
     <% end %>
     """
   end

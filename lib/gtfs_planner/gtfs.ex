@@ -781,6 +781,23 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.one()
   end
 
+  @doc """
+  Creates an agency.
+
+  ## Examples
+
+      iex> create_agency(%{organization_id: org_id, gtfs_version_id: version_id, agency_name: "Transit Agency"})
+      {:ok, %Agency{}}
+
+      iex> create_agency(%{agency_name: nil})
+      {:error, %Ecto.Changeset{}}
+  """
+  def create_agency(attrs \\ %{}) do
+    %Agency{}
+    |> Agency.changeset(attrs)
+    |> Repo.insert()
+  end
+
   # Area functions
 
   @doc """
