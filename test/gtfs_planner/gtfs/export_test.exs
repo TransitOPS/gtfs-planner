@@ -2,7 +2,6 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Gtfs.Export
-  alias GtfsPlanner.Repo
 
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
@@ -12,7 +11,7 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
   setup do
     user = user_fixture()
     organization = organization_fixture()
-    gtfs_version = gtfs_version_fixture(organization_id: organization.id)
+    gtfs_version = gtfs_version_fixture(organization.id)
 
     %{
       user: user,
@@ -157,12 +156,13 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
       header = stops_csv |> String.split("\n") |> hd()
 
       # Should NOT include internal fields
-      refute header =~ "id"
-      refute header =~ "organization_id"
-      refute header =~ "gtfs_version_id"
-      refute header =~ "inserted_at"
-      refute header =~ "updated_at"
-      refute header =~ "diagram_coordinate"
+      columns = String.split(header, ",")
+      refute "id" in columns
+      refute "organization_id" in columns
+      refute "gtfs_version_id" in columns
+      refute "inserted_at" in columns
+      refute "updated_at" in columns
+      refute "diagram_coordinate" in columns
 
       # Should include GTFS fields
       assert header =~ "stop_id"
@@ -261,7 +261,7 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
 
       # Create data for a different organization
       other_org = organization_fixture()
-      other_version = gtfs_version_fixture(organization_id: other_org.id)
+      other_version = gtfs_version_fixture(other_org.id)
 
       stop_fixture(
         other_org.id,
