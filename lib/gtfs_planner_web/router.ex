@@ -113,7 +113,6 @@ defmodule GtfsPlannerWeb.Router do
       live "/stops/:stop_id", Gtfs.StopDetailLive, :show_default
       live "/import", Gtfs.ImportLive, :index_default
       live "/export", Gtfs.ExportLive, :index_default
-      live "/validate", Gtfs.ValidateLive, :index_default
     end
   end
 
@@ -136,7 +135,6 @@ defmodule GtfsPlannerWeb.Router do
       live "/stops/:stop_id/diagram", Gtfs.StationDiagramLive, :index
       live "/import", Gtfs.ImportLive, :index
       live "/export", Gtfs.ExportLive, :index
-      live "/validate", Gtfs.ValidateLive, :index
     end
   end
 

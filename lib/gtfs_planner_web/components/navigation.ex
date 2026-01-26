@@ -88,12 +88,6 @@ defmodule GtfsPlannerWeb.Navigation do
         >
           <.icon name="hero-arrow-up-tray" class="w-4 h-4" /> Export
         </.link>
-        <.link
-          navigate="/gtfs/validate"
-          class={pill_class(gtfs_tab_active?(@current_path, "validate"))}
-        >
-          <.icon name="hero-shield-check" class="w-4 h-4" /> Validate
-        </.link>
       <% end %>
     </nav>
     """
