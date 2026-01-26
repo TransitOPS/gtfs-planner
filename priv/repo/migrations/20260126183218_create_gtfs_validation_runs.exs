@@ -1,7 +1,7 @@
 defmodule GtfsPlanner.Repo.Migrations.CreateGtfsValidationRuns do
   use Ecto.Migration
 
-  def change do
+  def up do
     create table(:gtfs_validation_runs, primary_key: false) do
       add :id, :binary_id, primary_key: true
 
@@ -28,5 +28,9 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsValidationRuns do
     create index(:gtfs_validation_runs, [:organization_id])
     create index(:gtfs_validation_runs, [:gtfs_version_id])
     create index(:gtfs_validation_runs, [:organization_id, :gtfs_version_id])
+  end
+
+  def down do
+    drop table(:gtfs_validation_runs)
   end
 end
