@@ -1,0 +1,424 @@
+{
+  "notices": [
+    {
+      "code": "location_without_parent_station",
+      "notices": [
+        {
+          "code": "location_without_parent_station",
+          "severity": "ERROR",
+          "totalNotices": 2184,
+          "sampleNotices": [
+            {
+              "stopId": "door-NBM-0374-elevator",
+              "stopName": "Parking",
+              "csvRowNumber": 7801,
+              "locationType": 2
+            },
+            {
+              "stopId": "door-NBM-0374-ramp",
+              "stopName": "Parking (Ramp)",
+              "csvRowNumber": 7802,
+              "locationType": 2
+            },
+            {
+              "stopId": "door-NEC-1891-barton",
+              "stopName": "Barton St, Pick-up/Drop-off",
+              "csvRowNumber": 7803,
+              "locationType": 2
+            }
+          ]
+        }
+      ],
+      "severity": "ERROR",
+      "total_notices": 1
+    },
+    {
+      "code": "missing_calendar_and_calendar_date_files",
+      "notices": [
+        {
+          "code": "missing_calendar_and_calendar_date_files",
+          "severity": "ERROR",
+          "totalNotices": 1,
+          "sampleNotices": [{}]
+        }
+      ],
+      "severity": "ERROR",
+      "total_notices": 1
+    },
+    {
+      "code": "missing_recommended_file",
+      "notices": [
+        {
+          "code": "missing_recommended_file",
+          "severity": "WARNING",
+          "totalNotices": 1,
+          "sampleNotices": [{ "filename": "feed_info.txt" }]
+        }
+      ],
+      "severity": "WARNING",
+      "total_notices": 1
+    },
+    {
+      "code": "missing_required_file",
+      "notices": [
+        {
+          "code": "missing_required_file",
+          "severity": "ERROR",
+          "totalNotices": 3,
+          "sampleNotices": [
+            { "filename": "stop_times.txt" },
+            { "filename": "agency.txt" },
+            { "filename": "trips.txt" }
+          ]
+        }
+      ],
+      "severity": "ERROR",
+      "total_notices": 1
+    },
+    {
+      "code": "mixed_case_recommended_field",
+      "notices": [
+        {
+          "code": "mixed_case_recommended_field",
+          "severity": "WARNING",
+          "totalNotices": 8,
+          "sampleNotices": [
+            {
+              "filename": "stops.txt",
+              "fieldName": "stop_name",
+              "fieldValue": "ELEVATOR ABC",
+              "csvRowNumber": 7329
+            },
+            {
+              "filename": "stops.txt",
+              "fieldName": "stop_name",
+              "fieldValue": "ababab",
+              "csvRowNumber": 7798
+            },
+            {
+              "filename": "stops.txt",
+              "fieldName": "stop_name",
+              "fieldValue": "bbbb",
+              "csvRowNumber": 7799
+            },
+            {
+              "filename": "stops.txt",
+              "fieldName": "stop_name",
+              "fieldValue": "ccc",
+              "csvRowNumber": 7800
+            },
+            {
+              "filename": "stops.txt",
+              "fieldName": "stop_name",
+              "fieldValue": "hhhh",
+              "csvRowNumber": 8124
+            },
+            {
+              "filename": "stops.txt",
+              "fieldName": "stop_name",
+              "fieldValue": "hhhhh",
+              "csvRowNumber": 8125
+            },
+            {
+              "filename": "stops.txt",
+              "fieldName": "stop_name",
+              "fieldValue": "kkkk",
+              "csvRowNumber": 8126
+            },
+            {
+              "filename": "stops.txt",
+              "fieldName": "stop_name",
+              "fieldValue": "tqtq",
+              "csvRowNumber": 10264
+            }
+          ]
+        }
+      ],
+      "severity": "WARNING",
+      "total_notices": 1
+    },
+    {
+      "code": "pathway_dangling_generic_node",
+      "notices": [
+        {
+          "code": "pathway_dangling_generic_node",
+          "severity": "WARNING",
+          "totalNotices": 2,
+          "sampleNotices": [
+            {
+              "stopId": "ELEVATOR ABC",
+              "stopName": "ELEVATOR ABC",
+              "csvRowNumber": 7329,
+              "parentStation": "STOP_001"
+            },
+            {
+              "stopId": "hhhh",
+              "stopName": "hhhh",
+              "csvRowNumber": 8124,
+              "parentStation": "4573"
+            }
+          ]
+        }
+      ],
+      "severity": "WARNING",
+      "total_notices": 1
+    },
+    {
+      "code": "platform_without_parent_station",
+      "notices": [
+        {
+          "code": "platform_without_parent_station",
+          "severity": "INFO",
+          "totalNotices": 359,
+          "sampleNotices": [
+            { "stopId": "14112", "stopName": "Alewife", "csvRowNumber": 629 },
+            { "stopId": "14118", "stopName": "Alewife", "csvRowNumber": 630 },
+            { "stopId": "14120", "stopName": "Alewife", "csvRowNumber": 631 },
+            { "stopId": "14121", "stopName": "Alewife", "csvRowNumber": 632 },
+            { "stopId": "14122", "stopName": "Alewife", "csvRowNumber": 633 },
+            { "stopId": "14123", "stopName": "Alewife", "csvRowNumber": 634 },
+            {
+              "stopId": "15796",
+              "stopName": "Wonderland",
+              "csvRowNumber": 845
+            },
+            {
+              "stopId": "15797",
+              "stopName": "Wonderland",
+              "csvRowNumber": 846
+            },
+            {
+              "stopId": "15798",
+              "stopName": "Wonderland",
+              "csvRowNumber": 847
+            }
+          ]
+        }
+      ],
+      "severity": "INFO",
+      "total_notices": 1
+    },
+    {
+      "code": "route_short_name_too_long",
+      "notices": [
+        {
+          "code": "route_short_name_too_long",
+          "severity": "WARNING",
+          "totalNotices": 213,
+          "sampleNotices": [
+            {
+              "routeId": "Shuttle-AirportGovernmentCenterExpress",
+              "csvRowNumber": 185,
+              "routeShortName": "Blue Line Shuttle"
+            },
+            {
+              "routeId": "Shuttle-AirportGovernmentCenterLocal",
+              "csvRowNumber": 186,
+              "routeShortName": "Blue Line Shuttle"
+            }
+          ]
+        }
+      ],
+      "severity": "WARNING",
+      "total_notices": 1
+    },
+    {
+      "code": "same_name_and_description_for_stop",
+      "notices": [
+        {
+          "code": "same_name_and_description_for_stop",
+          "severity": "WARNING",
+          "totalNotices": 324,
+          "sampleNotices": [
+            {
+              "stopId": "Boat-Long-South-4",
+              "stopDesc": "Long Wharf (South) - Gate 4",
+              "csvRowNumber": 7282
+            },
+            {
+              "stopId": "door-NBM-0374-elevator",
+              "stopDesc": "Parking",
+              "csvRowNumber": 7801
+            }
+          ]
+        }
+      ],
+      "severity": "WARNING",
+      "total_notices": 1
+    },
+    {
+      "code": "stop_without_location",
+      "notices": [
+        {
+          "code": "stop_without_location",
+          "severity": "ERROR",
+          "totalNotices": 4,
+          "sampleNotices": [
+            { "stopId": "ababa", "csvRowNumber": 7798, "locationType": "STOP" },
+            { "stopId": "hhhhh", "csvRowNumber": 8125, "locationType": "STOP" },
+            { "stopId": "kkkk", "csvRowNumber": 8126, "locationType": "STOP" },
+            {
+              "stopId": "tqtqtq",
+              "csvRowNumber": 10264,
+              "locationType": "STOP"
+            }
+          ]
+        }
+      ],
+      "severity": "ERROR",
+      "total_notices": 1
+    },
+    {
+      "code": "unused_station",
+      "notices": [
+        {
+          "code": "unused_station",
+          "severity": "INFO",
+          "totalNotices": 275,
+          "sampleNotices": [
+            {
+              "stopId": "place-FR-0064",
+              "stopName": "Belmont",
+              "csvRowNumber": 10022
+            },
+            {
+              "stopId": "place-SB-0189",
+              "stopName": "Stoughton",
+              "csvRowNumber": 10101
+            },
+            {
+              "stopId": "place-ccmnl",
+              "stopName": "Community College",
+              "csvRowNumber": 10162
+            },
+            {
+              "stopId": "place-ER-0099",
+              "stopName": "River Works",
+              "csvRowNumber": 10000
+            },
+            {
+              "stopId": "place-WR-0062",
+              "stopName": "Wyoming Hill",
+              "csvRowNumber": 10118
+            }
+          ]
+        }
+      ],
+      "severity": "INFO",
+      "total_notices": 1
+    },
+    {
+      "code": "wrong_parent_location_type",
+      "notices": [
+        {
+          "code": "wrong_parent_location_type",
+          "severity": "ERROR",
+          "totalNotices": 18,
+          "sampleNotices": [
+            {
+              "stopId": "ELEVATOR ABC",
+              "stopName": "ELEVATOR ABC",
+              "csvRowNumber": 7329,
+              "locationType": 3,
+              "parentStation": "STOP_001",
+              "parentStopName": "Main Street Station",
+              "parentCsvRowNumber": 7685,
+              "parentLocationType": 0,
+              "expectedLocationType": 1
+            },
+            {
+              "stopId": "STOP_001_ELEV_PL",
+              "stopName": "Elevator (Platform Level)",
+              "csvRowNumber": 7686,
+              "locationType": 3,
+              "parentStation": "STOP_001",
+              "parentStopName": "Main Street Station",
+              "parentCsvRowNumber": 7685,
+              "parentLocationType": 0,
+              "expectedLocationType": 1
+            },
+            {
+              "stopId": "STOP_001_ELEV_ST",
+              "stopName": "Elevator (Street Level)",
+              "csvRowNumber": 7687,
+              "locationType": 3,
+              "parentStation": "STOP_001",
+              "parentStopName": "Main Street Station",
+              "parentCsvRowNumber": 7685,
+              "parentLocationType": 0,
+              "expectedLocationType": 1
+            },
+            {
+              "stopId": "STOP_001_ENT_N",
+              "stopName": "North Entrance",
+              "csvRowNumber": 7688,
+              "locationType": 2,
+              "parentStation": "STOP_001",
+              "parentStopName": "Main Street Station",
+              "parentCsvRowNumber": 7685,
+              "parentLocationType": 0,
+              "expectedLocationType": 1
+            },
+            {
+              "stopId": "STOP_001_ENT_S",
+              "stopName": "South Entrance",
+              "csvRowNumber": 7689,
+              "locationType": 2,
+              "parentStation": "STOP_001",
+              "parentStopName": "Main Street Station",
+              "parentCsvRowNumber": 7685,
+              "parentLocationType": 0,
+              "expectedLocationType": 1
+            },
+            {
+              "stopId": "STOP_001_FARE_N",
+              "stopName": "Fare Gate North",
+              "csvRowNumber": 7690,
+              "locationType": 3,
+              "parentStation": "STOP_001",
+              "parentStopName": "Main Street Station",
+              "parentCsvRowNumber": 7685,
+              "parentLocationType": 0,
+              "expectedLocationType": 1
+            },
+            {
+              "stopId": "STOP_001_FARE_S",
+              "stopName": "Fare Gate South",
+              "csvRowNumber": 7691,
+              "locationType": 3,
+              "parentStation": "STOP_001",
+              "parentStopName": "Main Street Station",
+              "parentCsvRowNumber": 7685,
+              "parentLocationType": 0,
+              "expectedLocationType": 1
+            },
+            {
+              "stopId": "STOP_001_MEZZ",
+              "stopName": "Mezzanine",
+              "csvRowNumber": 7692,
+              "locationType": 3,
+              "parentStation": "STOP_001",
+              "parentStopName": "Main Street Station",
+              "parentCsvRowNumber": 7685,
+              "parentLocationType": 0,
+              "expectedLocationType": 1
+            },
+            {
+              "stopId": "STOP_001_PLAT_1",
+              "stopName": "Platform 1 - Northbound",
+              "csvRowNumber": 7693,
+              "locationType": 0,
+              "parentStation": "STOP_001",
+              "parentStopName": "Main Street Station",
+              "parentCsvRowNumber": 7685,
+              "parentLocationType": 0,
+              "expectedLocationType": 1
+            }
+          ]
+        }
+      ],
+      "severity": "ERROR",
+      "total_notices": 1
+    }
+  ]
+}
