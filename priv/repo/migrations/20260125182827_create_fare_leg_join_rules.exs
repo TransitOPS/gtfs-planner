@@ -26,7 +26,9 @@ defmodule GtfsPlanner.Repo.Migrations.CreateFareLegJoinRules do
                :to_network_id,
                :from_stop_id,
                :to_stop_id
-             ], name: :fare_leg_join_rules_org_version_networks_stops_index)
+             ],
+             name: :fare_leg_join_rules_org_version_networks_stops_index
+           )
 
     create index(:fare_leg_join_rules, [:organization_id, :gtfs_version_id])
   end

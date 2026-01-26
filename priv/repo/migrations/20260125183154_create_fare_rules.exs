@@ -28,7 +28,9 @@ defmodule GtfsPlanner.Repo.Migrations.CreateFareRules do
                :origin_id,
                :destination_id,
                :contains_id
-             ], name: :fare_rules_org_version_fare_route_origin_dest_contains_index)
+             ],
+             name: :fare_rules_org_version_fare_route_origin_dest_contains_index
+           )
 
     create index(:fare_rules, [:organization_id, :gtfs_version_id])
   end
