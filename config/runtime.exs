@@ -75,10 +75,21 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST") || "example.com"
 
+  # Configure origin checking for WebSocket connections
+  # For local Docker development, set PHX_CHECK_ORIGIN=false
+  # For production with specific origins, set PHX_CHECK_ORIGIN="//example.com,//www.example.com"
+  check_origin =
+    case System.get_env("PHX_CHECK_ORIGIN") do
+      "false" -> false
+      nil -> true
+      origins -> String.split(origins, ",") |> Enum.map(&String.trim/1)
+    end
+
   config :gtfs_planner, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   config :gtfs_planner, GtfsPlannerWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
+    check_origin: check_origin,
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.

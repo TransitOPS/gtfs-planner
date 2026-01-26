@@ -14,6 +14,56 @@ Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
 Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
 
+## Docker
+
+Run GTFS Planner in a Docker container while connecting to your local PostgreSQL database.
+
+```sh
+scripts/docker-build.sh
+scripts/docker-run.sh
+```
+
+### Accessing the Application
+
+Once the container is running, access the application at:
+
+- **Web Interface:** http://localhost:4000
+- **Health Check:** http://localhost:4000/health
+
+### Environment Variables
+
+The container accepts these environment variables:
+
+| Variable          | Description                           | Required | Default       |
+| ----------------- | ------------------------------------- | -------- | ------------- |
+| `DATABASE_URL`    | PostgreSQL connection string          | Yes      | -             |
+| `SECRET_KEY_BASE` | Phoenix secret for signing/encryption | Yes      | -             |
+| `PHX_SERVER`      | Start the Phoenix web server          | No       | `false`       |
+| `PHX_HOST`        | Hostname for URL generation           | No       | `example.com` |
+| `PORT`            | HTTP port to bind                     | No       | `4000`        |
+
+### Troubleshooting
+
+**Cannot connect to database:**
+
+- Verify PostgreSQL is running: `pg_isready -h localhost`
+- Ensure database exists: `psql -U postgres -l | grep gtfs_planner_dev`
+- On Linux, verify you used `--add-host=host.docker.internal:host-gateway`
+
+**Build fails:**
+
+- Ensure you have sufficient disk space (build requires ~2GB)
+- Check Docker daemon is running: `docker info`
+- Clear build cache: `docker builder prune`
+
+**Container exits immediately:**
+
+- Check logs: `docker logs gtfs-planner-dev` or `docker-compose logs`
+- Verify `DATABASE_URL` and `SECRET_KEY_BASE` are set
+- Ensure `PHX_SERVER=true` is set to start the web server
+
+For comprehensive troubleshooting and advanced configuration, see [Docker Local Development Guide](docs/docker-local-dev.md).
+
 ## Authentication & Authorization
 
 GTFS Planner includes a comprehensive authentication and authorization system with the following features:
