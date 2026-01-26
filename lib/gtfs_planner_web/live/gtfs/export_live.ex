@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Validator
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
@@ -33,7 +34,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
        |> assign(:file_inventory, [])
        |> assign(:exporting, false)
        |> assign(:export_task, nil)
-       |> assign(:export_error, nil)}
+       |> assign(:export_error, nil)
+       |> assign(:validation_id, nil)
+       |> assign(:validation_task, nil)
+       |> assign(:validating, false)
+       |> assign(:validation_progress, nil)
+       |> assign(:validation_result, nil)}
     end
   end
 
@@ -172,7 +178,53 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_event("run_validation", _params, socket) do
-    {:noreply, put_flash(socket, :info, "Validation functionality coming soon")}
+    cond do
+      socket.assigns.validating ->
+        {:noreply, put_flash(socket, :error, "Validation already in progress")}
+
+      :mobility_data not in socket.assigns.selected_validations ->
+        {:noreply, put_flash(socket, :info, "Select 'MobilityData GTFS Validator' to run validation")}
+
+      true ->
+        organization_id = socket.assigns.current_organization.id
+        gtfs_version_id = socket.assigns.current_gtfs_version.id
+        validation_id = :erlang.unique_integer([:positive])
+
+        # Subscribe to PubSub topic for progress updates
+        if connected?(socket) do
+          Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "validation:#{validation_id}")
+        end
+
+        validator_module = Application.get_env(:gtfs_planner, :validator_module)
+
+        task =
+          Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
+            validator_module.validate(organization_id, gtfs_version_id, validation_id: validation_id)
+          end)
+
+        {:noreply,
+         socket
+         |> assign(:validation_id, validation_id)
+         |> assign(:validation_task, task)
+         |> assign(:validating, true)
+         |> assign(:validation_progress, %{phase: :starting, percent: 0})
+         |> assign(:validation_result, nil)}
+    end
+  end
+
+  @impl Phoenix.LiveView
+  def handle_event("reset_validation", _params, socket) do
+    if socket.assigns.validation_id do
+      Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, "validation:#{socket.assigns.validation_id}")
+    end
+
+    {:noreply,
+     socket
+     |> assign(:validation_id, nil)
+     |> assign(:validation_task, nil)
+     |> assign(:validating, false)
+     |> assign(:validation_progress, nil)
+     |> assign(:validation_result, nil)}
   end
 
   @impl Phoenix.LiveView
@@ -198,58 +250,98 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   @impl Phoenix.LiveView
+  def handle_info({:validation_progress, progress}, socket) do
+    {:noreply, assign(socket, :validation_progress, progress)}
+  end
+
+  @impl Phoenix.LiveView
   def handle_info({ref, result}, socket) do
-    if socket.assigns.export_task && socket.assigns.export_task.ref == ref do
-      Process.demonitor(ref, [:flush])
+    cond do
+      socket.assigns.export_task && socket.assigns.export_task.ref == ref ->
+        Process.demonitor(ref, [:flush])
 
-      socket =
-        case result do
-          {:ok, zip_binary} ->
-            version_name = socket.assigns.current_gtfs_version.name
-            filename = "gtfs_#{version_name}_#{Date.utc_today()}.zip"
+        socket =
+          case result do
+            {:ok, zip_binary} ->
+              version_name = socket.assigns.current_gtfs_version.name
+              filename = "gtfs_#{version_name}_#{Date.utc_today()}.zip"
 
-            socket
-            |> push_event("download-file", %{
-              data: Base.encode64(zip_binary),
-              filename: filename
-            })
-            |> put_flash(:info, "Export completed successfully")
+              socket
+              |> push_event("download-file", %{
+                data: Base.encode64(zip_binary),
+                filename: filename
+              })
+              |> put_flash(:info, "Export completed successfully")
 
-          {:error, reason} ->
-            error_message =
-              case reason do
-                :no_data -> "No data available to export"
-                _ -> "Export failed: #{inspect(reason)}"
-              end
+            {:error, reason} ->
+              error_message =
+                case reason do
+                  :no_data -> "No data available to export"
+                  _ -> "Export failed: #{inspect(reason)}"
+                end
 
-            socket
-            |> put_flash(:error, error_message)
-            |> assign(:export_error, error_message)
-        end
+              socket
+              |> put_flash(:error, error_message)
+              |> assign(:export_error, error_message)
+          end
 
-      {:noreply,
-       socket
-       |> assign(:exporting, false)
-       |> assign(:export_task, nil)}
-    else
-      {:noreply, socket}
+        {:noreply,
+         socket
+         |> assign(:exporting, false)
+         |> assign(:export_task, nil)}
+
+      socket.assigns.validation_task && socket.assigns.validation_task.ref == ref ->
+        Process.demonitor(ref, [:flush])
+
+        socket =
+          case result do
+            {:ok, %Validator.Result{} = validation_result} ->
+              socket
+              |> assign(:validation_result, validation_result)
+              |> put_flash(:info, "Validation completed successfully")
+
+            {:error, reason} ->
+              socket
+              |> put_flash(:error, "Validation failed: #{inspect(reason)}")
+          end
+
+        {:noreply,
+         socket
+         |> assign(:validating, false)
+         |> assign(:validation_task, nil)}
+
+      true ->
+        {:noreply, socket}
     end
   end
 
   @impl Phoenix.LiveView
   def handle_info({:DOWN, ref, :process, _pid, reason}, socket) do
-    if socket.assigns.export_task && socket.assigns.export_task.ref == ref do
-      require Logger
-      Logger.error("Export task crashed: #{inspect(reason)}")
+    cond do
+      socket.assigns.export_task && socket.assigns.export_task.ref == ref ->
+        require Logger
+        Logger.error("Export task crashed: #{inspect(reason)}")
 
-      {:noreply,
-       socket
-       |> put_flash(:error, "Export failed unexpectedly")
-       |> assign(:export_error, "Export failed unexpectedly")
-       |> assign(:exporting, false)
-       |> assign(:export_task, nil)}
-    else
-      {:noreply, socket}
+        {:noreply,
+         socket
+         |> put_flash(:error, "Export failed unexpectedly")
+         |> assign(:export_error, "Export failed unexpectedly")
+         |> assign(:exporting, false)
+         |> assign(:export_task, nil)}
+
+      socket.assigns.validation_task && socket.assigns.validation_task.ref == ref ->
+        require Logger
+        Logger.error("Validation task crashed: #{inspect(reason)}")
+
+        {:noreply,
+         socket
+         |> put_flash(:error, "Validation failed unexpectedly")
+         |> assign(:validating, false)
+         |> assign(:validation_task, nil)
+         |> assign(:validation_progress, nil)}
+
+      true ->
+        {:noreply, socket}
     end
   end
 
@@ -375,43 +467,95 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               Run industry-standard validation checks to ensure data correctness before publishing. Includes MobilityData GTFS Validator and custom pathways trip tests.
             </p>
 
-            <div class="space-y-3">
-              <label class="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  class="checkbox"
-                  phx-click="toggle_validation"
-                  phx-value-validation="mobility_data"
-                  checked={:mobility_data in @selected_validations}
-                />
-                <div>
-                  <div class="font-medium">MobilityData GTFS Validator</div>
-                  <div class="text-xs text-base-content/60">
-                    Industry-standard validation for GTFS compliance
+            <%= cond do %>
+              <% @validating -> %>
+                <div class="space-y-4">
+                  <progress
+                    class="progress progress-primary w-full"
+                    value={@validation_progress.percent}
+                    max="100"
+                  />
+                  <div class="flex items-center gap-2">
+                    <span class="loading loading-spinner loading-sm"></span>
+                    <span class="text-sm">{phase_label(@validation_progress.phase)}</span>
                   </div>
                 </div>
-              </label>
+              <% @validation_result -> %>
+                <div class="space-y-6">
+                  <div class="grid grid-cols-3 gap-2">
+                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                      <div class="stat-title text-[10px] uppercase opacity-60">Errors</div>
+                      <div class="stat-value text-sm text-error">
+                        {@validation_result.summary.errors}
+                      </div>
+                    </div>
+                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                      <div class="stat-title text-[10px] uppercase opacity-60">Warnings</div>
+                      <div class="stat-value text-sm text-warning">
+                        {@validation_result.summary.warnings}
+                      </div>
+                    </div>
+                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                      <div class="stat-title text-[10px] uppercase opacity-60">Infos</div>
+                      <div class="stat-value text-sm text-info">
+                        {@validation_result.summary.infos}
+                      </div>
+                    </div>
+                  </div>
 
-              <label class="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  class="checkbox"
-                  phx-click="toggle_validation"
-                  phx-value-validation="pathways_tests"
-                  checked={:pathways_tests in @selected_validations}
-                />
-                <div>
-                  <div class="font-medium">Pathways Trip Tests</div>
-                  <div class="text-xs text-base-content/60">
-                    Custom validation for pathways connectivity
+                  <div class="flex flex-col gap-2">
+                    <.link
+                      navigate={
+                        ~p"/gtfs/#{@current_gtfs_version.id}/validation/#{@validation_id}"
+                      }
+                      class="btn btn-primary btn-sm w-full"
+                    >
+                      View Full Results
+                    </.link>
+                    <button class="btn btn-outline btn-sm w-full" phx-click="reset_validation">
+                      Run Again
+                    </button>
                   </div>
                 </div>
-              </label>
-            </div>
+              <% true -> %>
+                <div class="space-y-3">
+                  <label class="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      class="checkbox"
+                      phx-click="toggle_validation"
+                      phx-value-validation="mobility_data"
+                      checked={:mobility_data in @selected_validations}
+                    />
+                    <div>
+                      <div class="font-medium">MobilityData GTFS Validator</div>
+                      <div class="text-xs text-base-content/60">
+                        Industry-standard validation for GTFS compliance
+                      </div>
+                    </div>
+                  </label>
 
-            <button class="btn btn-outline mt-6 w-full" phx-click="run_validation">
-              Run Validation
-            </button>
+                  <label class="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      class="checkbox"
+                      phx-click="toggle_validation"
+                      phx-value-validation="pathways_tests"
+                      checked={:pathways_tests in @selected_validations}
+                    />
+                    <div>
+                      <div class="font-medium">Pathways Trip Tests</div>
+                      <div class="text-xs text-base-content/60">
+                        Custom validation for pathways connectivity
+                      </div>
+                    </div>
+                  </label>
+                </div>
+
+                <button class="btn btn-outline mt-6 w-full" phx-click="run_validation">
+                  Run Validation
+                </button>
+            <% end %>
           </div>
         </div>
       </Layouts.app>
@@ -455,4 +599,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       _ -> false
     end
   end
+
+  defp phase_label(:exporting), do: "Exporting GTFS data..."
+  defp phase_label(:validating), do: "Running validator..."
+  defp phase_label(:processing), do: "Processing results..."
+  defp phase_label(_), do: "Preparing..."
 end

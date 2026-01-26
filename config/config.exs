@@ -9,7 +9,8 @@ import Config
 
 config :gtfs_planner,
   ecto_repos: [GtfsPlanner.Repo],
-  generators: [timestamp_type: :utc_datetime]
+  generators: [timestamp_type: :utc_datetime],
+  validator_module: GtfsPlanner.Gtfs.Validator
 
 # Configure the endpoint
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,
