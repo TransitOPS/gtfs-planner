@@ -323,7 +323,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
 
       # Should redirect with error message
       assert_redirect(view, "/gtfs/#{version.id}/export")
-      assert Phoenix.Flash.get(view.assigns.flash, :error) =~ "Unauthorized access"
+      assert Phoenix.Flash.get(view.assigns.flash, :error) =~ "Unauthorized access to validation run"
     end
   end
 end
