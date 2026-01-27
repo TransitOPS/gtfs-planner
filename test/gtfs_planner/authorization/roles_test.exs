@@ -11,7 +11,6 @@ defmodule GtfsPlanner.Authorization.RolesTest do
       assert Map.has_key?(roles, :administrator)
       assert Map.has_key?(roles, :pathways_studio_admin)
       assert Map.has_key?(roles, :pathways_studio_editor)
-      assert Map.has_key?(roles, :pathways_studio_viewer)
     end
 
     test "each role has required metadata fields" do
@@ -37,7 +36,6 @@ defmodule GtfsPlanner.Authorization.RolesTest do
       assert Roles.valid?(:administrator)
       assert Roles.valid?(:pathways_studio_admin)
       assert Roles.valid?(:pathways_studio_editor)
-      assert Roles.valid?(:pathways_studio_viewer)
     end
 
     test "returns false for :nonexistent" do
@@ -60,7 +58,6 @@ defmodule GtfsPlanner.Authorization.RolesTest do
       assert Roles.valid?("administrator")
       assert Roles.valid?("pathways_studio_admin")
       assert Roles.valid?("pathways_studio_editor")
-      assert Roles.valid?("pathways_studio_viewer")
     end
 
     test "returns false for \"nonexistent\"" do
@@ -91,8 +88,8 @@ defmodule GtfsPlanner.Authorization.RolesTest do
       assert %{name: "Pathways Studio Admin", scope: :organization} =
                Roles.get(:pathways_studio_admin)
 
-      assert %{name: "Pathways Studio Viewer", scope: :organization} =
-               Roles.get(:pathways_studio_viewer)
+      assert %{name: "Pathways Studio Editor", scope: :organization} =
+               Roles.get(:pathways_studio_editor)
     end
 
     test "returns metadata for string roles" do
@@ -123,15 +120,14 @@ defmodule GtfsPlanner.Authorization.RolesTest do
       assert role_map.scope == :system
     end
 
-    test "with :organization returns three org-level roles" do
+    test "with :organization returns two org-level roles" do
       org_roles = Roles.list_by_scope(:organization)
 
-      assert length(org_roles) == 3
+      assert length(org_roles) == 2
 
       role_atoms = Enum.map(org_roles, fn {role_atom, _} -> role_atom end)
       assert :pathways_studio_admin in role_atoms
       assert :pathways_studio_editor in role_atoms
-      assert :pathways_studio_viewer in role_atoms
 
       # Verify all have organization scope
       for {_role_atom, role_map} <- org_roles do

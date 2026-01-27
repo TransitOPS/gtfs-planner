@@ -485,7 +485,7 @@ defmodule GtfsPlanner.OrganizationsTest do
         Organizations.add_user_to_organization(
           user.id,
           organization.id,
-          ["pathways_studio_viewer"]
+          ["pathways_studio_editor"]
         )
 
       %{user: user, organization: organization}
@@ -526,7 +526,7 @@ defmodule GtfsPlanner.OrganizationsTest do
         Organizations.add_user_to_organization(user.id, org1.id, ["pathways_studio_admin"])
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, org2.id, ["pathways_studio_viewer"])
+        Organizations.add_user_to_organization(user.id, org2.id, ["pathways_studio_editor"])
 
       orgs = Organizations.list_organizations_for_user(user.id)
 
@@ -536,7 +536,7 @@ defmodule GtfsPlanner.OrganizationsTest do
       org2_result = Enum.find(orgs, &(&1.id == org2.id))
 
       assert org1_result.user_roles == ["pathways_studio_admin"]
-      assert org2_result.user_roles == ["pathways_studio_viewer"]
+      assert org2_result.user_roles == ["pathways_studio_editor"]
     end
 
     test "returns empty list for user with no organizations" do
@@ -558,7 +558,7 @@ defmodule GtfsPlanner.OrganizationsTest do
         Organizations.add_user_to_organization(user1.id, org.id, ["pathways_studio_admin"])
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user2.id, org.id, ["pathways_studio_viewer"])
+        Organizations.add_user_to_organization(user2.id, org.id, ["pathways_studio_editor"])
 
       users = Organizations.list_users_in_organization(org.id)
 
@@ -568,7 +568,7 @@ defmodule GtfsPlanner.OrganizationsTest do
       user2_result = Enum.find(users, &(&1.user.id == user2.id))
 
       assert user1_result.roles == ["pathways_studio_admin"]
-      assert user2_result.roles == ["pathways_studio_viewer"]
+      assert user2_result.roles == ["pathways_studio_editor"]
     end
 
     test "returns empty list for organization with no users" do

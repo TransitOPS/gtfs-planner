@@ -54,7 +54,7 @@ defmodule GtfsPlannerWeb.Navigation do
         </.link>
       <% end %>
 
-      <%= if (has_role?(@user_roles, :pathways_studio_editor) || has_role?(@user_roles, :pathways_studio_viewer)) && @current_organization do %>
+      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization do %>
         <.link
           navigate="/gtfs/routes"
           class={pill_class(gtfs_tab_active?(@current_path, "routes"))}
@@ -63,7 +63,7 @@ defmodule GtfsPlannerWeb.Navigation do
         </.link>
       <% end %>
 
-      <%= if (has_role?(@user_roles, :pathways_studio_editor) || has_role?(@user_roles, :pathways_studio_viewer)) && @current_organization do %>
+      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization do %>
         <.link
           navigate="/gtfs/stops"
           class={pill_class(gtfs_tab_active?(@current_path, "stops"))}
@@ -81,7 +81,7 @@ defmodule GtfsPlannerWeb.Navigation do
         </.link>
       <% end %>
 
-      <%= if (has_role?(@user_roles, :pathways_studio_editor) || has_role?(@user_roles, :pathways_studio_viewer)) && @current_organization do %>
+      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization do %>
         <.link
           navigate="/gtfs/export"
           class={pill_class(gtfs_tab_active?(@current_path, "export"))}

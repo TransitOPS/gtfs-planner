@@ -100,7 +100,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       # Fill and submit the invite form
       assert view
              |> form("#invite-form",
-               invite: %{email: "newuser@example.com", roles: ["pathways_studio_viewer"]}
+               invite: %{email: "newuser@example.com", roles: ["pathways_studio_editor"]}
              )
              |> render_submit()
 
@@ -116,7 +116,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       memberships = Accounts.list_user_org_memberships(user.id)
       membership = Enum.find(memberships, &(&1.organization_id == organization.id))
       assert membership
-      assert "pathways_studio_viewer" in membership.roles
+      assert "pathways_studio_editor" in membership.roles
     end
   end
 end

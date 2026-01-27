@@ -1,7 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   @moduledoc """
   LiveView for exporting GTFS data.
-  Accessible by both pathways_studio_editor and pathways_studio_viewer roles.
+  Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
 
