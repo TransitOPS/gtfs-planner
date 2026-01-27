@@ -49,18 +49,23 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLive do
   end
 
   def mount(%{"token" => token}, _session, socket) do
-    socket =
-      case Accounts.get_user_by_invite_token(token) do
-        %User{} = user ->
-          assign(socket, user: user, token: token, form: to_form(%{}, as: "user"))
+    case Accounts.get_user_by_invite_token(token) do
+      %User{} = user ->
+        socket =
+          socket
+          |> assign(user: user, token: token)
+          |> assign_new(:form, fn -> to_form(%{}, as: "user") end)
 
-        nil ->
+        {:ok, socket, temporary_assigns: [form: socket.assigns.form]}
+
+      nil ->
+        socket =
           socket
           |> put_flash(:error, "Invite link is invalid or it has expired.")
           |> redirect(to: ~p"/")
-      end
 
-    {:ok, socket, temporary_assigns: [form: socket.assigns.form]}
+        {:ok, socket}
+    end
   end
 
   def handle_event("accept_invite", %{"user" => user_params}, socket) do
@@ -73,16 +78,15 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLive do
       {:ok, _user} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Password set successfully. You can now log in.")
          |> redirect(to: ~p"/users/log_in")}
 
       {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset))}
+        {:noreply, assign(socket, form: to_form(changeset, as: "user"))}
     end
   end
 
   def handle_event("validate", %{"user" => user_params}, socket) do
     changeset = Accounts.change_user_password(socket.assigns.user, user_params)
-    {:noreply, assign(socket, form: to_form(changeset))}
+    {:noreply, assign(socket, form: to_form(changeset, as: "user"))}
   end
 end

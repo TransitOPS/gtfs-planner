@@ -44,31 +44,50 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   end
 
   defp apply_action(socket, :show, %{"org_id" => org_id}) do
-    organization = Organizations.get_organization!(org_id)
-    members = Organizations.list_users_in_organization(org_id)
+    case Organizations.get_organization(org_id) do
+      nil ->
+        socket
+        |> put_flash(:error, "Organization not found")
+        |> push_navigate(to: ~p"/admin/organizations")
 
-    socket
-    |> assign(:page_title, "Organization Details")
-    |> assign(:organization, organization)
-    |> assign(:members, members)
+      organization ->
+        members = Organizations.list_users_in_organization(org_id)
+
+        socket
+        |> assign(:page_title, "Organization Details")
+        |> assign(:organization, organization)
+        |> assign(:members, members)
+    end
   end
 
   defp apply_action(socket, :edit, %{"org_id" => org_id}) do
-    organization = Organizations.get_organization!(org_id)
+    case Organizations.get_organization(org_id) do
+      nil ->
+        socket
+        |> put_flash(:error, "Organization not found")
+        |> push_navigate(to: ~p"/admin/organizations")
 
-    socket
-    |> assign(:page_title, "Edit Organization")
-    |> assign(:organization, organization)
-    |> assign_form(organization)
+      organization ->
+        socket
+        |> assign(:page_title, "Edit Organization")
+        |> assign(:organization, organization)
+        |> assign_form(organization)
+    end
   end
 
   defp apply_action(socket, :invite, %{"org_id" => org_id}) do
-    organization = Organizations.get_organization!(org_id)
+    case Organizations.get_organization(org_id) do
+      nil ->
+        socket
+        |> put_flash(:error, "Organization not found")
+        |> push_navigate(to: ~p"/admin/organizations")
 
-    socket
-    |> assign(:page_title, "Invite Member")
-    |> assign(:organization, organization)
-    |> assign_invite_form()
+      organization ->
+        socket
+        |> assign(:page_title, "Invite Member")
+        |> assign(:organization, organization)
+        |> assign_invite_form()
+    end
   end
 
   defp assign_form(socket, %Organizations.Organization{} = org, attrs \\ %{}) do
@@ -85,8 +104,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   defp available_roles do
     [
       {"Pathways Studio Admin", "pathways_studio_admin"},
-      {"Pathways Studio Editor", "pathways_studio_editor"},
-      {"Pathways Studio Viewer", "pathways_studio_viewer"}
+      {"Pathways Studio Editor", "pathways_studio_editor"}
     ]
   end
 
@@ -158,6 +176,38 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         {:noreply,
          socket
          |> put_flash(:error, "User has already accepted their invitation")}
+    end
+  end
+
+  @impl true
+  def handle_event("deactivate", %{"user-id" => user_id}, socket) do
+    case Organizations.deactivate_user_in_organization(user_id, socket.assigns.organization.id) do
+      {:ok, _} ->
+        members = Organizations.list_users_in_organization(socket.assigns.organization.id)
+
+        {:noreply,
+         socket
+         |> assign(:members, members)
+         |> put_flash(:info, "User deactivated")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to deactivate user")}
+    end
+  end
+
+  @impl true
+  def handle_event("activate", %{"user-id" => user_id}, socket) do
+    case Organizations.activate_user_in_organization(user_id, socket.assigns.organization.id) do
+      {:ok, _} ->
+        members = Organizations.list_users_in_organization(socket.assigns.organization.id)
+
+        {:noreply,
+         socket
+         |> assign(:members, members)
+         |> put_flash(:info, "User activated")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to activate user")}
     end
   end
 
@@ -382,48 +432,67 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
             <%= if @members == [] do %>
               <p class="text-sm text-base-content/60 p-4">No members yet.</p>
             <% else %>
-              <table class="table">
-                <thead>
-                  <tr>
-                    <th>Email</th>
-                    <th>Roles</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={member <- @members}>
-                    <td>{member.user.email}</td>
-                    <td>
-                      <div class="flex flex-wrap gap-2">
-                        <span :for={role <- member.roles} class="badge badge-sm badge-outline">
-                          {humanize_role(role)}
-                        </span>
-                      </div>
-                    </td>
-                    <td>
-                      <div class="flex items-center gap-2 flex-wrap">
-                        <button
-                          :if={is_nil(member.user.hashed_password)}
-                          type="button"
-                          class="btn btn-xs"
-                          phx-click="resend_invite"
-                          phx-value-user-id={member.user.id}
-                        >
-                          <.icon name="hero-envelope" class="w-3 h-3" /> Resend Invite
-                        </button>
-                        <button
-                          type="button"
-                          class="btn btn-xs btn-disabled"
-                          disabled
-                          title="Coming soon"
-                        >
-                          <.icon name="hero-no-symbol" class="w-3 h-3" /> De-activate
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              <div class="overflow-x-auto">
+                <table class="table w-full">
+                  <thead>
+                    <tr>
+                      <th>Email</th>
+                      <th>Roles</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr :for={member <- @members}>
+                      <td>{member.user.email}</td>
+                      <td>
+                        <div class="flex flex-wrap gap-1">
+                          <span :for={role <- member.roles} class="badge badge-sm badge-outline">
+                            {humanize_role(role)}
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <%= if member.deactivated_at do %>
+                          <span class="badge badge-outline badge-error">Deactivated</span>
+                        <% else %>
+                          <span class="badge badge-outline badge-accent">Active</span>
+                        <% end %>
+                      </td>
+                      <td>
+                        <div class="flex gap-2">
+                          <%= if is_nil(member.user.hashed_password) do %>
+                            <button
+                              phx-click="resend_invite"
+                              phx-value-user-id={member.user.id}
+                              class="btn btn-sm btn-ghost"
+                            >
+                              Resend Invite
+                            </button>
+                          <% end %>
+                          <%= if member.deactivated_at do %>
+                            <button
+                              phx-click="activate"
+                              phx-value-user-id={member.user.id}
+                              class="btn btn-sm btn-ghost"
+                            >
+                              Activate
+                            </button>
+                          <% else %>
+                            <button
+                              phx-click="deactivate"
+                              phx-value-user-id={member.user.id}
+                              class="btn btn-sm btn-ghost"
+                            >
+                              Deactivate
+                            </button>
+                          <% end %>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             <% end %>
           </section>
         </div>

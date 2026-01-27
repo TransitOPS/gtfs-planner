@@ -2,11 +2,10 @@ defmodule GtfsPlanner.Authorization.Roles do
   @moduledoc """
   Canonical role definitions for the GTFS Planner application.
 
-  Defines four distinct roles with specific scopes and permissions:
+  Defines three distinct roles with specific scopes and permissions:
   - `administrator`: System-level role for managing organizations
   - `pathways_studio_admin`: Organization-level role for managing users
   - `pathways_studio_editor`: Organization-level role with full GTFS data access
-  - `pathways_studio_viewer`: Organization-level role with read-only GTFS data access
   """
 
   @roles %{
@@ -25,11 +24,6 @@ defmodule GtfsPlanner.Authorization.Roles do
       description: "Full access to view and modify GTFS data",
       scope: :organization
     },
-    pathways_studio_viewer: %{
-      name: "Pathways Studio Viewer",
-      description: "Read-only access to GTFS data",
-      scope: :organization
-    }
   }
 
   @doc """
@@ -116,8 +110,7 @@ defmodule GtfsPlanner.Authorization.Roles do
       iex> GtfsPlanner.Authorization.Roles.list_by_scope(:organization)
       [
         {:pathways_studio_admin, %{...}},
-        {:pathways_studio_editor, %{...}},
-        {:pathways_studio_viewer, %{...}}
+        {:pathways_studio_editor, %{...}}
       ]
   """
   def list_by_scope(scope) do

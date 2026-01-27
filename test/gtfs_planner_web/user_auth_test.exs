@@ -28,7 +28,7 @@ defmodule GtfsPlannerWeb.UserAuthTest do
         GtfsPlanner.Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: organization.id,
-          roles: ["pathways_studio_viewer"]
+          roles: ["pathways_studio_editor"]
         })
 
       # Deactivate user in organization

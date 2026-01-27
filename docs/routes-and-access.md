@@ -20,7 +20,6 @@
 | ------------------------ | ---------------------------------------- | ------------ |
 | `pathways_studio_admin`  | Manages users within their organization  | Organization |
 | `pathways_studio_editor` | Full access to view and modify GTFS data | Organization |
-| `pathways_studio_viewer` | Read-only access to GTFS data            | Organization |
 
 **Note:** A user can hold multiple roles. For example, a `pathways_studio_admin` who also needs to edit GTFS data would also need the `pathways_studio_editor` role.
 
@@ -58,44 +57,44 @@
 
 ### GTFS Routes
 
-| Route                           | Description                                  | Access                                             |
-| ------------------------------- | -------------------------------------------- | -------------------------------------------------- |
-| `/gtfs/:version/stops`          | List parent stops                            | `pathways_studio_viewer`, `pathways_studio_editor` |
-| `/gtfs/:version/stops/:stop_id` | View stop with levels, child-stops, pathways | `pathways_studio_viewer`, `pathways_studio_editor` |
-| `/gtfs/:version/import`         | Import GTFS data                             | `pathways_studio_viewer`, `pathways_studio_editor` |
-| `/gtfs/:version/export`         | Export GTFS data                             | `pathways_studio_viewer`, `pathways_studio_editor` |
-| `/gtfs/:version/validate`       | Run validation on current version            | `pathways_studio_viewer`, `pathways_studio_editor` |
-| `/gtfs/:version/switch`         | Switch between GTFS versions                 | `pathways_studio_viewer`, `pathways_studio_editor` |
+| Route                           | Description                                  | Access                       |
+| ------------------------------- | -------------------------------------------- | ---------------------------- |
+| `/gtfs/:version/stops`          | List parent stops                            | `pathways_studio_editor` |
+| `/gtfs/:version/stops/:stop_id` | View stop with levels, child-stops, pathways | `pathways_studio_editor` |
+| `/gtfs/:version/import`         | Import GTFS data                             | `pathways_studio_editor` |
+| `/gtfs/:version/export`         | Export GTFS data                             | `pathways_studio_editor` |
+| `/gtfs/:version/validate`       | Run validation on current version            | `pathways_studio_editor` |
+| `/gtfs/:version/switch`         | Switch between GTFS versions                 | `pathways_studio_editor` |
 
 ---
 
 ## Action Permissions
 
-Within the GTFS routes, the ability to perform actions differs by role:
+Within GTFS routes, users with the `pathways_studio_editor` role can perform all actions.
 
-| Action             | `pathways_studio_editor` | `pathways_studio_viewer` |
-| ------------------ | :----------------------: | :----------------------: |
-| View stops         |            ✅            |            ✅            |
-| View levels        |            ✅            |            ✅            |
-| View child-stops   |            ✅            |            ✅            |
-| View pathways      |            ✅            |            ✅            |
-| View versions      |            ✅            |            ✅            |
-| Create stop        |            ✅            |            ❌            |
-| Edit stop          |            ✅            |            ❌            |
-| Delete stop        |            ✅            |            ❌            |
-| Create level       |            ✅            |            ❌            |
-| Edit level         |            ✅            |            ❌            |
-| Delete level       |            ✅            |            ❌            |
-| Create child-stop  |            ✅            |            ❌            |
-| Edit child-stop    |            ✅            |            ❌            |
-| Delete child-stop  |            ✅            |            ❌            |
-| Create pathway     |            ✅            |            ❌            |
-| Edit pathway       |            ✅            |            ❌            |
-| Delete pathway     |            ✅            |            ❌            |
-| Upload floorplan   |            ✅            |            ❌            |
-| Import GTFS        |            ✅            |            ❌            |
-| Export GTFS        |            ✅            |            ✅            |
-| Create new version |            ✅            |            ❌            |
+| Action             | `pathways_studio_editor` |
+| ------------------ | :----------------------: |
+| View stops         |            ✅            |
+| View levels        |            ✅            |
+| View child-stops   |            ✅            |
+| View pathways      |            ✅            |
+| View versions      |            ✅            |
+| Create stop        |            ✅            |
+| Edit stop          |            ✅            |
+| Delete stop        |            ✅            |
+| Create level       |            ✅            |
+| Edit level         |            ✅            |
+| Delete level       |            ✅            |
+| Create child-stop  |            ✅            |
+| Edit child-stop    |            ✅            |
+| Delete child-stop  |            ✅            |
+| Create pathway     |            ✅            |
+| Edit pathway       |            ✅            |
+| Delete pathway     |            ✅            |
+| Upload floorplan   |            ✅            |
+| Import GTFS        |            ✅            |
+| Export GTFS        |            ✅            |
+| Create new version |            ✅            |
 
 ---
 
@@ -187,38 +186,12 @@ User Menu: Profile, Sign Out
 
 ---
 
-### Pathways Studio Viewer View
-
-```
-┌────────────────────────────────────────────────────────────┐
-│  [Logo]  Pathways Studio    [Version: v1.2 ▼] [User: Jo ▼] │
-├────────────────────────────────────────────────────────────┤
-│  ┌────────────┐                                            │
-│  │    NAV     │   ┌──────────────────────────────────────┐ │
-│  │            │   │                                      │ │
-│  │  Stations  │   │          MAIN CONTENT                │ │
-│  │  Export    │   │                                      │ │
-│  │  Validate  │   │        (Read-only mode)              │ │
-│  │            │   │                                      │ │
-│  │            │   └──────────────────────────────────────┘ │
-│  └────────────┘                                            │
-└────────────────────────────────────────────────────────────┘
-
-User Menu: Profile, Sign Out
-```
-
-_Note: Import is hidden for viewers since they cannot use it_
-
----
-
 ## Common Role Combinations
 
 | Roles                                              | Use Case                                           |
 | -------------------------------------------------- | -------------------------------------------------- |
-| `pathways_studio_viewer`                           | Staff who need to review data but not modify it    |
 | `pathways_studio_editor`                           | Staff who actively maintain GTFS pathway data      |
 | `pathways_studio_admin` + `pathways_studio_editor` | Team lead who manages users and edits data         |
-| `pathways_studio_admin` + `pathways_studio_viewer` | Manager who oversees users but only reviews data   |
 | `administrator`                                    | System operator managing multiple transit agencies |
 
 ---
@@ -230,4 +203,3 @@ _Note: Import is hidden for viewers since they cannot use it_
 | `administrator`          |        ✅        |       ❌       |     ❌      |      ❌       |
 | `pathways_studio_admin`  |        ❌        |       ✅       |     ❌      |      ❌       |
 | `pathways_studio_editor` |        ❌        |       ❌       |     ✅      |      ✅       |
-| `pathways_studio_viewer` |        ❌        |       ❌       |     ✅      |      ❌       |

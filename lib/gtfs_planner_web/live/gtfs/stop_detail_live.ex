@@ -1,7 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   @moduledoc """
   LiveView for viewing GTFS station (stop) details.
-  Requires to pathways_studio_editor or pathways_studio_viewer role.
+  Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
 
