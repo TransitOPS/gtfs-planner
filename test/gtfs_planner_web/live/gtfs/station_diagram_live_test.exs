@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs
 
   describe "StationDiagramLive - child stop editing" do
     setup do
@@ -35,8 +36,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         level_fixture(organization.id, gtfs_version.id, %{
           level_id: "L1",
           level_name: "Level 1",
-          level_index: 0.0,
-          parent_station_id: station.id
+          level_index: 0.0
+        })
+
+      # Associate level with station
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
         })
 
       %{
@@ -62,8 +71,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           stop_id: "CHILD_STOP_1",
           stop_name: "Child Stop 1",
           location_type: 0,
-          parent_station_id: station.id,
-          level_id: level.id,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
           diagram_coordinate: %{"x" => 50.0, "y" => 75.0}
         })
 

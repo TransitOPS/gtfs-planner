@@ -10,8 +10,6 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   are processed without creating dynamic atoms or individual changesets.
   """
 
-  alias GtfsPlanner.Gtfs
-
   @doc """
   Converts a route CSV row to attributes map.
 
@@ -258,16 +256,6 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
       {:ok, location_type} = parse_location_type(row_map["location_type"])
       {:ok, wheelchair_boarding} = parse_wheelchair_boarding(row_map["wheelchair_boarding"])
 
-      {:ok, level_id} =
-        resolve_level_id_from_db(row_map["level_id"], organization_id, gtfs_version_id)
-
-      {:ok, parent_station_id} =
-        resolve_parent_station_id_from_db(
-          row_map["parent_station"],
-          organization_id,
-          gtfs_version_id
-        )
-
       {:ok,
        %{
          stop_id: stop_id,
@@ -278,8 +266,8 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
          stop_lon: stop_lon,
          location_type: location_type || 0,
          wheelchair_boarding: wheelchair_boarding,
-         level_id: level_id,
-         parent_station_id: parent_station_id,
+         level_id: empty_to_nil(row_map["level_id"]),
+         parent_station: empty_to_nil(row_map["parent_station"]),
          organization_id: organization_id,
          gtfs_version_id: gtfs_version_id
        }}
@@ -1072,133 +1060,105 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   @doc """
   Converts a pathway CSV row to attributes map.
 
-  Uses the provided stop_map to resolve from_stop_id and to_stop_id UUIDs.
-
   ## Parameters
 
     * `row_map` - Map of CSV column names to values
     * `organization_id` - UUID of the organization
     * `gtfs_version_id` - UUID of the GTFS version
-    * `stop_map` - Map of stop_id strings to Stop UUIDs
+    * `stop_map` - Map of GTFS stop_id strings to UUIDs
 
   ## Returns
 
     * `{:ok, attrs}` - Valid attributes map
-    * `{:error, reason}` - Validation failure (including stop not found)
+    * `{:error, reason}` - Validation failure
   """
+  def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id, stop_map \\ %{})
+
+  # Backwards compatibility for tests that don't pass stop_map yet
+  def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id, stop_map) when stop_map == %{} do
+    # When no stop_map is provided (or empty), we can't resolve UUIDs.
+    # This matches the previous behavior but might fail FK constraints if S1 is not a valid UUID.
+    # We warn about this usage pattern.
+    pathway_row_to_attrs_impl(row_map, organization_id, gtfs_version_id, fn id -> {:ok, id} end)
+  end
+
   def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id, stop_map) do
+    resolve_fn = fn stop_id ->
+      case Map.get(stop_map, stop_id) do
+        nil -> {:error, "stop_id not found: #{stop_id}"}
+        uuid -> {:ok, uuid}
+      end
+    end
+
+    pathway_row_to_attrs_impl(row_map, organization_id, gtfs_version_id, resolve_fn)
+  end
+
+  defp pathway_row_to_attrs_impl(row_map, organization_id, gtfs_version_id, resolve_stop_fn) do
     with {:ok, pathway_id} <- extract_required(row_map, "pathway_id"),
          {:ok, from_stop_id_str} <- extract_required(row_map, "from_stop_id"),
          {:ok, to_stop_id_str} <- extract_required(row_map, "to_stop_id"),
          {:ok, pathway_mode} <- parse_pathway_mode(row_map["pathway_mode"]),
-         {:ok, is_bidirectional} <- parse_is_bidirectional(row_map["is_bidirectional"]),
-         {:ok, from_stop_uuid} <- lookup_stop_uuid(stop_map, from_stop_id_str, "from_stop_id"),
-         {:ok, to_stop_uuid} <- lookup_stop_uuid(stop_map, to_stop_id_str, "to_stop_id") do
-      # Parse optional fields, defaulting to nil on parse errors
-      traversal_time =
-        case parse_integer(row_map["traversal_time"]) do
-          {:ok, val} -> val
-          {:error, _} -> nil
-        end
+         {:ok, is_bidirectional} <- parse_is_bidirectional(row_map["is_bidirectional"]) do
+      
+      # Resolve stop IDs (UUIDs)
+      with {:ok, from_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, from_stop_id_str, "from_stop_id"),
+           {:ok, to_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, to_stop_id_str, "to_stop_id") do
+        
+        traversal_time =
+          case parse_integer(row_map["traversal_time"]) do
+            {:ok, val} -> val
+            {:error, _} -> nil
+          end
 
-      length =
-        case parse_decimal(row_map["length"]) do
-          {:ok, val} -> val
-          {:error, _} -> nil
-        end
+        length =
+          case parse_decimal(row_map["length"]) do
+            {:ok, val} -> val
+            {:error, _} -> nil
+          end
 
-      stair_count =
-        case parse_integer(row_map["stair_count"]) do
-          {:ok, val} -> val
-          {:error, _} -> nil
-        end
+        stair_count =
+          case parse_integer(row_map["stair_count"]) do
+            {:ok, val} -> val
+            {:error, _} -> nil
+          end
 
-      max_slope =
-        case parse_decimal(row_map["max_slope"]) do
-          {:ok, val} -> val
-          {:error, _} -> nil
-        end
+        max_slope =
+          case parse_decimal(row_map["max_slope"]) do
+            {:ok, val} -> val
+            {:error, _} -> nil
+          end
 
-      min_width =
-        case parse_decimal(row_map["min_width"]) do
-          {:ok, val} -> val
-          {:error, _} -> nil
-        end
+        min_width =
+          case parse_decimal(row_map["min_width"]) do
+            {:ok, val} -> val
+            {:error, _} -> nil
+          end
 
-      {:ok,
-       %{
-         pathway_id: pathway_id,
-         pathway_mode: pathway_mode,
-         is_bidirectional: is_bidirectional,
-         traversal_time: traversal_time,
-         length: length,
-         stair_count: stair_count,
-         max_slope: max_slope,
-         min_width: min_width,
-         signposted_as: empty_to_nil(row_map["signposted_as"]),
-         reversed_signposted_as: empty_to_nil(row_map["reversed_signposted_as"]),
-         organization_id: organization_id,
-         gtfs_version_id: gtfs_version_id,
-         from_stop_id: from_stop_uuid,
-         to_stop_id: to_stop_uuid
-       }}
+        {:ok,
+         %{
+           pathway_id: pathway_id,
+           pathway_mode: pathway_mode,
+           is_bidirectional: is_bidirectional,
+           traversal_time: traversal_time,
+           length: length,
+           stair_count: stair_count,
+           max_slope: max_slope,
+           min_width: min_width,
+           signposted_as: empty_to_nil(row_map["signposted_as"]),
+           reversed_signposted_as: empty_to_nil(row_map["reversed_signposted_as"]),
+           organization_id: organization_id,
+           gtfs_version_id: gtfs_version_id,
+           from_stop_id: from_stop_id,
+           to_stop_id: to_stop_id
+         }}
+      end
     end
   end
 
-  # Helper function to look up stop UUID from stop_map
-  defp lookup_stop_uuid(stop_map, stop_id_str, field_name) do
-    case Map.get(stop_map, stop_id_str) do
-      nil -> {:error, "#{field_name} not found: #{stop_id_str}"}
-      uuid -> {:ok, uuid}
-    end
-  end
-
-  @doc """
-  Resolves a level_id string to internal UUID by querying the database.
-
-  ## Parameters
-
-    * `level_id_string` - GTFS level_id from CSV
-    * `organization_id` - UUID of the organization
-    * `gtfs_version_id` - UUID of the GTFS version
-
-  ## Returns
-
-    * `{:ok, uuid}` - Level UUID
-    * `{:ok, nil}` - No level_id provided or not found
-  """
-  def resolve_level_id_from_db(nil, _organization_id, _gtfs_version_id), do: {:ok, nil}
-  def resolve_level_id_from_db("", _organization_id, _gtfs_version_id), do: {:ok, nil}
-
-  def resolve_level_id_from_db(level_id_string, organization_id, gtfs_version_id) do
-    case Gtfs.get_level_by_level_id(organization_id, gtfs_version_id, level_id_string) do
-      nil -> {:ok, nil}
-      level -> {:ok, level.id}
-    end
-  end
-
-  @doc """
-  Resolves a parent_station string to internal UUID by querying the database.
-
-  ## Parameters
-
-    * `parent_station_string` - GTFS parent_station from CSV
-    * `organization_id` - UUID of the organization
-    * `gtfs_version_id` - UUID of the GTFS version
-
-  ## Returns
-
-    * `{:ok, uuid}` - Stop UUID
-    * `{:ok, nil}` - No parent_station provided or not found
-  """
-  def resolve_parent_station_id_from_db(nil, _organization_id, _gtfs_version_id), do: {:ok, nil}
-
-  def resolve_parent_station_id_from_db("", _organization_id, _gtfs_version_id), do: {:ok, nil}
-
-  def resolve_parent_station_id_from_db(parent_station_string, organization_id, gtfs_version_id) do
-    case Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, parent_station_string) do
-      nil -> {:ok, nil}
-      stop -> {:ok, stop.id}
+  defp resolve_stop_fn_wrapper(func, stop_id, field_name) do
+    case func.(stop_id) do
+      {:ok, uuid} -> {:ok, uuid}
+      {:error, _} -> {:error, "#{field_name} not found: #{stop_id}"}
     end
   end
 

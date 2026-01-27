@@ -25,11 +25,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
     else
       user_roles = get_user_roles(socket)
 
-       {:ok,
+      {:ok,
        socket
        |> assign(:page_title, "Stations")
        |> assign(:user_roles, user_roles)
-       |> assign(:filter_form, to_form(%{"wheelchair_boarding" => "", "route_id" => "", "direction_id" => ""}))
+       |> assign(
+         :filter_form,
+         to_form(%{"wheelchair_boarding" => "", "route_id" => "", "direction_id" => ""})
+       )
        |> assign(:search, "")
        |> assign(:sort_by, :stop_name)
        |> assign(:sort_dir, :asc)
@@ -452,7 +455,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
                             </span>
                           <% end %>
                           <%= if length(station.routes) > 5 do %>
-                            <span class="badge badge-sm badge-ghost">+{length(station.routes) - 5}</span>
+                            <span class="badge badge-sm badge-ghost">
+                              +{length(station.routes) - 5}
+                            </span>
                           <% end %>
                         </div>
                       <% end %>
@@ -554,7 +559,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
     |> Map.put(:sort_dir, sort_dir)
   end
 
-  defp parse_column_atom(column) when column in ["stop_id", "stop_name", "location_type", "route_id"] do
+  defp parse_column_atom(column)
+       when column in ["stop_id", "stop_name", "location_type", "route_id"] do
     String.to_existing_atom(column)
   end
 

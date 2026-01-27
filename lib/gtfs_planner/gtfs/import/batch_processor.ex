@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
   for atomicity.
   """
 
+  require Logger
   import Ecto.Query
 
   alias GtfsPlanner.Gtfs.Stop
@@ -49,6 +50,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     file_name = Keyword.fetch!(opts, :file_name)
     topic = Keyword.fetch!(opts, :topic)
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
+    total_rows = Keyword.get(opts, :total_rows, 0)
 
     # Process stream directly in chunks without materializing entire file
     # This reduces memory pressure for large files (e.g., stop_times.txt with millions of rows)
@@ -56,11 +58,6 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     |> Stream.chunk_every(batch_size)
     |> Stream.with_index()
     |> Enum.reduce_while({:ok, 0, 0}, fn {chunk, batch_index}, {:ok, acc_count, _} ->
-      # Calculate approximate total based on batches processed
-      # We don't know total upfront since we're streaming, so we estimate
-      processed_so_far = acc_count
-      estimated_total = max(processed_so_far + length(chunk), processed_so_far + batch_size)
-
       case process_batch(
              repo,
              schema,
@@ -71,8 +68,92 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
              file_name,
              topic,
              acc_count,
-             estimated_total
+             total_rows
            ) do
+        {:ok, batch_count} ->
+          {:cont, {:ok, acc_count + batch_count, batch_index + 1}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, total_count, _batch_count} -> {:ok, total_count}
+      {:error, _} = error -> error
+    end
+  end
+
+  @doc """
+  Inserts rows in batches with each batch wrapped in its own transaction.
+  
+  This variant prevents long-running transactions by committing each batch separately.
+  Useful for very large files (e.g., stop_times.txt with millions of rows) where
+  a single transaction would timeout or hold connections for too long.
+
+  ## Parameters
+
+    * `repo` - The Ecto repository module
+    * `schema` - The Ecto schema module to insert into
+    * `rows_stream` - A stream of row maps to process
+    * `row_to_attrs_fn` - Function to convert row map to attrs map. Should accept
+      (row, organization_id, gtfs_version_id) and return `{:ok, attrs}` or `{:error, reason}`
+    * `opts` - Keyword list of options:
+      * `:organization_id` (required) - Organization ID to associate records with
+      * `:gtfs_version_id` (required) - GTFS version ID to associate records with
+      * `:file_name` (required) - Name of file being processed (for error reporting)
+      * `:topic` (required) - PubSub topic for progress broadcasts
+      * `:batch_size` (optional) - Number of rows per batch (default: #{@default_batch_size})
+
+  ## Returns
+
+    * `{:ok, total_inserted}` - On success, returns count of inserted rows
+    * `{:error, reason}` - On failure, returns error details
+
+  ## Notes
+
+  Each batch is committed immediately. If an error occurs mid-import, partial data
+  will remain in the database. The caller should handle cleanup if needed.
+
+  Progress events are broadcast via PubSub as:
+  `{:import_progress, %{file: file_name, processed: count, total: total}}`
+  """
+  def insert_batched_with_transactions(repo, schema, rows_stream, row_to_attrs_fn, opts) do
+    organization_id = Keyword.fetch!(opts, :organization_id)
+    gtfs_version_id = Keyword.fetch!(opts, :gtfs_version_id)
+    file_name = Keyword.fetch!(opts, :file_name)
+    topic = Keyword.fetch!(opts, :topic)
+    batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
+    total_rows = Keyword.get(opts, :total_rows, 0)
+
+    # Process stream in chunks, wrapping each batch in its own transaction
+    rows_stream
+    |> Stream.chunk_every(batch_size)
+    |> Stream.with_index()
+    |> Enum.reduce_while({:ok, 0, 0}, fn {chunk, batch_index}, {:ok, acc_count, _} ->
+      # Wrap this batch in its own transaction
+      result =
+        repo.transaction(fn ->
+          case process_batch(
+                 repo,
+                 schema,
+                 chunk,
+                 row_to_attrs_fn,
+                 organization_id,
+                 gtfs_version_id,
+                 file_name,
+                 topic,
+                 acc_count,
+                 total_rows
+               ) do
+            {:ok, batch_count} ->
+              batch_count
+
+            {:error, reason} ->
+              repo.rollback(reason)
+          end
+        end)
+
+      case result do
         {:ok, batch_count} ->
           {:cont, {:ok, acc_count + batch_count, batch_index + 1}}
 
@@ -128,6 +209,12 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
          processed_count,
          total_rows
        ) do
+    batch_number = div(processed_count, length(chunk)) + 1
+    
+    Logger.debug(
+      "Processing batch #{batch_number} for #{file_name}: rows #{processed_count + 1}-#{processed_count + length(chunk)} of #{total_rows}"
+    )
+
     # Convert rows to attrs (pass processed_count as batch_start for accurate row indexing)
     case convert_rows_to_attrs(
            chunk,
@@ -145,7 +232,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
           Enum.map(attrs_list, &Map.merge(&1, %{inserted_at: now, updated_at: now}))
 
         # Insert batch
-        case insert_batch(repo, schema, attrs_with_timestamps, file_name) do
+        case insert_batch(repo, schema, attrs_with_timestamps, file_name, processed_count) do
           {:ok, batch_count} ->
             # Broadcast progress
             new_processed = processed_count + batch_count
@@ -187,27 +274,81 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     end
   end
 
-  defp insert_batch(repo, schema, attrs_list, file_name) do
+  defp insert_batch(repo, schema, attrs_list, file_name, processed_count) do
     try do
       {count, _} = repo.insert_all(schema, attrs_list, returning: false)
       {:ok, count}
     rescue
       e in Ecto.ConstraintError ->
-        {:error, %{file: file_name, constraint: e.constraint, message: Exception.message(e)}}
+        error_msg = Exception.message(e)
+        
+        Logger.error("""
+        ===== GTFS Import Error: Constraint Violation =====
+        File: #{file_name}
+        Schema: #{inspect(schema)}
+        Batch starting at row: #{processed_count + 1}
+        Constraint: #{e.constraint}
+        Error: #{error_msg}
+        
+        Stacktrace:
+        #{Exception.format_stacktrace(__STACKTRACE__)}
+        ===================================================
+        """)
+
+        {:error, %{file: file_name, constraint: e.constraint, message: error_msg}}
 
       e in Postgrex.Error ->
         constraint_name = extract_constraint_name(e)
+        error_msg = Exception.message(e)
+        
+        Logger.error("""
+        ===== GTFS Import Error: Database Error =====
+        File: #{file_name}
+        Schema: #{inspect(schema)}
+        Batch starting at row: #{processed_count + 1}
+        Postgres Error Code: #{e.postgres.code}
+        Constraint: #{inspect(constraint_name)}
+        Error Message: #{error_msg}
+        
+        Full Postgres Error:
+        #{inspect(e.postgres, pretty: true, limit: :infinity)}
+        
+        Stacktrace:
+        #{Exception.format_stacktrace(__STACKTRACE__)}
+        ==============================================
+        """)
 
         {:error,
          %{
            file: file_name,
            postgres_error: e.postgres.code,
            constraint: constraint_name,
-           message: Exception.message(e)
+           message: error_msg
          }}
 
       e ->
-        {:error, %{file: file_name, error: Exception.message(e)}}
+        error_msg = Exception.message(e)
+        
+        Logger.error("""
+        ===== GTFS Import Error: Unexpected Exception =====
+        File: #{file_name}
+        Schema: #{inspect(schema)}
+        Batch starting at row: #{processed_count + 1}
+        Exception Type: #{inspect(e.__struct__)}
+        Error Message: #{error_msg}
+        
+        Full Exception:
+        #{inspect(e, pretty: true, limit: :infinity)}
+        
+        Sample of attrs (first 3 records):
+        #{inspect(Enum.take(attrs_list, 3), pretty: true, limit: :infinity)}
+        
+        Stacktrace:
+        #{Exception.format_stacktrace(__STACKTRACE__)}
+        ====================================================
+        """)
+
+        {:error, %{file: file_name, error: error_msg}}
     end
   end
 

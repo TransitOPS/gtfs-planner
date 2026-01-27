@@ -97,6 +97,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :station, :any, required: true
   attr :active_level, :any, required: true
+  attr :active_stop_level, :any, default: nil
   attr :streams, :any, required: true
   attr :active_point_id, :any
   attr :pending_xy, :any
@@ -108,7 +109,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <div class="relative bg-base-200 border border-base-300 rounded-lg overflow-hidden">
       <%= cond do %>
-        <% @active_level && @active_level.diagram_filename -> %>
+        <% @active_stop_level && @active_stop_level.diagram_filename -> %>
           <svg
             id="diagram-canvas"
             phx-hook="DiagramCanvas"
@@ -118,7 +119,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             class="w-full block cursor-crosshair"
           >
             <image
-              href={"/uploads/diagrams/#{@station.stop_id}/#{@active_level.diagram_filename}"}
+              href={"/uploads/diagrams/#{@station.stop_id}/#{@active_stop_level.diagram_filename}"}
               x="0"
               y="0"
               width="100"
@@ -527,6 +528,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :show_level_modal, :atom
   attr :level_form, :any, required: true
+  attr :available_levels, :list, default: []
+  attr :level_mode, :atom, default: :existing
 
   def level_sidebar(assigns) do
     ~H"""
@@ -540,6 +543,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         :if={@show_level_modal}
         level_form={@level_form}
         show_level_modal={@show_level_modal}
+        available_levels={@available_levels}
+        level_mode={@level_mode}
       />
     </.drawer>
     """
@@ -547,40 +552,94 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :level_form, :any, required: true
   attr :show_level_modal, :atom, required: true
+  attr :available_levels, :list, default: []
+  attr :level_mode, :atom, default: :existing
 
   defp level_form(assigns) do
     ~H"""
+    <div :if={@show_level_modal == :add} class="mb-6">
+      <div class="form-control">
+        <label class="label cursor-pointer justify-start gap-4">
+          <input
+            type="radio"
+            name="mode"
+            class="radio radio-primary"
+            checked={@level_mode == :existing}
+            phx-click="level_mode_changed"
+            phx-value-mode="existing"
+          />
+          <span class="label-text">Use existing level</span>
+        </label>
+      </div>
+      <div class="form-control">
+        <label class="label cursor-pointer justify-start gap-4">
+          <input
+            type="radio"
+            name="mode"
+            class="radio radio-primary"
+            checked={@level_mode == :new}
+            phx-click="level_mode_changed"
+            phx-value-mode="new"
+          />
+          <span class="label-text">Create new level</span>
+        </label>
+      </div>
+    </div>
+
     <.simple_form
       for={@level_form}
       id="level-form"
       phx-submit="save_level"
-      phx-change="level_name_changed"
     >
-      <.input
-        field={@level_form[:level_name]}
-        type="text"
-        label="Level Name"
-        placeholder="e.g., Ground Floor"
-        help="Optional display name"
-      />
+      <%= if @show_level_modal == :add && @level_mode == :existing do %>
+        <%= if @available_levels == [] do %>
+          <div class="p-4 bg-base-200 rounded-lg text-center">
+            <p class="text-base-content/60 mb-2">All levels are already assigned to this station</p>
+            <p class="text-sm text-base-content/40">Switch to "Create new level" to add a new one</p>
+          </div>
+        <% else %>
+          <.input
+            field={@level_form[:existing_level_id]}
+            type="select"
+            label="Select Level"
+            options={
+              Enum.map(
+                @available_levels,
+                &{"#{&1.level_name || &1.level_id} (#{trunc(&1.level_index)})", &1.id}
+              )
+            }
+            prompt="Choose a level..."
+            required
+          />
+        <% end %>
+      <% else %>
+        <.input
+          field={@level_form[:level_name]}
+          type="text"
+          label="Level Name"
+          placeholder="e.g., Ground Floor"
+          phx-change="level_name_changed"
+          help="Optional display name"
+        />
 
-      <.input
-        field={@level_form[:level_id]}
-        type="text"
-        label="Level ID"
-        placeholder="e.g., STATION_GROUND_FLOOR"
-        phx-blur="level_id_changed"
-        help="Auto-generated from level name, or enter a custom ID"
-      />
+        <.input
+          field={@level_form[:level_id]}
+          type="text"
+          label="Level ID"
+          placeholder="e.g., STATION_GROUND_FLOOR"
+          phx-blur="level_id_changed"
+          help="Auto-generated from level name, or enter a custom ID"
+        />
 
-      <.input
-        field={@level_form[:level_index]}
-        type="number"
-        label="Level Index"
-        step="1"
-        required
-        help="Floor number (0 = ground, negative = below, positive = above)"
-      />
+        <.input
+          field={@level_form[:level_index]}
+          type="number"
+          label="Level Index"
+          step="1"
+          required
+          help="Floor number (0 = ground, negative = below, positive = above)"
+        />
+      <% end %>
 
       <:actions>
         <div class="flex-1"></div>
@@ -588,7 +647,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           Cancel
         </button>
         <button type="submit" class="btn btn-primary">
-          {if @show_level_modal == :add, do: "Create Level", else: "Update Level"}
+          {if @show_level_modal == :add, do: "Save", else: "Update Level"}
         </button>
       </:actions>
     </.simple_form>
@@ -634,7 +693,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             phx-click="edit_child_stop"
             phx-value-id={stop.id}
           >
-            <span class="font-medium">{stop.stop_name || stop.stop_id}</span>
+            <span class="font-medium">{stop.stop_id}</span>
             <span class="badge badge-ghost badge-sm">
               {Stop.location_type_label(stop.location_type)}
             </span>
@@ -672,8 +731,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             phx-value-id={pathway.id}
           >
             <span>
-              {pathway.from_stop.stop_name || pathway.from_stop.stop_id} → {pathway.to_stop.stop_name ||
-                pathway.to_stop.stop_id}
+              {pathway.from_stop_id} → {pathway.to_stop_id}
             </span>
             <span class="badge badge-outline badge-sm">
               {Pathway.mode_label(pathway.pathway_mode)}

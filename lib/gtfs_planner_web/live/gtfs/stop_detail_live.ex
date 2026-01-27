@@ -278,15 +278,25 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                     <th>Name</th>
                     <th>Index</th>
                     <th>Stops</th>
+                    <th>Diagram</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <%= for %{level: level, stop_count: count} <- @levels do %>
+                  <%= for %{level: level, stop_count: count, diagram_filename: filename} <- @levels do %>
                     <tr>
                       <td>{level.level_id}</td>
                       <td>{level.level_name || ""}</td>
                       <td>{level.level_index}</td>
                       <td><span class="badge badge-ghost">{count}</span></td>
+                      <td>
+                        <%= if filename do %>
+                          <span class="text-success">
+                            <.icon name="hero-check-circle" class="w-5 h-5" />
+                          </span>
+                        <% else %>
+                          <span class="text-base-content/30">-</span>
+                        <% end %>
+                      </td>
                     </tr>
                   <% end %>
                 </tbody>
@@ -317,15 +327,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                   <%= for pathway <- @pathways do %>
                     <tr>
                       <td>{pathway.pathway_id}</td>
-                      <td>{pathway.from_stop.stop_name || pathway.from_stop.stop_id}</td>
-                      <td>{pathway.to_stop.stop_name || pathway.to_stop.stop_id}</td>
+                      <td>{pathway.from_stop_id}</td>
+                      <td>{pathway.to_stop_id}</td>
                       <td>
                         <span class="badge badge-outline">
                           {Pathway.mode_label(pathway.pathway_mode)}
                         </span>
                       </td>
                       <td>
-                        {if pathway.traversal_time, do: "#{pathway.traversal_time}s", else: ""}
+                        {if pathway.traversal_time, do: "#{pathway.traversal_time}s", else: "\u0014"}
                       </td>
                     </tr>
                   <% end %>

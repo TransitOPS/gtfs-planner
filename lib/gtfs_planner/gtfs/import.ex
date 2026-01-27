@@ -42,11 +42,11 @@ defmodule GtfsPlanner.Gtfs.Import do
   @batch_size Application.compile_env(:gtfs_planner, :import_batch_size, 1000)
 
   @doc """
-  Imports GTFS data files within a single database transaction.
+  Imports GTFS data files with optimized transaction handling.
 
-  Accepts a list of file maps containing filename and binary content.
-  Files are categorized by filename and processed in the correct order
-  to satisfy foreign key dependencies.
+  Small files are processed in a single transaction for atomicity.
+  Large files (stop_times) are processed separately with batch-level
+  transactions to prevent long-running transactions and connection timeouts.
 
   Progress is broadcast via PubSub on the returned topic for LiveView consumption.
 
@@ -63,7 +63,7 @@ defmodule GtfsPlanner.Gtfs.Import do
       - `counts` - map with keys for each file type containing import counts
       - `unrecognized_files` - list of unrecognized filenames
       - `topic` - PubSub topic for progress updates
-    - `{:error, reason}` on failure (transaction is rolled back)
+    - `{:error, reason}` on failure
 
   ## Examples
 
@@ -78,7 +78,8 @@ defmodule GtfsPlanner.Gtfs.Import do
     # Generate unique progress topic for PubSub if not provided
     topic = topic || "import:#{:erlang.unique_integer()}"
 
-    # Execute all imports within a single transaction
+    # Phase 1: Import all files EXCEPT stop_times in a single transaction
+    # This maintains atomicity for the core data (routes, stops, trips, etc.)
     result =
       Repo.transaction(fn ->
         counts = %{}
@@ -188,87 +189,113 @@ defmodule GtfsPlanner.Gtfs.Import do
             {:error, reason} -> Repo.rollback(reason)
           end
 
-        # Process stop_times
-        counts =
-          case process_file_category(
-                 categorized[:stop_times] || [],
-                 organization_id,
-                 gtfs_version_id,
-                 topic,
-                 :stop_times,
-                 Gtfs.StopTime,
-                 &RowParser.stop_time_row_to_attrs/3
-               ) do
-            {:ok, count} -> Map.put(counts, :stop_times, count)
-            {:error, reason} -> Repo.rollback(reason)
-          end
+        # NOTE: stop_times are NOT processed here - they're handled separately below
 
-        # Build stop lookup map for pathways
+        # Build stop lookup map for pathways (needed to resolve foreign keys)
+        # This must happen after stops are inserted but within the same transaction
         stop_map = BatchProcessor.build_stop_lookup_map(Repo, organization_id, gtfs_version_id)
 
-        # Process pathways (using stop lookup map)
+        # Process pathways
         counts =
-          case process_pathways(
+          case process_file_category(
                  categorized[:pathways] || [],
                  organization_id,
                  gtfs_version_id,
                  topic,
-                 stop_map
+                 :pathways,
+                 Gtfs.Pathway,
+                 fn row, org_id, ver_id ->
+                   RowParser.pathway_row_to_attrs(row, org_id, ver_id, stop_map)
+                 end
                ) do
             {:ok, count} -> Map.put(counts, :pathways, count)
             {:error, reason} -> Repo.rollback(reason)
           end
 
-        counts =
-          [
-            :routes,
-            :calendar,
-            :calendar_dates,
-            :route_patterns,
-            :trips,
-            :levels,
-            :stops,
-            :stop_times,
-            :pathways
-          ]
-          |> Enum.reduce(counts, fn key, acc -> Map.put_new(acc, key, 0) end)
-
         counts
       end)
 
+    # Check if Phase 1 succeeded
     case result do
       {:ok, counts} ->
-        {:ok, {counts, unrecognized_files, topic}}
+        # Phase 2: Process stop_times separately with batch-level transactions
+        # This prevents long-running transactions that can timeout
+        case process_stop_times_batched(
+               categorized[:stop_times] || [],
+               organization_id,
+               gtfs_version_id,
+               topic
+             ) do
+          {:ok, stop_times_count} ->
+            # Merge stop_times count with other counts
+            counts = Map.put(counts, :stop_times, stop_times_count)
+
+            # Fill in zeros for any file types not imported
+            counts =
+              [
+                :agencies,
+                :areas,
+                :attributions,
+                :booking_rules,
+                :calendars,
+                :calendar_dates,
+                :fare_attributes,
+                :fare_leg_join_rules,
+                :fare_leg_rules,
+                :fare_media,
+                :fare_products,
+                :fare_rules,
+                :fare_transfer_rules,
+                :feed_info,
+                :frequencies,
+                :levels,
+                :locations,
+                :networks,
+                :pathways,
+                :rider_categories,
+                :route_networks,
+                :route_patterns,
+                :routes,
+                :shapes,
+                :stop_areas,
+                :stop_times,
+                :stops,
+                :timeframes,
+                :transfers,
+                :translations,
+                :trips
+              ]
+              |> Enum.reduce(counts, fn key, acc -> Map.put_new(acc, key, 0) end)
+
+            {:ok, {counts, unrecognized_files, topic}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  # Processes a category of files using batch insertion
-  defp process_file_category(
-         files,
-         organization_id,
-         gtfs_version_id,
-         topic,
-         _file_type,
-         schema,
-         row_to_attrs_fn
-       ) do
+  # Processes stop_times files with batch-level transactions
+  # Each batch gets its own transaction to prevent long-running transactions
+  defp process_stop_times_batched(files, organization_id, gtfs_version_id, topic) do
     total_count =
       Enum.reduce_while(files, 0, fn file, acc ->
-        rows_stream = parse_csv_content(file.content)
+        {rows_stream, total_rows} = parse_csv_content_with_count(file.content)
 
-        case BatchProcessor.insert_batched(
+        case BatchProcessor.insert_batched_with_transactions(
                Repo,
-               schema,
+               Gtfs.StopTime,
                rows_stream,
-               row_to_attrs_fn,
+               &RowParser.stop_time_row_to_attrs/3,
                organization_id: organization_id,
                gtfs_version_id: gtfs_version_id,
                file_name: file.filename,
                topic: topic,
-               batch_size: @batch_size
+               batch_size: @batch_size,
+               total_rows: total_rows
              ) do
           {:ok, count} ->
             {:cont, acc + count}
@@ -284,27 +311,31 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   end
 
-  # Processes pathway files using the stop lookup map
-  defp process_pathways(files, organization_id, gtfs_version_id, topic, stop_map) do
+  # Processes a category of files using batch insertion
+  defp process_file_category(
+         files,
+         organization_id,
+         gtfs_version_id,
+         topic,
+         _file_type,
+         schema,
+         row_to_attrs_fn
+       ) do
     total_count =
       Enum.reduce_while(files, 0, fn file, acc ->
-        rows_stream = parse_csv_content(file.content)
-
-        # Create a wrapper function that includes the stop_map
-        row_to_attrs_fn = fn row, org_id, version_id ->
-          RowParser.pathway_row_to_attrs(row, org_id, version_id, stop_map)
-        end
+        {rows_stream, total_rows} = parse_csv_content_with_count(file.content)
 
         case BatchProcessor.insert_batched(
                Repo,
-               Gtfs.Pathway,
+               schema,
                rows_stream,
                row_to_attrs_fn,
                organization_id: organization_id,
                gtfs_version_id: gtfs_version_id,
                file_name: file.filename,
                topic: topic,
-               batch_size: @batch_size
+               batch_size: @batch_size,
+               total_rows: total_rows
              ) do
           {:ok, count} ->
             {:cont, acc + count}
@@ -374,6 +405,78 @@ defmodule GtfsPlanner.Gtfs.Import do
       Map.new(categorized, fn {key, files_list} -> {key, Enum.reverse(files_list)} end)
 
     {categorized, Enum.reverse(unrecognized)}
+  end
+
+  @doc """
+  Parses CSV content into a stream of row maps with total row count.
+
+  Takes binary CSV content with a header row and returns a tuple with the stream
+  and the total number of data rows (excluding header).
+
+  ## Parameters
+
+    - `content` - Binary string containing CSV data with header row
+
+  ## Returns
+
+  `{stream, total_rows}` - Tuple with stream of row maps and total count
+
+  ## Examples
+
+      iex> content = "level_id,level_name\\nL1,Ground Floor\\nL2,Platform"
+      iex> {stream, total} = parse_csv_content_with_count(content)
+      iex> {Enum.to_list(stream), total}
+      {[%{"level_id" => "L1", ...}], 2}
+  """
+  def parse_csv_content_with_count(content) when is_binary(content) do
+    lines =
+      content
+      |> String.split("\n")
+      |> Enum.map(&String.trim/1)
+      |> Enum.filter(&(&1 != ""))
+
+    # Count total data rows (subtract 1 for header)
+    total_rows = max(length(lines) - 1, 0)
+
+    # Create stream from lines
+    stream =
+      lines
+      |> Stream.transform({:no_header, nil}, fn
+        line, {:no_header, nil} ->
+          # First line is header
+          case parse_csv_line(line) do
+            {:ok, header} ->
+              {[], {:has_header, header}}
+
+            {:error, _reason} ->
+              {[], {:has_header, []}}
+          end
+
+        _line, {:has_header, header} when header == [] ->
+          # No valid header, skip all rows
+          {[], {:has_header, []}}
+
+        line, {:has_header, header} ->
+          case parse_csv_line(line) do
+            {:ok, fields} when length(fields) == length(header) ->
+              row_map = Enum.zip(header, fields) |> Map.new()
+              {[row_map], {:has_header, header}}
+
+            {:ok, _fields} ->
+              # Skip malformed lines silently
+              {[], {:has_header, header}}
+
+            {:error, _reason} ->
+              # Skip malformed lines silently
+              {[], {:has_header, header}}
+          end
+      end)
+      |> Stream.filter(fn
+        row_map when is_map(row_map) -> true
+        _ -> false
+      end)
+
+    {stream, total_rows}
   end
 
   @doc """

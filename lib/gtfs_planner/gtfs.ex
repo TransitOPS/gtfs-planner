@@ -31,6 +31,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopArea
+  alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Timeframe
   alias GtfsPlanner.Gtfs.Transfer
@@ -226,6 +227,17 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns all levels for organization and GTFS version.
+  """
+  def list_all_levels(organization_id, gtfs_version_id) do
+    from(l in Level,
+      where: l.organization_id == ^organization_id and l.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: l.level_index]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
   Gets a single level.
 
   Returns nil if the Level does not exist.
@@ -314,21 +326,21 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Updates a level's diagram filename.
-
-  ## Examples
-
-      iex> update_level_diagram(level, "floor_plan.png")
-      {:ok, %Level{}}
-
-      iex> update_level_diagram(level, nil)
-      {:ok, %Level{}}
+  Deletes a stop_level association.
   """
-  def update_level_diagram(%Level{} = level, filename) do
-    level
-    |> Level.changeset(%{diagram_filename: filename})
+  def delete_stop_level(%StopLevel{} = stop_level) do
+    Repo.delete(stop_level)
+    |> broadcast([:stop_levels, :deleted])
+  end
+
+  @doc """
+  Updates a stop_level's diagram filename.
+  """
+  def update_stop_level_diagram(%StopLevel{} = stop_level, filename) do
+    stop_level
+    |> StopLevel.changeset(%{diagram_filename: filename})
     |> Repo.update()
-    |> broadcast([:levels, :updated])
+    |> broadcast([:stop_levels, :updated])
   end
 
   @doc """
@@ -387,15 +399,26 @@ defmodule GtfsPlanner.Gtfs do
     query =
       from(st in StopTime,
         join: t in Trip,
-        on: st.trip_id == t.trip_id and st.organization_id == t.organization_id and st.gtfs_version_id == t.gtfs_version_id,
+        on:
+          st.trip_id == t.trip_id and st.organization_id == t.organization_id and
+            st.gtfs_version_id == t.gtfs_version_id,
         join: r in Route,
-        on: t.route_id == r.route_id and t.organization_id == r.organization_id and t.gtfs_version_id == r.gtfs_version_id,
+        on:
+          t.route_id == r.route_id and t.organization_id == r.organization_id and
+            t.gtfs_version_id == r.gtfs_version_id,
         where:
           st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id and
             st.stop_id in ^stop_ids,
         distinct: [st.stop_id, r.route_id],
         order_by: [asc: r.route_short_name],
-        select: {st.stop_id, %{route_id: r.route_id, route_short_name: r.route_short_name, route_color: r.route_color, route_text_color: r.route_text_color}}
+        select:
+          {st.stop_id,
+           %{
+             route_id: r.route_id,
+             route_short_name: r.route_short_name,
+             route_color: r.route_color,
+             route_text_color: r.route_text_color
+           }}
       )
 
     Repo.all(query)
@@ -413,10 +436,14 @@ defmodule GtfsPlanner.Gtfs do
         JOIN trips t ON st.trip_id = t.trip_id AND st.organization_id = t.organization_id AND st.gtfs_version_id = t.gtfs_version_id
         JOIN stops s ON st.stop_id = s.stop_id AND st.organization_id = s.organization_id AND st.gtfs_version_id = s.gtfs_version_id
         WHERE t.route_id = ? AND t.organization_id = ? AND t.gtfs_version_id = ?
-        AND s.parent_station_id IS NULL
+        AND s.parent_station IS NULL
       )", r.route_id, r.organization_id, r.gtfs_version_id),
       order_by: [asc: r.route_short_name, asc: r.route_id],
-      select: %{route_id: r.route_id, route_short_name: r.route_short_name, route_color: r.route_color}
+      select: %{
+        route_id: r.route_id,
+        route_short_name: r.route_short_name,
+        route_color: r.route_color
+      }
     )
     |> Repo.all()
   end
@@ -435,7 +462,7 @@ defmodule GtfsPlanner.Gtfs do
     from(s in Stop,
       where:
         s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
-          is_nil(s.parent_station_id)
+          is_nil(s.parent_station)
     )
     |> maybe_filter_route(opts[:route_id], organization_id, gtfs_version_id)
     |> maybe_filter_direction(opts[:direction_id], organization_id, gtfs_version_id)
@@ -460,7 +487,7 @@ defmodule GtfsPlanner.Gtfs do
     from(s in Stop,
       where:
         s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
-          is_nil(s.parent_station_id)
+          is_nil(s.parent_station)
     )
     |> maybe_filter_route(opts[:route_id], organization_id, gtfs_version_id)
     |> maybe_filter_direction(opts[:direction_id], organization_id, gtfs_version_id)
@@ -594,34 +621,84 @@ defmodule GtfsPlanner.Gtfs do
       [%Stop{level: %Level{}}, ...]
   """
   def list_child_stops_for_parent(organization_id, gtfs_version_id, parent_station_id) do
+    parent_station = Repo.get!(Stop, parent_station_id)
+
     from(s in Stop,
+      left_join: l in Level,
+      on:
+        l.level_id == s.level_id and
+          l.organization_id == ^organization_id and
+          l.gtfs_version_id == ^gtfs_version_id,
       where:
         s.organization_id == ^organization_id and
           s.gtfs_version_id == ^gtfs_version_id and
-          s.parent_station_id == ^parent_station_id,
+          s.parent_station == ^parent_station.stop_id,
       order_by: [asc: s.stop_name],
-      preload: [:level]
+      select: s,
+      select_merge: %{level: l}
     )
     |> Repo.all()
   end
 
   @doc """
-  Returns the list of levels for a specific station.
+  Returns the list of levels for a specific station with stop counts.
+  Derives levels from child stops rather than the stop_levels join table.
 
   ## Examples
 
       iex> list_levels_for_station(organization_id, gtfs_version_id, parent_station_id)
-      [%Level{}, ...]
+      [%{level: %Level{}, stop_count: 5}, ...]
   """
   def list_levels_for_station(organization_id, gtfs_version_id, parent_station_id) do
-    from(l in Level,
+    parent_station = Repo.get!(Stop, parent_station_id)
+
+    # Derive levels from child stops that have a level_id set
+    from(s in Stop,
+      join: l in Level,
+      on:
+        l.level_id == s.level_id and
+          l.organization_id == ^organization_id and
+          l.gtfs_version_id == ^gtfs_version_id,
+      left_join: sl in StopLevel,
+      on:
+        sl.level_id == l.id and
+          sl.stop_id == ^parent_station_id and
+          sl.organization_id == ^organization_id and
+          sl.gtfs_version_id == ^gtfs_version_id,
       where:
-        l.organization_id == ^organization_id and
-          l.gtfs_version_id == ^gtfs_version_id and
-          l.parent_station_id == ^parent_station_id,
-      order_by: [asc: l.level_index]
+        s.organization_id == ^organization_id and
+          s.gtfs_version_id == ^gtfs_version_id and
+          s.parent_station == ^parent_station.stop_id and
+          not is_nil(s.level_id),
+      group_by: [l.id, sl.diagram_filename],
+      order_by: [asc: l.level_index],
+      select: %{level: l, stop_count: count(s.id), diagram_filename: sl.diagram_filename}
     )
     |> Repo.all()
+  end
+
+  @doc """
+  Gets a stop_level by stop_id and level_id.
+  """
+  def get_stop_level(organization_id, gtfs_version_id, stop_id, level_id) do
+    from(sl in StopLevel,
+      where:
+        sl.organization_id == ^organization_id and
+          sl.gtfs_version_id == ^gtfs_version_id and
+          sl.stop_id == ^stop_id and
+          sl.level_id == ^level_id
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Creates a stop_level association.
+  """
+  def create_stop_level(attrs \\ %{}) do
+    %StopLevel{}
+    |> StopLevel.changeset(attrs)
+    |> Repo.insert()
+    |> broadcast([:stop_levels, :created])
   end
 
   @doc """
@@ -648,16 +725,23 @@ defmodule GtfsPlanner.Gtfs do
       [%Stop{}, ...]
   """
   def list_child_stops_for_level(parent_station_id, level_id) do
+    parent_station = Repo.get!(Stop, parent_station_id)
+    level = Repo.get!(Level, level_id)
+
     from(s in Stop,
-      where: s.parent_station_id == ^parent_station_id and s.level_id == ^level_id,
+      where: s.parent_station == ^parent_station.stop_id,
       order_by: [asc: s.stop_name]
     )
     |> Repo.all()
+    |> Enum.map(fn stop ->
+      # Add a virtual field indicating if this stop is on the active level
+      Map.put(stop, :on_active_level, stop.level_id == level.level_id)
+    end)
   end
 
   @doc """
-  Returns pathways where both from_stop and to_stop have the specified level_id
-  and belong to the specified parent station.
+  Returns pathways where at least one endpoint has the specified level_id
+  and both endpoints belong to the specified parent station.
 
   ## Examples
 
@@ -665,22 +749,43 @@ defmodule GtfsPlanner.Gtfs do
       [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
   """
   def list_pathways_for_level(organization_id, gtfs_version_id, level_id, parent_station_id) do
+    parent_station = Repo.get!(Stop, parent_station_id)
+    level = Repo.get!(Level, level_id)
+
     from(p in Pathway,
       join: from_stop in Stop,
-      on: p.from_stop_id == from_stop.id,
+      on:
+        p.from_stop_id == from_stop.stop_id and
+          from_stop.organization_id == ^organization_id and
+          from_stop.gtfs_version_id == ^gtfs_version_id,
       join: to_stop in Stop,
-      on: p.to_stop_id == to_stop.id,
+      on:
+        p.to_stop_id == to_stop.stop_id and
+          to_stop.organization_id == ^organization_id and
+          to_stop.gtfs_version_id == ^gtfs_version_id,
       where:
         p.organization_id == ^organization_id and
           p.gtfs_version_id == ^gtfs_version_id and
-          from_stop.level_id == ^level_id and
-          to_stop.level_id == ^level_id and
-          from_stop.parent_station_id == ^parent_station_id and
-          to_stop.parent_station_id == ^parent_station_id,
+          (from_stop.level_id == ^level.level_id or to_stop.level_id == ^level.level_id) and
+          from_stop.parent_station == ^parent_station.stop_id and
+          to_stop.parent_station == ^parent_station.stop_id,
       order_by: [asc: p.pathway_id],
-      preload: [:from_stop, :to_stop]
+      select: p,
+      select_merge: %{from_stop: from_stop, to_stop: to_stop}
     )
     |> Repo.all()
+    |> Enum.map(fn pathway ->
+      # Add flags indicating if this is a cross-level pathway
+      from_on_level = pathway.from_stop.level_id == level.level_id
+      to_on_level = pathway.to_stop.level_id == level.level_id
+      is_cross_level = from_on_level != to_on_level
+
+      Map.merge(pathway, %{
+        is_cross_level: is_cross_level,
+        from_on_active_level: from_on_level,
+        to_on_active_level: to_on_level
+      })
+    end)
   end
 
   @doc """
@@ -692,23 +797,36 @@ defmodule GtfsPlanner.Gtfs do
       [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
   """
   def list_pathways_for_station(organization_id, gtfs_version_id, parent_station_id) do
+    parent_station = Repo.get!(Stop, parent_station_id)
+
     child_stop_ids =
       from(s in Stop,
         where:
           s.organization_id == ^organization_id and
             s.gtfs_version_id == ^gtfs_version_id and
-            s.parent_station_id == ^parent_station_id,
-        select: s.id
+            s.parent_station == ^parent_station.stop_id,
+        select: s.stop_id
       )
 
     from(p in Pathway,
+      join: from_stop in Stop,
+      on:
+        p.from_stop_id == from_stop.stop_id and
+          from_stop.organization_id == ^organization_id and
+          from_stop.gtfs_version_id == ^gtfs_version_id,
+      join: to_stop in Stop,
+      on:
+        p.to_stop_id == to_stop.stop_id and
+          to_stop.organization_id == ^organization_id and
+          to_stop.gtfs_version_id == ^gtfs_version_id,
       where:
         p.organization_id == ^organization_id and
           p.gtfs_version_id == ^gtfs_version_id and
           (p.from_stop_id in subquery(child_stop_ids) or
              p.to_stop_id in subquery(child_stop_ids)),
       order_by: [asc: p.pathway_id],
-      preload: [:from_stop, :to_stop]
+      select: p,
+      select_merge: %{from_stop: from_stop, to_stop: to_stop}
     )
     |> Repo.all()
   end
@@ -762,7 +880,7 @@ defmodule GtfsPlanner.Gtfs do
   def get_pathway!(id), do: Repo.get!(Pathway, id)
 
   @doc """
-  Gets a single pathway with preloaded from_stop and to_stop associations.
+  Gets a single pathway with manually populated from_stop and to_stop.
 
   Raises `Ecto.NoResultsError` if the Pathway does not exist.
 
@@ -775,7 +893,15 @@ defmodule GtfsPlanner.Gtfs do
       ** (Ecto.NoResultsError)
   """
   def get_pathway_with_stops!(id) do
-    Repo.get!(Pathway, id) |> Repo.preload([:from_stop, :to_stop])
+    pathway = Repo.get!(Pathway, id)
+
+    from_stop =
+      get_stop_by_stop_id(pathway.organization_id, pathway.gtfs_version_id, pathway.from_stop_id)
+
+    to_stop =
+      get_stop_by_stop_id(pathway.organization_id, pathway.gtfs_version_id, pathway.to_stop_id)
+
+    %{pathway | from_stop: from_stop, to_stop: to_stop}
   end
 
   @doc """
@@ -1666,6 +1792,9 @@ defmodule GtfsPlanner.Gtfs do
 
         [:pathways, _] ->
           Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "pathways", {event_topic, result})
+
+        [:stop_levels, _] ->
+          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "stop_levels", {event_topic, result})
       end
 
     case broadcast_result do

@@ -190,8 +190,8 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
         org_id,
         version_id,
         stop_id: "CHILD_STOP",
-        parent_station_id: parent_station.id,
-        level_id: level.id,
+        parent_station: parent_station.stop_id,
+        level_id: level.level_id,
         location_type: 0
       )
 

@@ -44,6 +44,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:show_pathway_drawer, false)
        |> assign(:editing_pathway, nil)
        |> assign(:pathway_form, to_form(%{}))
+       |> assign(:available_levels, [])
+       |> assign(:level_mode, :existing)
        |> allow_upload(:diagram,
          accept: ~w(.png .jpg .jpeg .svg),
          max_file_size: 10_000_000
@@ -64,7 +66,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:noreply, push_navigate(socket, to: "/gtfs/#{gtfs_version_id}/stops")}
 
         station ->
-          levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+          # levels is now a list of maps: %{level: Level, stop_count: count}
+          levels_data =
+            Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+
+          levels = Enum.map(levels_data, & &1.level)
+          station_level_ids = Enum.map(levels, & &1.id)
+
+          # Only show levels that are not already assigned to this station
+          available_levels =
+            Gtfs.list_all_levels(organization_id, gtfs_version_id)
+            |> Enum.reject(&(&1.id in station_level_ids))
+            |> Enum.sort_by(&(&1.level_name || &1.level_id), :asc)
 
           active_level =
             Enum.find(levels, List.first(levels), fn l -> l.level_index == 0.0 end)
@@ -74,6 +87,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             |> assign(:stop_id, stop_id)
             |> assign(:station, station)
             |> assign(:levels, levels)
+            |> assign(:available_levels, available_levels)
             |> assign(:active_level, active_level)
 
           socket = load_level_data(socket, active_level)
@@ -89,6 +103,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> stream(:pathways, [], reset: true)
     |> assign(:child_stops_list, [])
     |> assign(:pathways_list, [])
+    |> assign(:active_stop_level, nil)
+    |> assign(:graph_data, %{nodes: [], edges: [], width: 400, height: 200})
   end
 
   defp load_level_data(socket, level) do
@@ -96,16 +112,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
+    stop_level = Gtfs.get_stop_level(organization_id, gtfs_version_id, station.id, level.id)
     child_stops = Gtfs.list_child_stops_for_level(station.id, level.id)
 
     pathways =
       Gtfs.list_pathways_for_level(organization_id, gtfs_version_id, level.id, station.id)
+
+    # Build graph data for single-level SVG visualization
+    graph_data = build_pathways_graph(child_stops, pathways)
 
     socket
     |> stream(:child_stops, child_stops, reset: true)
     |> stream(:pathways, pathways, reset: true)
     |> assign(:child_stops_list, child_stops)
     |> assign(:pathways_list, pathways)
+    |> assign(:active_stop_level, stop_level)
+    |> assign(:graph_data, graph_data)
   end
 
   @impl true
@@ -143,13 +165,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             active_level={@active_level}
             mode={@mode}
             uploads={@uploads}
-            has_diagram={@active_level && @active_level.diagram_filename}
+            has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
             diagram_error={@diagram_error}
           />
           <div class="w-full px-4 sm:px-6 lg:px-8 py-4">
             <.diagram_canvas
               station={@station}
               active_level={@active_level}
+              active_stop_level={@active_stop_level}
               streams={@streams}
               active_point_id={@active_point_id}
               pending_xy={@pending_xy}
@@ -175,6 +198,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         <.level_sidebar
           show_level_modal={@show_level_modal}
           level_form={@level_form}
+          available_levels={@available_levels}
+          level_mode={@level_mode}
         />
 
         <.lists_section
@@ -182,6 +207,102 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pathways_list={@pathways_list}
           pathway_error={@pathway_error}
         />
+
+        <%= if @active_level && @graph_data.nodes != [] do %>
+          <div class="mx-4 sm:mx-6 lg:mx-8 mt-8">
+            <h2 class="text-lg font-semibold mb-4">Pathways Graph</h2>
+            <div class="bg-base-100 border border-base-300 rounded-lg p-4 overflow-x-auto">
+              <%!-- Legend --%>
+              <div class="flex flex-wrap gap-4 mb-4 text-sm">
+                <div class="flex items-center gap-2">
+                  <span class="font-medium">Nodes:</span>
+                  <span class="flex items-center gap-1">
+                    <span class="w-3 h-3 rounded-full bg-blue-500"></span> Platform
+                  </span>
+                  <span class="flex items-center gap-1">
+                    <span class="w-3 h-3 rounded-full bg-green-500"></span> Station
+                  </span>
+                  <span class="flex items-center gap-1">
+                    <span class="w-3 h-3 rounded-full bg-amber-500"></span> Entrance
+                  </span>
+                  <span class="flex items-center gap-1">
+                    <span class="w-3 h-3 rounded-full bg-gray-500"></span> Node
+                  </span>
+                  <span class="flex items-center gap-1">
+                    <span class="w-3 h-3 rounded-full bg-purple-500"></span> Boarding
+                  </span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="font-medium">Edges:</span>
+                  <span class="flex items-center gap-1">
+                    <span class="w-4 h-0.5 bg-gray-500"></span> Walkway
+                  </span>
+                  <span class="flex items-center gap-1">
+                    <span class="w-4 h-0.5 bg-amber-500 border-dashed border-t-2 border-amber-500">
+                    </span>
+                    Stairs
+                  </span>
+                  <span class="flex items-center gap-1">
+                    <span class="w-4 h-0.5 bg-blue-500"></span> Elevator
+                  </span>
+                </div>
+              </div>
+
+              <%!-- SVG Graph --%>
+              <svg
+                width={@graph_data.width}
+                height={@graph_data.height}
+                class="bg-base-200 rounded"
+                viewBox={"0 0 #{@graph_data.width} #{@graph_data.height}"}
+              >
+                <%!-- Draw edges first (behind nodes) --%>
+                <%= for edge <- @graph_data.edges do %>
+                  <line
+                    x1={edge.from_x}
+                    y1={edge.from_y}
+                    x2={edge.to_x}
+                    y2={edge.to_y}
+                    stroke={pathway_stroke_color(edge.pathway_mode)}
+                    stroke-width="2"
+                    stroke-dasharray={pathway_stroke_dash(edge.pathway_mode)}
+                  />
+                  <%!-- Arrow for directional pathways --%>
+                  <%= if not edge.is_bidirectional do %>
+                    <polygon
+                      points={arrow_points(edge.from_x, edge.from_y, edge.to_x, edge.to_y)}
+                      fill={pathway_stroke_color(edge.pathway_mode)}
+                    />
+                  <% end %>
+                <% end %>
+
+                <%!-- Draw nodes --%>
+                <%= for node <- @graph_data.nodes do %>
+                  <g>
+                    <%!-- Node circle --%>
+                    <circle
+                      cx={node.x}
+                      cy={node.y}
+                      r="12"
+                      fill={node_fill_color(node.location_type)}
+                      stroke="#fff"
+                      stroke-width="2"
+                    />
+                    <%!-- Node label --%>
+                    <text
+                      x={node.x}
+                      y={node.y + 28}
+                      text-anchor="middle"
+                      class="text-xs fill-base-content"
+                      font-size="10"
+                    >
+                      {truncate_label(node.label, 12)}
+                    </text>
+                  </g>
+                <% end %>
+              </svg>
+            </div>
+          </div>
+        <% end %>
       </Layouts.app>
     <% end %>
     """
@@ -331,8 +452,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       stop_id: params["stop_id"],
       stop_name: params["stop_name"],
       location_type: String.to_integer(params["location_type"]),
-      parent_station_id: station.id,
-      level_id: level.id,
+      parent_station: station.stop_id,
+      level_id: level.level_id,
       diagram_coordinate: %{"x" => pending_xy.x, "y" => pending_xy.y},
       organization_id: organization_id,
       gtfs_version_id: gtfs_version_id
@@ -463,11 +584,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
 
-    pathway =
-      case editing_pathway do
-        nil -> nil
-        _ -> GtfsPlanner.Repo.preload(editing_pathway, [:from_stop, :to_stop])
-      end
+    pathway = editing_pathway
 
     cond do
       is_nil(pathway) ->
@@ -488,8 +605,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pathway_error, "Pathway is not fully associated with stops.")
          |> assign(:pathway_form, to_form(%{}))}
 
-      pathway.from_stop.parent_station_id != station.id or
-          pathway.to_stop.parent_station_id != station.id ->
+      pathway.from_stop.parent_station != station.stop_id or
+          pathway.to_stop.parent_station != station.stop_id ->
         {:noreply,
          socket
          |> assign(:pathway_error, "Unauthorized pathway access.")
@@ -498,7 +615,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       true ->
         case Gtfs.update_pathway(pathway, attrs) do
           {:ok, updated_pathway} ->
-            updated_pathway = GtfsPlanner.Repo.preload(updated_pathway, [:from_stop, :to_stop])
+            from_stop =
+              Gtfs.get_stop_by_stop_id(
+                organization_id,
+                gtfs_version_id,
+                updated_pathway.from_stop_id
+              )
+
+            to_stop =
+              Gtfs.get_stop_by_stop_id(
+                organization_id,
+                gtfs_version_id,
+                updated_pathway.to_stop_id
+              )
+
+            updated_pathway = %{updated_pathway | from_stop: from_stop, to_stop: to_stop}
 
             updated_list =
               Enum.map(socket.assigns.pathways_list, fn p ->
@@ -529,52 +660,64 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("save_diagram", _params, socket) do
     station = socket.assigns.station
-    level = socket.assigns.active_level
+    stop_level = socket.assigns.active_stop_level
 
-    uploaded_files =
-      consume_uploaded_entries(socket, :diagram, fn %{path: path}, entry ->
-        dest_dir = Path.join(["priv", "static", "uploads", "diagrams", station.stop_id])
-        File.mkdir_p!(dest_dir)
+    if is_nil(stop_level) do
+      {:noreply, assign(socket, :diagram_error, "No active level selected")}
+    else
+      uploaded_files =
+        consume_uploaded_entries(socket, :diagram, fn %{path: path}, entry ->
+          dest_dir = Path.join(["priv", "static", "uploads", "diagrams", station.stop_id])
+          File.mkdir_p!(dest_dir)
 
-        dest_path = Path.join(dest_dir, entry.client_name)
-        File.cp!(path, dest_path)
+          dest_path = Path.join(dest_dir, entry.client_name)
+          File.cp!(path, dest_path)
 
-        {:ok, entry.client_name}
-      end)
+          {:ok, entry.client_name}
+        end)
 
-    case uploaded_files do
-      [filename | _] ->
-        case Gtfs.update_level_diagram(level, filename) do
-          {:ok, updated_level} ->
-            levels =
-              Enum.map(socket.assigns.levels, fn l ->
-                if l.id == updated_level.id, do: updated_level, else: l
-              end)
+      case uploaded_files do
+        [filename | _] ->
+          case Gtfs.update_stop_level_diagram(stop_level, filename) do
+            {:ok, updated_stop_level} ->
+              {:noreply,
+               socket
+               |> assign(:active_stop_level, updated_stop_level)
+               |> assign(:diagram_error, nil)}
 
-            {:noreply,
-             socket
-             |> assign(:active_level, updated_level)
-             |> assign(:levels, levels)
-             |> assign(:diagram_error, nil)}
+            {:error, _changeset} ->
+              {:noreply, assign(socket, :diagram_error, "Failed to save diagram")}
+          end
 
-          {:error, _changeset} ->
-            {:noreply, assign(socket, :diagram_error, "Failed to save diagram")}
-        end
-
-      [] ->
-        {:noreply, socket}
+        [] ->
+          {:noreply, socket}
+      end
     end
   end
 
   @impl true
   def handle_event("open_add_level", _params, socket) do
-    form = to_form(%{"level_id" => "", "level_name" => "", "level_index" => "0"})
+    form =
+      to_form(%{
+        "mode" => "existing",
+        "existing_level_id" => "",
+        "level_id" => "",
+        "level_name" => "",
+        "level_index" => "0"
+      })
 
     {:noreply,
      socket
      |> assign(:show_level_modal, :add)
      |> assign(:level_form, form)
+     |> assign(:level_mode, :existing)
      |> assign(:level_id_manually_edited, false)}
+  end
+
+  @impl true
+  def handle_event("level_mode_changed", %{"mode" => mode}, socket) do
+    mode_atom = if mode == "new", do: :new, else: :existing
+    {:noreply, assign(socket, :level_mode, mode_atom)}
   end
 
   @impl true
@@ -648,41 +791,95 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
 
-    level_attrs = %{
-      level_id: params["level_id"],
-      level_name: params["level_name"],
-      level_index: parse_int(params["level_index"]),
-      organization_id: organization_id,
-      gtfs_version_id: gtfs_version_id,
-      parent_station_id: station.id
-    }
-
     case socket.assigns.show_level_modal do
       :add ->
-        case Gtfs.create_level(level_attrs) do
-          {:ok, new_level} ->
-            station = socket.assigns.station
-            levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+        if socket.assigns.level_mode == :existing do
+          existing_level_id = params["existing_level_id"]
+          level = Gtfs.get_level(existing_level_id)
 
-            {:noreply,
-             socket
-             |> assign(:levels, levels)
-             |> assign(:active_level, new_level)
-             |> assign(:show_level_modal, nil)
-             |> assign(:level_form, to_form(%{}))
-             |> load_level_data(new_level)}
+          if level do
+            case Gtfs.create_stop_level(%{
+                   stop_id: station.id,
+                   level_id: level.id,
+                   organization_id: organization_id,
+                   gtfs_version_id: gtfs_version_id
+                 }) do
+              {:ok, _stop_level} ->
+                levels_data =
+                  Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
 
-          {:error, changeset} ->
-            {:noreply, assign(socket, :level_form, to_form(changeset))}
+                levels = Enum.map(levels_data, & &1.level)
+
+                {:noreply,
+                 socket
+                 |> assign(:levels, levels)
+                 |> assign(:active_level, level)
+                 |> assign(:show_level_modal, nil)
+                 |> assign(:level_form, to_form(%{}))
+                 |> load_level_data(level)}
+
+              {:error, changeset} ->
+                {:noreply, assign(socket, :level_form, to_form(changeset))}
+            end
+          else
+            {:noreply, socket}
+          end
+        else
+          level_attrs = %{
+            level_id: params["level_id"],
+            level_name: params["level_name"],
+            level_index: parse_int(params["level_index"]),
+            organization_id: organization_id,
+            gtfs_version_id: gtfs_version_id
+          }
+
+          case Gtfs.create_level(level_attrs) do
+            {:ok, new_level} ->
+              # Create the association
+              {:ok, _stop_level} =
+                Gtfs.create_stop_level(%{
+                  stop_id: station.id,
+                  level_id: new_level.id,
+                  organization_id: organization_id,
+                  gtfs_version_id: gtfs_version_id
+                })
+
+              levels_data =
+                Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+
+              levels = Enum.map(levels_data, & &1.level)
+              # Refresh available levels list since we added one
+              available_levels = Gtfs.list_all_levels(organization_id, gtfs_version_id)
+
+              {:noreply,
+               socket
+               |> assign(:levels, levels)
+               |> assign(:available_levels, available_levels)
+               |> assign(:active_level, new_level)
+               |> assign(:show_level_modal, nil)
+               |> assign(:level_form, to_form(%{}))
+               |> load_level_data(new_level)}
+
+            {:error, changeset} ->
+              {:noreply, assign(socket, :level_form, to_form(changeset))}
+          end
         end
 
       :edit ->
         level = socket.assigns.active_level
 
+        level_attrs = %{
+          level_id: params["level_id"],
+          level_name: params["level_name"],
+          level_index: parse_int(params["level_index"])
+        }
+
         case Gtfs.update_level(level, level_attrs) do
           {:ok, updated_level} ->
-            station = socket.assigns.station
-            levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+            levels_data =
+              Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+
+            levels = Enum.map(levels_data, & &1.level)
 
             {:noreply,
              socket
@@ -840,8 +1037,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     attrs = %{
       pathway_id: pathway_id,
-      from_stop_id: from_stop.id,
-      to_stop_id: to_stop.id,
+      from_stop_id: from_stop.stop_id,
+      to_stop_id: to_stop.stop_id,
       pathway_mode: 1,
       is_bidirectional: true,
       organization_id: organization_id,
@@ -892,4 +1089,168 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       _ -> false
     end
   end
+
+  # Build graph data structure for single-level SVG visualization
+  # Returns %{nodes: [...], edges: [...], width: int, height: int}
+  defp build_pathways_graph(child_stops, pathways) do
+    if child_stops == [] do
+      %{nodes: [], edges: [], width: 400, height: 200}
+    else
+      # Create stop_id -> stop map (kept for potential future use)
+      _stop_map = Map.new(child_stops, fn s -> {s.stop_id, s} end)
+
+      # Horizontal spacing for single-level layout
+      node_spacing_x = 120
+      padding = 60
+
+      # Calculate node positions (single row, horizontal layout)
+      nodes =
+        child_stops
+        |> Enum.with_index()
+        |> Enum.map(fn {stop, col} ->
+          x = padding + col * node_spacing_x
+          y = 100
+
+          %{
+            id: stop.stop_id,
+            label: stop.stop_id,
+            x: x,
+            y: y,
+            location_type: stop.location_type
+          }
+        end)
+
+      # Create node position lookup
+      node_pos_map = Map.new(nodes, fn n -> {n.id, {n.x, n.y}} end)
+
+      # Build edges from pathways (already filtered by level)
+      edges =
+        pathways
+        |> Enum.filter(fn p ->
+          Map.has_key?(node_pos_map, p.from_stop_id) and Map.has_key?(node_pos_map, p.to_stop_id)
+        end)
+        |> Enum.map(fn p ->
+          {from_x, from_y} = Map.get(node_pos_map, p.from_stop_id)
+          {to_x, to_y} = Map.get(node_pos_map, p.to_stop_id)
+
+          %{
+            from_id: p.from_stop_id,
+            to_id: p.to_stop_id,
+            from_x: from_x,
+            from_y: from_y,
+            to_x: to_x,
+            to_y: to_y,
+            pathway_mode: p.pathway_mode,
+            is_bidirectional: p.is_bidirectional
+          }
+        end)
+
+      # Calculate SVG dimensions
+      max_x = nodes |> Enum.map(& &1.x) |> Enum.max(fn -> 0 end)
+
+      width = max(max_x + padding + 60, 400)
+      height = 240
+
+      %{nodes: nodes, edges: edges, width: width, height: height}
+    end
+  end
+
+  # Get stroke color for pathway mode
+  defp pathway_stroke_color(mode) do
+    case mode do
+      1 -> "#6b7280"
+      2 -> "#f59e0b"
+      3 -> "#8b5cf6"
+      4 -> "#ec4899"
+      5 -> "#3b82f6"
+      6 -> "#ef4444"
+      7 -> "#10b981"
+      _ -> "#9ca3af"
+    end
+  end
+
+  # Get stroke dash array for pathway mode
+  defp pathway_stroke_dash(mode) do
+    case mode do
+      # Stairs - dashed
+      2 -> "4,4"
+      # Escalator - dotted
+      4 -> "2,2"
+      # Elevator - long dash
+      5 -> "8,4"
+      # Fare/Exit gates - dash-dot
+      6 -> "6,2,2,2"
+      7 -> "6,2,2,2"
+      # Default solid
+      _ -> "none"
+    end
+  end
+
+  # Get node fill color based on location_type
+  defp node_fill_color(location_type) do
+    case location_type do
+      # Platform
+      0 -> "#3b82f6"
+      # Station
+      1 -> "#10b981"
+      # Entrance/Exit
+      2 -> "#f59e0b"
+      # Generic node
+      3 -> "#6b7280"
+      # Boarding area
+      4 -> "#8b5cf6"
+      _ -> "#9ca3af"
+    end
+  end
+
+  # Calculate arrow points for directional pathway edges
+  defp arrow_points(from_x, from_y, to_x, to_y) do
+    # Calculate direction vector
+    dx = to_x - from_x
+    dy = to_y - from_y
+    len = :math.sqrt(dx * dx + dy * dy)
+
+    # Normalize and scale
+    if len > 0 do
+      nx = dx / len
+      ny = dy / len
+
+      # Arrow tip position (slightly before the target node)
+      tip_x = to_x - nx * 14
+      tip_y = to_y - ny * 14
+
+      # Arrow size
+      arrow_len = 8
+      arrow_width = 4
+
+      # Perpendicular vector
+      px = -ny
+      py = nx
+
+      # Arrow base points
+      base_x = tip_x - nx * arrow_len
+      base_y = tip_y - ny * arrow_len
+
+      left_x = base_x + px * arrow_width
+      left_y = base_y + py * arrow_width
+
+      right_x = base_x - px * arrow_width
+      right_y = base_y - py * arrow_width
+
+      "#{tip_x},#{tip_y} #{left_x},#{left_y} #{right_x},#{right_y}"
+    else
+      "0,0 0,0 0,0"
+    end
+  end
+
+  # Truncate label to max length
+  defp truncate_label(label, max_len) when is_binary(label) do
+    if String.length(label) > max_len do
+      String.slice(label, 0, max_len - 1) <> "..."
+    else
+      label
+    end
+  end
+
+  defp truncate_label(label, _max_len), do: to_string(label)
 end

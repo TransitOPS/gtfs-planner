@@ -20,10 +20,16 @@ defmodule GtfsPlanner.Gtfs.Stop do
       foreign_key: :organization_id
 
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
-    belongs_to :level, GtfsPlanner.Gtfs.Level
-    belongs_to :parent_station, __MODULE__, foreign_key: :parent_station_id
 
-    has_many :child_stops, __MODULE__, foreign_key: :parent_station_id
+    field :parent_station, :string
+    field :level_id, :string
+
+    has_many :child_stops, __MODULE__, foreign_key: :parent_station
+    has_many :stop_levels, GtfsPlanner.Gtfs.StopLevel
+    many_to_many :levels, GtfsPlanner.Gtfs.Level, join_through: GtfsPlanner.Gtfs.StopLevel
+
+    # Virtual field for preloaded level data (populated via select_merge in queries)
+    field :level, :map, virtual: true
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -41,8 +47,8 @@ defmodule GtfsPlanner.Gtfs.Stop do
           wheelchair_boarding: integer() | nil,
           platform_code: String.t() | nil,
           diagram_coordinate: map() | nil,
-          parent_station_id: Ecto.UUID.t() | nil,
-          level_id: Ecto.UUID.t() | nil,
+          parent_station: String.t() | nil,
+          level_id: String.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -62,7 +68,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
       :diagram_coordinate,
       :organization_id,
       :gtfs_version_id,
-      :parent_station_id,
+      :parent_station,
       :level_id
     ])
     |> validate_required([:stop_id, :organization_id, :gtfs_version_id])

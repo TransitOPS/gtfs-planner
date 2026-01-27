@@ -96,11 +96,8 @@ defmodule GtfsPlanner.Gtfs.Export do
   end
 
   # Builds lookup maps for foreign key resolution
-  defp build_lookup_maps(organization_id, gtfs_version_id) do
-    %{
-      stop: StreamBuilder.build_stop_lookup(Repo, organization_id, gtfs_version_id),
-      level: StreamBuilder.build_level_lookup(Repo, organization_id, gtfs_version_id)
-    }
+  defp build_lookup_maps(_organization_id, _gtfs_version_id) do
+    %{}
   end
 
   # Exports all files for the given specs

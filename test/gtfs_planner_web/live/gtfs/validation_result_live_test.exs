@@ -323,13 +323,12 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
 
       # Try to access the other organization's validation run
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{other_run.id}")
 
-      # Should redirect with error message
-      assert_redirect(view, "/gtfs/#{version.id}/export")
+      assert {:error, {:live_redirect, %{to: path, flash: flash}}} =
+               live(conn, "/gtfs/#{version.id}/validation/#{other_run.id}")
 
-      assert Phoenix.Flash.get(view.assigns.flash, :error) =~
-               "Unauthorized access to validation run"
+      assert path == "/gtfs/#{version.id}/export"
+      assert flash["error"] == "Unauthorized access to validation run"
     end
   end
 end
