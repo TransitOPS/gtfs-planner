@@ -1065,7 +1065,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
     * `row_map` - Map of CSV column names to values
     * `organization_id` - UUID of the organization
     * `gtfs_version_id` - UUID of the GTFS version
-    * `stop_map` - Map of GTFS stop_id strings to UUIDs
+    * `stop_map` - Map of GTFS stop_id strings for validation (keys only)
 
   ## Returns
 
@@ -1076,17 +1076,17 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
 
   # Backwards compatibility for tests that don't pass stop_map yet
   def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id, stop_map) when stop_map == %{} do
-    # When no stop_map is provided (or empty), we can't resolve UUIDs.
-    # This matches the previous behavior but might fail FK constraints if S1 is not a valid UUID.
-    # We warn about this usage pattern.
+    # When no stop_map is provided (or empty), we can't validate stop_id existence.
+    # This matches the previous behavior and just returns the stop_id strings as-is.
     pathway_row_to_attrs_impl(row_map, organization_id, gtfs_version_id, fn id -> {:ok, id} end)
   end
 
   def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id, stop_map) do
     resolve_fn = fn stop_id ->
-      case Map.get(stop_map, stop_id) do
-        nil -> {:error, "stop_id not found: #{stop_id}"}
-        uuid -> {:ok, uuid}
+      if Map.has_key?(stop_map, stop_id) do
+        {:ok, stop_id}
+      else
+        {:error, "stop_id not found: #{stop_id}"}
       end
     end
 
@@ -1100,7 +1100,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
          {:ok, pathway_mode} <- parse_pathway_mode(row_map["pathway_mode"]),
          {:ok, is_bidirectional} <- parse_is_bidirectional(row_map["is_bidirectional"]) do
       
-      # Resolve stop IDs (UUIDs)
+      # Validate stop IDs exist
       with {:ok, from_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, from_stop_id_str, "from_stop_id"),
            {:ok, to_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, to_stop_id_str, "to_stop_id") do
         
@@ -1157,7 +1157,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
 
   defp resolve_stop_fn_wrapper(func, stop_id, field_name) do
     case func.(stop_id) do
-      {:ok, uuid} -> {:ok, uuid}
+      {:ok, validated_stop_id} -> {:ok, validated_stop_id}
       {:error, _} -> {:error, "#{field_name} not found: #{stop_id}"}
     end
   end
