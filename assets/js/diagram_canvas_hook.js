@@ -39,8 +39,8 @@ const DiagramCanvasHook = {
     }
 
     svg.addEventListener("wheel", (e) => {
-      e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
         // Scroll up (negative deltaY) = zoom in, scroll down = zoom out
         const delta = e.deltaY > 0 ? 0.95 : 1.05;
         const newScale = Math.min(this.maxScale, Math.max(this.minScale, this.scale * delta));
@@ -62,6 +62,21 @@ const DiagramCanvasHook = {
           this.updateViewBox();
         }
       } else {
+        // Calculate limits to check if we should allow page scroll
+        const margin = 0.5;
+        const minY = -this.viewBox.h * margin;
+        const maxY = this.baseH - this.viewBox.h * (1 - margin);
+        
+        // Use a small epsilon for float comparison
+        const isAtTop = this.viewBox.y <= minY + 0.1;
+        const isAtBottom = this.viewBox.y >= maxY - 0.1;
+        
+        // If we are at the edge and trying to scroll past it, let the page scroll
+        if ((isAtTop && e.deltaY < 0) || (isAtBottom && e.deltaY > 0)) {
+          return;
+        }
+
+        e.preventDefault();
         const panSpeed = 0.3;
         this.viewBox.x += e.deltaX * panSpeed / this.scale;
         this.viewBox.y += e.deltaY * panSpeed / this.scale;

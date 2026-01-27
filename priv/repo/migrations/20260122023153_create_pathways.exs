@@ -21,8 +21,8 @@ defmodule GtfsPlanner.Repo.Migrations.CreatePathways do
       add :gtfs_version_id, references(:gtfs_versions, type: :binary_id, on_delete: :delete_all),
         null: false
 
-      add :from_stop_id, references(:stops, type: :binary_id, on_delete: :delete_all), null: false
-      add :to_stop_id, references(:stops, type: :binary_id, on_delete: :delete_all), null: false
+      add :from_stop_id, :string, null: false
+      add :to_stop_id, :string, null: false
 
       timestamps(type: :utc_datetime_usec)
     end

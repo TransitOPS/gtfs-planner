@@ -26,8 +26,8 @@ defmodule GtfsPlanner.Gtfs.Pathway do
           min_width: Decimal.t() | nil,
           signposted_as: String.t() | nil,
           reversed_signposted_as: String.t() | nil,
-          from_stop_id: Ecto.UUID.t(),
-          to_stop_id: Ecto.UUID.t(),
+          from_stop_id: String.t(),
+          to_stop_id: String.t(),
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -51,8 +51,12 @@ defmodule GtfsPlanner.Gtfs.Pathway do
       foreign_key: :organization_id
 
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
-    belongs_to :from_stop, GtfsPlanner.Gtfs.Stop
-    belongs_to :to_stop, GtfsPlanner.Gtfs.Stop
+
+    field :from_stop_id, :string
+    field :to_stop_id, :string
+
+    field :from_stop, :map, virtual: true
+    field :to_stop, :map, virtual: true
 
     timestamps(type: :utc_datetime_usec)
   end

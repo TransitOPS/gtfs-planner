@@ -48,10 +48,10 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
         {"stop_lat", :stop_lat},
         {"stop_lon", :stop_lon},
         {"location_type", :location_type},
-        {"parent_station", {:lookup, :parent_station_id, :stop}},
+        {"parent_station", :parent_station},
         {"wheelchair_boarding", :wheelchair_boarding},
         {"platform_code", :platform_code},
-        {"level_id", {:lookup, :level_id, :level}}
+        {"level_id", :level_id}
       ]
     }
   end
@@ -230,8 +230,8 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
       schema: Gtfs.Pathway,
       fields: [
         {"pathway_id", :pathway_id},
-        {"from_stop_id", {:lookup, :from_stop_id, :stop}},
-        {"to_stop_id", {:lookup, :to_stop_id, :stop}},
+        {"from_stop_id", :from_stop_id},
+        {"to_stop_id", :to_stop_id},
         {"pathway_mode", :pathway_mode},
         {"is_bidirectional", :is_bidirectional},
         {"length", :length},

@@ -282,6 +282,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           |> assign(:import_result, {:error, error_msg})
           |> assign(:importing, false)
           |> assign(:import_task, nil)
+
+        {:error, %{} = error_map} ->
+          # Handle map-format errors from BatchProcessor
+          error_msg = format_error_map(error_map)
+
+          socket
+          |> assign(:import_result, {:error, error_msg})
+          |> assign(:importing, false)
+          |> assign(:import_task, nil)
       end
 
     {:noreply, socket}
@@ -641,4 +650,21 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp upload_error_to_string({:error, reason}), do: reason
   defp upload_error_to_string(error) when is_binary(error), do: error
   defp upload_error_to_string(_), do: "Upload error"
+
+  # Format error maps from BatchProcessor into user-friendly strings
+  defp format_error_map(%{file: file, row: row, reason: reason}),
+    do: "Error in #{file} at row #{row}: #{reason}"
+
+  defp format_error_map(%{file: file, constraint: constraint, message: msg})
+       when not is_nil(constraint),
+       do: "Constraint error in #{file} (#{constraint}): #{msg}"
+
+  defp format_error_map(%{file: file, error: error}),
+    do: "Error in #{file}: #{error}"
+
+  defp format_error_map(%{file: file, message: msg}),
+    do: "Error in #{file}: #{msg}"
+
+  defp format_error_map(%{} = map),
+    do: inspect(map)
 end

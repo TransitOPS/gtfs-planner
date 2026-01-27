@@ -426,7 +426,7 @@ defmodule GtfsPlanner.GtfsTest do
         stop_fixture(org.id, version.id, %{
           stop_id: "STATION1",
           stop_name: "Main Station",
-          parent_station_id: nil
+          parent_station: nil
         })
 
       # Create a child stop (has parent)
@@ -434,14 +434,14 @@ defmodule GtfsPlanner.GtfsTest do
         stop_fixture(org.id, version.id, %{
           stop_id: "CHILD1",
           stop_name: "Platform 1",
-          parent_station_id: station.id
+          parent_station: station.stop_id
         })
 
       stations = Gtfs.list_stations(org.id, version.id)
 
       assert length(stations) == 1
       assert hd(stations).id == station.id
-      assert hd(stations).parent_station_id == nil
+      assert hd(stations).parent_station == nil
     end
 
     test "does not return stations from other organizations", %{
@@ -449,7 +449,7 @@ defmodule GtfsPlanner.GtfsTest do
       gtfs_version: version
     } do
       # Create station for this org
-      _station = stop_fixture(org.id, version.id, %{stop_id: "STATION1", parent_station_id: nil})
+      _station = stop_fixture(org.id, version.id, %{stop_id: "STATION1", parent_station: nil})
 
       # Create another org with its own station
       other_org = organization_fixture()
@@ -458,7 +458,7 @@ defmodule GtfsPlanner.GtfsTest do
       _other_station =
         stop_fixture(other_org.id, other_version.id, %{
           stop_id: "STATION2",
-          parent_station_id: nil
+          parent_station: nil
         })
 
       stations = Gtfs.list_stations(org.id, version.id)
@@ -472,13 +472,13 @@ defmodule GtfsPlanner.GtfsTest do
       gtfs_version: version
     } do
       # Create station for this version
-      _station = stop_fixture(org.id, version.id, %{stop_id: "STATION1", parent_station_id: nil})
+      _station = stop_fixture(org.id, version.id, %{stop_id: "STATION1", parent_station: nil})
 
       # Create another version with its own station
       other_version = gtfs_version_fixture(org.id)
 
       _other_station =
-        stop_fixture(org.id, other_version.id, %{stop_id: "STATION2", parent_station_id: nil})
+        stop_fixture(org.id, other_version.id, %{stop_id: "STATION2", parent_station: nil})
 
       stations = Gtfs.list_stations(org.id, version.id)
 
@@ -491,21 +491,21 @@ defmodule GtfsPlanner.GtfsTest do
         stop_fixture(org.id, version.id, %{
           stop_id: "STATION_C",
           stop_name: "Charlie Station",
-          parent_station_id: nil
+          parent_station: nil
         })
 
       station_a =
         stop_fixture(org.id, version.id, %{
           stop_id: "STATION_A",
           stop_name: "Alpha Station",
-          parent_station_id: nil
+          parent_station: nil
         })
 
       station_b =
         stop_fixture(org.id, version.id, %{
           stop_id: "STATION_B",
           stop_name: "Bravo Station",
-          parent_station_id: nil
+          parent_station: nil
         })
 
       stations = Gtfs.list_stations(org.id, version.id)
@@ -529,7 +529,7 @@ defmodule GtfsPlanner.GtfsTest do
       child =
         stop_fixture(org.id, version.id, %{
           stop_id: "CHILD",
-          parent_station_id: parent.id,
+          parent_station: parent.stop_id,
           level_id: level.id
         })
 
@@ -537,7 +537,7 @@ defmodule GtfsPlanner.GtfsTest do
 
       assert length(result) == 1
       assert hd(result).id == child.id
-      assert hd(result).level.id == level.id
+      assert hd(result).level_id == level.id
     end
   end
 
@@ -561,17 +561,43 @@ defmodule GtfsPlanner.GtfsTest do
         level_fixture(org.id, version.id, %{
           level_id: "L1",
           level_index: 0.0,
-          level_name: "Ground",
-          parent_station_id: station_a.id
+          level_name: "Ground"
         })
 
       level2 =
         level_fixture(org.id, version.id, %{
           level_id: "L2",
           level_index: 1.0,
-          level_name: "Platform",
-          parent_station_id: station_a.id
+          level_name: "Platform"
         })
+
+      # Create child stops (platforms) on these levels for station A
+      stop_fixture(org.id, version.id, %{
+        stop_id: "A_PLATFORM_1",
+        parent_station: station_a.stop_id,
+        level_id: level1.level_id
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "A_PLATFORM_2",
+        parent_station: station_a.stop_id,
+        level_id: level2.level_id
+      })
+
+      # Also create stop_level associations to test diagram_filename (optional)
+      Gtfs.create_stop_level(%{
+        stop_id: station_a.id,
+        level_id: level1.id,
+        organization_id: org.id,
+        gtfs_version_id: version.id
+      })
+
+      Gtfs.create_stop_level(%{
+        stop_id: station_a.id,
+        level_id: level2.id,
+        organization_id: org.id,
+        gtfs_version_id: version.id
+      })
 
       # Create a level without parent_station_id (orphaned)
       _orphaned_level =
@@ -584,9 +610,8 @@ defmodule GtfsPlanner.GtfsTest do
       result_a = Gtfs.list_levels_for_station(org.id, version.id, station_a.id)
 
       assert length(result_a) == 2
-      assert Enum.any?(result_a, fn l -> l.id == level1.id end)
-      assert Enum.any?(result_a, fn l -> l.id == level2.id end)
-      assert Enum.all?(result_a, fn l -> l.parent_station_id == station_a.id end)
+      assert Enum.any?(result_a, fn %{level: l} -> l.id == level1.id end)
+      assert Enum.any?(result_a, fn %{level: l} -> l.id == level2.id end)
 
       # Verify station B returns empty list (no levels assigned)
       result_b = Gtfs.list_levels_for_station(org.id, version.id, station_b.id)
@@ -599,28 +624,44 @@ defmodule GtfsPlanner.GtfsTest do
       level2 =
         level_fixture(org.id, version.id, %{
           level_id: "L2",
-          level_index: 2.0,
-          parent_station_id: station.id
+          level_index: 2.0
         })
 
       level0 =
         level_fixture(org.id, version.id, %{
           level_id: "L0",
-          level_index: 0.0,
-          parent_station_id: station.id
+          level_index: 0.0
         })
 
       level1 =
         level_fixture(org.id, version.id, %{
           level_id: "L1",
-          level_index: 1.0,
-          parent_station_id: station.id
+          level_index: 1.0
         })
+
+      # Create child stops on each level
+      stop_fixture(org.id, version.id, %{
+        stop_id: "PLATFORM_0",
+        parent_station: station.stop_id,
+        level_id: level0.level_id
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "PLATFORM_1",
+        parent_station: station.stop_id,
+        level_id: level1.level_id
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "PLATFORM_2",
+        parent_station: station.stop_id,
+        level_id: level2.level_id
+      })
 
       result = Gtfs.list_levels_for_station(org.id, version.id, station.id)
 
-      assert Enum.map(result, & &1.level_index) == [0.0, 1.0, 2.0]
-      assert Enum.map(result, & &1.id) == [level0.id, level1.id, level2.id]
+      assert Enum.map(result, & &1.level.level_index) == [0.0, 1.0, 2.0]
+      assert Enum.map(result, & &1.level.id) == [level0.id, level1.id, level2.id]
     end
   end
 
@@ -645,7 +686,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert route_info.route_short_name == route.route_short_name
     end
 
-    test "returns empty list for stops with no routes", %{organization: org, gtfs_version: version} do
+    test "returns empty list for stops with no routes", %{
+      organization: org,
+      gtfs_version: version
+    } do
       stop = stop_fixture(org.id, version.id, %{stop_id: "S1"})
       routes_map = Gtfs.get_routes_for_stops(org.id, version.id, [stop.stop_id])
       assert routes_map == %{}
@@ -661,13 +705,13 @@ defmodule GtfsPlanner.GtfsTest do
 
     test "filters stations by route_id", %{organization: org, gtfs_version: version} do
       # Station served by Route 1
-      station1 = stop_fixture(org.id, version.id, %{stop_id: "S1", parent_station_id: nil})
+      station1 = stop_fixture(org.id, version.id, %{stop_id: "S1", parent_station: nil})
       route1 = route_fixture(org.id, version.id, %{route_id: "R1"})
       trip1 = trip_fixture(org.id, version.id, route1.route_id, %{trip_id: "T1"})
       stop_time_fixture(org.id, version.id, trip1.trip_id, station1.stop_id)
 
       # Station served by Route 2
-      station2 = stop_fixture(org.id, version.id, %{stop_id: "S2", parent_station_id: nil})
+      station2 = stop_fixture(org.id, version.id, %{stop_id: "S2", parent_station: nil})
       route2 = route_fixture(org.id, version.id, %{route_id: "R2"})
       trip2 = trip_fixture(org.id, version.id, route2.route_id, %{trip_id: "T2"})
       stop_time_fixture(org.id, version.id, trip2.trip_id, station2.stop_id)
@@ -684,8 +728,8 @@ defmodule GtfsPlanner.GtfsTest do
     end
 
     test "returns all stations when route_id is nil", %{organization: org, gtfs_version: version} do
-      stop_fixture(org.id, version.id, %{stop_id: "S1", parent_station_id: nil})
-      stop_fixture(org.id, version.id, %{stop_id: "S2", parent_station_id: nil})
+      stop_fixture(org.id, version.id, %{stop_id: "S1", parent_station: nil})
+      stop_fixture(org.id, version.id, %{stop_id: "S2", parent_station: nil})
 
       stations = Gtfs.list_stations(org.id, version.id, route_id: nil)
       assert length(stations) == 2
@@ -704,11 +748,11 @@ defmodule GtfsPlanner.GtfsTest do
       gtfs_version: version
     } do
       parent = stop_fixture(org.id, version.id, %{stop_id: "PARENT", location_type: 1})
-      child1 = stop_fixture(org.id, version.id, %{stop_id: "C1", parent_station_id: parent.id})
-      child2 = stop_fixture(org.id, version.id, %{stop_id: "C2", parent_station_id: parent.id})
+      child1 = stop_fixture(org.id, version.id, %{stop_id: "C1", parent_station: parent.stop_id})
+      child2 = stop_fixture(org.id, version.id, %{stop_id: "C2", parent_station: parent.stop_id})
 
       pathway =
-        pathway_fixture(org.id, version.id, child1.id, child2.id, %{
+        pathway_fixture(org.id, version.id, child1.stop_id, child2.stop_id, %{
           pathway_id: "P1",
           pathway_mode: 1
         })
@@ -719,6 +763,95 @@ defmodule GtfsPlanner.GtfsTest do
       assert hd(result).id == pathway.id
       assert hd(result).from_stop.id == child1.id
       assert hd(result).to_stop.id == child2.id
+    end
+  end
+
+  describe "list_cross_level_stop_ids/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "returns stop IDs participating in cross-level pathways", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      # Create a parent station
+      parent = stop_fixture(org.id, version.id, %{stop_id: "STATION", location_type: 1})
+
+      # Create two levels
+      level1 = level_fixture(org.id, version.id, %{level_id: "L1", level_index: 0.0})
+      level2 = level_fixture(org.id, version.id, %{level_id: "L2", level_index: 1.0})
+
+      # Create two child stops on different levels
+      child1 =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD1",
+          parent_station: parent.stop_id,
+          level_id: level1.level_id
+        })
+
+      child2 =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD2",
+          parent_station: parent.stop_id,
+          level_id: level2.level_id
+        })
+
+      # Create a pathway between them
+      _pathway =
+        pathway_fixture(org.id, version.id, child1.stop_id, child2.stop_id, %{
+          pathway_id: "P1",
+          pathway_mode: 2
+        })
+
+      # Get cross-level stop IDs
+      result = Gtfs.list_cross_level_stop_ids(org.id, version.id, parent.id)
+
+      # Assert both stop IDs are returned in the MapSet
+      assert MapSet.size(result) == 2
+      assert MapSet.member?(result, child1.id)
+      assert MapSet.member?(result, child2.id)
+    end
+
+    test "returns empty MapSet when no cross-level pathways exist", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      # Create a parent station
+      parent = stop_fixture(org.id, version.id, %{stop_id: "STATION", location_type: 1})
+
+      # Create a level
+      level = level_fixture(org.id, version.id, %{level_id: "L1", level_index: 0.0})
+
+      # Create two child stops on the same level
+      child1 =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD1",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
+
+      child2 =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD2",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
+
+      # Create a pathway between them (same level)
+      _pathway =
+        pathway_fixture(org.id, version.id, child1.stop_id, child2.stop_id, %{
+          pathway_id: "P1",
+          pathway_mode: 1
+        })
+
+      # Get cross-level stop IDs
+      result = Gtfs.list_cross_level_stop_ids(org.id, version.id, parent.id)
+
+      # Assert empty MapSet is returned
+      assert MapSet.size(result) == 0
     end
   end
 
@@ -733,17 +866,17 @@ defmodule GtfsPlanner.GtfsTest do
       child1 =
         stop_fixture(organization.id, gtfs_version.id, %{
           stop_id: "C1",
-          parent_station_id: parent.id
+          parent_station: parent.stop_id
         })
 
       child2 =
         stop_fixture(organization.id, gtfs_version.id, %{
           stop_id: "C2",
-          parent_station_id: parent.id
+          parent_station: parent.stop_id
         })
 
       pathway =
-        pathway_fixture(organization.id, gtfs_version.id, child1.id, child2.id, %{
+        pathway_fixture(organization.id, gtfs_version.id, child1.stop_id, child2.stop_id, %{
           pathway_id: "P1",
           pathway_mode: 1,
           is_bidirectional: true,

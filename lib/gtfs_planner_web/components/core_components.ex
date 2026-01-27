@@ -666,7 +666,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
       <.drawer id="user-form" open={@show_form} on_close="close_form" title="Edit User">
         <.simple_form for={@form} phx-submit="save">
-          <.input field={@form[:name]} type="text" label="Name" />
+          <.input field={@form[:name]} type="text" label="Name" class="max-w-3xl" />
         </.simple_form>
       </.drawer>
 
@@ -693,30 +693,30 @@ defmodule GtfsPlannerWeb.CoreComponents do
     <aside
       id={@id}
       class={[
-        "fixed top-0 right-0 h-full w-full max-w-[480px] min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 z-50 transition-transform duration-300",
+        "fixed top-0 right-0 h-full w-full  min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 z-50 transition-transform duration-300",
         @open && "translate-x-0",
         !@open && "translate-x-full",
         @class
       ]}
     >
-      <div class="flex flex-col h-full p-6">
+      <div class="flex flex-col h-full">
         <%!-- Header --%>
-        <header class="flex items-center justify-between mb-6">
-          <h2 :if={@title} class="text-lg font-semibold">
+        <header class="flex items-center justify-between px-6 py-4 bg-emerald-50 border-b border-emerald-100">
+          <h2 :if={@title} class="text-lg font-semibold text-emerald-900">
             {@title}
           </h2>
           <div :if={!@title} class="flex-1" />
           <button
             type="button"
             phx-click={@on_close}
-            class="btn btn-ghost btn-sm btn-circle"
+            class="btn btn-ghost btn-sm btn-circle text-emerald-900/70 hover:bg-emerald-200/50"
             aria-label={gettext("close")}
           >
             <.icon name="hero-x-mark" class="size-5" />
           </button>
         </header>
         <%!-- Content --%>
-        <div class="flex-1 overflow-y-auto px-0.5 -mx-0.5">
+        <div class="flex-1 overflow-y-auto p-6">
           {render_slot(@inner_block)}
         </div>
       </div>
@@ -829,39 +829,26 @@ defmodule GtfsPlannerWeb.CoreComponents do
         <div :if={@active_tab == :diagram} class="flex items-center gap-4 pb-2">
           <%!-- Level context --%>
           <div class="flex items-center gap-2">
-            <form phx-change="switch_level" class="flex items-center gap-2">
-              <label class="text-sm font-medium">Level:</label>
-              <select class="select select-sm select-bordered" name="level_id">
-                <%= for level <- @levels do %>
-                  <option value={level.id} selected={@active_level && level.id == @active_level.id}>
-                    {level.level_name || level.level_id} ({trunc(level.level_index)})
-                  </option>
-                <% end %>
-              </select>
-            </form>
-
             <button
               type="button"
-              class="btn btn-sm btn-outline btn-square"
+              class="btn btn-sm btn-outline"
               phx-click="open_add_level"
-              aria-label="Add level"
             >
-              <.icon name="hero-plus" class="size-4" />
+              Add a level
             </button>
 
             <button
               :if={@active_level}
               type="button"
-              class="btn btn-sm btn-outline btn-square"
+              class="btn btn-sm btn-outline"
               phx-click="open_edit_level"
-              aria-label="Edit level"
             >
-              <.icon name="hero-pencil" class="size-4" />
+              Edit this level
             </button>
           </div>
 
           <%!-- Canvas actions --%>
-          <div :if={@active_level && @uploads && @has_diagram} class="flex items-center gap-2">
+          <div :if={@active_level && @uploads} class="flex items-center gap-2">
             <form
               id="diagram-upload-form"
               phx-change="upload_diagram"
@@ -869,29 +856,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
               phx-hook="AutoSubmitUpload"
             >
               <label class="btn btn-sm btn-outline cursor-pointer">
-                Upload Diagram <.live_file_input upload={@uploads.diagram} class="hidden" />
+                {if @has_diagram, do: "Replace diagram", else: "Upload Diagram"} <.live_file_input upload={@uploads.diagram} class="hidden" />
               </label>
             </form>
             <span :if={@diagram_error} class="text-error text-sm">{@diagram_error}</span>
-          </div>
-
-          <div class="join" role="group" aria-label="Canvas mode">
-            <button
-              type="button"
-              class={["btn btn-sm join-item", @mode == :add && "btn-active"]}
-              phx-click="switch_mode"
-              phx-value-mode="add"
-            >
-              Add child stop
-            </button>
-            <button
-              type="button"
-              class={["btn btn-sm join-item", @mode == :connect && "btn-active"]}
-              phx-click="switch_mode"
-              phx-value-mode="connect"
-            >
-              Connect pathways
-            </button>
           </div>
         </div>
       </div>

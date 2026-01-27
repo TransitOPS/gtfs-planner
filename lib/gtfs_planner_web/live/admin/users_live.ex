@@ -377,6 +377,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
         open={@live_action == :invite}
         on_close="close_drawer"
         title="Invite User"
+        class="max-w-3xl"
       >
         <%= if @invite_form do %>
           <.invite_form

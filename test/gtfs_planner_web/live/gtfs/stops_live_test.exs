@@ -191,16 +191,23 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     setup do
       organization = organization_fixture()
       user = user_fixture()
+
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: organization.id,
         roles: ["pathways_studio_viewer"]
       })
+
       gtfs_version = gtfs_version_fixture(organization.id)
       %{user: user, organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "can filter by route", %{conn: conn, user: user, organization: org, gtfs_version: version} do
+    test "can filter by route", %{
+      conn: conn,
+      user: user,
+      organization: org,
+      gtfs_version: version
+    } do
       # Setup data: Route1 serves Station1, Route2 serves Station2
       station1 = stop_fixture(org.id, version.id, %{stop_id: "S1", stop_name: "Station 1"})
       route1 = route_fixture(org.id, version.id, %{route_id: "R1", route_short_name: "Route 1"})
