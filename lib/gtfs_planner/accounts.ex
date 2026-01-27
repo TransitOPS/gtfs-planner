@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Accounts do
 
   alias GtfsPlanner.Accounts.{User, UserToken, UserOrgMembership}
   alias GtfsPlanner.Accounts.UserNotifier
+  alias GtfsPlanner.Organizations.Organization
 
   ## Database getters
 
@@ -57,6 +58,22 @@ defmodule GtfsPlanner.Accounts do
       when is_binary(email) and is_binary(password) do
     user = Repo.get_by(User, email: email)
     if User.valid_password?(user, password), do: user
+  end
+
+  @doc """
+  Returns the count of users in the system.
+
+  ## Examples
+
+      iex> count_users()
+      0
+
+      iex> count_users()
+      1
+
+  """
+  def count_users do
+    Repo.aggregate(User, :count, :id)
   end
 
   ## User registration
@@ -518,6 +535,48 @@ defmodule GtfsPlanner.Accounts do
       {:ok, %{user: user}} -> {:ok, user}
       {:error, :user, changeset, _} -> {:error, changeset}
       {:error, :membership, changeset, _} -> {:error, changeset}
+    end
+  end
+
+  @doc """
+  Registers the first administrator user along with their organization.
+
+  Creates a user, organization, default GTFS version, user-organization membership
+  with administrator role, and confirms the user account. All operations occur
+  atomically within a single transaction.
+
+  ## Examples
+
+      iex> register_first_admin(%{email: "admin@example.com", password: "password123", password_confirmation: "password123"}, %{name: "My Org", alias: "my-org"})
+      {:ok, %User{}}
+
+      iex> register_first_admin(%{email: "invalid"}, %{name: "My Org"})
+      {:error, %Ecto.Changeset{}}
+
+  """
+  def register_first_admin(user_attrs, org_attrs) do
+    Ecto.Multi.new()
+    |> Ecto.Multi.insert(:user, User.registration_changeset(%User{}, user_attrs))
+    |> Ecto.Multi.insert(:org, Organization.changeset(%Organization{}, org_attrs))
+    |> Ecto.Multi.run(:version, fn _repo, %{org: org} ->
+      GtfsPlanner.Versions.create_default_version(org.id)
+    end)
+    |> Ecto.Multi.insert(:membership, fn %{user: user, org: org} ->
+      UserOrgMembership.changeset(%UserOrgMembership{}, %{
+        user_id: user.id,
+        organization_id: org.id,
+        roles: ["administrator"]
+      })
+    end)
+    |> Ecto.Multi.update(:confirm_user, fn %{user: user} ->
+      User.confirm_changeset(user)
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{user: user}} -> {:ok, user}
+      {:error, :user, changeset, _} -> {:error, changeset}
+      {:error, :org, changeset, _} -> {:error, changeset}
+      {:error, _, _, _} -> {:error, :transaction_failed}
     end
   end
 
