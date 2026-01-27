@@ -34,6 +34,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:pending_xy, nil)
        |> assign(:selected_stop_id, nil)
        |> assign(:active_point_id, nil)
+       |> assign(:selected_from_stop, nil)
+       |> assign(:cross_level_stop_ids, MapSet.new())
        |> assign(:child_stop_form, to_form(%{}))
        |> assign(:show_level_modal, nil)
        |> assign(:level_form, to_form(%{}))
@@ -44,6 +46,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:show_pathway_drawer, false)
        |> assign(:editing_pathway, nil)
        |> assign(:pathway_form, to_form(%{}))
+       |> assign(:available_levels, [])
+       |> assign(:level_mode, :existing)
        |> allow_upload(:diagram,
          accept: ~w(.png .jpg .jpeg .svg),
          max_file_size: 10_000_000
@@ -64,7 +68,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:noreply, push_navigate(socket, to: "/gtfs/#{gtfs_version_id}/stops")}
 
         station ->
-          levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+          # levels is now a list of maps: %{level: Level, stop_count: count}
+          levels_data =
+            Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+
+          levels = Enum.map(levels_data, & &1.level)
+          station_level_ids = Enum.map(levels, & &1.id)
+
+          # Only show levels that are not already assigned to this station
+          available_levels =
+            Gtfs.list_all_levels(organization_id, gtfs_version_id)
+            |> Enum.reject(&(&1.id in station_level_ids))
+            |> Enum.sort_by(&(&1.level_name || &1.level_id), :asc)
+
+          # Complete picklist of all levels for stop form dropdown
+          all_levels = Gtfs.list_all_levels(organization_id, gtfs_version_id)
 
           active_level =
             Enum.find(levels, List.first(levels), fn l -> l.level_index == 0.0 end)
@@ -74,6 +92,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             |> assign(:stop_id, stop_id)
             |> assign(:station, station)
             |> assign(:levels, levels)
+            |> assign(:available_levels, available_levels)
+            |> assign(:all_levels, all_levels)
             |> assign(:active_level, active_level)
 
           socket = load_level_data(socket, active_level)
@@ -89,6 +109,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> stream(:pathways, [], reset: true)
     |> assign(:child_stops_list, [])
     |> assign(:pathways_list, [])
+    |> assign(:active_stop_level, nil)
   end
 
   defp load_level_data(socket, level) do
@@ -96,16 +117,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
+    stop_level = Gtfs.get_stop_level(organization_id, gtfs_version_id, station.id, level.id)
     child_stops = Gtfs.list_child_stops_for_level(station.id, level.id)
 
     pathways =
       Gtfs.list_pathways_for_level(organization_id, gtfs_version_id, level.id, station.id)
+
+    cross_level_stop_ids =
+      Gtfs.list_cross_level_stop_ids(organization_id, gtfs_version_id, station.id)
 
     socket
     |> stream(:child_stops, child_stops, reset: true)
     |> stream(:pathways, pathways, reset: true)
     |> assign(:child_stops_list, child_stops)
     |> assign(:pathways_list, pathways)
+    |> assign(:active_stop_level, stop_level)
+    |> assign(:cross_level_stop_ids, cross_level_stop_ids)
   end
 
   @impl true
@@ -143,19 +170,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             active_level={@active_level}
             mode={@mode}
             uploads={@uploads}
-            has_diagram={@active_level && @active_level.diagram_filename}
+            has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
             diagram_error={@diagram_error}
+          />
+          <.diagram_action_strip
+            mode={@mode}
+            selected_from_stop={@selected_from_stop}
+            has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
+            levels={@levels}
+            active_level={@active_level}
           />
           <div class="w-full px-4 sm:px-6 lg:px-8 py-4">
             <.diagram_canvas
               station={@station}
               active_level={@active_level}
+              active_stop_level={@active_stop_level}
               streams={@streams}
               active_point_id={@active_point_id}
               pending_xy={@pending_xy}
               selected_stop_id={@selected_stop_id}
               mode={@mode}
               uploads={@uploads}
+              cross_level_stop_ids={@cross_level_stop_ids}
             />
           </div>
         </:sub_header>
@@ -164,6 +200,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pending_xy={@pending_xy}
           selected_stop_id={@selected_stop_id}
           child_stop_form={@child_stop_form}
+          mode={@mode}
+          all_levels={@all_levels}
         />
 
         <.pathway_drawer
@@ -175,6 +213,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         <.level_sidebar
           show_level_modal={@show_level_modal}
           level_form={@level_form}
+          available_levels={@available_levels}
+          level_mode={@level_mode}
         />
 
         <.lists_section
@@ -230,13 +270,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:active_level, level)
      |> assign(:pending_xy, nil)
-     |> assign(:active_point_id, nil)
      |> load_level_data(level)}
   end
 
   @impl true
   def handle_event("switch_mode", %{"mode" => mode}, socket) do
     mode_atom = String.to_existing_atom(mode)
+
+    socket =
+      if socket.assigns.mode == :connect do
+        assign(socket, :selected_from_stop, nil)
+      else
+        socket
+      end
 
     {:noreply,
      socket
@@ -258,7 +304,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         case clicked_stop do
           nil ->
             # No stop found - create new stop
-            form = to_form(%{"stop_id" => "", "stop_name" => "", "location_type" => "0"})
+            level_id = if socket.assigns.active_level, do: socket.assigns.active_level.level_id, else: ""
+            form = to_form(%{"stop_id" => "", "stop_name" => "", "location_type" => "3", "level_id" => level_id})
 
             {:noreply,
              socket
@@ -275,7 +322,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               to_form(%{
                 "stop_id" => stop.stop_id,
                 "stop_name" => stop.stop_name,
-                "location_type" => to_string(stop.location_type)
+                "location_type" => to_string(stop.location_type),
+                "level_id" => stop.level_id
               })
 
             {:noreply,
@@ -300,6 +348,45 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("stop_clicked", %{"id" => id}, socket) do
+    case socket.assigns.mode do
+      :connect ->
+        handle_stop_selection(id, socket)
+
+      _ ->
+        handle_event("edit_child_stop", %{"id" => id}, socket)
+    end
+  end
+
+  defp handle_stop_selection(id, socket) do
+    case socket.assigns.active_point_id do
+      nil ->
+        # First stop selected - set it as active
+        stop = Gtfs.get_stop!(id)
+
+        {:noreply,
+         socket
+         |> stream_insert(:child_stops, stop)
+         |> assign(:active_point_id, id)
+         |> assign(:selected_from_stop, stop)}
+
+      ^id ->
+        # Clicking same stop - deselect it
+        stop = Gtfs.get_stop!(id)
+
+        {:noreply,
+         socket
+         |> stream_insert(:child_stops, stop)
+         |> assign(:active_point_id, nil)
+         |> assign(:selected_from_stop, nil)}
+
+      first_stop_id ->
+        # Second stop selected - create pathway between them
+        create_pathway_between_stops(socket, first_stop_id, id)
+    end
+  end
+
+  @impl true
   def handle_event("edit_child_stop", %{"id" => id}, socket) do
     stop = Gtfs.get_stop!(id)
     coord = stop.diagram_coordinate
@@ -309,7 +396,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       to_form(%{
         "stop_id" => stop.stop_id,
         "stop_name" => stop.stop_name,
-        "location_type" => to_string(stop.location_type)
+        "location_type" => to_string(stop.location_type),
+        "level_id" => stop.level_id
       })
 
     {:noreply,
@@ -331,8 +419,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       stop_id: params["stop_id"],
       stop_name: params["stop_name"],
       location_type: String.to_integer(params["location_type"]),
-      parent_station_id: station.id,
-      level_id: level.id,
+      parent_station: station.stop_id,
+      level_id: params["level_id"],
       diagram_coordinate: %{"x" => pending_xy.x, "y" => pending_xy.y},
       organization_id: organization_id,
       gtfs_version_id: gtfs_version_id
@@ -377,6 +465,58 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:error, changeset} ->
             {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
         end
+    end
+  end
+
+  @impl true
+  def handle_event("delete_child_stop", %{"id" => stop_id}, socket) do
+    stop = Gtfs.get_stop!(stop_id)
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    # Delete any pathways connected to this stop
+    pathways_to_delete =
+      Gtfs.list_pathways_for_stop(organization_id, gtfs_version_id, stop.stop_id)
+
+    # Delete pathways from database and remove from stream
+    socket =
+      Enum.reduce(pathways_to_delete, socket, fn pathway, acc_socket ->
+        case Gtfs.delete_pathway(pathway) do
+          {:ok, deleted_pathway} ->
+            stream_delete(acc_socket, :pathways, deleted_pathway)
+
+          {:error, _} ->
+            acc_socket
+        end
+      end)
+
+    # Delete the stop itself
+    case Gtfs.delete_stop(stop) do
+      {:ok, deleted_stop} ->
+        updated_child_stops_list =
+          Enum.reject(socket.assigns.child_stops_list, &(&1.id == deleted_stop.id))
+
+        updated_pathways_list =
+          Enum.reject(socket.assigns.pathways_list, fn p ->
+            p.from_stop_id == deleted_stop.stop_id or p.to_stop_id == deleted_stop.stop_id
+          end)
+
+        {:noreply,
+         socket
+         |> stream_delete(:child_stops, deleted_stop)
+         |> assign(:child_stops_list, updated_child_stops_list)
+         |> assign(:pathways_list, updated_pathways_list)
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
+
+      {:error, _changeset} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Failed to delete child stop")
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
     end
   end
 
@@ -436,6 +576,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("clear_from_selection", _params, socket) do
+    socket =
+      if socket.assigns.selected_from_stop do
+        stop = socket.assigns.selected_from_stop
+        stream_insert(socket, :child_stops, stop)
+      else
+        socket
+      end
+
+    {:noreply,
+     socket
+     |> assign(:selected_from_stop, nil)
+     |> assign(:active_point_id, nil)}
+  end
+
+  @impl true
   def handle_event("close_pathway_drawer", _params, socket) do
     {:noreply,
      socket
@@ -463,11 +619,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
 
-    pathway =
-      case editing_pathway do
-        nil -> nil
-        _ -> GtfsPlanner.Repo.preload(editing_pathway, [:from_stop, :to_stop])
-      end
+    pathway = editing_pathway
 
     cond do
       is_nil(pathway) ->
@@ -488,8 +640,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pathway_error, "Pathway is not fully associated with stops.")
          |> assign(:pathway_form, to_form(%{}))}
 
-      pathway.from_stop.parent_station_id != station.id or
-          pathway.to_stop.parent_station_id != station.id ->
+      pathway.from_stop.parent_station != station.stop_id or
+          pathway.to_stop.parent_station != station.stop_id ->
         {:noreply,
          socket
          |> assign(:pathway_error, "Unauthorized pathway access.")
@@ -498,7 +650,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       true ->
         case Gtfs.update_pathway(pathway, attrs) do
           {:ok, updated_pathway} ->
-            updated_pathway = GtfsPlanner.Repo.preload(updated_pathway, [:from_stop, :to_stop])
+            from_stop =
+              Gtfs.get_stop_by_stop_id(
+                organization_id,
+                gtfs_version_id,
+                updated_pathway.from_stop_id
+              )
+
+            to_stop =
+              Gtfs.get_stop_by_stop_id(
+                organization_id,
+                gtfs_version_id,
+                updated_pathway.to_stop_id
+              )
+
+            updated_pathway = %{updated_pathway | from_stop: from_stop, to_stop: to_stop}
 
             updated_list =
               Enum.map(socket.assigns.pathways_list, fn p ->
@@ -529,52 +695,64 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("save_diagram", _params, socket) do
     station = socket.assigns.station
-    level = socket.assigns.active_level
+    stop_level = socket.assigns.active_stop_level
 
-    uploaded_files =
-      consume_uploaded_entries(socket, :diagram, fn %{path: path}, entry ->
-        dest_dir = Path.join(["priv", "static", "uploads", "diagrams", station.stop_id])
-        File.mkdir_p!(dest_dir)
+    if is_nil(stop_level) do
+      {:noreply, assign(socket, :diagram_error, "No active level selected")}
+    else
+      uploaded_files =
+        consume_uploaded_entries(socket, :diagram, fn %{path: path}, entry ->
+          dest_dir = Path.join(["priv", "static", "uploads", "diagrams", station.stop_id])
+          File.mkdir_p!(dest_dir)
 
-        dest_path = Path.join(dest_dir, entry.client_name)
-        File.cp!(path, dest_path)
+          dest_path = Path.join(dest_dir, entry.client_name)
+          File.cp!(path, dest_path)
 
-        {:ok, entry.client_name}
-      end)
+          {:ok, entry.client_name}
+        end)
 
-    case uploaded_files do
-      [filename | _] ->
-        case Gtfs.update_level_diagram(level, filename) do
-          {:ok, updated_level} ->
-            levels =
-              Enum.map(socket.assigns.levels, fn l ->
-                if l.id == updated_level.id, do: updated_level, else: l
-              end)
+      case uploaded_files do
+        [filename | _] ->
+          case Gtfs.update_stop_level_diagram(stop_level, filename) do
+            {:ok, updated_stop_level} ->
+              {:noreply,
+               socket
+               |> assign(:active_stop_level, updated_stop_level)
+               |> assign(:diagram_error, nil)}
 
-            {:noreply,
-             socket
-             |> assign(:active_level, updated_level)
-             |> assign(:levels, levels)
-             |> assign(:diagram_error, nil)}
+            {:error, _changeset} ->
+              {:noreply, assign(socket, :diagram_error, "Failed to save diagram")}
+          end
 
-          {:error, _changeset} ->
-            {:noreply, assign(socket, :diagram_error, "Failed to save diagram")}
-        end
-
-      [] ->
-        {:noreply, socket}
+        [] ->
+          {:noreply, socket}
+      end
     end
   end
 
   @impl true
   def handle_event("open_add_level", _params, socket) do
-    form = to_form(%{"level_id" => "", "level_name" => "", "level_index" => "0"})
+    form =
+      to_form(%{
+        "mode" => "existing",
+        "existing_level_id" => "",
+        "level_id" => "",
+        "level_name" => "",
+        "level_index" => "0"
+      })
 
     {:noreply,
      socket
      |> assign(:show_level_modal, :add)
      |> assign(:level_form, form)
+     |> assign(:level_mode, :existing)
      |> assign(:level_id_manually_edited, false)}
+  end
+
+  @impl true
+  def handle_event("level_mode_changed", %{"mode" => mode}, socket) do
+    mode_atom = if mode == "new", do: :new, else: :existing
+    {:noreply, assign(socket, :level_mode, mode_atom)}
   end
 
   @impl true
@@ -648,41 +826,99 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
 
-    level_attrs = %{
-      level_id: params["level_id"],
-      level_name: params["level_name"],
-      level_index: parse_int(params["level_index"]),
-      organization_id: organization_id,
-      gtfs_version_id: gtfs_version_id,
-      parent_station_id: station.id
-    }
-
     case socket.assigns.show_level_modal do
       :add ->
-        case Gtfs.create_level(level_attrs) do
-          {:ok, new_level} ->
-            station = socket.assigns.station
-            levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+        if socket.assigns.level_mode == :existing do
+          existing_level_id = params["existing_level_id"]
 
-            {:noreply,
-             socket
-             |> assign(:levels, levels)
-             |> assign(:active_level, new_level)
-             |> assign(:show_level_modal, nil)
-             |> assign(:level_form, to_form(%{}))
-             |> load_level_data(new_level)}
+          cond do
+            existing_level_id in [nil, ""] ->
+              {:noreply, put_flash(socket, :error, "Please select a level to add.")}
 
-          {:error, changeset} ->
-            {:noreply, assign(socket, :level_form, to_form(changeset))}
+            level = Gtfs.get_level(existing_level_id) ->
+              case Gtfs.create_stop_level(%{
+                     stop_id: station.id,
+                     level_id: level.id,
+                     organization_id: organization_id,
+                     gtfs_version_id: gtfs_version_id
+                   }) do
+                {:ok, _stop_level} ->
+                  levels_data =
+                    Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+
+                  levels = Enum.map(levels_data, & &1.level)
+
+                  {:noreply,
+                   socket
+                   |> assign(:levels, levels)
+                   |> assign(:active_level, level)
+                   |> assign(:show_level_modal, nil)
+                   |> assign(:level_form, to_form(%{}))
+                   |> load_level_data(level)}
+
+                {:error, changeset} ->
+                  {:noreply, assign(socket, :level_form, to_form(changeset))}
+              end
+
+            true ->
+              {:noreply, put_flash(socket, :error, "Selected level could not be found.")}
+          end
+        else
+          level_attrs = %{
+            level_id: params["level_id"],
+            level_name: params["level_name"],
+            level_index: parse_int(params["level_index"]),
+            organization_id: organization_id,
+            gtfs_version_id: gtfs_version_id
+          }
+
+          case Gtfs.create_level(level_attrs) do
+            {:ok, new_level} ->
+              # Create the association
+              {:ok, _stop_level} =
+                Gtfs.create_stop_level(%{
+                  stop_id: station.id,
+                  level_id: new_level.id,
+                  organization_id: organization_id,
+                  gtfs_version_id: gtfs_version_id
+                })
+
+              levels_data =
+                Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+
+              levels = Enum.map(levels_data, & &1.level)
+              # Refresh available levels list since we added one
+              available_levels = Gtfs.list_all_levels(organization_id, gtfs_version_id)
+
+              {:noreply,
+               socket
+               |> assign(:levels, levels)
+               |> assign(:available_levels, available_levels)
+               |> assign(:active_level, new_level)
+               |> assign(:show_level_modal, nil)
+               |> assign(:level_form, to_form(%{}))
+               |> load_level_data(new_level)}
+
+            {:error, changeset} ->
+              {:noreply, assign(socket, :level_form, to_form(changeset))}
+          end
         end
 
       :edit ->
         level = socket.assigns.active_level
 
+        level_attrs = %{
+          level_id: params["level_id"],
+          level_name: params["level_name"],
+          level_index: parse_int(params["level_index"])
+        }
+
         case Gtfs.update_level(level, level_attrs) do
           {:ok, updated_level} ->
-            station = socket.assigns.station
-            levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+            levels_data =
+              Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+
+            levels = Enum.map(levels_data, & &1.level)
 
             {:noreply,
              socket
@@ -832,6 +1068,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp create_pathway_between_stops(socket, from_stop_id, to_stop_id) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
 
     from_stop = Gtfs.get_stop!(from_stop_id)
     to_stop = Gtfs.get_stop!(to_stop_id)
@@ -840,8 +1077,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     attrs = %{
       pathway_id: pathway_id,
-      from_stop_id: from_stop.id,
-      to_stop_id: to_stop.id,
+      from_stop_id: from_stop.stop_id,
+      to_stop_id: to_stop.stop_id,
       pathway_mode: 1,
       is_bidirectional: true,
       organization_id: organization_id,
@@ -853,6 +1090,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         pathway = %{pathway | from_stop: from_stop, to_stop: to_stop}
         updated_list = [pathway | socket.assigns.pathways_list]
 
+        cross_level_stop_ids =
+          Gtfs.list_cross_level_stop_ids(organization_id, gtfs_version_id, station.id)
+
         {:noreply,
          socket
          |> stream_insert(:pathways, pathway)
@@ -860,6 +1100,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          # Re-stream to remove highlight
          |> stream_insert(:child_stops, from_stop)
          |> assign(:active_point_id, nil)
+         |> assign(:selected_from_stop, nil)
+         |> assign(:cross_level_stop_ids, cross_level_stop_ids)
          |> assign(:pathway_error, nil)}
 
       {:error, changeset} ->
@@ -892,4 +1134,5 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       _ -> false
     end
   end
+
 end

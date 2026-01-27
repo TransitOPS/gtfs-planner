@@ -221,9 +221,7 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
          {:ok, location_type} <- parse_location_type(row_map["location_type"]),
          {:ok, wheelchair_boarding} <- parse_wheelchair_boarding(row_map["wheelchair_boarding"]),
          {:ok, level_id} <-
-           resolve_level_id(row_map["level_id"], organization_id, gtfs_version_id),
-         {:ok, parent_station_id} <-
-           resolve_parent_station_id(row_map["parent_station"], organization_id, gtfs_version_id) do
+           resolve_level_id(row_map["level_id"], organization_id, gtfs_version_id) do
       attrs = %{
         stop_id: stop_id,
         stop_name: empty_to_nil(row_map["stop_name"]),
@@ -234,7 +232,7 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
         location_type: location_type,
         wheelchair_boarding: wheelchair_boarding,
         level_id: level_id,
-        parent_station_id: parent_station_id,
+        parent_station: empty_to_nil(row_map["parent_station"]),
         organization_id: organization_id,
         gtfs_version_id: gtfs_version_id
       }
@@ -313,28 +311,6 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
 
       level ->
         {:ok, level.id}
-    end
-  end
-
-  # Step 7: Implement foreign key resolution for parent_station
-  defp resolve_parent_station_id(nil, _organization_id, _gtfs_version_id), do: {:ok, nil}
-  defp resolve_parent_station_id("", _organization_id, _gtfs_version_id), do: {:ok, nil}
-
-  defp resolve_parent_station_id(parent_station_string, organization_id, gtfs_version_id) do
-    case GtfsPlanner.Gtfs.get_stop_by_stop_id(
-           organization_id,
-           gtfs_version_id,
-           parent_station_string
-         ) do
-      nil ->
-        Mix.shell().info(
-          "  ⚠ Parent station not found: #{parent_station_string}, setting parent_station_id to nil"
-        )
-
-        {:ok, nil}
-
-      stop ->
-        {:ok, stop.id}
     end
   end
 end
