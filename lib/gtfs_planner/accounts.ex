@@ -475,28 +475,44 @@ defmodule GtfsPlanner.Accounts do
   @doc """
   Accepts an invitation by setting the user's password.
 
+  If an organization_id is provided, creates a membership with default viewer role.
+
   ## Examples
 
       iex> accept_invite_set_password(user, %{password: "new valid password", password_confirmation: "new valid password", organization_id: org_id})
       {:ok, %User{}}
 
-      iex> accept_invite_set_password(user, %{password: "invalid", password_confirmation: "doesn't match", organization_id: org_id})
+      iex> accept_invite_set_password(user, %{password: "invalid", password_confirmation: "doesn't match"})
       {:error, %Ecto.Changeset{}}
 
   """
   def accept_invite_set_password(user, attrs) do
-    organization_id = attrs[:organization_id] || attrs["organization_id"]
+    multi =
+      Ecto.Multi.new()
+      |> Ecto.Multi.update(:user, User.password_changeset(user, attrs))
+      |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, ["invite"]))
 
-    Ecto.Multi.new()
-    |> Ecto.Multi.update(:user, User.password_changeset(user, attrs))
-    |> Ecto.Multi.insert(:membership, fn _changes ->
-      UserOrgMembership.changeset(%UserOrgMembership{}, %{
-        user_id: user.id,
-        organization_id: organization_id,
-        roles: ["pathways_studio_viewer"]
-      })
-    end)
-    |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, ["invite"]))
+    # Add membership creation if organization_id is provided
+    multi =
+      case Map.get(attrs, :organization_id) || Map.get(attrs, "organization_id") do
+        nil ->
+          multi
+
+        org_id ->
+          membership_attrs = %{
+            user_id: user.id,
+            organization_id: org_id,
+            roles: ["pathways_studio_viewer"]
+          }
+
+          Ecto.Multi.insert(
+            multi,
+            :membership,
+            UserOrgMembership.changeset(%UserOrgMembership{}, membership_attrs)
+          )
+      end
+
+    multi
     |> Repo.transaction()
     |> case do
       {:ok, %{user: user}} -> {:ok, user}
