@@ -44,7 +44,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
          |> put_flash(:error, "Unauthorized access to validation run")
          |> push_navigate(to: ~p"/gtfs/#{gtfs_version_id}/export")}
       else
-        validation_runs_history = Validations.list_validation_runs(organization_id, gtfs_version_id)
+        validation_runs_history =
+          Validations.list_validation_runs(organization_id, gtfs_version_id)
 
         {:noreply,
          socket

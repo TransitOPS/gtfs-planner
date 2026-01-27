@@ -624,6 +624,74 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "get_routes_for_stops/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "returns routes for stops", %{organization: org, gtfs_version: version} do
+      stop = stop_fixture(org.id, version.id, %{stop_id: "S1"})
+      route = route_fixture(org.id, version.id, %{route_id: "R1", route_short_name: "Route 1"})
+      trip = trip_fixture(org.id, version.id, route.route_id, %{trip_id: "T1"})
+      _stop_time = stop_time_fixture(org.id, version.id, trip.trip_id, stop.stop_id)
+
+      routes_map = Gtfs.get_routes_for_stops(org.id, version.id, [stop.stop_id])
+
+      assert Map.has_key?(routes_map, stop.stop_id)
+      [route_info] = routes_map[stop.stop_id]
+      assert route_info.route_id == route.route_id
+      assert route_info.route_short_name == route.route_short_name
+    end
+
+    test "returns empty list for stops with no routes", %{organization: org, gtfs_version: version} do
+      stop = stop_fixture(org.id, version.id, %{stop_id: "S1"})
+      routes_map = Gtfs.get_routes_for_stops(org.id, version.id, [stop.stop_id])
+      assert routes_map == %{}
+    end
+  end
+
+  describe "list_stations/3 route filtering" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "filters stations by route_id", %{organization: org, gtfs_version: version} do
+      # Station served by Route 1
+      station1 = stop_fixture(org.id, version.id, %{stop_id: "S1", parent_station_id: nil})
+      route1 = route_fixture(org.id, version.id, %{route_id: "R1"})
+      trip1 = trip_fixture(org.id, version.id, route1.route_id, %{trip_id: "T1"})
+      stop_time_fixture(org.id, version.id, trip1.trip_id, station1.stop_id)
+
+      # Station served by Route 2
+      station2 = stop_fixture(org.id, version.id, %{stop_id: "S2", parent_station_id: nil})
+      route2 = route_fixture(org.id, version.id, %{route_id: "R2"})
+      trip2 = trip_fixture(org.id, version.id, route2.route_id, %{trip_id: "T2"})
+      stop_time_fixture(org.id, version.id, trip2.trip_id, station2.stop_id)
+
+      # Filter for Route 1
+      stations = Gtfs.list_stations(org.id, version.id, route_id: "R1")
+      assert length(stations) == 1
+      assert hd(stations).id == station1.id
+
+      # Filter for Route 2
+      stations = Gtfs.list_stations(org.id, version.id, route_id: "R2")
+      assert length(stations) == 1
+      assert hd(stations).id == station2.id
+    end
+
+    test "returns all stations when route_id is nil", %{organization: org, gtfs_version: version} do
+      stop_fixture(org.id, version.id, %{stop_id: "S1", parent_station_id: nil})
+      stop_fixture(org.id, version.id, %{stop_id: "S2", parent_station_id: nil})
+
+      stations = Gtfs.list_stations(org.id, version.id, route_id: nil)
+      assert length(stations) == 2
+    end
+  end
+
   describe "list_pathways_for_station/3" do
     setup do
       organization = organization_fixture()
