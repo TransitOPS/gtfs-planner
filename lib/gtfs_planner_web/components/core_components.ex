@@ -856,7 +856,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               phx-hook="AutoSubmitUpload"
             >
               <label class="btn btn-sm btn-outline cursor-pointer">
-                {if @has_diagram, do: "Replace diagram", else: "Upload Diagram"} <.live_file_input upload={@uploads.diagram} class="hidden" />
+                {if @has_diagram, do: "Replace diagram", else: "Upload Diagram"} <.live_file_input upload={@uploads.diagram} id="station-sub-nav-upload" class="hidden" />
               </label>
             </form>
             <span :if={@diagram_error} class="text-error text-sm">{@diagram_error}</span>

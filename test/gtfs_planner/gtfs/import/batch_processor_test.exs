@@ -2,7 +2,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
   use GtfsPlanner.DataCase, async: true
 
   alias GtfsPlanner.Gtfs.Import.BatchProcessor
-  alias GtfsPlanner.Gtfs.{Level, Stop}
+  alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Repo
 
   setup do
