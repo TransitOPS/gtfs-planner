@@ -1060,12 +1060,13 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   @doc """
   Converts a pathway CSV row to attributes map.
 
+  Pathways store string stop_ids directly, no UUID resolution needed.
+
   ## Parameters
 
     * `row_map` - Map of CSV column names to values
     * `organization_id` - UUID of the organization
     * `gtfs_version_id` - UUID of the GTFS version
-    * `stop_map` - Map of GTFS stop_id strings to UUIDs
 
   ## Returns
 
