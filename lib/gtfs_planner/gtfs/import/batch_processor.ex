@@ -7,11 +7,6 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
   for atomicity.
   """
 
-  require Logger
-  import Ecto.Query
-
-  alias GtfsPlanner.Gtfs.Stop
-
   @default_batch_size 1000
 
   @doc """
@@ -181,12 +176,6 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
          processed_count,
          total_rows
        ) do
-    batch_number = div(processed_count, length(chunk)) + 1
-    
-    Logger.debug(
-      "Processing batch #{batch_number} for #{file_name}: rows #{processed_count + 1}-#{processed_count + length(chunk)} of #{total_rows}"
-    )
-
     # Convert rows to attrs (pass processed_count as batch_start for accurate row indexing)
     case convert_rows_to_attrs(
            chunk,
@@ -204,7 +193,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
           Enum.map(attrs_list, &Map.merge(&1, %{inserted_at: now, updated_at: now}))
 
         # Insert batch
-        case insert_batch(repo, schema, attrs_with_timestamps, file_name, processed_count) do
+        case insert_batch(repo, schema, attrs_with_timestamps, file_name) do
           {:ok, batch_count} ->
             # Broadcast progress
             new_processed = processed_count + batch_count
@@ -246,49 +235,19 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     end
   end
 
-  defp insert_batch(repo, schema, attrs_list, file_name, processed_count) do
+  defp insert_batch(repo, schema, attrs_list, file_name) do
     try do
       {count, _} = repo.insert_all(schema, attrs_list, returning: false)
       {:ok, count}
     rescue
       e in Ecto.ConstraintError ->
         error_msg = Exception.message(e)
-        
-        Logger.error("""
-        ===== GTFS Import Error: Constraint Violation =====
-        File: #{file_name}
-        Schema: #{inspect(schema)}
-        Batch starting at row: #{processed_count + 1}
-        Constraint: #{e.constraint}
-        Error: #{error_msg}
-        
-        Stacktrace:
-        #{Exception.format_stacktrace(__STACKTRACE__)}
-        ===================================================
-        """)
 
         {:error, %{file: file_name, constraint: e.constraint, message: error_msg}}
 
       e in Postgrex.Error ->
         constraint_name = extract_constraint_name(e)
         error_msg = Exception.message(e)
-        
-        Logger.error("""
-        ===== GTFS Import Error: Database Error =====
-        File: #{file_name}
-        Schema: #{inspect(schema)}
-        Batch starting at row: #{processed_count + 1}
-        Postgres Error Code: #{e.postgres.code}
-        Constraint: #{inspect(constraint_name)}
-        Error Message: #{error_msg}
-        
-        Full Postgres Error:
-        #{inspect(e.postgres, pretty: true, limit: :infinity)}
-        
-        Stacktrace:
-        #{Exception.format_stacktrace(__STACKTRACE__)}
-        ==============================================
-        """)
 
         {:error,
          %{
@@ -300,25 +259,6 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
 
       e ->
         error_msg = Exception.message(e)
-        
-        Logger.error("""
-        ===== GTFS Import Error: Unexpected Exception =====
-        File: #{file_name}
-        Schema: #{inspect(schema)}
-        Batch starting at row: #{processed_count + 1}
-        Exception Type: #{inspect(e.__struct__)}
-        Error Message: #{error_msg}
-        
-        Full Exception:
-        #{inspect(e, pretty: true, limit: :infinity)}
-        
-        Sample of attrs (first 3 records):
-        #{inspect(Enum.take(attrs_list, 3), pretty: true, limit: :infinity)}
-        
-        Stacktrace:
-        #{Exception.format_stacktrace(__STACKTRACE__)}
-        ====================================================
-        """)
 
         {:error, %{file: file_name, error: error_msg}}
     end
