@@ -182,6 +182,8 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       organization_id: org_id,
       gtfs_version_id: version_id
     } do
+      stop_map = %{"S1" => true, "S2" => true}
+
       row = %{
         "pathway_id" => "P1",
         "from_stop_id" => "S1",
@@ -196,6 +198,42 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       assert attrs.to_stop_id == "S2"
       assert attrs.pathway_mode == 1
       assert attrs.is_bidirectional == true
+    end
+
+    test "returns error when from_stop_id not found", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      stop_map = %{"S2" => true}
+
+      row = %{
+        "pathway_id" => "P1",
+        "from_stop_id" => "S1",
+        "to_stop_id" => "S2",
+        "pathway_mode" => "1",
+        "is_bidirectional" => "1"
+      }
+
+      assert {:error, "from_stop_id not found: S1"} =
+               RowParser.pathway_row_to_attrs(row, org_id, version_id, stop_map)
+    end
+
+    test "returns error when to_stop_id not found", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id
+    } do
+      stop_map = %{"S1" => true}
+
+      row = %{
+        "pathway_id" => "P1",
+        "from_stop_id" => "S1",
+        "to_stop_id" => "S2",
+        "pathway_mode" => "1",
+        "is_bidirectional" => "1"
+      }
+
+      assert {:error, "to_stop_id not found: S2"} =
+               RowParser.pathway_row_to_attrs(row, org_id, version_id, stop_map)
     end
   end
 

@@ -729,7 +729,10 @@ defmodule GtfsPlanner.Gtfs do
     level = Repo.get!(Level, level_id)
 
     from(s in Stop,
-      where: s.parent_station == ^parent_station.stop_id,
+      where:
+        s.parent_station == ^parent_station.stop_id and
+          s.organization_id == ^parent_station.organization_id and
+          s.gtfs_version_id == ^parent_station.gtfs_version_id,
       order_by: [asc: s.stop_name]
     )
     |> Repo.all()
