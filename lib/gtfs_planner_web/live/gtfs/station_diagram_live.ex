@@ -192,6 +192,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               mode={@mode}
               uploads={@uploads}
               cross_level_stop_ids={@cross_level_stop_ids}
+              diagram_error={@diagram_error}
             />
           </div>
         </:sub_header>
@@ -358,34 +359,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
-  defp handle_stop_selection(id, socket) do
-    case socket.assigns.active_point_id do
-      nil ->
-        # First stop selected - set it as active
-        stop = Gtfs.get_stop!(id)
-
-        {:noreply,
-         socket
-         |> stream_insert(:child_stops, stop)
-         |> assign(:active_point_id, id)
-         |> assign(:selected_from_stop, stop)}
-
-      ^id ->
-        # Clicking same stop - deselect it
-        stop = Gtfs.get_stop!(id)
-
-        {:noreply,
-         socket
-         |> stream_insert(:child_stops, stop)
-         |> assign(:active_point_id, nil)
-         |> assign(:selected_from_stop, nil)}
-
-      first_stop_id ->
-        # Second stop selected - create pathway between them
-        create_pathway_between_stops(socket, first_stop_id, id)
-    end
-  end
-
   @impl true
   def handle_event("edit_child_stop", %{"id" => id}, socket) do
     stop = Gtfs.get_stop!(id)
@@ -412,7 +385,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
-    level = socket.assigns.active_level
     pending_xy = socket.assigns.pending_xy
 
     stop_attrs = %{
@@ -939,6 +911,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # ============================================================================
   # Private Helpers
   # ============================================================================
+
+  defp handle_stop_selection(id, socket) do
+    case socket.assigns.active_point_id do
+      nil ->
+        # First stop selected - set it as active
+        stop = Gtfs.get_stop!(id)
+
+        {:noreply,
+         socket
+         |> stream_insert(:child_stops, stop)
+         |> assign(:active_point_id, id)
+         |> assign(:selected_from_stop, stop)}
+
+      ^id ->
+        # Clicking same stop - deselect it
+        stop = Gtfs.get_stop!(id)
+
+        {:noreply,
+         socket
+         |> stream_insert(:child_stops, stop)
+         |> assign(:active_point_id, nil)
+         |> assign(:selected_from_stop, nil)}
+
+      first_stop_id ->
+        # Second stop selected - create pathway between them
+        create_pathway_between_stops(socket, first_stop_id, id)
+    end
+  end
 
   defp parse_int(str) when is_binary(str) do
     case Integer.parse(str) do
