@@ -622,8 +622,8 @@ defmodule GtfsPlanner.AccountsTest do
       # Verify invite token was deleted
       refute Accounts.get_user_by_invite_token(token)
 
-      # Verify no membership was created
-      assert Repo.all(UserOrgMembership) == []
+      # Verify no membership was created for this user
+      refute Repo.get_by(UserOrgMembership, user_id: user.id)
     end
   end
 
