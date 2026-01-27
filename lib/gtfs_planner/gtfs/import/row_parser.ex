@@ -1103,8 +1103,8 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
          {:ok, is_bidirectional} <- parse_is_bidirectional(row_map["is_bidirectional"]) do
       
       # Validate stop IDs exist
-      with {:ok, from_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, from_stop_id_str, "from_stop_id"),
-           {:ok, to_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, to_stop_id_str, "to_stop_id") do
+      with {:ok, from_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, from_stop_id, "from_stop_id"),
+           {:ok, to_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, to_stop_id, "to_stop_id") do
         
         traversal_time =
           case parse_integer(row_map["traversal_time"]) do

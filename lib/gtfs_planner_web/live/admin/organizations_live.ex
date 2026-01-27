@@ -460,6 +460,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
           open={@live_action in [:new, :edit, :invite]}
           on_close="close_drawer"
           title={@page_title}
+          class="max-w-3xl"
         >
           <%= if @live_action in [:new, :edit] do %>
             <.org_form form={@form} live_action={@live_action} />

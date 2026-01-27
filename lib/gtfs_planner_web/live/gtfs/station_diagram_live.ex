@@ -34,6 +34,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:pending_xy, nil)
        |> assign(:selected_stop_id, nil)
        |> assign(:active_point_id, nil)
+       |> assign(:selected_from_stop, nil)
+       |> assign(:cross_level_stop_ids, MapSet.new())
        |> assign(:child_stop_form, to_form(%{}))
        |> assign(:show_level_modal, nil)
        |> assign(:level_form, to_form(%{}))
@@ -79,6 +81,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             |> Enum.reject(&(&1.id in station_level_ids))
             |> Enum.sort_by(&(&1.level_name || &1.level_id), :asc)
 
+          # Complete picklist of all levels for stop form dropdown
+          all_levels = Gtfs.list_all_levels(organization_id, gtfs_version_id)
+
           active_level =
             Enum.find(levels, List.first(levels), fn l -> l.level_index == 0.0 end)
 
@@ -88,6 +93,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             |> assign(:station, station)
             |> assign(:levels, levels)
             |> assign(:available_levels, available_levels)
+            |> assign(:all_levels, all_levels)
             |> assign(:active_level, active_level)
 
           socket = load_level_data(socket, active_level)
@@ -104,7 +110,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:child_stops_list, [])
     |> assign(:pathways_list, [])
     |> assign(:active_stop_level, nil)
-    |> assign(:graph_data, %{nodes: [], edges: [], width: 400, height: 200})
   end
 
   defp load_level_data(socket, level) do
@@ -118,8 +123,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     pathways =
       Gtfs.list_pathways_for_level(organization_id, gtfs_version_id, level.id, station.id)
 
-    # Build graph data for single-level SVG visualization
-    graph_data = build_pathways_graph(child_stops, pathways)
+    cross_level_stop_ids =
+      Gtfs.list_cross_level_stop_ids(organization_id, gtfs_version_id, station.id)
 
     socket
     |> stream(:child_stops, child_stops, reset: true)
@@ -127,7 +132,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:child_stops_list, child_stops)
     |> assign(:pathways_list, pathways)
     |> assign(:active_stop_level, stop_level)
-    |> assign(:graph_data, graph_data)
+    |> assign(:cross_level_stop_ids, cross_level_stop_ids)
   end
 
   @impl true
@@ -168,6 +173,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
             diagram_error={@diagram_error}
           />
+          <.diagram_action_strip
+            mode={@mode}
+            selected_from_stop={@selected_from_stop}
+            has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
+            levels={@levels}
+            active_level={@active_level}
+          />
           <div class="w-full px-4 sm:px-6 lg:px-8 py-4">
             <.diagram_canvas
               station={@station}
@@ -179,6 +191,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               selected_stop_id={@selected_stop_id}
               mode={@mode}
               uploads={@uploads}
+              cross_level_stop_ids={@cross_level_stop_ids}
             />
           </div>
         </:sub_header>
@@ -187,6 +200,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pending_xy={@pending_xy}
           selected_stop_id={@selected_stop_id}
           child_stop_form={@child_stop_form}
+          mode={@mode}
+          all_levels={@all_levels}
         />
 
         <.pathway_drawer
@@ -207,102 +222,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pathways_list={@pathways_list}
           pathway_error={@pathway_error}
         />
-
-        <%= if @active_level && @graph_data.nodes != [] do %>
-          <div class="mx-4 sm:mx-6 lg:mx-8 mt-8">
-            <h2 class="text-lg font-semibold mb-4">Pathways Graph</h2>
-            <div class="bg-base-100 border border-base-300 rounded-lg p-4 overflow-x-auto">
-              <%!-- Legend --%>
-              <div class="flex flex-wrap gap-4 mb-4 text-sm">
-                <div class="flex items-center gap-2">
-                  <span class="font-medium">Nodes:</span>
-                  <span class="flex items-center gap-1">
-                    <span class="w-3 h-3 rounded-full bg-blue-500"></span> Platform
-                  </span>
-                  <span class="flex items-center gap-1">
-                    <span class="w-3 h-3 rounded-full bg-green-500"></span> Station
-                  </span>
-                  <span class="flex items-center gap-1">
-                    <span class="w-3 h-3 rounded-full bg-amber-500"></span> Entrance
-                  </span>
-                  <span class="flex items-center gap-1">
-                    <span class="w-3 h-3 rounded-full bg-gray-500"></span> Node
-                  </span>
-                  <span class="flex items-center gap-1">
-                    <span class="w-3 h-3 rounded-full bg-purple-500"></span> Boarding
-                  </span>
-                </div>
-                <div class="flex items-center gap-2">
-                  <span class="font-medium">Edges:</span>
-                  <span class="flex items-center gap-1">
-                    <span class="w-4 h-0.5 bg-gray-500"></span> Walkway
-                  </span>
-                  <span class="flex items-center gap-1">
-                    <span class="w-4 h-0.5 bg-amber-500 border-dashed border-t-2 border-amber-500">
-                    </span>
-                    Stairs
-                  </span>
-                  <span class="flex items-center gap-1">
-                    <span class="w-4 h-0.5 bg-blue-500"></span> Elevator
-                  </span>
-                </div>
-              </div>
-
-              <%!-- SVG Graph --%>
-              <svg
-                width={@graph_data.width}
-                height={@graph_data.height}
-                class="bg-base-200 rounded"
-                viewBox={"0 0 #{@graph_data.width} #{@graph_data.height}"}
-              >
-                <%!-- Draw edges first (behind nodes) --%>
-                <%= for edge <- @graph_data.edges do %>
-                  <line
-                    x1={edge.from_x}
-                    y1={edge.from_y}
-                    x2={edge.to_x}
-                    y2={edge.to_y}
-                    stroke={pathway_stroke_color(edge.pathway_mode)}
-                    stroke-width="2"
-                    stroke-dasharray={pathway_stroke_dash(edge.pathway_mode)}
-                  />
-                  <%!-- Arrow for directional pathways --%>
-                  <%= if not edge.is_bidirectional do %>
-                    <polygon
-                      points={arrow_points(edge.from_x, edge.from_y, edge.to_x, edge.to_y)}
-                      fill={pathway_stroke_color(edge.pathway_mode)}
-                    />
-                  <% end %>
-                <% end %>
-
-                <%!-- Draw nodes --%>
-                <%= for node <- @graph_data.nodes do %>
-                  <g>
-                    <%!-- Node circle --%>
-                    <circle
-                      cx={node.x}
-                      cy={node.y}
-                      r="12"
-                      fill={node_fill_color(node.location_type)}
-                      stroke="#fff"
-                      stroke-width="2"
-                    />
-                    <%!-- Node label --%>
-                    <text
-                      x={node.x}
-                      y={node.y + 28}
-                      text-anchor="middle"
-                      class="text-xs fill-base-content"
-                      font-size="10"
-                    >
-                      {truncate_label(node.label, 12)}
-                    </text>
-                  </g>
-                <% end %>
-              </svg>
-            </div>
-          </div>
-        <% end %>
       </Layouts.app>
     <% end %>
     """
@@ -351,13 +270,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:active_level, level)
      |> assign(:pending_xy, nil)
-     |> assign(:active_point_id, nil)
      |> load_level_data(level)}
   end
 
   @impl true
   def handle_event("switch_mode", %{"mode" => mode}, socket) do
     mode_atom = String.to_existing_atom(mode)
+
+    socket =
+      if socket.assigns.mode == :connect do
+        assign(socket, :selected_from_stop, nil)
+      else
+        socket
+      end
 
     {:noreply,
      socket
@@ -379,7 +304,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         case clicked_stop do
           nil ->
             # No stop found - create new stop
-            form = to_form(%{"stop_id" => "", "stop_name" => "", "location_type" => "0"})
+            level_id = if socket.assigns.active_level, do: socket.assigns.active_level.level_id, else: ""
+            form = to_form(%{"stop_id" => "", "stop_name" => "", "location_type" => "3", "level_id" => level_id})
 
             {:noreply,
              socket
@@ -396,7 +322,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               to_form(%{
                 "stop_id" => stop.stop_id,
                 "stop_name" => stop.stop_name,
-                "location_type" => to_string(stop.location_type)
+                "location_type" => to_string(stop.location_type),
+                "level_id" => stop.level_id
               })
 
             {:noreply,
@@ -421,6 +348,45 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("stop_clicked", %{"id" => id}, socket) do
+    case socket.assigns.mode do
+      :connect ->
+        handle_stop_selection(id, socket)
+
+      _ ->
+        handle_event("edit_child_stop", %{"id" => id}, socket)
+    end
+  end
+
+  defp handle_stop_selection(id, socket) do
+    case socket.assigns.active_point_id do
+      nil ->
+        # First stop selected - set it as active
+        stop = Gtfs.get_stop!(id)
+
+        {:noreply,
+         socket
+         |> stream_insert(:child_stops, stop)
+         |> assign(:active_point_id, id)
+         |> assign(:selected_from_stop, stop)}
+
+      ^id ->
+        # Clicking same stop - deselect it
+        stop = Gtfs.get_stop!(id)
+
+        {:noreply,
+         socket
+         |> stream_insert(:child_stops, stop)
+         |> assign(:active_point_id, nil)
+         |> assign(:selected_from_stop, nil)}
+
+      first_stop_id ->
+        # Second stop selected - create pathway between them
+        create_pathway_between_stops(socket, first_stop_id, id)
+    end
+  end
+
+  @impl true
   def handle_event("edit_child_stop", %{"id" => id}, socket) do
     stop = Gtfs.get_stop!(id)
     coord = stop.diagram_coordinate
@@ -430,7 +396,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       to_form(%{
         "stop_id" => stop.stop_id,
         "stop_name" => stop.stop_name,
-        "location_type" => to_string(stop.location_type)
+        "location_type" => to_string(stop.location_type),
+        "level_id" => stop.level_id
       })
 
     {:noreply,
@@ -453,7 +420,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       stop_name: params["stop_name"],
       location_type: String.to_integer(params["location_type"]),
       parent_station: station.stop_id,
-      level_id: level.level_id,
+      level_id: params["level_id"],
       diagram_coordinate: %{"x" => pending_xy.x, "y" => pending_xy.y},
       organization_id: organization_id,
       gtfs_version_id: gtfs_version_id
@@ -498,6 +465,58 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:error, changeset} ->
             {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
         end
+    end
+  end
+
+  @impl true
+  def handle_event("delete_child_stop", %{"id" => stop_id}, socket) do
+    stop = Gtfs.get_stop!(stop_id)
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    # Delete any pathways connected to this stop
+    pathways_to_delete =
+      Gtfs.list_pathways_for_stop(organization_id, gtfs_version_id, stop.stop_id)
+
+    # Delete pathways from database and remove from stream
+    socket =
+      Enum.reduce(pathways_to_delete, socket, fn pathway, acc_socket ->
+        case Gtfs.delete_pathway(pathway) do
+          {:ok, deleted_pathway} ->
+            stream_delete(acc_socket, :pathways, deleted_pathway)
+
+          {:error, _} ->
+            acc_socket
+        end
+      end)
+
+    # Delete the stop itself
+    case Gtfs.delete_stop(stop) do
+      {:ok, deleted_stop} ->
+        updated_child_stops_list =
+          Enum.reject(socket.assigns.child_stops_list, &(&1.id == deleted_stop.id))
+
+        updated_pathways_list =
+          Enum.reject(socket.assigns.pathways_list, fn p ->
+            p.from_stop_id == deleted_stop.stop_id or p.to_stop_id == deleted_stop.stop_id
+          end)
+
+        {:noreply,
+         socket
+         |> stream_delete(:child_stops, deleted_stop)
+         |> assign(:child_stops_list, updated_child_stops_list)
+         |> assign(:pathways_list, updated_pathways_list)
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
+
+      {:error, _changeset} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Failed to delete child stop")
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
     end
   end
 
@@ -554,6 +573,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:editing_pathway, pathway)
      |> assign(:pathway_form, form)
      |> assign(:show_pathway_drawer, true)}
+  end
+
+  @impl true
+  def handle_event("clear_from_selection", _params, socket) do
+    socket =
+      if socket.assigns.selected_from_stop do
+        stop = socket.assigns.selected_from_stop
+        stream_insert(socket, :child_stops, stop)
+      else
+        socket
+      end
+
+    {:noreply,
+     socket
+     |> assign(:selected_from_stop, nil)
+     |> assign(:active_point_id, nil)}
   end
 
   @impl true
@@ -1033,6 +1068,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp create_pathway_between_stops(socket, from_stop_id, to_stop_id) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
 
     from_stop = Gtfs.get_stop!(from_stop_id)
     to_stop = Gtfs.get_stop!(to_stop_id)
@@ -1054,6 +1090,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         pathway = %{pathway | from_stop: from_stop, to_stop: to_stop}
         updated_list = [pathway | socket.assigns.pathways_list]
 
+        cross_level_stop_ids =
+          Gtfs.list_cross_level_stop_ids(organization_id, gtfs_version_id, station.id)
+
         {:noreply,
          socket
          |> stream_insert(:pathways, pathway)
@@ -1061,6 +1100,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          # Re-stream to remove highlight
          |> stream_insert(:child_stops, from_stop)
          |> assign(:active_point_id, nil)
+         |> assign(:selected_from_stop, nil)
+         |> assign(:cross_level_stop_ids, cross_level_stop_ids)
          |> assign(:pathway_error, nil)}
 
       {:error, changeset} ->
@@ -1094,167 +1135,4 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
-  # Build graph data structure for single-level SVG visualization
-  # Returns %{nodes: [...], edges: [...], width: int, height: int}
-  defp build_pathways_graph(child_stops, pathways) do
-    if child_stops == [] do
-      %{nodes: [], edges: [], width: 400, height: 200}
-    else
-      # Create stop_id -> stop map (kept for potential future use)
-      _stop_map = Map.new(child_stops, fn s -> {s.stop_id, s} end)
-
-      # Horizontal spacing for single-level layout
-      node_spacing_x = 120
-      padding = 60
-
-      # Calculate node positions (single row, horizontal layout)
-      nodes =
-        child_stops
-        |> Enum.with_index()
-        |> Enum.map(fn {stop, col} ->
-          x = padding + col * node_spacing_x
-          y = 100
-
-          %{
-            id: stop.stop_id,
-            label: stop.stop_id,
-            x: x,
-            y: y,
-            location_type: stop.location_type
-          }
-        end)
-
-      # Create node position lookup
-      node_pos_map = Map.new(nodes, fn n -> {n.id, {n.x, n.y}} end)
-
-      # Build edges from pathways (already filtered by level)
-      edges =
-        pathways
-        |> Enum.filter(fn p ->
-          Map.has_key?(node_pos_map, p.from_stop_id) and Map.has_key?(node_pos_map, p.to_stop_id)
-        end)
-        |> Enum.map(fn p ->
-          {from_x, from_y} = Map.get(node_pos_map, p.from_stop_id)
-          {to_x, to_y} = Map.get(node_pos_map, p.to_stop_id)
-
-          %{
-            from_id: p.from_stop_id,
-            to_id: p.to_stop_id,
-            from_x: from_x,
-            from_y: from_y,
-            to_x: to_x,
-            to_y: to_y,
-            pathway_mode: p.pathway_mode,
-            is_bidirectional: p.is_bidirectional
-          }
-        end)
-
-      # Calculate SVG dimensions
-      max_x = nodes |> Enum.map(& &1.x) |> Enum.max(fn -> 0 end)
-
-      width = max(max_x + padding + 60, 400)
-      height = 240
-
-      %{nodes: nodes, edges: edges, width: width, height: height}
-    end
-  end
-
-  # Get stroke color for pathway mode
-  defp pathway_stroke_color(mode) do
-    case mode do
-      1 -> "#6b7280"
-      2 -> "#f59e0b"
-      3 -> "#8b5cf6"
-      4 -> "#ec4899"
-      5 -> "#3b82f6"
-      6 -> "#ef4444"
-      7 -> "#10b981"
-      _ -> "#9ca3af"
-    end
-  end
-
-  # Get stroke dash array for pathway mode
-  defp pathway_stroke_dash(mode) do
-    case mode do
-      # Stairs - dashed
-      2 -> "4,4"
-      # Escalator - dotted
-      4 -> "2,2"
-      # Elevator - long dash
-      5 -> "8,4"
-      # Fare/Exit gates - dash-dot
-      6 -> "6,2,2,2"
-      7 -> "6,2,2,2"
-      # Default solid
-      _ -> "none"
-    end
-  end
-
-  # Get node fill color based on location_type
-  defp node_fill_color(location_type) do
-    case location_type do
-      # Platform
-      0 -> "#3b82f6"
-      # Station
-      1 -> "#10b981"
-      # Entrance/Exit
-      2 -> "#f59e0b"
-      # Generic node
-      3 -> "#6b7280"
-      # Boarding area
-      4 -> "#8b5cf6"
-      _ -> "#9ca3af"
-    end
-  end
-
-  # Calculate arrow points for directional pathway edges
-  defp arrow_points(from_x, from_y, to_x, to_y) do
-    # Calculate direction vector
-    dx = to_x - from_x
-    dy = to_y - from_y
-    len = :math.sqrt(dx * dx + dy * dy)
-
-    # Normalize and scale
-    if len > 0 do
-      nx = dx / len
-      ny = dy / len
-
-      # Arrow tip position (slightly before the target node)
-      tip_x = to_x - nx * 14
-      tip_y = to_y - ny * 14
-
-      # Arrow size
-      arrow_len = 8
-      arrow_width = 4
-
-      # Perpendicular vector
-      px = -ny
-      py = nx
-
-      # Arrow base points
-      base_x = tip_x - nx * arrow_len
-      base_y = tip_y - ny * arrow_len
-
-      left_x = base_x + px * arrow_width
-      left_y = base_y + py * arrow_width
-
-      right_x = base_x - px * arrow_width
-      right_y = base_y - py * arrow_width
-
-      "#{tip_x},#{tip_y} #{left_x},#{left_y} #{right_x},#{right_y}"
-    else
-      "0,0 0,0 0,0"
-    end
-  end
-
-  # Truncate label to max length
-  defp truncate_label(label, max_len) when is_binary(label) do
-    if String.length(label) > max_len do
-      String.slice(label, 0, max_len - 1) <> "..."
-    else
-      label
-    end
-  end
-
-  defp truncate_label(label, _max_len), do: to_string(label)
 end

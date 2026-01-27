@@ -642,7 +642,7 @@ defmodule GtfsPlanner.Gtfs do
 
   @doc """
   Returns the list of levels for a specific station with stop counts.
-  Derives levels from child stops rather than the stop_levels join table.
+  Uses a hybrid approach: combines levels from child stops with levels from stop_levels table.
 
   ## Examples
 
@@ -652,29 +652,56 @@ defmodule GtfsPlanner.Gtfs do
   def list_levels_for_station(organization_id, gtfs_version_id, parent_station_id) do
     parent_station = Repo.get!(Stop, parent_station_id)
 
-    # Derive levels from child stops that have a level_id set
-    from(s in Stop,
-      join: l in Level,
-      on:
-        l.level_id == s.level_id and
-          l.organization_id == ^organization_id and
-          l.gtfs_version_id == ^gtfs_version_id,
-      left_join: sl in StopLevel,
-      on:
-        sl.level_id == l.id and
-          sl.stop_id == ^parent_station_id and
+    # Query 1: Levels from child stops that have a level_id set
+    levels_from_stops =
+      from(s in Stop,
+        join: l in Level,
+        on:
+          l.level_id == s.level_id and
+            l.organization_id == ^organization_id and
+            l.gtfs_version_id == ^gtfs_version_id,
+        where:
+          s.organization_id == ^organization_id and
+            s.gtfs_version_id == ^gtfs_version_id and
+            s.parent_station == ^parent_station.stop_id and
+            not is_nil(s.level_id),
+        group_by: l.id,
+        select: %{level_id: l.id, stop_count: count(s.id)}
+      )
+      |> Repo.all()
+      |> Enum.into(%{}, fn %{level_id: id, stop_count: count} -> {id, count} end)
+
+    # Query 2: Levels from stop_levels table (expressing intent)
+    levels_from_stop_levels =
+      from(sl in StopLevel,
+        join: l in Level,
+        on: sl.level_id == l.id,
+        where:
           sl.organization_id == ^organization_id and
-          sl.gtfs_version_id == ^gtfs_version_id,
-      where:
-        s.organization_id == ^organization_id and
-          s.gtfs_version_id == ^gtfs_version_id and
-          s.parent_station == ^parent_station.stop_id and
-          not is_nil(s.level_id),
-      group_by: [l.id, sl.diagram_filename],
-      order_by: [asc: l.level_index],
-      select: %{level: l, stop_count: count(s.id), diagram_filename: sl.diagram_filename}
-    )
-    |> Repo.all()
+            sl.gtfs_version_id == ^gtfs_version_id and
+            sl.stop_id == ^parent_station_id,
+        select: %{level: l, diagram_filename: sl.diagram_filename}
+      )
+      |> Repo.all()
+
+    # Combine: unique list of level IDs from both sources
+    all_level_ids =
+      (Map.keys(levels_from_stops) ++ Enum.map(levels_from_stop_levels, & &1.level.id))
+      |> Enum.uniq()
+
+    # Build final result with stop counts and diagram filenames
+    all_level_ids
+    |> Enum.map(fn level_id ->
+      # Get level from stop_levels query if available (includes diagram_filename)
+      from_stop_levels = Enum.find(levels_from_stop_levels, &(&1.level.id == level_id))
+      
+      level = if from_stop_levels, do: from_stop_levels.level, else: Repo.get!(Level, level_id)
+      stop_count = Map.get(levels_from_stops, level_id, 0)
+      diagram_filename = if from_stop_levels, do: from_stop_levels.diagram_filename, else: nil
+
+      %{level: level, stop_count: stop_count, diagram_filename: diagram_filename}
+    end)
+    |> Enum.sort_by(& &1.level.level_index, :asc)
   end
 
   @doc """
@@ -743,7 +770,7 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Returns pathways where at least one endpoint has the specified level_id
+  Returns pathways where the from_stop is on the specified level
   and both endpoints belong to the specified parent station.
 
   ## Examples
@@ -769,7 +796,7 @@ defmodule GtfsPlanner.Gtfs do
       where:
         p.organization_id == ^organization_id and
           p.gtfs_version_id == ^gtfs_version_id and
-          (from_stop.level_id == ^level.level_id or to_stop.level_id == ^level.level_id) and
+          from_stop.level_id == ^level.level_id and
           from_stop.parent_station == ^parent_station.stop_id and
           to_stop.parent_station == ^parent_station.stop_id,
       order_by: [asc: p.pathway_id],
@@ -832,6 +859,66 @@ defmodule GtfsPlanner.Gtfs do
       select_merge: %{from_stop: from_stop, to_stop: to_stop}
     )
     |> Repo.all()
+  end
+
+  @doc """
+  Returns pathways where the given stop_id is either the from_stop or to_stop.
+
+  ## Examples
+
+      iex> list_pathways_for_stop(org_id, version_id, "stop_123")
+      [%Pathway{}, ...]
+  """
+  def list_pathways_for_stop(organization_id, gtfs_version_id, stop_id) do
+    from(p in Pathway,
+      where:
+        p.organization_id == ^organization_id and
+          p.gtfs_version_id == ^gtfs_version_id and
+          (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id),
+      order_by: [asc: p.pathway_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Returns a MapSet of stop IDs that participate in cross-level pathways.
+  
+  This includes both from_stop and to_stop IDs where pathways connect
+  stops on different levels within the same parent station.
+  
+  ## Examples
+  
+      iex> list_cross_level_stop_ids(org_id, version_id, station_id)
+      #MapSet<[123, 456, 789]>
+  """
+  def list_cross_level_stop_ids(organization_id, gtfs_version_id, station_id) do
+    parent_station = Repo.get!(Stop, station_id)
+
+    query =
+      from(p in Pathway,
+        join: from_stop in Stop,
+        on:
+          p.from_stop_id == from_stop.stop_id and
+            from_stop.organization_id == ^organization_id and
+            from_stop.gtfs_version_id == ^gtfs_version_id,
+        join: to_stop in Stop,
+        on:
+          p.to_stop_id == to_stop.stop_id and
+            to_stop.organization_id == ^organization_id and
+            to_stop.gtfs_version_id == ^gtfs_version_id,
+        where:
+          p.organization_id == ^organization_id and
+            p.gtfs_version_id == ^gtfs_version_id and
+            from_stop.parent_station == ^parent_station.stop_id and
+            to_stop.parent_station == ^parent_station.stop_id and
+            from_stop.level_id != to_stop.level_id,
+        select: {from_stop.id, to_stop.id}
+      )
+
+    query
+    |> Repo.all()
+    |> Enum.flat_map(fn {from_id, to_id} -> [from_id, to_id] end)
+    |> MapSet.new()
   end
 
   @doc """
