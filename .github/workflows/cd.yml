@@ -1,0 +1,123 @@
+name: Deploy
+run-name: Deploy ${{inputs.version || 'main' }} to ${{ inputs.environment || 'dev' }} environment
+concurrency:
+  group: cd-${{inputs.version || 'main' }}-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy to
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+      version:
+        required: true
+        default: "main"
+        description: Tag or branch or SHA to deploy
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  MISE_AUTO_INSTALL: 0
+
+jobs:
+  build_publish:
+    name: Build/publish
+    runs-on: ${{ fromJSON(vars.GH_DOCKER_RUNNER_LABEL) }}
+    env:
+      DEV_IP: ${{ vars.DEV_IP }}
+    steps:
+      - name: Set environment configuration
+        run: |
+          echo "environment=${{ inputs.environment || 'dev' }}" >> $GITHUB_ENV
+          echo "version=${{ inputs.version || 'main' }}" >> $GITHUB_ENV
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v3
+        with:
+          install: true
+          install_args: "opentofu"
+          cache: true
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ vars.DEV_IP }}" > ~/.ssh/known_hosts
+          eval $(ssh-agent -s)
+          ssh-add ~/.ssh/id_ed25519
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
+      - name: Gather account information
+        run: |
+          source mise-tasks/infra/account-information $environment
+
+          echo "REPOSITORY_URL=$repository_url" >> $GITHUB_ENV
+          echo "AWS_REGION=$region" >> $GITHUB_ENV
+          echo "AWS_ROLE_TO_ASSUME=$github_actions_role_arn" >> $GITHUB_ENV
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.1
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+      - uses: actions/checkout@v6
+        with:
+          path: build
+          ref: ${{ env.version }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build/publish
+        run: mise run infra:environment:build "$environment" --build-dir build --push
+
+  deploy:
+    name: Deploy
+    runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
+    needs: [build_publish]
+    environment: ${{ inputs.environment || 'dev' }}
+    env:
+      DEV_IP: ${{ vars.DEV_IP }}
+
+    steps:
+      - name: Set environment configuration
+        run: |
+          echo "environment=${{ inputs.environment || 'dev' }}" >> $GITHUB_ENV
+          echo "version=${{ inputs.version || 'main' }}" >> $GITHUB_ENV
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v3
+        with:
+          install: true
+          install_args: "opentofu"
+          cache: true
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ vars.DEV_IP }}" > ~/.ssh/known_hosts
+          eval $(ssh-agent -s)
+          ssh-add ~/.ssh/id_ed25519
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
+      - name: Gather account information
+        run: |
+          source mise-tasks/infra/account-information $environment
+
+          echo "REPOSITORY_URL=$repository_url" >> $GITHUB_ENV
+          echo "AWS_REGION=$region" >> $GITHUB_ENV
+          echo "AWS_ROLE_TO_ASSUME=$github_actions_role_arn" >> $GITHUB_ENV
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.1
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+      - uses: actions/checkout@v6
+        with:
+          path: build
+          ref: ${{ env.version }}
+      - name: Deploy
+        run: mise run infra:environment:deploy "$environment" --build-dir build
