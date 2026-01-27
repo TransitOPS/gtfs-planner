@@ -139,7 +139,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
-          level_id: level1.id
+          level_id: level1.id,
+          diagram_filename: "level1.png"
         })
 
       {:ok, _stop_level2} =
@@ -147,7 +148,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
-          level_id: level2.id
+          level_id: level2.id,
+          diagram_filename: "level2.png"
         })
 
       # Create child stops on different levels
@@ -206,17 +208,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Click first stop on level 1
       view
-      |> element("#stop-point-#{child_stop1.id}")
+      |> element("#child_stops-#{child_stop1.id}-circle")
       |> render_click()
 
       # Switch to level 2
       view
-      |> element("select[name=\"level_id\"]")
+      |> element("form[phx-change=\"switch_level\"]")
       |> render_change(%{"level_id" => level2.id})
 
       # Click second stop on level 2
       view
-      |> element("#stop-point-#{child_stop2.id}")
+      |> element("#child_stops-#{child_stop2.id}-circle")
       |> render_click()
 
       # Assert pathway was created
@@ -292,9 +294,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     } do
       # Add a diagram to the stop_level
       {:ok, _updated_stop_level} =
-        Gtfs.update_stop_level_diagram(stop_level, %{
-          diagram_filename: "test_diagram.png"
-        })
+        Gtfs.update_stop_level_diagram(stop_level, "test_diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -305,7 +305,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Assert the action strip contains sticky positioning classes
       assert html =~ "sticky top-0 z-10"
-      assert html =~ "bg-primary-content"
+      assert html =~ "bg-blue-50"
     end
 
     test "upload button shows 'Upload Diagram' when no diagram exists", %{
@@ -337,9 +337,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     } do
       # Add a diagram to the stop_level
       {:ok, _updated_stop_level} =
-        Gtfs.update_stop_level_diagram(stop_level, %{
-          diagram_filename: "test_diagram.png"
-        })
+        Gtfs.update_stop_level_diagram(stop_level, "test_diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 

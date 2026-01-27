@@ -192,7 +192,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
         "is_bidirectional" => "1"
       }
 
-      assert {:ok, attrs} = RowParser.pathway_row_to_attrs(row, org_id, version_id)
+      assert {:ok, attrs} = RowParser.pathway_row_to_attrs(row, org_id, version_id, stop_map)
       assert attrs.pathway_id == "P1"
       assert attrs.from_stop_id == "S1"
       assert attrs.to_stop_id == "S2"

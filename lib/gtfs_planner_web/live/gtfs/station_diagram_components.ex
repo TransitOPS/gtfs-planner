@@ -55,7 +55,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           phx-hook="AutoSubmitUpload"
         >
           <label class="btn btn-sm btn-ghost cursor-pointer">
-            Upload Diagram <.live_file_input upload={@uploads.diagram} class="hidden" />
+            Upload Diagram <.live_file_input upload={@uploads.diagram} id="toolbar-diagram-upload" class="hidden" />
           </label>
         </form>
         <span :if={@diagram_error} class="text-error text-sm">{@diagram_error}</span>
@@ -172,6 +172,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :mode, :atom, required: true
   attr :uploads, :any, required: true
   attr :cross_level_stop_ids, :any, default: MapSet.new()
+  attr :diagram_error, :string, default: nil
 
   def diagram_canvas(assigns) do
     ~H"""
@@ -204,7 +205,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             cross_level_stop_ids={@cross_level_stop_ids}
           />
         <% @active_level -> %>
-          <.empty_diagram_state uploads={@uploads} />
+          <.empty_diagram_state />
         <% true -> %>
           <.no_level_state />
       <% end %>
@@ -322,8 +323,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
-  attr :uploads, :any, required: true
-
   defp empty_diagram_state(assigns) do
     ~H"""
     <div class="flex flex-col items-center justify-center py-24 px-8 text-center">
@@ -334,16 +333,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <p class="text-base-content/50 text-sm mb-6 max-w-xs">
         Upload a floor plan to place stops and draw pathways on this level.
       </p>
-      <form
-        id="diagram-upload-form-empty"
-        phx-change="upload_diagram"
-        phx-submit="save_diagram"
-        phx-hook="AutoSubmitUpload"
-      >
-        <label class="btn btn-primary btn-active btn-sm">
-          Upload Diagram <.live_file_input upload={@uploads.diagram} class="hidden" />
-        </label>
-      </form>
+      <p class="text-base-content/40 text-xs">
+        Use the "Upload Diagram" button in the navigation bar above.
+      </p>
     </div>
     """
   end
