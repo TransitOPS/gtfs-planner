@@ -249,7 +249,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
   @impl true
   def handle_event("paginate", %{"page" => page}, socket) do
-    page_int = String.to_integer(page)
+    page_int = parse_integer(page, 1)
 
     params =
       %{}
