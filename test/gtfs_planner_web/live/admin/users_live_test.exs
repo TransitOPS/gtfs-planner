@@ -19,7 +19,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       roles: ["pathways_studio_admin"]
     })
 
-    # Log in the admin user and set organization in session
+    # Log in as admin user and set organization in session
     conn =
       conn
       |> log_in_user(admin_user)
@@ -41,7 +41,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       Accounts.create_user_org_membership(%{
         user_id: user1.id,
         organization_id: organization.id,
-        roles: ["pathways_studio_viewer"]
+        roles: ["pathways_studio_editor"]
       })
 
       Accounts.create_user_org_membership(%{
@@ -73,13 +73,13 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       Accounts.create_user_org_membership(%{
         user_id: other_user.id,
         organization_id: other_org.id,
-        roles: ["pathways_studio_viewer"]
+        roles: ["pathways_studio_editor"]
       })
 
       # Navigate to users index page
       {:ok, _view, html} = live(conn, ~p"/admin/users")
 
-      # Assert only the admin's email is visible, not the other organization's user
+      # Assert only admin's email is visible, not other organization's user
       assert html =~ admin_user.email
       refute html =~ "other@example.com"
     end
@@ -91,7 +91,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       Accounts.create_user_org_membership(%{
         user_id: active_user.id,
         organization_id: organization.id,
-        roles: ["pathways_studio_viewer"]
+        roles: ["pathways_studio_editor"]
       })
 
       # Create deactivated user
@@ -100,7 +100,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       Accounts.create_user_org_membership(%{
         user_id: deactivated_user.id,
         organization_id: organization.id,
-        roles: ["pathways_studio_viewer"]
+        roles: ["pathways_studio_editor"]
       })
 
       GtfsPlanner.Organizations.deactivate_user_in_organization(
@@ -126,7 +126,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
              |> form("#invite-form",
                invite: %{
                  email: "newmember@example.com",
-                 roles: ["pathways_studio_viewer"]
+                 roles: ["pathways_studio_editor"]
                }
              )
              |> render_submit()
@@ -143,13 +143,13 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       memberships = Accounts.list_user_org_memberships(user.id)
       membership = Enum.find(memberships, &(&1.organization_id == organization.id))
       assert membership
-      assert "pathways_studio_viewer" in membership.roles
+      assert "pathways_studio_editor" in membership.roles
     end
 
     test "displays newly invited user in members list", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
 
-      # Submit invite form
+      # Submit the invite form
       assert view
              |> form("#invite-form",
                invite: %{
@@ -162,7 +162,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       # Navigate back to index
       {:ok, _index_view, html} = live(conn, ~p"/admin/users")
 
-      # Assert new user appears in the list
+      # Assert new user appears in list
       assert html =~ "invited@example.com"
     end
 
@@ -175,7 +175,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
         |> form("#invite-form",
           invite: %{
             email: "invalid-email",
-            roles: ["pathways_studio_viewer"]
+            roles: ["pathways_studio_editor"]
           }
         )
         |> render_change()
@@ -214,7 +214,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: organization.id,
-        roles: ["pathways_studio_viewer"]
+        roles: ["pathways_studio_editor"]
       })
 
       {:ok, view, html} = live(conn, ~p"/admin/users")
@@ -248,7 +248,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: organization.id,
-        roles: ["pathways_studio_viewer"]
+        roles: ["pathways_studio_editor"]
       })
 
       GtfsPlanner.Organizations.deactivate_user_in_organization(user.id, organization.id)
@@ -284,7 +284,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: organization.id,
-        roles: ["pathways_studio_viewer"]
+        roles: ["pathways_studio_editor"]
       })
 
       # Generate session token

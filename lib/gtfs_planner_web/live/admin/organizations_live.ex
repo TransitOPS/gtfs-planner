@@ -44,31 +44,50 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   end
 
   defp apply_action(socket, :show, %{"org_id" => org_id}) do
-    organization = Organizations.get_organization!(org_id)
-    members = Organizations.list_users_in_organization(org_id)
+    case Organizations.get_organization(org_id) do
+      nil ->
+        socket
+        |> put_flash(:error, "Organization not found")
+        |> push_navigate(to: ~p"/admin/organizations")
 
-    socket
-    |> assign(:page_title, "Organization Details")
-    |> assign(:organization, organization)
-    |> assign(:members, members)
+      organization ->
+        members = Organizations.list_users_in_organization(org_id)
+
+        socket
+        |> assign(:page_title, "Organization Details")
+        |> assign(:organization, organization)
+        |> assign(:members, members)
+    end
   end
 
   defp apply_action(socket, :edit, %{"org_id" => org_id}) do
-    organization = Organizations.get_organization!(org_id)
+    case Organizations.get_organization(org_id) do
+      nil ->
+        socket
+        |> put_flash(:error, "Organization not found")
+        |> push_navigate(to: ~p"/admin/organizations")
 
-    socket
-    |> assign(:page_title, "Edit Organization")
-    |> assign(:organization, organization)
-    |> assign_form(organization)
+      organization ->
+        socket
+        |> assign(:page_title, "Edit Organization")
+        |> assign(:organization, organization)
+        |> assign_form(organization)
+    end
   end
 
   defp apply_action(socket, :invite, %{"org_id" => org_id}) do
-    organization = Organizations.get_organization!(org_id)
+    case Organizations.get_organization(org_id) do
+      nil ->
+        socket
+        |> put_flash(:error, "Organization not found")
+        |> push_navigate(to: ~p"/admin/organizations")
 
-    socket
-    |> assign(:page_title, "Invite Member")
-    |> assign(:organization, organization)
-    |> assign_invite_form()
+      organization ->
+        socket
+        |> assign(:page_title, "Invite Member")
+        |> assign(:organization, organization)
+        |> assign_invite_form()
+    end
   end
 
   defp assign_form(socket, %Organizations.Organization{} = org, attrs \\ %{}) do
@@ -85,8 +104,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   defp available_roles do
     [
       {"Pathways Studio Admin", "pathways_studio_admin"},
-      {"Pathways Studio Editor", "pathways_studio_editor"},
-      {"Pathways Studio Viewer", "pathways_studio_viewer"}
+      {"Pathways Studio Editor", "pathways_studio_editor"}
     ]
   end
 

@@ -519,7 +519,7 @@ defmodule GtfsPlanner.Accounts do
           membership_attrs = %{
             user_id: user.id,
             organization_id: org_id,
-            roles: ["pathways_studio_viewer"]
+            roles: ["pathways_studio_editor"]
           }
 
           Ecto.Multi.insert(

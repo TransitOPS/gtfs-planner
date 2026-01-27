@@ -68,23 +68,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert {:error, {:redirect, %{to: "/", flash: %{"error" => "GTFS version not found"}}}} =
                live(conn, "/gtfs/#{other_version.id}/import")
     end
-
-    test "requires pathways_studio_editor role", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      # Update user to have only viewer role (not editor)
-      membership = Accounts.get_user_org_membership(user.id, organization.id)
-      Accounts.update_user_org_membership(membership, %{roles: ["pathways_studio_viewer"]})
-
-      conn = log_in_user(conn, user, organization: organization)
-
-      # The actual error message might be different, so we'll just check that it redirects with an error
-      assert {:error, {:redirect, %{to: _, flash: %{"error" => _}}}} =
-               live(conn, "/gtfs/#{version.id}/import")
-    end
   end
 
   describe "ImportLive version redirect flow" do

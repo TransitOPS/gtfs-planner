@@ -59,11 +59,12 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
     if Accounts.count_users() > 0 do
       {:ok, redirect(socket, to: ~p"/")}
     else
+      form = to_form(%{}, as: "admin")
+
       {:ok,
        socket
-       |> assign(form: to_form(%{}, as: "admin"))
-       |> assign(page_title: "Setup Administrator"),
-       temporary_assigns: [form: socket.assigns.form]}
+       |> assign(form: form)
+       |> assign(page_title: "Setup Administrator")}
     end
   end
 
@@ -89,7 +90,7 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
          |> redirect(to: ~p"/users/log_in")}
 
       {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset))}
+        {:noreply, assign(socket, form: to_form(changeset, as: "admin"))}
     end
   end
 
@@ -103,8 +104,10 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
           password_confirmation: admin_params["password_confirmation"]
         }
       )
+      |> Map.put(:action, :validate)
 
-    {:noreply, assign(socket, form: to_form(changeset))}
+    # Use raw params to preserve ALL fields, pass changeset errors for validation
+    {:noreply, assign(socket, form: to_form(admin_params, as: "admin", errors: changeset.errors))}
   end
 
   defp generate_alias(name) do

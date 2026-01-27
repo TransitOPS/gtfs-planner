@@ -54,8 +54,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
   defp available_roles do
     [
       {"Pathways Studio Admin", "pathways_studio_admin"},
-      {"Pathways Studio Editor", "pathways_studio_editor"},
-      {"Pathways Studio Viewer", "pathways_studio_viewer"}
+      {"Pathways Studio Editor", "pathways_studio_editor"}
     ]
   end
 
@@ -63,7 +62,6 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
     case role do
       "pathways_studio_admin" -> "Pathways Studio Admin"
       "pathways_studio_editor" -> "Pathways Studio Editor"
-      "pathways_studio_viewer" -> "Pathways Studio Viewer"
       "administrator" -> "Administrator"
       _ -> role
     end

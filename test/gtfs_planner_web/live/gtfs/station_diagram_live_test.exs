@@ -18,7 +18,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: organization.id,
-        roles: ["pathways_studio_viewer"]
+        roles: ["pathways_studio_editor"]
       })
 
       gtfs_version = gtfs_version_fixture(organization.id)
@@ -31,7 +31,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           location_type: 1
         })
 
-      # Create a level for the station
+      # Create a level for station
       level =
         level_fixture(organization.id, gtfs_version.id, %{
           level_id: "L1",
@@ -81,17 +81,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      # Click on the child stop list item
+      # Click on child stop list item
       result =
         view
         |> element("#child-stop-list-#{child_stop.id}")
         |> render_click()
 
-      # Assert the drawer opened with populated form fields
+      # Assert drawer opened with populated form fields
       assert result =~ "Child Stop 1"
       assert result =~ "CHILD_STOP_1"
 
-      # Verify the form has the correct values in the input fields
+      # Verify form has correct values in input fields
       assert result =~ ~r/value=\"CHILD_STOP_1\"/
       assert result =~ ~r/value=\"Child Stop 1\"/
     end
@@ -105,7 +105,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: organization.id,
-        roles: ["pathways_studio_viewer"]
+        roles: ["pathways_studio_editor"]
       })
 
       gtfs_version = gtfs_version_fixture(organization.id)
@@ -229,8 +229,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert pathway.from_stop_id == child_stop1.stop_id
       assert pathway.to_stop_id == child_stop2.stop_id
 
-      # Assert selected_from_stop is cleared by checking the view state
-      # The view should not show the "From: ..." message anymore
+      # Assert selected_from_stop is cleared by checking view state
+      # The view should not show "From: ..." message anymore
       html = render(view)
       refute html =~ "From: Child Stop 1"
     end
@@ -244,7 +244,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: organization.id,
-        roles: ["pathways_studio_viewer"]
+        roles: ["pathways_studio_editor"]
       })
 
       gtfs_version = gtfs_version_fixture(organization.id)
