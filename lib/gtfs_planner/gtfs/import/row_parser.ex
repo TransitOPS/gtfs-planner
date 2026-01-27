@@ -1072,93 +1072,60 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
     * `{:ok, attrs}` - Valid attributes map
     * `{:error, reason}` - Validation failure
   """
-  def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id, stop_map \\ %{})
-
-  # Backwards compatibility for tests that don't pass stop_map yet
-  def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id, stop_map) when stop_map == %{} do
-    # When no stop_map is provided (or empty), we can't resolve UUIDs.
-    # This matches the previous behavior but might fail FK constraints if S1 is not a valid UUID.
-    # We warn about this usage pattern.
-    pathway_row_to_attrs_impl(row_map, organization_id, gtfs_version_id, fn id -> {:ok, id} end)
-  end
-
-  def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id, stop_map) do
-    resolve_fn = fn stop_id ->
-      case Map.get(stop_map, stop_id) do
-        nil -> {:error, "stop_id not found: #{stop_id}"}
-        uuid -> {:ok, uuid}
-      end
-    end
-
-    pathway_row_to_attrs_impl(row_map, organization_id, gtfs_version_id, resolve_fn)
-  end
-
-  defp pathway_row_to_attrs_impl(row_map, organization_id, gtfs_version_id, resolve_stop_fn) do
+  def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id) do
     with {:ok, pathway_id} <- extract_required(row_map, "pathway_id"),
-         {:ok, from_stop_id_str} <- extract_required(row_map, "from_stop_id"),
-         {:ok, to_stop_id_str} <- extract_required(row_map, "to_stop_id"),
+         {:ok, from_stop_id} <- extract_required(row_map, "from_stop_id"),
+         {:ok, to_stop_id} <- extract_required(row_map, "to_stop_id"),
          {:ok, pathway_mode} <- parse_pathway_mode(row_map["pathway_mode"]),
          {:ok, is_bidirectional} <- parse_is_bidirectional(row_map["is_bidirectional"]) do
       
-      # Resolve stop IDs (UUIDs)
-      with {:ok, from_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, from_stop_id_str, "from_stop_id"),
-           {:ok, to_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, to_stop_id_str, "to_stop_id") do
-        
-        traversal_time =
-          case parse_integer(row_map["traversal_time"]) do
-            {:ok, val} -> val
-            {:error, _} -> nil
-          end
+      traversal_time =
+        case parse_integer(row_map["traversal_time"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-        length =
-          case parse_decimal(row_map["length"]) do
-            {:ok, val} -> val
-            {:error, _} -> nil
-          end
+      length =
+        case parse_decimal(row_map["length"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-        stair_count =
-          case parse_integer(row_map["stair_count"]) do
-            {:ok, val} -> val
-            {:error, _} -> nil
-          end
+      stair_count =
+        case parse_integer(row_map["stair_count"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-        max_slope =
-          case parse_decimal(row_map["max_slope"]) do
-            {:ok, val} -> val
-            {:error, _} -> nil
-          end
+      max_slope =
+        case parse_decimal(row_map["max_slope"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-        min_width =
-          case parse_decimal(row_map["min_width"]) do
-            {:ok, val} -> val
-            {:error, _} -> nil
-          end
+      min_width =
+        case parse_decimal(row_map["min_width"]) do
+          {:ok, val} -> val
+          {:error, _} -> nil
+        end
 
-        {:ok,
-         %{
-           pathway_id: pathway_id,
-           pathway_mode: pathway_mode,
-           is_bidirectional: is_bidirectional,
-           traversal_time: traversal_time,
-           length: length,
-           stair_count: stair_count,
-           max_slope: max_slope,
-           min_width: min_width,
-           signposted_as: empty_to_nil(row_map["signposted_as"]),
-           reversed_signposted_as: empty_to_nil(row_map["reversed_signposted_as"]),
-           organization_id: organization_id,
-           gtfs_version_id: gtfs_version_id,
-           from_stop_id: from_stop_id,
-           to_stop_id: to_stop_id
-         }}
-      end
-    end
-  end
-
-  defp resolve_stop_fn_wrapper(func, stop_id, field_name) do
-    case func.(stop_id) do
-      {:ok, uuid} -> {:ok, uuid}
-      {:error, _} -> {:error, "#{field_name} not found: #{stop_id}"}
+      {:ok,
+       %{
+         pathway_id: pathway_id,
+         pathway_mode: pathway_mode,
+         is_bidirectional: is_bidirectional,
+         traversal_time: traversal_time,
+         length: length,
+         stair_count: stair_count,
+         max_slope: max_slope,
+         min_width: min_width,
+         signposted_as: empty_to_nil(row_map["signposted_as"]),
+         reversed_signposted_as: empty_to_nil(row_map["reversed_signposted_as"]),
+         organization_id: organization_id,
+         gtfs_version_id: gtfs_version_id,
+         from_stop_id: from_stop_id,
+         to_stop_id: to_stop_id
+       }}
     end
   end
 
