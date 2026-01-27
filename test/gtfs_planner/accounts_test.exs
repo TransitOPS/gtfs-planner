@@ -600,6 +600,31 @@ defmodule GtfsPlanner.AccountsTest do
 
       refute Accounts.get_user_by_invite_token(token)
     end
+
+    test "sets password without creating membership when organization_id is not provided", %{
+      user: user
+    } do
+      # Generate an invite token first
+      token =
+        extract_user_token(fn url ->
+          Accounts.deliver_user_invite(user, fn token -> "#{url}/users/accept_invite/#{token}" end)
+        end)
+
+      {:ok, _updated_user} =
+        Accounts.accept_invite_set_password(user, %{
+          password: "new valid password",
+          password_confirmation: "new valid password"
+        })
+
+      # Verify password was set
+      assert Accounts.get_user_by_email_and_password(user.email, "new valid password")
+
+      # Verify invite token was deleted
+      refute Accounts.get_user_by_invite_token(token)
+
+      # Verify no membership was created
+      assert Repo.all(UserOrgMembership) == []
+    end
   end
 
   describe "list_user_org_memberships/1" do
