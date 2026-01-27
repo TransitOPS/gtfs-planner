@@ -535,10 +535,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   defp parse_integer(nil, default), do: default
   defp parse_integer("", default), do: default
 
-  defp parse_integer(val, default) do
-    case Integer.parse(val) do
-      {int, _} -> int
-      :error -> default
+  defp parse_integer(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when int > 0 -> int
+      _ -> default
     end
   end
 
