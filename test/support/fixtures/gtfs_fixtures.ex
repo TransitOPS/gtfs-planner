@@ -143,4 +143,57 @@ defmodule GtfsPlanner.GtfsFixtures do
 
     agency
   end
+
+  @doc """
+  Generate valid trip attributes for testing.
+  """
+  def valid_trip_attrs(attrs \\ %{}) do
+    Enum.into(attrs, %{
+      trip_id: "trip_#{System.unique_integer([:positive])}",
+      service_id: "service_#{System.unique_integer([:positive])}",
+      trip_headsign: "Downtown"
+    })
+  end
+
+  @doc """
+  Generate a trip fixture.
+  """
+  def trip_fixture(organization_id, gtfs_version_id, route_id, attrs \\ %{}) do
+    {:ok, trip} =
+      Gtfs.create_trip(
+        valid_trip_attrs(attrs)
+        |> Map.put(:organization_id, organization_id)
+        |> Map.put(:gtfs_version_id, gtfs_version_id)
+        |> Map.put(:route_id, route_id)
+      )
+
+    trip
+  end
+
+  @doc """
+  Generate valid stop time attributes for testing.
+  """
+  def valid_stop_time_attrs(attrs \\ %{}) do
+    Enum.into(attrs, %{
+      arrival_time: "08:00:00",
+      departure_time: "08:00:00",
+      stop_sequence: System.unique_integer([:positive])
+    })
+  end
+
+  @doc """
+  Generate a stop time fixture.
+  """
+  def stop_time_fixture(organization_id, gtfs_version_id, trip_id, stop_id, attrs \\ %{}) do
+    {:ok, stop_time} =
+      Gtfs.create_stop_time(
+        valid_stop_time_attrs(attrs)
+        |> Map.put(:organization_id, organization_id)
+        |> Map.put(:gtfs_version_id, gtfs_version_id)
+        |> Map.put(:trip_id, trip_id)
+        |> Map.put(:stop_id, stop_id)
+      )
+
+    stop_time
+  end
 end
