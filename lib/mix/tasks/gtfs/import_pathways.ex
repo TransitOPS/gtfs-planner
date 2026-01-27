@@ -234,8 +234,8 @@ defmodule Mix.Tasks.Gtfs.ImportPathways do
         reversed_signposted_as: empty_to_nil(row_map["reversed_signposted_as"]),
         organization_id: organization_id,
         gtfs_version_id: gtfs_version_id,
-        from_stop_id: from_stop.id,
-        to_stop_id: to_stop.id
+        from_stop_id: from_stop.stop_id,
+        to_stop_id: to_stop.stop_id
       }
 
       {:ok, attrs}

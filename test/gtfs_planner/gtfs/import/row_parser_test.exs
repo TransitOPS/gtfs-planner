@@ -182,9 +182,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       organization_id: org_id,
       gtfs_version_id: version_id
     } do
-      stop_uuid_1 = Ecto.UUID.generate()
-      stop_uuid_2 = Ecto.UUID.generate()
-      stop_map = %{"S1" => stop_uuid_1, "S2" => stop_uuid_2}
+      stop_map = %{"S1" => true, "S2" => true}
 
       row = %{
         "pathway_id" => "P1",
@@ -196,8 +194,8 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
 
       assert {:ok, attrs} = RowParser.pathway_row_to_attrs(row, org_id, version_id, stop_map)
       assert attrs.pathway_id == "P1"
-      assert attrs.from_stop_id == stop_uuid_1
-      assert attrs.to_stop_id == stop_uuid_2
+      assert attrs.from_stop_id == "S1"
+      assert attrs.to_stop_id == "S2"
       assert attrs.pathway_mode == 1
       assert attrs.is_bidirectional == true
     end
@@ -206,7 +204,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       organization_id: org_id,
       gtfs_version_id: version_id
     } do
-      stop_map = %{"S2" => Ecto.UUID.generate()}
+      stop_map = %{"S2" => true}
 
       row = %{
         "pathway_id" => "P1",
@@ -224,7 +222,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       organization_id: org_id,
       gtfs_version_id: version_id
     } do
-      stop_map = %{"S1" => Ecto.UUID.generate()}
+      stop_map = %{"S1" => true}
 
       row = %{
         "pathway_id" => "P1",
