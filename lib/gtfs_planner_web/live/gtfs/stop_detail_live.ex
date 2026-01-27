@@ -335,7 +335,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                         </span>
                       </td>
                       <td>
-                        {if pathway.traversal_time, do: "#{pathway.traversal_time}s", else: "\u0014"}
+                        {if pathway.traversal_time, do: "#{pathway.traversal_time}s", else: "-"}
                       </td>
                     </tr>
                   <% end %>
