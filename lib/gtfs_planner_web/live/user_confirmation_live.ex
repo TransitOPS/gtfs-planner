@@ -9,7 +9,6 @@ defmodule GtfsPlannerWeb.UserConfirmationLive do
       case Accounts.confirm_user(token) do
         {:ok, _user} ->
           socket
-          |> put_flash(:info, "Email confirmed successfully. You can now log in.")
           |> redirect(to: ~p"/users/log_in")
 
         :error ->

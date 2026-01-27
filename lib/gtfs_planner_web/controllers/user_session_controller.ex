@@ -21,7 +21,6 @@ defmodule GtfsPlannerWeb.UserSessionController do
 
           conn ->
             conn
-            |> put_flash(:info, "Welcome back!")
         end
       else
         # User has no organization membership and is not an administrator
@@ -43,7 +42,6 @@ defmodule GtfsPlannerWeb.UserSessionController do
 
   def delete(conn, _params) do
     conn
-    |> put_flash(:info, "Logged out successfully.")
     |> UserAuth.log_out_user()
   end
 end

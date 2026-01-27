@@ -86,7 +86,6 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
       {:ok, _user} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Administrator account created successfully. Please log in.")
          |> redirect(to: ~p"/users/log_in")}
 
       {:error, changeset} ->

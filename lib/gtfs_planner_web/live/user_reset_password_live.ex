@@ -72,7 +72,6 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
       {:ok, _user} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Password reset successfully.")
          |> redirect(to: ~p"/users/log_in")}
 
       {:error, changeset} ->
