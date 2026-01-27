@@ -795,34 +795,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       :add ->
         if socket.assigns.level_mode == :existing do
           existing_level_id = params["existing_level_id"]
-          level = Gtfs.get_level(existing_level_id)
 
-          if level do
-            case Gtfs.create_stop_level(%{
-                   stop_id: station.id,
-                   level_id: level.id,
-                   organization_id: organization_id,
-                   gtfs_version_id: gtfs_version_id
-                 }) do
-              {:ok, _stop_level} ->
-                levels_data =
-                  Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+          cond do
+            existing_level_id in [nil, ""] ->
+              {:noreply, put_flash(socket, :error, "Please select a level to add.")}
 
-                levels = Enum.map(levels_data, & &1.level)
+            level = Gtfs.get_level(existing_level_id) ->
+              case Gtfs.create_stop_level(%{
+                     stop_id: station.id,
+                     level_id: level.id,
+                     organization_id: organization_id,
+                     gtfs_version_id: gtfs_version_id
+                   }) do
+                {:ok, _stop_level} ->
+                  levels_data =
+                    Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
 
-                {:noreply,
-                 socket
-                 |> assign(:levels, levels)
-                 |> assign(:active_level, level)
-                 |> assign(:show_level_modal, nil)
-                 |> assign(:level_form, to_form(%{}))
-                 |> load_level_data(level)}
+                  levels = Enum.map(levels_data, & &1.level)
 
-              {:error, changeset} ->
-                {:noreply, assign(socket, :level_form, to_form(changeset))}
-            end
-          else
-            {:noreply, socket}
+                  {:noreply,
+                   socket
+                   |> assign(:levels, levels)
+                   |> assign(:active_level, level)
+                   |> assign(:show_level_modal, nil)
+                   |> assign(:level_form, to_form(%{}))
+                   |> load_level_data(level)}
+
+                {:error, changeset} ->
+                  {:noreply, assign(socket, :level_form, to_form(changeset))}
+              end
+
+            true ->
+              {:noreply, put_flash(socket, :error, "Selected level could not be found.")}
           end
         else
           level_attrs = %{
