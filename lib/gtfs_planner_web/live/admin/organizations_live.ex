@@ -162,6 +162,38 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   end
 
   @impl true
+  def handle_event("deactivate", %{"user-id" => user_id}, socket) do
+    case Organizations.deactivate_user_in_organization(user_id, socket.assigns.organization.id) do
+      {:ok, _} ->
+        members = Organizations.list_users_in_organization(socket.assigns.organization.id)
+
+        {:noreply,
+         socket
+         |> assign(:members, members)
+         |> put_flash(:info, "User deactivated")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to deactivate user")}
+    end
+  end
+
+  @impl true
+  def handle_event("activate", %{"user-id" => user_id}, socket) do
+    case Organizations.activate_user_in_organization(user_id, socket.assigns.organization.id) do
+      {:ok, _} ->
+        members = Organizations.list_users_in_organization(socket.assigns.organization.id)
+
+        {:noreply,
+         socket
+         |> assign(:members, members)
+         |> put_flash(:info, "User activated")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to activate user")}
+    end
+  end
+
+  @impl true
   def handle_event("send_invite", %{"invite" => invite_params}, socket) do
     email =
       invite_params
@@ -382,48 +414,67 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
             <%= if @members == [] do %>
               <p class="text-sm text-base-content/60 p-4">No members yet.</p>
             <% else %>
-              <table class="table">
-                <thead>
-                  <tr>
-                    <th>Email</th>
-                    <th>Roles</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={member <- @members}>
-                    <td>{member.user.email}</td>
-                    <td>
-                      <div class="flex flex-wrap gap-2">
-                        <span :for={role <- member.roles} class="badge badge-sm badge-outline">
-                          {humanize_role(role)}
-                        </span>
-                      </div>
-                    </td>
-                    <td>
-                      <div class="flex items-center gap-2 flex-wrap">
-                        <button
-                          :if={is_nil(member.user.hashed_password)}
-                          type="button"
-                          class="btn btn-xs"
-                          phx-click="resend_invite"
-                          phx-value-user-id={member.user.id}
-                        >
-                          <.icon name="hero-envelope" class="w-3 h-3" /> Resend Invite
-                        </button>
-                        <button
-                          type="button"
-                          class="btn btn-xs btn-disabled"
-                          disabled
-                          title="Coming soon"
-                        >
-                          <.icon name="hero-no-symbol" class="w-3 h-3" /> De-activate
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              <div class="overflow-x-auto">
+                <table class="table w-full">
+                  <thead>
+                    <tr>
+                      <th>Email</th>
+                      <th>Roles</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr :for={member <- @members}>
+                      <td>{member.user.email}</td>
+                      <td>
+                        <div class="flex flex-wrap gap-1">
+                          <span :for={role <- member.roles} class="badge badge-sm badge-outline">
+                            {humanize_role(role)}
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <%= if member.deactivated_at do %>
+                          <span class="badge badge-outline badge-error">Deactivated</span>
+                        <% else %>
+                          <span class="badge badge-outline badge-accent">Active</span>
+                        <% end %>
+                      </td>
+                      <td>
+                        <div class="flex gap-2">
+                          <%= if is_nil(member.user.hashed_password) do %>
+                            <button
+                              phx-click="resend_invite"
+                              phx-value-user-id={member.user.id}
+                              class="btn btn-sm btn-ghost"
+                            >
+                              Resend Invite
+                            </button>
+                          <% end %>
+                          <%= if member.deactivated_at do %>
+                            <button
+                              phx-click="activate"
+                              phx-value-user-id={member.user.id}
+                              class="btn btn-sm btn-ghost"
+                            >
+                              Activate
+                            </button>
+                          <% else %>
+                            <button
+                              phx-click="deactivate"
+                              phx-value-user-id={member.user.id}
+                              class="btn btn-sm btn-ghost"
+                            >
+                              Deactivate
+                            </button>
+                          <% end %>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             <% end %>
           </section>
         </div>
