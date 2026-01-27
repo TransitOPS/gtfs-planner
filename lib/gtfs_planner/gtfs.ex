@@ -381,21 +381,92 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns a map of stop_id to list of routes serving that stop.
+  """
+  def get_routes_for_stops(organization_id, gtfs_version_id, stop_ids) do
+    query =
+      from(st in StopTime,
+        join: t in Trip,
+        on: st.trip_id == t.trip_id and st.organization_id == t.organization_id and st.gtfs_version_id == t.gtfs_version_id,
+        join: r in Route,
+        on: t.route_id == r.route_id and t.organization_id == r.organization_id and t.gtfs_version_id == r.gtfs_version_id,
+        where:
+          st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id and
+            st.stop_id in ^stop_ids,
+        distinct: [st.stop_id, r.route_id],
+        order_by: [asc: r.route_short_name],
+        select: {st.stop_id, %{route_id: r.route_id, route_short_name: r.route_short_name, route_color: r.route_color, route_text_color: r.route_text_color}}
+      )
+
+    Repo.all(query)
+    |> Enum.group_by(fn {stop_id, _} -> stop_id end, fn {_, route} -> route end)
+  end
+
+  @doc """
+  Returns a list of routes that serve at least one station (stop with no parent).
+  """
+  def list_routes_serving_stations(organization_id, gtfs_version_id) do
+    from(r in Route,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
+      where: fragment("EXISTS (
+        SELECT 1 FROM stop_times st
+        JOIN trips t ON st.trip_id = t.trip_id AND st.organization_id = t.organization_id AND st.gtfs_version_id = t.gtfs_version_id
+        JOIN stops s ON st.stop_id = s.stop_id AND st.organization_id = s.organization_id AND st.gtfs_version_id = s.gtfs_version_id
+        WHERE t.route_id = ? AND t.organization_id = ? AND t.gtfs_version_id = ?
+        AND s.parent_station_id IS NULL
+      )", r.route_id, r.organization_id, r.gtfs_version_id),
+      order_by: [asc: r.route_short_name, asc: r.route_id],
+      select: %{route_id: r.route_id, route_short_name: r.route_short_name, route_color: r.route_color}
+    )
+    |> Repo.all()
+  end
+
+  @doc """
   Returns the list of stations (stops with no parent) for an organization and GTFS version.
+
+  Accepts optional filters, search, sort, and pagination via opts keyword list.
 
   ## Examples
 
       iex> list_stations(organization_id, gtfs_version_id)
       [%Stop{}, ...]
   """
-  def list_stations(organization_id, gtfs_version_id) do
+  def list_stations(organization_id, gtfs_version_id, opts \\ []) do
     from(s in Stop,
       where:
         s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
-          is_nil(s.parent_station_id),
-      order_by: [asc: s.stop_name]
+          is_nil(s.parent_station_id)
     )
+    |> maybe_filter_route(opts[:route_id], organization_id, gtfs_version_id)
+    |> maybe_filter_direction(opts[:direction_id], organization_id, gtfs_version_id)
+    |> maybe_filter_wheelchair(opts[:wheelchair_boarding])
+    |> maybe_search_stops(opts[:search])
+    |> apply_stop_sort(opts[:sort_by], opts[:sort_dir])
+    |> paginate(opts[:page], opts[:per_page])
     |> Repo.all()
+  end
+
+  @doc """
+  Returns the count of stations (stops with no parent) for an organization and GTFS version.
+
+  Accepts optional filters via opts keyword list.
+
+  ## Examples
+
+      iex> count_stations(organization_id, gtfs_version_id)
+      42
+  """
+  def count_stations(organization_id, gtfs_version_id, opts \\ []) do
+    from(s in Stop,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          is_nil(s.parent_station_id)
+    )
+    |> maybe_filter_route(opts[:route_id], organization_id, gtfs_version_id)
+    |> maybe_filter_direction(opts[:direction_id], organization_id, gtfs_version_id)
+    |> maybe_filter_wheelchair(opts[:wheelchair_boarding])
+    |> maybe_search_stops(opts[:search])
+    |> Repo.aggregate(:count)
   end
 
   @doc """
@@ -1336,6 +1407,15 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.aggregate(:count)
   end
 
+  @doc """
+  Creates a trip.
+  """
+  def create_trip(attrs \\ %{}) do
+    %Trip{}
+    |> Trip.changeset(attrs)
+    |> Repo.insert()
+  end
+
   # StopTime functions
 
   @doc """
@@ -1346,6 +1426,15 @@ defmodule GtfsPlanner.Gtfs do
       where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id
     )
     |> Repo.aggregate(:count)
+  end
+
+  @doc """
+  Creates a stop time.
+  """
+  def create_stop_time(attrs \\ %{}) do
+    %StopTime{}
+    |> StopTime.changeset(attrs)
+    |> Repo.insert()
   end
 
   # Calendar functions
@@ -1427,6 +1516,107 @@ defmodule GtfsPlanner.Gtfs do
 
   defp maybe_filter_active(query, "false") do
     where(query, [r], r.active == false)
+  end
+
+  defp maybe_filter_wheelchair(query, nil), do: query
+  defp maybe_filter_wheelchair(query, ""), do: query
+
+  defp maybe_filter_wheelchair(query, wheelchair_boarding) do
+    where(query, [s], s.wheelchair_boarding == ^wheelchair_boarding)
+  end
+
+  defp maybe_filter_route(query, nil, _organization_id, _gtfs_version_id), do: query
+  defp maybe_filter_route(query, "", _organization_id, _gtfs_version_id), do: query
+
+  defp maybe_filter_route(query, route_id, organization_id, gtfs_version_id) do
+    # Step 1: Get representative trip_ids from route_patterns (typically 2-4 trips)
+    # This is much faster than scanning all trips for a route
+    representative_trip_ids =
+      from(rp in RoutePattern,
+        where:
+          rp.route_id == ^route_id and
+            rp.organization_id == ^organization_id and
+            rp.gtfs_version_id == ^gtfs_version_id and
+            not is_nil(rp.representative_trip_id),
+        select: rp.representative_trip_id
+      )
+      |> Repo.all()
+
+    # Step 2: Get stop_ids using route_patterns (fast) or all trips (fallback)
+    stop_ids =
+      if representative_trip_ids != [] do
+        # Fast path: Query only 2-4 representative trips
+        from(st in StopTime,
+          where:
+            st.trip_id in ^representative_trip_ids and
+              st.organization_id == ^organization_id and
+              st.gtfs_version_id == ^gtfs_version_id,
+          distinct: true,
+          select: st.stop_id
+        )
+        |> Repo.all()
+      else
+        # Fallback: For data without route_patterns, query all trips
+        from(st in StopTime,
+          join: t in Trip,
+          on:
+            st.trip_id == t.trip_id and
+              st.organization_id == t.organization_id and
+              st.gtfs_version_id == t.gtfs_version_id,
+          where:
+            t.route_id == ^route_id and
+              t.organization_id == ^organization_id and
+              t.gtfs_version_id == ^gtfs_version_id,
+          distinct: true,
+          select: st.stop_id
+        )
+        |> Repo.all()
+      end
+
+    # Step 3: Filter stops using IN clause (efficient with index)
+    where(query, [s], s.stop_id in ^stop_ids)
+  end
+
+  defp maybe_filter_direction(query, nil, _organization_id, _gtfs_version_id), do: query
+  defp maybe_filter_direction(query, "", _organization_id, _gtfs_version_id), do: query
+
+  defp maybe_filter_direction(query, direction_id, organization_id, gtfs_version_id) do
+    # Filter stations by direction_id
+    # Find stops that are served by trips with the specified direction_id
+    stop_ids =
+      from(st in StopTime,
+        join: t in Trip,
+        on:
+          st.trip_id == t.trip_id and
+            st.organization_id == t.organization_id and
+            st.gtfs_version_id == t.gtfs_version_id,
+        where:
+          t.direction_id == ^direction_id and
+            t.organization_id == ^organization_id and
+            t.gtfs_version_id == ^gtfs_version_id,
+        distinct: true,
+        select: st.stop_id
+      )
+      |> Repo.all()
+
+    where(query, [s], s.stop_id in ^stop_ids)
+  end
+
+  defp maybe_search_stops(query, nil), do: query
+  defp maybe_search_stops(query, ""), do: query
+
+  defp maybe_search_stops(query, term) do
+    pattern = "%#{term}%"
+    where(query, [s], ilike(s.stop_id, ^pattern) or ilike(s.stop_name, ^pattern))
+  end
+
+  defp apply_stop_sort(query, sort_by, sort_dir)
+       when sort_by in [:stop_id, :stop_name, :location_type] and sort_dir in [:asc, :desc] do
+    order_by(query, [s], [{^sort_dir, field(s, ^sort_by)}])
+  end
+
+  defp apply_stop_sort(query, _sort_by, _sort_dir) do
+    order_by(query, [s], asc: s.stop_name)
   end
 
   defp maybe_search(query, nil), do: query

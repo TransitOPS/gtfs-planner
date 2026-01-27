@@ -315,7 +315,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       other_version = gtfs_version_fixture(other_organization.id)
 
       {:ok, other_run} =
-        Validations.create_validation_run(other_organization.id, other_version.id, "mobility_data")
+        Validations.create_validation_run(
+          other_organization.id,
+          other_version.id,
+          "mobility_data"
+        )
 
       # Try to access the other organization's validation run
       conn = log_in_user(conn, user, organization: organization)
@@ -323,7 +327,9 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
 
       # Should redirect with error message
       assert_redirect(view, "/gtfs/#{version.id}/export")
-      assert Phoenix.Flash.get(view.assigns.flash, :error) =~ "Unauthorized access to validation run"
+
+      assert Phoenix.Flash.get(view.assigns.flash, :error) =~
+               "Unauthorized access to validation run"
     end
   end
 end
