@@ -167,34 +167,6 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     end
   end
 
-  @doc """
-  Builds a lookup map of stop_id -> UUID for all stops in an organization/version.
-
-  This is used for pathways which reference stops by GTFS string ID but need
-  the internal UUID for foreign key relationships.
-
-  ## Parameters
-
-    * `repo` - The Ecto repository module
-    * `organization_id` - Organization ID to query stops for
-    * `gtfs_version_id` - GTFS version ID to query stops for
-
-  ## Returns
-
-  A map of `%{stop_id_string => uuid}` for all stops in the organization/version.
-  """
-  def build_stop_lookup_map(repo, organization_id, gtfs_version_id) do
-    query =
-      from(s in Stop,
-        where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
-        select: {s.stop_id, s.id}
-      )
-
-    query
-    |> repo.all()
-    |> Map.new()
-  end
-
   # Private Functions
 
   defp process_batch(

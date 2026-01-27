@@ -191,10 +191,6 @@ defmodule GtfsPlanner.Gtfs.Import do
 
         # NOTE: stop_times are NOT processed here - they're handled separately below
 
-        # Build stop lookup map for pathways (needed to resolve foreign keys)
-        # This must happen after stops are inserted but within the same transaction
-        stop_map = BatchProcessor.build_stop_lookup_map(Repo, organization_id, gtfs_version_id)
-
         # Process pathways
         counts =
           case process_file_category(
@@ -204,9 +200,7 @@ defmodule GtfsPlanner.Gtfs.Import do
                  topic,
                  :pathways,
                  Gtfs.Pathway,
-                 fn row, org_id, ver_id ->
-                   RowParser.pathway_row_to_attrs(row, org_id, ver_id, stop_map)
-                 end
+                 &RowParser.pathway_row_to_attrs/3
                ) do
             {:ok, count} -> Map.put(counts, :pathways, count)
             {:error, reason} -> Repo.rollback(reason)

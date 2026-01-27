@@ -1060,6 +1060,8 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   @doc """
   Converts a pathway CSV row to attributes map.
 
+  Pathways store string stop_ids directly, no UUID resolution needed.
+
   ## Parameters
 
     * `row_map` - Map of CSV column names to values
@@ -1095,8 +1097,8 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
 
   defp pathway_row_to_attrs_impl(row_map, organization_id, gtfs_version_id, resolve_stop_fn) do
     with {:ok, pathway_id} <- extract_required(row_map, "pathway_id"),
-         {:ok, from_stop_id_str} <- extract_required(row_map, "from_stop_id"),
-         {:ok, to_stop_id_str} <- extract_required(row_map, "to_stop_id"),
+         {:ok, from_stop_id} <- extract_required(row_map, "from_stop_id"),
+         {:ok, to_stop_id} <- extract_required(row_map, "to_stop_id"),
          {:ok, pathway_mode} <- parse_pathway_mode(row_map["pathway_mode"]),
          {:ok, is_bidirectional} <- parse_is_bidirectional(row_map["is_bidirectional"]) do
       
