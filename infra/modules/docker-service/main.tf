@@ -132,6 +132,8 @@ resource "terraform_data" "load_balancer" {
   }
 }
 
+data "aws_region" "current" {}
+
 resource "aws_iam_user" "service" {
   name = local.service_name
   # checkov:skip=CKV_AWS_273:we limit this user to only the given IP address
