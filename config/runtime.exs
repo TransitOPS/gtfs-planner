@@ -168,9 +168,16 @@ if config_env() == :prod do
 
     config :gtfs_planner, GtfsPlanner.Mailer, ses_config
   else
-    # Fallback to Logger adapter if AWS SES is not configured
-    # This logs emails instead of sending them - suitable for staging
-    config :gtfs_planner, GtfsPlanner.Mailer,
-      adapter: Swoosh.Adapters.Logger
+    raise """
+    Missing AWS SES configuration for production environment.
+
+    Please set the following environment variables:
+      - AWS_SES_REGION or AWS_REGION
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+
+    To use a non-sending/logging adapter, configure it explicitly in a
+    non-production environment instead of relying on a production fallback.
+    """
   end
 end
