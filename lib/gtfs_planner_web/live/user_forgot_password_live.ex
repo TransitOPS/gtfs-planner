@@ -49,10 +49,13 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
 
   def handle_event("send_instructions", %{"user" => %{"email" => email}}, socket) do
     if user = Accounts.get_user_by_email(email) do
-      Accounts.deliver_user_reset_password_instructions(
-        user,
-        &url(~p"/users/reset_password/#{&1}")
-      )
+      res =
+        Accounts.deliver_user_reset_password_instructions(
+          user,
+          &url(~p"/users/reset_password/#{&1}")
+        )
+
+      Logger.info("Deliving password reset user=#{email} #{inspect(res)}")
     end
 
     # Regardless of whether the user exists, we show the same success message

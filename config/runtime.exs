@@ -131,21 +131,45 @@ if config_env() == :prod do
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
 
-  # ## Configuring the mailer
+  # ## Configuring the mailer with AWS SES
   #
-  # In production you need to configure the mailer to use a different adapter.
-  # Here is an example configuration for Mailgun:
+  # In production, emails are sent via AWS Simple Email Service (SES).
+  # The API client is configured at compile-time in config/prod.exs with:
+  # config :swoosh, :api_client, Swoosh.ApiClient.Req
   #
-  #     config :gtfs_planner, GtfsPlanner.Mailer,
-  #       adapter: Swoosh.Adapters.Mailgun,
-  #       api_key: System.get_env("MAILGUN_API_KEY"),
-  #       domain: System.get_env("MAILGUN_DOMAIN")
+  # Required environment variables:
+  #   - AWS_REGION or AWS_SES_REGION: AWS region (e.g., us-east-1)
+  #   - AWS_ACCESS_KEY_ID: IAM access key with SES permissions
+  #   - AWS_SECRET_ACCESS_KEY: IAM secret key
   #
-  # Most non-SMTP adapters require an API client. Swoosh supports Req, Hackney,
-  # and Finch out-of-the-box. This configuration is typically done at
-  # compile-time in your config/prod.exs:
+  # Optional:
+  #   - AWS_SES_CONFIGURATION_SET: SES configuration set for tracking/analytics
   #
-  #     config :swoosh, :api_client, Swoosh.ApiClient.Req
-  #
-  # See https://hexdocs.pm/swoosh/Swoosh.html#module-installation for details.
+  # See https://hexdocs.pm/swoosh/Swoosh.Adapters.AmazonSES.html for details.
+
+  ses_region = System.get_env("AWS_SES_REGION") || System.get_env("AWS_REGION")
+  ses_access_key = System.get_env("AWS_ACCESS_KEY_ID")
+  ses_secret_key = System.get_env("AWS_SECRET_ACCESS_KEY")
+
+  if ses_region && ses_access_key && ses_secret_key do
+    ses_config = [
+      adapter: Swoosh.Adapters.AmazonSES,
+      region: ses_region,
+      access_key: ses_access_key,
+      secret: ses_secret_key
+    ]
+
+    # Add configuration set if provided
+    ses_config =
+      case System.get_env("AWS_SES_CONFIGURATION_SET") do
+        nil -> ses_config
+        config_set -> Keyword.put(ses_config, :configuration_set_name, config_set)
+      end
+
+    config :gtfs_planner, GtfsPlanner.Mailer, ses_config
+  else
+    # Fallback to Logger adapter if AWS SES is not configured
+    # This logs emails instead of sending them - suitable for staging
+    config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Logger
+  end
 end
