@@ -1077,7 +1077,8 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id, stop_map \\ %{})
 
   # Backwards compatibility for tests that don't pass stop_map yet
-  def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id, stop_map) when stop_map == %{} do
+  def pathway_row_to_attrs(row_map, organization_id, gtfs_version_id, stop_map)
+      when stop_map == %{} do
     # When no stop_map is provided (or empty), we can't validate stop_id existence.
     # This matches the previous behavior and just returns the stop_id strings as-is.
     pathway_row_to_attrs_impl(row_map, organization_id, gtfs_version_id, fn id -> {:ok, id} end)
@@ -1101,11 +1102,10 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
          {:ok, to_stop_id} <- extract_required(row_map, "to_stop_id"),
          {:ok, pathway_mode} <- parse_pathway_mode(row_map["pathway_mode"]),
          {:ok, is_bidirectional} <- parse_is_bidirectional(row_map["is_bidirectional"]) do
-      
       # Validate stop IDs exist
-      with {:ok, from_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, from_stop_id, "from_stop_id"),
+      with {:ok, from_stop_id} <-
+             resolve_stop_fn_wrapper(resolve_stop_fn, from_stop_id, "from_stop_id"),
            {:ok, to_stop_id} <- resolve_stop_fn_wrapper(resolve_stop_fn, to_stop_id, "to_stop_id") do
-        
         traversal_time =
           case parse_integer(row_map["traversal_time"]) do
             {:ok, val} -> val

@@ -80,7 +80,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
 
   @doc """
   Inserts rows in batches with each batch wrapped in its own transaction.
-  
+
   This variant prevents long-running transactions by committing each batch separately.
   Useful for very large files (e.g., stop_times.txt with millions of rows) where
   a single transaction would timeout or hold connections for too long.

@@ -130,6 +130,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
 
       assert html =~ "Import GTFS"
     end
+
     test "editor can access stops", %{
       conn: conn,
       user: user,

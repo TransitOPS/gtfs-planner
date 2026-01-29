@@ -305,8 +305,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         case clicked_stop do
           nil ->
             # No stop found - create new stop
-            level_id = if socket.assigns.active_level, do: socket.assigns.active_level.level_id, else: ""
-            form = to_form(%{"stop_id" => "", "stop_name" => "", "location_type" => "3", "level_id" => level_id})
+            level_id =
+              if socket.assigns.active_level, do: socket.assigns.active_level.level_id, else: ""
+
+            form =
+              to_form(%{
+                "stop_id" => "",
+                "stop_name" => "",
+                "location_type" => "3",
+                "level_id" => level_id
+              })
 
             {:noreply,
              socket
@@ -1134,5 +1142,4 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       _ -> false
     end
   end
-
 end
