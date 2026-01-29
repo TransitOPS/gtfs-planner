@@ -1,6 +1,7 @@
 defmodule GtfsPlannerWeb.UserForgotPasswordLive do
   use GtfsPlannerWeb, :live_view
 
+  require Logger
   alias GtfsPlanner.Accounts
 
   def render(assigns) do
@@ -55,7 +56,7 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
           &url(~p"/users/reset_password/#{&1}")
         )
 
-      Logger.info("Deliving password reset user=#{email} #{inspect(res)}")
+      Logger.info("Delivering password reset user=#{email} #{inspect(res)}")
     end
 
     # Regardless of whether the user exists, we show the same success message

@@ -19,10 +19,11 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
   """
   def deliver_confirmation_instructions(user, url) when is_binary(url) do
     email_body = confirmation_instructions_html(user, url)
+    mail_domain = Application.get_env(:gtfs_planner, :mail_domain)
 
     new()
     |> to(user.email)
-    |> from({"GTFS Planner", "no-reply@gtfsplanner.com"})
+    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
     |> subject("Confirm your GTFS Planner email")
     |> html_body(email_body)
     |> Mailer.deliver()
@@ -39,10 +40,11 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
   """
   def deliver_update_email_instructions(user, url) when is_binary(url) do
     email_body = update_email_instructions_html(user, url)
+    mail_domain = Application.get_env(:gtfs_planner, :mail_domain)
 
     new()
     |> to(user.email)
-    |> from({"GTFS Planner", "no-reply@gtfsplanner.com"})
+    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
     |> subject("Update your GTFS Planner email")
     |> html_body(email_body)
     |> Mailer.deliver()
@@ -59,10 +61,11 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
   """
   def deliver_reset_password_instructions(user, url) when is_binary(url) do
     email_body = reset_password_instructions_html(user, url)
+    mail_domain = Application.get_env(:gtfs_planner, :mail_domain)
 
     new()
     |> to(user.email)
-    |> from({"GTFS Planner", "no-reply@gtfsplanner.com"})
+    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
     |> subject("Reset your GTFS Planner password")
     |> html_body(email_body)
     |> Mailer.deliver()
@@ -81,10 +84,11 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
     Logger.info("User invite for #{user.email}: #{url}")
 
     email_body = user_invite_html(user, url)
+    mail_domain = Application.get_env(:gtfs_planner, :mail_domain)
 
     new()
     |> to(user.email)
-    |> from({"GTFS Planner", "no-reply@gtfsplanner.com"})
+    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
     |> subject("You're invited to join GTFS Planner")
     |> html_body(email_body)
     |> Mailer.deliver()

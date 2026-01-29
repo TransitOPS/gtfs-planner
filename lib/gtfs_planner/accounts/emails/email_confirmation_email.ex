@@ -17,9 +17,11 @@ defmodule GtfsPlanner.Accounts.Emails.EmailConfirmationEmail do
 
   """
   def deliver(user, url) when is_binary(url) do
+    mail_domain = Application.get_env(:gtfs_planner, :mail_domain)
+
     new()
     |> to({user.email})
-    |> from({"GTFS Planner", "no-reply@gtfsplanner.com"})
+    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
     |> subject("Confirm your GTFS Planner email")
     |> html_body(html_template(user, url))
     |> text_body(text_template(user, url))
