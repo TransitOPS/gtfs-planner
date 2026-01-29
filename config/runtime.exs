@@ -39,6 +39,8 @@ config :gtfs_planner,
            else: "/opt/homebrew/opt/openjdk@21/bin/java"
          )
 
+config :gtfs_planner, :mail_domain, System.get_env("MAIL_DOMAIN") || "gtfsplanner.com"
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
