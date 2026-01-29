@@ -199,7 +199,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram?level_id=#{level1.id}", on_error: :warn)
+        live(
+          conn,
+          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram?level_id=#{level1.id}",
+          on_error: :warn
+        )
 
       # Switch to connect mode
       view

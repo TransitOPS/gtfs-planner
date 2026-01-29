@@ -23,7 +23,7 @@ defmodule GtfsPlanner.Authorization.Roles do
       name: "Pathways Studio Editor",
       description: "Full access to view and modify GTFS data",
       scope: :organization
-    },
+    }
   }
 
   @doc """

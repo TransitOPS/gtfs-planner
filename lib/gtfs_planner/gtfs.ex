@@ -694,7 +694,7 @@ defmodule GtfsPlanner.Gtfs do
     |> Enum.map(fn level_id ->
       # Get level from stop_levels query if available (includes diagram_filename)
       from_stop_levels = Enum.find(levels_from_stop_levels, &(&1.level.id == level_id))
-      
+
       level = if from_stop_levels, do: from_stop_levels.level, else: Repo.get!(Level, level_id)
       stop_count = Map.get(levels_from_stops, level_id, 0)
       diagram_filename = if from_stop_levels, do: from_stop_levels.diagram_filename, else: nil
@@ -882,12 +882,12 @@ defmodule GtfsPlanner.Gtfs do
 
   @doc """
   Returns a MapSet of stop IDs that participate in cross-level pathways.
-  
+
   This includes both from_stop and to_stop IDs where pathways connect
   stops on different levels within the same parent station.
-  
+
   ## Examples
-  
+
       iex> list_cross_level_stop_ids(org_id, version_id, station_id)
       #MapSet<[123, 456, 789]>
   """
