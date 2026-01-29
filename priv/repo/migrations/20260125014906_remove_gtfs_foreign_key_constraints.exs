@@ -3,18 +3,18 @@ defmodule GtfsPlanner.Repo.Migrations.RemoveGtfsForeignKeyConstraints do
 
   def up do
     # Remove GTFS FK constraints from stops table
-    drop constraint(:stops, :stops_level_id_fkey)
-    drop constraint(:stops, :stops_parent_station_id_fkey)
-    drop constraint(:stops, :stops_gtfs_version_id_fkey)
+    drop_if_exists constraint(:stops, :stops_level_id_fkey)
+    drop_if_exists constraint(:stops, :stops_parent_station_id_fkey)
+    drop_if_exists constraint(:stops, :stops_gtfs_version_id_fkey)
 
     # Remove GTFS FK constraints from levels table
-    drop constraint(:levels, :levels_gtfs_version_id_fkey)
-    drop constraint(:levels, :levels_parent_station_id_fkey)
+    drop_if_exists constraint(:levels, :levels_gtfs_version_id_fkey)
+    drop_if_exists constraint(:levels, :levels_parent_station_id_fkey)
 
     # Remove GTFS FK constraints from pathways table
-    drop constraint(:pathways, :pathways_gtfs_version_id_fkey)
-    drop constraint(:pathways, :pathways_from_stop_id_fkey)
-    drop constraint(:pathways, :pathways_to_stop_id_fkey)
+    drop_if_exists constraint(:pathways, :pathways_gtfs_version_id_fkey)
+    drop_if_exists constraint(:pathways, :pathways_from_stop_id_fkey)
+    drop_if_exists constraint(:pathways, :pathways_to_stop_id_fkey)
   end
 
   def down do

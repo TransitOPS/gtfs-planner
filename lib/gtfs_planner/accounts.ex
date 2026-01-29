@@ -392,7 +392,10 @@ defmodule GtfsPlanner.Accounts do
   """
   def reset_user_password(user, attrs) do
     Ecto.Multi.new()
-    |> Ecto.Multi.update(:user, user |> User.password_changeset(attrs) |> User.confirm_changeset())
+    |> Ecto.Multi.update(
+      :user,
+      user |> User.password_changeset(attrs) |> User.confirm_changeset()
+    )
     |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, :all))
     |> Repo.transaction()
     |> case do
@@ -506,7 +509,10 @@ defmodule GtfsPlanner.Accounts do
   def accept_invite_set_password(user, attrs) do
     multi =
       Ecto.Multi.new()
-      |> Ecto.Multi.update(:user, user |> User.password_changeset(attrs) |> User.confirm_changeset())
+      |> Ecto.Multi.update(
+        :user,
+        user |> User.password_changeset(attrs) |> User.confirm_changeset()
+      )
       |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, ["invite"]))
 
     # Add membership creation if organization_id is provided

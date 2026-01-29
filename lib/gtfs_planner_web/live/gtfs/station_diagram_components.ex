@@ -55,7 +55,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           phx-hook="AutoSubmitUpload"
         >
           <label class="btn btn-sm btn-ghost cursor-pointer">
-            Upload Diagram <.live_file_input upload={@uploads.diagram} id="toolbar-diagram-upload" class="hidden" />
+            Upload Diagram
+            <.live_file_input upload={@uploads.diagram} id="toolbar-diagram-upload" class="hidden" />
           </label>
         </form>
         <span :if={@diagram_error} class="text-error text-sm">{@diagram_error}</span>
@@ -132,9 +133,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <%= if @has_diagram do %>
             <%= cond do %>
               <% @mode == :add -> %>
-                <span class="text-sm text-blue-700 font-medium">Click diagram to add a child stop</span>
+                <span class="text-sm text-blue-700 font-medium">
+                  Click diagram to add a child stop
+                </span>
               <% @mode == :connect && @selected_from_stop == nil -> %>
-                <span class="text-sm text-blue-700 font-medium">Choose a child stop to begin pathway</span>
+                <span class="text-sm text-blue-700 font-medium">
+                  Choose a child stop to begin pathway
+                </span>
               <% @mode == :connect && @selected_from_stop != nil -> %>
                 <span class="text-sm text-blue-700 font-medium">
                   From: {@selected_from_stop.stop_name || @selected_from_stop.stop_id} — select destination stop
@@ -229,7 +234,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       preserveAspectRatio="xMidYMid meet"
     >
       <.pathways_layer streams={@streams} />
-      <.stops_layer streams={@streams} active_point_id={@active_point_id} mode={@mode} cross_level_stop_ids={@cross_level_stop_ids} />
+      <.stops_layer
+        streams={@streams}
+        active_point_id={@active_point_id}
+        mode={@mode}
+        cross_level_stop_ids={@cross_level_stop_ids}
+      />
       <.pending_marker
         :if={@pending_xy && @mode == :add && @selected_stop_id == nil}
         pending_xy={@pending_xy}
@@ -294,11 +304,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             cy={stop.diagram_coordinate["y"]}
             r="0.75"
             fill={if @active_point_id == stop.id, do: "#1e40af", else: "#06b6d4"}
-            stroke={cond do
-              @active_point_id == stop.id -> "#1e40af"
-              MapSet.member?(@cross_level_stop_ids, stop.id) -> "#f59e0b"
-              true -> "#fff"
-            end}
+            stroke={
+              cond do
+                @active_point_id == stop.id -> "#1e40af"
+                MapSet.member?(@cross_level_stop_ids, stop.id) -> "#f59e0b"
+                true -> "#fff"
+              end
+            }
             stroke-width={if MapSet.member?(@cross_level_stop_ids, stop.id), do: "0.25", else: "0.15"}
             class="cursor-pointer pointer-events-auto"
             phx-click="stop_clicked"
@@ -438,9 +450,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         label="Level"
         options={
           [{"— No Level —", ""}] ++
-          Enum.map(@all_levels, fn level ->
-            {"#{level.level_name || level.level_id} (#{trunc(level.level_index)})", level.level_id}
-          end)
+            Enum.map(@all_levels, fn level ->
+              {"#{level.level_name || level.level_id} (#{trunc(level.level_index)})", level.level_id}
+            end)
         }
         help="GTFS level for this child stop"
       />
@@ -461,7 +473,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <div class="flex items-center justify-between">
           <div>
             <h3 class="text-error font-medium">Delete Child Stop</h3>
-            <p class="text-xs text-error/70 mt-1">This will also delete any pathways connected to this stop.</p>
+            <p class="text-xs text-error/70 mt-1">
+              This will also delete any pathways connected to this stop.
+            </p>
           </div>
           <button
             type="button"
@@ -610,7 +624,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </div>
 
       <div :if={@editing_pathway} class="mt-8 p-6 bg-base-200 rounded-lg">
-        <h4 class="font-bold text-sm uppercase tracking-wide text-base-content/50 mb-4">Connection Details</h4>
+        <h4 class="font-bold text-sm uppercase tracking-wide text-base-content/50 mb-4">
+          Connection Details
+        </h4>
         <div class="grid grid-cols-2 gap-4 text-sm">
           <div>
             <span class="block text-xs font-semibold text-base-content/40">From Stop</span>

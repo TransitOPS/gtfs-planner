@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
     # Create a fresh user without a password for each test
     email = "test-#{System.unique_integer()}@example.com"
     {:ok, user} = Accounts.invite_user(email, nil)
-    
+
     # Create an invite token for the user
     {encoded_token, user_token} = GtfsPlanner.Accounts.UserToken.build_email_token(user, "invite")
     GtfsPlanner.Repo.insert!(user_token)
@@ -34,10 +34,10 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
 
     # Submit with invalid organization_id (this requires knowing how it gets there, 
     # but we can simulate the event as it would come from the client if it was present)
-    
+
     # We'll simulate a submission that we know will fail in a way that returns a membership changeset
     # We can't easily do this without the field being in the form, but we can send the params directly
-    
+
     # Actually, let's just verify that after a failed validation, the form still uses "user"
     lv
     |> element("form")
