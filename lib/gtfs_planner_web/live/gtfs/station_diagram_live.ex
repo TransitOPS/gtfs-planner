@@ -295,8 +295,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("canvas_click", %{"x" => x, "y" => y}, socket) do
-    IO.inspect({x, y}, label: "DEBUG: canvas_click received")
-    IO.inspect(socket.assigns.mode, label: "DEBUG: current mode")
 
     case socket.assigns.mode do
       :add ->
@@ -1006,7 +1004,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp handle_connect_click(socket, x, y) do
     child_stops = get_child_stops_with_coordinates(socket)
-    IO.inspect(length(child_stops), label: "DEBUG: child_stops with coords count")
 
     Enum.each(child_stops, fn stop ->
       coord = stop.diagram_coordinate
@@ -1014,13 +1011,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       coord_y = to_float(coord["y"])
       distance = :math.sqrt((coord_x - x) * (coord_x - x) + (coord_y - y) * (coord_y - y))
 
-      IO.inspect({stop.stop_id, coord, {coord_x, coord_y}, {x, y}, distance},
-        label: "DEBUG: stop info"
-      )
+
     end)
 
     clicked_stop = find_stop_near_point(child_stops, x, y, 5.0)
-    IO.inspect(clicked_stop && clicked_stop.stop_id, label: "DEBUG: clicked_stop")
 
     case {socket.assigns.active_point_id, clicked_stop} do
       {nil, nil} ->
@@ -1123,7 +1117,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pathway_error, nil)}
 
       {:error, changeset} ->
-        IO.inspect(changeset, label: "DEBUG: pathway creation FAILED")
 
         {:noreply,
          socket

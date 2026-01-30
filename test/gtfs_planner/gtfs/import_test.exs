@@ -290,12 +290,12 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       # Verify no new levels were created (only the original one exists)
       levels = Gtfs.list_levels(organization.id, gtfs_version.id)
-      assert length(levels) == 1
+      assert match?([_], levels)
       assert Enum.all?(levels, &(&1.level_id == "L1"))
 
       # Verify no stops were created (transaction rolled back)
       stops = Gtfs.list_stops(organization.id, gtfs_version.id)
-      assert length(stops) == 0
+      assert stops == []
     end
 
     test "imports pathway with malformed traversal_time, setting it to nil", %{
