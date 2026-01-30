@@ -178,6 +178,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :uploads, :any, required: true
   attr :cross_level_stop_ids, :any, default: MapSet.new()
   attr :diagram_error, :string, default: nil
+  attr :organization_id, :string, required: true
 
   def diagram_canvas(assigns) do
     ~H"""
@@ -193,7 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             class="w-full block cursor-crosshair"
           >
             <image
-              href={"/uploads/diagrams/#{@station.stop_id}/#{@active_stop_level.diagram_filename}"}
+              href={"/uploads/diagrams/#{@organization_id}/#{@station.stop_id}/#{@active_stop_level.diagram_filename}"}
               x="0"
               y="0"
               width="100"

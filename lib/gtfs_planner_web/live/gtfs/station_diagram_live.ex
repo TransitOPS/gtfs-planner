@@ -193,6 +193,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               uploads={@uploads}
               cross_level_stop_ids={@cross_level_stop_ids}
               diagram_error={@diagram_error}
+              organization_id={@current_organization.id}
             />
           </div>
         </:sub_header>
@@ -682,7 +683,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     else
       uploaded_files =
         consume_uploaded_entries(socket, :diagram, fn %{path: path}, entry ->
-          dest_dir = Path.join(["priv", "static", "uploads", "diagrams", station.stop_id])
+          uploads_base = Application.get_env(:gtfs_planner, :uploads_path)
+
+          dest_dir =
+            Path.join([
+              uploads_base,
+              "diagrams",
+              to_string(socket.assigns.current_organization.id),
+              station.stop_id
+            ])
+
           File.mkdir_p!(dest_dir)
 
           dest_path = Path.join(dest_dir, entry.client_name)
