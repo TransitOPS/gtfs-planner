@@ -178,7 +178,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :uploads, :any, required: true
   attr :cross_level_stop_ids, :any, default: MapSet.new()
   attr :diagram_error, :string, default: nil
-  attr :organization_id, :integer, required: true
+  attr :organization_id, :string, required: true
 
   def diagram_canvas(assigns) do
     ~H"""
