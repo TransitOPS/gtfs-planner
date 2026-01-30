@@ -41,6 +41,13 @@ config :gtfs_planner,
 
 config :gtfs_planner, :mail_domain, System.get_env("MAIL_DOMAIN") || "gtfsplanner.com"
 
+if config_env() != :test do
+  config :gtfs_planner,
+         :uploads_path,
+         System.get_env("UPLOADS_PATH") ||
+           Path.join(:code.priv_dir(:gtfs_planner), "static/uploads")
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

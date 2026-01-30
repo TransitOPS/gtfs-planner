@@ -29,6 +29,9 @@ config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Test
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
 
+# Use isolated temp directory for uploads during tests
+config :gtfs_planner, :uploads_path, Path.join(System.tmp_dir!(), "gtfs_planner_test_uploads")
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 
