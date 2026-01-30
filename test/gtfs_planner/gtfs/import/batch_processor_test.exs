@@ -263,7 +263,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
 
       # Verify no levels were inserted (transaction rolled back)
       levels = Repo.all(Level)
-      assert length(levels) == 0
+      assert levels == []
     end
   end
 end
