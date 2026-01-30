@@ -15,7 +15,7 @@ echo "account_name=$account_name"
 backend_config=$(basename "$(ls infra/accounts/"$account_name".s3.tfbackend)")
 echo "backend_config=$backend_config"
 
-account_id=$(grep "bucket\s*=" infra/accounts/"$account_name".s3.tfbackend | sed 's/^.*=.*"[a-z]\{1,\}-\([0-9]\{1,\}\)-.*"$/\1/')
+account_id=$(grep "bucket\s*=" infra/accounts/"$account_name".s3.tfbackend | sed 's/^.*[^0-9]\([0-9]\{12\}\)[^0-9].*$/\1/')
 echo "account_id=$account_id"
 
 region=$(grep "region\s*=" infra/accounts/"$account_name".s3.tfbackend | sed 's/^.*=.*"\(.*\)"$/\1/')
