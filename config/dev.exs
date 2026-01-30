@@ -94,3 +94,6 @@ config :phoenix_live_view,
 
 # Disable swoosh api client as it is only required for production adapters.
 config :swoosh, :api_client, false
+
+# Explicit uploads path for development visibility
+config :gtfs_planner, :uploads_path, Path.expand("../priv/static/uploads", __DIR__)
