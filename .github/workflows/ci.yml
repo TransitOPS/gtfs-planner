@@ -237,13 +237,21 @@ jobs:
           cache-to: type=gha,mode=max
           cache-from: ${{ steps.cache-outputs.outputs.cache-from }}
           tags: pathways
+      - name: Cache Trivy databases
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            trivy-db-${{ runner.os }}-
+      - name: Download Trivy Java DB
+        run: trivy image --download-java-db-only
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: pathways
           trivy-config: trivy.yml
-        env:
-          TRIVY_SKIP_JAVA_DB_UPDATE: true
 
   infra:
     name: Lint/scan infrastructure

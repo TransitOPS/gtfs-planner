@@ -1,0 +1,17 @@
+# Trivy configuration for Docker image scanning
+
+# Report severity levels
+severity:
+  - CRITICAL
+  - HIGH
+  - MEDIUM
+
+# Exit with non-zero code if vulnerabilities are found
+exit-code: 1
+
+# Scan for vulnerabilities only (not secrets/misconfigs)
+scanners:
+  - vuln
+
+# Ignore unfixed vulnerabilities
+ignore-unfixed: false
