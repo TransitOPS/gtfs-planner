@@ -245,8 +245,6 @@ jobs:
           key: trivy-db-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
             trivy-db-${{ runner.os }}-
-      - name: Download Trivy Java DB
-        run: trivy image --download-java-db-only
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
