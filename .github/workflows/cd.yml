@@ -32,6 +32,7 @@ jobs:
   build_publish:
     name: Build/publish
     runs-on: ${{ fromJSON(vars.GH_DOCKER_RUNNER_LABEL) }}
+    timeout-minutes: 30
     env:
       DEV_IP: ${{ vars.DEV_IP }}
     steps:
@@ -78,6 +79,7 @@ jobs:
   deploy:
     name: Deploy
     runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
+    timeout-minutes: 30
     needs: [build_publish]
     environment: ${{ inputs.environment || 'dev' }}
     env:
