@@ -66,7 +66,8 @@ defmodule GtfsPlanner.Geocoding do
         text: text,
         apiKey: api_key,
         format: "json",
-        limit: 5
+        limit: 5,
+        filter: "countrycode:us"
       }
 
       case Req.get("https://api.geoapify.com/v1/geocode/autocomplete", params: params) do
