@@ -97,3 +97,6 @@ config :swoosh, :api_client, false
 
 # Explicit uploads path for development visibility
 config :gtfs_planner, :uploads_path, Path.expand("../priv/static/uploads", __DIR__)
+
+# Geoapify API key for address autocomplete
+config :gtfs_planner, :geoapify_api_key, "232508a26e0a4b85a0a97afcad8b958b"

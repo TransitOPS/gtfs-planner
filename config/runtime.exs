@@ -48,6 +48,14 @@ if config_env() != :test do
            Path.join(:code.priv_dir(:gtfs_planner), "static/uploads")
 end
 
+config :gtfs_planner,
+       :geoapify_api_key,
+       System.get_env("GEOAPIFY_API_KEY") ||
+         if(config_env() == :prod,
+           do: raise("environment variable GEOAPIFY_API_KEY is missing"),
+           else: Application.get_env(:gtfs_planner, :geoapify_api_key)
+         )
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

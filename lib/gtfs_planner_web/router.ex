@@ -69,6 +69,7 @@ defmodule GtfsPlannerWeb.Router do
       on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do
       live "/", DashboardLive, :index
       live "/users/settings", UserSettingsLive, :edit
+      live "/components", ComponentsLive, :index
     end
   end
 
