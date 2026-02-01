@@ -11,6 +11,7 @@ defmodule GtfsPlanner.Geocoding do
     Represents a geocoding result from the Geoapify API.
     """
 
+    @derive Jason.Encoder
     @enforce_keys [:formatted_address, :lat, :lon]
     defstruct [:formatted_address, :lat, :lon, :country, :state, :city]
 
