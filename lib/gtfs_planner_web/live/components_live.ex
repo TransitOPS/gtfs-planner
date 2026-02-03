@@ -103,7 +103,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
   end
 
   @impl true
-  def handle_event("form_changed", %{"address_search" => %{"address_autocomplete" => selection}} = params, socket) do
+  def handle_event("address-form", %{"address_search" => %{"address_autocomplete" => selection}} = params, socket) do
     IO.inspect(params, label: "📋 FORM_CHANGED EVENT")
     IO.inspect(selection, label: "🎯 SELECTION VALUE")
 
@@ -168,7 +168,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
           <h2 class="text-xl font-semibold mb-4">Address Autocomplete</h2>
 
           <div class="bg-base-100 border border-base-300 rounded-lg p-6">
-            <.form for={@form} id="address-form" phx-change="form_changed">
+            <.form for={@form} id="address-form" phx-change="address-form">
               <div class="mb-4">
                 <label for="address_autocomplete" class="block text-sm font-medium mb-2">
                   Search Address

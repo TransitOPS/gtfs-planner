@@ -40,20 +40,38 @@ defmodule GtfsPlannerWeb.ComponentsLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/components")
 
-      # Simulate a live_select_change event with text input
-      # Note: This test verifies the event handler exists and doesn't crash
-      # Full integration testing would require mocking the Geoapify API
-
       # Verify initial state - no selected address
       refute has_element?(view, "dt", "Address")
 
-      # Note: Full event simulation would look like this with proper mocking:
-      # render_hook(view, "live_select_change", %{
-      #   "text" => "Regent",
-      #   "id" => "address_autocomplete"
-      # })
-      #
-      # Then verify that results are displayed
+      # Set expectation on the mock
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Regent", _opts ->
+        {:ok,
+         [
+           %GtfsPlanner.Geocoding.Result{
+             formatted_address: "Regent Street, London, UK",
+             lat: 51.5105,
+             lon: -0.1367,
+             country: "UK",
+             state: "England",
+             city: "London"
+           }
+         ]}
+      end)
+
+      # Simulate a live_select_change event with text input
+      render_hook(view, "live_select_change", %{
+        "text" => "Regent",
+        "id" => "address_autocomplete"
+      })
+
+      # Then, simulate the form change event that happens on selection
+      render_change(view, "address-form", %{
+        "address_search" => %{"address_autocomplete" => "Regent Street, London, UK"}
+      })
+
+      # Verify that the selected address is displayed
+      assert has_element?(view, "dt", "Address")
+      assert render(view) =~ "Regent Street, London, UK"
     end
 
     test "does not display selected location initially", %{conn: conn, user: user} do
