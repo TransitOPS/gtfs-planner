@@ -1,5 +1,5 @@
 defmodule GtfsPlanner.GeocodingTest do
-  use GtfsPlanner.DataCase
+  use GtfsPlanner.DataCase, async: true
 
   alias GtfsPlanner.Geocoding
 
