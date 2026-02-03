@@ -292,7 +292,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
                           phx-click="delete_location"
                           phx-value-index={index}
                           class="btn btn-ghost btn-sm text-error"
-                          aria-label="Delete location"
+                          aria-label={"Delete location: " <> location.formatted_address}
                         >
                           Delete
                         </button>
