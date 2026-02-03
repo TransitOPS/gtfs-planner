@@ -274,7 +274,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
                     <th class="border-b border-base-300">City</th>
                     <th class="border-b border-base-300">State</th>
                     <th class="border-b border-base-300">Country</th>
-                    <th class="border-b border-base-300"></th>
+                    <th class="border-b border-base-300"><span class="sr-only">Actions</span></th>
                   </tr>
                 </thead>
                 <tbody>
