@@ -185,7 +185,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
                   option_class="px-4 py-2.5 border-b border-base-content/10 last:border-b-0 text-base-content"
                   active_option_class="bg-primary text-primary-content"
                   available_option_class="hover:bg-base-content/10 cursor-pointer transition-colors"
-                  text_input_class="input input-bordered w-full text-base-content"
+                  text_input_class="input input-bordered w-full live-select-input"
                 >
                   <:option :let={option}>
                     <div class="flex flex-col">
