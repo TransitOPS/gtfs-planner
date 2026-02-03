@@ -181,11 +181,11 @@ defmodule GtfsPlannerWeb.ComponentsLive do
                   debounce={300}
                   placeholder="Type at least 3 characters..."
                   update_min_len={3}
-                  dropdown_class="bg-base-300 border border-base-content/20 shadow-lg mt-1"
-                  option_class="px-4 py-2.5 border-b border-base-content/10 last:border-b-0"
+                  dropdown_class="bg-base-300 border border-base-content/20 shadow-lg mt-1 text-base-content"
+                  option_class="px-4 py-2.5 border-b border-base-content/10 last:border-b-0 text-base-content"
                   active_option_class="bg-primary text-primary-content"
                   available_option_class="hover:bg-base-content/10 cursor-pointer transition-colors"
-                  text_input_class="input input-bordered w-full text-white"
+                  text_input_class="input input-bordered w-full text-base-content"
                 >
                   <:option :let={option}>
                     <div class="flex flex-col">
