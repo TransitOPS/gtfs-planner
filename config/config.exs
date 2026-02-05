@@ -7,6 +7,7 @@
 # General application configuration
 import Config
 
+
 config :gtfs_planner,
   ecto_repos: [GtfsPlanner.Repo],
   generators: [timestamp_type: :utc_datetime],
