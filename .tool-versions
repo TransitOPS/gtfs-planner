@@ -1,7 +1,7 @@
-elixir 1.19.2-otp-28
-erlang 28.1.1
-nodejs 24.13.0
-opentofu 1.11.4
-checkov 3.2.499
-shellcheck 0.11.0
-uv 0.9.27
+elixir      1.19.2-otp-28
+erlang      28.1.1
+nodejs      24.13.0
+opentofu    1.11.4
+checkov     3.2.499
+shellcheck  0.11.0
+uv          0.9.27
