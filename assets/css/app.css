@@ -54,3 +54,12 @@ body {
   text-rendering: optimizeLegibility;
   min-height: 100vh;
 }
+
+/* Custom override for LiveSelect input text color to ensure theme compatibility */
+.live-select-input {
+  color: oklch(var(--bc)); /* Use DaisyUI's base content color for light mode */
+}
+
+[data-theme="dark"] .live-select-input {
+  color: oklch(100% 0 0) !important; /* Force pure white for dark mode */
+}

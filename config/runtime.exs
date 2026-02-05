@@ -16,6 +16,11 @@ import Config
 #
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
+
+if config_env() in [:dev, :test] and File.exists?(".env") do
+  DotenvParser.load_file(".env")
+end
+
 if System.get_env("PHX_SERVER") do
   config :gtfs_planner, GtfsPlannerWeb.Endpoint, server: true
 end
@@ -47,6 +52,14 @@ if config_env() != :test do
          System.get_env("UPLOADS_PATH") ||
            Path.join(:code.priv_dir(:gtfs_planner), "static/uploads")
 end
+
+config :gtfs_planner,
+       :geoapify_api_key,
+       System.get_env("GEOAPIFY_API_KEY") ||
+         if(config_env() == :prod,
+           do: raise("environment variable GEOAPIFY_API_KEY is missing"),
+           else: nil
+         )
 
 if config_env() == :prod do
   database_url =

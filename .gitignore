@@ -65,3 +65,5 @@ priv/static/uploads
 infra/modules/rds-database/db_admin/vendor
 infra/modules/rds-database/db_admin/.python-version
 infra/modules/rds-database/db_admin.zip
+# Environment variables
+.env
