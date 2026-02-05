@@ -23,6 +23,8 @@ config :gtfs_planner, GtfsPlannerWeb.Endpoint,
   secret_key_base: "Vlqg9A56iIf2P4HgwZAFhhA0raEXyKKmoZ5xjBmuiZUjDE1FI9/OpjJ/HRgFfTIE",
   server: false
 
+config :gtfs_planner, :geocoding_service, GtfsPlanner.GeocodingMock
+
 # In test we don't send emails
 config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Test
 

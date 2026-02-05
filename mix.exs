@@ -21,7 +21,7 @@ defmodule GtfsPlanner.MixProject do
   def application do
     [
       mod: {GtfsPlanner.Application, []},
-      extra_applications: [:logger, :runtime_tools]
+      extra_applications: extra_applications(Mix.env())
     ]
   end
 
@@ -34,6 +34,9 @@ defmodule GtfsPlanner.MixProject do
   # Specifies which paths to compile per environment.
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
+
+  defp extra_applications(:test), do: [:logger, :runtime_tools, :mox, :dotenv_parser]
+  defp extra_applications(_), do: [:logger, :runtime_tools, :dotenv_parser]
 
   # Specifies your project dependencies.
   #
@@ -71,7 +74,9 @@ defmodule GtfsPlanner.MixProject do
       {:bandit, "~> 1.5"},
       {:argon2_elixir, "~> 4.1"},
       {:ex_cldr_plugs, "~> 1.3"},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:live_select, "~> 1.4"},
+      {:dotenv_parser, "~> 2.0"}
     ]
   end
 
