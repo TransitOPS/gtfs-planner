@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:18.1
+    restart: always
+    environment:
+      - POSTGRES_USER=app
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_DB=gtfs_planner
+    volumes:
+      - db:/var/lib/postgresql
+  gtfs-planner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - PORT=4000
+      - PHX_SERVER=true
+      - PHX_HOST=localhost
+      - SECRET_KEY_BASE=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      - DATABASE_URL=ecto://app@postgres:5432/gtfs_planner
+    ports:
+      - '4000:4000'
+    volumes:
+      - uploads:/app/lib/gtfs_planner-0.1.0/priv/static/uploads
+    depends_on:
+      - postgres
+volumes:
+  db:
+  uploads:
