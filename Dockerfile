@@ -32,6 +32,7 @@ RUN mix deps.compile
 
 COPY lib lib
 COPY priv priv
+RUN mkdir -p priv/static/uploads
 RUN mix compile
 
 COPY assets assets
