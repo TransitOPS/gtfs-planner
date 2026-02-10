@@ -47,16 +47,21 @@ locals {
 
   environments = {
     dev = {
-      network_name  = "dev"
-      database_name = "dev"
-      type          = "docker"
-      host          = data.env_var.dev_ip.value
-      domain        = "dev.gtfs-planner.transitops.tech"
-      is_temporary  = true
+      network_name     = "dev"
+      database_name    = "dev"
+      type             = "docker"
+      host             = data.env_var.dev_ip.value
+      domain           = "dev.gtfs-planner.transitops.tech"
+      geoapify_api_key = data.env_var.geoapify_api_key.value
+      is_temporary     = true
     }
   }
 }
 
 data "env_var" "dev_ip" {
   id = "DEV_IP"
+}
+
+data "env_var" "geoapify_api_key" {
+  id = "GEOAPIFY_API_KEY"
 }
