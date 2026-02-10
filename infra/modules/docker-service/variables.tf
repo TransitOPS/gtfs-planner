@@ -33,3 +33,8 @@ variable "db_name" {
 variable "db_username" {
   type = string
 }
+
+variable "geoapify_api_key" {
+  type      = string
+  sensitive = true
+}

@@ -11,7 +11,8 @@ module "docker_service" {
   db_port     = module.database_data.db_port
   db_name     = module.database_data.db_name
   db_username = module.database_data.db_username
-  domain      = local.env_config.domain
+  domain           = local.env_config.domain
+  geoapify_api_key = local.env_config.geoapify_api_key
 }
 
 resource "aws_route53_record" "lb" {
