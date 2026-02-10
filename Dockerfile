@@ -66,7 +66,7 @@ RUN apt-get update --allow-releaseinfo-change && apt-get upgrade -y --no-install
     && apt-get update \
     && apt-get install -y --no-install-recommends temurin-21-jre \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives && \
-    export DATABASE_URL= SECRET_KEY_BASE= && \
+    export DATABASE_URL= SECRET_KEY_BASE= GEOAPIFY_API_KEY= && \
     /app/bin/gtfs_planner eval "[_ | _] = :crypto.supports()" || exit 1 && \
     /app/bin/gtfs_planner eval ":ok = :public_key.cacerts_load()" || exit 1
 
