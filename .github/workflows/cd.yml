@@ -80,6 +80,7 @@ jobs:
     environment: ${{ inputs.environment || 'dev' }}
     env:
       DEV_IP: ${{ vars.DEV_IP }}
+      GEOAPIFY_API_KEY: ${{ secrets.GEOAPIFY_API_KEY }}
 
     steps:
       - name: Set environment configuration

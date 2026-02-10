@@ -55,7 +55,8 @@ locals {
           "AWS_ACCESS_KEY_ID=${aws_iam_access_key.service.id}",
           "AWS_SECRET_ACCESS_KEY=${aws_iam_access_key.service.secret}",
           "SECRET_KEY_BASE=${random_password.secret_key_base.result}",
-          "DATABASE_URL=ecto://${var.db_username}@${var.db_host}:${var.db_name}/${var.db_name}"
+          "DATABASE_URL=ecto://${var.db_username}@${var.db_host}:${var.db_name}/${var.db_name}",
+          "GEOAPIFY_API_KEY=${var.geoapify_api_key}"
         ]
         networks = [
           local.lb_network,
