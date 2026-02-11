@@ -7,7 +7,7 @@ defmodule GtfsPlanner.ValidationsFixtures do
   @doc """
   Generate a walkability test fixture.
 
-  Requires `organization_id` in attrs.
+  When called, requires `organization_id` in attrs.
   """
   def walkability_test_fixture(attrs \\ %{}) do
     {organization_id, attrs} = Map.pop!(attrs, :organization_id)
