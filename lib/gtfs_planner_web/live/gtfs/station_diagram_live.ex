@@ -295,7 +295,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("canvas_click", %{"x" => x, "y" => y}, socket) do
-
     case socket.assigns.mode do
       :add ->
         child_stops = get_child_stops_with_coordinates(socket)
@@ -1005,15 +1004,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp handle_connect_click(socket, x, y) do
     child_stops = get_child_stops_with_coordinates(socket)
 
-    Enum.each(child_stops, fn stop ->
-      coord = stop.diagram_coordinate
-      coord_x = to_float(coord["x"])
-      coord_y = to_float(coord["y"])
-      distance = :math.sqrt((coord_x - x) * (coord_x - x) + (coord_y - y) * (coord_y - y))
-
-
-    end)
-
     clicked_stop = find_stop_near_point(child_stops, x, y, 5.0)
 
     case {socket.assigns.active_point_id, clicked_stop} do
@@ -1116,8 +1106,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:cross_level_stop_ids, cross_level_stop_ids)
          |> assign(:pathway_error, nil)}
 
-      {:error, changeset} ->
-
+      {:error, _changeset} ->
         {:noreply,
          socket
          |> assign(:active_point_id, nil)

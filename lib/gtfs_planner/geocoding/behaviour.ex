@@ -5,5 +5,6 @@ defmodule GtfsPlanner.Geocoding.Behaviour do
 
   alias GtfsPlanner.Geocoding.Result
 
-  @callback autocomplete(String.t(), keyword()) :: {:ok, [Result.t()]} | {:error, atom() | tuple()}
+  @callback autocomplete(String.t(), keyword()) ::
+              {:ok, [Result.t()]} | {:error, atom() | tuple()}
 end
