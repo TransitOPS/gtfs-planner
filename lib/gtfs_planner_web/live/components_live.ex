@@ -23,6 +23,29 @@ defmodule GtfsPlannerWeb.ComponentsLive do
   end
 
   @impl true
+  def handle_event(
+        "live_select_change",
+        %{"text" => _text, "id" => _id, "field" => _field, selection: selection},
+        socket
+      ) do
+    # This handles the selection event when user picks an option
+    case selection do
+      %{tag: result} when is_map(result) ->
+        socket =
+          socket
+          |> assign(:selected_address, result.formatted_address)
+          |> assign(:selected_lat, result.lat)
+          |> assign(:selected_lon, result.lon)
+          |> assign(:selected_result, result)
+
+        {:noreply, socket}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_event("live_select_change", %{"text" => text, "id" => id}, socket) do
     Logger.debug("Autocomplete search initiated for field: #{id}")
 
@@ -83,29 +106,6 @@ defmodule GtfsPlannerWeb.ComponentsLive do
   def handle_event("change", _params, socket) do
     Logger.debug("Address form change event (no selection)")
     {:noreply, socket}
-  end
-
-  @impl true
-  def handle_event(
-        "live_select_change",
-        %{"text" => _text, "id" => _id, "field" => _field, selection: selection},
-        socket
-      ) do
-    # This handles the selection event when user picks an option
-    case selection do
-      %{tag: result} when is_map(result) ->
-        socket =
-          socket
-          |> assign(:selected_address, result.formatted_address)
-          |> assign(:selected_lat, result.lat)
-          |> assign(:selected_lon, result.lon)
-          |> assign(:selected_result, result)
-
-        {:noreply, socket}
-
-      _ ->
-        {:noreply, socket}
-    end
   end
 
   @impl true
