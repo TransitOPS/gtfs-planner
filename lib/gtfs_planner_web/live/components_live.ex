@@ -1,6 +1,8 @@
 defmodule GtfsPlannerWeb.ComponentsLive do
   use GtfsPlannerWeb, :live_view
 
+  require Logger
+
   alias GtfsPlanner.Geocoding
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -22,11 +24,11 @@ defmodule GtfsPlannerWeb.ComponentsLive do
 
   @impl true
   def handle_event("live_select_change", %{"text" => text, "id" => id}, socket) do
-    IO.inspect(text, label: "🔍 LIVE_SELECT_CHANGE FIRED WITH TEXT")
+    Logger.debug("Autocomplete search initiated for field: #{id}")
 
     case Geocoding.autocomplete(text) do
       {:ok, results} ->
-        IO.inspect(length(results), label: "✅ GOT RESULTS COUNT")
+        Logger.debug("Autocomplete returned #{length(results)} results")
 
         options =
           Enum.map(results, fn result ->
@@ -44,7 +46,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
         {:noreply, assign(socket, :last_results, results)}
 
       {:error, reason} ->
-        IO.inspect(reason, label: "❌ GEOCODING ERROR")
+        Logger.error("Geocoding autocomplete failed: #{inspect(reason)}")
         send_update(LiveSelectComponent, id: id, options: [])
         {:noreply, socket}
     end
@@ -53,11 +55,11 @@ defmodule GtfsPlannerWeb.ComponentsLive do
   @impl true
   def handle_event(
         "change",
-        %{"address_search" => %{"address_autocomplete" => selection}} = params,
+        %{"address_search" => %{"address_autocomplete" => selection}},
         socket
       )
       when is_binary(selection) and selection != "" do
-    IO.inspect(params, label: "📝 CHANGE EVENT WITH SELECTION")
+    Logger.debug("Address selection change event received for address_autocomplete field")
 
     # Match selection against last results
     result = Enum.find(socket.assigns.last_results, fn r -> r.formatted_address == selection end)
@@ -78,8 +80,8 @@ defmodule GtfsPlannerWeb.ComponentsLive do
     {:noreply, socket}
   end
 
-  def handle_event("change", params, socket) do
-    IO.inspect(params, label: "📝 CHANGE EVENT (OTHER)")
+  def handle_event("change", _params, socket) do
+    Logger.debug("Address form change event (no selection)")
     {:noreply, socket}
   end
 
@@ -109,11 +111,10 @@ defmodule GtfsPlannerWeb.ComponentsLive do
   @impl true
   def handle_event(
         "address-form",
-        %{"address_search" => %{"address_autocomplete" => selection}} = params,
+        %{"address_search" => %{"address_autocomplete" => selection}},
         socket
       ) do
-    IO.inspect(params, label: "📋 FORM_CHANGED EVENT")
-    IO.inspect(selection, label: "🎯 SELECTION VALUE")
+    Logger.debug("Address form submitted for address_autocomplete field")
 
     # Match selection against last results
     result = Enum.find(socket.assigns.last_results, fn r -> r.formatted_address == selection end)
@@ -121,11 +122,11 @@ defmodule GtfsPlannerWeb.ComponentsLive do
     socket =
       case result do
         nil ->
-          IO.inspect("❌ NO MATCH FOUND")
+          Logger.debug("No matching address found in #{length(socket.assigns.last_results)} cached results")
           socket
 
         result ->
-          IO.inspect(result, label: "✅ MATCHED RESULT")
+          Logger.debug("Address matched successfully from #{length(socket.assigns.last_results)} cached results")
 
           socket
           |> assign(:selected_address, result.formatted_address)
