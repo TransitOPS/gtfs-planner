@@ -114,7 +114,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
         %{"address_search" => %{"address_autocomplete" => selection}},
         socket
       ) do
-    Logger.debug("Address form submitted")
+    Logger.debug("Address form submitted for address_autocomplete field")
 
     # Match selection against last results
     result = Enum.find(socket.assigns.last_results, fn r -> r.formatted_address == selection end)
