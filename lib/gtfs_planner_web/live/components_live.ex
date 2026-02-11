@@ -59,7 +59,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
         socket
       )
       when is_binary(selection) and selection != "" do
-    Logger.debug("Address selection change event received")
+    Logger.debug("Address selection change event received for address_autocomplete field")
 
     # Match selection against last results
     result = Enum.find(socket.assigns.last_results, fn r -> r.formatted_address == selection end)
@@ -122,7 +122,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
     socket =
       case result do
         nil ->
-          Logger.debug("No matching address found in cached results")
+          Logger.debug("No matching address found in #{length(socket.assigns.last_results)} cached results")
           socket
 
         result ->
