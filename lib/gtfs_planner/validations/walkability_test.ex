@@ -57,7 +57,26 @@ defmodule GtfsPlanner.Validations.WalkabilityTest do
       :expected_max_distance_meters
     ])
     |> validate_required([:stop_id, :address, :address_lat, :address_lon])
+    |> validate_number(:expected_min_duration_seconds, greater_than_or_equal_to: 0)
+    |> validate_number(:expected_max_duration_seconds, greater_than_or_equal_to: 0)
+    |> validate_number(:expected_min_distance_meters, greater_than_or_equal_to: 0)
+    |> validate_number(:expected_max_distance_meters, greater_than_or_equal_to: 0)
+    |> validate_min_max_range(:expected_min_duration_seconds, :expected_max_duration_seconds)
+    |> validate_min_max_range(:expected_min_distance_meters, :expected_max_distance_meters)
     |> unique_constraint([:organization_id, :stop_id, :address])
     |> foreign_key_constraint(:organization_id)
+  end
+
+  defp validate_min_max_range(changeset, min_field, max_field) do
+    min_value = get_field(changeset, min_field)
+    max_value = get_field(changeset, max_field)
+
+    if is_integer(min_value) and is_integer(max_value) and min_value > max_value do
+      changeset
+      |> add_error(min_field, "must be less than or equal to #{max_field}")
+      |> add_error(max_field, "must be greater than or equal to #{min_field}")
+    else
+      changeset
+    end
   end
 end
