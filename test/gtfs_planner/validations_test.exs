@@ -234,7 +234,11 @@ defmodule GtfsPlanner.ValidationsTest do
     test "create_walkability_test/2 returns error for duplicate (org_id, stop_id, address)", %{
       organization: org
     } do
-      walkability_test_fixture(%{organization_id: org.id, stop_id: "stop-dup", address: "456 Elm St"})
+      walkability_test_fixture(%{
+        organization_id: org.id,
+        stop_id: "stop-dup",
+        address: "456 Elm St"
+      })
 
       assert {:error, changeset} =
                Validations.create_walkability_test(org.id, %{
@@ -248,10 +252,17 @@ defmodule GtfsPlanner.ValidationsTest do
     end
 
     test "list_walkability_tests/1 returns tests scoped to the given org", %{organization: org} do
-      wt1 = walkability_test_fixture(%{organization_id: org.id, stop_id: "stop-a", address: "Addr A"})
+      wt1 =
+        walkability_test_fixture(%{organization_id: org.id, stop_id: "stop-a", address: "Addr A"})
 
       other_org = organization_fixture()
-      _wt2 = walkability_test_fixture(%{organization_id: other_org.id, stop_id: "stop-b", address: "Addr B"})
+
+      _wt2 =
+        walkability_test_fixture(%{
+          organization_id: other_org.id,
+          stop_id: "stop-b",
+          address: "Addr B"
+        })
 
       results = Validations.list_walkability_tests(org.id)
 
