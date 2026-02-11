@@ -126,7 +126,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
           socket
 
         result ->
-          Logger.debug("Address matched successfully")
+          Logger.debug("Address matched successfully from #{length(socket.assigns.last_results)} cached results")
 
           socket
           |> assign(:selected_address, result.formatted_address)
