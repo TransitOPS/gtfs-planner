@@ -206,7 +206,7 @@ defmodule GtfsPlanner.Validations do
 
   ## Examples
 
-      iex> create_walkability_test(org_id, %{name: "Test"})
+      iex> create_walkability_test(org_id, %{stop_id: "stop_123", address: "123 Main St", address_lat: "40.7128", address_lon: "-74.0060"})
       {:ok, %WalkabilityTest{}}
 
       iex> create_walkability_test(org_id, %{})
@@ -224,7 +224,7 @@ defmodule GtfsPlanner.Validations do
 
   ## Examples
 
-      iex> update_walkability_test(walkability_test, %{description: "Updated description"})
+      iex> update_walkability_test(walkability_test, %{address: "456 Oak Ave"})
       {:ok, %WalkabilityTest{}}
 
       iex> update_walkability_test(walkability_test, %{stop_id: nil})
