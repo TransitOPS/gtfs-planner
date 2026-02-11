@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Validations do
 
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations.ValidationRun
+  alias GtfsPlanner.Validations.WalkabilityTest
 
   @doc """
   Creates a new validation run with status "started".
@@ -163,5 +164,105 @@ defmodule GtfsPlanner.Validations do
       completed_at: DateTime.utc_now()
     })
     |> Repo.update()
+  end
+
+  # --- Walkability Tests ---
+
+  @doc """
+  Lists walkability tests for a given organization.
+  Results are ordered by inserted_at descending.
+
+  ## Examples
+
+      iex> list_walkability_tests(org_id)
+      [%WalkabilityTest{}, ...]
+
+  """
+  def list_walkability_tests(organization_id) do
+    WalkabilityTest
+    |> where([wt], wt.organization_id == ^organization_id)
+    |> order_by([wt], desc: wt.inserted_at)
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single walkability test, raising if not found.
+
+  ## Examples
+
+      iex> get_walkability_test!(id)
+      %WalkabilityTest{}
+
+      iex> get_walkability_test!("invalid")
+      ** (Ecto.NoResultsError)
+
+  """
+  def get_walkability_test!(id) do
+    Repo.get!(WalkabilityTest, id)
+  end
+
+  @doc """
+  Creates a walkability test for a given organization.
+
+  ## Examples
+
+      iex> create_walkability_test(org_id, %{name: "Test"})
+      {:ok, %WalkabilityTest{}}
+
+      iex> create_walkability_test(org_id, %{})
+      {:error, %Ecto.Changeset{}}
+
+  """
+  def create_walkability_test(organization_id, attrs) do
+    %WalkabilityTest{organization_id: organization_id}
+    |> WalkabilityTest.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Updates a walkability test.
+
+  ## Examples
+
+      iex> update_walkability_test(walkability_test, %{name: "Updated"})
+      {:ok, %WalkabilityTest{}}
+
+      iex> update_walkability_test(walkability_test, %{name: nil})
+      {:error, %Ecto.Changeset{}}
+
+  """
+  def update_walkability_test(walkability_test, attrs) do
+    walkability_test
+    |> WalkabilityTest.changeset(attrs)
+    |> Repo.update()
+  end
+
+  @doc """
+  Deletes a walkability test.
+
+  ## Examples
+
+      iex> delete_walkability_test(walkability_test)
+      {:ok, %WalkabilityTest{}}
+
+      iex> delete_walkability_test(walkability_test)
+      {:error, %Ecto.Changeset{}}
+
+  """
+  def delete_walkability_test(walkability_test) do
+    Repo.delete(walkability_test)
+  end
+
+  @doc """
+  Returns an `%Ecto.Changeset{}` for tracking walkability test changes.
+
+  ## Examples
+
+      iex> change_walkability_test(walkability_test)
+      %Ecto.Changeset{data: %WalkabilityTest{}}
+
+  """
+  def change_walkability_test(walkability_test, attrs \\ %{}) do
+    WalkabilityTest.changeset(walkability_test, attrs)
   end
 end
