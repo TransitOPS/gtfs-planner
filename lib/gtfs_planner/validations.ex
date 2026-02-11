@@ -224,10 +224,10 @@ defmodule GtfsPlanner.Validations do
 
   ## Examples
 
-      iex> update_walkability_test(walkability_test, %{name: "Updated"})
+      iex> update_walkability_test(walkability_test, %{description: "Updated description"})
       {:ok, %WalkabilityTest{}}
 
-      iex> update_walkability_test(walkability_test, %{name: nil})
+      iex> update_walkability_test(walkability_test, %{stop_id: nil})
       {:error, %Ecto.Changeset{}}
 
   """
