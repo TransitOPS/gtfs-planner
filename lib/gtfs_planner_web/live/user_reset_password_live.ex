@@ -51,7 +51,7 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
     socket =
       case Accounts.get_user_by_reset_password_token(token) do
         %GtfsPlanner.Accounts.User{} = user ->
-          assign(socket, user: user, token: token, form: to_form(%{}, as: "user"))
+          assign(socket, user: user, form: to_form(%{}, as: "user"))
 
         nil ->
           socket
