@@ -50,22 +50,22 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
   def mount(%{"token" => token}, _session, socket) do
     socket =
       case Accounts.get_user_by_reset_password_token(token) do
-        {:ok, user} ->
+        %GtfsPlanner.Accounts.User{} = user ->
           assign(socket, user: user, token: token, form: to_form(%{}, as: "user"))
 
-        :error ->
+        nil ->
           socket
           |> put_flash(:error, "Reset password link is invalid or it has expired.")
           |> redirect(to: ~p"/")
       end
 
-    {:ok, socket, temporary_assigns: [form: socket.assigns.form]}
+    {:ok, socket}
   end
 
   def handle_event("reset_password", %{"user" => user_params}, socket) do
     %{"password" => password, "password_confirmation" => password_confirmation} = user_params
 
-    case Accounts.reset_user_password(socket.assigns.token, %{
+    case Accounts.reset_user_password(socket.assigns.user, %{
            "password" => password,
            "password_confirmation" => password_confirmation
          }) do
@@ -75,12 +75,12 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
          |> redirect(to: ~p"/users/log_in")}
 
       {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset))}
+        {:noreply, assign(socket, form: to_form(changeset, as: "user"))}
     end
   end
 
   def handle_event("validate", %{"user" => user_params}, socket) do
     changeset = Accounts.change_user_password(socket.assigns.user, user_params)
-    {:noreply, assign(socket, form: to_form(changeset))}
+    {:noreply, assign(socket, form: to_form(changeset, as: "user"))}
   end
 end
