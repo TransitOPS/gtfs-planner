@@ -1,6 +1,7 @@
 defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
   use GtfsPlannerWeb.ConnCase
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
 
@@ -34,8 +35,15 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
              live(conn, ~p"/users/reset_password/invalid-token")
   end
 
-  test "expired token mount redirects with error flash", %{conn: conn, token: token} do
-    {1, _} = Repo.update_all(UserToken, set: [inserted_at: ~U[2020-01-01 00:00:00Z]])
+  test "expired token mount redirects with error flash", %{conn: conn, user: user, token: token} do
+    {:ok, decoded_token} = Base.url_decode64(token, padding: false)
+    hashed_token = :crypto.hash(:sha256, decoded_token)
+
+    update_query =
+      from t in UserToken.token_and_context_query(hashed_token, "reset_password"),
+        where: t.user_id == ^user.id
+
+    {1, _} = Repo.update_all(update_query, set: [inserted_at: ~U[2020-01-01 00:00:00Z]])
 
     assert {:error,
             {:redirect,
