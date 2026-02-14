@@ -90,7 +90,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
         %{"address_search" => %{"address_autocomplete" => selection}},
         socket
       ) do
-    Logger.debug("Address form submitted for address_autocomplete field")
+    Logger.debug("Address form change event for address_autocomplete field")
     {:noreply, apply_selection_by_address(socket, selection)}
   end
 
