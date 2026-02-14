@@ -693,7 +693,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
     <aside
       id={@id}
       class={[
-        "fixed top-0 right-0 h-full w-full  min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 z-50 transition-transform duration-300",
+        "fixed top-0 right-0 h-full w-screen min-w-[320px] max-w-[min(100vw,48rem)] bg-base-100 shadow-xl border-l border-base-200 z-50 transition-transform duration-300 overflow-x-hidden",
         @open && "translate-x-0",
         !@open && "translate-x-full",
         @class

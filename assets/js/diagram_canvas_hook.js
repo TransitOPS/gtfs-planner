@@ -14,6 +14,7 @@ const DiagramCanvasHook = {
     this.isPanning = false;
     this.panStart = { x: 0, y: 0 };
     this._canvasKey = svg.getAttribute("data-canvas-key");
+    this.currentImageHref = null;
 
     // Set up MutationObserver to detect when overlay viewBox gets reset
     this.setupOverlayObserver();
@@ -175,6 +176,17 @@ const DiagramCanvasHook = {
     this.syncOverlayViewBox();
   },
 
+  applyImageDimensions() {
+    const imageEl = this.el.querySelector("image");
+
+    if (!imageEl || !this.baseW || !this.baseH) {
+      return;
+    }
+
+    imageEl.setAttribute("width", this.baseW);
+    imageEl.setAttribute("height", this.baseH);
+  },
+
   updated() {
     const newKey = this.el.getAttribute("data-canvas-key");
 
@@ -188,6 +200,7 @@ const DiagramCanvasHook = {
       this.updateViewBox();
       this.syncImageDimensions(true);
     } else {
+      this.applyImageDimensions();
       // LiveView patching can reset the SVG attribute to the static template viewBox.
       // Re-apply the current interactive viewBox on every update to avoid jumps.
       this.updateViewBox();
@@ -206,6 +219,7 @@ const DiagramCanvasHook = {
     const href = imageEl.getAttribute("href");
 
     if (!href || (!forceReset && href === this.currentImageHref)) {
+      this.applyImageDimensions();
       return;
     }
 
