@@ -2,6 +2,18 @@
  * DiagramCanvas Hook
  * Provides pan and zoom functionality for the station diagram SVG canvas.
  */
+const OVERLAY_BASE = {
+  circleR: 0.75,
+  circleStroke: 0.15,
+  circleStrokeCrossLevel: 0.25,
+  pathwayStroke: 0.5,
+  pathwayHitStroke: 2,
+  pendingOffsetY: 1,
+  pendingOffsetX: 0.75,
+  pendingOffsetBottomY: 0.5,
+  pendingStroke: 0.15
+};
+
 const DiagramCanvasHook = {
   mounted() {
     const svg = this.el;
@@ -20,6 +32,7 @@ const DiagramCanvasHook = {
     this.setupOverlayObserver();
 
     this.syncImageDimensions(true);
+    this.scaleOverlayElements();
 
     svg.addEventListener("wheel", (e) => {
       if (e.ctrlKey || e.metaKey) {
@@ -127,11 +140,13 @@ const DiagramCanvasHook = {
           if (overlay && mutation.target === overlay) {
             // LiveView reset the viewBox, re-apply our current state
             this.syncOverlayViewBox();
+            this.scaleOverlayElements();
           }
         }
         // Also watch for child changes (stream updates)
         if (mutation.type === "childList") {
           this.syncOverlayViewBox();
+          this.scaleOverlayElements();
         }
       }
     });
@@ -169,11 +184,64 @@ const DiagramCanvasHook = {
     }
   },
 
+  scaleOverlayElements() {
+    const overlay = this.el.parentElement.querySelector("#diagram-overlay");
+
+    if (!overlay) {
+      return;
+    }
+
+    const scale = this.scale || 1;
+
+    overlay.querySelectorAll("#stops-svg circle").forEach((circle) => {
+      circle.setAttribute("r", `${OVERLAY_BASE.circleR / scale}`);
+      const isCrossLevel = circle.hasAttribute("data-cross-level");
+      const baseStroke = isCrossLevel ? OVERLAY_BASE.circleStrokeCrossLevel : OVERLAY_BASE.circleStroke;
+      circle.setAttribute("stroke-width", `${baseStroke / scale}`);
+    });
+
+    overlay.querySelectorAll("#pathways-svg g").forEach((group) => {
+      const lines = group.querySelectorAll("line");
+
+      if (lines[0]) {
+        lines[0].setAttribute("stroke-width", `${OVERLAY_BASE.pathwayHitStroke / scale}`);
+      }
+
+      if (lines[1]) {
+        lines[1].setAttribute("stroke-width", `${OVERLAY_BASE.pathwayStroke / scale}`);
+      }
+    });
+
+    const pending = overlay.querySelector("polygon[data-cx][data-cy]");
+
+    if (!pending) {
+      return;
+    }
+
+    const cx = parseFloat(pending.dataset.cx);
+    const cy = parseFloat(pending.dataset.cy);
+
+    if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+      return;
+    }
+
+    const offX = OVERLAY_BASE.pendingOffsetX / scale;
+    const offY = OVERLAY_BASE.pendingOffsetY / scale;
+    const bottomOffsetY = OVERLAY_BASE.pendingOffsetBottomY / scale;
+
+    pending.setAttribute(
+      "points",
+      `${cx},${cy - offY} ${cx - offX},${cy + bottomOffsetY} ${cx + offX},${cy + bottomOffsetY}`
+    );
+    pending.setAttribute("stroke-width", `${OVERLAY_BASE.pendingStroke / scale}`);
+  },
+
   updateViewBox() {
     const svg = this.el;
     const viewBoxStr = `${this.viewBox.x} ${this.viewBox.y} ${this.viewBox.w} ${this.viewBox.h}`;
     svg.setAttribute("viewBox", viewBoxStr);
     this.syncOverlayViewBox();
+    this.scaleOverlayElements();
   },
 
   applyImageDimensions() {
@@ -204,6 +272,7 @@ const DiagramCanvasHook = {
       // LiveView patching can reset the SVG attribute to the static template viewBox.
       // Re-apply the current interactive viewBox on every update to avoid jumps.
       this.updateViewBox();
+      this.scaleOverlayElements();
       this.syncImageDimensions(false);
     }
   },
