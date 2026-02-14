@@ -2,8 +2,10 @@ defmodule GtfsPlanner.ValidationsTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.WalkabilityTest
 
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.ValidationsFixtures
   import GtfsPlanner.VersionsFixtures
 
   describe "validation_runs" do
@@ -189,6 +191,115 @@ defmodule GtfsPlanner.ValidationsTest do
 
       # Should limit to 20 results
       assert length(runs) == 20
+    end
+  end
+
+  describe "walkability_tests" do
+    setup do
+      organization = organization_fixture()
+      %{organization: organization}
+    end
+
+    test "create_walkability_test/2 creates with valid attrs", %{organization: org} do
+      attrs = %{
+        stop_id: "stop-1",
+        address: "123 Main St",
+        address_lat: Decimal.new("42.3601"),
+        address_lon: Decimal.new("-71.0589")
+      }
+
+      assert {:ok, %WalkabilityTest{} = walkability_test} =
+               Validations.create_walkability_test(org.id, attrs)
+
+      assert walkability_test.organization_id == org.id
+      assert walkability_test.stop_id == "stop-1"
+      assert walkability_test.address == "123 Main St"
+      assert walkability_test.address_lat == Decimal.new("42.3601")
+      assert walkability_test.address_lon == Decimal.new("-71.0589")
+    end
+
+    test "create_walkability_test/2 returns error with missing required field", %{
+      organization: org
+    } do
+      assert {:error, changeset} = Validations.create_walkability_test(org.id, %{})
+
+      assert %{
+               stop_id: ["can't be blank"],
+               address: ["can't be blank"],
+               address_lat: ["can't be blank"],
+               address_lon: ["can't be blank"]
+             } = errors_on(changeset)
+    end
+
+    test "create_walkability_test/2 returns error for duplicate (org_id, stop_id, address)", %{
+      organization: org
+    } do
+      walkability_test_fixture(%{
+        organization_id: org.id,
+        stop_id: "stop-dup",
+        address: "456 Elm St"
+      })
+
+      assert {:error, changeset} =
+               Validations.create_walkability_test(org.id, %{
+                 stop_id: "stop-dup",
+                 address: "456 Elm St",
+                 address_lat: Decimal.new("42.3601"),
+                 address_lon: Decimal.new("-71.0589")
+               })
+
+      assert "has already been taken" in errors_on(changeset).organization_id
+    end
+
+    test "list_walkability_tests/1 returns tests scoped to the given org", %{organization: org} do
+      wt1 =
+        walkability_test_fixture(%{organization_id: org.id, stop_id: "stop-a", address: "Addr A"})
+
+      other_org = organization_fixture()
+
+      _wt2 =
+        walkability_test_fixture(%{
+          organization_id: other_org.id,
+          stop_id: "stop-b",
+          address: "Addr B"
+        })
+
+      results = Validations.list_walkability_tests(org.id)
+
+      assert length(results) == 1
+      assert hd(results).id == wt1.id
+    end
+
+    test "get_walkability_test!/1 returns the test", %{organization: org} do
+      walkability_test = walkability_test_fixture(%{organization_id: org.id})
+
+      fetched = Validations.get_walkability_test!(walkability_test.id)
+      assert fetched.id == walkability_test.id
+      assert fetched.organization_id == org.id
+    end
+
+    test "update_walkability_test/2 updates fields", %{organization: org} do
+      walkability_test = walkability_test_fixture(%{organization_id: org.id})
+
+      assert {:ok, %WalkabilityTest{} = updated} =
+               Validations.update_walkability_test(walkability_test, %{
+                 description: "Updated description",
+                 expected_traversable: true
+               })
+
+      assert updated.id == walkability_test.id
+      assert updated.description == "Updated description"
+      assert updated.expected_traversable == true
+    end
+
+    test "delete_walkability_test/1 removes the record", %{organization: org} do
+      walkability_test = walkability_test_fixture(%{organization_id: org.id})
+
+      assert {:ok, %WalkabilityTest{}} = Validations.delete_walkability_test(walkability_test)
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Validations.get_walkability_test!(walkability_test.id)
+      end
     end
   end
 end
