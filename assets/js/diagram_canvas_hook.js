@@ -209,8 +209,15 @@ const DiagramCanvasHook = {
 
     this.currentImageHref = href;
     const img = new Image();
+    const requestedHref = href;
 
     img.onload = () => {
+      // Check if the image href is still the same as when we started loading
+      // If it changed (e.g., user switched levels), bail out to avoid race condition
+      if (this.currentImageHref !== requestedHref) {
+        return;
+      }
+
       const naturalW = img.naturalWidth || 1;
       const naturalH = img.naturalHeight || 1;
 
