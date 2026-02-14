@@ -244,7 +244,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     case active_stop_level.diagram_filename do
       filename when is_binary(filename) ->
         token = URI.encode_www_form(filename)
-        "/uploads/diagrams/#{organization_id}/#{station.stop_id}/#{filename}?v=#{token}"
+        encoded_filename = URI.encode(filename)
+        "/uploads/diagrams/#{organization_id}/#{station.stop_id}/#{encoded_filename}?v=#{token}"
 
       _ ->
         nil
