@@ -241,8 +241,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   defp diagram_image_href(organization_id, station, active_stop_level) do
-    case active_stop_level.diagram_filename do
-      filename when is_binary(filename) ->
+    case active_stop_level do
+      %{diagram_filename: filename} when is_binary(filename) ->
         token = URI.encode_www_form(filename)
         encoded_filename = URI.encode(filename)
         "/uploads/diagrams/#{organization_id}/#{station.stop_id}/#{encoded_filename}?v=#{token}"

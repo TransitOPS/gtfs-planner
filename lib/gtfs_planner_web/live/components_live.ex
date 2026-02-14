@@ -25,23 +25,15 @@ defmodule GtfsPlannerWeb.ComponentsLive do
   @impl true
   def handle_event(
         "live_select_change",
-        %{"text" => _text, "id" => _id, "field" => _field, selection: selection},
+        %{"text" => _text, "id" => _id, "field" => _field, "selection" => %{"tag" => selection}},
         socket
       ) do
-    # This handles the selection event when user picks an option
-    case selection do
-      %{tag: result} when is_map(result) ->
-        socket =
-          socket
-          |> assign(:selected_address, result.formatted_address)
-          |> assign(:selected_lat, result.lat)
-          |> assign(:selected_lon, result.lon)
-          |> assign(:selected_result, result)
+    case normalize_result(selection) do
+      {:ok, result} ->
+        {:noreply, apply_selected_result(socket, result)}
 
-        {:noreply, socket}
-
-      _ ->
-        {:noreply, socket}
+      :error ->
+        {:noreply, clear_selected_result(socket)}
     end
   end
 
@@ -71,7 +63,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
       {:error, reason} ->
         Logger.error("Geocoding autocomplete failed: #{inspect(reason)}")
         send_update(LiveSelectComponent, id: id, options: [])
-        {:noreply, socket}
+        {:noreply, assign(socket, :last_results, [])}
     end
   end
 
@@ -84,28 +76,12 @@ defmodule GtfsPlannerWeb.ComponentsLive do
       when is_binary(selection) and selection != "" do
     Logger.debug("Address selection change event received for address_autocomplete field")
 
-    # Match selection against last results
-    result = Enum.find(socket.assigns.last_results, fn r -> r.formatted_address == selection end)
-
-    socket =
-      case result do
-        nil ->
-          socket
-
-        result ->
-          socket
-          |> assign(:selected_address, result.formatted_address)
-          |> assign(:selected_lat, result.lat)
-          |> assign(:selected_lon, result.lon)
-          |> assign(:selected_result, result)
-      end
-
-    {:noreply, socket}
+    {:noreply, apply_selection_by_address(socket, selection)}
   end
 
   def handle_event("change", _params, socket) do
     Logger.debug("Address form change event (no selection)")
-    {:noreply, socket}
+    {:noreply, clear_selected_result(socket)}
   end
 
   @impl true
@@ -114,28 +90,12 @@ defmodule GtfsPlannerWeb.ComponentsLive do
         %{"address_search" => %{"address_autocomplete" => selection}},
         socket
       ) do
-    Logger.debug("Address form submitted for address_autocomplete field")
+    Logger.debug("Address form change event for address_autocomplete field")
+    {:noreply, apply_selection_by_address(socket, selection)}
+  end
 
-    # Match selection against last results
-    result = Enum.find(socket.assigns.last_results, fn r -> r.formatted_address == selection end)
-
-    socket =
-      case result do
-        nil ->
-          Logger.debug("No matching address found in #{length(socket.assigns.last_results)} cached results")
-          socket
-
-        result ->
-          Logger.debug("Address matched successfully from #{length(socket.assigns.last_results)} cached results")
-
-          socket
-          |> assign(:selected_address, result.formatted_address)
-          |> assign(:selected_lat, result.lat)
-          |> assign(:selected_lon, result.lon)
-          |> assign(:selected_result, result)
-      end
-
-    {:noreply, socket}
+  def handle_event("address-form", _params, socket) do
+    {:noreply, clear_selected_result(socket)}
   end
 
   @impl true
@@ -161,6 +121,57 @@ defmodule GtfsPlannerWeb.ComponentsLive do
     saved_locations = List.delete_at(socket.assigns.saved_locations, index)
     {:noreply, assign(socket, :saved_locations, saved_locations)}
   end
+
+  defp apply_selection_by_address(socket, selection) do
+    result =
+      Enum.find(socket.assigns.last_results, fn current_result ->
+        current_result.formatted_address == selection
+      end)
+
+    case result do
+      nil -> clear_selected_result(socket)
+      selected_result -> apply_selected_result(socket, selected_result)
+    end
+  end
+
+  defp apply_selected_result(socket, result) do
+    socket
+    |> assign(:selected_address, result.formatted_address)
+    |> assign(:selected_lat, result.lat)
+    |> assign(:selected_lon, result.lon)
+    |> assign(:selected_result, result)
+  end
+
+  defp clear_selected_result(socket) do
+    socket
+    |> assign(:selected_address, nil)
+    |> assign(:selected_lat, nil)
+    |> assign(:selected_lon, nil)
+    |> assign(:selected_result, nil)
+  end
+
+  defp normalize_result(%Geocoding.Result{} = result), do: {:ok, result}
+
+  defp normalize_result(%{} = result) do
+    with formatted_address when is_binary(formatted_address) <-
+           Map.get(result, "formatted_address"),
+         lat when is_float(lat) <- Map.get(result, "lat"),
+         lon when is_float(lon) <- Map.get(result, "lon") do
+      {:ok,
+       %Geocoding.Result{
+         formatted_address: formatted_address,
+         lat: lat,
+         lon: lon,
+         city: Map.get(result, "city"),
+         state: Map.get(result, "state"),
+         country: Map.get(result, "country")
+       }}
+    else
+      _ -> :error
+    end
+  end
+
+  defp normalize_result(_result), do: :error
 
   @impl true
   def render(assigns) do
