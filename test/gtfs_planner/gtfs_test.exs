@@ -218,6 +218,24 @@ defmodule GtfsPlanner.GtfsTest do
       assert %{stop_id: ["can't be blank"]} = errors_on(changeset)
     end
 
+    test "create_stop/1 requires level_id when parent_station is set", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "PARENT_STATION", location_type: 1})
+
+      attrs =
+        valid_stop_attrs(%{
+          stop_id: "CHILD_NO_LEVEL",
+          parent_station: station.stop_id,
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
+
+      assert {:error, changeset} = Gtfs.create_stop(attrs)
+      assert %{level_id: ["can't be blank"]} = errors_on(changeset)
+    end
+
     test "list_stops/2 returns stops for the given organization and version", %{
       organization: org,
       gtfs_version: version
@@ -430,11 +448,14 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       # Create a child stop (has parent)
+      level = level_fixture(org.id, version.id, %{level_id: "L_CHILD", level_index: 0.0})
+
       _child =
         stop_fixture(org.id, version.id, %{
           stop_id: "CHILD1",
           stop_name: "Platform 1",
-          parent_station: station.stop_id
+          parent_station: station.stop_id,
+          level_id: level.level_id
         })
 
       stations = Gtfs.list_stations(org.id, version.id)
@@ -748,8 +769,21 @@ defmodule GtfsPlanner.GtfsTest do
       gtfs_version: version
     } do
       parent = stop_fixture(org.id, version.id, %{stop_id: "PARENT", location_type: 1})
-      child1 = stop_fixture(org.id, version.id, %{stop_id: "C1", parent_station: parent.stop_id})
-      child2 = stop_fixture(org.id, version.id, %{stop_id: "C2", parent_station: parent.stop_id})
+      level = level_fixture(org.id, version.id, %{level_id: "L_PATH", level_index: 0.0})
+
+      child1 =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "C1",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
+
+      child2 =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "C2",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
 
       pathway =
         pathway_fixture(org.id, version.id, child1.stop_id, child2.stop_id, %{
@@ -863,16 +897,21 @@ defmodule GtfsPlanner.GtfsTest do
       parent =
         stop_fixture(organization.id, gtfs_version.id, %{stop_id: "PARENT", location_type: 1})
 
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{level_id: "L_PATHWAY", level_index: 0.0})
+
       child1 =
         stop_fixture(organization.id, gtfs_version.id, %{
           stop_id: "C1",
-          parent_station: parent.stop_id
+          parent_station: parent.stop_id,
+          level_id: level.level_id
         })
 
       child2 =
         stop_fixture(organization.id, gtfs_version.id, %{
           stop_id: "C2",
-          parent_station: parent.stop_id
+          parent_station: parent.stop_id,
+          level_id: level.level_id
         })
 
       pathway =

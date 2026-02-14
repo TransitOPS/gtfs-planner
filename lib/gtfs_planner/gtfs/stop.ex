@@ -72,6 +72,13 @@ defmodule GtfsPlanner.Gtfs.Stop do
       :level_id
     ])
     |> validate_required([:stop_id, :organization_id, :gtfs_version_id])
+    |> then(fn changeset ->
+      if get_field(changeset, :parent_station) not in [nil, ""] do
+        validate_required(changeset, [:level_id])
+      else
+        changeset
+      end
+    end)
     |> validate_inclusion(:location_type, 0..4)
     |> validate_inclusion(:wheelchair_boarding, 0..2)
     |> unique_constraint([:organization_id, :gtfs_version_id, :stop_id])
