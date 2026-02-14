@@ -138,6 +138,13 @@ const DiagramCanvasHook = {
         if (mutation.type === "attributes" && mutation.attributeName === "viewBox") {
           const overlay = container.querySelector("#diagram-overlay");
           if (overlay && mutation.target === overlay) {
+            const expectedViewBox =
+              `${this.viewBox.x} ${this.viewBox.y} ${this.viewBox.w} ${this.viewBox.h}`;
+
+            if (overlay.getAttribute("viewBox") === expectedViewBox) {
+              continue;
+            }
+
             // LiveView reset the viewBox, re-apply our current state
             this.syncOverlayViewBox();
             this.scaleOverlayElements();
