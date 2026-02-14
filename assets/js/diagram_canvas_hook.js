@@ -4,6 +4,7 @@
  */
 const OVERLAY_BASE = {
   circleR: 0.75,
+  circleHitR: 2.5,
   circleStroke: 0.15,
   circleStrokeCrossLevel: 0.25,
   pathwayStroke: 0.5,
@@ -201,8 +202,16 @@ const DiagramCanvasHook = {
     const scale = this.scale || 1;
 
     overlay.querySelectorAll("#stops-svg circle").forEach((circle) => {
+      const isHitTarget = circle.getAttribute("data-stop-hit-target") === "true";
+
+      if (isHitTarget) {
+        circle.setAttribute("r", `${OVERLAY_BASE.circleHitR / scale}`);
+        circle.setAttribute("stroke-width", "0");
+        return;
+      }
+
       circle.setAttribute("r", `${OVERLAY_BASE.circleR / scale}`);
-      const isCrossLevel = circle.hasAttribute("data-cross-level");
+      const isCrossLevel = circle.getAttribute("data-cross-level") === "true";
       const baseStroke = isCrossLevel ? OVERLAY_BASE.circleStrokeCrossLevel : OVERLAY_BASE.circleStroke;
       circle.setAttribute("stroke-width", `${baseStroke / scale}`);
     });

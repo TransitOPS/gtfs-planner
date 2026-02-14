@@ -7,8 +7,9 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
       <div id="container">
         <svg id="diagram-overlay">
           <g id="stops-svg">
-            <circle id="stop-normal" stroke-width="0.15"></circle>
-            <circle id="stop-cross" data-cross-level="true" stroke-width="0.25"></circle>
+            <circle id="stop-hit" data-stop-hit-target="true" stroke-width="0"></circle>
+            <circle id="stop-normal" data-stop-marker="true" stroke-width="0.15"></circle>
+            <circle id="stop-cross" data-stop-marker="true" data-cross-level="true" stroke-width="0.25"></circle>
           </g>
           <g id="pathways-svg">
             <g>
@@ -37,6 +38,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
 
     const normalCircle = document.querySelector("#stop-normal");
     const crossCircle = document.querySelector("#stop-cross");
+    const hitCircle = document.querySelector("#stop-hit");
     const hitLine = document.querySelector("#path-hit");
     const visibleLine = document.querySelector("#path-visible");
     const pending = document.querySelector("#pending");
@@ -48,6 +50,8 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
       expect(normalCircle.getAttribute("r")).toBe(`${0.75 / scale}`);
       expect(normalCircle.getAttribute("stroke-width")).toBe(`${0.15 / scale}`);
       expect(crossCircle.getAttribute("stroke-width")).toBe(`${0.25 / scale}`);
+      expect(hitCircle.getAttribute("r")).toBe(`${2.5 / scale}`);
+      expect(hitCircle.getAttribute("stroke-width")).toBe("0");
       expect(hitLine.getAttribute("stroke-width")).toBe(`${2 / scale}`);
       expect(visibleLine.getAttribute("stroke-width")).toBe(`${0.5 / scale}`);
       expect(pending.getAttribute("stroke-width")).toBe(`${0.15 / scale}`);

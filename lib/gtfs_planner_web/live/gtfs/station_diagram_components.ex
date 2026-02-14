@@ -77,6 +77,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         type="button"
         class={[
           "btn join-item",
+          @mode == :view && "bg-blue-600 text-white hover:bg-blue-700",
+          @mode != :view && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300"
+        ]}
+        phx-click="switch_mode"
+        phx-value-mode="view"
+      >
+        View
+      </button>
+      <button
+        type="button"
+        class={[
+          "btn join-item",
           @mode == :add && "bg-blue-600 text-white hover:bg-blue-700",
           @mode != :add && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300",
           !@has_diagram && "opacity-50 cursor-not-allowed"
@@ -132,6 +144,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </form>
           <%= if @has_diagram do %>
             <%= cond do %>
+              <% @mode == :view -> %>
+                <span class="text-sm text-blue-700 font-medium">
+                  Click a stop to view or edit
+                </span>
               <% @mode == :add -> %>
                 <span class="text-sm text-blue-700 font-medium">
                   Click diagram to add a child stop
@@ -201,7 +217,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             data-canvas-key={@canvas_key}
             viewBox="0 0 100 100"
             preserveAspectRatio="xMidYMid meet"
-            class="w-full block cursor-crosshair"
+            class={[
+              "w-full block",
+              if(@mode == :view, do: "cursor-default", else: "cursor-crosshair")
+            ]}
           >
             <image
               href={@image_href}
@@ -332,25 +351,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <g id="stops-svg" phx-update="stream">
       <%= for {dom_id, stop} <- @streams.child_stops do %>
         <%= if stop.diagram_coordinate do %>
-          <circle
-            id={dom_id <> "-circle"}
-            cx={stop.diagram_coordinate["x"]}
-            cy={stop.diagram_coordinate["y"]}
-            r="0.75"
-            fill={if @active_point_id == stop.id, do: "#1e40af", else: "#06b6d4"}
-            stroke={
-              cond do
-                @active_point_id == stop.id -> "#1e40af"
-                MapSet.member?(@cross_level_stop_ids, stop.id) -> "#f59e0b"
-                true -> "#fff"
-              end
-            }
-            stroke-width={if MapSet.member?(@cross_level_stop_ids, stop.id), do: "0.25", else: "0.15"}
-            class="cursor-pointer pointer-events-auto"
-            phx-click="stop_clicked"
-            phx-value-id={stop.id}
-            data-cross-level={MapSet.member?(@cross_level_stop_ids, stop.id)}
-          />
+          <g id={dom_id} class="pointer-events-auto" phx-click="stop_clicked" phx-value-id={stop.id}>
+            <circle
+              cx={stop.diagram_coordinate["x"]}
+              cy={stop.diagram_coordinate["y"]}
+              r="2.5"
+              fill="transparent"
+              stroke="transparent"
+              stroke-width="0"
+              data-stop-hit-target="true"
+              class="cursor-pointer"
+            />
+            <circle
+              id={dom_id <> "-circle"}
+              cx={stop.diagram_coordinate["x"]}
+              cy={stop.diagram_coordinate["y"]}
+              r="0.75"
+              fill={if @active_point_id == stop.id, do: "#1e40af", else: "#06b6d4"}
+              stroke={
+                cond do
+                  @active_point_id == stop.id -> "#1e40af"
+                  MapSet.member?(@cross_level_stop_ids, stop.id) -> "#f59e0b"
+                  true -> "#fff"
+                end
+              }
+              stroke-width={
+                if MapSet.member?(@cross_level_stop_ids, stop.id), do: "0.25", else: "0.15"
+              }
+              class="pointer-events-none"
+              data-stop-marker="true"
+              data-cross-level={MapSet.member?(@cross_level_stop_ids, stop.id)}
+            />
+          </g>
         <% end %>
       <% end %>
     </g>
@@ -419,7 +451,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <.drawer
       id="child-stop-drawer"
-      open={@pending_xy != nil && @mode == :add}
+      open={@pending_xy != nil && (@mode == :add || (@mode == :view && @selected_stop_id != nil))}
       on_close="close_drawer"
       title={if @selected_stop_id, do: "Edit Child Stop", else: "Add Child Stop"}
       class="max-w-3xl"
