@@ -30,7 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        socket
        |> assign(:page_title, "Station Diagram")
        |> assign(:user_roles, user_roles)
-       |> assign(:mode, :add)
+       |> assign(:mode, :view)
        |> assign(:pending_xy, nil)
        |> assign(:selected_stop_id, nil)
        |> assign(:active_point_id, nil)
@@ -311,7 +311,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("canvas_click", %{"x" => x, "y" => y}, socket) do
+    x = to_float(x)
+    y = to_float(y)
+
     case socket.assigns.mode do
+      :view ->
+        child_stops = get_child_stops_with_coordinates(socket)
+        clicked_stop = find_stop_near_point(child_stops, x, y, 5.0)
+
+        case clicked_stop do
+          nil ->
+            {:noreply, socket}
+
+          stop ->
+            handle_event("edit_child_stop", %{"id" => stop.id}, socket)
+        end
+
       :add ->
         child_stops = get_child_stops_with_coordinates(socket)
         clicked_stop = find_stop_near_point(child_stops, x, y, 5.0)
@@ -1091,7 +1106,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp to_float(val) when is_float(val), do: val
   defp to_float(val) when is_integer(val), do: val / 1
-  defp to_float(val) when is_binary(val), do: String.to_float(val)
+
+  defp to_float(val) when is_binary(val) do
+    case Float.parse(val) do
+      {parsed, _rest} -> parsed
+      :error -> 0.0
+    end
+  end
+
   defp to_float(nil), do: 0.0
 
   defp build_diagram_storage_filename(level_id, client_name) do

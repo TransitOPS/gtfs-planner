@@ -109,6 +109,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
       render_hook(view, "canvas_click", %{"x" => "12", "y" => "24"})
 
       assert has_element?(
@@ -165,6 +167,93 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       refute has_element?(view, "#child-stop-form select[name='level_id']")
+    end
+
+    test "view mode background click is a no-op", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "30"})
+
+      refute has_element?(view, "#child-stop-form")
+    end
+
+    test "view mode stop dot click opens edit drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_VIEW_DOT",
+          stop_name: "Child View Dot",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child_stops-#{child_stop.id}")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-form")
+      assert render(view) =~ "Child View Dot"
+    end
+
+    test "view mode canvas click near stop opens edit drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_VIEW_CANVAS",
+          stop_name: "Child View Canvas",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 22.0, "y" => 33.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "canvas_click", %{"x" => "22", "y" => "33"})
+
+      assert has_element?(view, "#child-stop-form")
+      assert render(view) =~ child_stop.stop_id
     end
   end
 
@@ -283,7 +372,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Click first stop on level 1
       view
-      |> element("#child_stops-#{child_stop1.id}-circle")
+      |> element("#child_stops-#{child_stop1.id}")
       |> render_click()
 
       # Switch to level 2
@@ -293,7 +382,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Click second stop on level 2
       view
-      |> element("#child_stops-#{child_stop2.id}-circle")
+      |> element("#child_stops-#{child_stop2.id}")
       |> render_click()
 
       # Assert pathway was created
@@ -423,6 +512,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Assert the upload button shows "Replace diagram" when diagram exists
       assert html =~ "Replace diagram"
+    end
+
+    test "mode toggle has view first, highlights view by default, and keeps view enabled", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, ".join button:nth-child(1)[phx-value-mode='view']", "View")
+      assert has_element?(view, ".join button:nth-child(2)[phx-value-mode='add']", "Add Stop")
+      assert has_element?(view, ".join button:nth-child(3)[phx-value-mode='connect']", "Connect")
+      assert has_element?(view, "button[phx-value-mode='view']:not([disabled]).bg-blue-600")
+    end
+
+    test "view mode shows contextual text and default cursor with diagram", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "span", "Click a stop to view or edit")
+      assert has_element?(view, "svg.cursor-default")
+
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
+      |> render_click()
+
+      assert has_element?(view, "svg.cursor-crosshair")
     end
   end
 
