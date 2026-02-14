@@ -51,7 +51,11 @@ defmodule GtfsPlannerWeb.ComponentsLive do
   end
 
   @impl true
-  def handle_event("change", %{"address_search" => %{"address_autocomplete" => selection}} = params, socket)
+  def handle_event(
+        "change",
+        %{"address_search" => %{"address_autocomplete" => selection}} = params,
+        socket
+      )
       when is_binary(selection) and selection != "" do
     IO.inspect(params, label: "📝 CHANGE EVENT WITH SELECTION")
 
@@ -103,7 +107,11 @@ defmodule GtfsPlannerWeb.ComponentsLive do
   end
 
   @impl true
-  def handle_event("address-form", %{"address_search" => %{"address_autocomplete" => selection}} = params, socket) do
+  def handle_event(
+        "address-form",
+        %{"address_search" => %{"address_autocomplete" => selection}} = params,
+        socket
+      ) do
     IO.inspect(params, label: "📋 FORM_CHANGED EVENT")
     IO.inspect(selection, label: "🎯 SELECTION VALUE")
 
@@ -118,6 +126,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
 
         result ->
           IO.inspect(result, label: "✅ MATCHED RESULT")
+
           socket
           |> assign(:selected_address, result.formatted_address)
           |> assign(:selected_lat, result.lat)
@@ -189,7 +198,7 @@ defmodule GtfsPlannerWeb.ComponentsLive do
                 >
                   <:option :let={option}>
                     <div class="flex flex-col">
-                      <span class="font-medium"><%= option.label %></span>
+                      <span class="font-medium">{option.label}</span>
                     </div>
                   </:option>
                 </.live_component>
@@ -199,11 +208,11 @@ defmodule GtfsPlannerWeb.ComponentsLive do
                     <div class="grid grid-cols-2 gap-4 text-sm">
                       <div>
                         <span class="text-base-content/70">Lat</span>
-                        <span class="ml-2 font-mono text-white"><%= @selected_lat %></span>
+                        <span class="ml-2 font-mono text-white">{@selected_lat}</span>
                       </div>
                       <div>
                         <span class="text-base-content/70">Lon</span>
-                        <span class="ml-2 font-mono text-white"><%= @selected_lon %></span>
+                        <span class="ml-2 font-mono text-white">{@selected_lon}</span>
                       </div>
                     </div>
                   </div>
@@ -280,12 +289,12 @@ defmodule GtfsPlannerWeb.ComponentsLive do
                 <tbody>
                   <%= for {location, index} <- Enum.with_index(@saved_locations) do %>
                     <tr class="border-b border-base-300 last:border-b-0">
-                      <td class="py-3"><%= location.formatted_address %></td>
-                      <td class="py-3 font-mono text-sm"><%= location.lat %></td>
-                      <td class="py-3 font-mono text-sm"><%= location.lon %></td>
-                      <td class="py-3"><%= location.city || "—" %></td>
-                      <td class="py-3"><%= location.state || "—" %></td>
-                      <td class="py-3"><%= location.country || "—" %></td>
+                      <td class="py-3">{location.formatted_address}</td>
+                      <td class="py-3 font-mono text-sm">{location.lat}</td>
+                      <td class="py-3 font-mono text-sm">{location.lon}</td>
+                      <td class="py-3">{location.city || "—"}</td>
+                      <td class="py-3">{location.state || "—"}</td>
+                      <td class="py-3">{location.country || "—"}</td>
                       <td class="py-3">
                         <button
                           type="button"

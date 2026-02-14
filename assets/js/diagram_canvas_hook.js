@@ -5,7 +5,6 @@
 const DiagramCanvasHook = {
   mounted() {
     const svg = this.el;
-    const imageEl = svg.querySelector("image");
     this.baseW = 100;
     this.baseH = 100;
     this.viewBox = { x: 0, y: 0, w: 100, h: 100 };
@@ -18,25 +17,7 @@ const DiagramCanvasHook = {
     // Set up MutationObserver to detect when overlay viewBox gets reset
     this.setupOverlayObserver();
 
-    // Load image to get natural dimensions and set viewBox accordingly
-    if (imageEl) {
-      const img = new Image();
-      img.onload = () => {
-        const naturalW = img.naturalWidth;
-        const naturalH = img.naturalHeight;
-        // Normalize to width 100, height proportional
-        this.baseW = 100;
-        this.baseH = (naturalH / naturalW) * 100;
-        this.viewBox = { x: 0, y: 0, w: this.baseW, h: this.baseH };
-        svg.setAttribute("viewBox", `0 0 ${this.baseW} ${this.baseH}`);
-        // Update the image element dimensions to match
-        imageEl.setAttribute("width", this.baseW);
-        imageEl.setAttribute("height", this.baseH);
-        // Update the overlay SVG if it exists
-        this.syncOverlayViewBox();
-      };
-      img.src = imageEl.getAttribute("href");
-    }
+    this.syncImageDimensions(true);
 
     svg.addEventListener("wheel", (e) => {
       if (e.ctrlKey || e.metaKey) {
@@ -194,8 +175,45 @@ const DiagramCanvasHook = {
   },
 
   updated() {
-    // Re-apply viewBox to overlay after LiveView updates
+    this.syncImageDimensions(false);
     this.syncOverlayViewBox();
+  },
+
+  syncImageDimensions(forceReset) {
+    const svg = this.el;
+    const imageEl = svg.querySelector("image");
+
+    if (!imageEl) {
+      return;
+    }
+
+    const href = imageEl.getAttribute("href");
+
+    if (!href || (!forceReset && href === this.currentImageHref)) {
+      return;
+    }
+
+    this.currentImageHref = href;
+    const img = new Image();
+
+    img.onload = () => {
+      const naturalW = img.naturalWidth || 1;
+      const naturalH = img.naturalHeight || 1;
+
+      this.baseW = 100;
+      this.baseH = (naturalH / naturalW) * 100;
+
+      this.scale = 1;
+      this.viewBox = { x: 0, y: 0, w: this.baseW, h: this.baseH };
+      svg.setAttribute("viewBox", `0 0 ${this.baseW} ${this.baseH}`);
+
+      imageEl.setAttribute("width", this.baseW);
+      imageEl.setAttribute("height", this.baseH);
+
+      this.syncOverlayViewBox();
+    };
+
+    img.src = href;
   },
 
   destroyed() {
