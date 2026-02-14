@@ -95,6 +95,77 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert result =~ ~r/value=\"CHILD_STOP_1\"/
       assert result =~ ~r/value=\"Child Stop 1\"/
     end
+
+    test "new child stop drawer locks level to active level with hidden field", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "canvas_click", %{"x" => "12", "y" => "24"})
+
+      assert has_element?(
+               view,
+               "#child-stop-form input[type='hidden'][name='level_id'][value='#{level.level_id}']"
+             )
+
+      assert has_element?(view, "#child-stop-form", "Level 1 (0)")
+      refute has_element?(view, "#child-stop-form button[phx-click='toggle_level_edit']")
+    end
+
+    test "editing child stop shows change link and toggles level selector", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_TOGGLE_1",
+          stop_name: "Child Toggle 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 25.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-list-#{child_stop.id}")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-form button[phx-click='toggle_level_edit']")
+      refute has_element?(view, "#child-stop-form select[name='level_id']")
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_level_edit']")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-form select[name='level_id']")
+
+      view
+      |> element("#child-stop-form button[phx-click='close_drawer']")
+      |> render_click()
+
+      view
+      |> element("#child-stop-list-#{child_stop.id}")
+      |> render_click()
+
+      refute has_element?(view, "#child-stop-form select[name='level_id']")
+    end
   end
 
   describe "StationDiagramLive - cross-level pathway creation" do

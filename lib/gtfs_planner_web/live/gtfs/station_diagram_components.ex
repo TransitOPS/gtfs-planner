@@ -209,7 +209,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               y="0"
               width="100"
               height="100"
-              preserveAspectRatio="xMidYMid slice"
+              preserveAspectRatio="xMidYMid meet"
             />
           </svg>
           <.diagram_overlay
@@ -409,6 +409,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :child_stop_form, :any, required: true
   attr :mode, :atom, required: true
   attr :all_levels, :list, required: true
+  attr :editing_level, :boolean, default: false
+  attr :active_level, :any, default: nil
 
   def child_stop_drawer(assigns) do
     ~H"""
@@ -425,6 +427,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         selected_stop_id={@selected_stop_id}
         pending_xy={@pending_xy}
         all_levels={@all_levels}
+        editing_level={@editing_level}
+        active_level={@active_level}
       />
     </.drawer>
     """
@@ -434,6 +438,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :selected_stop_id, :any
   attr :pending_xy, :any, required: true
   attr :all_levels, :list, required: true
+  attr :editing_level, :boolean, default: false
+  attr :active_level, :any, default: nil
 
   defp child_stop_form(assigns) do
     # Location type options for select (GTFS spec allows 0-4 for child stops)
@@ -446,7 +452,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       {"4 - Boarding Area", "4"}
     ]
 
-    assigns = assign(assigns, :location_type_options, location_type_options)
+    current_level_id =
+      assigns.child_stop_form[:level_id].value ||
+        if(assigns.active_level, do: assigns.active_level.level_id, else: nil)
+
+    current_level_display = level_display_name(assigns.all_levels, current_level_id)
+
+    assigns =
+      assigns
+      |> assign(:location_type_options, location_type_options)
+      |> assign(:current_level_id, current_level_id || "")
+      |> assign(:current_level_display, current_level_display)
 
     ~H"""
     <.simple_form for={@child_stop_form} id="child-stop-form" phx-submit="save_child_stop">
@@ -478,18 +494,44 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         options={@location_type_options}
       />
 
-      <.input
-        field={@child_stop_form[:level_id]}
-        type="select"
-        label="Level"
-        options={
-          [{"— No Level —", ""}] ++
+      <%= if @selected_stop_id != nil && @editing_level do %>
+        <.input
+          field={@child_stop_form[:level_id]}
+          id="child-stop-level-id-select"
+          type="select"
+          label="Level"
+          options={
             Enum.map(@all_levels, fn level ->
               {"#{level.level_name || level.level_id} (#{trunc(level.level_index)})", level.level_id}
             end)
-        }
-        help="GTFS level for this child stop"
-      />
+          }
+          help="GTFS level for this child stop"
+        />
+      <% else %>
+        <.input
+          field={@child_stop_form[:level_id]}
+          id="child-stop-level-id-hidden"
+          type="hidden"
+          value={@current_level_id}
+        />
+        <div class="space-y-2">
+          <label class="text-sm font-medium leading-6 text-zinc-800">
+            {if @selected_stop_id == nil, do: "Current Level", else: "Level"}
+          </label>
+          <p class="w-full input input-lg bg-base-200 flex items-center">
+            {@current_level_display}
+          </p>
+
+          <button
+            :if={@selected_stop_id != nil}
+            type="button"
+            class="link link-primary text-xs"
+            phx-click="toggle_level_edit"
+          >
+            Change
+          </button>
+        </div>
+      <% end %>
 
       <:actions>
         <div class="flex-1"></div>
@@ -524,6 +566,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </div>
     </div>
     """
+  end
+
+  defp level_display_name(_levels, nil), do: "Unassigned"
+  defp level_display_name(_levels, ""), do: "Unassigned"
+
+  defp level_display_name(levels, level_id) do
+    case Enum.find(levels, fn level -> level.level_id == level_id end) do
+      nil -> level_id
+      level -> "#{level.level_name || level.level_id} (#{trunc(level.level_index)})"
+    end
   end
 
   # ============================================================================

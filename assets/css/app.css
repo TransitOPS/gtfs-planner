@@ -46,6 +46,7 @@
 html {
   min-height: 100vh;
   background-color: hsl(var(--b2));
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -53,6 +54,7 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 /* Custom override for LiveSelect input text color to ensure theme compatibility */

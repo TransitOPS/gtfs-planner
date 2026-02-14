@@ -43,6 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:pathway_error, nil)
        |> assign(:diagram_error, nil)
        |> assign(:editing_child_stop, nil)
+       |> assign(:editing_level, false)
        |> assign(:show_pathway_drawer, false)
        |> assign(:editing_pathway, nil)
        |> assign(:pathway_form, to_form(%{}))
@@ -204,6 +205,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           child_stop_form={@child_stop_form}
           mode={@mode}
           all_levels={@all_levels}
+          editing_level={@editing_level}
+          active_level={@active_level}
         />
 
         <.pathway_drawer
@@ -331,6 +334,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              socket
              |> assign(:pending_xy, %{x: x, y: y})
              |> assign(:selected_stop_id, nil)
+             |> assign(:editing_level, false)
              |> assign(:child_stop_form, form)}
 
           stop ->
@@ -350,6 +354,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              socket
              |> assign(:pending_xy, pending_xy)
              |> assign(:selected_stop_id, stop.id)
+             |> assign(:editing_level, false)
              |> assign(:child_stop_form, form)}
         end
 
@@ -396,7 +401,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:pending_xy, pending_xy)
      |> assign(:selected_stop_id, stop.id)
+     |> assign(:editing_level, false)
      |> assign(:child_stop_form, form)}
+  end
+
+  @impl true
+  def handle_event("toggle_level_edit", _params, socket) do
+    {:noreply, assign(socket, :editing_level, !socket.assigns.editing_level)}
   end
 
   @impl true
