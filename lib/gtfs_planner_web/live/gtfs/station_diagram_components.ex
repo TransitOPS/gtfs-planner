@@ -479,12 +479,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp child_stop_form(assigns) do
     # Location type options for select (GTFS spec allows 0-4 for child stops)
     # Note: Type 1 (Station) can be used for hierarchical stations in complex transit hubs
-    # Type 0 (Stop/Platform) removed - Generic Node (3) is the default for child stops
     location_type_options = [
+      {"0 - Stop/Platform", "0"},
       {"1 - Station", "1"},
       {"2 - Entrance/Exit", "2"},
       {"3 - Generic Node", "3"},
       {"4 - Boarding Area", "4"}
+    ]
+
+    wheelchair_boarding_options = [
+      {"0 - No info", "0"},
+      {"1 - Accessible", "1"},
+      {"2 - Not accessible", "2"}
     ]
 
     current_level_id =
@@ -492,15 +498,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         if(assigns.active_level, do: assigns.active_level.level_id, else: nil)
 
     current_level_display = level_display_name(assigns.all_levels, current_level_id)
+    location_type = parse_optional_int(assigns.child_stop_form[:location_type].value) || 3
 
     assigns =
       assigns
       |> assign(:location_type_options, location_type_options)
+      |> assign(:wheelchair_boarding_options, wheelchair_boarding_options)
       |> assign(:current_level_id, current_level_id || "")
       |> assign(:current_level_display, current_level_display)
+      |> assign(:show_platform_code, location_type in [0, 4])
 
     ~H"""
-    <.simple_form for={@child_stop_form} id="child-stop-form" phx-submit="save_child_stop">
+    <.simple_form for={@child_stop_form} id="child-stop-form" phx-submit="save_child_stop" phx-change="validate_child_stop">
       <.input
         field={@child_stop_form[:stop_id]}
         type="text"
@@ -527,6 +536,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         type="select"
         label="Location Type"
         options={@location_type_options}
+      />
+
+      <.input
+        field={@child_stop_form[:wheelchair_boarding]}
+        type="select"
+        label="Accessible"
+        options={@wheelchair_boarding_options}
+        help="Optional"
+      />
+
+      <.input
+        :if={@show_platform_code}
+        field={@child_stop_form[:platform_code]}
+        type="text"
+        label="Platform"
+        placeholder="e.g., 2A"
+        help="Optional"
       />
 
       <%= if @selected_stop_id != nil && @editing_level do %>
@@ -612,6 +638,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       level -> "#{level.level_name || level.level_id} (#{trunc(level.level_index)})"
     end
   end
+
+  defp parse_optional_int(nil), do: nil
+  defp parse_optional_int(""), do: nil
+
+  defp parse_optional_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, _} -> parsed
+      :error -> nil
+    end
+  end
+
+  defp parse_optional_int(value) when is_integer(value), do: value
+  defp parse_optional_int(_), do: nil
 
   # ============================================================================
   # Pathway Drawer
@@ -941,46 +980,104 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # ============================================================================
 
   attr :child_stops_list, :list, required: true
+  attr :unassigned_child_stops, :list, required: true
   attr :pathways_list, :list, required: true
   attr :pathway_error, :string
 
   def lists_section(assigns) do
     ~H"""
-    <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-      <.child_stops_list child_stops_list={@child_stops_list} />
-      <.pathways_list pathways_list={@pathways_list} pathway_error={@pathway_error} />
+    <div class="mt-4 space-y-8">
+      <.child_stops_table child_stops_list={@child_stops_list} />
+      <.unassigned_stops_table
+        :if={@unassigned_child_stops != []}
+        child_stops_list={@unassigned_child_stops}
+      />
+      <.pathways_table pathways_list={@pathways_list} pathway_error={@pathway_error} />
     </div>
     """
   end
 
   attr :child_stops_list, :list, required: true
 
-  defp child_stops_list(assigns) do
+  defp child_stops_table(assigns) do
     ~H"""
     <div>
-      <h3 class="font-medium mb-2">Child Stops on Level</h3>
-      <div
-        id="child-stops-list"
-        class="bg-base-100 border border-base-300 rounded-lg divide-y divide-base-300"
-      >
+      <h3 class="text-sm font-semibold mb-2">Child Stops on Level</h3>
+      <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden [&_thead_th]:bg-base-200">
         <%= if @child_stops_list == [] do %>
-          <div class="px-4 py-2 text-base-content/60">
-            No stops on this level
-          </div>
+          <p class="px-4 py-3 text-sm text-base-content/60">No child stops on this level.</p>
         <% else %>
-          <div
-            :for={stop <- @child_stops_list}
-            id={"child-stop-list-#{stop.id}"}
-            class="px-4 py-2 flex justify-between items-center cursor-pointer hover:bg-base-200"
-            phx-click="edit_child_stop"
-            phx-value-id={stop.id}
+          <.table
+            id="child-stops-table"
+            rows={@child_stops_list}
+            row_id={&"child-stop-row-#{&1.id}"}
           >
+            <:col :let={stop} label="Stop ID">
+              <span class="font-medium">{stop.stop_id}</span>
+            </:col>
+            <:col :let={stop} label="Name">{stop.stop_name || "—"}</:col>
+            <:col :let={stop} label="Type">
+              <span class="badge badge-ghost badge-sm">
+                {Stop.location_type_label(stop.location_type)}
+              </span>
+            </:col>
+            <:col :let={stop} label="Platform">{stop.platform_code || "—"}</:col>
+            <:col :let={stop} label="Accessible">
+              {Stop.wheelchair_boarding_label(stop.wheelchair_boarding) || "—"}
+            </:col>
+            <:action :let={stop}>
+              <button
+                type="button"
+                class="link link-primary text-sm"
+                phx-click="edit_child_stop"
+                phx-value-id={stop.id}
+              >
+                Edit
+              </button>
+            </:action>
+          </.table>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  attr :child_stops_list, :list, required: true
+
+  defp unassigned_stops_table(assigns) do
+    ~H"""
+    <div>
+      <h3 class="text-sm font-semibold mb-2 text-warning">Child Stops Not Assigned to a Level</h3>
+      <div class="bg-base-100 border border-warning/30 rounded-lg overflow-hidden [&_thead_th]:bg-base-200">
+        <.table
+          id="unassigned-stops-table"
+          rows={@child_stops_list}
+          row_id={&"unassigned-stop-row-#{&1.id}"}
+        >
+          <:col :let={stop} label="Stop ID">
             <span class="font-medium">{stop.stop_id}</span>
+          </:col>
+          <:col :let={stop} label="Name">{stop.stop_name || "—"}</:col>
+          <:col :let={stop} label="Type">
             <span class="badge badge-ghost badge-sm">
               {Stop.location_type_label(stop.location_type)}
             </span>
-          </div>
-        <% end %>
+          </:col>
+          <:col :let={stop} label="Platform">{stop.platform_code || "—"}</:col>
+          <:col :let={stop} label="Accessible">
+            {Stop.wheelchair_boarding_label(stop.wheelchair_boarding) || "—"}
+          </:col>
+          <:action :let={stop}>
+            <button
+              type="button"
+              class="link link-primary text-sm"
+              phx-click="edit_child_stop"
+              phx-value-id={stop.id}
+            >
+              Edit
+            </button>
+          </:action>
+        </.table>
       </div>
     </div>
     """
@@ -989,39 +1086,81 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :pathways_list, :list, required: true
   attr :pathway_error, :string
 
-  defp pathways_list(assigns) do
+  defp pathways_table(assigns) do
     ~H"""
     <div>
       <div class="flex items-center gap-2 mb-2">
-        <h3 class="font-medium">Pathways on Level</h3>
+        <h3 class="text-sm font-semibold">Pathways on Level</h3>
         <span :if={@pathway_error} class="text-error text-sm">{@pathway_error}</span>
       </div>
-      <div
-        id="pathways-list"
-        class="bg-base-100 border border-base-300 rounded-lg divide-y divide-base-300"
-      >
+      <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden [&_thead_th]:bg-base-200">
         <%= if @pathways_list == [] do %>
-          <div class="px-4 py-2 text-base-content/60">
-            No pathways on this level
-          </div>
+          <p class="px-4 py-3 text-sm text-base-content/60">No pathways on this level.</p>
         <% else %>
-          <div
-            :for={pathway <- @pathways_list}
-            id={"pathway-list-#{pathway.id}"}
-            class="px-4 py-2 flex justify-between items-center cursor-pointer hover:bg-base-200"
-            phx-click="edit_pathway"
-            phx-value-id={pathway.id}
+          <.table
+            id="pathways-table"
+            rows={@pathways_list}
+            row_id={&"pathway-row-#{&1.id}"}
           >
-            <span>
-              {pathway.from_stop_id} → {pathway.to_stop_id}
-            </span>
-            <span class="badge badge-outline badge-sm">
-              {Pathway.mode_label(pathway.pathway_mode)}
-            </span>
-          </div>
+            <:col :let={pathway} label="From">{pathway_stop_display(pathway.from_stop)}</:col>
+            <:col :let={pathway} label="To">{pathway_stop_display(pathway.to_stop)}</:col>
+            <:col :let={pathway} label="Mode">
+              <span class="badge badge-ghost badge-sm">
+                {Pathway.mode_label(pathway.pathway_mode)}
+              </span>
+            </:col>
+            <:col :let={pathway} label="Bidirectional">
+              {if pathway.is_bidirectional, do: "Yes", else: "No"}
+            </:col>
+            <:col :let={pathway} label="Signage">
+              <div class="space-y-1">
+                <%= if !present_text?(pathway.signposted_as) && !present_text?(pathway.reversed_signposted_as) do %>
+                  <p class="text-sm leading-tight">—</p>
+                <% end %>
+
+                <div :if={present_text?(pathway.signposted_as)} class="space-y-0.5">
+                  <p class="text-xs font-medium text-base-content/70">Forward</p>
+                  <p class="text-sm leading-tight">{pathway.signposted_as}</p>
+                </div>
+
+                <div :if={present_text?(pathway.reversed_signposted_as)} class="space-y-0.5">
+                  <p class="text-xs font-medium text-base-content/70">Reverse</p>
+                  <p class="text-sm leading-tight">{pathway.reversed_signposted_as}</p>
+                </div>
+              </div>
+            </:col>
+            <:col :let={pathway} label="Time (s)">
+              <span class="tabular-nums text-right block">{pathway.traversal_time || "—"}</span>
+            </:col>
+            <:col :let={pathway} label="Length (m)">
+              <span class="tabular-nums text-right block">
+                {format_decimal(pathway.length) || "—"}
+              </span>
+            </:col>
+            <:action :let={pathway}>
+              <button
+                type="button"
+                class="link link-primary text-sm"
+                phx-click="edit_pathway"
+                phx-value-id={pathway.id}
+              >
+                Edit
+              </button>
+            </:action>
+          </.table>
         <% end %>
       </div>
     </div>
     """
   end
+
+  defp pathway_stop_display(%Stop{} = stop), do: stop.stop_name || stop.stop_id
+  defp pathway_stop_display(_), do: "Unknown"
+
+  defp format_decimal(nil), do: nil
+  defp format_decimal(%Decimal{} = decimal), do: Decimal.to_string(decimal, :normal)
+  defp format_decimal(value), do: to_string(value)
+
+  defp present_text?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_text?(_), do: false
 end

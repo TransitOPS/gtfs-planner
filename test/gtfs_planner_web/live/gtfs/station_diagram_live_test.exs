@@ -84,7 +84,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # Click on child stop list item
       result =
         view
-        |> element("#child-stop-list-#{child_stop.id}")
+        |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
         |> render_click()
 
       # Assert drawer opened with populated form fields
@@ -146,7 +146,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       view
-      |> element("#child-stop-list-#{child_stop.id}")
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
       |> render_click()
 
       assert has_element?(view, "#child-stop-form button[phx-click='toggle_level_edit']")
@@ -163,7 +163,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       view
-      |> element("#child-stop-list-#{child_stop.id}")
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
       |> render_click()
 
       refute has_element?(view, "#child-stop-form select[name='level_id']")
@@ -797,13 +797,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}")
 
       view
       |> element("form[phx-change='switch_level']")
       |> render_change(%{"level_id" => "not-a-real-level"})
 
-      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}")
       assert render(view) =~ "Invalid level selection"
     end
 
@@ -820,11 +820,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}")
 
       render_hook(view, "switch_level", %{})
 
-      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}")
       assert render(view) =~ "Malformed level selection request"
     end
 
