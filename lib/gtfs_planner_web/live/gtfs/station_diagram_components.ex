@@ -349,6 +349,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             class="cursor-pointer pointer-events-auto"
             phx-click="stop_clicked"
             phx-value-id={stop.id}
+            data-cross-level={MapSet.member?(@cross_level_stop_ids, stop.id)}
           />
         <% end %>
       <% end %>
@@ -362,6 +363,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <polygon
       points={"#{@pending_xy.x},#{@pending_xy.y - 1} #{@pending_xy.x - 0.75},#{@pending_xy.y + 0.5} #{@pending_xy.x + 0.75},#{@pending_xy.y + 0.5}"}
+      data-cx={@pending_xy.x}
+      data-cy={@pending_xy.y}
       fill="#f97316"
       stroke="#fff"
       stroke-width="0.15"
