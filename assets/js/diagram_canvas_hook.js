@@ -272,7 +272,6 @@ const DiagramCanvasHook = {
       // LiveView patching can reset the SVG attribute to the static template viewBox.
       // Re-apply the current interactive viewBox on every update to avoid jumps.
       this.updateViewBox();
-      this.scaleOverlayElements();
       this.syncImageDimensions(false);
     }
   },
