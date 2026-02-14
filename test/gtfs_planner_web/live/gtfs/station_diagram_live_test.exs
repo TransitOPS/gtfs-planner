@@ -527,6 +527,127 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - level switching validation" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_SWITCH",
+          stop_name: "Station Switch",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L1_SWITCH",
+          level_name: "Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_SWITCH_1",
+          stop_name: "Child Switch 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 15.0}
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        child_stop: child_stop
+      }
+    end
+
+    test "invalid level_id keeps active level data and shows explicit error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      child_stop: child_stop
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+
+      view
+      |> element("form[phx-change='switch_level']")
+      |> render_change(%{"level_id" => "not-a-real-level"})
+
+      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+      assert render(view) =~ "Invalid level selection"
+    end
+
+    test "missing level_id payload keeps current level data and shows explicit error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      child_stop: child_stop
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+
+      render_hook(view, "switch_level", %{})
+
+      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+      assert render(view) =~ "Malformed level selection request"
+    end
+
+    test "station with no levels renders empty level state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_NO_LEVELS",
+          stop_name: "Station No Levels",
+          location_type: 1
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert render(view) =~ "No levels defined"
+    end
+  end
+
   defp upload_diagram(view, filename, content) do
     upload =
       file_input(view, "#diagram-upload-form", :diagram, [

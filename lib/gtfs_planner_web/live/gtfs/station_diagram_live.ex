@@ -264,15 +264,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
-  def handle_event("switch_level", params, socket) do
-    level_id = params["level_id"]
-    level = Enum.find(socket.assigns.levels, fn l -> to_string(l.id) == level_id end)
+  def handle_event("switch_level", %{"level_id" => level_id}, socket) do
+    level =
+      Enum.find(socket.assigns.levels, fn existing_level ->
+        to_string(existing_level.id) == level_id
+      end)
 
-    {:noreply,
-     socket
-     |> assign(:active_level, level)
-     |> assign(:pending_xy, nil)
-     |> load_level_data(level)}
+    case level do
+      nil ->
+        {:noreply, assign(socket, :diagram_error, "Invalid level selection")}
+
+      selected_level ->
+        {:noreply,
+         socket
+         |> assign(:active_level, selected_level)
+         |> assign(:pending_xy, nil)
+         |> assign(:diagram_error, nil)
+         |> load_level_data(selected_level)}
+    end
+  end
+
+  def handle_event("switch_level", _params, socket) do
+    {:noreply, assign(socket, :diagram_error, "Malformed level selection request")}
   end
 
   @impl true
