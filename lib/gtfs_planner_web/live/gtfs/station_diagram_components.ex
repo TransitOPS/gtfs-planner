@@ -494,13 +494,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         options={@location_type_options}
       />
 
-      <.input
-        field={@child_stop_form[:level_id]}
-        id="child-stop-level-id-hidden"
-        type="hidden"
-        value={@current_level_id}
-      />
-
       <%= if @selected_stop_id != nil && @editing_level do %>
         <.input
           field={@child_stop_form[:level_id]}
@@ -515,6 +508,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           help="GTFS level for this child stop"
         />
       <% else %>
+        <.input
+          field={@child_stop_form[:level_id]}
+          id="child-stop-level-id-hidden"
+          type="hidden"
+          value={@current_level_id}
+        />
         <div class="space-y-2">
           <label class="text-sm font-medium leading-6 text-zinc-800">
             {if @selected_stop_id == nil, do: "Current Level", else: "Level"}
