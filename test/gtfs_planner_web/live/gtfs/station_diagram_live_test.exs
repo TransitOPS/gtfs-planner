@@ -626,6 +626,56 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert render(view) =~ "Malformed level selection request"
     end
 
+    test "switching levels updates data-canvas-key on the SVG element", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      # Give level A a diagram
+      stop_level_a =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level_a, "level_a.png")
+
+      # Create a second level with its own diagram
+      level_b =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L2_SWITCH",
+          level_name: "Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, stop_level_b} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_b.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level_b, "level_b.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # Assert initial canvas key contains level A's id
+      assert has_element?(view, "svg[data-canvas-key*=\"#{level.id}\"]")
+
+      # Switch to level B
+      view
+      |> element("form[phx-change='switch_level']")
+      |> render_change(%{"level_id" => level_b.id})
+
+      # Assert canvas key now contains level B's id
+      assert has_element?(view, "svg[data-canvas-key*=\"#{level_b.id}\"]")
+      refute has_element?(view, "svg[data-canvas-key*=\"#{level.id}\"]")
+    end
+
     test "station with no levels renders empty level state", %{
       conn: conn,
       user: user,
