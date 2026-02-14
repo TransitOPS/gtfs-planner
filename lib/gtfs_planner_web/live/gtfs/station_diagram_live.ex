@@ -295,7 +295,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("canvas_click", %{"x" => x, "y" => y}, socket) do
-
     case socket.assigns.mode do
       :add ->
         child_stops = get_child_stops_with_coordinates(socket)
@@ -683,6 +682,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         consume_uploaded_entries(socket, :diagram, fn %{path: path}, entry ->
           uploads_base = Application.get_env(:gtfs_planner, :uploads_path)
 
+          storage_filename =
+            build_diagram_storage_filename(stop_level.level_id, entry.client_name)
+
           dest_dir =
             Path.join([
               uploads_base,
@@ -693,10 +695,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
           File.mkdir_p!(dest_dir)
 
-          dest_path = Path.join(dest_dir, entry.client_name)
+          dest_path = Path.join(dest_dir, storage_filename)
           File.cp!(path, dest_path)
 
-          {:ok, entry.client_name}
+          {:ok, storage_filename}
         end)
 
       case uploaded_files do
@@ -1005,15 +1007,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp handle_connect_click(socket, x, y) do
     child_stops = get_child_stops_with_coordinates(socket)
 
-    Enum.each(child_stops, fn stop ->
-      coord = stop.diagram_coordinate
-      coord_x = to_float(coord["x"])
-      coord_y = to_float(coord["y"])
-      distance = :math.sqrt((coord_x - x) * (coord_x - x) + (coord_y - y) * (coord_y - y))
-
-
-    end)
-
     clicked_stop = find_stop_near_point(child_stops, x, y, 5.0)
 
     case {socket.assigns.active_point_id, clicked_stop} do
@@ -1077,6 +1070,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp to_float(val) when is_binary(val), do: String.to_float(val)
   defp to_float(nil), do: 0.0
 
+  defp build_diagram_storage_filename(level_id, client_name) do
+    extension =
+      client_name
+      |> Path.extname()
+      |> String.downcase()
+      |> String.replace(~r/[^.a-z0-9]/, "")
+
+    safe_extension = if extension == "", do: ".bin", else: extension
+    safe_level_id = level_id |> to_string() |> String.replace(~r/[^A-Za-z0-9_-]/, "_")
+    token = System.unique_integer([:positive, :monotonic])
+
+    "lvl_#{safe_level_id}_#{token}#{safe_extension}"
+  end
+
   defp create_pathway_between_stops(socket, from_stop_id, to_stop_id) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
@@ -1116,8 +1123,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:cross_level_stop_ids, cross_level_stop_ids)
          |> assign(:pathway_error, nil)}
 
-      {:error, changeset} ->
-
+      {:error, _changeset} ->
         {:noreply,
          socket
          |> assign(:active_point_id, nil)

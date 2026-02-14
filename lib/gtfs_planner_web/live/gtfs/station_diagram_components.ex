@@ -181,20 +181,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :organization_id, :string, required: true
 
   def diagram_canvas(assigns) do
+    canvas_key = diagram_canvas_key(assigns.active_level, assigns.active_stop_level)
+
+    image_href =
+      diagram_image_href(assigns.organization_id, assigns.station, assigns.active_stop_level)
+
+    assigns =
+      assigns
+      |> assign(:canvas_key, canvas_key)
+      |> assign(:image_href, image_href)
+
     ~H"""
     <div class="relative bg-base-200 border border-base-300 rounded-lg overflow-hidden">
       <%= cond do %>
         <% @active_stop_level && @active_stop_level.diagram_filename -> %>
           <svg
-            id="diagram-canvas"
+            id={"diagram-canvas-#{@canvas_key}"}
             phx-hook="DiagramCanvas"
-            phx-update="ignore"
+            data-canvas-key={@canvas_key}
             viewBox="0 0 100 100"
             preserveAspectRatio="xMidYMid meet"
             class="w-full block cursor-crosshair"
           >
             <image
-              href={"/uploads/diagrams/#{@organization_id}/#{@station.stop_id}/#{@active_stop_level.diagram_filename}"}
+              href={@image_href}
               x="0"
               y="0"
               width="100"
@@ -217,6 +227,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <% end %>
     </div>
     """
+  end
+
+  defp diagram_canvas_key(active_level, active_stop_level) do
+    level_part = if active_level, do: to_string(active_level.id), else: "no-level"
+
+    file_part =
+      if active_stop_level, do: active_stop_level.diagram_filename || "no-file", else: "no-file"
+
+    safe_level = String.replace(level_part, ~r/[^A-Za-z0-9_-]/, "_")
+    safe_file = String.replace(file_part, ~r/[^A-Za-z0-9_.-]/, "_")
+    "#{safe_level}-#{safe_file}"
+  end
+
+  defp diagram_image_href(organization_id, station, active_stop_level) do
+    case active_stop_level.diagram_filename do
+      filename when is_binary(filename) ->
+        token = URI.encode_www_form(filename)
+        "/uploads/diagrams/#{organization_id}/#{station.stop_id}/#{filename}?v=#{token}"
+
+      _ ->
+        nil
+    end
   end
 
   attr :streams, :any, required: true

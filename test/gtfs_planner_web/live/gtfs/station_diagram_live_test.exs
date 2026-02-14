@@ -354,4 +354,193 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "Replace diagram"
     end
   end
+
+  describe "StationDiagramLive - diagram replacement and level isolation" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_1",
+          stop_name: "Test Station",
+          location_type: 1
+        })
+
+      level1 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L1",
+          level_name: "Level 1",
+          level_index: 0.0
+        })
+
+      level2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L2",
+          level_name: "Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level1} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level1.id
+        })
+
+      {:ok, _stop_level2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level2.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level1: level1,
+        level2: level2
+      }
+    end
+
+    test "replacing a diagram updates rendered image URL in the same LiveView session", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level1: level1
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      upload_diagram(view, "floorplan.png", "first image payload")
+
+      first_stop_level =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level1.id)
+
+      first_filename = first_stop_level.diagram_filename
+      first_href_fragment = "#{first_filename}?v=#{first_filename}"
+
+      assert has_element?(view, "image[href*='#{first_href_fragment}']")
+
+      upload_diagram(view, "floorplan.png", "second image payload")
+
+      second_stop_level =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level1.id)
+
+      second_filename = second_stop_level.diagram_filename
+      second_href_fragment = "#{second_filename}?v=#{second_filename}"
+
+      assert second_filename != first_filename
+      assert has_element?(view, "image[href*='#{second_href_fragment}']")
+      refute has_element?(view, "image[href*='#{first_href_fragment}']")
+    end
+
+    test "same client filename uploads persist distinct diagram filenames per level", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level1: level1,
+      level2: level2
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      upload_diagram(view, "floorplan.png", "level 1 payload")
+
+      view
+      |> element("form[phx-change='switch_level']")
+      |> render_change(%{"level_id" => level2.id})
+
+      upload_diagram(view, "floorplan.png", "level 2 payload")
+
+      level1_stop_level =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level1.id)
+
+      level2_stop_level =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level2.id)
+
+      assert level1_stop_level.diagram_filename != level2_stop_level.diagram_filename
+    end
+
+    test "replacing level A diagram does not change level B rendered or persisted filename", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level1: level1,
+      level2: level2
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      upload_diagram(view, "floorplan.png", "level a initial payload")
+      level1_before = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level1.id)
+
+      view
+      |> element("form[phx-change='switch_level']")
+      |> render_change(%{"level_id" => level2.id})
+
+      upload_diagram(view, "floorplan.png", "level b payload")
+      level2_before = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level2.id)
+
+      view
+      |> element("form[phx-change='switch_level']")
+      |> render_change(%{"level_id" => level1.id})
+
+      upload_diagram(view, "floorplan.png", "level a replacement payload")
+
+      level1_after = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level1.id)
+      level2_after = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level2.id)
+
+      assert level1_after.diagram_filename != level1_before.diagram_filename
+      assert level2_after.diagram_filename == level2_before.diagram_filename
+
+      view
+      |> element("form[phx-change='switch_level']")
+      |> render_change(%{"level_id" => level2.id})
+
+      level2_href_fragment = "#{level2_after.diagram_filename}?v=#{level2_after.diagram_filename}"
+      assert has_element?(view, "image[href*='#{level2_href_fragment}']")
+    end
+  end
+
+  defp upload_diagram(view, filename, content) do
+    upload =
+      file_input(view, "#diagram-upload-form", :diagram, [
+        %{
+          name: filename,
+          content: content,
+          type: "image/png"
+        }
+      ])
+
+    render_upload(upload, filename)
+
+    view
+    |> form("#diagram-upload-form")
+    |> render_submit()
+  end
 end

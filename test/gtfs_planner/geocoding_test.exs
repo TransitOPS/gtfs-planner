@@ -7,12 +7,18 @@ defmodule GtfsPlanner.GeocodingTest do
 
   describe "autocomplete/2" do
     test "returns error when text is less than 3 characters" do
-      stub(GtfsPlanner.GeocodingMock, :autocomplete, fn "ab", _opts -> {:error, :text_too_short} end)
+      stub(GtfsPlanner.GeocodingMock, :autocomplete, fn "ab", _opts ->
+        {:error, :text_too_short}
+      end)
+
       assert {:error, :text_too_short} = Geocoding.autocomplete("ab")
     end
 
     test "returns error when API key is missing" do
-      stub(GtfsPlanner.GeocodingMock, :autocomplete, fn "test", _opts -> {:error, :api_key_missing} end)
+      stub(GtfsPlanner.GeocodingMock, :autocomplete, fn "test", _opts ->
+        {:error, :api_key_missing}
+      end)
+
       assert {:error, :api_key_missing} = Geocoding.autocomplete("test")
     end
 
@@ -46,7 +52,10 @@ defmodule GtfsPlanner.GeocodingTest do
     end
 
     test "handles network errors gracefully" do
-      stub(GtfsPlanner.GeocodingMock, :autocomplete, fn "test query", _opts -> {:error, :network_error} end)
+      stub(GtfsPlanner.GeocodingMock, :autocomplete, fn "test query", _opts ->
+        {:error, :network_error}
+      end)
+
       assert {:error, :network_error} == Geocoding.autocomplete("test query")
     end
   end
