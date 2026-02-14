@@ -13,6 +13,7 @@ const DiagramCanvasHook = {
     this.maxScale = 5;
     this.isPanning = false;
     this.panStart = { x: 0, y: 0 };
+    this._canvasKey = svg.getAttribute("data-canvas-key");
 
     // Set up MutationObserver to detect when overlay viewBox gets reset
     this.setupOverlayObserver();
@@ -175,8 +176,21 @@ const DiagramCanvasHook = {
   },
 
   updated() {
-    this.syncImageDimensions(false);
-    this.syncOverlayViewBox();
+    const newKey = this.el.getAttribute("data-canvas-key");
+
+    if (newKey !== this._canvasKey) {
+      this._canvasKey = newKey;
+      this.baseW = 100;
+      this.baseH = 100;
+      this.viewBox = { x: 0, y: 0, w: 100, h: 100 };
+      this.scale = 1;
+      this.currentImageHref = null;
+      this.updateViewBox();
+      this.syncImageDimensions(true);
+    } else {
+      this.syncImageDimensions(false);
+      this.syncOverlayViewBox();
+    }
   },
 
   syncImageDimensions(forceReset) {
