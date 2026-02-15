@@ -1039,6 +1039,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           type="button"
           phx-click={JS.toggle(to: "#diagram-legend-panel")}
           class="btn btn-ghost btn-xs"
+          aria-label="Close legend"
         >
           <.icon name="hero-x-mark" class="w-4 h-4" />
         </button>
