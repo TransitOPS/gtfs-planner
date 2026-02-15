@@ -4,12 +4,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   Requires the pathways_studio_editor role (editor only, not viewer).
   """
   use GtfsPlannerWeb, :live_view
-
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Versions
-
-  on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
-  on_mount GtfsPlannerWeb.AssignOrganization
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_editor}
 
   # List of recognized GTFS filenames
@@ -56,7 +51,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
        |> assign(:page_title, "Import GTFS")
        |> assign(:pending_version_resolution, true)}
     else
-      user_roles = get_user_roles(socket)
+      user_roles = socket.assigns[:user_roles] || []
 
       {:ok,
        socket
@@ -620,16 +615,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       </Layouts.app>
     <% end %>
     """
-  end
-
-  defp get_user_roles(socket) do
-    user = socket.assigns[:current_user]
-    organization = socket.assigns[:current_organization]
-
-    case GtfsPlanner.Accounts.get_user_org_membership(user.id, organization.id) do
-      %UserOrgMembership{roles: roles} when is_list(roles) -> roles
-      _ -> []
-    end
   end
 
   defp valid_version_for_org?(version_id, organization_id) do

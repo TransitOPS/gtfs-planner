@@ -65,6 +65,34 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       assert {:error, {:redirect, %{to: "/", flash: %{"error" => "GTFS version not found"}}}} =
                live(conn, "/gtfs/#{other_version.id}/stops")
     end
+
+    test "paginates stations", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      Enum.each(1..51, fn idx ->
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "S#{String.pad_leading(Integer.to_string(idx), 3, "0")}",
+          stop_name: "Station #{String.pad_leading(Integer.to_string(idx), 3, "0")}",
+          parent_station: nil
+        })
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      html =
+        view
+        |> element("button[phx-click='paginate'][phx-value-page='2']")
+        |> render_click()
+
+      assert html =~ "Station 051"
+      refute html =~ "Station 001"
+      assert_patch(view, "/gtfs/#{version.id}/stops?page=2")
+    end
   end
 
   describe "StopsLive version redirect flow" do

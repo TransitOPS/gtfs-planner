@@ -684,6 +684,50 @@ defmodule GtfsPlanner.GtfsTest do
       assert Enum.map(result, & &1.level.level_index) == [0.0, 1.0, 2.0]
       assert Enum.map(result, & &1.level.id) == [level0.id, level1.id, level2.id]
     end
+
+    test "returns mixed levels from child stops and stop_levels", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION_MIXED", location_type: 1})
+
+      child_only_level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_CHILD_ONLY",
+          level_index: 0.0
+        })
+
+      stop_level_only_level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_STOP_LEVEL_ONLY",
+          level_index: 1.0
+        })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "CHILD_MIXED_1",
+        parent_station: station.stop_id,
+        level_id: child_only_level.level_id
+      })
+
+      Gtfs.create_stop_level(%{
+        stop_id: station.id,
+        level_id: stop_level_only_level.id,
+        organization_id: org.id,
+        gtfs_version_id: version.id
+      })
+
+      result = Gtfs.list_levels_for_station(org.id, version.id, station.id)
+
+      assert Enum.map(result, & &1.level.id) == [child_only_level.id, stop_level_only_level.id]
+
+      assert Enum.any?(result, fn %{level: level, stop_count: count, diagram_filename: filename} ->
+               level.id == child_only_level.id and count == 1 and is_nil(filename)
+             end)
+
+      assert Enum.any?(result, fn %{level: level, stop_count: count, diagram_filename: filename} ->
+               level.id == stop_level_only_level.id and count == 0 and is_nil(filename)
+             end)
+    end
   end
 
   describe "get_routes_for_stops/3" do
