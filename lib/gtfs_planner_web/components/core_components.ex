@@ -770,6 +770,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   def station_sub_nav(assigns) do
     ~H"""
     <nav
+      id="station-sub-nav"
       class="w-full px-4 sm:px-6 lg:px-8"
       aria-label="Station navigation"
     >

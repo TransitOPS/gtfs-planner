@@ -65,3 +65,110 @@ body {
 [data-theme="dark"] .live-select-input {
   color: oklch(100% 0 0) !important; /* Force pure white for dark mode */
 }
+
+#diagram-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#diagram-page[data-immersive="true"] {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+#diagram-page #app-header {
+  transition: transform 300ms ease-out, max-height 300ms ease-out, opacity 200ms ease-out;
+  max-height: 200px;
+  overflow: hidden;
+}
+
+#diagram-page[data-immersive="true"] #app-header {
+  transform: translateY(-100%);
+  min-height: 0;
+  height: 0;
+  max-height: 0;
+  opacity: 0;
+  border-bottom-width: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+#diagram-page #station-sub-nav {
+  transition: transform 300ms ease-out, max-height 300ms ease-out, opacity 200ms ease-out;
+  max-height: 500px;
+  overflow: hidden;
+}
+
+#diagram-page[data-immersive="true"] #station-sub-nav {
+  transform: translateY(-100%);
+  max-height: 0;
+  opacity: 0;
+}
+
+#diagram-page #sub-header-wrapper {
+  transition: flex-grow 300ms ease-out;
+  flex-grow: 0;
+}
+
+#diagram-page[data-immersive="true"] #sub-header-wrapper {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: none;
+}
+
+#diagram-page #diagram-canvas-wrapper {
+  transition: flex-grow 300ms ease-out, padding 300ms ease-out;
+  flex-grow: 0;
+}
+
+#diagram-page[data-immersive="true"] #diagram-canvas-wrapper {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  min-height: 0;
+}
+
+#diagram-page[data-immersive="true"] #diagram-canvas-wrapper > .relative {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-radius: 0;
+  border: none;
+  min-height: 0;
+}
+
+#diagram-page[data-immersive="true"] #diagram-canvas-wrapper svg[phx-hook="DiagramCanvas"] {
+  flex: 1;
+  min-height: 0;
+}
+
+#diagram-page #main-content {
+  transition: max-height 300ms ease-out, padding 300ms ease-out;
+  max-height: 5000px;
+  overflow: hidden;
+}
+
+#diagram-page[data-immersive="true"] #main-content {
+  max-height: 0;
+  padding: 0;
+  margin: 0;
+}
+
+body:has(#diagram-page[data-immersive="true"]) {
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #diagram-page #app-header,
+  #diagram-page #station-sub-nav,
+  #diagram-page #sub-header-wrapper,
+  #diagram-page #diagram-canvas-wrapper,
+  #diagram-page #main-content {
+    transition-duration: 0ms;
+  }
+}

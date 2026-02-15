@@ -158,82 +158,84 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         </div>
       </div>
     <% else %>
-      <Layouts.app
-        flash={@flash}
-        current_user={@current_user}
-        current_organization={@current_organization}
-        user_roles={@user_roles}
-        current_path={@current_path}
-        current_gtfs_version={assigns[:current_gtfs_version]}
-        available_versions={assigns[:available_versions] || []}
-      >
-        <:sub_header>
-          <.station_sub_nav
-            station={@station}
-            gtfs_version_id={@current_gtfs_version.id}
-            active_tab={:diagram}
-            levels={@levels}
-            active_level={@active_level}
-            mode={@mode}
-            uploads={@uploads}
-            has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
-            diagram_error={@diagram_error}
-          />
-          <.diagram_action_strip
-            mode={@mode}
-            selected_from_stop={@selected_from_stop}
-            has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
-            levels={@levels}
-            active_level={@active_level}
-          />
-          <div class="w-full px-4 sm:px-6 lg:px-8 py-4">
-            <.diagram_canvas
+      <div id="diagram-page" data-immersive={if @mode in [:add, :connect], do: "true"}>
+        <Layouts.app
+          flash={@flash}
+          current_user={@current_user}
+          current_organization={@current_organization}
+          user_roles={@user_roles}
+          current_path={@current_path}
+          current_gtfs_version={assigns[:current_gtfs_version]}
+          available_versions={assigns[:available_versions] || []}
+        >
+          <:sub_header>
+            <.station_sub_nav
               station={@station}
+              gtfs_version_id={@current_gtfs_version.id}
+              active_tab={:diagram}
+              levels={@levels}
               active_level={@active_level}
-              active_stop_level={@active_stop_level}
-              streams={@streams}
-              active_point_id={@active_point_id}
-              pending_xy={@pending_xy}
-              selected_stop_id={@selected_stop_id}
               mode={@mode}
               uploads={@uploads}
-              cross_level_stop_ids={@cross_level_stop_ids}
+              has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
               diagram_error={@diagram_error}
-              organization_id={@current_organization.id}
             />
-          </div>
-        </:sub_header>
+            <.diagram_action_strip
+              mode={@mode}
+              selected_from_stop={@selected_from_stop}
+              has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
+              levels={@levels}
+              active_level={@active_level}
+            />
+            <div id="diagram-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
+              <.diagram_canvas
+                station={@station}
+                active_level={@active_level}
+                active_stop_level={@active_stop_level}
+                streams={@streams}
+                active_point_id={@active_point_id}
+                pending_xy={@pending_xy}
+                selected_stop_id={@selected_stop_id}
+                mode={@mode}
+                uploads={@uploads}
+                cross_level_stop_ids={@cross_level_stop_ids}
+                diagram_error={@diagram_error}
+                organization_id={@current_organization.id}
+              />
+            </div>
+          </:sub_header>
 
-        <.child_stop_drawer
-          pending_xy={@pending_xy}
-          selected_stop_id={@selected_stop_id}
-          child_stop_form={@child_stop_form}
-          mode={@mode}
-          all_levels={@all_levels}
-          editing_level={@editing_level}
-          active_level={@active_level}
-        />
+          <.child_stop_drawer
+            pending_xy={@pending_xy}
+            selected_stop_id={@selected_stop_id}
+            child_stop_form={@child_stop_form}
+            mode={@mode}
+            all_levels={@all_levels}
+            editing_level={@editing_level}
+            active_level={@active_level}
+          />
 
-        <.pathway_drawer
-          open={@show_pathway_drawer}
-          pathway_form={@pathway_form}
-          editing_pathway={@editing_pathway}
-        />
+          <.pathway_drawer
+            open={@show_pathway_drawer}
+            pathway_form={@pathway_form}
+            editing_pathway={@editing_pathway}
+          />
 
-        <.level_sidebar
-          show_level_modal={@show_level_modal}
-          level_form={@level_form}
-          available_levels={@available_levels}
-          level_mode={@level_mode}
-        />
+          <.level_sidebar
+            show_level_modal={@show_level_modal}
+            level_form={@level_form}
+            available_levels={@available_levels}
+            level_mode={@level_mode}
+          />
 
-        <.lists_section
-          child_stops_list={@child_stops_list}
-          unassigned_child_stops={@unassigned_child_stops}
-          pathways_list={@pathways_list}
-          pathway_error={@pathway_error}
-        />
-      </Layouts.app>
+          <.lists_section
+            child_stops_list={@child_stops_list}
+            unassigned_child_stops={@unassigned_child_stops}
+            pathways_list={@pathways_list}
+            pathway_error={@pathway_error}
+          />
+        </Layouts.app>
+      </div>
     <% end %>
     """
   end
