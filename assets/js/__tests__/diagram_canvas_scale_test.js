@@ -1,3 +1,4 @@
+/* @vitest-environment jsdom */
 import { beforeEach, describe, expect, it } from "vitest";
 import DiagramCanvasHook from "../diagram_canvas_hook";
 
@@ -6,16 +7,72 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     document.body.innerHTML = `
       <div id="container">
         <svg id="diagram-overlay">
+          <defs>
+            <marker id="pathway-arrow" markerWidth="1.5" markerHeight="1.5"></marker>
+          </defs>
           <g id="stops-svg">
-            <circle id="stop-hit" data-stop-hit-target="true" stroke-width="0"></circle>
-            <circle id="stop-normal" data-stop-marker="true" stroke-width="0.15"></circle>
-            <circle id="stop-cross" data-stop-marker="true" data-cross-level="true" stroke-width="0.25"></circle>
+            <rect
+              id="stop-hit"
+              data-stop-hit-target="true"
+              data-center-x="10"
+              data-center-y="20"
+            ></rect>
+            <circle
+              id="stop-marker"
+              data-stop-marker="true"
+              data-location-type="3"
+              data-center-x="10"
+              data-center-y="20"
+            ></circle>
+            <text
+              id="stop-label"
+              data-stop-label="true"
+              data-center-x="10"
+              data-center-y="20"
+              data-label-offset-x="1"
+            ></text>
+            <text
+              id="stop-badge"
+              data-stop-badge="true"
+              data-center-x="10"
+              data-center-y="20"
+            ></text>
           </g>
           <g id="pathways-svg">
-            <g>
-              <line id="path-hit" stroke-width="2"></line>
-              <line id="path-visible" stroke-width="0.5"></line>
-            </g>
+            <line id="path-hit" data-pathway-hit="true" data-base-stroke="2"></line>
+            <line id="path-line" data-pathway-line="true" data-base-stroke="0.5"></line>
+            <line
+              id="path-dashed"
+              data-pathway-line="true"
+              data-base-stroke="0.5"
+              data-base-dash="2,1"
+            ></line>
+            <rect
+              id="elevator-box"
+              data-pathway-elevator-box="true"
+              data-center-x="30"
+              data-center-y="40"
+              data-base-width="2"
+              data-base-height="2"
+              data-base-stroke="0.4"
+            ></rect>
+            <text
+              id="elevator-text"
+              data-pathway-elevator-text="true"
+              data-center-x="30"
+              data-center-y="40"
+              data-base-font-size="1.2"
+            ></text>
+            <text
+              id="path-label"
+              data-pathway-label="true"
+              data-midpoint-x="50"
+              data-midpoint-y="60"
+              data-offset-x="1.4"
+              data-offset-y="-1.4"
+              data-base-font-size="0.9"
+              data-base-stroke="0.2"
+            ></text>
           </g>
           <polygon
             id="pending"
@@ -30,38 +87,43 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     `;
   });
 
-  it("keeps overlay geometry visually constant across zoom levels", () => {
+  it("scales stop and pathway overlay elements from base data attributes", () => {
     const hook = {
       ...DiagramCanvasHook,
       el: document.querySelector("#canvas")
     };
 
-    const normalCircle = document.querySelector("#stop-normal");
-    const crossCircle = document.querySelector("#stop-cross");
-    const hitCircle = document.querySelector("#stop-hit");
-    const hitLine = document.querySelector("#path-hit");
-    const visibleLine = document.querySelector("#path-visible");
-    const pending = document.querySelector("#pending");
+    hook.scale = 2;
+    hook.scaleOverlayElements();
 
-    [1, 2, 5].forEach((scale) => {
-      hook.scale = scale;
-      hook.scaleOverlayElements();
+    expect(document.querySelector("#stop-hit").getAttribute("width")).toBe("1.75");
+    expect(document.querySelector("#stop-hit").getAttribute("height")).toBe("1.75");
+    expect(document.querySelector("#stop-marker").getAttribute("r")).toBe("0.3");
+    expect(document.querySelector("#stop-label").getAttribute("x")).toBe("10.5");
+    expect(document.querySelector("#stop-label").getAttribute("font-size")).toBe("0.55");
+    expect(document.querySelector("#stop-badge").getAttribute("x")).toBe("10.25");
 
-      expect(normalCircle.getAttribute("r")).toBe(`${0.75 / scale}`);
-      expect(normalCircle.getAttribute("stroke-width")).toBe(`${0.15 / scale}`);
-      expect(crossCircle.getAttribute("stroke-width")).toBe(`${0.25 / scale}`);
-      expect(hitCircle.getAttribute("r")).toBe(`${2.5 / scale}`);
-      expect(hitCircle.getAttribute("stroke-width")).toBe("0");
-      expect(hitLine.getAttribute("stroke-width")).toBe(`${2 / scale}`);
-      expect(visibleLine.getAttribute("stroke-width")).toBe(`${0.5 / scale}`);
-      expect(pending.getAttribute("stroke-width")).toBe(`${0.15 / scale}`);
+    expect(document.querySelector("#path-hit").getAttribute("stroke-width")).toBe("1");
+    expect(document.querySelector("#path-line").getAttribute("stroke-width")).toBe("0.25");
+    expect(document.querySelector("#path-dashed").getAttribute("stroke-width")).toBe("0.25");
+    expect(document.querySelector("#path-dashed").getAttribute("stroke-dasharray")).toBe("1 0.5");
 
-      const offY = 1 / scale;
-      const offX = 0.75 / scale;
-      const bottomOffsetY = 0.5 / scale;
-      expect(pending.getAttribute("points")).toBe(
-        `10,${20 - offY} ${10 - offX},${20 + bottomOffsetY} ${10 + offX},${20 + bottomOffsetY}`
-      );
-    });
+    expect(document.querySelector("#pathway-arrow").getAttribute("markerWidth")).toBe("0.75");
+    expect(document.querySelector("#pathway-arrow").getAttribute("markerHeight")).toBe("0.75");
+
+    expect(document.querySelector("#elevator-box").getAttribute("x")).toBe("29.5");
+    expect(document.querySelector("#elevator-box").getAttribute("y")).toBe("39.5");
+    expect(document.querySelector("#elevator-box").getAttribute("width")).toBe("1");
+    expect(document.querySelector("#elevator-box").getAttribute("height")).toBe("1");
+    expect(document.querySelector("#elevator-box").getAttribute("stroke-width")).toBe("0.2");
+
+    expect(document.querySelector("#elevator-text").getAttribute("font-size")).toBe("0.6");
+    expect(document.querySelector("#path-label").getAttribute("x")).toBe("50.7");
+    expect(document.querySelector("#path-label").getAttribute("y")).toBe("59.3");
+    expect(document.querySelector("#path-label").getAttribute("font-size")).toBe("0.45");
+    expect(document.querySelector("#path-label").getAttribute("stroke-width")).toBe("0.1");
+
+    expect(document.querySelector("#pending").getAttribute("stroke-width")).toBe("0.075");
+    expect(document.querySelector("#pending").getAttribute("points")).toBe("10,19.5 9.625,20.25 10.375,20.25");
   });
 });

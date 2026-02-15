@@ -1775,6 +1775,408 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - pathway mode rendering" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PATHWAY_STATION",
+          stop_name: "Pathway Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PATHWAY_L1",
+          level_name: "Pathway Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "pathway-level.png"
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "renders mode-specific SVG structure for pathway modes 1 through 7", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      from_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PATHWAY_FROM",
+          stop_name: "Pathway From",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      make_to_stop = fn suffix, x ->
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PATHWAY_TO_#{suffix}",
+          stop_name: "Pathway To #{suffix}",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => x, "y" => 10.0 + x / 10}
+        })
+      end
+
+      walkway_to = make_to_stop.("WALK", 20.0)
+      stairs_to = make_to_stop.("STAIRS", 24.0)
+      moving_to = make_to_stop.("MOVE", 28.0)
+      escalator_to = make_to_stop.("ESC", 32.0)
+      elevator_to = make_to_stop.("ELEV", 36.0)
+      fare_gate_to = make_to_stop.("FARE", 40.0)
+      exit_gate_to = make_to_stop.("EXIT", 44.0)
+
+      mode_1 =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          from_stop.stop_id,
+          walkway_to.stop_id,
+          %{
+            pathway_mode: 1,
+            is_bidirectional: true,
+            signposted_as: "Forward Sign",
+            reversed_signposted_as: "Reverse Sign"
+          }
+        )
+
+      mode_2 =
+        pathway_fixture(organization.id, gtfs_version.id, from_stop.stop_id, stairs_to.stop_id, %{
+          pathway_mode: 2,
+          is_bidirectional: false
+        })
+
+      mode_3 =
+        pathway_fixture(organization.id, gtfs_version.id, from_stop.stop_id, moving_to.stop_id, %{
+          pathway_mode: 3,
+          is_bidirectional: true
+        })
+
+      mode_4 =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          from_stop.stop_id,
+          escalator_to.stop_id,
+          %{
+            pathway_mode: 4,
+            is_bidirectional: false
+          }
+        )
+
+      mode_5 =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          from_stop.stop_id,
+          elevator_to.stop_id,
+          %{
+            pathway_mode: 5,
+            is_bidirectional: true
+          }
+        )
+
+      mode_6 =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          from_stop.stop_id,
+          fare_gate_to.stop_id,
+          %{
+            pathway_mode: 6,
+            is_bidirectional: false
+          }
+        )
+
+      mode_7 =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          from_stop.stop_id,
+          exit_gate_to.stop_id,
+          %{
+            pathway_mode: 7,
+            is_bidirectional: false
+          }
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-line]")
+      assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-label]", "Forward Sign")
+      assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-label]", "Reverse Sign")
+
+      assert has_element?(view, "#pathways-#{mode_2.id} [data-pathway-tick]")
+      assert has_element?(view, "#pathways-#{mode_3.id} [data-base-dash='2,1']")
+      assert has_element?(view, "#pathways-#{mode_4.id} [data-pathway-tick]")
+      assert has_element?(view, "#pathways-#{mode_5.id} [data-pathway-elevator-box]")
+      assert has_element?(view, "#pathways-#{mode_5.id} [data-pathway-connector]")
+      assert has_element?(view, "#pathways-#{mode_6.id} [data-pathway-bar]")
+      assert has_element?(view, "#pathways-#{mode_7.id} [data-pathway-exit-bar]")
+    end
+
+    test "applies directional arrow rules for one-way and bidirectional pathways", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ARROW_A",
+          stop_name: "Arrow A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 22.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ARROW_B",
+          stop_name: "Arrow B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 25.0, "y" => 22.0}
+        })
+
+      stop_c =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ARROW_C",
+          stop_name: "Arrow C",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 38.0, "y" => 22.0}
+        })
+
+      one_way_walkway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: false
+        })
+
+      two_way_walkway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_b.stop_id, stop_c.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      two_way_moving =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_c.stop_id, %{
+          pathway_mode: 3,
+          is_bidirectional: true
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(
+               view,
+               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-end='url(#pathway-arrow)']"
+             )
+
+      refute has_element?(
+               view,
+               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-end]"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-end='url(#pathway-arrow)']"
+             )
+    end
+
+    test "uses 0.5 opacity for cross-level pathways and for elevators", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PATHWAY_L2",
+          level_name: "Pathway Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "pathway-level-2.png"
+        })
+
+      level_1_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OPACITY_L1_A",
+          stop_name: "Opacity L1 A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 35.0}
+        })
+
+      level_1_stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OPACITY_L1_B",
+          stop_name: "Opacity L1 B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 28.0, "y" => 35.0}
+        })
+
+      level_2_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OPACITY_L2_A",
+          stop_name: "Opacity L2 A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 28.0, "y" => 44.0}
+        })
+
+      elevator_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop.stop_id,
+          level_1_stop_b.stop_id,
+          %{
+            pathway_mode: 5,
+            is_bidirectional: true
+          }
+        )
+
+      cross_level_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop.stop_id,
+          level_2_stop.stop_id,
+          %{
+            pathway_mode: 1,
+            is_bidirectional: false
+          }
+        )
+
+      normal_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop_b.stop_id,
+          level_1_stop.stop_id,
+          %{
+            pathway_mode: 1,
+            is_bidirectional: true
+          }
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#pathways-#{elevator_pathway.id}[opacity='0.5']")
+      assert has_element?(view, "#pathways-#{cross_level_pathway.id}[opacity='0.5']")
+      assert has_element?(view, "#pathways-#{normal_pathway.id}[opacity='1']")
+    end
+
+    test "add mode keeps pathways non-interactive", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NON_INTERACTIVE_A",
+          stop_name: "Non Interactive A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 48.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NON_INTERACTIVE_B",
+          stop_name: "Non Interactive B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 26.0, "y" => 48.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: false
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
+      |> render_click()
+
+      view
+      |> element("#pathways-#{pathway.id}")
+      |> render_click()
+
+      refute has_element?(view, "#pathway-form")
+    end
+  end
+
   defp upload_diagram(view, filename, content) do
     upload =
       file_input(view, "#diagram-upload-form", :diagram, [

@@ -293,6 +293,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       viewBox="0 0 100 100"
       preserveAspectRatio="xMidYMid meet"
     >
+      <defs>
+        <marker
+          id="pathway-arrow"
+          viewBox="0 0 6 6"
+          refX="6"
+          refY="3"
+          markerWidth="1.5"
+          markerHeight="1.5"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          <path d="M 0 0 L 6 3 L 0 6 z" fill="#2563EB" />
+        </marker>
+      </defs>
+
       <.pathways_layer streams={@streams} mode={@mode} />
       <.stops_layer
         streams={@streams}
@@ -317,40 +332,552 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <g id="pathways-svg" phx-update="stream">
       <%= for {dom_id, pathway} <- @streams.pathways do %>
         <%= if pathway.from_stop.diagram_coordinate && pathway.to_stop.diagram_coordinate do %>
-          <g
-            id={dom_id}
-            class={
-              if @mode in [:view, :connect],
-                do: "cursor-pointer pointer-events-auto",
-                else: "pointer-events-none"
-            }
-            phx-click={if @mode in [:view, :connect], do: "edit_pathway", else: nil}
-            phx-value-id={pathway.id}
-          >
-            <%!-- Invisible wider line for easier clicking --%>
-            <line
-              x1={pathway.from_stop.diagram_coordinate["x"]}
-              y1={pathway.from_stop.diagram_coordinate["y"]}
-              x2={pathway.to_stop.diagram_coordinate["x"]}
-              y2={pathway.to_stop.diagram_coordinate["y"]}
-              stroke="transparent"
-              stroke-width="2"
-            />
-            <%!-- Visible line --%>
-            <line
-              x1={pathway.from_stop.diagram_coordinate["x"]}
-              y1={pathway.from_stop.diagram_coordinate["y"]}
-              x2={pathway.to_stop.diagram_coordinate["x"]}
-              y2={pathway.to_stop.diagram_coordinate["y"]}
-              stroke="#0891b2"
-              stroke-width="0.5"
-              stroke-linecap="round"
-              class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
-            />
-          </g>
+          <.pathway_element id={dom_id} pathway={pathway} mode={@mode} />
         <% end %>
       <% end %>
     </g>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :pathway, :any, required: true
+  attr :mode, :atom, required: true
+
+  defp pathway_element(assigns) do
+    from_coordinate = assigns.pathway.from_stop.diagram_coordinate
+    to_coordinate = assigns.pathway.to_stop.diagram_coordinate
+
+    x1 = from_coordinate["x"]
+    y1 = from_coordinate["y"]
+    x2 = to_coordinate["x"]
+    y2 = to_coordinate["y"]
+    {line_x1, line_y1, line_x2, line_y2} = parallel_offset(x1, y1, x2, y2, 0.0)
+
+    one_way? = assigns.pathway.is_bidirectional != true
+
+    is_cross_level =
+      assigns.pathway.from_stop.level_id != assigns.pathway.to_stop.level_id
+
+    opacity =
+      if assigns.pathway.pathway_mode == 5 or is_cross_level do
+        "0.5"
+      else
+        "1"
+      end
+
+    has_forward_label? = present_text?(assigns.pathway.signposted_as)
+
+    has_reverse_label? =
+      assigns.pathway.is_bidirectional == true and
+        present_text?(assigns.pathway.reversed_signposted_as)
+
+    assigns =
+      assigns
+      |> assign(:x1, line_x1)
+      |> assign(:y1, line_y1)
+      |> assign(:x2, line_x2)
+      |> assign(:y2, line_y2)
+      |> assign(:one_way?, one_way?)
+      |> assign(:opacity, opacity)
+      |> assign(:has_forward_label?, has_forward_label?)
+      |> assign(:has_reverse_label?, has_reverse_label?)
+
+    ~H"""
+    <g
+      id={@id}
+      opacity={@opacity}
+      class={
+        if @mode in [:view, :connect],
+          do: "cursor-pointer pointer-events-auto",
+          else: "pointer-events-none"
+      }
+      phx-click={if @mode in [:view, :connect], do: "edit_pathway", else: nil}
+      phx-value-id={@pathway.id}
+    >
+      <line
+        x1={@x1}
+        y1={@y1}
+        x2={@x2}
+        y2={@y2}
+        stroke="transparent"
+        stroke-width="2"
+        data-pathway-hit="true"
+        data-base-stroke="2"
+      />
+
+      <%= case @pathway.pathway_mode do %>
+        <% 1 -> %>
+          <.pathway_walkway x1={@x1} y1={@y1} x2={@x2} y2={@y2} mode={@mode} one_way?={@one_way?} />
+        <% 2 -> %>
+          <.pathway_stairs x1={@x1} y1={@y1} x2={@x2} y2={@y2} mode={@mode} one_way?={@one_way?} />
+        <% 3 -> %>
+          <.pathway_moving_sidewalk
+            x1={@x1}
+            y1={@y1}
+            x2={@x2}
+            y2={@y2}
+            mode={@mode}
+            one_way?={@one_way?}
+          />
+        <% 4 -> %>
+          <.pathway_escalator x1={@x1} y1={@y1} x2={@x2} y2={@y2} mode={@mode} one_way?={@one_way?} />
+        <% 5 -> %>
+          <.pathway_elevator x1={@x1} y1={@y1} x2={@x2} y2={@y2} />
+        <% 6 -> %>
+          <.pathway_fare_gate x1={@x1} y1={@y1} x2={@x2} y2={@y2} mode={@mode} one_way?={@one_way?} />
+        <% 7 -> %>
+          <.pathway_exit_gate x1={@x1} y1={@y1} x2={@x2} y2={@y2} mode={@mode} />
+        <% _ -> %>
+          <.pathway_walkway x1={@x1} y1={@y1} x2={@x2} y2={@y2} mode={@mode} one_way?={@one_way?} />
+      <% end %>
+
+      <.pathway_label
+        :if={@has_forward_label?}
+        x1={@x1}
+        y1={@y1}
+        x2={@x2}
+        y2={@y2}
+        text={@pathway.signposted_as}
+        side={:forward}
+      />
+      <.pathway_label
+        :if={@has_reverse_label?}
+        x1={@x1}
+        y1={@y1}
+        x2={@x2}
+        y2={@y2}
+        text={@pathway.reversed_signposted_as}
+        side={:reverse}
+      />
+    </g>
+    """
+  end
+
+  attr :x1, :float, required: true
+  attr :y1, :float, required: true
+  attr :x2, :float, required: true
+  attr :y2, :float, required: true
+  attr :mode, :atom, required: true
+  attr :one_way?, :boolean, required: true
+
+  defp pathway_walkway(assigns) do
+    ~H"""
+    <line
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke="#2563EB"
+      stroke-width="0.5"
+      stroke-linecap="round"
+      marker-end={if @one_way?, do: "url(#pathway-arrow)", else: nil}
+      data-pathway-line="true"
+      data-base-stroke="0.5"
+      class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
+    />
+    """
+  end
+
+  attr :x1, :float, required: true
+  attr :y1, :float, required: true
+  attr :x2, :float, required: true
+  attr :y2, :float, required: true
+  attr :mode, :atom, required: true
+  attr :one_way?, :boolean, required: true
+
+  defp pathway_stairs(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :ticks,
+        tick_marks(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 1.5, 0.8)
+      )
+
+    ~H"""
+    <line
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke="#2563EB"
+      stroke-width="0.5"
+      stroke-linecap="round"
+      marker-end={if @one_way?, do: "url(#pathway-arrow)", else: nil}
+      data-pathway-line="true"
+      data-base-stroke="0.5"
+      class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
+    />
+    <line
+      :for={tick <- @ticks}
+      x1={tick.x1}
+      y1={tick.y1}
+      x2={tick.x2}
+      y2={tick.y2}
+      stroke="#2563EB"
+      stroke-width="0.3"
+      stroke-linecap="round"
+      data-pathway-tick="true"
+      data-base-stroke="0.3"
+      class="pointer-events-none"
+    />
+    """
+  end
+
+  attr :x1, :float, required: true
+  attr :y1, :float, required: true
+  attr :x2, :float, required: true
+  attr :y2, :float, required: true
+  attr :mode, :atom, required: true
+  attr :one_way?, :boolean, required: true
+
+  defp pathway_moving_sidewalk(assigns) do
+    {upper_x1, upper_y1, upper_x2, upper_y2} =
+      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 0.4)
+
+    {lower_x1, lower_y1, lower_x2, lower_y2} =
+      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, -0.4)
+
+    assigns =
+      assigns
+      |> assign(:upper_x1, upper_x1)
+      |> assign(:upper_y1, upper_y1)
+      |> assign(:upper_x2, upper_x2)
+      |> assign(:upper_y2, upper_y2)
+      |> assign(:lower_x1, lower_x1)
+      |> assign(:lower_y1, lower_y1)
+      |> assign(:lower_x2, lower_x2)
+      |> assign(:lower_y2, lower_y2)
+
+    ~H"""
+    <%= if @one_way? do %>
+      <line
+        x1={@x1}
+        y1={@y1}
+        x2={@x2}
+        y2={@y2}
+        stroke="#2563EB"
+        stroke-width="0.5"
+        stroke-linecap="round"
+        stroke-dasharray="2 1"
+        marker-end="url(#pathway-arrow)"
+        data-pathway-line="true"
+        data-base-stroke="0.5"
+        data-base-dash="2,1"
+        class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
+      />
+    <% else %>
+      <line
+        x1={@upper_x1}
+        y1={@upper_y1}
+        x2={@upper_x2}
+        y2={@upper_y2}
+        stroke="#2563EB"
+        stroke-width="0.5"
+        stroke-linecap="round"
+        stroke-dasharray="2 1"
+        marker-end="url(#pathway-arrow)"
+        data-pathway-line="true"
+        data-base-stroke="0.5"
+        data-base-dash="2,1"
+        class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
+      />
+      <line
+        x1={@lower_x2}
+        y1={@lower_y2}
+        x2={@lower_x1}
+        y2={@lower_y1}
+        stroke="#2563EB"
+        stroke-width="0.5"
+        stroke-linecap="round"
+        stroke-dasharray="2 1"
+        marker-end="url(#pathway-arrow)"
+        data-pathway-line="true"
+        data-base-stroke="0.5"
+        data-base-dash="2,1"
+        class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
+      />
+    <% end %>
+    """
+  end
+
+  attr :x1, :float, required: true
+  attr :y1, :float, required: true
+  attr :x2, :float, required: true
+  attr :y2, :float, required: true
+  attr :mode, :atom, required: true
+  attr :one_way?, :boolean, required: true
+
+  defp pathway_escalator(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :ticks,
+        tick_marks(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 1.5, 0.8)
+      )
+
+    ~H"""
+    <line
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke="#2563EB"
+      stroke-width="0.5"
+      stroke-linecap="round"
+      marker-end={if @one_way?, do: "url(#pathway-arrow)", else: nil}
+      data-pathway-line="true"
+      data-base-stroke="0.5"
+      class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
+    />
+    <line
+      :for={tick <- @ticks}
+      x1={tick.x1}
+      y1={tick.y1}
+      x2={tick.x2}
+      y2={tick.y2}
+      stroke="#2563EB"
+      stroke-width="0.3"
+      stroke-linecap="round"
+      data-pathway-tick="true"
+      data-base-stroke="0.3"
+      class="pointer-events-none"
+    />
+    """
+  end
+
+  attr :x1, :float, required: true
+  attr :y1, :float, required: true
+  attr :x2, :float, required: true
+  attr :y2, :float, required: true
+
+  defp pathway_elevator(assigns) do
+    {mid_x, mid_y} = pathway_midpoint(assigns.x1, assigns.y1, assigns.x2, assigns.y2)
+    length = pathway_length(assigns.x1, assigns.y1, assigns.x2, assigns.y2)
+
+    {unit_x, unit_y} =
+      if length > 0.0 do
+        {(assigns.x2 - assigns.x1) / length, (assigns.y2 - assigns.y1) / length}
+      else
+        {1.0, 0.0}
+      end
+
+    half_size = 1.0
+
+    connector_to_x = mid_x - unit_x * half_size
+    connector_to_y = mid_y - unit_y * half_size
+    connector_from_x = mid_x + unit_x * half_size
+    connector_from_y = mid_y + unit_y * half_size
+
+    assigns =
+      assigns
+      |> assign(:mid_x, mid_x)
+      |> assign(:mid_y, mid_y)
+      |> assign(:connector_to_x, connector_to_x)
+      |> assign(:connector_to_y, connector_to_y)
+      |> assign(:connector_from_x, connector_from_x)
+      |> assign(:connector_from_y, connector_from_y)
+
+    ~H"""
+    <line
+      x1={@x1}
+      y1={@y1}
+      x2={@connector_to_x}
+      y2={@connector_to_y}
+      stroke="#2563EB"
+      stroke-width="0.3"
+      stroke-linecap="round"
+      stroke-dasharray="0.8 0.5"
+      data-pathway-connector="true"
+      data-base-stroke="0.3"
+      data-base-dash="0.8,0.5"
+      class="pointer-events-none"
+    />
+    <line
+      x1={@connector_from_x}
+      y1={@connector_from_y}
+      x2={@x2}
+      y2={@y2}
+      stroke="#2563EB"
+      stroke-width="0.3"
+      stroke-linecap="round"
+      stroke-dasharray="0.8 0.5"
+      data-pathway-connector="true"
+      data-base-stroke="0.3"
+      data-base-dash="0.8,0.5"
+      class="pointer-events-none"
+    />
+    <rect
+      x={@mid_x - 1}
+      y={@mid_y - 1}
+      width="2"
+      height="2"
+      fill="#FFFFFF"
+      stroke="#2563EB"
+      stroke-width="0.4"
+      data-pathway-elevator-box="true"
+      data-center-x={@mid_x}
+      data-center-y={@mid_y}
+      data-base-width="2"
+      data-base-height="2"
+      data-base-stroke="0.4"
+      class="pointer-events-none"
+    />
+    <text
+      x={@mid_x}
+      y={@mid_y}
+      fill="#2563EB"
+      font-size="1.2"
+      text-anchor="middle"
+      dominant-baseline="central"
+      data-pathway-elevator-text="true"
+      data-center-x={@mid_x}
+      data-center-y={@mid_y}
+      data-base-font-size="1.2"
+      class="pointer-events-none select-none"
+    >
+      ↕
+    </text>
+    """
+  end
+
+  attr :x1, :float, required: true
+  attr :y1, :float, required: true
+  attr :x2, :float, required: true
+  attr :y2, :float, required: true
+  attr :mode, :atom, required: true
+  attr :one_way?, :boolean, required: true
+
+  defp pathway_fare_gate(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :bars,
+        tick_marks(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 2.5, 1.25)
+      )
+
+    ~H"""
+    <line
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke="#2563EB"
+      stroke-width="0.5"
+      stroke-linecap="round"
+      marker-end={if @one_way?, do: "url(#pathway-arrow)", else: nil}
+      data-pathway-line="true"
+      data-base-stroke="0.5"
+      class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
+    />
+    <line
+      :for={bar <- @bars}
+      x1={bar.x1}
+      y1={bar.y1}
+      x2={bar.x2}
+      y2={bar.y2}
+      stroke="#2563EB"
+      stroke-width="0.5"
+      stroke-linecap="round"
+      data-pathway-bar="true"
+      data-base-stroke="0.5"
+      class="pointer-events-none"
+    />
+    """
+  end
+
+  attr :x1, :float, required: true
+  attr :y1, :float, required: true
+  attr :x2, :float, required: true
+  attr :y2, :float, required: true
+  attr :mode, :atom, required: true
+
+  defp pathway_exit_gate(assigns) do
+    # GTFS mode 7 should be one-way; render one-way arrow for legacy bidirectional data as fallback.
+    {mid_x, mid_y} = pathway_midpoint(assigns.x1, assigns.y1, assigns.x2, assigns.y2)
+    {perp_x, perp_y} = perpendicular_unit(assigns.x1, assigns.y1, assigns.x2, assigns.y2)
+    half_extent = 1.25 / 2
+
+    assigns =
+      assigns
+      |> assign(:bar_x1, mid_x - perp_x * half_extent)
+      |> assign(:bar_y1, mid_y - perp_y * half_extent)
+      |> assign(:bar_x2, mid_x + perp_x * half_extent)
+      |> assign(:bar_y2, mid_y + perp_y * half_extent)
+
+    ~H"""
+    <line
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke="#2563EB"
+      stroke-width="0.5"
+      stroke-linecap="round"
+      marker-end="url(#pathway-arrow)"
+      data-pathway-line="true"
+      data-base-stroke="0.5"
+      class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
+    />
+    <line
+      x1={@bar_x1}
+      y1={@bar_y1}
+      x2={@bar_x2}
+      y2={@bar_y2}
+      stroke="#2563EB"
+      stroke-width="0.5"
+      stroke-linecap="round"
+      data-pathway-exit-bar="true"
+      data-base-stroke="0.5"
+      class="pointer-events-none"
+    />
+    """
+  end
+
+  attr :x1, :float, required: true
+  attr :y1, :float, required: true
+  attr :x2, :float, required: true
+  attr :y2, :float, required: true
+  attr :text, :string, required: true
+  attr :side, :atom, required: true
+
+  defp pathway_label(assigns) do
+    {mid_x, mid_y} = pathway_midpoint(assigns.x1, assigns.y1, assigns.x2, assigns.y2)
+
+    {offset_x, offset_y} =
+      label_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, assigns.side)
+
+    assigns =
+      assigns
+      |> assign(:mid_x, mid_x)
+      |> assign(:mid_y, mid_y)
+      |> assign(:offset_x, offset_x)
+      |> assign(:offset_y, offset_y)
+      |> assign(:x, mid_x + offset_x)
+      |> assign(:y, mid_y + offset_y)
+
+    ~H"""
+    <text
+      x={@x}
+      y={@y}
+      fill="#2563EB"
+      stroke="#FFFFFF"
+      stroke-width="0.2"
+      paint-order="stroke fill"
+      font-size="0.9"
+      font-style="italic"
+      text-anchor="middle"
+      dominant-baseline="central"
+      data-pathway-label="true"
+      data-midpoint-x={@mid_x}
+      data-midpoint-y={@mid_y}
+      data-offset-x={@offset_x}
+      data-offset-y={@offset_y}
+      data-base-font-size="0.9"
+      data-base-stroke="0.2"
+      class="pointer-events-none select-none"
+    >
+      {@text}
+    </text>
     """
   end
 
@@ -1002,6 +1529,79 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp parse_optional_int(value) when is_integer(value), do: value
   defp parse_optional_int(_), do: nil
+
+  defp pathway_midpoint(x1, y1, x2, y2), do: {(x1 + x2) / 2, (y1 + y2) / 2}
+
+  defp pathway_length(x1, y1, x2, y2) do
+    dx = x2 - x1
+    dy = y2 - y1
+    :math.sqrt(dx * dx + dy * dy)
+  end
+
+  defp perpendicular_unit(x1, y1, x2, y2) do
+    length = pathway_length(x1, y1, x2, y2)
+
+    if length <= 0.0 do
+      {0.0, -1.0}
+    else
+      dx = x2 - x1
+      dy = y2 - y1
+      {-dy / length, dx / length}
+    end
+  end
+
+  defp tick_marks(x1, y1, x2, y2, spacing, extent, skip_ends \\ 1.5) do
+    length = pathway_length(x1, y1, x2, y2)
+
+    if length < skip_ends * 2 or spacing <= 0 or extent <= 0 do
+      []
+    else
+      dx = x2 - x1
+      dy = y2 - y1
+      {perp_x, perp_y} = perpendicular_unit(x1, y1, x2, y2)
+      half_extent = extent / 2
+
+      start_distance = skip_ends
+      end_distance = length - skip_ends
+
+      start_distance
+      |> Stream.iterate(&(&1 + spacing))
+      |> Enum.take_while(&(&1 <= end_distance))
+      |> Enum.map(fn distance ->
+        ratio = distance / length
+        center_x = x1 + dx * ratio
+        center_y = y1 + dy * ratio
+
+        %{
+          x1: center_x - perp_x * half_extent,
+          y1: center_y - perp_y * half_extent,
+          x2: center_x + perp_x * half_extent,
+          y2: center_y + perp_y * half_extent
+        }
+      end)
+    end
+  end
+
+  defp parallel_offset(x1, y1, x2, y2, offset) do
+    {perp_x, perp_y} = perpendicular_unit(x1, y1, x2, y2)
+
+    {
+      x1 + perp_x * offset,
+      y1 + perp_y * offset,
+      x2 + perp_x * offset,
+      y2 + perp_y * offset
+    }
+  end
+
+  defp label_offset(x1, y1, x2, y2, side) do
+    {perp_x, perp_y} = perpendicular_unit(x1, y1, x2, y2)
+    distance = 1.4
+
+    case side do
+      :reverse -> {-perp_x * distance, -perp_y * distance}
+      _ -> {perp_x * distance, perp_y * distance}
+    end
+  end
 
   # ============================================================================
   # Pathway Drawer
