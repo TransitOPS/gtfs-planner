@@ -468,11 +468,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       x2={@x2}
       y2={@y2}
       stroke="#2563EB"
-      stroke-width="0.5"
+      stroke-width="0.35"
       stroke-linecap="round"
       marker-end={if @one_way?, do: "url(#pathway-arrow)", else: nil}
       data-pathway-line="true"
-      data-base-stroke="0.5"
+      data-base-stroke="0.35"
       class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
     />
     """
@@ -490,7 +490,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       assign(
         assigns,
         :ticks,
-        tick_marks(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 1.5, 0.8)
+        tick_marks(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 1.5, 0.6)
       )
 
     ~H"""
@@ -500,11 +500,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       x2={@x2}
       y2={@y2}
       stroke="#2563EB"
-      stroke-width="0.5"
+      stroke-width="0.35"
       stroke-linecap="round"
       marker-end={if @one_way?, do: "url(#pathway-arrow)", else: nil}
       data-pathway-line="true"
-      data-base-stroke="0.5"
+      data-base-stroke="0.35"
       class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
     />
     <line
@@ -556,12 +556,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         x2={@x2}
         y2={@y2}
         stroke="#2563EB"
-        stroke-width="0.5"
+        stroke-width="0.35"
         stroke-linecap="round"
         stroke-dasharray="2 1"
         marker-end="url(#pathway-arrow)"
         data-pathway-line="true"
-        data-base-stroke="0.5"
+        data-base-stroke="0.35"
         data-base-dash="2,1"
         class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
       />
@@ -572,12 +572,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         x2={@upper_x2}
         y2={@upper_y2}
         stroke="#2563EB"
-        stroke-width="0.5"
+        stroke-width="0.35"
         stroke-linecap="round"
         stroke-dasharray="2 1"
         marker-end="url(#pathway-arrow)"
         data-pathway-line="true"
-        data-base-stroke="0.5"
+        data-base-stroke="0.35"
         data-base-dash="2,1"
         class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
       />
@@ -587,12 +587,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         x2={@lower_x1}
         y2={@lower_y1}
         stroke="#2563EB"
-        stroke-width="0.5"
+        stroke-width="0.35"
         stroke-linecap="round"
         stroke-dasharray="2 1"
         marker-end="url(#pathway-arrow)"
         data-pathway-line="true"
-        data-base-stroke="0.5"
+        data-base-stroke="0.35"
         data-base-dash="2,1"
         class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
       />
@@ -612,7 +612,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       assign(
         assigns,
         :ticks,
-        tick_marks(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 1.5, 0.8)
+        tick_marks(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 1.5, 0.6)
       )
 
     ~H"""
@@ -622,11 +622,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       x2={@x2}
       y2={@y2}
       stroke="#2563EB"
-      stroke-width="0.5"
+      stroke-width="0.35"
       stroke-linecap="round"
       marker-end={if @one_way?, do: "url(#pathway-arrow)", else: nil}
       data-pathway-line="true"
-      data-base-stroke="0.5"
+      data-base-stroke="0.35"
       class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
     />
     <line
@@ -752,7 +752,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       assign(
         assigns,
         :bars,
-        tick_marks(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 2.5, 1.25)
+        tick_marks(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 2.5, 0.9)
       )
 
     ~H"""
@@ -762,11 +762,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       x2={@x2}
       y2={@y2}
       stroke="#2563EB"
-      stroke-width="0.5"
+      stroke-width="0.35"
       stroke-linecap="round"
       marker-end={if @one_way?, do: "url(#pathway-arrow)", else: nil}
       data-pathway-line="true"
-      data-base-stroke="0.5"
+      data-base-stroke="0.35"
       class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
     />
     <line
@@ -795,7 +795,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     # GTFS mode 7 should be one-way; render one-way arrow for legacy bidirectional data as fallback.
     {mid_x, mid_y} = pathway_midpoint(assigns.x1, assigns.y1, assigns.x2, assigns.y2)
     {perp_x, perp_y} = perpendicular_unit(assigns.x1, assigns.y1, assigns.x2, assigns.y2)
-    half_extent = 1.25 / 2
+    half_extent = 0.9 / 2
 
     assigns =
       assigns
@@ -811,11 +811,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       x2={@x2}
       y2={@y2}
       stroke="#2563EB"
-      stroke-width="0.5"
+      stroke-width="0.35"
       stroke-linecap="round"
       marker-end="url(#pathway-arrow)"
       data-pathway-line="true"
-      data-base-stroke="0.5"
+      data-base-stroke="0.35"
       class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
     />
     <line

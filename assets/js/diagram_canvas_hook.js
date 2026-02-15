@@ -16,7 +16,7 @@ const OVERLAY_BASE = {
   textStrokeWidth: 0.24,
   badgeFontSize: 0.65,
   badgeStrokeWidth: 0.16,
-  pathwayStroke: 0.5,
+  pathwayStroke: 0.35,
   pathwayHitStroke: 2,
   pathwayTickStroke: 0.3,
   pathwayBarStroke: 0.5,
