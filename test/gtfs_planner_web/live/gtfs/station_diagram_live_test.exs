@@ -270,6 +270,49 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child-stop-form")
     end
 
+    test "renders pan and zoom hints when a diagram exists", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, _view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert html =~ "Scroll to pan"
+      assert html =~ "Show Key"
+    end
+
+    test "renders legend markup and keeps legend panel hidden by default", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert html =~ "diagram-legend-panel"
+      assert html =~ "hidden"
+      assert html =~ "Child Stops"
+      assert html =~ "Pathways"
+      assert has_element?(view, "#diagram-legend-panel.hidden")
+    end
+
     test "view mode stop dot click opens edit drawer", %{
       conn: conn,
       user: user,
@@ -2117,7 +2160,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-end]"
              )
 
-      assert has_element?(
+      refute has_element?(
                view,
                "#pathways-#{two_way_moving.id} [data-pathway-line][marker-end='url(#pathway-arrow)']"
              )

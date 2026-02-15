@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Pathway
+  alias Phoenix.LiveView.JS
 
   # ============================================================================
   # Toolbar
@@ -244,6 +245,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             cross_level_stop_ids={@cross_level_stop_ids}
             wheelchair_minority={@wheelchair_minority}
           />
+          <.diagram_hints_and_legend />
         <% @active_level -> %>
           <.empty_diagram_state />
         <% true -> %>
@@ -527,72 +529,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :one_way?, :boolean, required: true
 
   defp pathway_moving_sidewalk(assigns) do
-    {upper_x1, upper_y1, upper_x2, upper_y2} =
-      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 0.4)
-
-    {lower_x1, lower_y1, lower_x2, lower_y2} =
-      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, -0.4)
-
-    assigns =
-      assigns
-      |> assign(:upper_x1, upper_x1)
-      |> assign(:upper_y1, upper_y1)
-      |> assign(:upper_x2, upper_x2)
-      |> assign(:upper_y2, upper_y2)
-      |> assign(:lower_x1, lower_x1)
-      |> assign(:lower_y1, lower_y1)
-      |> assign(:lower_x2, lower_x2)
-      |> assign(:lower_y2, lower_y2)
-
     ~H"""
-    <%= if @one_way? do %>
-      <line
-        x1={@x1}
-        y1={@y1}
-        x2={@x2}
-        y2={@y2}
-        stroke="#2563EB"
-        stroke-width="0.35"
-        stroke-linecap="round"
-        stroke-dasharray="2 1"
-        marker-end="url(#pathway-arrow)"
-        data-pathway-line="true"
-        data-base-stroke="0.35"
-        data-base-dash="2,1"
-        class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
-      />
-    <% else %>
-      <line
-        x1={@upper_x1}
-        y1={@upper_y1}
-        x2={@upper_x2}
-        y2={@upper_y2}
-        stroke="#2563EB"
-        stroke-width="0.35"
-        stroke-linecap="round"
-        stroke-dasharray="2 1"
-        marker-end="url(#pathway-arrow)"
-        data-pathway-line="true"
-        data-base-stroke="0.35"
-        data-base-dash="2,1"
-        class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
-      />
-      <line
-        x1={@lower_x2}
-        y1={@lower_y2}
-        x2={@lower_x1}
-        y2={@lower_y1}
-        stroke="#2563EB"
-        stroke-width="0.35"
-        stroke-linecap="round"
-        stroke-dasharray="2 1"
-        marker-end="url(#pathway-arrow)"
-        data-pathway-line="true"
-        data-base-stroke="0.35"
-        data-base-dash="2,1"
-        class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
-      />
-    <% end %>
+    <line
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke="#2563EB"
+      stroke-width="0.35"
+      stroke-linecap="round"
+      stroke-dasharray="2 1"
+      marker-end={if @one_way?, do: "url(#pathway-arrow)", else: nil}
+      data-pathway-line="true"
+      data-base-stroke="0.35"
+      data-base-dash="2,1"
+      class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
+    />
     """
   end
 
@@ -890,7 +842,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <%= if stop.diagram_coordinate do %>
           <% cx = stop.diagram_coordinate["x"] %>
           <% cy = stop.diagram_coordinate["y"] %>
-          <% active_fill = if(@active_point_id == stop.id, do: "#1e40af", else: "#2563EB") %>
+          <% active_fill = if(@active_point_id == stop.id, do: "#059669", else: "#2563EB") %>
           <% label = stop_label_text(stop) %>
           <g
             id={dom_id}
@@ -1062,6 +1014,174 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke="#fff"
       stroke-width="0.15"
     />
+    """
+  end
+
+  defp diagram_hints_and_legend(assigns) do
+    ~H"""
+    <div class="absolute bottom-2 left-2 z-10 flex items-center gap-3 bg-black/50 text-white text-xs rounded-lg px-3 py-1.5 backdrop-blur-sm">
+      <span>Scroll to pan · Ctrl+Scroll to zoom</span>
+      <button
+        type="button"
+        phx-click={JS.toggle(to: "#diagram-legend-panel")}
+        class="btn btn-xs btn-ghost text-white border-white/30 hover:bg-white/20"
+      >
+        Show Key
+      </button>
+    </div>
+    <div
+      id="diagram-legend-panel"
+      class="hidden absolute bottom-12 left-2 z-10 bg-white border border-base-300 rounded-lg shadow-lg p-4 max-h-[70vh] overflow-y-auto w-72"
+    >
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-semibold text-sm">Key</h3>
+        <button
+          type="button"
+          phx-click={JS.toggle(to: "#diagram-legend-panel")}
+          class="btn btn-ghost btn-xs"
+          aria-label="Close legend"
+        >
+          <.icon name="hero-x-mark" class="w-4 h-4" />
+        </button>
+      </div>
+
+      <div class="mb-4">
+        <h4 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+          Child Stops
+        </h4>
+        <div class="space-y-1.5">
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="14" height="22" class="shrink-0">
+              <rect x="1" y="1" width="12" height="20" rx="1" fill="#2563EB" />
+            </svg>
+            <span>Platform</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="14" height="22" class="shrink-0">
+              <rect
+                x="1"
+                y="1"
+                width="12"
+                height="20"
+                rx="1"
+                fill="#fff"
+                stroke="#2563EB"
+                stroke-width="1.5"
+              />
+            </svg>
+            <span>Entrance / Exit</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="14" height="14" class="shrink-0">
+              <circle cx="7" cy="7" r="6" fill="#2563EB" />
+            </svg>
+            <span>Generic Node</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="22" height="12" class="shrink-0">
+              <rect x="1" y="1" width="20" height="10" rx="1" fill="#2563EB" />
+            </svg>
+            <span>Boarding Area</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="14" height="22" class="shrink-0">
+              <rect x="1" y="1" width="12" height="20" rx="1" fill="#2563EB" opacity="0.5" />
+            </svg>
+            <span>Cross-level (50%)</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h4 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+          Pathways
+        </h4>
+        <div class="space-y-1.5">
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="36" height="8" class="shrink-0">
+              <line x1="0" y1="4" x2="36" y2="4" stroke="#2563EB" stroke-width="2" />
+            </svg>
+            <span>Walkway</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="36" height="12" class="shrink-0">
+              <line x1="0" y1="6" x2="36" y2="6" stroke="#2563EB" stroke-width="2" />
+              <line x1="8" y1="2" x2="8" y2="10" stroke="#2563EB" stroke-width="1.2" />
+              <line x1="16" y1="2" x2="16" y2="10" stroke="#2563EB" stroke-width="1.2" />
+              <line x1="24" y1="2" x2="24" y2="10" stroke="#2563EB" stroke-width="1.2" />
+            </svg>
+            <span>Stairs</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="36" height="12" class="shrink-0">
+              <line x1="0" y1="6" x2="36" y2="6" stroke="#2563EB" stroke-width="2" />
+              <line x1="8" y1="2" x2="8" y2="10" stroke="#2563EB" stroke-width="1.2" />
+              <line x1="16" y1="2" x2="16" y2="10" stroke="#2563EB" stroke-width="1.2" />
+              <line x1="24" y1="2" x2="24" y2="10" stroke="#2563EB" stroke-width="1.2" />
+              <polygon points="33,3 36,6 33,9" fill="#2563EB" />
+            </svg>
+            <span>Escalator</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="36" height="8" class="shrink-0">
+              <line
+                x1="0"
+                y1="4"
+                x2="32"
+                y2="4"
+                stroke="#2563EB"
+                stroke-width="2"
+                stroke-dasharray="6 3"
+              />
+              <polygon points="33,1 36,4 33,7" fill="#2563EB" />
+            </svg>
+            <span>Moving Sidewalk</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="36" height="18" class="shrink-0">
+              <rect
+                x="6"
+                y="1"
+                width="16"
+                height="16"
+                rx="2"
+                fill="#fff"
+                stroke="#2563EB"
+                stroke-width="1.5"
+              />
+              <text
+                x="14"
+                y="9"
+                text-anchor="middle"
+                dominant-baseline="middle"
+                font-family="Inter, sans-serif"
+                font-size="9"
+                fill="#2563EB"
+              >
+                ↕
+              </text>
+            </svg>
+            <span>Elevator</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="36" height="14" class="shrink-0">
+              <line x1="0" y1="7" x2="36" y2="7" stroke="#2563EB" stroke-width="2" />
+              <line x1="12" y1="2" x2="12" y2="12" stroke="#2563EB" stroke-width="2" />
+              <line x1="24" y1="2" x2="24" y2="12" stroke="#2563EB" stroke-width="2" />
+            </svg>
+            <span>Fare Gate</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="36" height="14" class="shrink-0">
+              <line x1="0" y1="7" x2="32" y2="7" stroke="#2563EB" stroke-width="2" />
+              <line x1="16" y1="2" x2="16" y2="12" stroke="#2563EB" stroke-width="2" />
+              <polygon points="33,4 36,7 33,10" fill="#2563EB" />
+            </svg>
+            <span>Exit Gate</span>
+          </div>
+        </div>
+      </div>
+    </div>
     """
   end
 
