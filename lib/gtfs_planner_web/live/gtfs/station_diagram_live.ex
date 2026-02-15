@@ -770,11 +770,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("save_diagram", _params, socket) do
     station = socket.assigns.station
-    stop_level = socket.assigns.active_stop_level
+    active_level = socket.assigns.active_level
 
-    if is_nil(stop_level) do
+    if is_nil(active_level) do
       {:noreply, assign(socket, :diagram_error, "No active level selected")}
     else
+      stop_level =
+        case socket.assigns.active_stop_level do
+          nil ->
+            {:ok, sl} =
+              Gtfs.create_stop_level(%{
+                stop_id: station.id,
+                level_id: active_level.id,
+                organization_id: socket.assigns.current_organization.id,
+                gtfs_version_id: socket.assigns.current_gtfs_version.id
+              })
+
+            sl
+
+          existing ->
+            existing
+        end
+
       uploaded_files =
         consume_uploaded_entries(socket, :diagram, fn %{path: path}, entry ->
           uploads_base = Application.get_env(:gtfs_planner, :uploads_path)
