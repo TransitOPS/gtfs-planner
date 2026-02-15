@@ -275,10 +275,34 @@ const DiagramCanvasHook = {
         return;
       }
 
-      label.setAttribute("x", `${cx + offsetX / scale}`);
+      const previousLabelXAttr = label.getAttribute("x");
+      const previousLabelX = previousLabelXAttr !== null ? parseFloat(previousLabelXAttr) : NaN;
+      const newLabelX = cx + offsetX / scale;
+
+      label.setAttribute("x", `${newLabelX}`);
       label.setAttribute("y", `${cy}`);
       label.setAttribute("font-size", `${OVERLAY_BASE.fontSize / scale}`);
       label.setAttribute("stroke-width", `${OVERLAY_BASE.textStrokeWidth / scale}`);
+
+      if (Number.isFinite(previousLabelX)) {
+        const deltaX = newLabelX - previousLabelX;
+
+        label.querySelectorAll("tspan").forEach((tspan) => {
+          const tspanXAttr = tspan.getAttribute("x");
+
+          if (tspanXAttr === null) {
+            return;
+          }
+
+          const tspanX = parseFloat(tspanXAttr);
+
+          if (!Number.isFinite(tspanX)) {
+            return;
+          }
+
+          tspan.setAttribute("x", `${tspanX + deltaX}`);
+        });
+      }
     });
 
     overlay.querySelectorAll("[data-stop-badge]").forEach((badge) => {
