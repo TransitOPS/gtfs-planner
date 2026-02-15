@@ -1917,6 +1917,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :level_form, :any, required: true
   attr :available_levels, :list, default: []
   attr :level_mode, :atom, default: :existing
+  attr :editing_level_uuid, :string, default: nil
+  attr :level_shared, :boolean, default: false
 
   def level_sidebar(assigns) do
     ~H"""
@@ -1933,6 +1935,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         show_level_modal={@show_level_modal}
         available_levels={@available_levels}
         level_mode={@level_mode}
+        editing_level_uuid={@editing_level_uuid}
+        level_shared={@level_shared}
       />
     </.drawer>
     """
@@ -1942,6 +1946,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :show_level_modal, :atom, required: true
   attr :available_levels, :list, default: []
   attr :level_mode, :atom, default: :existing
+  attr :editing_level_uuid, :string, default: nil
+  attr :level_shared, :boolean, default: false
 
   defp level_form(assigns) do
     ~H"""
@@ -1979,6 +1985,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       id="level-form"
       phx-submit="save_level"
     >
+      <div
+        :if={@show_level_modal == :edit && @level_shared}
+        class="bg-info/10 border border-info/30 rounded-lg p-3 flex items-start gap-2"
+      >
+        <.icon name="hero-information-circle" class="w-5 h-5 text-info shrink-0 mt-0.5" />
+        <p class="text-sm text-info-content">
+          This level is shared. Changes here will apply everywhere it's used, not just this station.
+        </p>
+      </div>
+
       <%= if @show_level_modal == :add && @level_mode == :existing do %>
         <%= if @available_levels == [] do %>
           <div class="p-4 bg-base-200 rounded-lg text-center">
@@ -2039,6 +2055,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </button>
       </:actions>
     </.simple_form>
+
+    <div
+      :if={@show_level_modal == :edit && @editing_level_uuid}
+      class="mt-8 pt-6 border-t border-base-200"
+    >
+      <div class="bg-error/5 border border-error/20 rounded-lg p-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-error font-medium">Remove from this station</h3>
+            <p class="text-xs text-error/70 mt-1">
+              Unassigns all child stops on this level and removes the diagram. The level itself won't be deleted.
+            </p>
+          </div>
+          <button
+            type="button"
+            class="btn btn-error btn-sm btn-active text-white"
+            phx-click="remove_level_from_station"
+            phx-value-id={@editing_level_uuid}
+            data-confirm="Remove this level from the station? Child stops on this level will become unassigned."
+          >
+            Remove Level
+          </button>
+        </div>
+      </div>
+    </div>
     """
   end
 
@@ -2070,7 +2111,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <div>
       <h3 class="text-sm font-semibold mb-2">Child Stops on Level</h3>
-      <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden [&_thead_th]:bg-base-200">
+      <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <%= if @child_stops_list == [] do %>
           <p class="px-4 py-3 text-sm text-base-content/60">No child stops on this level.</p>
         <% else %>
@@ -2114,8 +2155,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp unassigned_stops_table(assigns) do
     ~H"""
     <div>
-      <h3 class="text-sm font-semibold mb-2 text-warning">Child Stops Not Assigned to a Level</h3>
-      <div class="bg-base-100 border border-warning/30 rounded-lg overflow-hidden [&_thead_th]:bg-base-200">
+      <h3 class="text-sm font-semibold mb-2 text-base-content">
+        Child Stops Not Assigned to a Level
+      </h3>
+      <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <.table
           id="unassigned-stops-table"
           rows={@child_stops_list}
@@ -2160,7 +2203,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <h3 class="text-sm font-semibold">Pathways on Level</h3>
         <span :if={@pathway_error} class="text-error text-sm">{@pathway_error}</span>
       </div>
-      <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden [&_thead_th]:bg-base-200">
+      <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <%= if @pathways_list == [] do %>
           <p class="px-4 py-3 text-sm text-base-content/60">No pathways on this level.</p>
         <% else %>
