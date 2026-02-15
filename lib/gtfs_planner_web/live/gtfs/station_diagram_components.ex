@@ -892,7 +892,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <%= if stop.diagram_coordinate do %>
           <% cx = stop.diagram_coordinate["x"] %>
           <% cy = stop.diagram_coordinate["y"] %>
-          <% active_fill = if(@active_point_id == stop.id, do: "#1e40af", else: "#2563EB") %>
+          <% active_fill = if(@active_point_id == stop.id, do: "#059669", else: "#2563EB") %>
           <% label = stop_label_text(stop) %>
           <g
             id={dom_id}
