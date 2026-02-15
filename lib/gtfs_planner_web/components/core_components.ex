@@ -86,16 +86,32 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
       <.button>Send!</.button>
       <.button phx-click="go" variant="primary">Send!</.button>
+      <.button phx-click="go" variant="secondary">Cancel</.button>
+      <.button phx-click="go" variant="danger">Delete user</.button>
       <.button navigate={~p"/"}>Home</.button>
   """
   attr :rest, :global, include: ~w(href navigate patch method download name value disabled)
   attr :class, :any
-  attr :variant, :string, values: ~w(primary)
+  attr :variant, :string, values: ~w(primary secondary quiet danger), default: "primary"
+  attr :size, :string, values: ~w(sm md lg), default: "md"
   slot :inner_block, required: true
 
   def button(%{rest: rest} = assigns) do
-    # Using btn-active removes the shadow/glow effect that causes visual misalignment
-    variants = %{"primary" => "btn-primary btn-active", nil => "btn-primary btn-soft btn-active"}
+    variants = %{
+      "primary" => "btn-primary",
+      "secondary" => "btn-outline",
+      "quiet" => "btn-ghost",
+      "danger" => "btn-error"
+    }
+
+    sizes = %{
+      "sm" => "btn-sm",
+      "md" => "",
+      "lg" => "btn-lg"
+    }
+
+    base_classes =
+      "font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
 
     assigns =
       assign_new(assigns, :class, fn ->
@@ -103,7 +119,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
       end)
 
     classes =
-      ["btn", Map.fetch!(variants, assigns[:variant]), List.wrap(assigns[:class])]
+      [
+        "btn",
+        base_classes,
+        Map.fetch!(sizes, assigns[:size]),
+        Map.fetch!(variants, assigns[:variant]),
+        List.wrap(assigns[:class])
+      ]
 
     assigns = assign(assigns, :class, classes)
 
@@ -834,22 +856,26 @@ defmodule GtfsPlannerWeb.CoreComponents do
         <div :if={@active_tab == :diagram} class="flex items-center gap-4 pb-2">
           <%!-- Level context --%>
           <div class="flex items-center gap-2">
-            <button
+            <.button
               type="button"
-              class="btn btn-sm btn-outline"
+              size="sm"
+              variant="secondary"
+              class="border-gray-500 bg-gray-50 text-gray-800 hover:bg-gray-100"
               phx-click="open_add_level"
             >
-              Add a level
-            </button>
+              Add level
+            </.button>
 
-            <button
+            <.button
               :if={@active_level}
               type="button"
-              class="btn btn-sm btn-outline"
+              size="sm"
+              variant="secondary"
+              class="border-gray-500 bg-gray-50 text-gray-800 hover:bg-gray-100"
               phx-click="open_edit_level"
             >
-              Edit this level
-            </button>
+              Edit level
+            </.button>
           </div>
 
           <%!-- Canvas actions --%>
@@ -860,8 +886,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
               phx-submit="save_diagram"
               phx-hook="AutoSubmitUpload"
             >
-              <label class="btn btn-sm btn-outline cursor-pointer">
-                {if @has_diagram, do: "Replace diagram", else: "Upload Diagram"}
+              <label class="btn btn-sm btn-outline cursor-pointer border-gray-500 bg-gray-50 text-gray-800 hover:bg-gray-100">
+                {if @has_diagram, do: "Replace diagram", else: "Upload diagram"}
                 <.live_file_input
                   upload={@uploads.diagram}
                   id="station-sub-nav-upload"

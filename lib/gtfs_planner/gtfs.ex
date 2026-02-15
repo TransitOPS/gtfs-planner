@@ -719,6 +719,53 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns true if the given level is associated with any station other than `station_id`.
+  """
+  def level_used_by_other_stations?(organization_id, gtfs_version_id, level_id, station_id) do
+    from(sl in StopLevel,
+      where:
+        sl.organization_id == ^organization_id and
+          sl.gtfs_version_id == ^gtfs_version_id and
+          sl.level_id == ^level_id and
+          sl.stop_id != ^station_id
+    )
+    |> Repo.exists?()
+  end
+
+  @doc """
+  Removes a level association from a station while preserving the shared level record.
+  """
+  def remove_level_from_station(
+        organization_id,
+        gtfs_version_id,
+        station_id,
+        station_stop_id,
+        level_id
+      ) do
+    Repo.transaction(fn ->
+      level = get_level!(level_id)
+
+      from(s in Stop,
+        where: s.parent_station == ^station_stop_id and s.level_id == ^level.level_id
+      )
+      |> Repo.update_all(set: [level_id: nil, diagram_coordinate: nil])
+
+      with %StopLevel{} = stop_level <-
+             get_stop_level(organization_id, gtfs_version_id, station_id, level_id),
+           {:ok, _deleted_stop_level} <- Repo.delete(stop_level) do
+        :removed
+      else
+        nil -> :removed
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, :removed} -> {:ok, :removed}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   Creates a stop_level association.
   """
   def create_stop_level(attrs \\ %{}) do
