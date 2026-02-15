@@ -335,6 +335,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("#child_stops-#{child_stop.id}")
       |> render_click()
 
+      refute has_element?(view, "#child-stop-form")
       refute has_element?(view, "#child-stop-form input[name='stop_id'][readonly]")
       refute has_element?(view, "#child-stop-form button[phx-click='delete_child_stop']")
     end
