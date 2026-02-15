@@ -689,13 +689,36 @@ defmodule GtfsPlanner.Gtfs do
       (Map.keys(levels_from_stops) ++ Enum.map(levels_from_stop_levels, & &1.level.id))
       |> Enum.uniq()
 
+    levels_from_stop_levels_by_id =
+      Map.new(levels_from_stop_levels, fn %{level: level} = level_data ->
+        {level.id, level_data}
+      end)
+
+    missing_level_ids =
+      all_level_ids
+      |> Enum.reject(&Map.has_key?(levels_from_stop_levels_by_id, &1))
+
+    missing_levels_by_id =
+      from(l in Level,
+        where: l.id in ^missing_level_ids,
+        select: {l.id, l}
+      )
+      |> Repo.all()
+      |> Map.new()
+
     # Build final result with stop counts and diagram filenames
     all_level_ids
     |> Enum.map(fn level_id ->
       # Get level from stop_levels query if available (includes diagram_filename)
-      from_stop_levels = Enum.find(levels_from_stop_levels, &(&1.level.id == level_id))
+      from_stop_levels = Map.get(levels_from_stop_levels_by_id, level_id)
 
-      level = if from_stop_levels, do: from_stop_levels.level, else: Repo.get!(Level, level_id)
+      level =
+        if from_stop_levels do
+          from_stop_levels.level
+        else
+          Map.fetch!(missing_levels_by_id, level_id)
+        end
+
       stop_count = Map.get(levels_from_stops, level_id, 0)
       diagram_filename = if from_stop_levels, do: from_stop_levels.diagram_filename, else: nil
 
