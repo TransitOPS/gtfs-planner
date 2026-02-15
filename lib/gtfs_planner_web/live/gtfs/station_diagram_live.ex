@@ -511,8 +511,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket =
       Enum.reduce(pathways_to_delete, socket, fn pathway, acc_socket ->
         case Gtfs.delete_pathway(pathway) do
-          {:ok, deleted_pathway} ->
-            stream_delete(acc_socket, :pathways, deleted_pathway)
+          {:ok, _deleted_pathway} ->
+            acc_socket
 
           {:error, _} ->
             acc_socket
@@ -521,10 +521,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     # Delete the stop itself
     case Gtfs.delete_stop(stop) do
-      {:ok, deleted_stop} ->
+      {:ok, _deleted_stop} ->
         {:noreply,
          socket
-         |> stream_delete(:child_stops, deleted_stop)
          |> refresh_lists()
          |> assign(:pending_xy, nil)
          |> assign(:selected_stop_id, nil)
@@ -1160,12 +1159,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     }
 
     case Gtfs.create_pathway(attrs) do
-      {:ok, pathway} ->
-        pathway = %{pathway | from_stop: from_stop, to_stop: to_stop}
-
+      {:ok, _pathway} ->
         {:noreply,
          socket
-         |> stream_insert(:pathways, pathway)
          |> refresh_lists()
          # Re-stream to remove highlight
          |> stream_insert(:child_stops, from_stop)
