@@ -775,61 +775,64 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     if is_nil(active_level) do
       {:noreply, assign(socket, :diagram_error, "No active level selected")}
     else
-      stop_level =
+      stop_level_result =
         case socket.assigns.active_stop_level do
           nil ->
-            {:ok, sl} =
-              Gtfs.create_stop_level(%{
-                stop_id: station.id,
-                level_id: active_level.id,
-                organization_id: socket.assigns.current_organization.id,
-                gtfs_version_id: socket.assigns.current_gtfs_version.id
-              })
-
-            sl
+            Gtfs.create_stop_level(%{
+              stop_id: station.id,
+              level_id: active_level.id,
+              organization_id: socket.assigns.current_organization.id,
+              gtfs_version_id: socket.assigns.current_gtfs_version.id
+            })
 
           existing ->
-            existing
+            {:ok, existing}
         end
 
-      uploaded_files =
-        consume_uploaded_entries(socket, :diagram, fn %{path: path}, entry ->
-          uploads_base = Application.get_env(:gtfs_planner, :uploads_path)
+      case stop_level_result do
+        {:error, _changeset} ->
+          {:noreply, assign(socket, :diagram_error, "Failed to associate level with station")}
 
-          storage_filename =
-            build_diagram_storage_filename(stop_level.level_id, entry.client_name)
+        {:ok, stop_level} ->
+          uploaded_files =
+            consume_uploaded_entries(socket, :diagram, fn %{path: path}, entry ->
+              uploads_base = Application.get_env(:gtfs_planner, :uploads_path)
 
-          dest_dir =
-            Path.join([
-              uploads_base,
-              "diagrams",
-              to_string(socket.assigns.current_organization.id),
-              station.stop_id
-            ])
+              storage_filename =
+                build_diagram_storage_filename(stop_level.level_id, entry.client_name)
 
-          File.mkdir_p!(dest_dir)
+              dest_dir =
+                Path.join([
+                  uploads_base,
+                  "diagrams",
+                  to_string(socket.assigns.current_organization.id),
+                  station.stop_id
+                ])
 
-          dest_path = Path.join(dest_dir, storage_filename)
-          File.cp!(path, dest_path)
+              File.mkdir_p!(dest_dir)
 
-          {:ok, storage_filename}
-        end)
+              dest_path = Path.join(dest_dir, storage_filename)
+              File.cp!(path, dest_path)
 
-      case uploaded_files do
-        [filename | _] ->
-          case Gtfs.update_stop_level_diagram(stop_level, filename) do
-            {:ok, updated_stop_level} ->
-              {:noreply,
-               socket
-               |> assign(:active_stop_level, updated_stop_level)
-               |> assign(:diagram_error, nil)}
+              {:ok, storage_filename}
+            end)
 
-            {:error, _changeset} ->
-              {:noreply, assign(socket, :diagram_error, "Failed to save diagram")}
+          case uploaded_files do
+            [filename | _] ->
+              case Gtfs.update_stop_level_diagram(stop_level, filename) do
+                {:ok, updated_stop_level} ->
+                  {:noreply,
+                   socket
+                   |> assign(:active_stop_level, updated_stop_level)
+                   |> assign(:diagram_error, nil)}
+
+                {:error, _changeset} ->
+                  {:noreply, assign(socket, :diagram_error, "Failed to save diagram")}
+              end
+
+            [] ->
+              {:noreply, socket}
           end
-
-        [] ->
-          {:noreply, socket}
       end
     end
   end
