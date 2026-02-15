@@ -716,7 +716,15 @@ defmodule GtfsPlanner.Gtfs do
         if from_stop_levels do
           from_stop_levels.level
         else
-          Map.fetch!(missing_levels_by_id, level_id)
+          case Map.fetch(missing_levels_by_id, level_id) do
+            {:ok, level} ->
+              level
+
+            :error ->
+              raise Ecto.NoResultsError,
+                queryable: Level,
+                query: "level not found for id #{inspect(level_id)} in list_levels_for_station/3"
+          end
         end
 
       stop_count = Map.get(levels_from_stops, level_id, 0)
