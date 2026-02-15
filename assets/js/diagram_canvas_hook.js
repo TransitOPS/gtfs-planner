@@ -16,8 +16,18 @@ const OVERLAY_BASE = {
   textStrokeWidth: 0.24,
   badgeFontSize: 0.65,
   badgeStrokeWidth: 0.16,
-  pathwayStroke: 0.5,
+  pathwayStroke: 0.35,
   pathwayHitStroke: 2,
+  pathwayTickStroke: 0.3,
+  pathwayBarStroke: 0.5,
+  pathwayConnectorStroke: 0.3,
+  pathwayLabelFontSize: 0.9,
+  pathwayLabelStrokeWidth: 0.2,
+  pathwayMarkerSize: 1.5,
+  pathwayElevatorBoxWidth: 2,
+  pathwayElevatorBoxHeight: 2,
+  pathwayElevatorBoxStroke: 0.4,
+  pathwayElevatorTextSize: 1.2,
   pendingOffsetY: 1,
   pendingOffsetX: 0.75,
   pendingOffsetBottomY: 0.5,
@@ -319,16 +329,133 @@ const DiagramCanvasHook = {
       badge.setAttribute("stroke-width", `${OVERLAY_BASE.badgeStrokeWidth / scale}`);
     });
 
-    overlay.querySelectorAll("#pathways-svg g").forEach((group) => {
-      const lines = group.querySelectorAll("line");
+    overlay.querySelectorAll("#pathways-svg [data-pathway-hit]").forEach((hitTarget) => {
+      const baseStroke = parseFloat(
+        hitTarget.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.pathwayHitStroke}`
+      );
 
-      if (lines[0]) {
-        lines[0].setAttribute("stroke-width", `${OVERLAY_BASE.pathwayHitStroke / scale}`);
+      if (!Number.isFinite(baseStroke)) {
+        return;
       }
 
-      if (lines[1]) {
-        lines[1].setAttribute("stroke-width", `${OVERLAY_BASE.pathwayStroke / scale}`);
+      hitTarget.setAttribute("stroke-width", `${baseStroke / scale}`);
+    });
+
+    overlay.querySelectorAll("#pathways-svg [data-base-stroke]").forEach((element) => {
+      if (element.hasAttribute("data-pathway-hit")) {
+        return;
       }
+
+      const baseStroke = parseFloat(element.getAttribute("data-base-stroke"));
+
+      if (!Number.isFinite(baseStroke)) {
+        return;
+      }
+
+      element.setAttribute("stroke-width", `${baseStroke / scale}`);
+    });
+
+    overlay.querySelectorAll("#pathways-svg [data-base-dash]").forEach((element) => {
+      const baseDash = element.getAttribute("data-base-dash");
+
+      if (!baseDash) {
+        return;
+      }
+
+      const scaled = baseDash
+        .split(",")
+        .map((part) => parseFloat(part.trim()))
+        .filter((value) => Number.isFinite(value))
+        .map((value) => value / scale);
+
+      if (scaled.length === 0) {
+        return;
+      }
+
+      element.setAttribute("stroke-dasharray", scaled.join(" "));
+    });
+
+    const pathwayMarker = overlay.querySelector("#pathway-arrow");
+    if (pathwayMarker) {
+      pathwayMarker.setAttribute("markerWidth", `${OVERLAY_BASE.pathwayMarkerSize / scale}`);
+      pathwayMarker.setAttribute("markerHeight", `${OVERLAY_BASE.pathwayMarkerSize / scale}`);
+    }
+
+    overlay.querySelectorAll("#pathways-svg [data-pathway-elevator-box]").forEach((box) => {
+      const cx = parseFloat(box.getAttribute("data-center-x"));
+      const cy = parseFloat(box.getAttribute("data-center-y"));
+      const baseWidth = parseFloat(
+        box.getAttribute("data-base-width") ?? `${OVERLAY_BASE.pathwayElevatorBoxWidth}`
+      );
+      const baseHeight = parseFloat(
+        box.getAttribute("data-base-height") ?? `${OVERLAY_BASE.pathwayElevatorBoxHeight}`
+      );
+      const baseStroke = parseFloat(
+        box.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.pathwayElevatorBoxStroke}`
+      );
+
+      if (
+        !Number.isFinite(cx) ||
+        !Number.isFinite(cy) ||
+        !Number.isFinite(baseWidth) ||
+        !Number.isFinite(baseHeight) ||
+        !Number.isFinite(baseStroke)
+      ) {
+        return;
+      }
+
+      const width = baseWidth / scale;
+      const height = baseHeight / scale;
+      box.setAttribute("x", `${cx - width / 2}`);
+      box.setAttribute("y", `${cy - height / 2}`);
+      box.setAttribute("width", `${width}`);
+      box.setAttribute("height", `${height}`);
+      box.setAttribute("stroke-width", `${baseStroke / scale}`);
+    });
+
+    overlay.querySelectorAll("#pathways-svg [data-pathway-elevator-text]").forEach((label) => {
+      const cx = parseFloat(label.getAttribute("data-center-x"));
+      const cy = parseFloat(label.getAttribute("data-center-y"));
+      const baseFontSize = parseFloat(
+        label.getAttribute("data-base-font-size") ?? `${OVERLAY_BASE.pathwayElevatorTextSize}`
+      );
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(baseFontSize)) {
+        return;
+      }
+
+      label.setAttribute("x", `${cx}`);
+      label.setAttribute("y", `${cy}`);
+      label.setAttribute("font-size", `${baseFontSize / scale}`);
+    });
+
+    overlay.querySelectorAll("#pathways-svg [data-pathway-label]").forEach((label) => {
+      const midpointX = parseFloat(label.getAttribute("data-midpoint-x"));
+      const midpointY = parseFloat(label.getAttribute("data-midpoint-y"));
+      const offsetX = parseFloat(label.getAttribute("data-offset-x"));
+      const offsetY = parseFloat(label.getAttribute("data-offset-y"));
+      const baseFontSize = parseFloat(
+        label.getAttribute("data-base-font-size") ?? `${OVERLAY_BASE.pathwayLabelFontSize}`
+      );
+      const baseStroke = parseFloat(
+        label.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.pathwayLabelStrokeWidth}`
+      );
+
+      if (
+        !Number.isFinite(midpointX) ||
+        !Number.isFinite(midpointY) ||
+        !Number.isFinite(offsetX) ||
+        !Number.isFinite(offsetY) ||
+        !Number.isFinite(baseFontSize) ||
+        !Number.isFinite(baseStroke)
+      ) {
+        return;
+      }
+
+      label.setAttribute("x", `${midpointX + offsetX / scale}`);
+      label.setAttribute("y", `${midpointY + offsetY / scale}`);
+      label.setAttribute("font-size", `${baseFontSize / scale}`);
+      label.setAttribute("stroke-width", `${baseStroke / scale}`);
     });
 
     const pending = overlay.querySelector("polygon[data-cx][data-cy]");
