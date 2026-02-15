@@ -796,7 +796,7 @@ defmodule GtfsPlanner.Gtfs do
       where:
         p.organization_id == ^organization_id and
           p.gtfs_version_id == ^gtfs_version_id and
-          from_stop.level_id == ^level.level_id and
+          (from_stop.level_id == ^level.level_id or to_stop.level_id == ^level.level_id) and
           from_stop.parent_station == ^parent_station.stop_id and
           to_stop.parent_station == ^parent_station.stop_id,
       order_by: [asc: p.pathway_id],
