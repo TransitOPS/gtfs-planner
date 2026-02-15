@@ -12,111 +12,57 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
-    # Check if version resolution is pending (versionless route)
-    if socket.assigns[:gtfs_version_pending] do
-      {:ok,
-       socket
-       |> assign(:page_title, "Export GTFS")
-       |> assign(:pending_version_resolution, true)}
-    else
-      user_roles = socket.assigns[:user_roles] || []
+    user_roles = socket.assigns[:user_roles] || []
 
-      {:ok,
-       socket
-       |> assign(:page_title, "Export GTFS")
-       |> assign(:user_roles, user_roles)
-       |> assign(:export_type, :full)
-       |> assign(:selected_validations, [])
-       |> assign(:file_inventory, [])
-       |> assign(:exporting, false)
-       |> assign(:export_task, nil)
-       |> assign(:export_error, nil)
-       |> assign(:validation_run_id, nil)
-       |> assign(:validation_task, nil)
-       |> assign(:validating, false)
-       |> assign(:validation_progress, nil)
-       |> assign(:validation_result, nil)
-       |> assign(:validation_error, nil)
-       |> assign(:recent_validation_runs, [])}
-    end
+    {:ok,
+     socket
+     |> assign(:page_title, "Export GTFS")
+     |> assign(:user_roles, user_roles)
+     |> assign(:export_type, :full)
+     |> assign(:selected_validations, [])
+     |> assign(:file_inventory, [])
+     |> assign(:exporting, false)
+     |> assign(:export_task, nil)
+     |> assign(:export_error, nil)
+     |> assign(:validation_run_id, nil)
+     |> assign(:validation_task, nil)
+     |> assign(:validating, false)
+     |> assign(:validation_progress, nil)
+     |> assign(:validation_result, nil)
+     |> assign(:validation_error, nil)
+     |> assign(:recent_validation_runs, [])}
   end
 
   @impl Phoenix.LiveView
   def handle_params(_params, _uri, socket) do
-    # Skip if pending version resolution
-    if socket.assigns[:pending_version_resolution] do
-      {:noreply, socket}
-    else
-      # Load file inventory with real database counts
-      organization_id = socket.assigns.current_organization.id
-      gtfs_version_id = socket.assigns.current_gtfs_version.id
-      export_type = socket.assigns.export_type
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    export_type = socket.assigns.export_type
 
-      file_inventory =
-        organization_id
-        |> Gtfs.get_file_inventory(gtfs_version_id, export_type)
-        |> Enum.sort_by(fn {filename, _count} -> filename end)
+    file_inventory =
+      organization_id
+      |> Gtfs.get_file_inventory(gtfs_version_id, export_type)
+      |> Enum.sort_by(fn {filename, _count} -> filename end)
 
-      recent_validation_runs =
-        Validations.list_recent_validation_runs(organization_id, gtfs_version_id, 5)
+    recent_validation_runs =
+      Validations.list_recent_validation_runs(organization_id, gtfs_version_id, 5)
 
-      {:noreply,
-       socket
-       |> assign(:file_inventory, file_inventory)
-       |> assign(:recent_validation_runs, recent_validation_runs)}
-    end
+    {:noreply,
+     socket
+     |> assign(:file_inventory, file_inventory)
+     |> assign(:recent_validation_runs, recent_validation_runs)}
   end
 
   @impl Phoenix.LiveView
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
-    # Guard clause: if pending version resolution, we need to redirect to a version
-    if socket.assigns[:pending_version_resolution] do
-      current_organization = socket.assigns.current_organization
+    current_organization = socket.assigns.current_organization
+    current_version_id = to_string(socket.assigns.current_gtfs_version.id)
 
-      # Use the version from localStorage if valid, otherwise fetch latest
-      version_to_use =
-        if version_id && valid_version_for_org?(version_id, current_organization.id) do
-          version_id
-        else
-          # Fetch latest version for the organization
-          case Versions.get_latest_gtfs_version(current_organization.id) do
-            {:ok, version} -> to_string(version.id)
-            {:error, :no_versions} -> nil
-          end
-        end
-
-      if version_to_use do
-        {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/export")}
-      else
-        # No versions available, stay on pending page
-        {:noreply, socket}
-      end
+    if version_id && version_id != current_version_id &&
+         valid_version_for_org?(version_id, current_organization.id) do
+      {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/export")}
     else
-      # Normal flow: we already have a current version
-      current_organization = socket.assigns.current_organization
-      current_version_id = to_string(socket.assigns.current_gtfs_version.id)
-
-      # Try to use the stored version_id from localStorage
-      version_to_use =
-        if version_id && valid_version_for_org?(version_id, current_organization.id) do
-          version_id
-        else
-          # Fall back to latest version or current version
-          case socket.assigns[:latest_gtfs_version] do
-            {:ok, version} -> to_string(version.id)
-            {:error, :no_versions} -> nil
-            # Already on a valid route
-            nil -> current_version_id
-          end
-        end
-
-      # Only navigate if switching to a different version
-      if version_to_use && version_to_use != current_version_id do
-        {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/export")}
-      else
-        # Already on correct version, do nothing
-        {:noreply, socket}
-      end
+      {:noreply, socket}
     end
   end
 
@@ -391,315 +337,297 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
-    <%= if assigns[:pending_version_resolution] do %>
-      <%!-- Pending version resolution - mount the hook to trigger redirect --%>
-      <div
-        id="gtfs-version-resolver"
-        phx-hook="GtfsVersionHook"
-        data-organization-id={@current_organization.id}
-      >
-        <div class="flex items-center justify-center min-h-screen">
-          <div class="text-center">
-            <div class="loading loading-spinner loading-lg"></div>
-            <p class="mt-4 text-base-content/60">Loading GTFS version...</p>
+    <Layouts.app
+      flash={@flash}
+      current_user={@current_user}
+      current_organization={@current_organization}
+      user_roles={@user_roles}
+      current_path={@current_path}
+      current_gtfs_version={assigns[:current_gtfs_version]}
+      available_versions={assigns[:available_versions] || []}
+    >
+      <.header>
+        Export & Validate
+        <:subtitle>
+          Generate GTFS exports and run validation checks to ensure data quality before publishing.
+        </:subtitle>
+      </.header>
+
+      <%!-- Version Info Card --%>
+      <div class="mt-6 bg-base-100 rounded-lg p-6 border border-base-300">
+        <div class="flex items-center gap-3">
+          <div class="flex-1">
+            <h2 class="text-xl font-semibold text-base-content">
+              {@current_gtfs_version.name}
+            </h2>
+            <p class="text-sm text-base-content/60 mt-1">
+              GTFS Version for {@current_organization.name}
+            </p>
           </div>
         </div>
       </div>
-    <% else %>
-      <Layouts.app
-        flash={@flash}
-        current_user={@current_user}
-        current_organization={@current_organization}
-        user_roles={@user_roles}
-        current_path={@current_path}
-        current_gtfs_version={assigns[:current_gtfs_version]}
-        available_versions={assigns[:available_versions] || []}
+
+      <div
+        id="export-download-container"
+        phx-hook=".DownloadHook"
+        class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8"
       >
-        <.header>
-          Export & Validate
-          <:subtitle>
-            Generate GTFS exports and run validation checks to ensure data quality before publishing.
-          </:subtitle>
-        </.header>
+        <%!-- Export Column --%>
+        <div class="bg-base-100 rounded-lg p-6 border border-base-300">
+          <h2 class="text-lg font-semibold mb-2">Export</h2>
+          <p class="text-sm text-base-content/70 mb-4">
+            Generate a GTFS zip file containing all data from this version. The export includes all required and optional GTFS files with current record counts.
+          </p>
 
-        <%!-- Version Info Card --%>
-        <div class="mt-6 bg-base-100 rounded-lg p-6 border border-base-300">
-          <div class="flex items-center gap-3">
-            <div class="flex-1">
-              <h2 class="text-xl font-semibold text-base-content">
-                {@current_gtfs_version.name}
-              </h2>
-              <p class="text-sm text-base-content/60 mt-1">
-                GTFS Version for {@current_organization.name}
-              </p>
-            </div>
+          <div class="flex items-center gap-6 mb-6">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="export_type"
+                class="radio"
+                phx-click="select_export_type"
+                phx-value-type="full"
+                checked={@export_type == :full}
+              />
+              <span>Full Export</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="export_type"
+                class="radio"
+                phx-click="select_export_type"
+                phx-value-type="pathways"
+                checked={@export_type == :pathways}
+              />
+              <span>Pathways Export</span>
+            </label>
           </div>
+          <div class="overflow-x-auto">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th class="text-right">Records</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={{filename, count} <- @file_inventory}>
+                  <td>{filename}</td>
+                  <td class="text-right">{count}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <%= if @export_error do %>
+            <div role="alert" class="alert alert-error mt-6">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="stroke-current shrink-0 h-6 w-6"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              <span>{@export_error}</span>
+            </div>
+          <% end %>
+
+          <%= if @exporting do %>
+            <button class="btn btn-primary mt-6 w-full" disabled>
+              <span class="loading loading-spinner"></span> Exporting...
+            </button>
+          <% else %>
+            <button class="btn btn-primary mt-6 w-full" phx-click="download_export">
+              Export GTFS
+            </button>
+          <% end %>
         </div>
 
-        <div
-          id="export-download-container"
-          phx-hook=".DownloadHook"
-          class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8"
-        >
-          <%!-- Export Column --%>
-          <div class="bg-base-100 rounded-lg p-6 border border-base-300">
-            <h2 class="text-lg font-semibold mb-2">Export</h2>
-            <p class="text-sm text-base-content/70 mb-4">
-              Generate a GTFS zip file containing all data from this version. The export includes all required and optional GTFS files with current record counts.
-            </p>
+        <%!-- Validate Column --%>
+        <div class="bg-base-100 rounded-lg p-6 border border-base-300">
+          <h2 class="text-lg font-semibold mb-2">Validate</h2>
+          <p class="text-sm text-base-content/70 mb-6">
+            Run industry-standard validation checks to ensure data correctness before publishing. Includes MobilityData GTFS Validator and custom pathways trip tests.
+          </p>
 
-            <div class="flex items-center gap-6 mb-6">
-              <label class="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="export_type"
-                  class="radio"
-                  phx-click="select_export_type"
-                  phx-value-type="full"
-                  checked={@export_type == :full}
+          <%= if @validation_error do %>
+            <div role="alert" class="alert alert-error mb-6">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="stroke-current shrink-0 h-6 w-6"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
                 />
-                <span>Full Export</span>
-              </label>
-              <label class="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="export_type"
-                  class="radio"
-                  phx-click="select_export_type"
-                  phx-value-type="pathways"
-                  checked={@export_type == :pathways}
+              </svg>
+              <span>{@validation_error}</span>
+            </div>
+          <% end %>
+
+          <%= cond do %>
+            <% @validating -> %>
+              <div class="space-y-4">
+                <progress
+                  class="progress progress-primary w-full"
+                  value={@validation_progress.percent}
+                  max="100"
                 />
-                <span>Pathways Export</span>
-              </label>
-            </div>
-            <div class="overflow-x-auto">
-              <table class="table">
-                <thead>
-                  <tr>
-                    <th>File</th>
-                    <th class="text-right">Records</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={{filename, count} <- @file_inventory}>
-                    <td>{filename}</td>
-                    <td class="text-right">{count}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <%= if @export_error do %>
-              <div role="alert" class="alert alert-error mt-6">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="stroke-current shrink-0 h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-                <span>{@export_error}</span>
+                <div class="flex items-center gap-2">
+                  <span class="loading loading-spinner loading-sm"></span>
+                  <span class="text-sm">{phase_label(@validation_progress.phase)}</span>
+                </div>
               </div>
-            <% end %>
+            <% @validation_result -> %>
+              <div class="space-y-6">
+                <div class="grid grid-cols-3 gap-2">
+                  <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                    <div class="stat-title text-[10px] uppercase opacity-60">Errors</div>
+                    <div class="stat-value text-sm text-error">
+                      {@validation_result.summary.errors}
+                    </div>
+                  </div>
+                  <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                    <div class="stat-title text-[10px] uppercase opacity-60">Warnings</div>
+                    <div class="stat-value text-sm text-warning">
+                      {@validation_result.summary.warnings}
+                    </div>
+                  </div>
+                  <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                    <div class="stat-title text-[10px] uppercase opacity-60">Infos</div>
+                    <div class="stat-value text-sm text-info">
+                      {@validation_result.summary.infos}
+                    </div>
+                  </div>
+                </div>
 
-            <%= if @exporting do %>
-              <button class="btn btn-primary mt-6 w-full" disabled>
-                <span class="loading loading-spinner"></span> Exporting...
+                <div class="flex flex-col gap-2">
+                  <.link
+                    navigate={~p"/gtfs/#{@current_gtfs_version.id}/validation/#{@validation_run_id}"}
+                    class="btn btn-primary btn-sm w-full"
+                  >
+                    View Full Results
+                  </.link>
+                  <button class="btn btn-outline btn-sm w-full" phx-click="reset_validation">
+                    Run Again
+                  </button>
+                </div>
+              </div>
+            <% true -> %>
+              <div class="space-y-3">
+                <label class="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    class="checkbox"
+                    phx-click="toggle_validation"
+                    phx-value-validation="mobility_data"
+                    checked={:mobility_data in @selected_validations}
+                  />
+                  <div>
+                    <div class="font-medium">MobilityData GTFS Validator</div>
+                    <div class="text-xs text-base-content/60">
+                      Industry-standard validation for GTFS compliance
+                    </div>
+                  </div>
+                </label>
+
+                <label class="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    class="checkbox"
+                    phx-click="toggle_validation"
+                    phx-value-validation="pathways_tests"
+                    checked={:pathways_tests in @selected_validations}
+                  />
+                  <div>
+                    <div class="font-medium">Pathways Trip Tests</div>
+                    <div class="text-xs text-base-content/60">
+                      Custom validation for pathways connectivity
+                    </div>
+                  </div>
+                </label>
+              </div>
+
+              <button class="btn btn-outline mt-6 w-full" phx-click="run_validation">
+                Run Validation
               </button>
-            <% else %>
-              <button class="btn btn-primary mt-6 w-full" phx-click="download_export">
-                Export GTFS
-              </button>
-            <% end %>
-          </div>
+          <% end %>
 
-          <%!-- Validate Column --%>
-          <div class="bg-base-100 rounded-lg p-6 border border-base-300">
-            <h2 class="text-lg font-semibold mb-2">Validate</h2>
-            <p class="text-sm text-base-content/70 mb-6">
-              Run industry-standard validation checks to ensure data correctness before publishing. Includes MobilityData GTFS Validator and custom pathways trip tests.
-            </p>
-
-            <%= if @validation_error do %>
-              <div role="alert" class="alert alert-error mb-6">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="stroke-current shrink-0 h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-                <span>{@validation_error}</span>
+          <%!-- Recent Validations --%>
+          <%= if @recent_validation_runs != [] do %>
+            <div class="mt-8 pt-8 border-t border-base-300">
+              <h3 class="text-sm font-semibold mb-4">Recent Validations</h3>
+              <div class="overflow-x-auto">
+                <table class="table table-sm">
+                  <thead>
+                    <tr>
+                      <th>Type</th>
+                      <th>Date</th>
+                      <th class="text-right">Errors</th>
+                      <th class="text-right">Warnings</th>
+                      <th class="text-right">Infos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr :for={run <- @recent_validation_runs}>
+                      <td>
+                        <.link
+                          navigate={~p"/gtfs/#{@current_gtfs_version.id}/validation/#{run.id}"}
+                          class="link link-primary"
+                        >
+                          {format_run_type(run.run_type)}
+                        </.link>
+                      </td>
+                      <td class="text-sm text-base-content/70">
+                        {format_date(run.started_at)}
+                      </td>
+                      <td class={["text-right", run.errors_count > 0 && "text-error font-medium"]}>
+                        {run.errors_count}
+                      </td>
+                      <td class={[
+                        "text-right",
+                        run.warnings_count > 0 && "text-warning font-medium"
+                      ]}>
+                        {run.warnings_count}
+                      </td>
+                      <td class={["text-right", run.infos_count > 0 && "text-info font-medium"]}>
+                        {run.infos_count}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
-            <% end %>
-
-            <%= cond do %>
-              <% @validating -> %>
-                <div class="space-y-4">
-                  <progress
-                    class="progress progress-primary w-full"
-                    value={@validation_progress.percent}
-                    max="100"
-                  />
-                  <div class="flex items-center gap-2">
-                    <span class="loading loading-spinner loading-sm"></span>
-                    <span class="text-sm">{phase_label(@validation_progress.phase)}</span>
-                  </div>
-                </div>
-              <% @validation_result -> %>
-                <div class="space-y-6">
-                  <div class="grid grid-cols-3 gap-2">
-                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                      <div class="stat-title text-[10px] uppercase opacity-60">Errors</div>
-                      <div class="stat-value text-sm text-error">
-                        {@validation_result.summary.errors}
-                      </div>
-                    </div>
-                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                      <div class="stat-title text-[10px] uppercase opacity-60">Warnings</div>
-                      <div class="stat-value text-sm text-warning">
-                        {@validation_result.summary.warnings}
-                      </div>
-                    </div>
-                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                      <div class="stat-title text-[10px] uppercase opacity-60">Infos</div>
-                      <div class="stat-value text-sm text-info">
-                        {@validation_result.summary.infos}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="flex flex-col gap-2">
-                    <.link
-                      navigate={
-                        ~p"/gtfs/#{@current_gtfs_version.id}/validation/#{@validation_run_id}"
-                      }
-                      class="btn btn-primary btn-sm w-full"
-                    >
-                      View Full Results
-                    </.link>
-                    <button class="btn btn-outline btn-sm w-full" phx-click="reset_validation">
-                      Run Again
-                    </button>
-                  </div>
-                </div>
-              <% true -> %>
-                <div class="space-y-3">
-                  <label class="flex items-center gap-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      class="checkbox"
-                      phx-click="toggle_validation"
-                      phx-value-validation="mobility_data"
-                      checked={:mobility_data in @selected_validations}
-                    />
-                    <div>
-                      <div class="font-medium">MobilityData GTFS Validator</div>
-                      <div class="text-xs text-base-content/60">
-                        Industry-standard validation for GTFS compliance
-                      </div>
-                    </div>
-                  </label>
-
-                  <label class="flex items-center gap-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      class="checkbox"
-                      phx-click="toggle_validation"
-                      phx-value-validation="pathways_tests"
-                      checked={:pathways_tests in @selected_validations}
-                    />
-                    <div>
-                      <div class="font-medium">Pathways Trip Tests</div>
-                      <div class="text-xs text-base-content/60">
-                        Custom validation for pathways connectivity
-                      </div>
-                    </div>
-                  </label>
-                </div>
-
-                <button class="btn btn-outline mt-6 w-full" phx-click="run_validation">
-                  Run Validation
-                </button>
-            <% end %>
-
-            <%!-- Recent Validations --%>
-            <%= if @recent_validation_runs != [] do %>
-              <div class="mt-8 pt-8 border-t border-base-300">
-                <h3 class="text-sm font-semibold mb-4">Recent Validations</h3>
-                <div class="overflow-x-auto">
-                  <table class="table table-sm">
-                    <thead>
-                      <tr>
-                        <th>Type</th>
-                        <th>Date</th>
-                        <th class="text-right">Errors</th>
-                        <th class="text-right">Warnings</th>
-                        <th class="text-right">Infos</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr :for={run <- @recent_validation_runs}>
-                        <td>
-                          <.link
-                            navigate={~p"/gtfs/#{@current_gtfs_version.id}/validation/#{run.id}"}
-                            class="link link-primary"
-                          >
-                            {format_run_type(run.run_type)}
-                          </.link>
-                        </td>
-                        <td class="text-sm text-base-content/70">
-                          {format_date(run.started_at)}
-                        </td>
-                        <td class={["text-right", run.errors_count > 0 && "text-error font-medium"]}>
-                          {run.errors_count}
-                        </td>
-                        <td class={[
-                          "text-right",
-                          run.warnings_count > 0 && "text-warning font-medium"
-                        ]}>
-                          {run.warnings_count}
-                        </td>
-                        <td class={["text-right", run.infos_count > 0 && "text-info font-medium"]}>
-                          {run.infos_count}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            <% end %>
-          </div>
+            </div>
+          <% end %>
         </div>
-      </Layouts.app>
+      </div>
+    </Layouts.app>
 
-      <script :type={Phoenix.LiveView.ColocatedHook} name=".DownloadHook">
-        export default {
-          mounted() {
-            this.handleEvent("download-file", ({data, filename}) => {
-              const blob = new Blob([Uint8Array.from(atob(data), c => c.charCodeAt(0))], {type: "application/zip"});
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url;
-              a.download = filename;
-              a.click();
-              URL.revokeObjectURL(url);
-            });
-          }
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".DownloadHook">
+      export default {
+        mounted() {
+          this.handleEvent("download-file", ({data, filename}) => {
+            const blob = new Blob([Uint8Array.from(atob(data), c => c.charCodeAt(0))], {type: "application/zip"});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+          });
         }
-      </script>
-    <% end %>
+      }
+    </script>
     """
   end
 

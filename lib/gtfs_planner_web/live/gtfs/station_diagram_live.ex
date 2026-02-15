@@ -13,95 +13,84 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    if socket.assigns[:gtfs_version_pending] do
-      {:ok,
-       socket
-       |> assign(:page_title, "Station Diagram")
-       |> assign(:pending_version_resolution, true)}
-    else
-      user_roles = socket.assigns[:user_roles] || []
+    user_roles = socket.assigns[:user_roles] || []
 
-      {:ok,
-       socket
-       |> assign(:page_title, "Station Diagram")
-       |> assign(:user_roles, user_roles)
-       |> assign(:mode, :view)
-       |> assign(:wheelchair_minority, nil)
-       |> assign(:pending_xy, nil)
-       |> assign(:selected_stop_id, nil)
-       |> assign(:active_point_id, nil)
-       |> assign(:selected_from_stop, nil)
-       |> assign(:cross_level_stop_ids, MapSet.new())
-       |> assign(:child_stop_form, to_form(%{}))
-       |> assign(:unassigned_child_stops, [])
-       |> assign(:show_level_modal, nil)
-       |> assign(:level_form, to_form(%{}))
-       |> assign(:level_shared, false)
-       |> assign(:level_id_manually_edited, false)
-       |> assign(:pathway_error, nil)
-       |> assign(:diagram_error, nil)
-       |> assign(:reposition_mode, false)
-       |> assign(:reposition_search, "")
-       |> assign(:reposition_stops, [])
-       |> assign(:editing_child_stop, nil)
-       |> assign(:editing_level, false)
-       |> assign(:show_pathway_drawer, false)
-       |> assign(:editing_pathway, nil)
-       |> assign(:pathway_form, to_form(%{}))
-       |> assign(:available_levels, [])
-       |> assign(:level_mode, :existing)
-       |> allow_upload(:diagram,
-         accept: ~w(.png .jpg .jpeg .svg),
-         max_file_size: 10_000_000
-       )}
-    end
+    {:ok,
+     socket
+     |> assign(:page_title, "Station Diagram")
+     |> assign(:user_roles, user_roles)
+     |> assign(:mode, :view)
+     |> assign(:wheelchair_minority, nil)
+     |> assign(:pending_xy, nil)
+     |> assign(:selected_stop_id, nil)
+     |> assign(:active_point_id, nil)
+     |> assign(:selected_from_stop, nil)
+     |> assign(:cross_level_stop_ids, MapSet.new())
+     |> assign(:child_stop_form, to_form(%{}))
+     |> assign(:unassigned_child_stops, [])
+     |> assign(:show_level_modal, nil)
+     |> assign(:level_form, to_form(%{}))
+     |> assign(:level_shared, false)
+     |> assign(:level_id_manually_edited, false)
+     |> assign(:pathway_error, nil)
+     |> assign(:diagram_error, nil)
+     |> assign(:reposition_mode, false)
+     |> assign(:reposition_search, "")
+     |> assign(:reposition_stops, [])
+     |> assign(:editing_child_stop, nil)
+     |> assign(:editing_level, false)
+     |> assign(:show_pathway_drawer, false)
+     |> assign(:editing_pathway, nil)
+     |> assign(:pathway_form, to_form(%{}))
+     |> assign(:available_levels, [])
+     |> assign(:level_mode, :existing)
+     |> allow_upload(:diagram,
+       accept: ~w(.png .jpg .jpeg .svg),
+       max_file_size: 10_000_000
+     )}
   end
 
   @impl true
   def handle_params(%{"stop_id" => stop_id} = _params, _uri, socket) do
-    if socket.assigns[:pending_version_resolution] do
-      {:noreply, socket}
-    else
-      organization_id = socket.assigns.current_organization.id
-      gtfs_version_id = socket.assigns.current_gtfs_version.id
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-      case Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id) do
-        nil ->
-          {:noreply, push_navigate(socket, to: "/gtfs/#{gtfs_version_id}/stops")}
+    case Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id) do
+      nil ->
+        {:noreply, push_navigate(socket, to: "/gtfs/#{gtfs_version_id}/stops")}
 
-        station ->
-          # levels is now a list of maps: %{level: Level, stop_count: count}
-          levels_data =
-            Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+      station ->
+        # levels is now a list of maps: %{level: Level, stop_count: count}
+        levels_data =
+          Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
 
-          levels = Enum.map(levels_data, & &1.level)
-          station_level_ids = Enum.map(levels, & &1.id)
+        levels = Enum.map(levels_data, & &1.level)
+        station_level_ids = Enum.map(levels, & &1.id)
 
-          # Only show levels that are not already assigned to this station
-          available_levels =
-            Gtfs.list_all_levels(organization_id, gtfs_version_id)
-            |> Enum.reject(&(&1.id in station_level_ids))
-            |> Enum.sort_by(&(&1.level_name || &1.level_id), :asc)
+        # Only show levels that are not already assigned to this station
+        available_levels =
+          Gtfs.list_all_levels(organization_id, gtfs_version_id)
+          |> Enum.reject(&(&1.id in station_level_ids))
+          |> Enum.sort_by(&(&1.level_name || &1.level_id), :asc)
 
-          # Complete picklist of all levels for stop form dropdown
-          all_levels = Gtfs.list_all_levels(organization_id, gtfs_version_id)
+        # Complete picklist of all levels for stop form dropdown
+        all_levels = Gtfs.list_all_levels(organization_id, gtfs_version_id)
 
-          active_level =
-            Enum.find(levels, List.first(levels), fn l -> l.level_index == 0.0 end)
+        active_level =
+          Enum.find(levels, List.first(levels), fn l -> l.level_index == 0.0 end)
 
-          socket =
-            socket
-            |> assign(:stop_id, stop_id)
-            |> assign(:station, station)
-            |> assign(:levels, levels)
-            |> assign(:available_levels, available_levels)
-            |> assign(:all_levels, all_levels)
-            |> assign(:active_level, active_level)
+        socket =
+          socket
+          |> assign(:stop_id, stop_id)
+          |> assign(:station, station)
+          |> assign(:levels, levels)
+          |> assign(:available_levels, available_levels)
+          |> assign(:all_levels, all_levels)
+          |> assign(:active_level, active_level)
 
-          socket = load_level_data(socket, active_level)
+        socket = load_level_data(socket, active_level)
 
-          {:noreply, socket}
-      end
+        {:noreply, socket}
     end
   end
 
@@ -203,105 +192,90 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <%= if assigns[:pending_version_resolution] do %>
-      <div
-        id="gtfs-version-resolver"
-        phx-hook="GtfsVersionHook"
-        data-organization-id={@current_organization.id}
+    <div id="diagram-page" data-immersive={if @mode in [:add, :connect], do: "true"}>
+      <Layouts.app
+        flash={@flash}
+        current_user={@current_user}
+        current_organization={@current_organization}
+        user_roles={@user_roles}
+        current_path={@current_path}
+        current_gtfs_version={assigns[:current_gtfs_version]}
+        available_versions={assigns[:available_versions] || []}
       >
-        <div class="flex items-center justify-center min-h-screen">
-          <div class="text-center">
-            <div class="loading loading-spinner loading-lg"></div>
-            <p class="mt-4 text-base-content/60">Loading GTFS version...</p>
-          </div>
-        </div>
-      </div>
-    <% else %>
-      <div id="diagram-page" data-immersive={if @mode in [:add, :connect], do: "true"}>
-        <Layouts.app
-          flash={@flash}
-          current_user={@current_user}
-          current_organization={@current_organization}
-          user_roles={@user_roles}
-          current_path={@current_path}
-          current_gtfs_version={assigns[:current_gtfs_version]}
-          available_versions={assigns[:available_versions] || []}
-        >
-          <:sub_header>
-            <.station_sub_nav
+        <:sub_header>
+          <.station_sub_nav
+            station={@station}
+            gtfs_version_id={@current_gtfs_version.id}
+            active_tab={:diagram}
+            levels={@levels}
+            active_level={@active_level}
+            mode={@mode}
+            uploads={@uploads}
+            has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
+            diagram_error={@diagram_error}
+          />
+          <.diagram_action_strip
+            mode={@mode}
+            selected_from_stop={@selected_from_stop}
+            has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
+            levels={@levels}
+            active_level={@active_level}
+          />
+          <div id="diagram-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
+            <.diagram_canvas
               station={@station}
-              gtfs_version_id={@current_gtfs_version.id}
-              active_tab={:diagram}
-              levels={@levels}
               active_level={@active_level}
+              active_stop_level={@active_stop_level}
+              streams={@streams}
+              active_point_id={@active_point_id}
+              pending_xy={@pending_xy}
+              selected_stop_id={@selected_stop_id}
               mode={@mode}
               uploads={@uploads}
-              has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
+              cross_level_stop_ids={@cross_level_stop_ids}
+              wheelchair_minority={@wheelchair_minority}
               diagram_error={@diagram_error}
+              organization_id={@current_organization.id}
             />
-            <.diagram_action_strip
-              mode={@mode}
-              selected_from_stop={@selected_from_stop}
-              has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
-              levels={@levels}
-              active_level={@active_level}
-            />
-            <div id="diagram-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
-              <.diagram_canvas
-                station={@station}
-                active_level={@active_level}
-                active_stop_level={@active_stop_level}
-                streams={@streams}
-                active_point_id={@active_point_id}
-                pending_xy={@pending_xy}
-                selected_stop_id={@selected_stop_id}
-                mode={@mode}
-                uploads={@uploads}
-                cross_level_stop_ids={@cross_level_stop_ids}
-                wheelchair_minority={@wheelchair_minority}
-                diagram_error={@diagram_error}
-                organization_id={@current_organization.id}
-              />
-            </div>
-          </:sub_header>
+          </div>
+        </:sub_header>
 
-          <.child_stop_drawer
-            pending_xy={@pending_xy}
-            selected_stop_id={@selected_stop_id}
-            child_stop_form={@child_stop_form}
-            mode={@mode}
-            all_levels={@all_levels}
-            editing_level={@editing_level}
-            active_level={@active_level}
-            reposition_mode={@reposition_mode}
-            reposition_search={@reposition_search}
-            reposition_stops={@reposition_stops}
-          />
+        <.child_stop_drawer
+          pending_xy={@pending_xy}
+          selected_stop_id={@selected_stop_id}
+          child_stop_form={@child_stop_form}
+          mode={@mode}
+          all_levels={@all_levels}
+          editing_level={@editing_level}
+          active_level={@active_level}
+          reposition_mode={@reposition_mode}
+          reposition_search={@reposition_search}
+          reposition_stops={@reposition_stops}
+        />
 
-          <.pathway_drawer
-            open={@show_pathway_drawer}
-            pathway_form={@pathway_form}
-            editing_pathway={@editing_pathway}
-          />
+        <.pathway_drawer
+          open={@show_pathway_drawer}
+          pathway_form={@pathway_form}
+          editing_pathway={@editing_pathway}
+        />
 
-          <.level_sidebar
-            show_level_modal={@show_level_modal}
-            level_form={@level_form}
-            available_levels={@available_levels}
-            level_mode={@level_mode}
-            editing_level_uuid={if @show_level_modal == :edit && @active_level, do: @active_level.id}
-            level_shared={@level_shared}
-          />
+        <.level_sidebar
+          show_level_modal={@show_level_modal}
+          level_form={@level_form}
+          available_levels={@available_levels}
+          level_mode={@level_mode}
+          editing_level_uuid={if @show_level_modal == :edit && @active_level, do: @active_level.id}
+          level_shared={@level_shared}
+        />
 
-          <.lists_section
-            child_stops_list={@child_stops_list}
-            unassigned_child_stops={@unassigned_child_stops}
-            pathways_list={@pathways_list}
-            pathway_error={@pathway_error}
-          />
-        </Layouts.app>
-      </div>
-    <% end %>
+        <.lists_section
+          child_stops_list={@child_stops_list}
+          unassigned_child_stops={@unassigned_child_stops}
+          pathways_list={@pathways_list}
+          pathway_error={@pathway_error}
+        />
+      </Layouts.app>
+    </div>
     """
   end
 
@@ -315,26 +289,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
     stop_id = socket.assigns[:stop_id]
 
-    # Try to use the stored version_id from localStorage
-    version_to_use =
-      if version_id && valid_version_for_org?(version_id, current_organization.id) do
-        version_id
-      else
-        # Fall back to latest version or current version
-        case socket.assigns[:latest_gtfs_version] do
-          {:ok, version} -> to_string(version.id)
-          {:error, :no_versions} -> nil
-          # Already on a valid route
-          nil -> current_version_id
-        end
-      end
-
-    # Only navigate if switching to a different version
-    if version_to_use && version_to_use != current_version_id do
-      path = "/gtfs/#{version_to_use}/stops/#{stop_id}/diagram"
+    if version_id && stop_id && version_id != current_version_id &&
+         valid_version_for_org?(version_id, current_organization.id) do
+      path = "/gtfs/#{version_id}/stops/#{stop_id}/diagram"
       {:noreply, push_navigate(socket, to: path)}
     else
-      # Already on correct version, do nothing
       {:noreply, socket}
     end
   end
