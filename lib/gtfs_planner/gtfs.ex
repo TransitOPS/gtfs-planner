@@ -699,12 +699,16 @@ defmodule GtfsPlanner.Gtfs do
       |> Enum.reject(&Map.has_key?(levels_from_stop_levels_by_id, &1))
 
     missing_levels_by_id =
-      from(l in Level,
-        where: l.id in ^missing_level_ids,
-        select: {l.id, l}
-      )
-      |> Repo.all()
-      |> Map.new()
+      if missing_level_ids == [] do
+        %{}
+      else
+        from(l in Level,
+          where: l.id in ^missing_level_ids,
+          select: {l.id, l}
+        )
+        |> Repo.all()
+        |> Map.new()
+      end
 
     # Build final result with stop counts and diagram filenames
     all_level_ids
