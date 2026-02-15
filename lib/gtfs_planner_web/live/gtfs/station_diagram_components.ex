@@ -470,8 +470,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     drawer_title =
       cond do
-        assigns.selected_stop_id -> "Edit Child Stop"
-        true -> "Child Stop"
+        assigns.reposition_mode && is_nil(assigns.selected_stop_id) ->
+          "Re-Position Child Stop"
+
+        assigns.selected_stop_id ->
+          "Edit Child Stop"
+
+        true ->
+          "Child Stop"
       end
 
     assigns =
