@@ -339,6 +339,49 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child-stop-form")
       refute has_element?(view, "#child-stop-form input[name='stop_id'][readonly]")
       refute has_element?(view, "#child-stop-form button[phx-click='delete_child_stop']")
+      refute has_element?(view, "#diagram-action-strip", "From:")
+    end
+
+    test "switching from add to connect keeps stop clicks available for connect selection", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_CONNECT_AFTER_ADD",
+          stop_name: "Child Connect After Add",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 24.0, "y" => 34.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='connect']")
+      |> render_click()
+
+      view
+      |> element("#child_stops-#{child_stop.id}")
+      |> render_click()
+
+      assert has_element?(view, "#diagram-action-strip", "From: Child Connect After Add")
+      refute has_element?(view, "#child-stop-form")
     end
 
     test "view mode stop click opens edit drawer", %{
@@ -428,6 +471,59 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       refute has_element?(view, "#pathway-form")
+      refute has_element?(view, "#diagram-action-strip", "From:")
+    end
+
+    test "view mode pathway click opens pathway drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      child_stop_1 =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_VIEW_PATH_1",
+          stop_name: "Child View Path 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      child_stop_2 =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_VIEW_PATH_2",
+          stop_name: "Child View Path 2",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 30.0}
+        })
+
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          child_stop_1.stop_id,
+          child_stop_2.stop_id
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#pathways-#{pathway.id}")
+      |> render_click()
+
+      assert has_element?(view, "#pathway-form")
+      assert render(view) =~ pathway.pathway_id
     end
   end
 
@@ -1614,7 +1710,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#child_stops-#{platform_stop.id} [data-stop-label]", "3A")
       refute has_element?(view, "#child_stops-#{platform_without_code.id} [data-stop-label]")
-      assert has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label]", "↙↗")
+      assert has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label] tspan", "↙")
+      assert has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label] tspan", "↗")
       refute has_element?(view, "#child_stops-#{node_stop.id} [data-stop-label]")
       refute has_element?(view, "#child_stops-#{boarding_without_code.id} [data-stop-label]")
     end
@@ -1656,7 +1753,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       # With all child stops sharing the same wheelchair_boarding, no wheelchair badge is shown.
-      refute has_element?(view, "[data-wheelchair-badge]")
+      refute has_element?(view, "[data-stop-badge]")
     end
 
     test "does not render wheelchair badge when counts of wheelchair_boarding 1 and 2 are equal",
@@ -1718,7 +1815,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       # With equal counts of wheelchair_boarding 1 and 2, there is no minority and no badge is shown.
-      refute has_element?(view, "[data-wheelchair-badge]")
+      refute has_element?(view, "[data-stop-badge]")
     end
 
     test "renders wheelchair badge only on stops with minority wheelchair_boarding value", %{
@@ -1769,9 +1866,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       # Badge appears only on the stop with the minority wheelchair_boarding value.
-      assert has_element?(view, "#child_stops-#{minority_stop.id} [data-wheelchair-badge]")
-      refute has_element?(view, "#child_stops-#{majority_stop_a.id} [data-wheelchair-badge]")
-      refute has_element?(view, "#child_stops-#{majority_stop_b.id} [data-wheelchair-badge]")
+      assert has_element?(view, "#child_stops-#{minority_stop.id} [data-stop-badge]")
+      refute has_element?(view, "#child_stops-#{majority_stop_a.id} [data-stop-badge]")
+      refute has_element?(view, "#child_stops-#{majority_stop_b.id} [data-stop-badge]")
     end
   end
 

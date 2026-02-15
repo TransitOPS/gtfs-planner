@@ -386,12 +386,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <g
       id={@id}
       opacity={@opacity}
-      class={
-        if @mode in [:view, :connect],
-          do: "cursor-pointer pointer-events-auto",
-          else: "pointer-events-none"
-      }
-      phx-click={if @mode in [:view, :connect], do: "edit_pathway", else: nil}
+      class="cursor-pointer pointer-events-auto"
+      phx-click="edit_pathway"
       phx-value-id={@pathway.id}
     >
       <line
@@ -898,8 +894,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <% label = stop_label_text(stop) %>
           <g
             id={dom_id}
-            class={if(@mode == :add, do: "pointer-events-none", else: "pointer-events-auto")}
-            phx-click={if @mode == :add, do: nil, else: "stop_clicked"}
+            class="pointer-events-auto"
+            phx-click="stop_clicked"
             phx-value-id={stop.id}
             opacity={if(MapSet.member?(@cross_level_stop_ids, stop.id), do: "0.5", else: "1")}
           >
@@ -914,7 +910,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               data-stop-hit-target="true"
               data-center-x={cx}
               data-center-y={cy}
-              class={if(@mode == :add, do: "pointer-events-none", else: "cursor-pointer")}
+              class="cursor-pointer"
             />
             <%= case stop.location_type do %>
               <% 0 -> %>
