@@ -126,26 +126,65 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
     stop_level = Gtfs.get_stop_level(organization_id, gtfs_version_id, station.id, level.id)
-    child_stops = Gtfs.list_child_stops_for_level(station.id, level.id)
-    wheelchair_minority = compute_wheelchair_minority(child_stops)
-    child_stops_on_level = Enum.filter(child_stops, & &1.on_active_level)
-    unassigned_child_stops = Enum.filter(child_stops, fn stop -> stop.level_id in [nil, ""] end)
+    all_child_stops = Gtfs.list_child_stops_for_level(station.id, level.id)
+    wheelchair_minority = compute_wheelchair_minority(all_child_stops)
+    child_stops_on_level = Enum.filter(all_child_stops, & &1.on_active_level)
 
-    pathways =
+    unassigned_child_stops =
+      Enum.filter(all_child_stops, fn stop -> stop.level_id in [nil, ""] end)
+
+    level_pathways =
       Gtfs.list_pathways_for_level(organization_id, gtfs_version_id, level.id, station.id)
+
+    active_level_stop_ids = active_level_stop_ids(all_child_stops, level)
+    connected_stop_ids = connected_stop_ids(level_pathways, active_level_stop_ids)
+
+    visible_canvas_stops =
+      visible_canvas_stops(all_child_stops, active_level_stop_ids, connected_stop_ids)
 
     cross_level_stop_ids =
       Gtfs.list_cross_level_stop_ids(organization_id, gtfs_version_id, station.id)
 
     socket
-    |> stream(:child_stops, child_stops, reset: true)
-    |> stream(:pathways, pathways, reset: true)
+    |> stream(:child_stops, visible_canvas_stops, reset: true)
+    |> stream(:pathways, level_pathways, reset: true)
     |> assign(:child_stops_list, child_stops_on_level)
     |> assign(:unassigned_child_stops, unassigned_child_stops)
-    |> assign(:pathways_list, pathways)
+    |> assign(:pathways_list, level_pathways)
     |> assign(:wheelchair_minority, wheelchair_minority)
     |> assign(:active_stop_level, stop_level)
     |> assign(:cross_level_stop_ids, cross_level_stop_ids)
+  end
+
+  defp active_level_stop_ids(all_child_stops, level) do
+    all_child_stops
+    |> Enum.filter(&(&1.level_id == level.level_id))
+    |> Enum.map(& &1.id)
+    |> MapSet.new()
+  end
+
+  defp connected_stop_ids(level_pathways, active_level_stop_ids) do
+    level_pathways
+    |> Enum.reduce(MapSet.new(), fn pathway, connected_ids ->
+      from_stop_id = pathway.from_stop.id
+      to_stop_id = pathway.to_stop.id
+
+      if MapSet.member?(active_level_stop_ids, from_stop_id) or
+           MapSet.member?(active_level_stop_ids, to_stop_id) do
+        connected_ids
+        |> MapSet.put(from_stop_id)
+        |> MapSet.put(to_stop_id)
+      else
+        connected_ids
+      end
+    end)
+  end
+
+  defp visible_canvas_stops(all_child_stops, active_level_stop_ids, connected_stop_ids) do
+    Enum.filter(all_child_stops, fn stop ->
+      MapSet.member?(active_level_stop_ids, stop.id) or
+        MapSet.member?(connected_stop_ids, stop.id)
+    end)
   end
 
   defp compute_wheelchair_minority(child_stops) do
