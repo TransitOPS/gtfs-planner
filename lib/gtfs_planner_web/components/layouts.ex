@@ -64,7 +64,10 @@ defmodule GtfsPlannerWeb.Layouts do
     >
       Skip to main content
     </a>
-    <header class="navbar bg-base-100 px-4 sm:px-6 lg:px-8 py-3 border-b border-base-300 items-center">
+    <header
+      id="app-header"
+      class="navbar bg-base-100 px-4 sm:px-6 lg:px-8 py-3 border-b border-base-300 items-center"
+    >
       <div class="flex-none">
         <.link href={~p"/"} class="flex items-center gap-2" aria-label="GTFS Planner - Go to homepage">
           <div class="bg-emerald-600 p-2 rounded-lg">
@@ -107,7 +110,7 @@ defmodule GtfsPlannerWeb.Layouts do
     </header>
 
     <%= if @sub_header != [] do %>
-      <div class="bg-base-100 border-b border-base-300">
+      <div id="sub-header-wrapper" class="bg-base-100 border-b border-base-300">
         {render_slot(@sub_header)}
       </div>
     <% end %>

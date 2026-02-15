@@ -603,6 +603,56 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "svg.cursor-crosshair")
     end
+
+    test "immersive data attribute toggles by mode", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#diagram-page:not([data-immersive])")
+
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
+      |> render_click()
+
+      assert has_element?(view, "#diagram-page[data-immersive='true']")
+
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='connect']")
+      |> render_click()
+
+      assert has_element?(view, "#diagram-page[data-immersive='true']")
+
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='view']")
+      |> render_click()
+
+      assert has_element?(view, "#diagram-page:not([data-immersive])")
+    end
+
+    test "renders diagram canvas wrapper id", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#diagram-canvas-wrapper")
+    end
   end
 
   describe "StationDiagramLive - diagram replacement and level isolation" do
