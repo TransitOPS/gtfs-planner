@@ -122,6 +122,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child-stop-form button[phx-click='toggle_level_edit']")
     end
 
+    test "add mode click near existing stop keeps create drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_NEARBY",
+          stop_name: "Nearby Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "21", "y" => "31"})
+
+      assert has_element?(view, "#child-stop-form button[type='submit']", "Create Stop")
+      refute has_element?(view, "#child-stop-form input[name='stop_id'][readonly]")
+      refute has_element?(view, "#child-stop-form button[phx-click='delete_child_stop']")
+    end
+
     test "editing child stop shows change link and toggles level selector", %{
       conn: conn,
       user: user,
@@ -272,7 +303,44 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert render(view) =~ "Child View Dot"
     end
 
-    test "view mode canvas click near stop opens edit drawer", %{
+    test "add mode stop dot click does not open edit drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_ADD_DOT",
+          stop_name: "Child Add Dot",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      view
+      |> element("#child_stops-#{child_stop.id}")
+      |> render_click()
+
+      refute has_element?(view, "#child-stop-form")
+      refute has_element?(view, "#child-stop-form input[name='stop_id'][readonly]")
+      refute has_element?(view, "#child-stop-form button[phx-click='delete_child_stop']")
+    end
+
+    test "view mode stop click opens edit drawer", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -298,10 +366,67 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      render_hook(view, "canvas_click", %{"x" => "22", "y" => "33"})
+      render_hook(view, "stop_clicked", %{"id" => child_stop.id})
 
       assert has_element?(view, "#child-stop-form")
       assert render(view) =~ child_stop.stop_id
+    end
+
+    test "add mode pathway click does not open pathway drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      child_stop_1 =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_PATH_1",
+          stop_name: "Child Path 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      child_stop_2 =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_PATH_2",
+          stop_name: "Child Path 2",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 30.0}
+        })
+
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          child_stop_1.stop_id,
+          child_stop_2.stop_id
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
+      |> render_click()
+
+      assert has_element?(view, "#diagram-page[data-immersive='true']")
+
+      view
+      |> element("#pathways-#{pathway.id}")
+      |> render_click()
+
+      refute has_element?(view, "#pathway-form")
     end
   end
 

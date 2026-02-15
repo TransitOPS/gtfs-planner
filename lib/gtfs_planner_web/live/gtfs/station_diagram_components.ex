@@ -285,11 +285,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <svg
       id="diagram-overlay"
+      data-mode={@mode}
       class="absolute inset-0 w-full h-full pointer-events-none"
       viewBox="0 0 100 100"
       preserveAspectRatio="xMidYMid meet"
     >
-      <.pathways_layer streams={@streams} />
+      <.pathways_layer streams={@streams} mode={@mode} />
       <.stops_layer
         streams={@streams}
         active_point_id={@active_point_id}
@@ -305,6 +306,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   attr :streams, :any, required: true
+  attr :mode, :atom, required: true
 
   defp pathways_layer(assigns) do
     ~H"""
@@ -313,8 +315,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <%= if pathway.from_stop.diagram_coordinate && pathway.to_stop.diagram_coordinate do %>
           <g
             id={dom_id}
-            class="cursor-pointer pointer-events-auto"
-            phx-click="edit_pathway"
+            class={
+              if @mode in [:view, :connect],
+                do: "cursor-pointer pointer-events-auto",
+                else: "pointer-events-none"
+            }
+            phx-click={if @mode in [:view, :connect], do: "edit_pathway", else: nil}
             phx-value-id={pathway.id}
           >
             <%!-- Invisible wider line for easier clicking --%>
@@ -335,7 +341,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               stroke="#0891b2"
               stroke-width="0.5"
               stroke-linecap="round"
-              class="hover:stroke-error transition-colors"
+              class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
             />
           </g>
         <% end %>
@@ -354,16 +360,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <g id="stops-svg" phx-update="stream">
       <%= for {dom_id, stop} <- @streams.child_stops do %>
         <%= if stop.diagram_coordinate do %>
-          <g id={dom_id} class="pointer-events-auto" phx-click="stop_clicked" phx-value-id={stop.id}>
+          <g
+            id={dom_id}
+            class={if(@mode == :add, do: "pointer-events-none", else: "pointer-events-auto")}
+            phx-click={if @mode == :add, do: nil, else: "stop_clicked"}
+            phx-value-id={stop.id}
+          >
             <circle
               cx={stop.diagram_coordinate["x"]}
               cy={stop.diagram_coordinate["y"]}
-              r="2.5"
+              r="1.25"
               fill="transparent"
               stroke="transparent"
               stroke-width="0"
               data-stop-hit-target="true"
-              class="cursor-pointer"
+              class={if(@mode == :add, do: "pointer-events-none", else: "cursor-pointer")}
             />
             <circle
               id={dom_id <> "-circle"}
@@ -449,18 +460,77 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :all_levels, :list, required: true
   attr :editing_level, :boolean, default: false
   attr :active_level, :any, default: nil
+  attr :reposition_mode, :boolean, default: false
+  attr :reposition_search, :string, default: ""
+  attr :reposition_stops, :list, default: []
 
   def child_stop_drawer(assigns) do
+    show_toggle =
+      assigns.mode == :add && assigns.pending_xy != nil && assigns.selected_stop_id == nil
+
+    drawer_title =
+      cond do
+        assigns.reposition_mode && is_nil(assigns.selected_stop_id) ->
+          "Re-Position Child Stop"
+
+        assigns.selected_stop_id ->
+          "Edit Child Stop"
+
+        true ->
+          "Child Stop"
+      end
+
+    assigns =
+      assigns
+      |> assign(:drawer_title, drawer_title)
+      |> assign(:show_toggle, show_toggle)
+
     ~H"""
     <.drawer
       id="child-stop-drawer"
       open={@pending_xy != nil && (@mode == :add || (@mode == :view && @selected_stop_id != nil))}
       on_close="close_drawer"
-      title={if @selected_stop_id, do: "Edit Child Stop", else: "Add Child Stop"}
+      title={@drawer_title}
       class="max-w-3xl"
     >
+      <:header_actions>
+        <div :if={@show_toggle} class="join">
+          <button
+            id="enter-new-stop-mode"
+            type="button"
+            class={[
+              "btn btn-sm join-item shadow-none",
+              !@reposition_mode && "bg-emerald-700 text-white border-emerald-700 hover:bg-emerald-800",
+              @reposition_mode && "bg-white text-emerald-800 border-emerald-300 hover:bg-emerald-100"
+            ]}
+            phx-click="exit_reposition_mode"
+          >
+            New Stop
+          </button>
+          <button
+            id="enter-reposition-mode"
+            type="button"
+            class={[
+              "btn btn-sm join-item shadow-none",
+              @reposition_mode && "bg-emerald-700 text-white border-emerald-700 hover:bg-emerald-800",
+              !@reposition_mode && "bg-white text-emerald-800 border-emerald-300 hover:bg-emerald-100"
+            ]}
+            phx-click="enter_reposition_mode"
+          >
+            Re-Position
+          </button>
+        </div>
+      </:header_actions>
+
+      <.reposition_stop_view
+        :if={@pending_xy && @reposition_mode && @selected_stop_id == nil}
+        reposition_stops={@reposition_stops}
+        reposition_search={@reposition_search}
+        active_level={@active_level}
+      />
+
       <.child_stop_form
-        :if={@pending_xy}
+        :if={@pending_xy && !(@reposition_mode && @selected_stop_id == nil)}
         child_stop_form={@child_stop_form}
         selected_stop_id={@selected_stop_id}
         pending_xy={@pending_xy}
@@ -469,6 +539,154 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         active_level={@active_level}
       />
     </.drawer>
+    """
+  end
+
+  attr :reposition_stops, :list, default: []
+  attr :reposition_search, :string, default: ""
+  attr :active_level, :any, default: nil
+
+  defp reposition_stop_view(assigns) do
+    normalized_search =
+      assigns.reposition_search
+      |> to_string()
+      |> String.trim()
+      |> String.downcase()
+
+    filtered_stops =
+      Enum.filter(assigns.reposition_stops, fn stop ->
+        if normalized_search == "" do
+          true
+        else
+          stop_id = stop.stop_id |> to_string() |> String.downcase()
+          stop_name = stop.stop_name |> to_string() |> String.downcase()
+
+          String.contains?(stop_id, normalized_search) or
+            String.contains?(stop_name, normalized_search)
+        end
+      end)
+
+    unpositioned_stops =
+      Enum.filter(filtered_stops, fn stop ->
+        is_nil(stop.diagram_coordinate) or stop.level_id in [nil, ""]
+      end)
+
+    positioned_stops =
+      Enum.filter(filtered_stops, fn stop ->
+        stop.diagram_coordinate != nil and not is_nil(assigns.active_level) and
+          stop.level_id == assigns.active_level.level_id
+      end)
+
+    search_form = to_form(%{"query" => assigns.reposition_search}, as: :search)
+
+    assigns =
+      assigns
+      |> assign(:search_form, search_form)
+      |> assign(:unpositioned_stops, unpositioned_stops)
+      |> assign(:positioned_stops, positioned_stops)
+
+    ~H"""
+    <div class="space-y-6">
+      <.form
+        for={@search_form}
+        id="reposition-search-form"
+        phx-change="reposition_search"
+        phx-submit="reposition_search"
+      >
+        <.input
+          field={@search_form[:query]}
+          id="reposition-search-input"
+          type="text"
+          label="Search Child Stops"
+          placeholder="Search by stop ID or name"
+          phx-debounce="200"
+        />
+      </.form>
+
+      <section class="space-y-2">
+        <h3 class="text-sm font-semibold text-base-content/70">
+          Unpositioned child stops
+        </h3>
+        <div class="overflow-x-auto">
+          <table id="unpositioned-stops-table" class="table table-sm">
+            <thead class="bg-gray-200">
+              <tr>
+                <th>Stop ID</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th class="text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <%= for stop <- @unpositioned_stops do %>
+                <tr id={"unpositioned-stop-row-#{stop.id}"}>
+                  <td>{stop.stop_id}</td>
+                  <td>{stop.stop_name || "—"}</td>
+                  <td>{Stop.location_type_label(stop.location_type)}</td>
+                  <td class="text-right">
+                    <button
+                      type="button"
+                      class="btn btn-primary btn-xs"
+                      phx-click="reposition_stop"
+                      phx-value-id={stop.id}
+                    >
+                      Place here
+                    </button>
+                  </td>
+                </tr>
+              <% end %>
+              <tr :if={@unpositioned_stops == []}>
+                <td colspan="4" class="text-sm text-base-content/60">
+                  No matching unpositioned stops.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="space-y-2">
+        <h3 class="text-sm font-semibold text-base-content/70">
+          Positioned stops on this level
+        </h3>
+        <div class="overflow-x-auto">
+          <table id="positioned-stops-table" class="table table-sm">
+            <thead class="bg-gray-200">
+              <tr>
+                <th>Stop ID</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th class="text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <%= for stop <- @positioned_stops do %>
+                <tr id={"positioned-stop-row-#{stop.id}"}>
+                  <td>{stop.stop_id}</td>
+                  <td>{stop.stop_name || "—"}</td>
+                  <td>{Stop.location_type_label(stop.location_type)}</td>
+                  <td class="text-right">
+                    <button
+                      type="button"
+                      class="btn btn-outline btn-xs"
+                      phx-click="reposition_stop"
+                      phx-value-id={stop.id}
+                    >
+                      Move here
+                    </button>
+                  </td>
+                </tr>
+              <% end %>
+              <tr :if={@positioned_stops == []}>
+                <td colspan="4" class="text-sm text-base-content/60">
+                  No matching positioned stops on this level.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
     """
   end
 
