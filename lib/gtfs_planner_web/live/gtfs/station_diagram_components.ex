@@ -488,6 +488,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ]
 
     wheelchair_boarding_options = [
+      {"— Unspecified", ""},
       {"0 - No info", "0"},
       {"1 - Accessible", "1"},
       {"2 - Not accessible", "2"}
@@ -509,7 +510,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:show_platform_code, location_type in [0, 4])
 
     ~H"""
-    <.simple_form for={@child_stop_form} id="child-stop-form" phx-submit="save_child_stop" phx-change="validate_child_stop">
+    <.simple_form
+      for={@child_stop_form}
+      id="child-stop-form"
+      phx-submit="save_child_stop"
+      phx-change="validate_child_stop"
+    >
       <.input
         field={@child_stop_form[:stop_id]}
         type="text"
