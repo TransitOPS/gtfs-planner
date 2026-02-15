@@ -3,10 +3,19 @@
  * Provides pan and zoom functionality for the station diagram SVG canvas.
  */
 const OVERLAY_BASE = {
-  circleR: 0.75,
-  circleHitR: 1.25,
-  circleStroke: 0.15,
-  circleStrokeCrossLevel: 0.25,
+  circleR: 0.6,
+  hitTargetSize: 3.5,
+  rectUprightW: 1.2,
+  rectUprightH: 2.4,
+  rectHorizW: 2.4,
+  rectHorizH: 1.2,
+  rectStroke: 0.12,
+  entranceStroke: 0.16,
+  rectRx: 0.2,
+  fontSize: 1.1,
+  textStrokeWidth: 0.24,
+  badgeFontSize: 0.65,
+  badgeStrokeWidth: 0.16,
   pathwayStroke: 0.5,
   pathwayHitStroke: 2,
   pendingOffsetY: 1,
@@ -201,19 +210,113 @@ const DiagramCanvasHook = {
 
     const scale = this.scale || 1;
 
-    overlay.querySelectorAll("#stops-svg circle").forEach((circle) => {
-      const isHitTarget = circle.getAttribute("data-stop-hit-target") === "true";
+    overlay.querySelectorAll("[data-stop-hit-target]").forEach((hitTarget) => {
+      const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
+      const cy = parseFloat(hitTarget.getAttribute("data-center-y"));
 
-      if (isHitTarget) {
-        circle.setAttribute("r", `${OVERLAY_BASE.circleHitR / scale}`);
-        circle.setAttribute("stroke-width", "0");
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
         return;
       }
 
-      circle.setAttribute("r", `${OVERLAY_BASE.circleR / scale}`);
-      const isCrossLevel = circle.getAttribute("data-cross-level") === "true";
-      const baseStroke = isCrossLevel ? OVERLAY_BASE.circleStrokeCrossLevel : OVERLAY_BASE.circleStroke;
-      circle.setAttribute("stroke-width", `${baseStroke / scale}`);
+      const size = OVERLAY_BASE.hitTargetSize / scale;
+      hitTarget.setAttribute("x", `${cx - size / 2}`);
+      hitTarget.setAttribute("y", `${cy - size / 2}`);
+      hitTarget.setAttribute("width", `${size}`);
+      hitTarget.setAttribute("height", `${size}`);
+    });
+
+    overlay.querySelectorAll("[data-stop-marker]").forEach((marker) => {
+      const cx = parseFloat(marker.getAttribute("data-center-x"));
+      const cy = parseFloat(marker.getAttribute("data-center-y"));
+      const locationType = marker.getAttribute("data-location-type");
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+        return;
+      }
+
+      if (locationType === "0" || locationType === "2") {
+        const width = OVERLAY_BASE.rectUprightW / scale;
+        const height = OVERLAY_BASE.rectUprightH / scale;
+        marker.setAttribute("x", `${cx - width / 2}`);
+        marker.setAttribute("y", `${cy - height / 2}`);
+        marker.setAttribute("width", `${width}`);
+        marker.setAttribute("height", `${height}`);
+        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / scale}`);
+        const strokeWidth =
+          locationType === "2" ? OVERLAY_BASE.entranceStroke : OVERLAY_BASE.rectStroke;
+        marker.setAttribute("stroke-width", `${strokeWidth / scale}`);
+        return;
+      }
+
+      if (locationType === "4") {
+        const width = OVERLAY_BASE.rectHorizW / scale;
+        const height = OVERLAY_BASE.rectHorizH / scale;
+        marker.setAttribute("x", `${cx - width / 2}`);
+        marker.setAttribute("y", `${cy - height / 2}`);
+        marker.setAttribute("width", `${width}`);
+        marker.setAttribute("height", `${height}`);
+        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / scale}`);
+        marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / scale}`);
+        return;
+      }
+
+      marker.setAttribute("cx", `${cx}`);
+      marker.setAttribute("cy", `${cy}`);
+      marker.setAttribute("r", `${OVERLAY_BASE.circleR / scale}`);
+      marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / scale}`);
+    });
+
+    overlay.querySelectorAll("[data-stop-label]").forEach((label) => {
+      const cx = parseFloat(label.getAttribute("data-center-x"));
+      const cy = parseFloat(label.getAttribute("data-center-y"));
+      const offsetX = parseFloat(label.getAttribute("data-label-offset-x"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX)) {
+        return;
+      }
+
+      const previousLabelXAttr = label.getAttribute("x");
+      const previousLabelX = previousLabelXAttr !== null ? parseFloat(previousLabelXAttr) : NaN;
+      const newLabelX = cx + offsetX / scale;
+
+      label.setAttribute("x", `${newLabelX}`);
+      label.setAttribute("y", `${cy}`);
+      label.setAttribute("font-size", `${OVERLAY_BASE.fontSize / scale}`);
+      label.setAttribute("stroke-width", `${OVERLAY_BASE.textStrokeWidth / scale}`);
+
+      if (Number.isFinite(previousLabelX)) {
+        const deltaX = newLabelX - previousLabelX;
+
+        label.querySelectorAll("tspan").forEach((tspan) => {
+          const tspanXAttr = tspan.getAttribute("x");
+
+          if (tspanXAttr === null) {
+            return;
+          }
+
+          const tspanX = parseFloat(tspanXAttr);
+
+          if (!Number.isFinite(tspanX)) {
+            return;
+          }
+
+          tspan.setAttribute("x", `${tspanX + deltaX}`);
+        });
+      }
+    });
+
+    overlay.querySelectorAll("[data-stop-badge]").forEach((badge) => {
+      const cx = parseFloat(badge.getAttribute("data-center-x"));
+      const cy = parseFloat(badge.getAttribute("data-center-y"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+        return;
+      }
+
+      badge.setAttribute("x", `${cx + 0.5 / scale}`);
+      badge.setAttribute("y", `${cy - 0.5 / scale}`);
+      badge.setAttribute("font-size", `${OVERLAY_BASE.badgeFontSize / scale}`);
+      badge.setAttribute("stroke-width", `${OVERLAY_BASE.badgeStrokeWidth / scale}`);
     });
 
     overlay.querySelectorAll("#pathways-svg g").forEach((group) => {
