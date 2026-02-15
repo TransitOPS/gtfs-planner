@@ -31,6 +31,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:page_title, "Station Diagram")
        |> assign(:user_roles, user_roles)
        |> assign(:mode, :view)
+       |> assign(:wheelchair_minority, nil)
        |> assign(:pending_xy, nil)
        |> assign(:selected_stop_id, nil)
        |> assign(:active_point_id, nil)
@@ -115,6 +116,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:child_stops_list, [])
     |> assign(:unassigned_child_stops, [])
     |> assign(:pathways_list, [])
+    |> assign(:wheelchair_minority, nil)
     |> assign(:active_stop_level, nil)
   end
 
@@ -125,6 +127,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     stop_level = Gtfs.get_stop_level(organization_id, gtfs_version_id, station.id, level.id)
     child_stops = Gtfs.list_child_stops_for_level(station.id, level.id)
+    wheelchair_minority = compute_wheelchair_minority(child_stops)
     child_stops_on_level = Enum.filter(child_stops, & &1.on_active_level)
     unassigned_child_stops = Enum.filter(child_stops, fn stop -> stop.level_id in [nil, ""] end)
 
@@ -140,8 +143,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:child_stops_list, child_stops_on_level)
     |> assign(:unassigned_child_stops, unassigned_child_stops)
     |> assign(:pathways_list, pathways)
+    |> assign(:wheelchair_minority, wheelchair_minority)
     |> assign(:active_stop_level, stop_level)
     |> assign(:cross_level_stop_ids, cross_level_stop_ids)
+  end
+
+  defp compute_wheelchair_minority(child_stops) do
+    {accessible_count, inaccessible_count} =
+      Enum.reduce(child_stops, {0, 0}, fn stop, {accessible, inaccessible} ->
+        case stop.wheelchair_boarding do
+          1 -> {accessible + 1, inaccessible}
+          2 -> {accessible, inaccessible + 1}
+          _ -> {accessible, inaccessible}
+        end
+      end)
+
+    cond do
+      accessible_count < inaccessible_count -> 1
+      inaccessible_count < accessible_count -> 2
+      true -> nil
+    end
   end
 
   @impl true
@@ -202,6 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 mode={@mode}
                 uploads={@uploads}
                 cross_level_stop_ids={@cross_level_stop_ids}
+                wheelchair_minority={@wheelchair_minority}
                 diagram_error={@diagram_error}
                 organization_id={@current_organization.id}
               />

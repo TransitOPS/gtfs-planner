@@ -952,14 +952,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "image[href*='#{level2_href_fragment}']")
     end
 
-    test "diagram upload auto-creates stop_level when level is associated via child stops only", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      level1: level1
-    } do
+    test "diagram upload auto-creates stop_level when level is associated via child stops only",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level1: level1
+         } do
       # Delete the pre-created stop_level so the level is only associated via child stops
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level1.id)
       Repo.delete!(stop_level)
@@ -1163,6 +1164,201 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       assert render(view) =~ "No levels defined"
+    end
+  end
+
+  describe "StationDiagramLive - stop marker rendering" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_MARKERS",
+          stop_name: "Station Markers",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L1_MARKERS",
+          level_name: "Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "renders marker shape per location type", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      platform_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLATFORM_0",
+          stop_name: "Platform Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      entrance_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENTRANCE_2",
+          stop_name: "Entrance Stop",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 20.0}
+        })
+
+      node_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NODE_3",
+          stop_name: "Node Stop",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 30.0}
+        })
+
+      boarding_area_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BOARDING_4",
+          stop_name: "Boarding Area Stop",
+          location_type: 4,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(
+               view,
+               "#child_stops-#{platform_stop.id} rect[data-stop-marker][data-location-type='0']"
+             )
+
+      assert has_element?(
+               view,
+               "#child_stops-#{entrance_stop.id} rect[data-stop-marker][data-location-type='2'][fill='#FFFFFF']"
+             )
+
+      assert has_element?(
+               view,
+               "#child_stops-#{node_stop.id} circle[data-stop-marker][data-location-type='3']"
+             )
+
+      assert has_element?(
+               view,
+               "#child_stops-#{boarding_area_stop.id} rect[data-stop-marker][data-location-type='4']"
+             )
+    end
+
+    test "renders expected stop labels by location type", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      platform_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLATFORM_LABEL",
+          stop_name: "Platform Label",
+          location_type: 0,
+          platform_code: "3A",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 15.0}
+        })
+
+      platform_without_code =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLATFORM_NO_CODE",
+          stop_name: "Platform No Code",
+          location_type: 0,
+          platform_code: nil,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 12.0}
+        })
+
+      entrance_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENTRANCE_LABEL",
+          stop_name: "Entrance Label",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 25.0, "y" => 25.0}
+        })
+
+      node_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NODE_LABEL",
+          stop_name: "Node Label",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 35.0, "y" => 35.0}
+        })
+
+      boarding_without_code =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BOARDING_NO_CODE",
+          stop_name: "Boarding No Code",
+          location_type: 4,
+          platform_code: nil,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 45.0, "y" => 45.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#child_stops-#{platform_stop.id} [data-stop-label]", "3A")
+      refute has_element?(view, "#child_stops-#{platform_without_code.id} [data-stop-label]")
+      assert has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label]", "↙")
+      assert has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label]", "↗")
+      refute has_element?(view, "#child_stops-#{node_stop.id} [data-stop-label]")
+      refute has_element?(view, "#child_stops-#{boarding_without_code.id} [data-stop-label]")
     end
   end
 
