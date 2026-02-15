@@ -3,6 +3,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Organizations
+  alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.UserAuth
 
   @impl true
@@ -12,13 +13,16 @@ defmodule GtfsPlannerWeb.DashboardLive do
 
     # Fetch user's organization and roles from their membership
     {current_organization, user_roles} = get_user_org_context(user, session, is_admin)
+    {current_gtfs_version, available_versions} = get_gtfs_version_context(current_organization)
 
     {:ok,
      socket
      |> assign(:page_title, "Dashboard")
      |> assign(:is_administrator, is_admin)
      |> assign(:current_organization, current_organization)
-     |> assign(:user_roles, user_roles)}
+     |> assign(:user_roles, user_roles)
+     |> assign(:current_gtfs_version, current_gtfs_version)
+     |> assign(:available_versions, available_versions)}
   end
 
   defp get_user_org_context(_user, _session, true = _is_admin) do
@@ -42,6 +46,20 @@ defmodule GtfsPlannerWeb.DashboardLive do
     else
       {nil, []}
     end
+  end
+
+  defp get_gtfs_version_context(nil), do: {nil, []}
+
+  defp get_gtfs_version_context(current_organization) do
+    available_versions = Versions.list_gtfs_versions_for_dropdown(current_organization.id)
+
+    current_gtfs_version =
+      case Versions.get_latest_gtfs_version(current_organization.id) do
+        {:ok, version} -> version
+        {:error, :no_versions} -> nil
+      end
+
+    {current_gtfs_version, available_versions}
   end
 
   @impl true

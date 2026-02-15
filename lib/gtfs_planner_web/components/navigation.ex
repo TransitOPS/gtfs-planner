@@ -32,6 +32,7 @@ defmodule GtfsPlannerWeb.Navigation do
   attr :current_organization, :map, default: nil
   attr :user_roles, :list, default: []
   attr :current_path, :string, default: "/"
+  attr :current_gtfs_version, :map, default: nil
 
   def top_nav(assigns) do
     ~H"""
@@ -54,36 +55,40 @@ defmodule GtfsPlannerWeb.Navigation do
         </.link>
       <% end %>
 
-      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization do %>
+      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
+              @current_gtfs_version do %>
         <.link
-          navigate="/gtfs/routes"
+          navigate={"/gtfs/#{@current_gtfs_version.id}/routes"}
           class={pill_class(gtfs_tab_active?(@current_path, "routes"))}
         >
           <.icon name="hero-arrow-path" class="w-4 h-4" /> Routes
         </.link>
       <% end %>
 
-      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization do %>
+      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
+              @current_gtfs_version do %>
         <.link
-          navigate="/gtfs/stops"
+          navigate={"/gtfs/#{@current_gtfs_version.id}/stops"}
           class={pill_class(gtfs_tab_active?(@current_path, "stops"))}
         >
           <.icon name="hero-map-pin" class="w-4 h-4" /> Stations
         </.link>
       <% end %>
 
-      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization do %>
+      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
+              @current_gtfs_version do %>
         <.link
-          navigate="/gtfs/import"
+          navigate={"/gtfs/#{@current_gtfs_version.id}/import"}
           class={pill_class(gtfs_tab_active?(@current_path, "import"))}
         >
           <.icon name="hero-arrow-down-tray" class="w-4 h-4" /> Import
         </.link>
       <% end %>
 
-      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization do %>
+      <%= if has_role?(@user_roles, :pathways_studio_editor) && @current_organization &&
+              @current_gtfs_version do %>
         <.link
-          navigate="/gtfs/export"
+          navigate={"/gtfs/#{@current_gtfs_version.id}/export"}
           class={pill_class(gtfs_tab_active?(@current_path, "export"))}
         >
           <.icon name="hero-arrow-up-tray" class="w-4 h-4" /> Export
@@ -113,8 +118,7 @@ defmodule GtfsPlannerWeb.Navigation do
     String.starts_with?(current_path, tab_path)
   end
 
-  # Checks if a GTFS tab is active. Handles both versionless (/gtfs/stops)
-  # and versioned (/gtfs/{uuid}/stops) routes.
+  # Checks if a GTFS tab is active on versioned GTFS routes.
   defp gtfs_tab_active?(current_path, tab_name) do
     String.starts_with?(current_path, "/gtfs") &&
       String.contains?(current_path, tab_name)

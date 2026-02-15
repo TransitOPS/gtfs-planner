@@ -95,7 +95,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     end
   end
 
-  describe "StopsLive version redirect flow" do
+  describe "StopsLive version switching" do
     setup do
       organization = organization_fixture()
       user = user_fixture()
@@ -110,87 +110,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       gtfs_version = gtfs_version_fixture(organization.id)
 
       %{user: user, organization: organization, gtfs_version: gtfs_version}
-    end
-
-    test "visiting /gtfs/stops (no version) mounts successfully with pending state", %{
-      conn: conn,
-      user: user,
-      organization: organization
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, _view, html} = live(conn, "/gtfs/stops")
-
-      # Should show loading state (which indicates pending_version_resolution is true)
-      assert html =~ "Loading GTFS version"
-      assert html =~ "gtfs-version-resolver"
-    end
-
-    test "handle_event gtfs_version_loaded with valid version triggers redirect", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} = live(conn, "/gtfs/stops")
-
-      # Simulate JS hook sending valid version_id
-      assert {:error, {:live_redirect, %{to: "/gtfs/" <> _, kind: :push}}} =
-               view
-               |> element("#gtfs-version-resolver")
-               |> render_hook("gtfs_version_loaded", %{"version_id" => to_string(version.id)})
-
-      # The redirect should go to the versioned URL
-    end
-
-    test "handle_event gtfs_version_loaded with nil falls back to latest version", %{
-      conn: conn,
-      user: user,
-      organization: organization
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      # Create multiple versions
-      {:ok, _version1} = GtfsPlanner.Versions.create_gtfs_version(organization.id, %{name: "V1"})
-      Process.sleep(10)
-      {:ok, version2} = GtfsPlanner.Versions.create_gtfs_version(organization.id, %{name: "V2"})
-
-      {:ok, view, _html} = live(conn, "/gtfs/stops")
-
-      # Simulate JS hook sending nil version_id (localStorage empty)
-      result =
-        view
-        |> element("#gtfs-version-resolver")
-        |> render_hook("gtfs_version_loaded", %{"version_id" => nil})
-
-      # Should redirect to the latest version
-      assert {:error, {:live_redirect, %{to: redirect_path, kind: :push}}} = result
-      assert redirect_path =~ "/gtfs/#{version2.id}/stops"
-    end
-
-    test "handle_event gtfs_version_loaded with invalid version falls back to latest", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} = live(conn, "/gtfs/stops")
-
-      # Simulate JS hook sending invalid version_id
-      invalid_uuid = Ecto.UUID.generate()
-
-      result =
-        view
-        |> element("#gtfs-version-resolver")
-        |> render_hook("gtfs_version_loaded", %{"version_id" => invalid_uuid})
-
-      # Should fall back to latest version (the fixture version in this case)
-      assert {:error, {:live_redirect, %{to: redirect_path, kind: :push}}} = result
-      assert redirect_path =~ "/gtfs/#{version.id}/stops"
     end
 
     test "handle_event switch_gtfs_version navigates to new URL", %{

@@ -70,7 +70,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
     end
   end
 
-  describe "ImportLive version redirect flow" do
+  describe "ImportLive version switching" do
     setup do
       organization = organization_fixture()
       user = user_fixture()
@@ -87,37 +87,21 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       %{user: user, organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "visiting /gtfs/import (no version) mounts successfully with pending state", %{
-      conn: conn,
-      user: user,
-      organization: organization
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, _view, html} = live(conn, "/gtfs/import")
-
-      # Should show loading state (which indicates pending_version_resolution is true)
-      assert html =~ "Loading GTFS version"
-      assert html =~ "gtfs-version-resolver"
-    end
-
-    test "handle_event gtfs_version_loaded with valid version triggers redirect", %{
+    test "handle_event switch_gtfs_version navigates to new URL", %{
       conn: conn,
       user: user,
       organization: organization,
-      gtfs_version: version
+      gtfs_version: version1
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} = live(conn, "/gtfs/import")
+      {:ok, version2} = GtfsPlanner.Versions.create_gtfs_version(organization.id, %{name: "V2"})
 
-      # Simulate JS hook sending valid version_id
-      assert {:error, {:live_redirect, %{to: "/gtfs/" <> _, kind: :push}}} =
-               view
-               |> element("#gtfs-version-resolver")
-               |> render_hook("gtfs_version_loaded", %{"version_id" => to_string(version.id)})
+      {:ok, view, _html} = live(conn, "/gtfs/#{version1.id}/import")
 
-      # The redirect should go to the versioned URL
+      render_hook(view, "switch_gtfs_version", %{"version" => to_string(version2.id)})
+
+      assert_redirect(view, "/gtfs/#{version2.id}/import")
     end
   end
 

@@ -292,6 +292,8 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
       current_path={@current_path}
       user_roles={@user_roles}
       current_organization={@current_organization}
+      current_gtfs_version={assigns[:current_gtfs_version]}
+      available_versions={assigns[:available_versions] || []}
     >
       <.header>
         Users

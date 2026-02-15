@@ -105,26 +105,6 @@ defmodule GtfsPlannerWeb.Router do
     end
   end
 
-  scope "/gtfs", GtfsPlannerWeb do
-    pipe_through [:browser, :require_authenticated_user]
-
-    live_session :gtfs_routes_versionless,
-      on_mount: [
-        {GtfsPlannerWeb.UserAuth, :ensure_authenticated},
-        GtfsPlannerWeb.AssignOrganization,
-        GtfsPlannerWeb.AssignGtfsVersion
-      ] do
-      # Versionless GTFS routes - will redirect to versioned routes
-      live "/routes", Gtfs.RoutesLive, :index_default
-      live "/routes/:route_id", Gtfs.RouteDetailLive, :show_default
-      live "/stops", Gtfs.StopsLive, :index_default
-      live "/stops/:stop_id", Gtfs.StopDetailLive, :show_default
-      live "/import", Gtfs.ImportLive, :index_default
-      live "/export", Gtfs.ExportLive, :index_default
-      live "/validation/:validation_id", Gtfs.ValidationResultLive, :show_default
-    end
-  end
-
   scope "/gtfs/:version", GtfsPlannerWeb do
     pipe_through [:browser, :require_authenticated_user]
 

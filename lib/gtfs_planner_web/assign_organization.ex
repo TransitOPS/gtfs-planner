@@ -16,6 +16,7 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   import Phoenix.Component, only: [assign: 3]
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Organizations
+  alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.UserAuth
 
   @doc """
@@ -72,10 +73,20 @@ defmodule GtfsPlannerWeb.AssignOrganization do
               nil -> []
             end
 
+          available_versions = Versions.list_gtfs_versions_for_dropdown(organization_id)
+
+          current_gtfs_version =
+            case Versions.get_latest_gtfs_version(organization_id) do
+              {:ok, version} -> version
+              {:error, :no_versions} -> nil
+            end
+
           {:cont,
            socket
            |> assign(:current_organization, organization)
-           |> assign(:user_roles, user_roles)}
+           |> assign(:user_roles, user_roles)
+           |> assign(:available_versions, available_versions)
+           |> assign(:current_gtfs_version, current_gtfs_version)}
         end
 
       nil ->

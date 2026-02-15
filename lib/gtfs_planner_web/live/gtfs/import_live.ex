@@ -44,87 +44,39 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    # Check if version resolution is pending (versionless route)
-    if socket.assigns[:gtfs_version_pending] do
-      {:ok,
-       socket
-       |> assign(:page_title, "Import GTFS")
-       |> assign(:pending_version_resolution, true)}
-    else
-      user_roles = socket.assigns[:user_roles] || []
+    user_roles = socket.assigns[:user_roles] || []
 
-      {:ok,
-       socket
-       |> assign(:page_title, "Import GTFS")
-       |> assign(:user_roles, user_roles)
-       |> allow_upload(:gtfs_files,
-         accept: ~w(.txt .csv),
-         max_entries: 50,
-         max_file_size: 200_000_000
-       )
-       |> assign(
-         :form,
-         to_form(%{"create_version" => false, "version_name" => ""}, as: :gtfs_import_form)
-       )
-       |> assign(:import_result, nil)
-       |> assign(:version_name_touched, false)
-       |> assign(:import_task, nil)
-       |> assign(:import_progress, nil)
-       |> assign(:importing, false)
-       |> assign(:unrecognized_upload_files, [])}
-    end
+    {:ok,
+     socket
+     |> assign(:page_title, "Import GTFS")
+     |> assign(:user_roles, user_roles)
+     |> allow_upload(:gtfs_files,
+       accept: ~w(.txt .csv),
+       max_entries: 50,
+       max_file_size: 200_000_000
+     )
+     |> assign(
+       :form,
+       to_form(%{"create_version" => false, "version_name" => ""}, as: :gtfs_import_form)
+     )
+     |> assign(:import_result, nil)
+     |> assign(:version_name_touched, false)
+     |> assign(:import_task, nil)
+     |> assign(:import_progress, nil)
+     |> assign(:importing, false)
+     |> assign(:unrecognized_upload_files, [])}
   end
 
   @impl true
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
-    # Guard clause: if pending version resolution, we need to redirect to a version
-    if socket.assigns[:pending_version_resolution] do
-      current_organization = socket.assigns.current_organization
+    current_organization = socket.assigns.current_organization
+    current_version_id = to_string(socket.assigns.current_gtfs_version.id)
 
-      # Use the version from localStorage if valid, otherwise fetch latest
-      version_to_use =
-        if version_id && valid_version_for_org?(version_id, current_organization.id) do
-          version_id
-        else
-          # Fetch latest version for the organization
-          case Versions.get_latest_gtfs_version(current_organization.id) do
-            {:ok, version} -> to_string(version.id)
-            {:error, :no_versions} -> nil
-          end
-        end
-
-      if version_to_use do
-        {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/import")}
-      else
-        # No versions available, stay on pending page
-        {:noreply, socket}
-      end
+    if version_id && version_id != current_version_id &&
+         valid_version_for_org?(version_id, current_organization.id) do
+      {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/import")}
     else
-      # Normal flow: we already have a current version
-      current_organization = socket.assigns.current_organization
-      current_version_id = to_string(socket.assigns.current_gtfs_version.id)
-
-      # Try to use the stored version_id from localStorage
-      version_to_use =
-        if version_id && valid_version_for_org?(version_id, current_organization.id) do
-          version_id
-        else
-          # Fall back to latest version or current version
-          case socket.assigns[:latest_gtfs_version] do
-            {:ok, version} -> to_string(version.id)
-            {:error, :no_versions} -> nil
-            # Already on a valid route
-            nil -> current_version_id
-          end
-        end
-
-      # Only navigate if switching to a different version
-      if version_to_use && version_to_use != current_version_id do
-        {:noreply, push_navigate(socket, to: "/gtfs/#{version_to_use}/import")}
-      else
-        # Already on correct version, do nothing
-        {:noreply, socket}
-      end
+      {:noreply, socket}
     end
   end
 
@@ -307,286 +259,248 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <%= if assigns[:pending_version_resolution] do %>
-      <%!-- Pending version resolution - mount the hook to trigger redirect --%>
-      <div
-        id="gtfs-version-resolver"
-        phx-hook="GtfsVersionHook"
-        data-organization-id={@current_organization.id}
-      >
-        <div class="flex items-center justify-center min-h-screen">
-          <div class="text-center">
-            <div class="loading loading-spinner loading-lg"></div>
-            <p class="mt-4 text-base-content/60">Loading GTFS version...</p>
-          </div>
-        </div>
-      </div>
-    <% else %>
-      <Layouts.app
-        flash={@flash}
-        current_user={@current_user}
-        current_organization={@current_organization}
-        user_roles={@user_roles}
-        current_path={@current_path}
-        current_gtfs_version={assigns[:current_gtfs_version]}
-        available_versions={assigns[:available_versions] || []}
-      >
-        <.header>
-          Import GTFS
-          <:subtitle>
-            Upload GTFS files to import levels, stops, and pathways
-          </:subtitle>
-        </.header>
+    <Layouts.app
+      flash={@flash}
+      current_user={@current_user}
+      current_organization={@current_organization}
+      user_roles={@user_roles}
+      current_path={@current_path}
+      current_gtfs_version={assigns[:current_gtfs_version]}
+      available_versions={assigns[:available_versions] || []}
+    >
+      <.header>
+        Import GTFS
+        <:subtitle>
+          Upload GTFS files to import levels, stops, and pathways
+        </:subtitle>
+      </.header>
 
-        <div class="mt-8">
-          <div class="bg-base-100 rounded-lg p-6">
-            <.form
-              for={@form}
-              id="gtfs-import-form"
-              class="space-y-6"
-              phx-change="validate"
-              phx-submit="import"
-            >
-              <div class="form-control">
+      <div class="mt-8">
+        <div class="bg-base-100 rounded-lg p-6">
+          <.form
+            for={@form}
+            id="gtfs-import-form"
+            class="space-y-6"
+            phx-change="validate"
+            phx-submit="import"
+          >
+            <div class="form-control">
+              <label class="label">
+                <span class="label-text">GTFS Files</span>
+              </label>
+              <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-base-300 rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
+                <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
+                  <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/60" />
+                  <p class="mb-2 text-sm font-medium">
+                    <span class="text-primary">Click to upload</span> or drag and drop
+                  </p>
+                  <p class="text-xs text-base-content/60">
+                    agency.txt, areas.txt, attributions.txt, booking_rules.txt, calendar.txt, calendar_dates.txt, fare_attributes.txt, fare_leg_join_rules.txt, fare_leg_rules.txt, fare_media.txt, fare_products.txt, fare_rules.txt, fare_transfer_rules.txt, feed_info.txt, frequencies.txt, levels.txt, locations.txt, networks.txt, pathways.txt, rider_categories.txt, route_networks.txt, route_patterns.txt, routes.txt, shapes.txt, stop_areas.txt, stop_times.txt, stops.txt, timeframes.txt, transfers.txt, translations.txt, trips.txt (max 50 files, 200MB each)
+                  </p>
+                </div>
+                <.live_file_input upload={@uploads.gtfs_files} class="sr-only" />
+              </label>
+            </div>
+
+            <div class="form-control">
+              <label class="label cursor-pointer justify-start gap-4">
+                <input
+                  type="checkbox"
+                  name="gtfs_import_form[create_version]"
+                  value="true"
+                  class="toggle toggle-primary"
+                  checked={@form[:create_version].value}
+                />
+                <div>
+                  <span class="label-text font-medium">Create a new GTFS version</span>
+                  <p class="text-xs text-base-content/60 mt-0.5">
+                    Import into a new version instead of the current one
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <%= if @form[:create_version].value do %>
+              <div class="form-control pl-14">
                 <label class="label">
-                  <span class="label-text">GTFS Files</span>
+                  <span class="label-text">Version Name</span>
                 </label>
-                <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-base-300 rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
-                  <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
-                    <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/60" />
-                    <p class="mb-2 text-sm font-medium">
-                      <span class="text-primary">Click to upload</span> or drag and drop
-                    </p>
-                    <p class="text-xs text-base-content/60">
-                      agency.txt, areas.txt, attributions.txt, booking_rules.txt, calendar.txt, calendar_dates.txt, fare_attributes.txt, fare_leg_join_rules.txt, fare_leg_rules.txt, fare_media.txt, fare_products.txt, fare_rules.txt, fare_transfer_rules.txt, feed_info.txt, frequencies.txt, levels.txt, locations.txt, networks.txt, pathways.txt, rider_categories.txt, route_networks.txt, route_patterns.txt, routes.txt, shapes.txt, stop_areas.txt, stop_times.txt, stops.txt, timeframes.txt, transfers.txt, translations.txt, trips.txt (max 50 files, 200MB each)
-                    </p>
-                  </div>
-                  <.live_file_input upload={@uploads.gtfs_files} class="sr-only" />
-                </label>
+                <input
+                  type="text"
+                  name="gtfs_import_form[version_name]"
+                  class={[
+                    "input input-bordered w-full",
+                    @form[:version_name].errors != [] && "input-error"
+                  ]}
+                  placeholder="e.g., Spring 2025 Schedule"
+                  value={@form[:version_name].value}
+                  phx-blur="version_name_blur"
+                />
+                <%= if @form[:version_name].errors != [] do %>
+                  <p class="text-error text-sm mt-1">
+                    {Enum.join(@form[:version_name].errors, ", ")}
+                  </p>
+                <% else %>
+                  <p class="text-base-content/50 text-xs mt-1">
+                    Give this version a descriptive name
+                  </p>
+                <% end %>
               </div>
+            <% end %>
 
-              <div class="form-control">
-                <label class="label cursor-pointer justify-start gap-4">
-                  <input
-                    type="checkbox"
-                    name="gtfs_import_form[create_version]"
-                    value="true"
-                    class="toggle toggle-primary"
-                    checked={@form[:create_version].value}
-                  />
-                  <div>
-                    <span class="label-text font-medium">Create a new GTFS version</span>
-                    <p class="text-xs text-base-content/60 mt-0.5">
-                      Import into a new version instead of the current one
-                    </p>
-                  </div>
-                </label>
-              </div>
-
-              <%= if @form[:create_version].value do %>
-                <div class="form-control pl-14">
-                  <label class="label">
-                    <span class="label-text">Version Name</span>
-                  </label>
-                  <input
-                    type="text"
-                    name="gtfs_import_form[version_name]"
-                    class={[
-                      "input input-bordered w-full",
-                      @form[:version_name].errors != [] && "input-error"
-                    ]}
-                    placeholder="e.g., Spring 2025 Schedule"
-                    value={@form[:version_name].value}
-                    phx-blur="version_name_blur"
-                  />
-                  <%= if @form[:version_name].errors != [] do %>
-                    <p class="text-error text-sm mt-1">
-                      {Enum.join(@form[:version_name].errors, ", ")}
-                    </p>
-                  <% else %>
-                    <p class="text-base-content/50 text-xs mt-1">
-                      Give this version a descriptive name
-                    </p>
-                  <% end %>
-                </div>
-              <% end %>
-
-              <%!-- Unrecognized files warning --%>
-              <%= if @unrecognized_upload_files != [] do %>
-                <div class="alert alert-warning alert-soft mt-2">
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    class="stroke-current shrink-0 h-6 w-6 text-warning"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                    />
-                  </svg>
-                  <div class="text-base-content">
-                    <h3 class="font-bold">Unrecognized Files</h3>
-                    <div class="text-xs">
-                      The following files are not recognized GTFS files and will be skipped during import: {Enum.join(
-                        @unrecognized_upload_files,
-                        ", "
-                      )}
-                    </div>
-                  </div>
-                </div>
-              <% end %>
-
-              <%!-- Upload errors --%>
-              <%= for error <- upload_errors(@uploads.gtfs_files) do %>
-                <div class="alert alert-error alert-soft mt-2">
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    class="stroke-current shrink-0 h-6 w-6"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                    />
-                  </svg>
-                  <span class="text-sm">{upload_error_to_string(error)}</span>
-                </div>
-              <% end %>
-
-              <div class="form-control">
-                <button
-                  type="submit"
-                  class="btn btn-primary"
-                  disabled={@uploads.gtfs_files.entries == [] || @importing}
+            <%!-- Unrecognized files warning --%>
+            <%= if @unrecognized_upload_files != [] do %>
+              <div class="alert alert-warning alert-soft mt-2">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="stroke-current shrink-0 h-6 w-6 text-warning"
+                  fill="none"
+                  viewBox="0 0 24 24"
                 >
-                  <%= if @importing do %>
-                    <span class="loading loading-spinner loading-sm"></span> Importing...
-                  <% else %>
-                    Import Files
-                  <% end %>
-                </button>
-              </div>
-
-              <%!-- Upload entries display --%>
-              <%= for entry <- @uploads.gtfs_files.entries do %>
-                <div class={[
-                  "flex items-center justify-between mt-2 p-2 rounded",
-                  upload_errors(@uploads.gtfs_files, entry) == [] && "bg-base-200",
-                  upload_errors(@uploads.gtfs_files, entry) != [] && "bg-error/10 border border-error"
-                ]}>
-                  <div class="flex-1">
-                    <span class="text-sm font-medium">{entry.client_name}</span>
-                    <%= if upload_errors(@uploads.gtfs_files, entry) == [] do %>
-                      <div class="w-full bg-base-300 rounded-full h-2 mt-1">
-                        <div
-                          class="bg-primary h-2 rounded-full transition-all duration-300"
-                          style={"width: #{entry.progress}%"}
-                        >
-                        </div>
-                      </div>
-                      <span class="text-xs text-base-content/60">
-                        {entry.progress}% uploaded
-                      </span>
-                    <% else %>
-                      <%= for error <- upload_errors(@uploads.gtfs_files, entry) do %>
-                        <div class="flex items-center gap-2 mt-1">
-                          <.icon name="hero-exclamation-circle" class="w-4 h-4 text-error" />
-                          <span class="text-sm text-error">{upload_error_to_string(error)}</span>
-                        </div>
-                      <% end %>
-                    <% end %>
-                  </div>
-                  <button
-                    type="button"
-                    class="btn btn-ghost btn-xs ml-2"
-                    phx-click="cancel-upload"
-                    phx-value-ref={entry.ref}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              <% end %>
-            </.form>
-
-            <%= if @importing && @import_progress do %>
-              <div class="mt-6 pt-6 border-t border-base-300">
-                <div class="space-y-4">
-                  <div>
-                    <div class="flex justify-between mb-2">
-                      <span class="text-sm font-medium">
-                        Processing: {@import_progress.file}
-                      </span>
-                      <span class="text-sm text-base-content/60">
-                        {@import_progress.processed} / {@import_progress.total} rows
-                      </span>
-                    </div>
-                    <progress
-                      class="progress progress-primary w-full"
-                      value={@import_progress.processed}
-                      max={@import_progress.total}
-                    >
-                    </progress>
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                  />
+                </svg>
+                <div class="text-base-content">
+                  <h3 class="font-bold">Unrecognized Files</h3>
+                  <div class="text-xs">
+                    The following files are not recognized GTFS files and will be skipped during import: {Enum.join(
+                      @unrecognized_upload_files,
+                      ", "
+                    )}
                   </div>
                 </div>
               </div>
             <% end %>
 
-            <%= if @import_result do %>
-              <div class="mt-6 pt-6 border-t border-base-300">
-                <%= case @import_result do %>
-                  <% {:ok, counts, unrecognized} -> %>
-                    <div class="alert alert-success">
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        class="stroke-current shrink-0 h-6 w-6"
-                        fill="none"
-                        viewBox="0 0 24 24"
+            <%!-- Upload errors --%>
+            <%= for error <- upload_errors(@uploads.gtfs_files) do %>
+              <div class="alert alert-error alert-soft mt-2">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="stroke-current shrink-0 h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                  />
+                </svg>
+                <span class="text-sm">{upload_error_to_string(error)}</span>
+              </div>
+            <% end %>
+
+            <div class="form-control">
+              <button
+                type="submit"
+                class="btn btn-primary"
+                disabled={@uploads.gtfs_files.entries == [] || @importing}
+              >
+                <%= if @importing do %>
+                  <span class="loading loading-spinner loading-sm"></span> Importing...
+                <% else %>
+                  Import Files
+                <% end %>
+              </button>
+            </div>
+
+            <%!-- Upload entries display --%>
+            <%= for entry <- @uploads.gtfs_files.entries do %>
+              <div class={[
+                "flex items-center justify-between mt-2 p-2 rounded",
+                upload_errors(@uploads.gtfs_files, entry) == [] && "bg-base-200",
+                upload_errors(@uploads.gtfs_files, entry) != [] && "bg-error/10 border border-error"
+              ]}>
+                <div class="flex-1">
+                  <span class="text-sm font-medium">{entry.client_name}</span>
+                  <%= if upload_errors(@uploads.gtfs_files, entry) == [] do %>
+                    <div class="w-full bg-base-300 rounded-full h-2 mt-1">
+                      <div
+                        class="bg-primary h-2 rounded-full transition-all duration-300"
+                        style={"width: #{entry.progress}%"}
                       >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                        />
-                      </svg>
-                      <div>
-                        <h3 class="font-bold">Import Successful</h3>
-                        <div class="text-xs">
-                          Imported {counts.agencies} agencies, {counts.areas} areas, {counts.attributions} attributions, {counts.booking_rules} booking rules, {counts.calendars} calendars, {counts.calendar_dates} calendar dates, {counts.fare_attributes} fare attributes, {counts.fare_leg_join_rules} fare leg join rules, {counts.fare_leg_rules} fare leg rules, {counts.fare_media} fare media, {counts.fare_products} fare products, {counts.fare_rules} fare rules, {counts.fare_transfer_rules} fare transfer rules, {counts.feed_info} feed info, {counts.frequencies} frequencies, {counts.levels} levels, {counts.locations} locations, {counts.networks} networks, {counts.pathways} pathways, {counts.rider_categories} rider categories, {counts.route_networks} route networks, {counts.route_patterns} route patterns, {counts.routes} routes, {counts.shapes} shapes, {counts.stop_areas} stop areas, {counts.stop_times} stop times, {counts.stops} stops, {counts.timeframes} timeframes, {counts.transfers} transfers, {counts.translations} translations, {counts.trips} trips.
-                        </div>
                       </div>
                     </div>
-                    <%= if unrecognized != [] do %>
-                      <div class="alert alert-warning mt-2">
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          class="stroke-current shrink-0 h-6 w-6"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="2"
-                            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                          />
-                        </svg>
-                        <div>
-                          <h3 class="font-bold">Unrecognized Files Skipped</h3>
-                          <div class="text-xs">
-                            {Enum.join(unrecognized, ", ")}
-                          </div>
-                        </div>
+                    <span class="text-xs text-base-content/60">
+                      {entry.progress}% uploaded
+                    </span>
+                  <% else %>
+                    <%= for error <- upload_errors(@uploads.gtfs_files, entry) do %>
+                      <div class="flex items-center gap-2 mt-1">
+                        <.icon name="hero-exclamation-circle" class="w-4 h-4 text-error" />
+                        <span class="text-sm text-error">{upload_error_to_string(error)}</span>
                       </div>
                     <% end %>
-                  <% {:error, error_msg} -> %>
-                    <div class="alert alert-error alert-soft">
+                  <% end %>
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-xs ml-2"
+                  phx-click="cancel-upload"
+                  phx-value-ref={entry.ref}
+                >
+                  Cancel
+                </button>
+              </div>
+            <% end %>
+          </.form>
+
+          <%= if @importing && @import_progress do %>
+            <div class="mt-6 pt-6 border-t border-base-300">
+              <div class="space-y-4">
+                <div>
+                  <div class="flex justify-between mb-2">
+                    <span class="text-sm font-medium">
+                      Processing: {@import_progress.file}
+                    </span>
+                    <span class="text-sm text-base-content/60">
+                      {@import_progress.processed} / {@import_progress.total} rows
+                    </span>
+                  </div>
+                  <progress
+                    class="progress progress-primary w-full"
+                    value={@import_progress.processed}
+                    max={@import_progress.total}
+                  >
+                  </progress>
+                </div>
+              </div>
+            </div>
+          <% end %>
+
+          <%= if @import_result do %>
+            <div class="mt-6 pt-6 border-t border-base-300">
+              <%= case @import_result do %>
+                <% {:ok, counts, unrecognized} -> %>
+                  <div class="alert alert-success">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="stroke-current shrink-0 h-6 w-6"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
+                    </svg>
+                    <div>
+                      <h3 class="font-bold">Import Successful</h3>
+                      <div class="text-xs">
+                        Imported {counts.agencies} agencies, {counts.areas} areas, {counts.attributions} attributions, {counts.booking_rules} booking rules, {counts.calendars} calendars, {counts.calendar_dates} calendar dates, {counts.fare_attributes} fare attributes, {counts.fare_leg_join_rules} fare leg join rules, {counts.fare_leg_rules} fare leg rules, {counts.fare_media} fare media, {counts.fare_products} fare products, {counts.fare_rules} fare rules, {counts.fare_transfer_rules} fare transfer rules, {counts.feed_info} feed info, {counts.frequencies} frequencies, {counts.levels} levels, {counts.locations} locations, {counts.networks} networks, {counts.pathways} pathways, {counts.rider_categories} rider categories, {counts.route_networks} route networks, {counts.route_patterns} route patterns, {counts.routes} routes, {counts.shapes} shapes, {counts.stop_areas} stop areas, {counts.stop_times} stop times, {counts.stops} stops, {counts.timeframes} timeframes, {counts.transfers} transfers, {counts.translations} translations, {counts.trips} trips.
+                      </div>
+                    </div>
+                  </div>
+                  <%= if unrecognized != [] do %>
+                    <div class="alert alert-warning mt-2">
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
                         class="stroke-current shrink-0 h-6 w-6"
@@ -601,19 +515,41 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         />
                       </svg>
                       <div>
-                        <h3 class="font-bold">Import Failed</h3>
+                        <h3 class="font-bold">Unrecognized Files Skipped</h3>
                         <div class="text-xs">
-                          {error_msg}
+                          {Enum.join(unrecognized, ", ")}
                         </div>
                       </div>
                     </div>
-                <% end %>
-              </div>
-            <% end %>
-          </div>
+                  <% end %>
+                <% {:error, error_msg} -> %>
+                  <div class="alert alert-error alert-soft">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="stroke-current shrink-0 h-6 w-6"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                      />
+                    </svg>
+                    <div>
+                      <h3 class="font-bold">Import Failed</h3>
+                      <div class="text-xs">
+                        {error_msg}
+                      </div>
+                    </div>
+                  </div>
+              <% end %>
+            </div>
+          <% end %>
         </div>
-      </Layouts.app>
-    <% end %>
+      </div>
+    </Layouts.app>
     """
   end
 
