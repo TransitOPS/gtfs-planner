@@ -6,6 +6,8 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   fetches the corresponding organization, and assigns it to the
   LiveView socket as `:current_organization`. It also fetches the
   user's roles for that organization and assigns them as `:user_roles`.
+  For organization-scoped users, it also assigns GTFS version context
+  via `:available_versions` and `:current_gtfs_version`.
   If no organization is in the session or the organization is not found,
   it redirects to the login page with an error.
 
@@ -29,7 +31,8 @@ defmodule GtfsPlannerWeb.AssignOrganization do
     - socket: The LiveView socket
 
   ## Returns
-    - `{:cont, socket}` with `:current_organization` assigned if found
+    - `{:cont, socket}` with `:current_organization`, `:user_roles`,
+      `:available_versions`, and `:current_gtfs_version` assigned if found
     - `{:cont, socket}` without organization if user is administrator
     - `{:halt, socket}` with flash error and redirect if organization not in session or not found
   """
