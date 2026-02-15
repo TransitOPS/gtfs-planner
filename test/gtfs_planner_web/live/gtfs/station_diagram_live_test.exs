@@ -1359,6 +1359,159 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child_stops-#{node_stop.id} [data-stop-label]")
       refute has_element?(view, "#child_stops-#{boarding_without_code.id} [data-stop-label]")
     end
+
+    test "does not render wheelchair badge when all child stops share same wheelchair_boarding", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _stop_1 =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WB_SAME_1",
+          stop_name: "WB Same 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          wheelchair_boarding: 1,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      _stop_2 =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WB_SAME_2",
+          stop_name: "WB Same 2",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          wheelchair_boarding: 1,
+          diagram_coordinate: %{"x" => 20.0, "y" => 20.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # With all child stops sharing the same wheelchair_boarding, no wheelchair badge is shown.
+      refute has_element?(view, "[data-wheelchair-badge]")
+    end
+
+    test "does not render wheelchair badge when counts of wheelchair_boarding 1 and 2 are equal", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _stop_wb1_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WB_EQ_1A",
+          stop_name: "WB Eq 1A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          wheelchair_boarding: 1,
+          diagram_coordinate: %{"x" => 11.0, "y" => 11.0}
+        })
+
+      _stop_wb1_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WB_EQ_1B",
+          stop_name: "WB Eq 1B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          wheelchair_boarding: 1,
+          diagram_coordinate: %{"x" => 12.0, "y" => 12.0}
+        })
+
+      _stop_wb2_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WB_EQ_2A",
+          stop_name: "WB Eq 2A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          wheelchair_boarding: 2,
+          diagram_coordinate: %{"x" => 13.0, "y" => 13.0}
+        })
+
+      _stop_wb2_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WB_EQ_2B",
+          stop_name: "WB Eq 2B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          wheelchair_boarding: 2,
+          diagram_coordinate: %{"x" => 14.0, "y" => 14.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # With equal counts of wheelchair_boarding 1 and 2, there is no minority and no badge is shown.
+      refute has_element?(view, "[data-wheelchair-badge]")
+    end
+
+    test "renders wheelchair badge only on stops with minority wheelchair_boarding value", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      # One stop with wheelchair_boarding: 1 (minority) and two with wheelchair_boarding: 2 (majority)
+      minority_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WB_MINORITY_1",
+          stop_name: "WB Minority 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          wheelchair_boarding: 1,
+          diagram_coordinate: %{"x" => 21.0, "y" => 21.0}
+        })
+
+      majority_stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WB_MAJOR_2A",
+          stop_name: "WB Major 2A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          wheelchair_boarding: 2,
+          diagram_coordinate: %{"x" => 22.0, "y" => 22.0}
+        })
+
+      majority_stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WB_MAJOR_2B",
+          stop_name: "WB Major 2B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          wheelchair_boarding: 2,
+          diagram_coordinate: %{"x" => 23.0, "y" => 23.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # Badge appears only on the stop with the minority wheelchair_boarding value.
+      assert has_element?(view, "#child_stops-#{minority_stop.id} [data-wheelchair-badge]")
+      refute has_element?(view, "#child_stops-#{majority_stop_a.id} [data-wheelchair-badge]")
+      refute has_element?(view, "#child_stops-#{majority_stop_b.id} [data-wheelchair-badge]")
+    end
     end
   end
 
