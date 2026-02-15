@@ -721,9 +721,13 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Returns true if the given level is associated with any station other than `station_id`.
   """
-  def level_used_by_other_stations?(level_id, station_id) do
+  def level_used_by_other_stations?(organization_id, gtfs_version_id, level_id, station_id) do
     from(sl in StopLevel,
-      where: sl.level_id == ^level_id and sl.stop_id != ^station_id
+      where:
+        sl.organization_id == ^organization_id and
+          sl.gtfs_version_id == ^gtfs_version_id and
+          sl.level_id == ^level_id and
+          sl.stop_id != ^station_id
     )
     |> Repo.exists?()
   end

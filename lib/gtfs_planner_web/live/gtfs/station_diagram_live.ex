@@ -937,7 +937,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         "level_index" => to_string(level.level_index)
       })
 
-    level_shared = Gtfs.level_used_by_other_stations?(level.id, socket.assigns.station.id)
+    level_shared =
+      Gtfs.level_used_by_other_stations?(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        level.id,
+        socket.assigns.station.id
+      )
 
     {:noreply,
      socket
