@@ -196,6 +196,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :mode, :atom, required: true
   attr :uploads, :any, required: true
   attr :cross_level_stop_ids, :any, default: MapSet.new()
+  attr :wheelchair_minority, :any, default: nil
   attr :diagram_error, :string, default: nil
   attr :organization_id, :string, required: true
 
@@ -241,6 +242,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             selected_stop_id={@selected_stop_id}
             mode={@mode}
             cross_level_stop_ids={@cross_level_stop_ids}
+            wheelchair_minority={@wheelchair_minority}
           />
         <% @active_level -> %>
           <.empty_diagram_state />
@@ -280,6 +282,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :selected_stop_id, :any
   attr :mode, :atom, required: true
   attr :cross_level_stop_ids, :any, default: MapSet.new()
+  attr :wheelchair_minority, :any, default: nil
 
   defp diagram_overlay(assigns) do
     ~H"""
@@ -296,6 +299,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         active_point_id={@active_point_id}
         mode={@mode}
         cross_level_stop_ids={@cross_level_stop_ids}
+        wheelchair_minority={@wheelchair_minority}
       />
       <.pending_marker
         :if={@pending_xy && @mode == :add && @selected_stop_id == nil}
@@ -354,53 +358,173 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :active_point_id, :any
   attr :mode, :atom, required: true
   attr :cross_level_stop_ids, :any, default: MapSet.new()
+  attr :wheelchair_minority, :any, default: nil
 
   defp stops_layer(assigns) do
     ~H"""
     <g id="stops-svg" phx-update="stream">
       <%= for {dom_id, stop} <- @streams.child_stops do %>
         <%= if stop.diagram_coordinate do %>
+          <% cx = stop.diagram_coordinate["x"] %>
+          <% cy = stop.diagram_coordinate["y"] %>
+          <% active_fill = if(@active_point_id == stop.id, do: "#1e40af", else: "#2563EB") %>
+          <% label = stop_label_text(stop) %>
           <g
             id={dom_id}
             class={if(@mode == :add, do: "pointer-events-none", else: "pointer-events-auto")}
             phx-click={if @mode == :add, do: nil, else: "stop_clicked"}
             phx-value-id={stop.id}
+            opacity={if(MapSet.member?(@cross_level_stop_ids, stop.id), do: "0.5", else: "1")}
           >
-            <circle
-              cx={stop.diagram_coordinate["x"]}
-              cy={stop.diagram_coordinate["y"]}
-              r="1.25"
+            <rect
+              x={cx - 1.75}
+              y={cy - 1.75}
+              width="3.5"
+              height="3.5"
               fill="transparent"
               stroke="transparent"
               stroke-width="0"
               data-stop-hit-target="true"
+              data-center-x={cx}
+              data-center-y={cy}
               class={if(@mode == :add, do: "pointer-events-none", else: "cursor-pointer")}
             />
-            <circle
-              id={dom_id <> "-circle"}
-              cx={stop.diagram_coordinate["x"]}
-              cy={stop.diagram_coordinate["y"]}
-              r="0.75"
-              fill={if @active_point_id == stop.id, do: "#1e40af", else: "#06b6d4"}
-              stroke={
-                cond do
-                  @active_point_id == stop.id -> "#1e40af"
-                  MapSet.member?(@cross_level_stop_ids, stop.id) -> "#f59e0b"
-                  true -> "#fff"
-                end
-              }
-              stroke-width={
-                if MapSet.member?(@cross_level_stop_ids, stop.id), do: "0.25", else: "0.15"
-              }
+            <%= case stop.location_type do %>
+              <% 0 -> %>
+                <rect
+                  x={cx - 0.6}
+                  y={cy - 1.2}
+                  width="1.2"
+                  height="2.4"
+                  rx="0.2"
+                  fill={active_fill}
+                  stroke="#FFFFFF"
+                  stroke-width="0.12"
+                  paint-order="stroke fill"
+                  class="pointer-events-none"
+                  data-stop-marker="true"
+                  data-location-type={stop.location_type}
+                  data-center-x={cx}
+                  data-center-y={cy}
+                />
+              <% 2 -> %>
+                <rect
+                  x={cx - 0.6}
+                  y={cy - 1.2}
+                  width="1.2"
+                  height="2.4"
+                  rx="0.2"
+                  fill="#FFFFFF"
+                  stroke={active_fill}
+                  stroke-width="0.16"
+                  class="pointer-events-none"
+                  data-stop-marker="true"
+                  data-location-type={stop.location_type}
+                  data-center-x={cx}
+                  data-center-y={cy}
+                />
+              <% 4 -> %>
+                <rect
+                  x={cx - 1.2}
+                  y={cy - 0.6}
+                  width="2.4"
+                  height="1.2"
+                  rx="0.2"
+                  fill={active_fill}
+                  stroke="#FFFFFF"
+                  stroke-width="0.12"
+                  paint-order="stroke fill"
+                  class="pointer-events-none"
+                  data-stop-marker="true"
+                  data-location-type={stop.location_type}
+                  data-center-x={cx}
+                  data-center-y={cy}
+                />
+              <% _ -> %>
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r="0.6"
+                  fill={active_fill}
+                  stroke="#FFFFFF"
+                  stroke-width="0.12"
+                  paint-order="stroke fill"
+                  class="pointer-events-none"
+                  data-stop-marker="true"
+                  data-location-type={stop.location_type}
+                  data-center-x={cx}
+                  data-center-y={cy}
+                />
+            <% end %>
+            <text
+              :if={label}
+              x={cx + label_x_offset(stop.location_type)}
+              y={cy}
+              font-family="Inter, sans-serif"
+              font-weight="500"
+              font-size="1.1"
+              letter-spacing="0.02em"
+              fill={active_fill}
+              stroke="#FFFFFF"
+              stroke-width="0.24"
+              paint-order="stroke fill"
+              text-anchor="start"
+              dominant-baseline="central"
+              data-stop-label="true"
+              data-center-x={cx}
+              data-center-y={cy}
+              data-label-offset-x={label_x_offset(stop.location_type)}
               class="pointer-events-none"
-              data-stop-marker="true"
-              data-cross-level={MapSet.member?(@cross_level_stop_ids, stop.id)}
-            />
+            >
+              <%= if stop.location_type == 2 do %>
+                <tspan x={cx + label_x_offset(stop.location_type)} dy="-0.3em">↙</tspan>
+                <tspan x={cx + label_x_offset(stop.location_type)} dy="1.0em">↗</tspan>
+              <% else %>
+                {label}
+              <% end %>
+            </text>
+            <text
+              :if={show_wheelchair_badge?(stop, @wheelchair_minority)}
+              x={cx + 0.5}
+              y={cy - 0.5}
+              font-family="Inter, sans-serif"
+              font-weight="500"
+              font-size="0.65"
+              fill={active_fill}
+              stroke="#FFFFFF"
+              stroke-width="0.16"
+              paint-order="stroke fill"
+              text-anchor="middle"
+              dominant-baseline="central"
+              data-stop-badge="true"
+              data-center-x={cx}
+              data-center-y={cy}
+              class="pointer-events-none"
+            >
+              {"\u267F"}
+            </text>
           </g>
         <% end %>
       <% end %>
     </g>
     """
+  end
+
+  defp stop_label_text(stop) do
+    case stop.location_type do
+      0 -> if stop.platform_code in [nil, ""], do: nil, else: stop.platform_code
+      2 -> "↙↗"
+      4 -> if stop.platform_code in [nil, ""], do: nil, else: stop.platform_code
+      3 -> nil
+      _ -> nil
+    end
+  end
+
+  defp label_x_offset(4), do: 1.55
+  defp label_x_offset(_location_type), do: 0.95
+
+  defp show_wheelchair_badge?(stop, wheelchair_minority) do
+    wheelchair_minority != nil and stop.wheelchair_boarding == wheelchair_minority
   end
 
   attr :pending_xy, :any, required: true
