@@ -1,12 +1,5 @@
 /**
- * GtfsVersionHook - Manages GTFS version selection persistence via localStorage
- * 
- * This hook:
- * 1. Reads the last-selected GTFS version from localStorage on mount
- * 2. Pushes the stored version to the server for validation
- * 3. Handles select changes directly in JS to avoid race conditions
- * 4. Handles server events to update localStorage when version changes
- * 5. Handles redirect events from the server
+ * GtfsVersionHook - Manages GTFS version selection persistence via localStorage.
  */
 const GtfsVersionHook = {
   mounted() {
@@ -16,8 +9,11 @@ const GtfsVersionHook = {
     // Read stored version from localStorage
     const storedVersion = localStorage.getItem(storageKey);
     
-    // Push the stored version to the server for validation
-    this.pushEvent("gtfs_version_loaded", { version_id: storedVersion });
+    // Only GTFS pages handle this event; avoid crashing non-GTFS LiveViews.
+    const isGtfsPage = /^\/gtfs\/[^/]+/.test(window.location.pathname);
+    if (isGtfsPage) {
+      this.pushEvent("gtfs_version_loaded", { version_id: storedVersion });
+    }
     
     // Handle select change directly in JS to avoid race condition with LiveView re-render
     const select = this.el.querySelector('select');
@@ -41,13 +37,6 @@ const GtfsVersionHook = {
     this.handleEvent("gtfs_version_selected", ({ version_id }) => {
       if (version_id) {
         localStorage.setItem(storageKey, version_id);
-      }
-    });
-    
-    // Handle redirect events from server
-    this.handleEvent("gtfs_version_redirect", ({ url }) => {
-      if (url) {
-        window.location.href = url;
       }
     });
   },

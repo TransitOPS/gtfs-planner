@@ -84,6 +84,7 @@ defmodule GtfsPlannerWeb.Layouts do
             current_organization={assigns[:current_organization]}
             user_roles={@user_roles}
             current_path={@current_path}
+            current_gtfs_version={@current_gtfs_version}
           />
         </div>
         <div class="flex-none flex items-center gap-4">

@@ -62,22 +62,4 @@ defmodule GtfsPlannerWeb.AssignGtfsVersion do
         {:halt, socket}
     end
   end
-
-  def on_mount(:default, _params, _session, socket) do
-    current_organization = socket.assigns[:current_organization]
-
-    # Get available versions for dropdown
-    available_versions = Versions.list_gtfs_versions_for_dropdown(current_organization.id)
-
-    # Get latest version for fallback
-    latest_result = Versions.get_latest_gtfs_version(current_organization.id)
-
-    socket =
-      socket
-      |> assign(:gtfs_version_pending, true)
-      |> assign(:available_versions, available_versions)
-      |> assign(:latest_gtfs_version, latest_result)
-
-    {:cont, socket}
-  end
 end

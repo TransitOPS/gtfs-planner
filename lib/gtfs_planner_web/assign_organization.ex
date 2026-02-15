@@ -6,6 +6,8 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   fetches the corresponding organization, and assigns it to the
   LiveView socket as `:current_organization`. It also fetches the
   user's roles for that organization and assigns them as `:user_roles`.
+  For organization-scoped users, it also assigns GTFS version context
+  via `:available_versions` and `:current_gtfs_version`.
   If no organization is in the session or the organization is not found,
   it redirects to the login page with an error.
 
@@ -16,6 +18,7 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   import Phoenix.Component, only: [assign: 3]
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Organizations
+  alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.UserAuth
 
   @doc """
@@ -28,7 +31,8 @@ defmodule GtfsPlannerWeb.AssignOrganization do
     - socket: The LiveView socket
 
   ## Returns
-    - `{:cont, socket}` with `:current_organization` assigned if found
+    - `{:cont, socket}` with `:current_organization`, `:user_roles`,
+      `:available_versions`, and `:current_gtfs_version` assigned if found
     - `{:cont, socket}` without organization if user is administrator
     - `{:halt, socket}` with flash error and redirect if organization not in session or not found
   """
@@ -72,10 +76,20 @@ defmodule GtfsPlannerWeb.AssignOrganization do
               nil -> []
             end
 
+          available_versions = Versions.list_gtfs_versions_for_dropdown(organization_id)
+
+          current_gtfs_version =
+            case Versions.get_latest_gtfs_version(organization_id) do
+              {:ok, version} -> version
+              {:error, :no_versions} -> nil
+            end
+
           {:cont,
            socket
            |> assign(:current_organization, organization)
-           |> assign(:user_roles, user_roles)}
+           |> assign(:user_roles, user_roles)
+           |> assign(:available_versions, available_versions)
+           |> assign(:current_gtfs_version, current_gtfs_version)}
         end
 
       nil ->
