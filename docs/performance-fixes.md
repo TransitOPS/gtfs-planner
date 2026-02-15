@@ -25,33 +25,15 @@
 
 ### LiveView Data Fetching (lib/gtfs_planner_web/live/gtfs/*)
 
-1.  **Redundant Dropdown Data**:
-    *   `RoutesLive`: `list_distinct_route_types` and `list_distinct_agencies` are called on every `handle_params` (search, sort, paginate).
-    *   `StopsLive`: `list_routes_serving_stations` is called on every `handle_params`.
-    *   *Optimization*: These should be fetched once on `mount` or when the version changes.
-
-2.  **Redundant Role Checks**:
-    *   Both `RoutesLive` and `StopsLive` have a `get_user_roles/1` function called in `mount`. However, `AssignOrganization` already assigns `:user_roles` to the socket.
-    *   *Optimization*: Use `socket.assigns.user_roles` instead of re-querying the DB.
-
-3.  **Heavy Joins for Stop Routes**:
+1.  **Heavy Joins for Stop Routes**:
     *   `StopsLive` calls `Gtfs.get_routes_for_stops/3` which joins `StopTime`, `Trip`, and `Route`. `StopTime` is often the largest table in a GTFS dataset.
     *   *Optimization*: Ensure proper indexing on `stop_times(organization_id, gtfs_version_id, stop_id)`. Consider a denormalized mapping if performance degrades. (Note: A covering index was added in `20260127004418_add_stop_times_covering_index.exs`, which is good).
 
-4.  **N+1 Query in `Gtfs.list_levels_for_station/3`**:
-    *   This function performs `Repo.get!(Level, level_id)` inside an `Enum.map` over `all_level_ids`.
-    *   *Optimization*: Fetch all required levels in a single query using `where l.id in ^all_level_ids`.
-
 ### Database Indexing Recommendations
 
-1.  **Route Pattern Filtering**:
-    *   `maybe_filter_route` in `Gtfs` context queries `route_patterns` by `route_id`.
-    *   *Current Index*: `[:organization_id, :gtfs_version_id]`
-    *   *Recommendation*: Add index on `[:organization_id, :gtfs_version_id, :route_id]` to `route_patterns`.
-
-2.  **Distinct Route Types/Agencies**:
+1.  **Distinct Route Types/Agencies**:
     *   Frequent queries for distinct values in `routes`.
     *   *Recommendation*: If route counts are very high, consider adding `route_type` and `agency_id` to the versioned index or as standalone indexes.
 
 ## Conclusion
-The application follows good patterns (LiveView streams, pagination), but has several opportunities for optimization through query consolidation, caching of semi-static data (like dropdown lists), and fixing N+1 queries in detail views.
+The remaining opportunities are in hook-level query consolidation (combining the 3 `AssignOrganization` queries and caching `AssignGtfsVersion` dropdown data) and monitoring heavy joins in `get_routes_for_stops/3` as dataset sizes grow.

@@ -145,5 +145,35 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
       alpha_pos = :binary.match(tbody_html, "R1") |> elem(0)
       assert charlie_pos < alpha_pos
     end
+
+    test "paginates routes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      Enum.each(1..51, fn idx ->
+        route_fixture(organization.id, version.id, %{
+          route_id: "R#{String.pad_leading(Integer.to_string(idx), 3, "0")}"
+        })
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      html =
+        view
+        |> element("button[phx-click='paginate'][phx-value-page='2']")
+        |> render_click()
+
+      assert html =~ "R051"
+      refute html =~ "R001"
+
+      assert_patched(
+        view,
+        "/gtfs/#{version.id}/routes?page=2&sort_by=route_id&sort_dir=asc"
+      )
+    end
   end
 end

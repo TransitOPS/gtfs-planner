@@ -4,14 +4,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
-
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Versions
-
-  on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
-  on_mount GtfsPlannerWeb.AssignOrganization
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @impl true
@@ -22,12 +17,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
        |> assign(:page_title, "Routes")
        |> assign(:pending_version_resolution, true)}
     else
-      user_roles = get_user_roles(socket)
+      user_roles = socket.assigns[:user_roles] || []
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
+      available_route_types = Gtfs.list_distinct_route_types(organization_id, gtfs_version_id)
+      available_agencies = Gtfs.list_distinct_agencies(organization_id, gtfs_version_id)
 
       {:ok,
        socket
        |> assign(:page_title, "Routes")
        |> assign(:user_roles, user_roles)
+       |> assign(:available_route_types, available_route_types)
+       |> assign(:available_agencies, available_agencies)
        |> assign(:filter_form, to_form(%{"route_type" => "", "agency_id" => "", "active" => ""}))
        |> assign(:search, "")
        |> assign(:sort_by, :route_id)
@@ -69,8 +70,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
       routes = Gtfs.list_routes(organization_id, gtfs_version_id, opts)
       total_count = Gtfs.count_routes(organization_id, gtfs_version_id, opts)
-      available_route_types = Gtfs.list_distinct_route_types(organization_id, gtfs_version_id)
-      available_agencies = Gtfs.list_distinct_agencies(organization_id, gtfs_version_id)
 
       filter_form_data = %{
         "route_type" => params["route_type"] || "",
@@ -86,8 +85,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
        |> assign(:sort_dir, sort_dir)
        |> assign(:page, page)
        |> assign(:total_count, total_count)
-       |> assign(:available_route_types, available_route_types)
-       |> assign(:available_agencies, available_agencies)
        |> assign(:routes_empty?, routes == [])
        |> stream(:routes, routes, reset: true)}
     end
@@ -457,16 +454,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       </Layouts.app>
     <% end %>
     """
-  end
-
-  defp get_user_roles(socket) do
-    user = socket.assigns[:current_user]
-    organization = socket.assigns[:current_organization]
-
-    case GtfsPlanner.Accounts.get_user_org_membership(user.id, organization.id) do
-      %UserOrgMembership{roles: roles} when is_list(roles) -> roles
-      _ -> []
-    end
   end
 
   defp valid_version_for_org?(version_id, organization_id) do

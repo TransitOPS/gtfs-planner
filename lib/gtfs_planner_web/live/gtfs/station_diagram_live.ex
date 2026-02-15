@@ -7,13 +7,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.StationDiagramComponents
-
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Versions
-
-  on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
-  on_mount GtfsPlannerWeb.AssignOrganization
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @impl true
@@ -24,7 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:page_title, "Station Diagram")
        |> assign(:pending_version_resolution, true)}
     else
-      user_roles = get_user_roles(socket)
+      user_roles = socket.assigns[:user_roles] || []
 
       {:ok,
        socket
@@ -1301,16 +1296,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          socket
          |> assign(:active_point_id, nil)
          |> assign(:pathway_error, "Failed to create pathway")}
-    end
-  end
-
-  defp get_user_roles(socket) do
-    user = socket.assigns[:current_user]
-    organization = socket.assigns[:current_organization]
-
-    case GtfsPlanner.Accounts.get_user_org_membership(user.id, organization.id) do
-      %UserOrgMembership{roles: roles} when is_list(roles) -> roles
-      _ -> []
     end
   end
 

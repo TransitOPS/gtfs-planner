@@ -1,13 +1,8 @@
 defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   use GtfsPlannerWeb, :live_view
-
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
-
-  on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
-  on_mount GtfsPlannerWeb.AssignOrganization
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @impl Phoenix.LiveView
@@ -18,7 +13,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
        |> assign(:page_title, "Validation Results")
        |> assign(:pending_version_resolution, true)}
     else
-      user_roles = get_user_roles(socket)
+      user_roles = socket.assigns[:user_roles] || []
 
       {:ok,
        socket
@@ -406,16 +401,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
       </div>
     <% end %>
     """
-  end
-
-  defp get_user_roles(socket) do
-    user = socket.assigns[:current_user]
-    organization = socket.assigns[:current_organization]
-
-    case GtfsPlanner.Accounts.get_user_org_membership(user.id, organization.id) do
-      %UserOrgMembership{roles: roles} when is_list(roles) -> roles
-      _ -> []
-    end
   end
 
   defp sorted_notices(notices) do

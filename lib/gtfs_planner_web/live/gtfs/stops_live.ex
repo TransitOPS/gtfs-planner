@@ -4,14 +4,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
-
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Versions
-
-  on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
-  on_mount GtfsPlannerWeb.AssignOrganization
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @impl true
@@ -23,7 +18,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
        |> assign(:page_title, "Stations")
        |> assign(:pending_version_resolution, true)}
     else
-      user_roles = get_user_roles(socket)
+      user_roles = socket.assigns[:user_roles] || []
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
+      available_routes = Gtfs.list_routes_serving_stations(organization_id, gtfs_version_id)
 
       {:ok,
        socket
@@ -40,7 +38,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
        |> assign(:per_page, 50)
        |> assign(:total_count, 0)
        |> assign(:stations_empty?, true)
-       |> assign(:available_routes, [])
+       |> assign(:available_routes, available_routes)
        |> assign(:route_id, nil)
        |> assign(:direction_id, nil)}
     end
@@ -77,8 +75,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       stations = Gtfs.list_stations(organization_id, gtfs_version_id, opts)
       total_count = Gtfs.count_stations(organization_id, gtfs_version_id, opts)
 
-      available_routes = Gtfs.list_routes_serving_stations(organization_id, gtfs_version_id)
-
       stop_ids = Enum.map(stations, & &1.stop_id)
       routes_by_stop = Gtfs.get_routes_for_stops(organization_id, gtfs_version_id, stop_ids)
 
@@ -104,7 +100,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
        |> assign(:per_page, per_page)
        |> assign(:total_count, total_count)
        |> assign(:stations_empty?, stations == [])
-       |> assign(:available_routes, available_routes)
        |> assign(:route_id, route_id)
        |> assign(:direction_id, direction_id)
        |> stream(:stations, stations_with_routes, reset: true)}
@@ -495,16 +490,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       </Layouts.app>
     <% end %>
     """
-  end
-
-  defp get_user_roles(socket) do
-    user = socket.assigns[:current_user]
-    organization = socket.assigns[:current_organization]
-
-    case GtfsPlanner.Accounts.get_user_org_membership(user.id, organization.id) do
-      %UserOrgMembership{roles: roles} when is_list(roles) -> roles
-      _ -> []
-    end
   end
 
   defp valid_version_for_org?(version_id, organization_id) do
