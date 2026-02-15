@@ -574,6 +574,265 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - child stop canvas visibility for active level connectivity" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VISIBILITY_STATION_PRIMARY",
+          stop_name: "Visibility Station Primary",
+          location_type: 1
+        })
+
+      foreign_station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VISIBILITY_STATION_FOREIGN",
+          stop_name: "Visibility Station Foreign",
+          location_type: 1
+        })
+
+      level_1 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "VISIBILITY_LEVEL_1",
+          level_name: "Visibility Level 1",
+          level_index: 0.0
+        })
+
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "VISIBILITY_LEVEL_2",
+          level_name: "Visibility Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_1} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_1.id,
+          diagram_filename: "visibility-level-1.png"
+        })
+
+      {:ok, _stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "visibility-level-2.png"
+        })
+
+      on_level_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VISIBILITY_ON_LEVEL",
+          stop_name: "Visibility On Level",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_1.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      off_level_disconnected_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VISIBILITY_OFF_LEVEL_DISCONNECTED",
+          stop_name: "Visibility Off Level Disconnected",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 20.0}
+        })
+
+      off_level_connected_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VISIBILITY_OFF_LEVEL_CONNECTED",
+          stop_name: "Visibility Off Level Connected",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 30.0}
+        })
+
+      off_level_connected_reverse_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VISIBILITY_OFF_LEVEL_CONNECTED_REVERSE",
+          stop_name: "Visibility Off Level Connected Reverse",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+        })
+
+      unassigned_disconnected_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VISIBILITY_UNASSIGNED_DISCONNECTED",
+          stop_name: "Visibility Unassigned Disconnected",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 45.0, "y" => 45.0}
+        })
+        |> Ecto.Changeset.change(level_id: nil)
+        |> Repo.update!()
+
+      foreign_station_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VISIBILITY_FOREIGN_STATION_STOP",
+          stop_name: "Visibility Foreign Station Stop",
+          location_type: 0,
+          parent_station: foreign_station.stop_id,
+          level_id: level_1.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+        })
+
+      pathway_fixture(
+        organization.id,
+        gtfs_version.id,
+        on_level_stop.stop_id,
+        off_level_connected_stop.stop_id
+      )
+
+      pathway_fixture(
+        organization.id,
+        gtfs_version.id,
+        off_level_connected_reverse_stop.stop_id,
+        on_level_stop.stop_id
+      )
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level_1: level_1,
+        on_level_stop: on_level_stop,
+        off_level_disconnected_stop: off_level_disconnected_stop,
+        off_level_connected_stop: off_level_connected_stop,
+        off_level_connected_reverse_stop: off_level_connected_reverse_stop,
+        unassigned_disconnected_stop: unassigned_disconnected_stop,
+        foreign_station_stop: foreign_station_stop
+      }
+    end
+
+    test "off-level disconnected child stop is hidden while on-level child stop is visible", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level_1: level_1,
+      on_level_stop: on_level_stop,
+      off_level_disconnected_stop: off_level_disconnected_stop
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram?level_id=#{level_1.id}",
+          on_error: :warn
+        )
+
+      assert has_element?(view, "#child_stops-#{on_level_stop.id}")
+      refute has_element?(view, "#child_stops-#{off_level_disconnected_stop.id}")
+    end
+
+    test "off-level connected child stop is visible when connected to an active-level stop", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level_1: level_1,
+      off_level_connected_stop: off_level_connected_stop
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram?level_id=#{level_1.id}",
+          on_error: :warn
+        )
+
+      assert has_element?(view, "#child_stops-#{off_level_connected_stop.id}")
+    end
+
+    test "pathway direction does not affect visibility when active-level stop is pathway to_stop",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level_1: level_1,
+           off_level_connected_reverse_stop: off_level_connected_reverse_stop
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram?level_id=#{level_1.id}",
+          on_error: :warn
+        )
+
+      assert has_element?(view, "#child_stops-#{off_level_connected_reverse_stop.id}")
+    end
+
+    test "foreign-station child stops never render in another station diagram", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level_1: level_1,
+      foreign_station_stop: foreign_station_stop
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram?level_id=#{level_1.id}",
+          on_error: :warn
+        )
+
+      refute has_element?(view, "#child_stops-#{foreign_station_stop.id}")
+    end
+
+    test "unassigned child stop without active-level pathway does not render on canvas", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level_1: level_1,
+      unassigned_disconnected_stop: unassigned_disconnected_stop
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram?level_id=#{level_1.id}",
+          on_error: :warn
+        )
+
+      refute has_element?(view, "#child_stops-#{unassigned_disconnected_stop.id}")
+    end
+  end
+
   describe "StationDiagramLive - action strip and UI elements" do
     setup do
       organization = organization_fixture()
@@ -1360,14 +1619,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child_stops-#{boarding_without_code.id} [data-stop-label]")
     end
 
-    test "does not render wheelchair badge when all child stops share same wheelchair_boarding", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      level: level
-    } do
+    test "does not render wheelchair badge when all child stops share same wheelchair_boarding",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
       _stop_1 =
         stop_fixture(organization.id, gtfs_version.id, %{
           stop_id: "WB_SAME_1",
@@ -1399,14 +1659,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "[data-wheelchair-badge]")
     end
 
-    test "does not render wheelchair badge when counts of wheelchair_boarding 1 and 2 are equal", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      level: level
-    } do
+    test "does not render wheelchair badge when counts of wheelchair_boarding 1 and 2 are equal",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
       _stop_wb1_a =
         stop_fixture(organization.id, gtfs_version.id, %{
           stop_id: "WB_EQ_1A",
@@ -1511,7 +1772,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#child_stops-#{minority_stop.id} [data-wheelchair-badge]")
       refute has_element?(view, "#child_stops-#{majority_stop_a.id} [data-wheelchair-badge]")
       refute has_element?(view, "#child_stops-#{majority_stop_b.id} [data-wheelchair-badge]")
-    end
     end
   end
 
