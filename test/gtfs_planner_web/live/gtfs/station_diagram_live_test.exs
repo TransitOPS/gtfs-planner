@@ -1355,10 +1355,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#child_stops-#{platform_stop.id} [data-stop-label]", "3A")
       refute has_element?(view, "#child_stops-#{platform_without_code.id} [data-stop-label]")
-      assert has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label]", "↙")
-      assert has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label]", "↗")
+      assert has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label]", "↙↗")
       refute has_element?(view, "#child_stops-#{node_stop.id} [data-stop-label]")
       refute has_element?(view, "#child_stops-#{boarding_without_code.id} [data-stop-label]")
+    end
     end
   end
 
