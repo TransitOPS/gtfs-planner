@@ -529,72 +529,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :one_way?, :boolean, required: true
 
   defp pathway_moving_sidewalk(assigns) do
-    {upper_x1, upper_y1, upper_x2, upper_y2} =
-      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 0.4)
-
-    {lower_x1, lower_y1, lower_x2, lower_y2} =
-      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, -0.4)
-
-    assigns =
-      assigns
-      |> assign(:upper_x1, upper_x1)
-      |> assign(:upper_y1, upper_y1)
-      |> assign(:upper_x2, upper_x2)
-      |> assign(:upper_y2, upper_y2)
-      |> assign(:lower_x1, lower_x1)
-      |> assign(:lower_y1, lower_y1)
-      |> assign(:lower_x2, lower_x2)
-      |> assign(:lower_y2, lower_y2)
-
     ~H"""
-    <%= if @one_way? do %>
-      <line
-        x1={@x1}
-        y1={@y1}
-        x2={@x2}
-        y2={@y2}
-        stroke="#2563EB"
-        stroke-width="0.35"
-        stroke-linecap="round"
-        stroke-dasharray="2 1"
-        marker-end="url(#pathway-arrow)"
-        data-pathway-line="true"
-        data-base-stroke="0.35"
-        data-base-dash="2,1"
-        class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
-      />
-    <% else %>
-      <line
-        x1={@upper_x1}
-        y1={@upper_y1}
-        x2={@upper_x2}
-        y2={@upper_y2}
-        stroke="#2563EB"
-        stroke-width="0.35"
-        stroke-linecap="round"
-        stroke-dasharray="2 1"
-        marker-end="url(#pathway-arrow)"
-        data-pathway-line="true"
-        data-base-stroke="0.35"
-        data-base-dash="2,1"
-        class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
-      />
-      <line
-        x1={@lower_x2}
-        y1={@lower_y2}
-        x2={@lower_x1}
-        y2={@lower_y1}
-        stroke="#2563EB"
-        stroke-width="0.35"
-        stroke-linecap="round"
-        stroke-dasharray="2 1"
-        marker-end="url(#pathway-arrow)"
-        data-pathway-line="true"
-        data-base-stroke="0.35"
-        data-base-dash="2,1"
-        class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
-      />
-    <% end %>
+    <line
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke="#2563EB"
+      stroke-width="0.35"
+      stroke-linecap="round"
+      stroke-dasharray="2 1"
+      marker-end={if @one_way?, do: "url(#pathway-arrow)", else: nil}
+      data-pathway-line="true"
+      data-base-stroke="0.35"
+      data-base-dash="2,1"
+      class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
+    />
     """
   end
 

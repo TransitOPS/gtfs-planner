@@ -2160,7 +2160,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-end]"
              )
 
-      assert has_element?(
+      refute has_element?(
                view,
                "#pathways-#{two_way_moving.id} [data-pathway-line][marker-end='url(#pathway-arrow)']"
              )
