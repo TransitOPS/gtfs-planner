@@ -130,7 +130,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   def diagram_action_strip(assigns) do
     ~H"""
     <%= if @levels != [] do %>
-      <div class="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-blue-50 border-b border-blue-200">
+      <div
+        id="diagram-action-strip"
+        class="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-blue-50 border-b border-blue-200"
+      >
         <div class="flex items-center gap-2">
           <form phx-change="switch_level" class="flex items-center gap-2">
             <label class="text-sm font-medium text-blue-900">Level:</label>
@@ -992,7 +995,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   def lists_section(assigns) do
     ~H"""
-    <div class="mt-4 space-y-8">
+    <div id="lists-section" class="mt-4 space-y-8">
       <.child_stops_table child_stops_list={@child_stops_list} />
       <.unassigned_stops_table
         :if={@unassigned_child_stops != []}
