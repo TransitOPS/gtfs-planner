@@ -449,18 +449,62 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :all_levels, :list, required: true
   attr :editing_level, :boolean, default: false
   attr :active_level, :any, default: nil
+  attr :reposition_mode, :boolean, default: false
+  attr :reposition_search, :string, default: ""
+  attr :reposition_stops, :list, default: []
 
   def child_stop_drawer(assigns) do
+    drawer_title =
+      cond do
+        assigns.selected_stop_id -> "Edit Child Stop"
+        assigns.reposition_mode -> "Re-Position Stop"
+        true -> "Add Child Stop"
+      end
+
+    assigns = assign(assigns, :drawer_title, drawer_title)
+
     ~H"""
     <.drawer
       id="child-stop-drawer"
       open={@pending_xy != nil && (@mode == :add || (@mode == :view && @selected_stop_id != nil))}
       on_close="close_drawer"
-      title={if @selected_stop_id, do: "Edit Child Stop", else: "Add Child Stop"}
+      title={@drawer_title}
       class="max-w-3xl"
     >
+      <div
+        :if={@mode == :add && @pending_xy != nil && @selected_stop_id == nil}
+        id="reposition-mode-toggle"
+        class="mb-5 flex items-center justify-end"
+      >
+        <button
+          :if={!@reposition_mode}
+          id="enter-reposition-mode"
+          type="button"
+          class="btn btn-sm btn-outline"
+          phx-click="enter_reposition_mode"
+        >
+          Re-Position Stop
+        </button>
+        <button
+          :if={@reposition_mode}
+          id="exit-reposition-mode"
+          type="button"
+          class="btn btn-sm btn-ghost"
+          phx-click="exit_reposition_mode"
+        >
+          New Stop
+        </button>
+      </div>
+
+      <.reposition_stop_view
+        :if={@pending_xy && @reposition_mode && @selected_stop_id == nil}
+        reposition_stops={@reposition_stops}
+        reposition_search={@reposition_search}
+        active_level={@active_level}
+      />
+
       <.child_stop_form
-        :if={@pending_xy}
+        :if={@pending_xy && !(@reposition_mode && @selected_stop_id == nil)}
         child_stop_form={@child_stop_form}
         selected_stop_id={@selected_stop_id}
         pending_xy={@pending_xy}
@@ -469,6 +513,149 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         active_level={@active_level}
       />
     </.drawer>
+    """
+  end
+
+  attr :reposition_stops, :list, default: []
+  attr :reposition_search, :string, default: ""
+  attr :active_level, :any, default: nil
+
+  defp reposition_stop_view(assigns) do
+    normalized_search =
+      assigns.reposition_search
+      |> to_string()
+      |> String.trim()
+      |> String.downcase()
+
+    filtered_stops =
+      Enum.filter(assigns.reposition_stops, fn stop ->
+        if normalized_search == "" do
+          true
+        else
+          stop_id = stop.stop_id |> to_string() |> String.downcase()
+          stop_name = stop.stop_name |> to_string() |> String.downcase()
+
+          String.contains?(stop_id, normalized_search) or
+            String.contains?(stop_name, normalized_search)
+        end
+      end)
+
+    unpositioned_stops =
+      Enum.filter(filtered_stops, fn stop ->
+        is_nil(stop.diagram_coordinate) or stop.level_id in [nil, ""]
+      end)
+
+    positioned_stops =
+      Enum.filter(filtered_stops, fn stop ->
+        stop.diagram_coordinate != nil and not is_nil(assigns.active_level) and
+          stop.level_id == assigns.active_level.level_id
+      end)
+
+    search_form = to_form(%{"query" => assigns.reposition_search}, as: :search)
+
+    assigns =
+      assigns
+      |> assign(:search_form, search_form)
+      |> assign(:unpositioned_stops, unpositioned_stops)
+      |> assign(:positioned_stops, positioned_stops)
+
+    ~H"""
+    <div class="space-y-6">
+      <.form for={@search_form} id="reposition-search-form" phx-change="reposition_search">
+        <.input
+          field={@search_form[:query]}
+          id="reposition-search-input"
+          type="text"
+          label="Search Child Stops"
+          placeholder="Search by stop ID or name"
+          phx-debounce="200"
+        />
+      </.form>
+
+      <section class="space-y-2">
+        <h3 class="text-sm font-semibold uppercase tracking-wide text-base-content/70">
+          Un-Positioned Child Stops
+        </h3>
+        <div class="overflow-x-auto border border-base-300 rounded-lg">
+          <table id="unpositioned-stops-table" class="table table-sm">
+            <thead>
+              <tr>
+                <th>Stop ID</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th class="text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <%= for stop <- @unpositioned_stops do %>
+                <tr id={"unpositioned-stop-row-#{stop.id}"}>
+                  <td>{stop.stop_id}</td>
+                  <td>{stop.stop_name || "—"}</td>
+                  <td>{Stop.location_type_label(stop.location_type)}</td>
+                  <td class="text-right">
+                    <button
+                      type="button"
+                      class="btn btn-primary btn-xs"
+                      phx-click="reposition_stop"
+                      phx-value-id={stop.id}
+                    >
+                      Place Here
+                    </button>
+                  </td>
+                </tr>
+              <% end %>
+              <tr :if={@unpositioned_stops == []}>
+                <td colspan="4" class="text-sm text-base-content/60">
+                  No matching un-positioned stops.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="space-y-2">
+        <h3 class="text-sm font-semibold uppercase tracking-wide text-base-content/70">
+          Re-Position Existing Stops (Current Level)
+        </h3>
+        <div class="overflow-x-auto border border-base-300 rounded-lg">
+          <table id="positioned-stops-table" class="table table-sm">
+            <thead>
+              <tr>
+                <th>Stop ID</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th class="text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <%= for stop <- @positioned_stops do %>
+                <tr id={"positioned-stop-row-#{stop.id}"}>
+                  <td>{stop.stop_id}</td>
+                  <td>{stop.stop_name || "—"}</td>
+                  <td>{Stop.location_type_label(stop.location_type)}</td>
+                  <td class="text-right">
+                    <button
+                      type="button"
+                      class="btn btn-outline btn-xs"
+                      phx-click="reposition_stop"
+                      phx-value-id={stop.id}
+                    >
+                      Move Here
+                    </button>
+                  </td>
+                </tr>
+              <% end %>
+              <tr :if={@positioned_stops == []}>
+                <td colspan="4" class="text-sm text-base-content/60">
+                  No matching positioned stops on this level.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
     """
   end
 

@@ -43,6 +43,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:level_id_manually_edited, false)
        |> assign(:pathway_error, nil)
        |> assign(:diagram_error, nil)
+       |> assign(:reposition_mode, false)
+       |> assign(:reposition_search, "")
+       |> assign(:reposition_stops, [])
        |> assign(:editing_child_stop, nil)
        |> assign(:editing_level, false)
        |> assign(:show_pathway_drawer, false)
@@ -213,6 +216,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             all_levels={@all_levels}
             editing_level={@editing_level}
             active_level={@active_level}
+            reposition_mode={@reposition_mode}
+            reposition_search={@reposition_search}
+            reposition_stops={@reposition_stops}
           />
 
           <.pathway_drawer
@@ -291,6 +297,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:active_level, selected_level)
          |> assign(:pending_xy, nil)
          |> assign(:diagram_error, nil)
+         |> reset_reposition_state()
          |> load_level_data(selected_level)}
     end
   end
@@ -313,6 +320,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:mode, mode_atom)
+     |> reset_reposition_state()
      |> assign(:pending_xy, nil)
      |> assign(:active_point_id, nil)}
   end
@@ -357,6 +365,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
             {:noreply,
              socket
+             |> reset_reposition_state()
              |> assign(:pending_xy, %{x: x, y: y})
              |> assign(:selected_stop_id, nil)
              |> assign(:editing_level, false)
@@ -379,6 +388,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
             {:noreply,
              socket
+             |> reset_reposition_state()
              |> assign(:pending_xy, pending_xy)
              |> assign(:selected_stop_id, stop.id)
              |> assign(:editing_level, false)
@@ -394,9 +404,85 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_event("close_drawer", _params, socket) do
     {:noreply,
      socket
+     |> reset_reposition_state()
      |> assign(:pending_xy, nil)
      |> assign(:selected_stop_id, nil)
      |> assign(:child_stop_form, to_form(%{}))}
+  end
+
+  @impl true
+  def handle_event("enter_reposition_mode", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    reposition_stops =
+      Gtfs.list_child_stops_for_parent(organization_id, gtfs_version_id, station.id)
+
+    {:noreply,
+     socket
+     |> assign(:reposition_mode, true)
+     |> assign(:reposition_search, "")
+     |> assign(:reposition_stops, reposition_stops)}
+  end
+
+  @impl true
+  def handle_event("exit_reposition_mode", _params, socket) do
+    {:noreply, reset_reposition_state(socket)}
+  end
+
+  @impl true
+  def handle_event("reposition_search", %{"search" => %{"query" => search}}, socket) do
+    {:noreply, assign(socket, :reposition_search, search)}
+  end
+
+  @impl true
+  def handle_event("reposition_search", _params, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("reposition_stop", %{"id" => id}, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+    pending_xy = socket.assigns.pending_xy
+    active_level = socket.assigns.active_level
+    stop = Gtfs.get_stop(id)
+
+    cond do
+      is_nil(stop) ->
+        {:noreply, put_flash(socket, :error, "Invalid stop selection")}
+
+      stop.organization_id != organization_id or stop.gtfs_version_id != gtfs_version_id ->
+        {:noreply, put_flash(socket, :error, "Invalid stop selection")}
+
+      stop.parent_station != station.stop_id ->
+        {:noreply, put_flash(socket, :error, "Invalid stop selection")}
+
+      is_nil(pending_xy) or is_nil(active_level) ->
+        {:noreply, put_flash(socket, :error, "Failed to re-position stop")}
+
+      true ->
+        attrs = %{
+          diagram_coordinate: %{"x" => pending_xy.x, "y" => pending_xy.y},
+          level_id: active_level.level_id
+        }
+
+        case Gtfs.update_stop(stop, attrs) do
+          {:ok, _updated_stop} ->
+            {:noreply,
+             socket
+             |> refresh_lists()
+             |> assign(:pending_xy, nil)
+             |> assign(:selected_stop_id, nil)
+             |> assign(:child_stop_form, to_form(%{}))
+             |> reset_reposition_state()}
+
+          {:error, _changeset} ->
+            {:noreply, put_flash(socket, :error, "Failed to re-position stop")}
+        end
+    end
   end
 
   @impl true
@@ -428,6 +514,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     {:noreply,
      socket
+     |> reset_reposition_state()
      |> assign(:pending_xy, pending_xy)
      |> assign(:selected_stop_id, stop.id)
      |> assign(:editing_level, false)
@@ -1198,6 +1285,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     rescue
       _ -> false
     end
+  end
+
+  defp reset_reposition_state(socket) do
+    socket
+    |> assign(:reposition_mode, false)
+    |> assign(:reposition_search, "")
+    |> assign(:reposition_stops, [])
   end
 
   defp refresh_lists(socket), do: load_level_data(socket, socket.assigns.active_level)
