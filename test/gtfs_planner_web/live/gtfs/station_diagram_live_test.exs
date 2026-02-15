@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Repo
 
   describe "StationDiagramLive - child stop editing" do
     setup do
@@ -949,6 +950,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       level2_href_fragment = "#{level2_after.diagram_filename}?v=#{level2_after.diagram_filename}"
       assert has_element?(view, "image[href*='#{level2_href_fragment}']")
+    end
+
+    test "diagram upload auto-creates stop_level when level is associated via child stops only", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level1: level1
+    } do
+      # Delete the pre-created stop_level so the level is only associated via child stops
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level1.id)
+      Repo.delete!(stop_level)
+
+      # Create a child stop that references level1 via level_id
+      _child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_NO_SL",
+          stop_name: "Child No StopLevel",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level1.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      # Verify no stop_level exists yet
+      assert is_nil(Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level1.id))
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # Upload a diagram — this should auto-create the stop_level
+      upload_diagram(view, "floorplan.png", "auto-create payload")
+
+      # Verify stop_level was created and diagram was saved
+      created_stop_level =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level1.id)
+
+      assert created_stop_level != nil
+      assert created_stop_level.diagram_filename != nil
     end
   end
 
