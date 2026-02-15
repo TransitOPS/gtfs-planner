@@ -285,11 +285,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <svg
       id="diagram-overlay"
+      data-mode={@mode}
       class="absolute inset-0 w-full h-full pointer-events-none"
       viewBox="0 0 100 100"
       preserveAspectRatio="xMidYMid meet"
     >
-      <.pathways_layer streams={@streams} />
+      <.pathways_layer streams={@streams} mode={@mode} />
       <.stops_layer
         streams={@streams}
         active_point_id={@active_point_id}
@@ -305,6 +306,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   attr :streams, :any, required: true
+  attr :mode, :atom, required: true
 
   defp pathways_layer(assigns) do
     ~H"""
@@ -313,8 +315,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <%= if pathway.from_stop.diagram_coordinate && pathway.to_stop.diagram_coordinate do %>
           <g
             id={dom_id}
-            class="cursor-pointer pointer-events-auto"
-            phx-click="edit_pathway"
+            class={
+              if @mode in [:view, :connect],
+                do: "cursor-pointer pointer-events-auto",
+                else: "pointer-events-none"
+            }
+            phx-click={if @mode in [:view, :connect], do: "edit_pathway", else: nil}
             phx-value-id={pathway.id}
           >
             <%!-- Invisible wider line for easier clicking --%>
@@ -335,7 +341,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               stroke="#0891b2"
               stroke-width="0.5"
               stroke-linecap="round"
-              class="hover:stroke-error transition-colors"
+              class={if(@mode == :add, do: "", else: "hover:stroke-error transition-colors")}
             />
           </g>
         <% end %>
@@ -354,16 +360,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <g id="stops-svg" phx-update="stream">
       <%= for {dom_id, stop} <- @streams.child_stops do %>
         <%= if stop.diagram_coordinate do %>
-          <g id={dom_id} class="pointer-events-auto" phx-click="stop_clicked" phx-value-id={stop.id}>
+          <g
+            id={dom_id}
+            class={if(@mode == :add, do: "pointer-events-none", else: "pointer-events-auto")}
+            phx-click={if @mode == :add, do: nil, else: "stop_clicked"}
+            phx-value-id={stop.id}
+          >
             <circle
               cx={stop.diagram_coordinate["x"]}
               cy={stop.diagram_coordinate["y"]}
-              r="2.5"
+              r="1.25"
               fill="transparent"
               stroke="transparent"
               stroke-width="0"
               data-stop-hit-target="true"
-              class="cursor-pointer"
+              class={if(@mode == :add, do: "pointer-events-none", else: "cursor-pointer")}
             />
             <circle
               id={dom_id <> "-circle"}
@@ -454,14 +465,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :reposition_stops, :list, default: []
 
   def child_stop_drawer(assigns) do
+    show_toggle =
+      assigns.mode == :add && assigns.pending_xy != nil && assigns.selected_stop_id == nil
+
     drawer_title =
       cond do
         assigns.selected_stop_id -> "Edit Child Stop"
-        assigns.reposition_mode -> "Re-Position Stop"
-        true -> "Add Child Stop"
+        true -> "Child Stop"
       end
 
-    assigns = assign(assigns, :drawer_title, drawer_title)
+    assigns =
+      assigns
+      |> assign(:drawer_title, drawer_title)
+      |> assign(:show_toggle, show_toggle)
 
     ~H"""
     <.drawer
@@ -471,30 +487,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       title={@drawer_title}
       class="max-w-3xl"
     >
-      <div
-        :if={@mode == :add && @pending_xy != nil && @selected_stop_id == nil}
-        id="reposition-mode-toggle"
-        class="mb-5 flex items-center justify-end"
-      >
-        <button
-          :if={!@reposition_mode}
-          id="enter-reposition-mode"
-          type="button"
-          class="btn btn-sm btn-outline"
-          phx-click="enter_reposition_mode"
-        >
-          Re-Position Stop
-        </button>
-        <button
-          :if={@reposition_mode}
-          id="exit-reposition-mode"
-          type="button"
-          class="btn btn-sm btn-ghost"
-          phx-click="exit_reposition_mode"
-        >
-          New Stop
-        </button>
-      </div>
+      <:header_actions>
+        <div :if={@show_toggle} class="join">
+          <button
+            id="enter-new-stop-mode"
+            type="button"
+            class={[
+              "btn btn-sm join-item shadow-none",
+              !@reposition_mode && "bg-emerald-700 text-white border-emerald-700 hover:bg-emerald-800",
+              @reposition_mode && "bg-white text-emerald-800 border-emerald-300 hover:bg-emerald-100"
+            ]}
+            phx-click="exit_reposition_mode"
+          >
+            New Stop
+          </button>
+          <button
+            id="enter-reposition-mode"
+            type="button"
+            class={[
+              "btn btn-sm join-item shadow-none",
+              @reposition_mode && "bg-emerald-700 text-white border-emerald-700 hover:bg-emerald-800",
+              !@reposition_mode && "bg-white text-emerald-800 border-emerald-300 hover:bg-emerald-100"
+            ]}
+            phx-click="enter_reposition_mode"
+          >
+            Re-Position
+          </button>
+        </div>
+      </:header_actions>
 
       <.reposition_stop_view
         :if={@pending_xy && @reposition_mode && @selected_stop_id == nil}
@@ -561,7 +581,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     ~H"""
     <div class="space-y-6">
-      <.form for={@search_form} id="reposition-search-form" phx-change="reposition_search">
+      <.form
+        for={@search_form}
+        id="reposition-search-form"
+        phx-change="reposition_search"
+        phx-submit="reposition_search"
+      >
         <.input
           field={@search_form[:query]}
           id="reposition-search-input"
@@ -573,12 +598,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </.form>
 
       <section class="space-y-2">
-        <h3 class="text-sm font-semibold uppercase tracking-wide text-base-content/70">
-          Un-Positioned Child Stops
+        <h3 class="text-sm font-semibold text-base-content/70">
+          Unpositioned child stops
         </h3>
-        <div class="overflow-x-auto border border-base-300 rounded-lg">
+        <div class="overflow-x-auto">
           <table id="unpositioned-stops-table" class="table table-sm">
-            <thead>
+            <thead class="bg-gray-200">
               <tr>
                 <th>Stop ID</th>
                 <th>Name</th>
@@ -599,14 +624,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                       phx-click="reposition_stop"
                       phx-value-id={stop.id}
                     >
-                      Place Here
+                      Place here
                     </button>
                   </td>
                 </tr>
               <% end %>
               <tr :if={@unpositioned_stops == []}>
                 <td colspan="4" class="text-sm text-base-content/60">
-                  No matching un-positioned stops.
+                  No matching unpositioned stops.
                 </td>
               </tr>
             </tbody>
@@ -615,12 +640,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </section>
 
       <section class="space-y-2">
-        <h3 class="text-sm font-semibold uppercase tracking-wide text-base-content/70">
-          Re-Position Existing Stops (Current Level)
+        <h3 class="text-sm font-semibold text-base-content/70">
+          Positioned stops on this level
         </h3>
-        <div class="overflow-x-auto border border-base-300 rounded-lg">
+        <div class="overflow-x-auto">
           <table id="positioned-stops-table" class="table table-sm">
-            <thead>
+            <thead class="bg-gray-200">
               <tr>
                 <th>Stop ID</th>
                 <th>Name</th>
@@ -641,7 +666,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                       phx-click="reposition_stop"
                       phx-value-id={stop.id}
                     >
-                      Move Here
+                      Move here
                     </button>
                   </td>
                 </tr>

@@ -677,6 +677,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :title, :string, default: nil
   attr :class, :string, default: nil
   slot :inner_block, required: true
+  slot :header_actions
 
   def drawer(assigns) do
     ~H"""
@@ -702,10 +703,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
       <div class="flex flex-col h-full">
         <%!-- Header --%>
         <header class="flex items-center justify-between px-6 py-4 bg-emerald-50 border-b border-emerald-100">
-          <h2 :if={@title} class="text-lg font-semibold text-emerald-900">
-            {@title}
-          </h2>
-          <div :if={!@title} class="flex-1" />
+          <div class="flex items-center gap-3">
+            <h2 :if={@title} class="text-lg font-semibold text-emerald-900">
+              {@title}
+            </h2>
+            {render_slot(@header_actions)}
+          </div>
+          <div :if={!@title && @header_actions == []} class="flex-1" />
           <button
             type="button"
             phx-click={@on_close}

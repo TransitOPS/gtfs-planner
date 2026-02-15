@@ -331,72 +331,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     y = to_float(y)
 
     case socket.assigns.mode do
-      :view ->
-        child_stops = get_child_stops_with_coordinates(socket)
-        clicked_stop = find_stop_near_point(child_stops, x, y, 5.0)
-
-        case clicked_stop do
-          nil ->
-            {:noreply, socket}
-
-          stop ->
-            handle_event("edit_child_stop", %{"id" => stop.id}, socket)
-        end
-
       :add ->
-        child_stops = get_child_stops_with_coordinates(socket)
-        clicked_stop = find_stop_near_point(child_stops, x, y, 5.0)
+        level_id =
+          if socket.assigns.active_level, do: socket.assigns.active_level.level_id, else: ""
 
-        case clicked_stop do
-          nil ->
-            # No stop found - create new stop
-            level_id =
-              if socket.assigns.active_level, do: socket.assigns.active_level.level_id, else: ""
+        form =
+          to_form(%{
+            "stop_id" => "",
+            "stop_name" => "",
+            "location_type" => "3",
+            "level_id" => level_id,
+            "wheelchair_boarding" => "0",
+            "platform_code" => ""
+          })
 
-            form =
-              to_form(%{
-                "stop_id" => "",
-                "stop_name" => "",
-                "location_type" => "3",
-                "level_id" => level_id,
-                "wheelchair_boarding" => "0",
-                "platform_code" => ""
-              })
+        {:noreply,
+         socket
+         |> reset_reposition_state()
+         |> assign(:pending_xy, %{x: x, y: y})
+         |> assign(:selected_stop_id, nil)
+         |> assign(:editing_level, false)
+         |> assign(:child_stop_form, form)}
 
-            {:noreply,
-             socket
-             |> reset_reposition_state()
-             |> assign(:pending_xy, %{x: x, y: y})
-             |> assign(:selected_stop_id, nil)
-             |> assign(:editing_level, false)
-             |> assign(:child_stop_form, form)}
-
-          stop ->
-            # Stop found - edit existing stop
-            coord = stop.diagram_coordinate
-            pending_xy = %{x: to_float(coord["x"]), y: to_float(coord["y"])}
-
-            form =
-              to_form(%{
-                "stop_id" => stop.stop_id,
-                "stop_name" => stop.stop_name,
-                "location_type" => to_string(stop.location_type),
-                "level_id" => stop.level_id,
-                "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
-                "platform_code" => stop.platform_code || ""
-              })
-
-            {:noreply,
-             socket
-             |> reset_reposition_state()
-             |> assign(:pending_xy, pending_xy)
-             |> assign(:selected_stop_id, stop.id)
-             |> assign(:editing_level, false)
-             |> assign(:child_stop_form, form)}
-        end
-
-      :connect ->
-        handle_connect_click(socket, x, y)
+      # In :view and :connect modes, stop selection is handled by the SVG
+      # hit-target circles via phx-click="stop_clicked" — no proximity search needed.
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -491,7 +451,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       :connect ->
         handle_stop_selection(id, socket)
 
-      _ ->
+      :add ->
+        {:noreply, socket}
+
+      _view ->
         handle_event("edit_child_stop", %{"id" => id}, socket)
     end
   end
@@ -661,26 +624,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("edit_pathway", %{"id" => id}, socket) do
-    pathway = Gtfs.get_pathway_with_stops!(id)
+    if socket.assigns.mode == :add do
+      {:noreply, socket}
+    else
+      pathway = Gtfs.get_pathway_with_stops!(id)
 
-    form =
-      to_form(%{
-        "pathway_id" => pathway.pathway_id,
-        "pathway_mode" => to_string(pathway.pathway_mode),
-        "is_bidirectional" => pathway.is_bidirectional,
-        "traversal_time" => pathway.traversal_time,
-        "length" => pathway.length,
-        "stair_count" => pathway.stair_count,
-        "min_width" => pathway.min_width,
-        "signposted_as" => pathway.signposted_as,
-        "reversed_signposted_as" => pathway.reversed_signposted_as
-      })
+      form =
+        to_form(%{
+          "pathway_id" => pathway.pathway_id,
+          "pathway_mode" => to_string(pathway.pathway_mode),
+          "is_bidirectional" => pathway.is_bidirectional,
+          "traversal_time" => pathway.traversal_time,
+          "length" => pathway.length,
+          "stair_count" => pathway.stair_count,
+          "min_width" => pathway.min_width,
+          "signposted_as" => pathway.signposted_as,
+          "reversed_signposted_as" => pathway.reversed_signposted_as
+        })
 
-    {:noreply,
-     socket
-     |> assign(:editing_pathway, pathway)
-     |> assign(:pathway_form, form)
-     |> assign(:show_pathway_drawer, true)}
+      {:noreply,
+       socket
+       |> assign(:editing_pathway, pathway)
+       |> assign(:pathway_form, form)
+       |> assign(:show_pathway_drawer, true)}
+    end
   end
 
   @impl true
@@ -1140,67 +1107,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp to_snakecase_id(_), do: ""
-
-  defp handle_connect_click(socket, x, y) do
-    child_stops = get_child_stops_with_coordinates(socket)
-
-    clicked_stop = find_stop_near_point(child_stops, x, y, 5.0)
-
-    case {socket.assigns.active_point_id, clicked_stop} do
-      {nil, nil} ->
-        {:noreply, socket}
-
-      {nil, stop} ->
-        # Re-stream the stop to force UI re-render with new active_point_id
-        {:noreply,
-         socket
-         |> stream_insert(:child_stops, stop)
-         |> assign(:active_point_id, stop.id)}
-
-      {_first_id, nil} ->
-        # Re-stream the previously selected stop to remove highlight
-        prev_stop = Gtfs.get_stop!(socket.assigns.active_point_id)
-
-        {:noreply,
-         socket
-         |> stream_insert(:child_stops, prev_stop)
-         |> assign(:active_point_id, nil)}
-
-      {first_id, stop} when first_id == stop.id ->
-        # Clicking same stop deselects it - re-stream to update UI
-        {:noreply,
-         socket
-         |> stream_insert(:child_stops, stop)
-         |> assign(:active_point_id, nil)}
-
-      {first_id, stop} ->
-        create_pathway_between_stops(socket, first_id, stop.id)
-    end
-  end
-
-  defp get_child_stops_with_coordinates(socket) do
-    station = socket.assigns.station
-    level = socket.assigns.active_level
-
-    if level do
-      Gtfs.list_child_stops_for_level(station.id, level.id)
-      |> Enum.filter(&(&1.diagram_coordinate != nil))
-    else
-      []
-    end
-  end
-
-  defp find_stop_near_point(stops, x, y, radius) do
-    Enum.find(stops, fn stop ->
-      coord = stop.diagram_coordinate
-      # Ensure floats for consistent arithmetic (JSONB may return integers)
-      coord_x = to_float(coord["x"])
-      coord_y = to_float(coord["y"])
-      dx = coord_x - x
-      dy = coord_y - y
-      :math.sqrt(dx * dx + dy * dy) <= radius
-    end)
-  end
 
   defp to_float(val) when is_float(val), do: val
   defp to_float(val) when is_integer(val), do: val / 1

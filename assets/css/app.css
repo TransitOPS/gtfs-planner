@@ -163,6 +163,14 @@ body:has(#diagram-page[data-immersive="true"]) {
   overflow: hidden;
 }
 
+/* Disable pointer events on stops and pathways in Add Stop mode.
+   Stream items don't re-render when @mode changes, so we override via CSS. */
+#diagram-overlay[data-mode="add"] #stops-svg g,
+#diagram-overlay[data-mode="add"] #pathways-svg g {
+  pointer-events: none !important;
+  cursor: default !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   #diagram-page #app-header,
   #diagram-page #station-sub-nav,
