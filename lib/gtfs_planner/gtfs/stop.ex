@@ -96,4 +96,14 @@ defmodule GtfsPlanner.Gtfs.Stop do
       _ -> "Unknown"
     end
   end
+
+  @doc "Returns human-readable label for wheelchair_boarding."
+  def wheelchair_boarding_label(wheelchair_boarding) do
+    case wheelchair_boarding do
+      0 -> "No info"
+      1 -> "Accessible"
+      2 -> "Not accessible"
+      _ -> nil
+    end
+  end
 end

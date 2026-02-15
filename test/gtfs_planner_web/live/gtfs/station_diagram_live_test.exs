@@ -84,7 +84,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # Click on child stop list item
       result =
         view
-        |> element("#child-stop-list-#{child_stop.id}")
+        |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
         |> render_click()
 
       # Assert drawer opened with populated form fields
@@ -146,7 +146,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       view
-      |> element("#child-stop-list-#{child_stop.id}")
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
       |> render_click()
 
       assert has_element?(view, "#child-stop-form button[phx-click='toggle_level_edit']")
@@ -163,10 +163,58 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       view
-      |> element("#child-stop-list-#{child_stop.id}")
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
       |> render_click()
 
       refute has_element?(view, "#child-stop-form select[name='level_id']")
+    end
+
+    test "editing stop preserves nil wheelchair boarding when unchanged", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_WHEELCHAIR_NIL",
+          stop_name: "Child Wheelchair Nil",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          wheelchair_boarding: nil,
+          diagram_coordinate: %{"x" => 35.0, "y" => 45.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#child-stop-form select[name='wheelchair_boarding'] option[value=''][selected]"
+             )
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => child_stop.stop_id,
+        "stop_name" => child_stop.stop_name,
+        "location_type" => Integer.to_string(child_stop.location_type),
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "platform_code" => ""
+      })
+      |> render_submit()
+
+      updated_stop = Gtfs.get_stop!(child_stop.id)
+      assert is_nil(updated_stop.wheelchair_boarding)
     end
 
     test "view mode background click is a no-op", %{
@@ -797,13 +845,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}")
 
       view
       |> element("form[phx-change='switch_level']")
       |> render_change(%{"level_id" => "not-a-real-level"})
 
-      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}")
       assert render(view) =~ "Invalid level selection"
     end
 
@@ -820,11 +868,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}")
 
       render_hook(view, "switch_level", %{})
 
-      assert has_element?(view, "#child-stop-list-#{child_stop.id}")
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}")
       assert render(view) =~ "Malformed level selection request"
     end
 
