@@ -4,7 +4,7 @@
  */
 const OVERLAY_BASE = {
   circleR: 0.75,
-  circleHitR: 2.5,
+  circleHitR: 1.25,
   circleStroke: 0.15,
   circleStrokeCrossLevel: 0.25,
   pathwayStroke: 0.5,
