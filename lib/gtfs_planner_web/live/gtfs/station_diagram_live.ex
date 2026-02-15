@@ -41,6 +41,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:unassigned_child_stops, [])
        |> assign(:show_level_modal, nil)
        |> assign(:level_form, to_form(%{}))
+       |> assign(:level_shared, false)
        |> assign(:level_id_manually_edited, false)
        |> assign(:pathway_error, nil)
        |> assign(:diagram_error, nil)
@@ -293,6 +294,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             level_form={@level_form}
             available_levels={@available_levels}
             level_mode={@level_mode}
+            editing_level_uuid={if @show_level_modal == :edit && @active_level, do: @active_level.id}
+            level_shared={@level_shared}
           />
 
           <.lists_section
@@ -934,10 +937,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         "level_index" => to_string(level.level_index)
       })
 
+    level_shared = Gtfs.level_used_by_other_stations?(level.id, socket.assigns.station.id)
+
     {:noreply,
      socket
      |> assign(:show_level_modal, :edit)
      |> assign(:level_form, form)
+     |> assign(:level_shared, level_shared)
      |> assign(:level_id_manually_edited, true)}
   end
 
@@ -947,6 +953,45 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:show_level_modal, nil)
      |> assign(:level_form, to_form(%{}))}
+  end
+
+  @impl true
+  def handle_event("remove_level_from_station", %{"id" => level_uuid}, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    case Gtfs.remove_level_from_station(
+           organization_id,
+           gtfs_version_id,
+           station.id,
+           station.stop_id,
+           level_uuid
+         ) do
+      {:ok, :removed} ->
+        levels_data = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+        levels = Enum.map(levels_data, & &1.level)
+        station_level_ids = Enum.map(levels, & &1.id)
+
+        available_levels =
+          Gtfs.list_all_levels(organization_id, gtfs_version_id)
+          |> Enum.reject(&(&1.id in station_level_ids))
+          |> Enum.sort_by(&(&1.level_name || &1.level_id), :asc)
+
+        active_level = List.first(levels)
+
+        {:noreply,
+         socket
+         |> assign(:levels, levels)
+         |> assign(:available_levels, available_levels)
+         |> assign(:active_level, active_level)
+         |> assign(:show_level_modal, nil)
+         |> assign(:level_form, to_form(%{}))
+         |> load_level_data(active_level)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to remove level from station.")}
+    end
   end
 
   @impl true
