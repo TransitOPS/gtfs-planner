@@ -6,10 +6,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
+  import GtfsPlanner.ValidationsFixtures
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Validations
 
   describe "StationDiagramLive - child stop editing" do
     setup do
@@ -2314,6 +2316,512 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       refute has_element?(view, "#pathway-form")
+    end
+  end
+
+  describe "StationDiagramLive - walkability selection" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_WALKABILITY",
+          stop_name: "Walkability Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L1_WALKABILITY",
+          level_name: "Walkability Level",
+          level_index: 0.0
+        })
+
+      secondary_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L2_WALKABILITY",
+          level_name: "Walkability Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "walkability-diagram.png")
+
+      {:ok, _secondary_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: secondary_level.id
+        })
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_WALKABILITY_1",
+          stop_name: "Walkability Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+        })
+
+      off_level_child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_WALKABILITY_2",
+          stop_name: "Walkability Child Off Level",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: secondary_level.level_id,
+          diagram_coordinate: %{"x" => 55.0, "y" => 55.0}
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        child_stop: child_stop,
+        off_level_child_stop: off_level_child_stop
+      }
+    end
+
+    test "address selection enables walkability test submission", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      child_stop: child_stop
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='open_walkability_drawer']")
+      |> render_click()
+
+      assert has_element?(view, "#walkability-test-form button[type='submit'][disabled]")
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "123 Main", _opts ->
+        {:ok,
+         [
+           %GtfsPlanner.Geocoding.Result{
+             formatted_address: "123 Main St, Boston, MA, USA",
+             lat: 42.3601,
+             lon: -71.0589,
+             country: "USA",
+             state: "Massachusetts",
+             city: "Boston"
+           }
+         ]}
+      end)
+
+      render_hook(view, "live_select_change", %{
+        "text" => "123 Main",
+        "id" => "walkability_address_autocomplete_component"
+      })
+
+      selection =
+        Phoenix.json_library().encode!(%{
+          "formatted_address" => "123 Main St, Boston, MA, USA",
+          "lat" => 42.3601,
+          "lon" => -71.0589,
+          "country" => "USA",
+          "state" => "Massachusetts",
+          "city" => "Boston"
+        })
+
+      render_change(view, "walkability_form_change", %{
+        "walkability" => %{"address_autocomplete" => selection}
+      })
+
+      assert has_element?(view, "#walkability-test-form button[type='submit']:not([disabled])")
+      assert has_element?(view, "#walkability-test-form p", "123 Main St, Boston, MA, USA")
+    end
+
+    test "text-input-only change does not clear selected walkability address", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      child_stop: child_stop
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='open_walkability_drawer']")
+      |> render_click()
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "123 Main", _opts ->
+        {:ok,
+         [
+           %GtfsPlanner.Geocoding.Result{
+             formatted_address: "123 Main St, Boston, MA, USA",
+             lat: 42.3601,
+             lon: -71.0589,
+             country: "USA",
+             state: "Massachusetts",
+             city: "Boston"
+           }
+         ]}
+      end)
+
+      render_hook(view, "live_select_change", %{
+        "text" => "123 Main",
+        "id" => "walkability_address_autocomplete_component"
+      })
+
+      selection =
+        Phoenix.json_library().encode!(%{
+          "formatted_address" => "123 Main St, Boston, MA, USA",
+          "lat" => 42.3601,
+          "lon" => -71.0589,
+          "country" => "USA",
+          "state" => "Massachusetts",
+          "city" => "Boston"
+        })
+
+      render_change(view, "walkability_form_change", %{
+        "walkability" => %{"address_autocomplete" => selection}
+      })
+
+      assert has_element?(view, "#walkability-test-form button[type='submit']:not([disabled])")
+
+      render_change(view, "walkability_form_change", %{
+        "walkability" => %{"address_autocomplete_text_input" => ""}
+      })
+
+      assert has_element?(view, "#walkability-test-form button[type='submit']:not([disabled])")
+      assert has_element?(view, "#walkability-test-form p", "123 Main St, Boston, MA, USA")
+    end
+
+    test "save success closes drawer and marks stop as tested", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      child_stop: child_stop
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='open_walkability_drawer']")
+      |> render_click()
+
+      selection =
+        Phoenix.json_library().encode!(%{
+          "formatted_address" => "123 Main St, Boston, MA, USA",
+          "lat" => 42.3601,
+          "lon" => -71.0589,
+          "country" => "USA",
+          "state" => "Massachusetts",
+          "city" => "Boston"
+        })
+
+      render_change(view, "walkability_form_change", %{
+        "walkability" => %{"address_autocomplete" => selection}
+      })
+
+      view
+      |> form("#walkability-test-form")
+      |> render_submit()
+
+      refute has_element?(view, "#walkability-test-form")
+
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}", "1 test case")
+    end
+
+    test "duplicate save shows duplicate-address error flash", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      child_stop: child_stop
+    } do
+      _existing_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          stop_id: child_stop.stop_id,
+          address: "123 Main St, Boston, MA, USA"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='open_walkability_drawer']")
+      |> render_click()
+
+      selection =
+        Phoenix.json_library().encode!(%{
+          "formatted_address" => "123 Main St, Boston, MA, USA",
+          "lat" => 42.3601,
+          "lon" => -71.0589,
+          "country" => "USA",
+          "state" => "Massachusetts",
+          "city" => "Boston"
+        })
+
+      render_change(view, "walkability_form_change", %{
+        "walkability" => %{"address_autocomplete" => selection}
+      })
+
+      view
+      |> form("#walkability-test-form")
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "#walkability-test-drawer",
+               "This address is already registered for this stop."
+             )
+
+      assert has_element?(view, "#walkability-test-form")
+    end
+
+    test "table lists only active-level walkability tests", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      child_stop: child_stop,
+      off_level_child_stop: off_level_child_stop
+    } do
+      in_level_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          stop_id: child_stop.stop_id,
+          address: "10 Active Level Way"
+        })
+
+      off_level_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          stop_id: off_level_child_stop.stop_id,
+          address: "20 Off Level Way"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#walkability-tests-table")
+      assert has_element?(view, "#walkability-test-row-#{in_level_test.id}")
+      refute has_element?(view, "#walkability-test-row-#{off_level_test.id}")
+    end
+
+    test "clicking Edit opens drawer in edit mode with pre-populated values", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      child_stop: child_stop
+    } do
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          stop_id: child_stop.stop_id,
+          address: "123 Edit Street, Boston, MA, USA",
+          description: "Prepopulated description",
+          expected_traversable: true,
+          expected_wheelchair_accessible: true,
+          expected_min_duration_seconds: 30
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#walkability-test-stop-#{walkability_test.id}")
+      |> render_click()
+
+      assert has_element?(view, "#walkability-test-form button[type='submit']", "Save Test Case")
+      assert has_element?(view, "#walkability-test-form", "123 Edit Street, Boston, MA, USA")
+      assert has_element?(view, "#walkability-test-form", "Prepopulated description")
+      assert has_element?(view, "#walkability-test-delete-section")
+    end
+
+    test "edit submit updates record and row content then closes drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      child_stop: child_stop
+    } do
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          stop_id: child_stop.stop_id,
+          address: "500 Update Ave, Boston, MA, USA",
+          description: "Before update",
+          expected_traversable: true,
+          expected_wheelchair_accessible: false
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#walkability-test-stop-#{walkability_test.id}")
+      |> render_click()
+
+      render_change(view, "walkability_form_change", %{
+        "walkability" => %{
+          "description" => "After update",
+          "expected_traversable" => "false",
+          "expected_wheelchair_accessible" => "true",
+          "expected_min_duration_seconds" => "45",
+          "expected_max_duration_seconds" => "120"
+        }
+      })
+
+      view
+      |> form("#walkability-test-form")
+      |> render_submit()
+
+      refute has_element?(view, "#walkability-test-form")
+      assert has_element?(view, "#walkability-test-row-#{walkability_test.id}", "After update")
+      refute has_element?(view, "#walkability-test-row-#{walkability_test.id}", "Before update")
+
+      updated = Validations.get_walkability_test!(walkability_test.id)
+      assert updated.description == "After update"
+      assert updated.expected_traversable == false
+      assert updated.expected_wheelchair_accessible == true
+      assert updated.expected_min_duration_seconds == 45
+      assert updated.expected_max_duration_seconds == 120
+    end
+
+    test "duplicate address on edit shows duplicate-specific error flash and keeps drawer open",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           child_stop: child_stop
+         } do
+      existing =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          stop_id: child_stop.stop_id,
+          address: "111 Existing Address, Boston, MA, USA"
+        })
+
+      editing =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          stop_id: child_stop.stop_id,
+          address: "222 Editable Address, Boston, MA, USA"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#walkability-test-stop-#{editing.id}")
+      |> render_click()
+
+      duplicate_selection =
+        Phoenix.json_library().encode!(%{
+          "formatted_address" => existing.address,
+          "lat" => 42.3601,
+          "lon" => -71.0589
+        })
+
+      render_change(view, "walkability_form_change", %{
+        "walkability" => %{"address_autocomplete" => duplicate_selection}
+      })
+
+      view
+      |> form("#walkability-test-form")
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "This address is already registered for this stop."
+             )
+
+      assert has_element?(view, "#walkability-test-form")
+
+      unchanged = Validations.get_walkability_test!(editing.id)
+      assert unchanged.address == "222 Editable Address, Boston, MA, USA"
+    end
+
+    test "deleting from row removes record and row, updates child-stop count, and shows success flash",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           child_stop: child_stop
+         } do
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          stop_id: child_stop.stop_id,
+          address: "999 Delete Me Ave"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#walkability-test-row-#{walkability_test.id}")
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}", "1 test case")
+
+      view
+      |> element("#walkability-test-stop-#{walkability_test.id}")
+      |> render_click()
+
+      view
+      |> element("#walkability-test-delete-in-form")
+      |> render_click()
+
+      refute has_element?(view, "#walkability-test-row-#{walkability_test.id}")
+      refute has_element?(view, "#child-stop-row-#{child_stop.id}", "1 test case")
+      assert is_nil(Validations.get_walkability_test(walkability_test.id))
     end
   end
 

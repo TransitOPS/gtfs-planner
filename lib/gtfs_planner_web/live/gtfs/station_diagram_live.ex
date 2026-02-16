@@ -7,8 +7,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.StationDiagramComponents
+  alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
+  alias LiveSelect.Component, as: LiveSelectComponent
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @impl true
@@ -44,6 +47,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:pathway_form, to_form(%{}))
      |> assign(:available_levels, [])
      |> assign(:level_mode, :existing)
+     |> assign(:show_walkability_drawer, false)
+     |> assign(:walkability_stop, nil)
+     |> assign(:walkability_form, to_form(default_walkability_form_params(), as: :walkability))
+     |> assign(:walkability_selected_address, nil)
+     |> assign(:walkability_selected_lat, nil)
+     |> assign(:walkability_selected_lon, nil)
+     |> assign(:walkability_selected_result, nil)
+     |> assign(:walkability_last_results, [])
+     |> assign(:walkability_error, nil)
+     |> assign(:walkability_field_errors, %{})
+     |> assign(:walkability_test_stop_ids, %{})
+     |> assign(:walkability_tests_list, [])
+     |> assign(:walkability_mode, :create)
+     |> assign(:editing_walkability_test, nil)
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg .svg),
        max_file_size: 10_000_000
@@ -87,6 +104,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:available_levels, available_levels)
           |> assign(:all_levels, all_levels)
           |> assign(:active_level, active_level)
+          |> assign(:show_walkability_drawer, false)
+          |> assign(:walkability_stop, nil)
+          |> assign(
+            :walkability_form,
+            to_form(default_walkability_form_params(), as: :walkability)
+          )
+          |> clear_walkability_selection()
+          |> assign(:walkability_last_results, [])
+          |> assign(:walkability_mode, :create)
+          |> assign(:editing_walkability_test, nil)
 
         socket = load_level_data(socket, active_level)
 
@@ -103,6 +130,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:pathways_list, [])
     |> assign(:wheelchair_minority, nil)
     |> assign(:active_stop_level, nil)
+    |> assign(:walkability_test_stop_ids, %{})
+    |> assign(:walkability_tests_list, [])
   end
 
   defp load_level_data(socket, level) do
@@ -114,6 +143,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     all_child_stops = Gtfs.list_child_stops_for_level(station.id, level.id)
     wheelchair_minority = compute_wheelchair_minority(all_child_stops)
     child_stops_on_level = Enum.filter(all_child_stops, & &1.on_active_level)
+    child_stop_ids = Enum.map(child_stops_on_level, & &1.stop_id)
+
+    walkability_test_stop_ids =
+      Validations.stop_ids_with_walkability_tests(organization_id, child_stop_ids)
+
+    walkability_tests_list =
+      Validations.list_walkability_tests_for_stop_ids(organization_id, child_stop_ids)
 
     unassigned_child_stops =
       Enum.filter(all_child_stops, fn stop -> stop.level_id in [nil, ""] end)
@@ -139,6 +175,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:wheelchair_minority, wheelchair_minority)
     |> assign(:active_stop_level, stop_level)
     |> assign(:cross_level_stop_ids, cross_level_stop_ids)
+    |> assign(:walkability_test_stop_ids, walkability_test_stop_ids)
+    |> assign(:walkability_tests_list, walkability_tests_list)
   end
 
   defp active_level_stop_ids(all_child_stops, level) do
@@ -268,11 +306,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           level_shared={@level_shared}
         />
 
+        <.walkability_test_drawer
+          open={@show_walkability_drawer}
+          walkability_stop={@walkability_stop}
+          walkability_form={@walkability_form}
+          walkability_selected_address={@walkability_selected_address}
+          walkability_selected_lat={@walkability_selected_lat}
+          walkability_selected_lon={@walkability_selected_lon}
+          walkability_error={@walkability_error}
+          walkability_field_errors={@walkability_field_errors}
+          walkability_mode={@walkability_mode}
+          editing_walkability_test={@editing_walkability_test}
+        />
+
         <.lists_section
           child_stops_list={@child_stops_list}
           unassigned_child_stops={@unassigned_child_stops}
           pathways_list={@pathways_list}
           pathway_error={@pathway_error}
+          walkability_test_stop_ids={@walkability_test_stop_ids}
+          walkability_tests_list={@walkability_tests_list}
         />
       </Layouts.app>
     </div>
@@ -315,6 +368,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:active_level, selected_level)
          |> assign(:pending_xy, nil)
          |> assign(:diagram_error, nil)
+         |> assign(:show_walkability_drawer, false)
+         |> assign(:walkability_stop, nil)
+         |> assign(
+           :walkability_form,
+           to_form(default_walkability_form_params(), as: :walkability)
+         )
+         |> clear_walkability_selection()
+         |> assign(:walkability_last_results, [])
+         |> assign(:walkability_mode, :create)
+         |> assign(:editing_walkability_test, nil)
          |> reset_reposition_state()
          |> load_level_data(selected_level)}
     end
@@ -691,6 +754,238 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:show_pathway_drawer, false)
      |> assign(:editing_pathway, nil)
      |> assign(:pathway_form, to_form(%{}))}
+  end
+
+  @impl true
+  def handle_event("open_walkability_drawer", %{"id" => id}, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+    stop = Gtfs.get_stop(id)
+
+    cond do
+      is_nil(stop) ->
+        {:noreply, put_flash(socket, :error, "Invalid stop selection")}
+
+      stop.organization_id != organization_id or stop.gtfs_version_id != gtfs_version_id ->
+        {:noreply, put_flash(socket, :error, "Invalid stop selection")}
+
+      stop.parent_station != station.stop_id ->
+        {:noreply, put_flash(socket, :error, "Invalid stop selection")}
+
+      true ->
+        {:noreply,
+         socket
+         |> assign(:show_walkability_drawer, true)
+         |> assign(:walkability_stop, stop)
+         |> assign(
+           :walkability_form,
+           to_form(default_walkability_form_params(), as: :walkability)
+         )
+         |> clear_walkability_selection()
+         |> assign(:walkability_last_results, [])
+         |> assign(:walkability_error, nil)
+         |> assign(:walkability_field_errors, %{})
+         |> assign(:walkability_mode, :create)
+         |> assign(:editing_walkability_test, nil)}
+    end
+  end
+
+  @impl true
+  def handle_event("edit_walkability_test", %{"id" => id}, socket) do
+    case Validations.get_walkability_test(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Walkability test not found.")}
+
+      walkability_test ->
+        case validate_walkability_test_scope(socket, walkability_test) do
+          {:ok, stop} ->
+            form_params = walkability_test_form_params(walkability_test)
+
+            {:noreply,
+             socket
+             |> assign(:show_walkability_drawer, true)
+             |> assign(:walkability_stop, stop)
+             |> assign(:walkability_form, to_form(form_params, as: :walkability))
+             |> assign(:walkability_selected_address, walkability_test.address)
+             |> assign(:walkability_selected_lat, walkability_test.address_lat)
+             |> assign(:walkability_selected_lon, walkability_test.address_lon)
+             |> assign(:walkability_selected_result, nil)
+             |> assign(:walkability_last_results, [])
+             |> assign(:walkability_error, nil)
+             |> assign(:walkability_field_errors, %{})
+             |> assign(:walkability_mode, :edit)
+             |> assign(:editing_walkability_test, walkability_test)}
+
+          {:error, message} ->
+            {:noreply, put_flash(socket, :error, message)}
+        end
+    end
+  end
+
+  @impl true
+  def handle_event("close_walkability_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_walkability_drawer, false)
+     |> assign(:walkability_stop, nil)
+     |> assign(:walkability_form, to_form(default_walkability_form_params(), as: :walkability))
+     |> clear_walkability_selection()
+     |> assign(:walkability_last_results, [])
+     |> assign(:walkability_error, nil)
+     |> assign(:walkability_field_errors, %{})
+     |> assign(:walkability_mode, :create)
+     |> assign(:editing_walkability_test, nil)}
+  end
+
+  @impl true
+  def handle_event(
+        "live_select_change",
+        %{"text" => text, "id" => "walkability_address_autocomplete_component"},
+        socket
+      ) do
+    case Geocoding.autocomplete(text) do
+      {:ok, results} ->
+        options =
+          Enum.map(results, fn result ->
+            %{
+              label: result.formatted_address,
+              value: result,
+              option: result.formatted_address
+            }
+          end)
+
+        send_update(LiveSelectComponent,
+          id: "walkability_address_autocomplete_component",
+          options: options
+        )
+
+        {:noreply, assign(socket, :walkability_last_results, results)}
+
+      {:error, _reason} ->
+        send_update(LiveSelectComponent,
+          id: "walkability_address_autocomplete_component",
+          options: []
+        )
+
+        {:noreply, assign(socket, :walkability_last_results, [])}
+    end
+  end
+
+  @impl true
+  def handle_event("live_select_change", _params, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("live_select_blur", _params, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("walkability_form_change", %{"walkability" => walkability_params}, socket) do
+    # Persist all form field values across re-renders
+    current_params = socket.assigns.walkability_form.params || %{}
+    merged_params = Map.merge(current_params, walkability_params)
+    socket = assign(socket, :walkability_form, to_form(merged_params, as: :walkability))
+
+    case Map.get(walkability_params, "address_autocomplete") do
+      selection when is_binary(selection) and selection != "" ->
+        {:noreply, apply_walkability_selection_from_form(socket, selection)}
+
+      "" ->
+        {:noreply, clear_walkability_selection(socket)}
+
+      _ ->
+        # Ignore text-input-only changes (e.g. blur/debounce cycles) so a valid
+        # selected address is not accidentally cleared.
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("walkability_form_change", _params, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("save_walkability_test", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    stop = socket.assigns.walkability_stop
+    address = socket.assigns.walkability_selected_address
+    address_lat = socket.assigns.walkability_selected_lat
+    address_lon = socket.assigns.walkability_selected_lon
+    form_params = socket.assigns.walkability_form.params || %{}
+
+    cond do
+      is_nil(stop) ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Select a stop before saving.")
+         |> assign(:walkability_error, "Select a stop before saving.")
+         |> assign(:walkability_field_errors, %{})
+         |> push_event("scroll_to_error", %{id: "walkability-error"})}
+
+      is_nil(address) or is_nil(address_lat) or is_nil(address_lon) ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Select an address from autocomplete.")
+         |> assign(:walkability_error, "Select an address from autocomplete.")
+         |> assign(:walkability_field_errors, %{})
+         |> push_event("scroll_to_error", %{id: "walkability-error"})}
+
+      true ->
+        attrs = %{
+          stop_id: stop.stop_id,
+          address: address,
+          address_lat: address_lat,
+          address_lon: address_lon,
+          description: form_params["description"],
+          expected_traversable: form_params["expected_traversable"] == "true",
+          expected_wheelchair_accessible: form_params["expected_wheelchair_accessible"] == "true",
+          expected_min_duration_seconds:
+            parse_optional_integer(form_params["expected_min_duration_seconds"]),
+          expected_max_duration_seconds:
+            parse_optional_integer(form_params["expected_max_duration_seconds"]),
+          expected_min_distance_meters:
+            parse_optional_integer(form_params["expected_min_distance_meters"]),
+          expected_max_distance_meters:
+            parse_optional_integer(form_params["expected_max_distance_meters"])
+        }
+
+        case socket.assigns.walkability_mode do
+          :edit ->
+            save_walkability_test_edit(socket, organization_id, attrs)
+
+          :create ->
+            save_walkability_test_create(socket, organization_id, attrs)
+        end
+    end
+  end
+
+  @impl true
+  def handle_event("delete_walkability_test", %{"id" => id}, socket) do
+    case Validations.get_walkability_test(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Walkability test not found.")}
+
+      walkability_test ->
+        case validate_walkability_test_scope(socket, walkability_test) do
+          {:ok, _stop} ->
+            case Validations.delete_walkability_test(walkability_test) do
+              {:ok, _deleted} ->
+                {:noreply,
+                 socket
+                 |> reset_walkability_drawer()
+                 |> refresh_lists()}
+
+              {:error, _changeset} ->
+                {:noreply, put_flash(socket, :error, "Failed to delete walkability test.")}
+            end
+
+          {:error, message} ->
+            {:noreply, put_flash(socket, :error, message)}
+        end
+    end
   end
 
   @impl true
@@ -1277,4 +1572,254 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp refresh_lists(socket), do: load_level_data(socket, socket.assigns.active_level)
+
+  defp save_walkability_test_create(socket, organization_id, attrs) do
+    case Validations.create_walkability_test(organization_id, attrs) do
+      {:ok, _walkability_test} ->
+        {:noreply, socket |> reset_walkability_drawer() |> refresh_lists()}
+
+      {:error, changeset} ->
+        error_message =
+          if duplicate_walkability_test?(changeset) do
+            "This address is already registered for this stop."
+          else
+            "Failed to create test case."
+          end
+
+        field_errors = extract_field_errors(changeset)
+
+        {:noreply,
+         socket
+         |> put_flash(:error, error_message)
+         |> assign(:walkability_error, error_message)
+         |> assign(:walkability_field_errors, field_errors)
+         |> push_event("scroll_to_error", %{id: "walkability-error"})}
+    end
+  end
+
+  defp save_walkability_test_edit(socket, organization_id, attrs) do
+    editing_walkability_test = socket.assigns.editing_walkability_test
+
+    cond do
+      is_nil(editing_walkability_test) ->
+        {:noreply, put_flash(socket, :error, "Walkability test not found.")}
+
+      true ->
+        case Validations.get_walkability_test(editing_walkability_test.id) do
+          nil ->
+            {:noreply, put_flash(socket, :error, "Walkability test not found.")}
+
+          walkability_test when walkability_test.organization_id != organization_id ->
+            {:noreply, put_flash(socket, :error, "Unauthorized walkability test access.")}
+
+          walkability_test ->
+            case validate_walkability_test_scope(socket, walkability_test) do
+              {:ok, _stop} ->
+                case Validations.update_walkability_test(walkability_test, attrs) do
+                  {:ok, _walkability_test} ->
+                    {:noreply,
+                     socket
+                     |> reset_walkability_drawer()
+                     |> refresh_lists()
+                     |> put_flash(:info, "Walkability test updated.")}
+
+                  {:error, changeset} ->
+                    error_message =
+                      if duplicate_walkability_test?(changeset) do
+                        "This address is already registered for this stop."
+                      else
+                        "Failed to update test case."
+                      end
+
+                    field_errors = extract_field_errors(changeset)
+
+                    {:noreply,
+                     socket
+                     |> put_flash(:error, error_message)
+                     |> assign(:walkability_error, error_message)
+                     |> assign(:walkability_field_errors, field_errors)
+                     |> push_event("scroll_to_error", %{id: "walkability-error"})}
+                end
+
+              {:error, message} ->
+                {:noreply, put_flash(socket, :error, message)}
+            end
+        end
+    end
+  end
+
+  defp reset_walkability_drawer(socket) do
+    socket
+    |> assign(:show_walkability_drawer, false)
+    |> assign(:walkability_stop, nil)
+    |> assign(:walkability_form, to_form(default_walkability_form_params(), as: :walkability))
+    |> clear_walkability_selection()
+    |> assign(:walkability_last_results, [])
+    |> assign(:walkability_error, nil)
+    |> assign(:walkability_field_errors, %{})
+    |> assign(:walkability_mode, :create)
+    |> assign(:editing_walkability_test, nil)
+  end
+
+  defp default_walkability_form_params(overrides \\ %{}) do
+    Map.merge(
+      %{
+        "address_autocomplete" => "",
+        "description" => "",
+        "expected_traversable" => false,
+        "expected_wheelchair_accessible" => false,
+        "expected_min_duration_seconds" => "",
+        "expected_max_duration_seconds" => "",
+        "expected_min_distance_meters" => "",
+        "expected_max_distance_meters" => ""
+      },
+      overrides
+    )
+  end
+
+  defp walkability_test_form_params(walkability_test) do
+    default_walkability_form_params(%{
+      "address_autocomplete" => walkability_test.address,
+      "description" => walkability_test.description || "",
+      "expected_traversable" => walkability_test.expected_traversable || false,
+      "expected_wheelchair_accessible" =>
+        walkability_test.expected_wheelchair_accessible || false,
+      "expected_min_duration_seconds" =>
+        to_optional_string(walkability_test.expected_min_duration_seconds),
+      "expected_max_duration_seconds" =>
+        to_optional_string(walkability_test.expected_max_duration_seconds),
+      "expected_min_distance_meters" =>
+        to_optional_string(walkability_test.expected_min_distance_meters),
+      "expected_max_distance_meters" =>
+        to_optional_string(walkability_test.expected_max_distance_meters)
+    })
+  end
+
+  defp validate_walkability_test_scope(socket, walkability_test) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    stop = Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, walkability_test.stop_id)
+    active_level_stop_ids = MapSet.new(Enum.map(socket.assigns.child_stops_list, & &1.stop_id))
+
+    cond do
+      walkability_test.organization_id != organization_id ->
+        {:error, "Unauthorized walkability test access."}
+
+      is_nil(stop) ->
+        {:error, "Walkability test stop not found."}
+
+      stop.parent_station != station.stop_id ->
+        {:error, "Unauthorized walkability test access."}
+
+      not MapSet.member?(active_level_stop_ids, walkability_test.stop_id) ->
+        {:error, "Walkability test is not on the active level."}
+
+      true ->
+        {:ok, stop}
+    end
+  end
+
+  defp clear_walkability_selection(socket) do
+    current_params = socket.assigns.walkability_form.params || %{}
+    preserved = Map.drop(current_params, ["address_autocomplete"])
+    updated_params = default_walkability_form_params(preserved)
+
+    socket
+    |> assign(:walkability_form, to_form(updated_params, as: :walkability))
+    |> assign(:walkability_selected_address, nil)
+    |> assign(:walkability_selected_lat, nil)
+    |> assign(:walkability_selected_lon, nil)
+    |> assign(:walkability_selected_result, nil)
+  end
+
+  defp apply_walkability_selection(socket, result) do
+    current_params = socket.assigns.walkability_form.params || %{}
+
+    updated_params =
+      default_walkability_form_params(
+        Map.merge(current_params, %{"address_autocomplete" => result.formatted_address})
+      )
+
+    socket
+    |> assign(:walkability_form, to_form(updated_params, as: :walkability))
+    |> assign(:walkability_selected_address, result.formatted_address)
+    |> assign(:walkability_selected_lat, result.lat)
+    |> assign(:walkability_selected_lon, result.lon)
+    |> assign(:walkability_selected_result, result)
+  end
+
+  defp normalize_geocoding_result(%Geocoding.Result{} = result), do: {:ok, result}
+
+  defp normalize_geocoding_result(%{} = result) do
+    with formatted_address when is_binary(formatted_address) <-
+           Map.get(result, "formatted_address"),
+         lat when is_float(lat) <- Map.get(result, "lat"),
+         lon when is_float(lon) <- Map.get(result, "lon") do
+      {:ok,
+       %Geocoding.Result{
+         formatted_address: formatted_address,
+         lat: lat,
+         lon: lon,
+         city: Map.get(result, "city"),
+         state: Map.get(result, "state"),
+         country: Map.get(result, "country")
+       }}
+    else
+      _ -> :error
+    end
+  end
+
+  defp normalize_geocoding_result(_result), do: :error
+
+  defp apply_walkability_selection_from_form(socket, selection) do
+    with {:ok, decoded_selection} <- decode_live_select_selection(selection),
+         {:ok, result} <- normalize_geocoding_result(decoded_selection) do
+      apply_walkability_selection(socket, result)
+    else
+      _ ->
+        socket.assigns.walkability_last_results
+        |> Enum.find(fn result -> result.formatted_address == selection end)
+        |> case do
+          nil -> clear_walkability_selection(socket)
+          result -> apply_walkability_selection(socket, result)
+        end
+    end
+  end
+
+  defp decode_live_select_selection(selection) when is_binary(selection) do
+    {:ok, LiveSelect.decode(selection)}
+  rescue
+    _ -> :error
+  end
+
+  defp parse_optional_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> nil
+    end
+  end
+
+  defp parse_optional_integer(_), do: nil
+
+  defp extract_field_errors(%Ecto.Changeset{} = changeset) do
+    changeset.errors
+    |> Enum.group_by(fn {field, _} -> field end, fn {_, {msg, opts}} ->
+      Enum.reduce(opts, msg, fn {key, value}, acc ->
+        String.replace(acc, "%{#{key}}", to_string(value))
+      end)
+    end)
+  end
+
+  defp duplicate_walkability_test?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {_field, {_message, opts}} ->
+        opts[:constraint] == :unique and
+          opts[:constraint_name] == "walkability_tests_organization_id_stop_id_address_index"
+
+      _ ->
+        false
+    end)
+  end
 end
