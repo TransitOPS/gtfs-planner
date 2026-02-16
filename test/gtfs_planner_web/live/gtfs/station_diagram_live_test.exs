@@ -349,6 +349,168 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert render(view) =~ "Child View Dot"
     end
 
+    test "view mode stop click does not render pending marker shape", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_VIEW_NO_PENDING",
+          stop_name: "Child View No Pending",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 26.0, "y" => 36.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child_stops-#{child_stop.id} [data-stop-hit-target]")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-form")
+
+      assert has_element?(
+               view,
+               "#child-stop-form input[name='stop_name'][value='Child View No Pending']"
+             )
+
+      refute has_element?(view, "#diagram-overlay polygon[fill='#f97316']")
+    end
+
+    test "view mode selected stop marker uses emerald and non-selected stays default", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      selected_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SELECTED_EMERALD",
+          stop_name: "Selected Emerald",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 18.0, "y" => 28.0}
+        })
+
+      other_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DEFAULT_BLUE",
+          stop_name: "Default Blue",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 42.0, "y" => 52.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child_stops-#{selected_stop.id} [data-stop-hit-target]")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#child_stops-#{selected_stop.id} [data-stop-marker][data-location-type='3'][fill='#059669']"
+             )
+
+      assert has_element?(
+               view,
+               "#child_stops-#{other_stop.id} [data-stop-marker][data-location-type='3'][fill='#2563EB']"
+             )
+    end
+
+    test "view mode selected stop cross-level badge uses emerald fill", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "VIEW_BADGE_L2",
+          level_name: "View Badge Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "view-badge-level-2.png"
+        })
+
+      selected_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VIEW_BADGE_L1",
+          stop_name: "View Badge L1",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 22.0, "y" => 32.0}
+        })
+
+      level_2_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VIEW_BADGE_L2_STOP",
+          stop_name: "View Badge L2 Stop",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 62.0, "y" => 72.0}
+        })
+
+      cross_level_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          selected_stop.stop_id,
+          level_2_stop.stop_id,
+          %{pathway_mode: 1, is_bidirectional: false}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child_stops-#{selected_stop.id} [data-stop-hit-target]")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#child_stops-#{selected_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}'] [data-cross-level-badge-elevator][fill='#059669']"
+             )
+    end
+
     test "add mode stop dot click does not open edit drawer", %{
       conn: conn,
       user: user,

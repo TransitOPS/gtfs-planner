@@ -386,6 +386,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         socket
       end
 
+    socket = restream_active_stop(socket)
+
     {:noreply,
      socket
      |> assign(:mode, mode_atom)
@@ -432,11 +434,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("close_drawer", _params, socket) do
+    socket = restream_active_stop(socket)
+
     {:noreply,
      socket
      |> reset_reposition_state()
      |> assign(:pending_xy, nil)
      |> assign(:selected_stop_id, nil)
+     |> assign(:active_point_id, nil)
      |> assign(:child_stop_form, to_form(%{}))}
   end
 
@@ -548,8 +553,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> reset_reposition_state()
+     |> stream_insert(:child_stops, stop)
      |> assign(:pending_xy, pending_xy)
      |> assign(:selected_stop_id, stop.id)
+     |> assign(:active_point_id, stop.id)
      |> assign(:editing_level, false)
      |> assign(:stop_id_mode, :manual)
      |> assign(:child_stop_form, form)}
@@ -651,6 +658,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> refresh_lists()
              |> assign(:pending_xy, nil)
              |> assign(:selected_stop_id, nil)
+             |> assign(:active_point_id, nil)
              |> assign(:child_stop_form, to_form(%{}))}
 
           {:error, changeset} ->
@@ -668,6 +676,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> refresh_lists()
              |> assign(:pending_xy, nil)
              |> assign(:selected_stop_id, nil)
+             |> assign(:active_point_id, nil)
              |> assign(:child_stop_form, to_form(%{}))}
 
           {:error, changeset} ->
@@ -706,6 +715,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> refresh_lists()
          |> assign(:pending_xy, nil)
          |> assign(:selected_stop_id, nil)
+         |> assign(:active_point_id, nil)
          |> assign(:child_stop_form, to_form(%{}))}
 
       {:error, _changeset} ->
@@ -1590,6 +1600,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:reposition_mode, false)
     |> assign(:reposition_search, "")
     |> assign(:reposition_stops, [])
+  end
+
+  defp restream_active_stop(socket) do
+    case socket.assigns.active_point_id do
+      nil ->
+        socket
+
+      active_point_id ->
+        case Gtfs.get_stop(active_point_id) do
+          nil -> socket
+          stop -> stream_insert(socket, :child_stops, stop)
+        end
+    end
   end
 
   defp refresh_lists(socket), do: load_level_data(socket, socket.assigns.active_level)
