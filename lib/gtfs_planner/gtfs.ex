@@ -554,12 +554,19 @@ defmodule GtfsPlanner.Gtfs do
   Uses the provided base stop_id if available, otherwise appends `_2`, `_3`, etc.
   """
   def unique_stop_id(organization_id, gtfs_version_id, base_stop_id, exclude_stop_id \\ nil) do
+    escaped_base_stop_id = escape_like_pattern(base_stop_id)
+
     query =
       from(s in Stop,
         where:
           s.organization_id == ^organization_id and
             s.gtfs_version_id == ^gtfs_version_id and
-            like(s.stop_id, ^"#{base_stop_id}%"),
+            fragment(
+              "? LIKE ? ESCAPE ?",
+              s.stop_id,
+              ^"#{escaped_base_stop_id}%",
+              ^"\\"
+            ),
         select: s.stop_id
       )
 
@@ -593,6 +600,13 @@ defmodule GtfsPlanner.Gtfs do
     else
       base_stop_id
     end
+  end
+
+  defp escape_like_pattern(value) when is_binary(value) do
+    value
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
   end
 
   @doc """
