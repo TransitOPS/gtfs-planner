@@ -2032,6 +2032,62 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
              )
     end
 
+    test "renders editable tooltip metadata for stops and pathways with one shared tooltip node",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      from_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TOOLTIP_STOP_A",
+          stop_name: "Tooltip Stop A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 14.0, "y" => 20.0}
+        })
+
+      to_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TOOLTIP_STOP_B",
+          stop_name: "Tooltip Stop B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 34.0, "y" => 20.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, from_stop.stop_id, to_stop.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: false
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(
+               view,
+               "#child_stops-#{from_stop.id}[data-editable='stop'][data-tooltip='Click to edit stop'][tabindex='0'][aria-label]"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{pathway.id}[data-editable='pathway'][data-tooltip='Click to edit pathway'][tabindex='0'][aria-label]"
+             )
+
+      assert has_element?(view, "#diagram-edit-tooltip[role='tooltip'][aria-hidden='true']")
+
+      html = render(view)
+      assert length(Regex.scan(~r/id=\"diagram-edit-tooltip\"/, html)) == 1
+    end
+
     test "renders elevator opacity, cross-level badges, and keeps cross-level pathways out of SVG",
          %{
            conn: conn,

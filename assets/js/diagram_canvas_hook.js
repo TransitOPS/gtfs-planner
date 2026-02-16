@@ -40,6 +40,9 @@ const OVERLAY_BASE = {
   pendingStroke: 0.15
 };
 
+const TOOLTIP_POINTER_OFFSET = 12;
+const TOOLTIP_VIEWPORT_PADDING = 8;
+
 const DiagramCanvasHook = {
   iconVisualScale(scale) {
     const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
@@ -65,6 +68,113 @@ const DiagramCanvasHook = {
     return zoomAdjusted * OVERLAY_BASE.pathwayVisualThinFactor;
   },
 
+  handleWheel(e) {
+    const svg = this.el;
+
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      // Scroll up (negative deltaY) = zoom in, scroll down = zoom out
+      const delta = e.deltaY > 0 ? 0.95 : 1.05;
+      const newScale = Math.min(this.maxScale, Math.max(this.minScale, this.scale * delta));
+
+      if (newScale !== this.scale) {
+        const rect = svg.getBoundingClientRect();
+        const mouseX = (e.clientX - rect.left) / rect.width * this.viewBox.w + this.viewBox.x;
+        const mouseY = (e.clientY - rect.top) / rect.height * this.viewBox.h + this.viewBox.y;
+
+        const newW = this.baseW / newScale;
+        const newH = this.baseH / newScale;
+
+        this.viewBox.x = mouseX - (mouseX - this.viewBox.x) * (newW / this.viewBox.w);
+        this.viewBox.y = mouseY - (mouseY - this.viewBox.y) * (newH / this.viewBox.h);
+        this.viewBox.w = newW;
+        this.viewBox.h = newH;
+        this.scale = newScale;
+
+        this.updateViewBox();
+      }
+    } else {
+      // Calculate limits to check if we should allow page scroll
+      const margin = 0.5;
+      const minY = -this.viewBox.h * margin;
+      const maxY = this.baseH - this.viewBox.h * (1 - margin);
+
+      // Use a small epsilon for float comparison
+      const isAtTop = this.viewBox.y <= minY + 0.1;
+      const isAtBottom = this.viewBox.y >= maxY - 0.1;
+
+      // If we are at the edge and trying to scroll past it, let the page scroll
+      if ((isAtTop && e.deltaY < 0) || (isAtBottom && e.deltaY > 0)) {
+        return;
+      }
+
+      e.preventDefault();
+      const panSpeed = 0.3;
+      this.viewBox.x += e.deltaX * panSpeed / this.scale;
+      this.viewBox.y += e.deltaY * panSpeed / this.scale;
+      this.clampViewBox();
+      this.updateViewBox();
+    }
+  },
+
+  handleMouseDown(e) {
+    if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+      this.isPanning = true;
+      this.panStart = { x: e.clientX, y: e.clientY };
+      this.el.style.cursor = "grabbing";
+      e.preventDefault();
+    }
+  },
+
+  handleMouseMove(e) {
+    if (this.isPanning) {
+      const rect = this.el.getBoundingClientRect();
+      const dx = (e.clientX - this.panStart.x) / rect.width * this.viewBox.w;
+      const dy = (e.clientY - this.panStart.y) / rect.height * this.viewBox.h;
+      this.viewBox.x -= dx;
+      this.viewBox.y -= dy;
+      this.panStart = { x: e.clientX, y: e.clientY };
+      this.clampViewBox();
+      this.updateViewBox();
+    }
+  },
+
+  handleMouseUp() {
+    if (this.isPanning) {
+      this.isPanning = false;
+      this.el.style.cursor = "";
+    }
+  },
+
+  handleGesture(e) {
+    e.preventDefault();
+  },
+
+  setupOverlayPanZoom() {
+    if (!this.overlay || this._overlayPanZoomBound === this.overlay) {
+      return;
+    }
+
+    this.removeOverlayPanZoom();
+    this.overlay.addEventListener("wheel", this._handleWheel, { passive: false });
+    this.overlay.addEventListener("mousedown", this._handleMouseDown);
+    this.overlay.addEventListener("gesturestart", this._handleGesture);
+    this.overlay.addEventListener("gesturechange", this._handleGesture);
+    this._overlayPanZoomBound = this.overlay;
+  },
+
+  removeOverlayPanZoom() {
+    if (!this._overlayPanZoomBound) {
+      return;
+    }
+
+    this._overlayPanZoomBound.removeEventListener("wheel", this._handleWheel);
+    this._overlayPanZoomBound.removeEventListener("mousedown", this._handleMouseDown);
+    this._overlayPanZoomBound.removeEventListener("gesturestart", this._handleGesture);
+    this._overlayPanZoomBound.removeEventListener("gesturechange", this._handleGesture);
+    this._overlayPanZoomBound = null;
+  },
+
   mounted() {
     const svg = this.el;
     this.baseW = 100;
@@ -77,6 +187,27 @@ const DiagramCanvasHook = {
     this.panStart = { x: 0, y: 0 };
     this._canvasKey = svg.getAttribute("data-canvas-key");
     this.currentImageHref = null;
+    this.overlay = null;
+    this.tooltipEl = null;
+    this.tooltipState = {
+      activeTarget: null,
+      visible: false,
+      anchor: null
+    };
+    this.tooltipListenersBound = false;
+    this.tooltipListenerOverlay = null;
+    this._overlayPanZoomBound = null;
+
+    // Create bound references for proper add/remove
+    this._handleWheel = this.handleWheel.bind(this);
+    this._handleMouseDown = this.handleMouseDown.bind(this);
+    this._handleMouseMove = this.handleMouseMove.bind(this);
+    this._handleMouseUp = this.handleMouseUp.bind(this);
+    this._handleGesture = this.handleGesture.bind(this);
+
+    this.refreshTooltipElements();
+    this.setupTooltipListeners();
+    this.setupOverlayPanZoom();
 
     // Set up MutationObserver to detect when overlay viewBox gets reset
     this.setupOverlayObserver();
@@ -84,84 +215,14 @@ const DiagramCanvasHook = {
     this.syncImageDimensions(true);
     this.scaleOverlayElements();
 
-    svg.addEventListener("wheel", (e) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        // Scroll up (negative deltaY) = zoom in, scroll down = zoom out
-        const delta = e.deltaY > 0 ? 0.95 : 1.05;
-        const newScale = Math.min(this.maxScale, Math.max(this.minScale, this.scale * delta));
+    // Wheel and mousedown on main canvas SVG
+    svg.addEventListener("wheel", this._handleWheel, { passive: false });
+    svg.addEventListener("mousedown", this._handleMouseDown);
 
-        if (newScale !== this.scale) {
-          const rect = svg.getBoundingClientRect();
-          const mouseX = (e.clientX - rect.left) / rect.width * this.viewBox.w + this.viewBox.x;
-          const mouseY = (e.clientY - rect.top) / rect.height * this.viewBox.h + this.viewBox.y;
-
-          const newW = this.baseW / newScale;
-          const newH = this.baseH / newScale;
-
-          this.viewBox.x = mouseX - (mouseX - this.viewBox.x) * (newW / this.viewBox.w);
-          this.viewBox.y = mouseY - (mouseY - this.viewBox.y) * (newH / this.viewBox.h);
-          this.viewBox.w = newW;
-          this.viewBox.h = newH;
-          this.scale = newScale;
-
-          this.updateViewBox();
-        }
-      } else {
-        // Calculate limits to check if we should allow page scroll
-        const margin = 0.5;
-        const minY = -this.viewBox.h * margin;
-        const maxY = this.baseH - this.viewBox.h * (1 - margin);
-        
-        // Use a small epsilon for float comparison
-        const isAtTop = this.viewBox.y <= minY + 0.1;
-        const isAtBottom = this.viewBox.y >= maxY - 0.1;
-        
-        // If we are at the edge and trying to scroll past it, let the page scroll
-        if ((isAtTop && e.deltaY < 0) || (isAtBottom && e.deltaY > 0)) {
-          return;
-        }
-
-        e.preventDefault();
-        const panSpeed = 0.3;
-        this.viewBox.x += e.deltaX * panSpeed / this.scale;
-        this.viewBox.y += e.deltaY * panSpeed / this.scale;
-        this.clampViewBox();
-        this.updateViewBox();
-      }
-    }, { passive: false });
-
-    svg.addEventListener("mousedown", (e) => {
-      if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
-        this.isPanning = true;
-        this.panStart = { x: e.clientX, y: e.clientY };
-        svg.style.cursor = "grabbing";
-        e.preventDefault();
-      }
-    });
-
-    svg.addEventListener("mousemove", (e) => {
-      if (this.isPanning) {
-        const rect = svg.getBoundingClientRect();
-        const dx = (e.clientX - this.panStart.x) / rect.width * this.viewBox.w;
-        const dy = (e.clientY - this.panStart.y) / rect.height * this.viewBox.h;
-        this.viewBox.x -= dx;
-        this.viewBox.y -= dy;
-        this.panStart = { x: e.clientX, y: e.clientY };
-        this.clampViewBox();
-        this.updateViewBox();
-      }
-    });
-
-    svg.addEventListener("mouseup", () => {
-      this.isPanning = false;
-      svg.style.cursor = "crosshair";
-    });
-
-    svg.addEventListener("mouseleave", () => {
-      this.isPanning = false;
-      svg.style.cursor = "crosshair";
-    });
+    // Mousemove and mouseup on document so panning works seamlessly
+    // across SVG layers and even outside the diagram
+    document.addEventListener("mousemove", this._handleMouseMove);
+    document.addEventListener("mouseup", this._handleMouseUp);
 
     svg.addEventListener("click", (e) => {
       if (e.shiftKey) return;
@@ -174,8 +235,264 @@ const DiagramCanvasHook = {
       this.pushEvent("canvas_click", { x, y });
     });
 
-    svg.addEventListener("gesturestart", (e) => e.preventDefault());
-    svg.addEventListener("gesturechange", (e) => e.preventDefault());
+    svg.addEventListener("gesturestart", this._handleGesture);
+    svg.addEventListener("gesturechange", this._handleGesture);
+  },
+
+  refreshTooltipElements() {
+    const container = this.el.parentElement;
+    if (!container) {
+      this.overlay = null;
+      this.tooltipEl = null;
+      return;
+    }
+
+    this.overlay = container.querySelector("#diagram-overlay");
+    this.tooltipEl = container.querySelector("#diagram-edit-tooltip");
+  },
+
+  setupTooltipListeners() {
+    if (!this.overlay) {
+      return;
+    }
+
+    if (this.tooltipListenersBound && this.tooltipListenerOverlay === this.overlay) {
+      return;
+    }
+
+    this.removeTooltipListeners();
+
+    this.handleTooltipMouseOver = (event) => {
+      const target = this.resolvePointerTooltipTarget(event.target);
+
+      if (!target) {
+        return;
+      }
+
+      this.showTooltip(target, {
+        type: "pointer",
+        clientX: event.clientX,
+        clientY: event.clientY
+      });
+    };
+
+    this.handleTooltipMouseMove = (event) => {
+      if (!this.tooltipState.visible || this.tooltipState.activeTarget == null) {
+        return;
+      }
+
+      const target = this.resolvePointerTooltipTarget(event.target);
+      if (target !== this.tooltipState.activeTarget) {
+        return;
+      }
+
+      this.positionTooltip({
+        type: "pointer",
+        clientX: event.clientX,
+        clientY: event.clientY
+      });
+    };
+
+    this.handleTooltipMouseOut = (event) => {
+      if (!this.tooltipState.visible || this.tooltipState.activeTarget == null) {
+        return;
+      }
+
+      const nextTarget = this.resolvePointerTooltipTarget(event.relatedTarget);
+      if (nextTarget === this.tooltipState.activeTarget) {
+        return;
+      }
+
+      this.hideTooltip();
+    };
+
+    this.handleTooltipFocusIn = (event) => {
+      const target = this.resolveTooltipTarget(event.target);
+
+      if (!target) {
+        return;
+      }
+
+      this.showTooltip(target, { type: "focus" });
+    };
+
+    this.handleTooltipFocusOut = (event) => {
+      if (!this.tooltipState.visible || this.tooltipState.activeTarget == null) {
+        return;
+      }
+
+      const nextTarget = this.resolveTooltipTarget(event.relatedTarget);
+      if (nextTarget === this.tooltipState.activeTarget) {
+        return;
+      }
+
+      this.hideTooltip();
+    };
+
+    this.overlay.addEventListener("mouseover", this.handleTooltipMouseOver);
+    this.overlay.addEventListener("mousemove", this.handleTooltipMouseMove);
+    this.overlay.addEventListener("mouseout", this.handleTooltipMouseOut);
+    this.overlay.addEventListener("focusin", this.handleTooltipFocusIn);
+    this.overlay.addEventListener("focusout", this.handleTooltipFocusOut);
+    this.tooltipListenersBound = true;
+    this.tooltipListenerOverlay = this.overlay;
+  },
+
+  removeTooltipListeners() {
+    if (!this.tooltipListenersBound || !this.tooltipListenerOverlay) {
+      return;
+    }
+
+    this.tooltipListenerOverlay.removeEventListener("mouseover", this.handleTooltipMouseOver);
+    this.tooltipListenerOverlay.removeEventListener("mousemove", this.handleTooltipMouseMove);
+    this.tooltipListenerOverlay.removeEventListener("mouseout", this.handleTooltipMouseOut);
+    this.tooltipListenerOverlay.removeEventListener("focusin", this.handleTooltipFocusIn);
+    this.tooltipListenerOverlay.removeEventListener("focusout", this.handleTooltipFocusOut);
+    this.tooltipListenersBound = false;
+    this.tooltipListenerOverlay = null;
+  },
+
+  resolveTooltipTarget(node) {
+    if (!(node instanceof Element)) {
+      return null;
+    }
+
+    const target = node.closest("[data-tooltip]");
+
+    if (!target || !this.overlay || !this.overlay.contains(target)) {
+      return null;
+    }
+
+    const tooltipText = target.getAttribute("data-tooltip");
+    if (!tooltipText || tooltipText.trim() === "") {
+      return null;
+    }
+
+    return target;
+  },
+
+  resolvePointerTooltipTarget(node) {
+    if (!(node instanceof Element)) {
+      return null;
+    }
+
+    const trigger = node.closest("[data-tooltip-trigger]");
+
+    if (!trigger || !this.overlay || !this.overlay.contains(trigger)) {
+      return null;
+    }
+
+    return this.resolveTooltipTarget(trigger);
+  },
+
+  showTooltip(target, anchor) {
+    if (!this.tooltipEl) {
+      return;
+    }
+
+    const tooltipText = target.getAttribute("data-tooltip");
+    if (!tooltipText || tooltipText.trim() === "") {
+      this.hideTooltip();
+      return;
+    }
+
+    this.tooltipEl.textContent = tooltipText.trim();
+    const tooltipColor = target.getAttribute("data-tooltip-color");
+
+    if (tooltipColor && tooltipColor.trim() !== "") {
+      this.tooltipEl.style.backgroundColor = tooltipColor.trim();
+      this.tooltipEl.style.borderColor = tooltipColor.trim();
+    } else {
+      this.tooltipEl.style.backgroundColor = "";
+      this.tooltipEl.style.borderColor = "";
+    }
+
+    this.tooltipEl.style.color = "#FFFFFF";
+    this.tooltipEl.setAttribute("aria-hidden", "false");
+    this.tooltipEl.classList.remove("is-hidden");
+    this.tooltipEl.classList.add("is-visible");
+
+    this.tooltipState.activeTarget = target;
+    this.tooltipState.visible = true;
+    this.tooltipState.anchor = anchor;
+
+    this.positionTooltip(anchor);
+  },
+
+  hideTooltip() {
+    this.tooltipState.activeTarget = null;
+    this.tooltipState.visible = false;
+    this.tooltipState.anchor = null;
+
+    if (!this.tooltipEl) {
+      return;
+    }
+
+    this.tooltipEl.setAttribute("aria-hidden", "true");
+    this.tooltipEl.classList.remove("is-visible");
+    this.tooltipEl.classList.add("is-hidden");
+  },
+
+  positionTooltip(anchor) {
+    if (!this.tooltipEl || !this.tooltipState.visible) {
+      return;
+    }
+
+    const container = this.el.parentElement;
+    if (!container) {
+      return;
+    }
+
+    const activeTarget = this.tooltipState.activeTarget;
+    if (!activeTarget || !activeTarget.isConnected) {
+      this.hideTooltip();
+      return;
+    }
+
+    const nextAnchor = anchor || this.tooltipState.anchor || { type: "focus" };
+    this.tooltipState.anchor = nextAnchor;
+
+    let screenX;
+    let screenY;
+
+    if (
+      nextAnchor.type === "pointer" &&
+      Number.isFinite(nextAnchor.clientX) &&
+      Number.isFinite(nextAnchor.clientY)
+    ) {
+      screenX = nextAnchor.clientX + TOOLTIP_POINTER_OFFSET;
+      screenY = nextAnchor.clientY + TOOLTIP_POINTER_OFFSET;
+    } else {
+      const targetRect = activeTarget.getBoundingClientRect();
+      screenX = targetRect.left + targetRect.width / 2;
+      screenY = targetRect.top - TOOLTIP_POINTER_OFFSET;
+    }
+
+    const tooltipRect = this.tooltipEl.getBoundingClientRect();
+    const maxLeft = window.innerWidth - tooltipRect.width - TOOLTIP_VIEWPORT_PADDING;
+    const maxTop = window.innerHeight - tooltipRect.height - TOOLTIP_VIEWPORT_PADDING;
+    const clampedLeft = Math.max(TOOLTIP_VIEWPORT_PADDING, Math.min(screenX, maxLeft));
+    const clampedTop = Math.max(TOOLTIP_VIEWPORT_PADDING, Math.min(screenY, maxTop));
+    const containerRect = container.getBoundingClientRect();
+
+    this.tooltipEl.style.left = `${clampedLeft - containerRect.left}px`;
+    this.tooltipEl.style.top = `${clampedTop - containerRect.top}px`;
+  },
+
+  repositionTooltipIfVisible() {
+    if (!this.tooltipState.visible || !this.tooltipState.activeTarget) {
+      return;
+    }
+
+    if (
+      !this.tooltipState.activeTarget.isConnected ||
+      (this.overlay && !this.overlay.contains(this.tooltipState.activeTarget))
+    ) {
+      this.hideTooltip();
+      return;
+    }
+
+    this.positionTooltip(this.tooltipState.anchor);
   },
 
   setupOverlayObserver() {
@@ -198,12 +515,17 @@ const DiagramCanvasHook = {
             // LiveView reset the viewBox, re-apply our current state
             this.syncOverlayViewBox();
             this.scaleOverlayElements();
+            this.repositionTooltipIfVisible();
           }
         }
         // Also watch for child changes (stream updates)
         if (mutation.type === "childList") {
+          this.refreshTooltipElements();
+          this.setupTooltipListeners();
+          this.setupOverlayPanZoom();
           this.syncOverlayViewBox();
           this.scaleOverlayElements();
+          this.repositionTooltipIfVisible();
         }
       }
     });
@@ -261,6 +583,21 @@ const DiagramCanvasHook = {
       }
 
       const size = OVERLAY_BASE.hitTargetSize / scale;
+      hitTarget.setAttribute("x", `${cx - size / 2}`);
+      hitTarget.setAttribute("y", `${cy - size / 2}`);
+      hitTarget.setAttribute("width", `${size}`);
+      hitTarget.setAttribute("height", `${size}`);
+    });
+
+    overlay.querySelectorAll("[data-stop-tooltip-hit]").forEach((hitTarget) => {
+      const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
+      const cy = parseFloat(hitTarget.getAttribute("data-center-y"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+        return;
+      }
+
+      const size = 1.8 / scale;
       hitTarget.setAttribute("x", `${cx - size / 2}`);
       hitTarget.setAttribute("y", `${cy - size / 2}`);
       hitTarget.setAttribute("width", `${size}`);
@@ -376,6 +713,24 @@ const DiagramCanvasHook = {
       );
     });
 
+    overlay.querySelectorAll("[data-cross-level-badge-tooltip-hit]").forEach((hitTarget) => {
+      const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
+      const cy = parseFloat(hitTarget.getAttribute("data-center-y"));
+      const offsetX = parseFloat(hitTarget.getAttribute("data-badge-offset-x"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX)) {
+        return;
+      }
+
+      const iconCx = cx + offsetX / iconScale;
+      const size = 0.9 / iconScale;
+
+      hitTarget.setAttribute("x", `${iconCx - size / 2}`);
+      hitTarget.setAttribute("y", `${cy - size / 2}`);
+      hitTarget.setAttribute("width", `${size}`);
+      hitTarget.setAttribute("height", `${size}`);
+    });
+
     overlay.querySelectorAll("#pathways-svg [data-pathway-hit]").forEach((hitTarget) => {
       const baseStroke = parseFloat(
         hitTarget.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.pathwayHitStroke}`
@@ -388,8 +743,21 @@ const DiagramCanvasHook = {
       hitTarget.setAttribute("stroke-width", `${baseStroke / scale}`);
     });
 
+    overlay.querySelectorAll("#pathways-svg [data-pathway-tooltip-hit]").forEach((hitTarget) => {
+      const baseStroke = parseFloat(hitTarget.getAttribute("data-base-stroke") ?? "0.8");
+
+      if (!Number.isFinite(baseStroke)) {
+        return;
+      }
+
+      hitTarget.setAttribute("stroke-width", `${baseStroke / scale}`);
+    });
+
     overlay.querySelectorAll("#pathways-svg [data-base-stroke]").forEach((element) => {
-      if (element.hasAttribute("data-pathway-hit")) {
+      if (
+        element.hasAttribute("data-pathway-hit") ||
+        element.hasAttribute("data-pathway-tooltip-hit")
+      ) {
         return;
       }
 
@@ -535,6 +903,7 @@ const DiagramCanvasHook = {
     svg.setAttribute("viewBox", viewBoxStr);
     this.syncOverlayViewBox();
     this.scaleOverlayElements();
+    this.repositionTooltipIfVisible();
   },
 
   applyImageDimensions() {
@@ -549,6 +918,9 @@ const DiagramCanvasHook = {
   },
 
   updated() {
+    this.refreshTooltipElements();
+    this.setupTooltipListeners();
+    this.setupOverlayPanZoom();
     const newKey = this.el.getAttribute("data-canvas-key");
 
     if (newKey !== this._canvasKey) {
@@ -567,6 +939,8 @@ const DiagramCanvasHook = {
       this.updateViewBox();
       this.syncImageDimensions(false);
     }
+
+    this.repositionTooltipIfVisible();
   },
 
   syncImageDimensions(forceReset) {
@@ -612,6 +986,18 @@ const DiagramCanvasHook = {
     if (this.overlayObserver) {
       this.overlayObserver.disconnect();
     }
+
+    // Clean up pan/zoom listeners
+    this.el.removeEventListener("wheel", this._handleWheel);
+    this.el.removeEventListener("mousedown", this._handleMouseDown);
+    this.el.removeEventListener("gesturestart", this._handleGesture);
+    this.el.removeEventListener("gesturechange", this._handleGesture);
+    document.removeEventListener("mousemove", this._handleMouseMove);
+    document.removeEventListener("mouseup", this._handleMouseUp);
+    this.removeOverlayPanZoom();
+
+    this.removeTooltipListeners();
+    this.hideTooltip();
   }
 };
 

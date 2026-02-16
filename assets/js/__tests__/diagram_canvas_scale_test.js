@@ -6,11 +6,33 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
   beforeEach(() => {
     document.body.innerHTML = `
       <div id="container">
+        <div
+          id="diagram-edit-tooltip"
+          class="diagram-edit-tooltip is-hidden"
+          role="tooltip"
+          aria-hidden="true"
+        ></div>
         <svg id="diagram-overlay">
           <defs>
             <marker id="pathway-arrow" markerWidth="1.5" markerHeight="1.5"></marker>
           </defs>
           <g id="stops-svg">
+            <g
+              id="editable-stop"
+              data-tooltip="Click to edit stop"
+              data-tooltip-color="#2563EB"
+              tabindex="0"
+              aria-label="Stop Editable Stop (EDIT_STOP)"
+            >
+              <rect
+                id="editable-stop-hit"
+                x="10"
+                y="10"
+                width="2"
+                height="2"
+                data-tooltip-trigger="true"
+              ></rect>
+            </g>
             <rect
               id="stop-hit"
               data-stop-hit-target="true"
@@ -69,6 +91,23 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
             ></path>
           </g>
           <g id="pathways-svg">
+            <g
+              id="editable-pathway"
+              data-tooltip="Click to edit pathway"
+              data-tooltip-color="#2563EB"
+              tabindex="0"
+              aria-label="Walkway pathway from A to B"
+            >
+              <line
+                id="editable-pathway-hit"
+                x1="20"
+                y1="20"
+                x2="30"
+                y2="20"
+                stroke="transparent"
+                data-tooltip-trigger="true"
+              ></line>
+            </g>
             <line id="path-hit" data-pathway-hit="true" data-base-stroke="2"></line>
             <line id="path-line" data-pathway-line="true" data-base-stroke="0.5"></line>
             <line
@@ -116,6 +155,22 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
       </div>
     `;
   });
+
+  const buildTooltipHook = () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+      viewBox: { x: 0, y: 0, w: 100, h: 100 },
+      scale: 1,
+      tooltipState: { activeTarget: null, visible: false, anchor: null },
+      tooltipListenersBound: false,
+      tooltipListenerOverlay: null,
+    };
+
+    hook.refreshTooltipElements();
+    hook.setupTooltipListeners();
+    return hook;
+  };
 
   it("scales stop and pathway overlay elements from base data attributes", () => {
     const hook = {
@@ -166,7 +221,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
       document.querySelector("#stop-boarding-area").getAttribute("height"),
     ).toBe("0.6");
     expect(document.querySelector("#stop-label").getAttribute("x")).toBe(
-      "9.875",
+      "9.75",
     );
     expect(document.querySelector("#stop-label").getAttribute("y")).toBe(
       "20.5",
@@ -290,11 +345,82 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
 
     // Icon visuals should scale down slightly when zoomed out to avoid chunky markers.
     expect(iconRadius).toBeCloseTo(0.5882352941, 5);
-    expect(platformHeight).toBeCloseTo(2.380952381, 5);
-    expect(entranceHeight).toBeCloseTo(2.380952381, 5);
+    expect(platformHeight).toBeCloseTo(1.9607843137, 5);
+    expect(entranceHeight).toBeCloseTo(1.9607843137, 5);
     expect(boardingWidth).toBeCloseTo(1.1764705882, 5);
     expect(document.querySelector("#stop-label").getAttribute("display")).toBe(
       "none",
     );
+  });
+
+  it("shows and hides tooltip on hover for stop and pathway targets", () => {
+    const hook = buildTooltipHook();
+    const tooltip = document.querySelector("#diagram-edit-tooltip");
+    const stopGroup = document.querySelector("#editable-stop");
+    const stopHit = document.querySelector("#editable-stop-hit");
+    const pathwayHit = document.querySelector("#editable-pathway-hit");
+
+    stopGroup.dispatchEvent(
+      new MouseEvent("mouseover", { bubbles: true, clientX: 100, clientY: 120 }),
+    );
+    expect(tooltip.getAttribute("aria-hidden")).toBe("true");
+
+    stopHit.dispatchEvent(
+      new MouseEvent("mouseover", { bubbles: true, clientX: 100, clientY: 120 }),
+    );
+
+    expect(tooltip.textContent).toBe("Click to edit stop");
+    expect(tooltip.getAttribute("aria-hidden")).toBe("false");
+    expect(tooltip.classList.contains("is-visible")).toBe(true);
+
+    stopHit.dispatchEvent(
+      new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }),
+    );
+
+    expect(tooltip.getAttribute("aria-hidden")).toBe("true");
+    expect(tooltip.classList.contains("is-hidden")).toBe(true);
+
+    pathwayHit.dispatchEvent(
+      new MouseEvent("mouseover", { bubbles: true, clientX: 160, clientY: 180 }),
+    );
+
+    expect(tooltip.textContent).toBe("Click to edit pathway");
+    expect(tooltip.getAttribute("aria-hidden")).toBe("false");
+
+    hook.removeTooltipListeners();
+  });
+
+  it("shows on focus, hides on blur, and repositions on view updates", () => {
+    const hook = buildTooltipHook();
+    const tooltip = document.querySelector("#diagram-edit-tooltip");
+    const editableStop = document.querySelector("#editable-stop");
+    const baseRect = { left: 40, top: 80, width: 20, height: 10, right: 60, bottom: 90 };
+
+    editableStop.getBoundingClientRect = () => baseRect;
+
+    editableStop.dispatchEvent(new Event("focusin", { bubbles: true }));
+
+    expect(tooltip.getAttribute("aria-hidden")).toBe("false");
+    const initialLeft = tooltip.style.left;
+    const initialTop = tooltip.style.top;
+
+    editableStop.getBoundingClientRect = () => ({
+      left: 140,
+      top: 160,
+      width: 20,
+      height: 10,
+      right: 160,
+      bottom: 170,
+    });
+
+    hook.updateViewBox();
+
+    expect(tooltip.style.left).not.toBe(initialLeft);
+    expect(tooltip.style.top).not.toBe(initialTop);
+
+    editableStop.dispatchEvent(new Event("focusout", { bubbles: true }));
+    expect(tooltip.getAttribute("aria-hidden")).toBe("true");
+
+    hook.removeTooltipListeners();
   });
 });
