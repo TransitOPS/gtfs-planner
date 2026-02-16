@@ -5,17 +5,21 @@
 const OVERLAY_BASE = {
   circleR: 0.6,
   hitTargetSize: 3.5,
-  rectUprightW: 1.2,
-  rectUprightH: 2.4,
-  rectHorizW: 2.4,
-  rectHorizH: 1.2,
+  rectUprightW: 1.0,
+  rectUprightH: 2.0,
+  rectSquareSize: 1.2,
+  rectBottomAnchorRatio: 0.8,
   rectStroke: 0.12,
   entranceStroke: 0.16,
   rectRx: 0.2,
-  fontSize: 1.1,
-  textStrokeWidth: 0.24,
-  badgeFontSize: 0.65,
-  badgeStrokeWidth: 0.16,
+  stopLabelFontSize: 0.72,
+  stopLabelStrokeWidth: 0.17,
+  stopLabelMinScale: 1.1,
+  crossLevelStairsSize: 0.9,
+  crossLevelStairsStepUnit: 0.3,
+  crossLevelElevatorHalfHeight: 0.45,
+  crossLevelElevatorHalfWidth: 0.35,
+  crossLevelElevatorGap: 0.05,
   pathwayStroke: 0.35,
   pathwayHitStroke: 2,
   pathwayTickStroke: 0.3,
@@ -28,13 +32,149 @@ const OVERLAY_BASE = {
   pathwayElevatorBoxHeight: 2,
   pathwayElevatorBoxStroke: 0.4,
   pathwayElevatorTextSize: 1.2,
+  pathwayVisualThinFactor: 1.4,
+  iconVisualThinFactor: 1.2,
   pendingOffsetY: 1,
   pendingOffsetX: 0.75,
   pendingOffsetBottomY: 0.5,
   pendingStroke: 0.15
 };
 
+const TOOLTIP_POINTER_OFFSET = 12;
+const TOOLTIP_VIEWPORT_PADDING = 8;
+
 const DiagramCanvasHook = {
+  iconVisualScale(scale) {
+    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+
+    if (safeScale >= 1) {
+      return safeScale;
+    }
+
+    const zoomAdjusted = 1 - (1 - safeScale) * 0.3;
+
+    // Keep icons from becoming visually chunky when zoomed out.
+    return zoomAdjusted * OVERLAY_BASE.iconVisualThinFactor;
+  },
+
+  pathwayVisualScale(scale) {
+    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    const zoomAdjusted =
+      safeScale < 1
+        ? 1 - (1 - safeScale) * 0.3
+        : safeScale;
+
+    // Keep pathway visuals slimmer at baseline and while zoomed out.
+    return zoomAdjusted * OVERLAY_BASE.pathwayVisualThinFactor;
+  },
+
+  handleWheel(e) {
+    const svg = this.el;
+
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      // Scroll up (negative deltaY) = zoom in, scroll down = zoom out
+      const delta = e.deltaY > 0 ? 0.95 : 1.05;
+      const newScale = Math.min(this.maxScale, Math.max(this.minScale, this.scale * delta));
+
+      if (newScale !== this.scale) {
+        const rect = svg.getBoundingClientRect();
+        const mouseX = (e.clientX - rect.left) / rect.width * this.viewBox.w + this.viewBox.x;
+        const mouseY = (e.clientY - rect.top) / rect.height * this.viewBox.h + this.viewBox.y;
+
+        const newW = this.baseW / newScale;
+        const newH = this.baseH / newScale;
+
+        this.viewBox.x = mouseX - (mouseX - this.viewBox.x) * (newW / this.viewBox.w);
+        this.viewBox.y = mouseY - (mouseY - this.viewBox.y) * (newH / this.viewBox.h);
+        this.viewBox.w = newW;
+        this.viewBox.h = newH;
+        this.scale = newScale;
+
+        this.updateViewBox();
+      }
+    } else {
+      // Calculate limits to check if we should allow page scroll
+      const margin = 0.5;
+      const minY = -this.viewBox.h * margin;
+      const maxY = this.baseH - this.viewBox.h * (1 - margin);
+
+      // Use a small epsilon for float comparison
+      const isAtTop = this.viewBox.y <= minY + 0.1;
+      const isAtBottom = this.viewBox.y >= maxY - 0.1;
+
+      // If we are at the edge and trying to scroll past it, let the page scroll
+      if ((isAtTop && e.deltaY < 0) || (isAtBottom && e.deltaY > 0)) {
+        return;
+      }
+
+      e.preventDefault();
+      const panSpeed = 0.3;
+      this.viewBox.x += e.deltaX * panSpeed / this.scale;
+      this.viewBox.y += e.deltaY * panSpeed / this.scale;
+      this.clampViewBox();
+      this.updateViewBox();
+    }
+  },
+
+  handleMouseDown(e) {
+    if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+      this.isPanning = true;
+      this.panStart = { x: e.clientX, y: e.clientY };
+      this.el.style.cursor = "grabbing";
+      e.preventDefault();
+    }
+  },
+
+  handleMouseMove(e) {
+    if (this.isPanning) {
+      const rect = this.el.getBoundingClientRect();
+      const dx = (e.clientX - this.panStart.x) / rect.width * this.viewBox.w;
+      const dy = (e.clientY - this.panStart.y) / rect.height * this.viewBox.h;
+      this.viewBox.x -= dx;
+      this.viewBox.y -= dy;
+      this.panStart = { x: e.clientX, y: e.clientY };
+      this.clampViewBox();
+      this.updateViewBox();
+    }
+  },
+
+  handleMouseUp() {
+    if (this.isPanning) {
+      this.isPanning = false;
+      this.el.style.cursor = "";
+    }
+  },
+
+  handleGesture(e) {
+    e.preventDefault();
+  },
+
+  setupOverlayPanZoom() {
+    if (!this.overlay || this._overlayPanZoomBound === this.overlay) {
+      return;
+    }
+
+    this.removeOverlayPanZoom();
+    this.overlay.addEventListener("wheel", this._handleWheel, { passive: false });
+    this.overlay.addEventListener("mousedown", this._handleMouseDown);
+    this.overlay.addEventListener("gesturestart", this._handleGesture);
+    this.overlay.addEventListener("gesturechange", this._handleGesture);
+    this._overlayPanZoomBound = this.overlay;
+  },
+
+  removeOverlayPanZoom() {
+    if (!this._overlayPanZoomBound) {
+      return;
+    }
+
+    this._overlayPanZoomBound.removeEventListener("wheel", this._handleWheel);
+    this._overlayPanZoomBound.removeEventListener("mousedown", this._handleMouseDown);
+    this._overlayPanZoomBound.removeEventListener("gesturestart", this._handleGesture);
+    this._overlayPanZoomBound.removeEventListener("gesturechange", this._handleGesture);
+    this._overlayPanZoomBound = null;
+  },
+
   mounted() {
     const svg = this.el;
     this.baseW = 100;
@@ -47,6 +187,27 @@ const DiagramCanvasHook = {
     this.panStart = { x: 0, y: 0 };
     this._canvasKey = svg.getAttribute("data-canvas-key");
     this.currentImageHref = null;
+    this.overlay = null;
+    this.tooltipEl = null;
+    this.tooltipState = {
+      activeTarget: null,
+      visible: false,
+      anchor: null
+    };
+    this.tooltipListenersBound = false;
+    this.tooltipListenerOverlay = null;
+    this._overlayPanZoomBound = null;
+
+    // Create bound references for proper add/remove
+    this._handleWheel = this.handleWheel.bind(this);
+    this._handleMouseDown = this.handleMouseDown.bind(this);
+    this._handleMouseMove = this.handleMouseMove.bind(this);
+    this._handleMouseUp = this.handleMouseUp.bind(this);
+    this._handleGesture = this.handleGesture.bind(this);
+
+    this.refreshTooltipElements();
+    this.setupTooltipListeners();
+    this.setupOverlayPanZoom();
 
     // Set up MutationObserver to detect when overlay viewBox gets reset
     this.setupOverlayObserver();
@@ -54,84 +215,14 @@ const DiagramCanvasHook = {
     this.syncImageDimensions(true);
     this.scaleOverlayElements();
 
-    svg.addEventListener("wheel", (e) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        // Scroll up (negative deltaY) = zoom in, scroll down = zoom out
-        const delta = e.deltaY > 0 ? 0.95 : 1.05;
-        const newScale = Math.min(this.maxScale, Math.max(this.minScale, this.scale * delta));
+    // Wheel and mousedown on main canvas SVG
+    svg.addEventListener("wheel", this._handleWheel, { passive: false });
+    svg.addEventListener("mousedown", this._handleMouseDown);
 
-        if (newScale !== this.scale) {
-          const rect = svg.getBoundingClientRect();
-          const mouseX = (e.clientX - rect.left) / rect.width * this.viewBox.w + this.viewBox.x;
-          const mouseY = (e.clientY - rect.top) / rect.height * this.viewBox.h + this.viewBox.y;
-
-          const newW = this.baseW / newScale;
-          const newH = this.baseH / newScale;
-
-          this.viewBox.x = mouseX - (mouseX - this.viewBox.x) * (newW / this.viewBox.w);
-          this.viewBox.y = mouseY - (mouseY - this.viewBox.y) * (newH / this.viewBox.h);
-          this.viewBox.w = newW;
-          this.viewBox.h = newH;
-          this.scale = newScale;
-
-          this.updateViewBox();
-        }
-      } else {
-        // Calculate limits to check if we should allow page scroll
-        const margin = 0.5;
-        const minY = -this.viewBox.h * margin;
-        const maxY = this.baseH - this.viewBox.h * (1 - margin);
-        
-        // Use a small epsilon for float comparison
-        const isAtTop = this.viewBox.y <= minY + 0.1;
-        const isAtBottom = this.viewBox.y >= maxY - 0.1;
-        
-        // If we are at the edge and trying to scroll past it, let the page scroll
-        if ((isAtTop && e.deltaY < 0) || (isAtBottom && e.deltaY > 0)) {
-          return;
-        }
-
-        e.preventDefault();
-        const panSpeed = 0.3;
-        this.viewBox.x += e.deltaX * panSpeed / this.scale;
-        this.viewBox.y += e.deltaY * panSpeed / this.scale;
-        this.clampViewBox();
-        this.updateViewBox();
-      }
-    }, { passive: false });
-
-    svg.addEventListener("mousedown", (e) => {
-      if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
-        this.isPanning = true;
-        this.panStart = { x: e.clientX, y: e.clientY };
-        svg.style.cursor = "grabbing";
-        e.preventDefault();
-      }
-    });
-
-    svg.addEventListener("mousemove", (e) => {
-      if (this.isPanning) {
-        const rect = svg.getBoundingClientRect();
-        const dx = (e.clientX - this.panStart.x) / rect.width * this.viewBox.w;
-        const dy = (e.clientY - this.panStart.y) / rect.height * this.viewBox.h;
-        this.viewBox.x -= dx;
-        this.viewBox.y -= dy;
-        this.panStart = { x: e.clientX, y: e.clientY };
-        this.clampViewBox();
-        this.updateViewBox();
-      }
-    });
-
-    svg.addEventListener("mouseup", () => {
-      this.isPanning = false;
-      svg.style.cursor = "crosshair";
-    });
-
-    svg.addEventListener("mouseleave", () => {
-      this.isPanning = false;
-      svg.style.cursor = "crosshair";
-    });
+    // Mousemove and mouseup on document so panning works seamlessly
+    // across SVG layers and even outside the diagram
+    document.addEventListener("mousemove", this._handleMouseMove);
+    document.addEventListener("mouseup", this._handleMouseUp);
 
     svg.addEventListener("click", (e) => {
       if (e.shiftKey) return;
@@ -144,8 +235,264 @@ const DiagramCanvasHook = {
       this.pushEvent("canvas_click", { x, y });
     });
 
-    svg.addEventListener("gesturestart", (e) => e.preventDefault());
-    svg.addEventListener("gesturechange", (e) => e.preventDefault());
+    svg.addEventListener("gesturestart", this._handleGesture);
+    svg.addEventListener("gesturechange", this._handleGesture);
+  },
+
+  refreshTooltipElements() {
+    const container = this.el.parentElement;
+    if (!container) {
+      this.overlay = null;
+      this.tooltipEl = null;
+      return;
+    }
+
+    this.overlay = container.querySelector("#diagram-overlay");
+    this.tooltipEl = container.querySelector("#diagram-edit-tooltip");
+  },
+
+  setupTooltipListeners() {
+    if (!this.overlay) {
+      return;
+    }
+
+    if (this.tooltipListenersBound && this.tooltipListenerOverlay === this.overlay) {
+      return;
+    }
+
+    this.removeTooltipListeners();
+
+    this.handleTooltipMouseOver = (event) => {
+      const target = this.resolvePointerTooltipTarget(event.target);
+
+      if (!target) {
+        return;
+      }
+
+      this.showTooltip(target, {
+        type: "pointer",
+        clientX: event.clientX,
+        clientY: event.clientY
+      });
+    };
+
+    this.handleTooltipMouseMove = (event) => {
+      if (!this.tooltipState.visible || this.tooltipState.activeTarget == null) {
+        return;
+      }
+
+      const target = this.resolvePointerTooltipTarget(event.target);
+      if (target !== this.tooltipState.activeTarget) {
+        return;
+      }
+
+      this.positionTooltip({
+        type: "pointer",
+        clientX: event.clientX,
+        clientY: event.clientY
+      });
+    };
+
+    this.handleTooltipMouseOut = (event) => {
+      if (!this.tooltipState.visible || this.tooltipState.activeTarget == null) {
+        return;
+      }
+
+      const nextTarget = this.resolvePointerTooltipTarget(event.relatedTarget);
+      if (nextTarget === this.tooltipState.activeTarget) {
+        return;
+      }
+
+      this.hideTooltip();
+    };
+
+    this.handleTooltipFocusIn = (event) => {
+      const target = this.resolveTooltipTarget(event.target);
+
+      if (!target) {
+        return;
+      }
+
+      this.showTooltip(target, { type: "focus" });
+    };
+
+    this.handleTooltipFocusOut = (event) => {
+      if (!this.tooltipState.visible || this.tooltipState.activeTarget == null) {
+        return;
+      }
+
+      const nextTarget = this.resolveTooltipTarget(event.relatedTarget);
+      if (nextTarget === this.tooltipState.activeTarget) {
+        return;
+      }
+
+      this.hideTooltip();
+    };
+
+    this.overlay.addEventListener("mouseover", this.handleTooltipMouseOver);
+    this.overlay.addEventListener("mousemove", this.handleTooltipMouseMove);
+    this.overlay.addEventListener("mouseout", this.handleTooltipMouseOut);
+    this.overlay.addEventListener("focusin", this.handleTooltipFocusIn);
+    this.overlay.addEventListener("focusout", this.handleTooltipFocusOut);
+    this.tooltipListenersBound = true;
+    this.tooltipListenerOverlay = this.overlay;
+  },
+
+  removeTooltipListeners() {
+    if (!this.tooltipListenersBound || !this.tooltipListenerOverlay) {
+      return;
+    }
+
+    this.tooltipListenerOverlay.removeEventListener("mouseover", this.handleTooltipMouseOver);
+    this.tooltipListenerOverlay.removeEventListener("mousemove", this.handleTooltipMouseMove);
+    this.tooltipListenerOverlay.removeEventListener("mouseout", this.handleTooltipMouseOut);
+    this.tooltipListenerOverlay.removeEventListener("focusin", this.handleTooltipFocusIn);
+    this.tooltipListenerOverlay.removeEventListener("focusout", this.handleTooltipFocusOut);
+    this.tooltipListenersBound = false;
+    this.tooltipListenerOverlay = null;
+  },
+
+  resolveTooltipTarget(node) {
+    if (!(node instanceof Element)) {
+      return null;
+    }
+
+    const target = node.closest("[data-tooltip]");
+
+    if (!target || !this.overlay || !this.overlay.contains(target)) {
+      return null;
+    }
+
+    const tooltipText = target.getAttribute("data-tooltip");
+    if (!tooltipText || tooltipText.trim() === "") {
+      return null;
+    }
+
+    return target;
+  },
+
+  resolvePointerTooltipTarget(node) {
+    if (!(node instanceof Element)) {
+      return null;
+    }
+
+    const trigger = node.closest("[data-tooltip-trigger]");
+
+    if (!trigger || !this.overlay || !this.overlay.contains(trigger)) {
+      return null;
+    }
+
+    return this.resolveTooltipTarget(trigger);
+  },
+
+  showTooltip(target, anchor) {
+    if (!this.tooltipEl) {
+      return;
+    }
+
+    const tooltipText = target.getAttribute("data-tooltip");
+    if (!tooltipText || tooltipText.trim() === "") {
+      this.hideTooltip();
+      return;
+    }
+
+    this.tooltipEl.textContent = tooltipText.trim();
+    const tooltipColor = target.getAttribute("data-tooltip-color");
+
+    if (tooltipColor && tooltipColor.trim() !== "") {
+      this.tooltipEl.style.backgroundColor = tooltipColor.trim();
+      this.tooltipEl.style.borderColor = tooltipColor.trim();
+    } else {
+      this.tooltipEl.style.backgroundColor = "";
+      this.tooltipEl.style.borderColor = "";
+    }
+
+    this.tooltipEl.style.color = "#FFFFFF";
+    this.tooltipEl.setAttribute("aria-hidden", "false");
+    this.tooltipEl.classList.remove("is-hidden");
+    this.tooltipEl.classList.add("is-visible");
+
+    this.tooltipState.activeTarget = target;
+    this.tooltipState.visible = true;
+    this.tooltipState.anchor = anchor;
+
+    this.positionTooltip(anchor);
+  },
+
+  hideTooltip() {
+    this.tooltipState.activeTarget = null;
+    this.tooltipState.visible = false;
+    this.tooltipState.anchor = null;
+
+    if (!this.tooltipEl) {
+      return;
+    }
+
+    this.tooltipEl.setAttribute("aria-hidden", "true");
+    this.tooltipEl.classList.remove("is-visible");
+    this.tooltipEl.classList.add("is-hidden");
+  },
+
+  positionTooltip(anchor) {
+    if (!this.tooltipEl || !this.tooltipState.visible) {
+      return;
+    }
+
+    const container = this.el.parentElement;
+    if (!container) {
+      return;
+    }
+
+    const activeTarget = this.tooltipState.activeTarget;
+    if (!activeTarget || !activeTarget.isConnected) {
+      this.hideTooltip();
+      return;
+    }
+
+    const nextAnchor = anchor || this.tooltipState.anchor || { type: "focus" };
+    this.tooltipState.anchor = nextAnchor;
+
+    let screenX;
+    let screenY;
+
+    if (
+      nextAnchor.type === "pointer" &&
+      Number.isFinite(nextAnchor.clientX) &&
+      Number.isFinite(nextAnchor.clientY)
+    ) {
+      screenX = nextAnchor.clientX + TOOLTIP_POINTER_OFFSET;
+      screenY = nextAnchor.clientY + TOOLTIP_POINTER_OFFSET;
+    } else {
+      const targetRect = activeTarget.getBoundingClientRect();
+      screenX = targetRect.left + targetRect.width / 2;
+      screenY = targetRect.top - TOOLTIP_POINTER_OFFSET;
+    }
+
+    const tooltipRect = this.tooltipEl.getBoundingClientRect();
+    const maxLeft = window.innerWidth - tooltipRect.width - TOOLTIP_VIEWPORT_PADDING;
+    const maxTop = window.innerHeight - tooltipRect.height - TOOLTIP_VIEWPORT_PADDING;
+    const clampedLeft = Math.max(TOOLTIP_VIEWPORT_PADDING, Math.min(screenX, maxLeft));
+    const clampedTop = Math.max(TOOLTIP_VIEWPORT_PADDING, Math.min(screenY, maxTop));
+    const containerRect = container.getBoundingClientRect();
+
+    this.tooltipEl.style.left = `${clampedLeft - containerRect.left}px`;
+    this.tooltipEl.style.top = `${clampedTop - containerRect.top}px`;
+  },
+
+  repositionTooltipIfVisible() {
+    if (!this.tooltipState.visible || !this.tooltipState.activeTarget) {
+      return;
+    }
+
+    if (
+      !this.tooltipState.activeTarget.isConnected ||
+      (this.overlay && !this.overlay.contains(this.tooltipState.activeTarget))
+    ) {
+      this.hideTooltip();
+      return;
+    }
+
+    this.positionTooltip(this.tooltipState.anchor);
   },
 
   setupOverlayObserver() {
@@ -168,12 +515,17 @@ const DiagramCanvasHook = {
             // LiveView reset the viewBox, re-apply our current state
             this.syncOverlayViewBox();
             this.scaleOverlayElements();
+            this.repositionTooltipIfVisible();
           }
         }
         // Also watch for child changes (stream updates)
         if (mutation.type === "childList") {
+          this.refreshTooltipElements();
+          this.setupTooltipListeners();
+          this.setupOverlayPanZoom();
           this.syncOverlayViewBox();
           this.scaleOverlayElements();
+          this.repositionTooltipIfVisible();
         }
       }
     });
@@ -219,6 +571,8 @@ const DiagramCanvasHook = {
     }
 
     const scale = this.scale || 1;
+    const iconScale = this.iconVisualScale(scale);
+    const pathwayScale = this.pathwayVisualScale(scale);
 
     overlay.querySelectorAll("[data-stop-hit-target]").forEach((hitTarget) => {
       const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
@@ -235,6 +589,21 @@ const DiagramCanvasHook = {
       hitTarget.setAttribute("height", `${size}`);
     });
 
+    overlay.querySelectorAll("[data-stop-tooltip-hit]").forEach((hitTarget) => {
+      const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
+      const cy = parseFloat(hitTarget.getAttribute("data-center-y"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+        return;
+      }
+
+      const size = 1.8 / scale;
+      hitTarget.setAttribute("x", `${cx - size / 2}`);
+      hitTarget.setAttribute("y", `${cy - size / 2}`);
+      hitTarget.setAttribute("width", `${size}`);
+      hitTarget.setAttribute("height", `${size}`);
+    });
+
     overlay.querySelectorAll("[data-stop-marker]").forEach((marker) => {
       const cx = parseFloat(marker.getAttribute("data-center-x"));
       const cy = parseFloat(marker.getAttribute("data-center-y"));
@@ -245,88 +614,121 @@ const DiagramCanvasHook = {
       }
 
       if (locationType === "0" || locationType === "2") {
-        const width = OVERLAY_BASE.rectUprightW / scale;
-        const height = OVERLAY_BASE.rectUprightH / scale;
+        const width = OVERLAY_BASE.rectUprightW / iconScale;
+        const height = OVERLAY_BASE.rectUprightH / iconScale;
         marker.setAttribute("x", `${cx - width / 2}`);
-        marker.setAttribute("y", `${cy - height / 2}`);
+        marker.setAttribute("y", `${cy - height * OVERLAY_BASE.rectBottomAnchorRatio}`);
         marker.setAttribute("width", `${width}`);
         marker.setAttribute("height", `${height}`);
-        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / scale}`);
+        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / iconScale}`);
         const strokeWidth =
           locationType === "2" ? OVERLAY_BASE.entranceStroke : OVERLAY_BASE.rectStroke;
-        marker.setAttribute("stroke-width", `${strokeWidth / scale}`);
+        marker.setAttribute("stroke-width", `${strokeWidth / iconScale}`);
         return;
       }
 
       if (locationType === "4") {
-        const width = OVERLAY_BASE.rectHorizW / scale;
-        const height = OVERLAY_BASE.rectHorizH / scale;
-        marker.setAttribute("x", `${cx - width / 2}`);
-        marker.setAttribute("y", `${cy - height / 2}`);
-        marker.setAttribute("width", `${width}`);
-        marker.setAttribute("height", `${height}`);
-        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / scale}`);
-        marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / scale}`);
+        const size = OVERLAY_BASE.rectSquareSize / iconScale;
+        marker.setAttribute("x", `${cx - size / 2}`);
+        marker.setAttribute("y", `${cy - size * OVERLAY_BASE.rectBottomAnchorRatio}`);
+        marker.setAttribute("width", `${size}`);
+        marker.setAttribute("height", `${size}`);
+        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / iconScale}`);
+        marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
         return;
       }
 
       marker.setAttribute("cx", `${cx}`);
       marker.setAttribute("cy", `${cy}`);
-      marker.setAttribute("r", `${OVERLAY_BASE.circleR / scale}`);
-      marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / scale}`);
+      marker.setAttribute("r", `${OVERLAY_BASE.circleR / iconScale}`);
+      marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
     });
 
     overlay.querySelectorAll("[data-stop-label]").forEach((label) => {
       const cx = parseFloat(label.getAttribute("data-center-x"));
       const cy = parseFloat(label.getAttribute("data-center-y"));
       const offsetX = parseFloat(label.getAttribute("data-label-offset-x"));
+      const offsetY = parseFloat(label.getAttribute("data-label-offset-y"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX) || !Number.isFinite(offsetY)) {
+        return;
+      }
+
+      if (scale < OVERLAY_BASE.stopLabelMinScale) {
+        label.setAttribute("display", "none");
+        return;
+      }
+
+      label.removeAttribute("display");
+      const newLabelX = cx + offsetX / iconScale;
+      const newLabelY = cy + offsetY / iconScale;
+
+      label.setAttribute("x", `${newLabelX}`);
+      label.setAttribute("y", `${newLabelY}`);
+      label.setAttribute("font-size", `${OVERLAY_BASE.stopLabelFontSize / iconScale}`);
+      label.setAttribute("stroke-width", `${OVERLAY_BASE.stopLabelStrokeWidth / iconScale}`);
+
+      label.querySelectorAll("tspan").forEach((tspan) => {
+        tspan.setAttribute("x", `${newLabelX}`);
+      });
+    });
+
+    overlay.querySelectorAll("[data-cross-level-badge-stairs]").forEach((stairsPath) => {
+      const cx = parseFloat(stairsPath.getAttribute("data-center-x"));
+      const cy = parseFloat(stairsPath.getAttribute("data-center-y"));
+      const offsetX = parseFloat(stairsPath.getAttribute("data-badge-offset-x"));
 
       if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX)) {
         return;
       }
 
-      const previousLabelXAttr = label.getAttribute("x");
-      const previousLabelX = previousLabelXAttr !== null ? parseFloat(previousLabelXAttr) : NaN;
-      const newLabelX = cx + offsetX / scale;
+      const s = OVERLAY_BASE.crossLevelStairsStepUnit / iconScale;
+      const size = OVERLAY_BASE.crossLevelStairsSize / iconScale;
+      const x0 = cx + offsetX / iconScale - size / 2;
+      const y0 = cy - size / 2;
 
-      label.setAttribute("x", `${newLabelX}`);
-      label.setAttribute("y", `${cy}`);
-      label.setAttribute("font-size", `${OVERLAY_BASE.fontSize / scale}`);
-      label.setAttribute("stroke-width", `${OVERLAY_BASE.textStrokeWidth / scale}`);
-
-      if (Number.isFinite(previousLabelX)) {
-        const deltaX = newLabelX - previousLabelX;
-
-        label.querySelectorAll("tspan").forEach((tspan) => {
-          const tspanXAttr = tspan.getAttribute("x");
-
-          if (tspanXAttr === null) {
-            return;
-          }
-
-          const tspanX = parseFloat(tspanXAttr);
-
-          if (!Number.isFinite(tspanX)) {
-            return;
-          }
-
-          tspan.setAttribute("x", `${tspanX + deltaX}`);
-        });
-      }
+      stairsPath.setAttribute(
+        "d",
+        `M ${x0} ${y0 + size} L ${x0} ${y0 + size - s} L ${x0 + s} ${y0 + size - s} L ${x0 + s} ${y0 + s} L ${x0 + size - s} ${y0 + s} L ${x0 + size - s} ${y0} L ${x0 + size} ${y0} L ${x0 + size} ${y0 + size} Z`
+      );
     });
 
-    overlay.querySelectorAll("[data-stop-badge]").forEach((badge) => {
-      const cx = parseFloat(badge.getAttribute("data-center-x"));
-      const cy = parseFloat(badge.getAttribute("data-center-y"));
+    overlay.querySelectorAll("[data-cross-level-badge-elevator]").forEach((elevPath) => {
+      const cx = parseFloat(elevPath.getAttribute("data-center-x"));
+      const cy = parseFloat(elevPath.getAttribute("data-center-y"));
+      const offsetX = parseFloat(elevPath.getAttribute("data-badge-offset-x"));
 
-      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX)) {
         return;
       }
 
-      badge.setAttribute("x", `${cx + 0.5 / scale}`);
-      badge.setAttribute("y", `${cy - 0.5 / scale}`);
-      badge.setAttribute("font-size", `${OVERLAY_BASE.badgeFontSize / scale}`);
-      badge.setAttribute("stroke-width", `${OVERLAY_BASE.badgeStrokeWidth / scale}`);
+      const iconCx = cx + offsetX / iconScale;
+      const halfH = OVERLAY_BASE.crossLevelElevatorHalfHeight / iconScale;
+      const halfW = OVERLAY_BASE.crossLevelElevatorHalfWidth / iconScale;
+      const gap = OVERLAY_BASE.crossLevelElevatorGap / iconScale;
+
+      elevPath.setAttribute(
+        "d",
+        `M ${iconCx} ${cy - halfH} L ${iconCx + halfW} ${cy - gap} L ${iconCx - halfW} ${cy - gap} Z M ${iconCx} ${cy + halfH} L ${iconCx + halfW} ${cy + gap} L ${iconCx - halfW} ${cy + gap} Z`
+      );
+    });
+
+    overlay.querySelectorAll("[data-cross-level-badge-tooltip-hit]").forEach((hitTarget) => {
+      const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
+      const cy = parseFloat(hitTarget.getAttribute("data-center-y"));
+      const offsetX = parseFloat(hitTarget.getAttribute("data-badge-offset-x"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX)) {
+        return;
+      }
+
+      const iconCx = cx + offsetX / iconScale;
+      const size = 0.9 / iconScale;
+
+      hitTarget.setAttribute("x", `${iconCx - size / 2}`);
+      hitTarget.setAttribute("y", `${cy - size / 2}`);
+      hitTarget.setAttribute("width", `${size}`);
+      hitTarget.setAttribute("height", `${size}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-hit]").forEach((hitTarget) => {
@@ -341,8 +743,21 @@ const DiagramCanvasHook = {
       hitTarget.setAttribute("stroke-width", `${baseStroke / scale}`);
     });
 
+    overlay.querySelectorAll("#pathways-svg [data-pathway-tooltip-hit]").forEach((hitTarget) => {
+      const baseStroke = parseFloat(hitTarget.getAttribute("data-base-stroke") ?? "0.8");
+
+      if (!Number.isFinite(baseStroke)) {
+        return;
+      }
+
+      hitTarget.setAttribute("stroke-width", `${baseStroke / scale}`);
+    });
+
     overlay.querySelectorAll("#pathways-svg [data-base-stroke]").forEach((element) => {
-      if (element.hasAttribute("data-pathway-hit")) {
+      if (
+        element.hasAttribute("data-pathway-hit") ||
+        element.hasAttribute("data-pathway-tooltip-hit")
+      ) {
         return;
       }
 
@@ -352,7 +767,7 @@ const DiagramCanvasHook = {
         return;
       }
 
-      element.setAttribute("stroke-width", `${baseStroke / scale}`);
+      element.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-base-dash]").forEach((element) => {
@@ -366,7 +781,7 @@ const DiagramCanvasHook = {
         .split(",")
         .map((part) => parseFloat(part.trim()))
         .filter((value) => Number.isFinite(value))
-        .map((value) => value / scale);
+        .map((value) => value / pathwayScale);
 
       if (scaled.length === 0) {
         return;
@@ -377,8 +792,8 @@ const DiagramCanvasHook = {
 
     const pathwayMarker = overlay.querySelector("#pathway-arrow");
     if (pathwayMarker) {
-      pathwayMarker.setAttribute("markerWidth", `${OVERLAY_BASE.pathwayMarkerSize / scale}`);
-      pathwayMarker.setAttribute("markerHeight", `${OVERLAY_BASE.pathwayMarkerSize / scale}`);
+      pathwayMarker.setAttribute("markerWidth", `${OVERLAY_BASE.pathwayMarkerSize / pathwayScale}`);
+      pathwayMarker.setAttribute("markerHeight", `${OVERLAY_BASE.pathwayMarkerSize / pathwayScale}`);
     }
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-elevator-box]").forEach((box) => {
@@ -410,7 +825,7 @@ const DiagramCanvasHook = {
       box.setAttribute("y", `${cy - height / 2}`);
       box.setAttribute("width", `${width}`);
       box.setAttribute("height", `${height}`);
-      box.setAttribute("stroke-width", `${baseStroke / scale}`);
+      box.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-elevator-text]").forEach((label) => {
@@ -455,7 +870,7 @@ const DiagramCanvasHook = {
       label.setAttribute("x", `${midpointX + offsetX / scale}`);
       label.setAttribute("y", `${midpointY + offsetY / scale}`);
       label.setAttribute("font-size", `${baseFontSize / scale}`);
-      label.setAttribute("stroke-width", `${baseStroke / scale}`);
+      label.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
     });
 
     const pending = overlay.querySelector("polygon[data-cx][data-cy]");
@@ -488,6 +903,7 @@ const DiagramCanvasHook = {
     svg.setAttribute("viewBox", viewBoxStr);
     this.syncOverlayViewBox();
     this.scaleOverlayElements();
+    this.repositionTooltipIfVisible();
   },
 
   applyImageDimensions() {
@@ -502,6 +918,9 @@ const DiagramCanvasHook = {
   },
 
   updated() {
+    this.refreshTooltipElements();
+    this.setupTooltipListeners();
+    this.setupOverlayPanZoom();
     const newKey = this.el.getAttribute("data-canvas-key");
 
     if (newKey !== this._canvasKey) {
@@ -520,6 +939,8 @@ const DiagramCanvasHook = {
       this.updateViewBox();
       this.syncImageDimensions(false);
     }
+
+    this.repositionTooltipIfVisible();
   },
 
   syncImageDimensions(forceReset) {
@@ -565,6 +986,18 @@ const DiagramCanvasHook = {
     if (this.overlayObserver) {
       this.overlayObserver.disconnect();
     }
+
+    // Clean up pan/zoom listeners
+    this.el.removeEventListener("wheel", this._handleWheel);
+    this.el.removeEventListener("mousedown", this._handleMouseDown);
+    this.el.removeEventListener("gesturestart", this._handleGesture);
+    this.el.removeEventListener("gesturechange", this._handleGesture);
+    document.removeEventListener("mousemove", this._handleMouseMove);
+    document.removeEventListener("mouseup", this._handleMouseUp);
+    this.removeOverlayPanZoom();
+
+    this.removeTooltipListeners();
+    this.hideTooltip();
   }
 };
 
