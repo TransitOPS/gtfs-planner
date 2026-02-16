@@ -986,7 +986,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <% cx = @stop.diagram_coordinate["x"] %>
       <% cy = @stop.diagram_coordinate["y"] %>
       <%= for {badge, index} <- @badges do %>
-        <% badge_offset_x = 1.1 + index * 1.25 %>
+        <% badge_offset_x = 1.35 + index * 1.25 %>
         <g
           id={"cross-level-badge-#{badge.pathway_id}"}
           class="pointer-events-auto cursor-pointer"
