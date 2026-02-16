@@ -28,8 +28,7 @@
    Make sure to look at the daisyUI changelog: https://daisyui.com/docs/changelog/ */
 @plugin "../vendor/daisyui" {
   themes:
-    light --default,
-    dark --prefersdark;
+    light --default;
 }
 
 /* Add variants based on LiveView classes */
@@ -37,8 +36,6 @@
 @custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);
 @custom-variant phx-change-loading (.phx-change-loading&, .phx-change-loading &);
 
-/* Use the data attribute for dark mode  */
-@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
@@ -70,9 +67,6 @@ body {
   color: oklch(var(--bc)); /* Use DaisyUI's base content color for light mode */
 }
 
-[data-theme="dark"] .live-select-input {
-  color: oklch(100% 0 0) !important; /* Force pure white for dark mode */
-}
 
 #diagram-page {
   display: flex;
