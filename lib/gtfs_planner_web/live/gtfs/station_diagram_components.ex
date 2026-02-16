@@ -197,8 +197,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :selected_stop_id, :any
   attr :mode, :atom, required: true
   attr :uploads, :any, required: true
-  attr :cross_level_stop_ids, :any, default: MapSet.new()
-  attr :wheelchair_minority, :any, default: nil
+  attr :cross_level_badges_by_stop, :map, default: %{}
   attr :diagram_error, :string, default: nil
   attr :organization_id, :string, required: true
 
@@ -243,8 +242,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             pending_xy={@pending_xy}
             selected_stop_id={@selected_stop_id}
             mode={@mode}
-            cross_level_stop_ids={@cross_level_stop_ids}
-            wheelchair_minority={@wheelchair_minority}
+            cross_level_badges_by_stop={@cross_level_badges_by_stop}
           />
           <.diagram_hints_and_legend />
         <% @active_level -> %>
@@ -284,8 +282,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :pending_xy, :any
   attr :selected_stop_id, :any
   attr :mode, :atom, required: true
-  attr :cross_level_stop_ids, :any, default: MapSet.new()
-  attr :wheelchair_minority, :any, default: nil
+  attr :cross_level_badges_by_stop, :map, default: %{}
 
   defp diagram_overlay(assigns) do
     ~H"""
@@ -316,8 +313,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         streams={@streams}
         active_point_id={@active_point_id}
         mode={@mode}
-        cross_level_stop_ids={@cross_level_stop_ids}
-        wheelchair_minority={@wheelchair_minority}
+        cross_level_badges_by_stop={@cross_level_badges_by_stop}
       />
       <.pending_marker
         :if={@pending_xy && @mode == :add && @selected_stop_id == nil}
@@ -358,15 +354,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     one_way? = assigns.pathway.is_bidirectional != true
 
-    is_cross_level =
-      assigns.pathway.from_stop.level_id != assigns.pathway.to_stop.level_id
-
-    opacity =
-      if assigns.pathway.pathway_mode == 5 or is_cross_level do
-        "0.5"
-      else
-        "1"
-      end
+    opacity = if assigns.pathway.pathway_mode == 5, do: "0.5", else: "1"
 
     has_forward_label? = present_text?(assigns.pathway.signposted_as)
 
@@ -833,8 +821,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :streams, :any, required: true
   attr :active_point_id, :any
   attr :mode, :atom, required: true
-  attr :cross_level_stop_ids, :any, default: MapSet.new()
-  attr :wheelchair_minority, :any, default: nil
+  attr :cross_level_badges_by_stop, :map, default: %{}
 
   defp stops_layer(assigns) do
     ~H"""
@@ -845,12 +832,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <% cy = stop.diagram_coordinate["y"] %>
           <% active_fill = if(@active_point_id == stop.id, do: "#059669", else: "#2563EB") %>
           <% label = stop_label_text(stop) %>
+          <% cross_level_badge_count = cross_level_badge_count(stop, @cross_level_badges_by_stop) %>
+          <% label_offset =
+            label_x_offset(stop.location_type) +
+              platform_code_label_shift(stop, cross_level_badge_count, label) %>
           <g
             id={dom_id}
             class="pointer-events-auto"
-            phx-click="stop_clicked"
-            phx-value-id={stop.id}
-            opacity={if(MapSet.member?(@cross_level_stop_ids, stop.id), do: "0.5", else: "1")}
           >
             <rect
               x={cx - 1.75}
@@ -864,6 +852,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               data-center-x={cx}
               data-center-y={cy}
               class="cursor-pointer"
+              phx-click="stop_clicked"
+              phx-value-id={stop.id}
             />
             <%= case stop.location_type do %>
               <% 0 -> %>
@@ -934,7 +924,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <% end %>
             <text
               :if={label}
-              x={cx + label_x_offset(stop.location_type)}
+              x={cx + label_offset}
               y={cy}
               font-family="Inter, sans-serif"
               font-weight="500"
@@ -949,36 +939,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               data-stop-label="true"
               data-center-x={cx}
               data-center-y={cy}
-              data-label-offset-x={label_x_offset(stop.location_type)}
+              data-label-offset-x={label_offset}
               class="pointer-events-none"
             >
-              <%= if stop.location_type == 2 do %>
-                <tspan x={cx + label_x_offset(stop.location_type)} dy="-0.3em">↙</tspan>
-                <tspan x={cx + label_x_offset(stop.location_type)} dy="1.0em">↗</tspan>
-              <% else %>
-                {label}
-              <% end %>
+              {label}
             </text>
-            <text
-              :if={show_wheelchair_badge?(stop, @wheelchair_minority)}
-              x={cx + 0.5}
-              y={cy - 0.5}
-              font-family="Inter, sans-serif"
-              font-weight="500"
-              font-size="0.65"
-              fill={active_fill}
-              stroke="#FFFFFF"
-              stroke-width="0.16"
-              paint-order="stroke fill"
-              text-anchor="middle"
-              dominant-baseline="central"
-              data-stop-badge="true"
-              data-center-x={cx}
-              data-center-y={cy}
-              class="pointer-events-none"
-            >
-              {"\u267F"}
-            </text>
+            <.cross_level_badges
+              stop={stop}
+              cross_level_badges_by_stop={@cross_level_badges_by_stop}
+              active_fill={active_fill}
+            />
           </g>
         <% end %>
       <% end %>
@@ -989,7 +959,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp stop_label_text(stop) do
     case stop.location_type do
       0 -> if stop.platform_code in [nil, ""], do: nil, else: stop.platform_code
-      2 -> "↙↗"
+      2 -> nil
       4 -> if stop.platform_code in [nil, ""], do: nil, else: stop.platform_code
       3 -> nil
       _ -> nil
@@ -999,8 +969,145 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp label_x_offset(4), do: 1.55
   defp label_x_offset(_location_type), do: 0.95
 
-  defp show_wheelchair_badge?(stop, wheelchair_minority) do
-    wheelchair_minority != nil and stop.wheelchair_boarding == wheelchair_minority
+  attr :stop, :any, required: true
+  attr :cross_level_badges_by_stop, :map, required: true
+  attr :active_fill, :string, required: true
+
+  defp cross_level_badges(assigns) do
+    badges =
+      assigns.cross_level_badges_by_stop
+      |> Map.get(assigns.stop.id, [])
+      |> Enum.with_index()
+
+    assigns = assign(assigns, :badges, badges)
+
+    ~H"""
+    <%= if @stop.diagram_coordinate do %>
+      <% cx = @stop.diagram_coordinate["x"] %>
+      <% cy = @stop.diagram_coordinate["y"] %>
+      <%= for {badge, index} <- @badges do %>
+        <% badge_offset_x = 1.1 + index * 1.25 %>
+        <g
+          id={"cross-level-badge-#{badge.pathway_id}"}
+          class="pointer-events-auto cursor-pointer"
+          data-cross-level-pathway-badge="true"
+          data-pathway-id={badge.pathway_id}
+          phx-click="edit_pathway"
+          phx-value-id={badge.pathway_id}
+        >
+          <rect
+            x={cx + badge_offset_x - 0.65}
+            y={cy - 0.65}
+            width="1.3"
+            height="1.3"
+            fill="transparent"
+            stroke="transparent"
+            stroke-width="0"
+            data-cross-level-badge-hit-target="true"
+          />
+          <title>{Pathway.mode_label(badge.pathway_mode)}</title>
+          <%= if badge.pathway_mode in [2, 4] do %>
+            <.cross_level_stairs_icon
+              center_x={cx}
+              center_y={cy}
+              offset_x={badge_offset_x}
+              fill={@active_fill}
+            />
+          <% else %>
+            <.cross_level_elevator_icon
+              center_x={cx}
+              center_y={cy}
+              offset_x={badge_offset_x}
+              fill={@active_fill}
+            />
+          <% end %>
+        </g>
+      <% end %>
+    <% end %>
+    """
+  end
+
+  attr :center_x, :float, required: true
+  attr :center_y, :float, required: true
+  attr :offset_x, :float, required: true
+  attr :fill, :string, required: true
+
+  defp cross_level_stairs_icon(assigns) do
+    s = 0.3
+    size = 3 * s
+    x0 = assigns.center_x + assigns.offset_x - size / 2
+    y0 = assigns.center_y - size / 2
+
+    d =
+      "M #{x0} #{y0 + size}" <>
+        " L #{x0} #{y0 + 2 * s}" <>
+        " L #{x0 + s} #{y0 + 2 * s}" <>
+        " L #{x0 + s} #{y0 + s}" <>
+        " L #{x0 + 2 * s} #{y0 + s}" <>
+        " L #{x0 + 2 * s} #{y0}" <>
+        " L #{x0 + 3 * s} #{y0}" <>
+        " L #{x0 + 3 * s} #{y0 + size}" <>
+        " Z"
+
+    assigns = assign(assigns, :d, d)
+
+    ~H"""
+    <path
+      d={@d}
+      fill={@fill}
+      data-cross-level-badge-stairs="true"
+      data-center-x={@center_x}
+      data-center-y={@center_y}
+      data-badge-offset-x={@offset_x}
+    />
+    """
+  end
+
+  defp cross_level_badge_count(stop, cross_level_badges_by_stop) do
+    cross_level_badges_by_stop
+    |> Map.get(stop.id, [])
+    |> length()
+  end
+
+  defp platform_code_label_shift(stop, cross_level_badge_count, label) do
+    if (stop.location_type in [0, 4] and label) && cross_level_badge_count > 0 do
+      cross_level_badge_count * 1.25 + 0.4
+    else
+      0
+    end
+  end
+
+  attr :center_x, :float, required: true
+  attr :center_y, :float, required: true
+  attr :offset_x, :float, required: true
+  attr :fill, :string, required: true
+
+  defp cross_level_elevator_icon(assigns) do
+    cx = assigns.center_x + assigns.offset_x
+    cy = assigns.center_y
+
+    d =
+      "M #{cx} #{cy - 0.45}" <>
+        " L #{cx + 0.35} #{cy - 0.05}" <>
+        " L #{cx - 0.35} #{cy - 0.05}" <>
+        " Z" <>
+        " M #{cx} #{cy + 0.45}" <>
+        " L #{cx + 0.35} #{cy + 0.05}" <>
+        " L #{cx - 0.35} #{cy + 0.05}" <>
+        " Z"
+
+    assigns = assign(assigns, :d, d)
+
+    ~H"""
+    <path
+      d={@d}
+      fill={@fill}
+      data-cross-level-badge-elevator="true"
+      data-center-x={@center_x}
+      data-center-y={@center_y}
+      data-badge-offset-x={@offset_x}
+    />
+    """
   end
 
   attr :pending_xy, :any, required: true
@@ -1085,10 +1192,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <span>Boarding Area</span>
           </div>
           <div class="flex items-center gap-2 text-sm">
-            <svg width="14" height="22" class="shrink-0">
-              <rect x="1" y="1" width="12" height="20" rx="1" fill="#2563EB" opacity="0.5" />
+            <svg width="16" height="16" class="shrink-0">
+              <path d="M 5 3.5 L 8 7.2 L 2 7.2 Z M 5 12.5 L 8 8.8 L 2 8.8 Z" fill="#2563EB" />
             </svg>
-            <span>Cross-level (50%)</span>
+            <span>Cross-level Badge</span>
           </div>
         </div>
       </div>
@@ -1530,9 +1637,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             Stop ID
           </label>
           <p class="w-full input input-lg bg-base-200 flex items-center font-mono text-sm">
-            <%= if @child_stop_form[:stop_id].value in [nil, ""],
+            {if @child_stop_form[:stop_id].value in [nil, ""],
               do: "Type a name above",
-              else: @child_stop_form[:stop_id].value %>
+              else: @child_stop_form[:stop_id].value}
           </p>
           <.input field={@child_stop_form[:stop_id]} type="hidden" />
           <button
@@ -2379,6 +2486,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # Lists Section
   # ============================================================================
 
+  attr :active_level, :any, default: nil
   attr :child_stops_list, :list, required: true
   attr :unassigned_child_stops, :list, required: true
   attr :pathways_list, :list, required: true
@@ -2398,7 +2506,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         :if={@unassigned_child_stops != []}
         child_stops_list={@unassigned_child_stops}
       />
-      <.pathways_table pathways_list={@pathways_list} pathway_error={@pathway_error} />
+      <.pathways_table
+        pathways_list={@pathways_list}
+        pathway_error={@pathway_error}
+        active_level={@active_level}
+      />
     </div>
     """
   end
@@ -2565,6 +2677,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :pathways_list, :list, required: true
   attr :pathway_error, :string
+  attr :active_level, :any, default: nil
 
   defp pathways_table(assigns) do
     ~H"""
@@ -2601,6 +2714,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <:col :let={pathway} label="Bidirectional">
               {if pathway.is_bidirectional, do: "Yes", else: "No"}
             </:col>
+            <:col :let={pathway} label="Cross-Level">
+              {cross_level_target_level(pathway, @active_level)}
+            </:col>
             <:col :let={pathway} label="Signage">
               <div class="space-y-1">
                 <%= if !present_text?(pathway.signposted_as) && !present_text?(pathway.reversed_signposted_as) do %>
@@ -2635,6 +2751,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp pathway_stop_display(%Stop{} = stop), do: stop.stop_name || stop.stop_id
   defp pathway_stop_display(_), do: "Unknown"
+
+  defp cross_level_target_level(pathway, active_level) do
+    active_level_id = if active_level, do: active_level.level_id, else: nil
+    from_level_id = pathway.from_stop && pathway.from_stop.level_id
+    to_level_id = pathway.to_stop && pathway.to_stop.level_id
+
+    cond do
+      from_level_id in [nil, ""] or to_level_id in [nil, ""] ->
+        "—"
+
+      from_level_id == to_level_id ->
+        "—"
+
+      active_level_id in [nil, ""] ->
+        to_level_id
+
+      from_level_id == active_level_id ->
+        to_level_id
+
+      to_level_id == active_level_id ->
+        from_level_id
+
+      true ->
+        to_level_id
+    end
+  end
 
   defp format_decimal(nil), do: nil
   defp format_decimal(%Decimal{} = decimal), do: Decimal.to_string(decimal, :normal)

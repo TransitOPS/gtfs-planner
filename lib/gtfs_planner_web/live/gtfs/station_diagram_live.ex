@@ -24,12 +24,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:page_title, "Station Diagram")
      |> assign(:user_roles, user_roles)
      |> assign(:mode, :view)
-     |> assign(:wheelchair_minority, nil)
      |> assign(:pending_xy, nil)
      |> assign(:selected_stop_id, nil)
      |> assign(:active_point_id, nil)
      |> assign(:selected_from_stop, nil)
-     |> assign(:cross_level_stop_ids, MapSet.new())
+     |> assign(:cross_level_badges_by_stop, %{})
      |> assign(:child_stop_form, to_form(%{}))
      |> assign(:unassigned_child_stops, [])
      |> assign(:show_level_modal, nil)
@@ -130,8 +129,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:child_stops_list, [])
     |> assign(:unassigned_child_stops, [])
     |> assign(:pathways_list, [])
-    |> assign(:wheelchair_minority, nil)
     |> assign(:active_stop_level, nil)
+    |> assign(:cross_level_badges_by_stop, %{})
     |> assign(:walkability_test_stop_ids, %{})
     |> assign(:walkability_tests_list, [])
   end
@@ -143,7 +142,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     stop_level = Gtfs.get_stop_level(organization_id, gtfs_version_id, station.id, level.id)
     all_child_stops = Gtfs.list_child_stops_for_level(station.id, level.id)
-    wheelchair_minority = compute_wheelchair_minority(all_child_stops)
     child_stops_on_level = Enum.filter(all_child_stops, & &1.on_active_level)
     child_stop_ids = Enum.map(child_stops_on_level, & &1.stop_id)
 
@@ -160,23 +158,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       Gtfs.list_pathways_for_level(organization_id, gtfs_version_id, level.id, station.id)
 
     active_level_stop_ids = active_level_stop_ids(all_child_stops, level)
-    connected_stop_ids = connected_stop_ids(level_pathways, active_level_stop_ids)
-
-    visible_canvas_stops =
-      visible_canvas_stops(all_child_stops, active_level_stop_ids, connected_stop_ids)
-
-    cross_level_stop_ids =
-      Gtfs.list_cross_level_stop_ids(organization_id, gtfs_version_id, station.id)
+    cross_level_badges_by_stop = cross_level_badges_by_stop(level_pathways, active_level_stop_ids)
+    visible_canvas_stops = Enum.filter(all_child_stops, & &1.on_active_level)
+    same_level_pathways = Enum.reject(level_pathways, & &1.is_cross_level)
 
     socket
     |> stream(:child_stops, visible_canvas_stops, reset: true)
-    |> stream(:pathways, level_pathways, reset: true)
+    |> stream(:pathways, same_level_pathways, reset: true)
     |> assign(:child_stops_list, child_stops_on_level)
     |> assign(:unassigned_child_stops, unassigned_child_stops)
     |> assign(:pathways_list, level_pathways)
-    |> assign(:wheelchair_minority, wheelchair_minority)
     |> assign(:active_stop_level, stop_level)
-    |> assign(:cross_level_stop_ids, cross_level_stop_ids)
+    |> assign(:cross_level_badges_by_stop, cross_level_badges_by_stop)
     |> assign(:walkability_test_stop_ids, walkability_test_stop_ids)
     |> assign(:walkability_tests_list, walkability_tests_list)
   end
@@ -188,45 +181,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> MapSet.new()
   end
 
-  defp connected_stop_ids(level_pathways, active_level_stop_ids) do
+  defp cross_level_badges_by_stop(level_pathways, active_level_stop_ids) do
     level_pathways
-    |> Enum.reduce(MapSet.new(), fn pathway, connected_ids ->
-      from_stop_id = pathway.from_stop.id
-      to_stop_id = pathway.to_stop.id
+    |> Enum.reduce(%{}, fn pathway, badges_by_stop ->
+      stop_id =
+        cond do
+          pathway.from_stop.level_id in [nil, ""] or pathway.to_stop.level_id in [nil, ""] ->
+            nil
 
-      if MapSet.member?(active_level_stop_ids, from_stop_id) or
-           MapSet.member?(active_level_stop_ids, to_stop_id) do
-        connected_ids
-        |> MapSet.put(from_stop_id)
-        |> MapSet.put(to_stop_id)
+          pathway.from_stop.level_id == pathway.to_stop.level_id ->
+            nil
+
+          MapSet.member?(active_level_stop_ids, pathway.from_stop.id) ->
+            pathway.from_stop.id
+
+          MapSet.member?(active_level_stop_ids, pathway.to_stop.id) ->
+            pathway.to_stop.id
+
+          true ->
+            nil
+        end
+
+      if stop_id do
+        badge = %{pathway_id: pathway.id, pathway_mode: pathway.pathway_mode}
+        Map.update(badges_by_stop, stop_id, [badge], &[badge | &1])
       else
-        connected_ids
+        badges_by_stop
       end
     end)
-  end
-
-  defp visible_canvas_stops(all_child_stops, active_level_stop_ids, connected_stop_ids) do
-    Enum.filter(all_child_stops, fn stop ->
-      MapSet.member?(active_level_stop_ids, stop.id) or
-        MapSet.member?(connected_stop_ids, stop.id)
+    |> Map.new(fn {stop_id, badges} ->
+      {stop_id, Enum.sort_by(badges, & &1.pathway_id, :asc)}
     end)
-  end
-
-  defp compute_wheelchair_minority(child_stops) do
-    {accessible_count, inaccessible_count} =
-      Enum.reduce(child_stops, {0, 0}, fn stop, {accessible, inaccessible} ->
-        case stop.wheelchair_boarding do
-          1 -> {accessible + 1, inaccessible}
-          2 -> {accessible, inaccessible + 1}
-          _ -> {accessible, inaccessible}
-        end
-      end)
-
-    cond do
-      accessible_count < inaccessible_count -> 1
-      inaccessible_count < accessible_count -> 2
-      true -> nil
-    end
   end
 
   @impl true
@@ -272,8 +257,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               selected_stop_id={@selected_stop_id}
               mode={@mode}
               uploads={@uploads}
-              cross_level_stop_ids={@cross_level_stop_ids}
-              wheelchair_minority={@wheelchair_minority}
+              cross_level_badges_by_stop={@cross_level_badges_by_stop}
               diagram_error={@diagram_error}
               organization_id={@current_organization.id}
             />
@@ -323,6 +307,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         />
 
         <.lists_section
+          active_level={@active_level}
           child_stops_list={@child_stops_list}
           unassigned_child_stops={@unassigned_child_stops}
           pathways_list={@pathways_list}
@@ -747,13 +732,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     pathway = Gtfs.get_pathway!(pathway_id)
 
     case Gtfs.delete_pathway(pathway) do
-      {:ok, deleted_pathway} ->
-        updated_list = Enum.reject(socket.assigns.pathways_list, &(&1.id == deleted_pathway.id))
-
+      {:ok, _deleted_pathway} ->
         {:noreply,
          socket
-         |> stream_delete(:pathways, deleted_pathway)
-         |> assign(:pathways_list, updated_list)
+         |> refresh_lists()
          |> assign(:pathway_error, nil)
          |> assign(:show_pathway_drawer, false)
          |> assign(:editing_pathway, nil)
@@ -1098,32 +1080,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
       true ->
         case Gtfs.update_pathway(pathway, attrs) do
-          {:ok, updated_pathway} ->
-            from_stop =
-              Gtfs.get_stop_by_stop_id(
-                organization_id,
-                gtfs_version_id,
-                updated_pathway.from_stop_id
-              )
-
-            to_stop =
-              Gtfs.get_stop_by_stop_id(
-                organization_id,
-                gtfs_version_id,
-                updated_pathway.to_stop_id
-              )
-
-            updated_pathway = %{updated_pathway | from_stop: from_stop, to_stop: to_stop}
-
-            updated_list =
-              Enum.map(socket.assigns.pathways_list, fn p ->
-                if p.id == updated_pathway.id, do: updated_pathway, else: p
-              end)
-
+          {:ok, _updated_pathway} ->
             {:noreply,
              socket
-             |> stream_insert(:pathways, updated_pathway)
-             |> assign(:pathways_list, updated_list)
+             |> refresh_lists()
              |> assign(:show_pathway_drawer, false)
              |> assign(:editing_pathway, nil)
              |> assign(:pathway_form, to_form(%{}))

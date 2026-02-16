@@ -14,8 +14,11 @@ const OVERLAY_BASE = {
   rectRx: 0.2,
   fontSize: 1.1,
   textStrokeWidth: 0.24,
-  badgeFontSize: 0.65,
-  badgeStrokeWidth: 0.16,
+  crossLevelStairsSize: 0.9,
+  crossLevelStairsStepUnit: 0.3,
+  crossLevelElevatorHalfHeight: 0.45,
+  crossLevelElevatorHalfWidth: 0.35,
+  crossLevelElevatorGap: 0.05,
   pathwayStroke: 0.35,
   pathwayHitStroke: 2,
   pathwayTickStroke: 0.3,
@@ -28,6 +31,7 @@ const OVERLAY_BASE = {
   pathwayElevatorBoxHeight: 2,
   pathwayElevatorBoxStroke: 0.4,
   pathwayElevatorTextSize: 1.2,
+  pathwayVisualThinFactor: 1.4,
   pendingOffsetY: 1,
   pendingOffsetX: 0.75,
   pendingOffsetBottomY: 0.5,
@@ -35,6 +39,17 @@ const OVERLAY_BASE = {
 };
 
 const DiagramCanvasHook = {
+  pathwayVisualScale(scale) {
+    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    const zoomAdjusted =
+      safeScale < 1
+        ? 1 - (1 - safeScale) * 0.3
+        : safeScale;
+
+    // Keep pathway visuals slimmer at baseline and while zoomed out.
+    return zoomAdjusted * OVERLAY_BASE.pathwayVisualThinFactor;
+  },
+
   mounted() {
     const svg = this.el;
     this.baseW = 100;
@@ -219,6 +234,7 @@ const DiagramCanvasHook = {
     }
 
     const scale = this.scale || 1;
+    const pathwayScale = this.pathwayVisualScale(scale);
 
     overlay.querySelectorAll("[data-stop-hit-target]").forEach((hitTarget) => {
       const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
@@ -315,18 +331,44 @@ const DiagramCanvasHook = {
       }
     });
 
-    overlay.querySelectorAll("[data-stop-badge]").forEach((badge) => {
-      const cx = parseFloat(badge.getAttribute("data-center-x"));
-      const cy = parseFloat(badge.getAttribute("data-center-y"));
+    overlay.querySelectorAll("[data-cross-level-badge-stairs]").forEach((stairsPath) => {
+      const cx = parseFloat(stairsPath.getAttribute("data-center-x"));
+      const cy = parseFloat(stairsPath.getAttribute("data-center-y"));
+      const offsetX = parseFloat(stairsPath.getAttribute("data-badge-offset-x"));
 
-      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX)) {
         return;
       }
 
-      badge.setAttribute("x", `${cx + 0.5 / scale}`);
-      badge.setAttribute("y", `${cy - 0.5 / scale}`);
-      badge.setAttribute("font-size", `${OVERLAY_BASE.badgeFontSize / scale}`);
-      badge.setAttribute("stroke-width", `${OVERLAY_BASE.badgeStrokeWidth / scale}`);
+      const s = OVERLAY_BASE.crossLevelStairsStepUnit / scale;
+      const size = OVERLAY_BASE.crossLevelStairsSize / scale;
+      const x0 = cx + offsetX / scale - size / 2;
+      const y0 = cy - size / 2;
+
+      stairsPath.setAttribute(
+        "d",
+        `M ${x0} ${y0 + size} L ${x0} ${y0 + size - s} L ${x0 + s} ${y0 + size - s} L ${x0 + s} ${y0 + s} L ${x0 + size - s} ${y0 + s} L ${x0 + size - s} ${y0} L ${x0 + size} ${y0} L ${x0 + size} ${y0 + size} Z`
+      );
+    });
+
+    overlay.querySelectorAll("[data-cross-level-badge-elevator]").forEach((elevPath) => {
+      const cx = parseFloat(elevPath.getAttribute("data-center-x"));
+      const cy = parseFloat(elevPath.getAttribute("data-center-y"));
+      const offsetX = parseFloat(elevPath.getAttribute("data-badge-offset-x"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX)) {
+        return;
+      }
+
+      const iconCx = cx + offsetX / scale;
+      const halfH = OVERLAY_BASE.crossLevelElevatorHalfHeight / scale;
+      const halfW = OVERLAY_BASE.crossLevelElevatorHalfWidth / scale;
+      const gap = OVERLAY_BASE.crossLevelElevatorGap / scale;
+
+      elevPath.setAttribute(
+        "d",
+        `M ${iconCx} ${cy - halfH} L ${iconCx + halfW} ${cy - gap} L ${iconCx - halfW} ${cy - gap} Z M ${iconCx} ${cy + halfH} L ${iconCx + halfW} ${cy + gap} L ${iconCx - halfW} ${cy + gap} Z`
+      );
     });
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-hit]").forEach((hitTarget) => {
@@ -352,7 +394,7 @@ const DiagramCanvasHook = {
         return;
       }
 
-      element.setAttribute("stroke-width", `${baseStroke / scale}`);
+      element.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-base-dash]").forEach((element) => {
@@ -366,7 +408,7 @@ const DiagramCanvasHook = {
         .split(",")
         .map((part) => parseFloat(part.trim()))
         .filter((value) => Number.isFinite(value))
-        .map((value) => value / scale);
+        .map((value) => value / pathwayScale);
 
       if (scaled.length === 0) {
         return;
@@ -377,8 +419,8 @@ const DiagramCanvasHook = {
 
     const pathwayMarker = overlay.querySelector("#pathway-arrow");
     if (pathwayMarker) {
-      pathwayMarker.setAttribute("markerWidth", `${OVERLAY_BASE.pathwayMarkerSize / scale}`);
-      pathwayMarker.setAttribute("markerHeight", `${OVERLAY_BASE.pathwayMarkerSize / scale}`);
+      pathwayMarker.setAttribute("markerWidth", `${OVERLAY_BASE.pathwayMarkerSize / pathwayScale}`);
+      pathwayMarker.setAttribute("markerHeight", `${OVERLAY_BASE.pathwayMarkerSize / pathwayScale}`);
     }
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-elevator-box]").forEach((box) => {
@@ -410,7 +452,7 @@ const DiagramCanvasHook = {
       box.setAttribute("y", `${cy - height / 2}`);
       box.setAttribute("width", `${width}`);
       box.setAttribute("height", `${height}`);
-      box.setAttribute("stroke-width", `${baseStroke / scale}`);
+      box.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-elevator-text]").forEach((label) => {
@@ -455,7 +497,7 @@ const DiagramCanvasHook = {
       label.setAttribute("x", `${midpointX + offsetX / scale}`);
       label.setAttribute("y", `${midpointY + offsetY / scale}`);
       label.setAttribute("font-size", `${baseFontSize / scale}`);
-      label.setAttribute("stroke-width", `${baseStroke / scale}`);
+      label.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
     });
 
     const pending = overlay.querySelector("polygon[data-cx][data-cy]");

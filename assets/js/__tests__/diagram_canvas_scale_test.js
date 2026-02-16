@@ -31,12 +31,20 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-center-y="20"
               data-label-offset-x="1"
             ></text>
-            <text
-              id="stop-badge"
-              data-stop-badge="true"
+            <path
+              id="cross-level-stairs"
+              data-cross-level-badge-stairs="true"
               data-center-x="10"
               data-center-y="20"
-            ></text>
+              data-badge-offset-x="1.1"
+            ></path>
+            <path
+              id="cross-level-elevator"
+              data-cross-level-badge-elevator="true"
+              data-center-x="10"
+              data-center-y="20"
+              data-badge-offset-x="1.1"
+            ></path>
           </g>
           <g id="pathways-svg">
             <line id="path-hit" data-pathway-hit="true" data-base-stroke="2"></line>
@@ -101,29 +109,69 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(document.querySelector("#stop-marker").getAttribute("r")).toBe("0.3");
     expect(document.querySelector("#stop-label").getAttribute("x")).toBe("10.5");
     expect(document.querySelector("#stop-label").getAttribute("font-size")).toBe("0.55");
-    expect(document.querySelector("#stop-badge").getAttribute("x")).toBe("10.25");
+    expect(document.querySelector("#cross-level-stairs").getAttribute("d")).toBe(
+      "M 10.325000000000001 20.224999999999998 L 10.325000000000001 20.075 L 10.475000000000001 20.075 L 10.475000000000001 19.924999999999997 L 10.625 19.924999999999997 L 10.625 19.775 L 10.775 19.775 L 10.775 20.224999999999998 Z"
+    );
+    expect(document.querySelector("#cross-level-elevator").getAttribute("d")).toBe(
+      "M 10.55 19.775 L 10.725000000000001 19.975 L 10.375 19.975 Z M 10.55 20.225 L 10.725000000000001 20.025 L 10.375 20.025 Z"
+    );
 
     expect(document.querySelector("#path-hit").getAttribute("stroke-width")).toBe("1");
-    expect(document.querySelector("#path-line").getAttribute("stroke-width")).toBe("0.25");
-    expect(document.querySelector("#path-dashed").getAttribute("stroke-width")).toBe("0.25");
-    expect(document.querySelector("#path-dashed").getAttribute("stroke-dasharray")).toBe("1 0.5");
+    expect(document.querySelector("#path-line").getAttribute("stroke-width")).toBe("0.17857142857142858");
+    expect(document.querySelector("#path-dashed").getAttribute("stroke-width")).toBe("0.17857142857142858");
+    expect(document.querySelector("#path-dashed").getAttribute("stroke-dasharray")).toBe(
+      "0.7142857142857143 0.35714285714285715"
+    );
 
-    expect(document.querySelector("#pathway-arrow").getAttribute("markerWidth")).toBe("0.75");
-    expect(document.querySelector("#pathway-arrow").getAttribute("markerHeight")).toBe("0.75");
+    expect(document.querySelector("#pathway-arrow").getAttribute("markerWidth")).toBe(
+      "0.5357142857142857"
+    );
+    expect(document.querySelector("#pathway-arrow").getAttribute("markerHeight")).toBe(
+      "0.5357142857142857"
+    );
 
     expect(document.querySelector("#elevator-box").getAttribute("x")).toBe("29.5");
     expect(document.querySelector("#elevator-box").getAttribute("y")).toBe("39.5");
     expect(document.querySelector("#elevator-box").getAttribute("width")).toBe("1");
     expect(document.querySelector("#elevator-box").getAttribute("height")).toBe("1");
-    expect(document.querySelector("#elevator-box").getAttribute("stroke-width")).toBe("0.2");
+    expect(document.querySelector("#elevator-box").getAttribute("stroke-width")).toBe(
+      "0.14285714285714288"
+    );
 
     expect(document.querySelector("#elevator-text").getAttribute("font-size")).toBe("0.6");
     expect(document.querySelector("#path-label").getAttribute("x")).toBe("50.7");
     expect(document.querySelector("#path-label").getAttribute("y")).toBe("59.3");
     expect(document.querySelector("#path-label").getAttribute("font-size")).toBe("0.45");
-    expect(document.querySelector("#path-label").getAttribute("stroke-width")).toBe("0.1");
+    expect(document.querySelector("#path-label").getAttribute("stroke-width")).toBe(
+      "0.07142857142857144"
+    );
 
     expect(document.querySelector("#pending").getAttribute("stroke-width")).toBe("0.075");
     expect(document.querySelector("#pending").getAttribute("points")).toBe("10,19.5 9.625,20.25 10.375,20.25");
+  });
+
+  it("keeps pathway visuals less chunky when zoomed out while preserving hit targets", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas")
+    };
+
+    hook.scale = 0.5;
+    hook.scaleOverlayElements();
+
+    const hitStroke = parseFloat(document.querySelector("#path-hit").getAttribute("stroke-width"));
+    const lineStroke = parseFloat(document.querySelector("#path-line").getAttribute("stroke-width"));
+    const markerWidth = parseFloat(document.querySelector("#pathway-arrow").getAttribute("markerWidth"));
+    const dashed = document
+      .querySelector("#path-dashed")
+      .getAttribute("stroke-dasharray")
+      .split(" ")
+      .map((value) => parseFloat(value));
+
+    expect(hitStroke).toBeCloseTo(4, 5);
+    expect(lineStroke).toBeCloseTo(0.4201680672, 5);
+    expect(markerWidth).toBeCloseTo(1.2605042017, 5);
+    expect(dashed[0]).toBeCloseTo(1.6806722689, 5);
+    expect(dashed[1]).toBeCloseTo(0.8403361344, 5);
   });
 });

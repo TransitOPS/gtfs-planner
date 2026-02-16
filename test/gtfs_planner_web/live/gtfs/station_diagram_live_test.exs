@@ -342,7 +342,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       view
-      |> element("#child_stops-#{child_stop.id}")
+      |> element("#child_stops-#{child_stop.id} [data-stop-hit-target]")
       |> render_click()
 
       assert has_element?(view, "#child-stop-form")
@@ -378,7 +378,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "add"})
 
       view
-      |> element("#child_stops-#{child_stop.id}")
+      |> element("#child_stops-#{child_stop.id} [data-stop-hit-target]")
       |> render_click()
 
       refute has_element?(view, "#child-stop-form")
@@ -422,7 +422,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       view
-      |> element("#child_stops-#{child_stop.id}")
+      |> element("#child_stops-#{child_stop.id} [data-stop-hit-target]")
       |> render_click()
 
       assert has_element?(view, "#diagram-action-strip", "From: Child Connect After Add")
@@ -687,7 +687,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Click first stop on level 1
       view
-      |> element("#child_stops-#{child_stop1.id}")
+      |> element("#child_stops-#{child_stop1.id} [data-stop-hit-target]")
       |> render_click()
 
       # Switch to level 2
@@ -697,7 +697,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Click second stop on level 2
       view
-      |> element("#child_stops-#{child_stop2.id}")
+      |> element("#child_stops-#{child_stop2.id} [data-stop-hit-target]")
       |> render_click()
 
       # Assert pathway was created
@@ -888,7 +888,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child_stops-#{off_level_disconnected_stop.id}")
     end
 
-    test "off-level connected child stop is visible when connected to an active-level stop", %{
+    test "off-level connected child stop is hidden when connected to an active-level stop", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -906,10 +906,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           on_error: :warn
         )
 
-      assert has_element?(view, "#child_stops-#{off_level_connected_stop.id}")
+      refute has_element?(view, "#child_stops-#{off_level_connected_stop.id}")
     end
 
-    test "pathway direction does not affect visibility when active-level stop is pathway to_stop",
+    test "pathway direction does not affect off-level stop hiding when active-level stop is pathway to_stop",
          %{
            conn: conn,
            user: user,
@@ -928,7 +928,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           on_error: :warn
         )
 
-      assert has_element?(view, "#child_stops-#{off_level_connected_reverse_stop.id}")
+      refute has_element?(view, "#child_stops-#{off_level_connected_reverse_stop.id}")
     end
 
     test "foreign-station child stops never render in another station diagram", %{
@@ -1755,165 +1755,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#child_stops-#{platform_stop.id} [data-stop-label]", "3A")
       refute has_element?(view, "#child_stops-#{platform_without_code.id} [data-stop-label]")
-      assert has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label] tspan", "↙")
-      assert has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label] tspan", "↗")
+      refute has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label]")
       refute has_element?(view, "#child_stops-#{node_stop.id} [data-stop-label]")
       refute has_element?(view, "#child_stops-#{boarding_without_code.id} [data-stop-label]")
-    end
-
-    test "does not render wheelchair badge when all child stops share same wheelchair_boarding",
-         %{
-           conn: conn,
-           user: user,
-           organization: organization,
-           gtfs_version: gtfs_version,
-           station: station,
-           level: level
-         } do
-      _stop_1 =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "WB_SAME_1",
-          stop_name: "WB Same 1",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          wheelchair_boarding: 1,
-          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
-        })
-
-      _stop_2 =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "WB_SAME_2",
-          stop_name: "WB Same 2",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          wheelchair_boarding: 1,
-          diagram_coordinate: %{"x" => 20.0, "y" => 20.0}
-        })
-
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      # With all child stops sharing the same wheelchair_boarding, no wheelchair badge is shown.
-      refute has_element?(view, "[data-stop-badge]")
-    end
-
-    test "does not render wheelchair badge when counts of wheelchair_boarding 1 and 2 are equal",
-         %{
-           conn: conn,
-           user: user,
-           organization: organization,
-           gtfs_version: gtfs_version,
-           station: station,
-           level: level
-         } do
-      _stop_wb1_a =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "WB_EQ_1A",
-          stop_name: "WB Eq 1A",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          wheelchair_boarding: 1,
-          diagram_coordinate: %{"x" => 11.0, "y" => 11.0}
-        })
-
-      _stop_wb1_b =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "WB_EQ_1B",
-          stop_name: "WB Eq 1B",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          wheelchair_boarding: 1,
-          diagram_coordinate: %{"x" => 12.0, "y" => 12.0}
-        })
-
-      _stop_wb2_a =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "WB_EQ_2A",
-          stop_name: "WB Eq 2A",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          wheelchair_boarding: 2,
-          diagram_coordinate: %{"x" => 13.0, "y" => 13.0}
-        })
-
-      _stop_wb2_b =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "WB_EQ_2B",
-          stop_name: "WB Eq 2B",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          wheelchair_boarding: 2,
-          diagram_coordinate: %{"x" => 14.0, "y" => 14.0}
-        })
-
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      # With equal counts of wheelchair_boarding 1 and 2, there is no minority and no badge is shown.
-      refute has_element?(view, "[data-stop-badge]")
-    end
-
-    test "renders wheelchair badge only on stops with minority wheelchair_boarding value", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      level: level
-    } do
-      # One stop with wheelchair_boarding: 1 (minority) and two with wheelchair_boarding: 2 (majority)
-      minority_stop =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "WB_MINORITY_1",
-          stop_name: "WB Minority 1",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          wheelchair_boarding: 1,
-          diagram_coordinate: %{"x" => 21.0, "y" => 21.0}
-        })
-
-      majority_stop_a =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "WB_MAJOR_2A",
-          stop_name: "WB Major 2A",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          wheelchair_boarding: 2,
-          diagram_coordinate: %{"x" => 22.0, "y" => 22.0}
-        })
-
-      majority_stop_b =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "WB_MAJOR_2B",
-          stop_name: "WB Major 2B",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          wheelchair_boarding: 2,
-          diagram_coordinate: %{"x" => 23.0, "y" => 23.0}
-        })
-
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      # Badge appears only on the stop with the minority wheelchair_boarding value.
-      assert has_element?(view, "#child_stops-#{minority_stop.id} [data-stop-badge]")
-      refute has_element?(view, "#child_stops-#{majority_stop_a.id} [data-stop-badge]")
-      refute has_element?(view, "#child_stops-#{majority_stop_b.id} [data-stop-badge]")
     end
   end
 
@@ -2168,14 +2012,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
              )
     end
 
-    test "uses 0.5 opacity for cross-level pathways and for elevators", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      level: level
-    } do
+    test "renders elevator opacity, cross-level badges, and keeps cross-level pathways out of SVG",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
       level_2 =
         level_fixture(organization.id, gtfs_version.id, %{
           level_id: "PATHWAY_L2",
@@ -2246,6 +2091,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           }
         )
 
+      cross_level_pathway_mode_2 =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop.stop_id,
+          level_2_stop.stop_id,
+          %{
+            pathway_mode: 2,
+            is_bidirectional: true
+          }
+        )
+
       normal_pathway =
         pathway_fixture(
           organization.id,
@@ -2264,8 +2121,446 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       assert has_element?(view, "#pathways-#{elevator_pathway.id}[opacity='0.5']")
-      assert has_element?(view, "#pathways-#{cross_level_pathway.id}[opacity='0.5']")
       assert has_element?(view, "#pathways-#{normal_pathway.id}[opacity='1']")
+
+      refute has_element?(view, "#pathways-#{cross_level_pathway.id}")
+      refute has_element?(view, "#pathways-#{cross_level_pathway_mode_2.id}")
+
+      assert has_element?(view, "#pathway-row-#{cross_level_pathway.id}")
+      assert has_element?(view, "#pathway-row-#{cross_level_pathway_mode_2.id}")
+      assert has_element?(view, "#pathway-row-#{cross_level_pathway.id}", level_2.level_id)
+      assert has_element?(view, "#pathway-row-#{cross_level_pathway_mode_2.id}", level_2.level_id)
+      assert has_element?(view, "#pathway-row-#{normal_pathway.id}", "—")
+
+      assert has_element?(
+               view,
+               "#child_stops-#{level_1_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}'] [data-cross-level-badge-elevator]"
+             )
+
+      assert has_element?(
+               view,
+               "#child_stops-#{level_1_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway_mode_2.id}'] [data-cross-level-badge-stairs]"
+             )
+
+      refute has_element?(
+               view,
+               "#child_stops-#{level_1_stop_b.id} [data-cross-level-pathway-badge]"
+             )
+
+      assert has_element?(view, "#diagram-legend-panel", "Cross-level Badge")
+    end
+
+    test "clicking a cross-level badge opens pathway drawer for that pathway only", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PATHWAY_L2_CLICK",
+          level_name: "Pathway Level 2 Click",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "pathway-level-2-click.png"
+        })
+
+      level_1_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CROSS_CLICK_L1",
+          stop_name: "Cross Click L1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 18.0, "y" => 28.0}
+        })
+
+      level_2_stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CROSS_CLICK_L2_A",
+          stop_name: "Cross Click L2 A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 36.0, "y" => 42.0}
+        })
+
+      level_2_stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CROSS_CLICK_L2_B",
+          stop_name: "Cross Click L2 B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 42.0, "y" => 46.0}
+        })
+
+      _other_cross_level_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop.stop_id,
+          level_2_stop_a.stop_id,
+          %{
+            pathway_mode: 1,
+            is_bidirectional: true
+          }
+        )
+
+      clicked_cross_level_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop.stop_id,
+          level_2_stop_b.stop_id,
+          %{
+            pathway_mode: 2,
+            is_bidirectional: false
+          }
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element(
+        "#child_stops-#{level_1_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{clicked_cross_level_pathway.id}']"
+      )
+      |> render_click()
+
+      assert has_element?(view, "#pathway-form")
+
+      assert has_element?(
+               view,
+               "#pathway-form input[name='pathway_id'][value='#{clicked_cross_level_pathway.pathway_id}']"
+             )
+
+      refute has_element?(view, "#child-stop-form")
+    end
+
+    test "renders one cross-level badge per cross-level pathway even for duplicate modes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PATHWAY_L2_DUP",
+          level_name: "Pathway Level 2 Dup",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "pathway-level-2-dup.png"
+        })
+
+      level_1_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CROSS_DUP_L1",
+          stop_name: "Cross Dup L1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 14.0, "y" => 22.0}
+        })
+
+      level_2_stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CROSS_DUP_L2_A",
+          stop_name: "Cross Dup L2 A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 34.0, "y" => 36.0}
+        })
+
+      level_2_stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CROSS_DUP_L2_B",
+          stop_name: "Cross Dup L2 B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 38.0, "y" => 40.0}
+        })
+
+      cross_level_pathway_1 =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop.stop_id,
+          level_2_stop_a.stop_id,
+          %{pathway_mode: 1, is_bidirectional: true}
+        )
+
+      cross_level_pathway_2 =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop.stop_id,
+          level_2_stop_b.stop_id,
+          %{pathway_mode: 1, is_bidirectional: true}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(
+               view,
+               "#child_stops-#{level_1_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway_1.id}']"
+             )
+
+      assert has_element?(
+               view,
+               "#child_stops-#{level_1_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway_2.id}']"
+             )
+
+      assert has_element?(
+               view,
+               "#cross-level-badge-#{cross_level_pathway_1.id} [data-cross-level-badge-elevator]"
+             )
+
+      assert has_element?(
+               view,
+               "#cross-level-badge-#{cross_level_pathway_2.id} [data-cross-level-badge-elevator]"
+             )
+    end
+
+    test "does not render a secondary badge for same-level pathways when a stop also has a cross-level pathway",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PATHWAY_L2_MIXED",
+          level_name: "Pathway Level 2 Mixed",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "pathway-level-2-mixed.png"
+        })
+
+      level_1_stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CROSS_MIX_L1_A",
+          stop_name: "Cross Mix L1 A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 16.0, "y" => 26.0}
+        })
+
+      level_1_stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CROSS_MIX_L1_B",
+          stop_name: "Cross Mix L1 B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 24.0, "y" => 26.0}
+        })
+
+      level_2_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CROSS_MIX_L2",
+          stop_name: "Cross Mix L2",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 34.0, "y" => 38.0}
+        })
+
+      same_level_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop_a.stop_id,
+          level_1_stop_b.stop_id,
+          %{pathway_mode: 2, is_bidirectional: true}
+        )
+
+      cross_level_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop_a.stop_id,
+          level_2_stop.stop_id,
+          %{pathway_mode: 2, is_bidirectional: true}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(
+               view,
+               "#child_stops-#{level_1_stop_a.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}']"
+             )
+
+      refute has_element?(
+               view,
+               "#child_stops-#{level_1_stop_a.id} [data-cross-level-pathway-badge][data-pathway-id='#{same_level_pathway.id}']"
+             )
+    end
+
+    test "deleting a cross-level pathway immediately removes its secondary badge", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PATHWAY_L2_DELETE",
+          level_name: "Pathway Level 2 Delete",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "pathway-level-2-delete.png"
+        })
+
+      level_1_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CROSS_DELETE_L1",
+          stop_name: "Cross Delete L1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 19.0, "y" => 29.0}
+        })
+
+      level_2_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CROSS_DELETE_L2",
+          stop_name: "Cross Delete L2",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 37.0, "y" => 45.0}
+        })
+
+      cross_level_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop.stop_id,
+          level_2_stop.stop_id,
+          %{pathway_mode: 1, is_bidirectional: true}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(
+               view,
+               "#child_stops-#{level_1_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}']"
+             )
+
+      render_hook(view, "delete_pathway", %{"id" => cross_level_pathway.id})
+
+      refute has_element?(view, "#pathway-row-#{cross_level_pathway.id}")
+
+      refute has_element?(
+               view,
+               "#child_stops-#{level_1_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}']"
+             )
+    end
+
+    test "pathway to an unassigned-level stop does not render a secondary badge", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      level_1_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "UNASSIGNED_BADGE_L1",
+          stop_name: "Unassigned Badge L1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 21.0, "y" => 31.0}
+        })
+
+      unassigned_stop =
+        Repo.insert!(%GtfsPlanner.Gtfs.Stop{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: "UNASSIGNED_BADGE_STOP",
+          stop_name: "Unassigned Badge Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: nil,
+          stop_lat: Decimal.new("40.7128"),
+          stop_lon: Decimal.new("-74.0060"),
+          wheelchair_boarding: 0
+        })
+
+      pathway_to_unassigned =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop.stop_id,
+          unassigned_stop.stop_id,
+          %{pathway_mode: 1, is_bidirectional: true}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#pathway-row-#{pathway_to_unassigned.id}")
+
+      refute has_element?(
+               view,
+               "#child_stops-#{level_1_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{pathway_to_unassigned.id}']"
+             )
     end
 
     test "add mode keeps pathways non-interactive", %{
