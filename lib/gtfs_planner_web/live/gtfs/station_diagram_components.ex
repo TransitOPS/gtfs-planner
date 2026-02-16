@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Pathway
+  alias LiveSelect.Component
   alias Phoenix.LiveView.JS
 
   # ============================================================================
@@ -2084,6 +2085,261 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   # ============================================================================
+  # Walkability Test Drawer
+  # ============================================================================
+
+  attr :open, :boolean, required: true
+  attr :walkability_stop, :any, default: nil
+  attr :walkability_form, :any, required: true
+  attr :walkability_selected_address, :string, default: nil
+  attr :walkability_selected_lat, :any, default: nil
+  attr :walkability_selected_lon, :any, default: nil
+  attr :walkability_error, :string, default: nil
+  attr :walkability_field_errors, :map, default: %{}
+  attr :walkability_mode, :atom, default: :create
+  attr :editing_walkability_test, :any, default: nil
+
+  def walkability_test_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="walkability-test-drawer"
+      open={@open}
+      on_close="close_walkability_drawer"
+      title={
+        if @walkability_mode == :edit,
+          do: "Edit Reachability Test Case",
+          else: "Add a Reachability Test Case"
+      }
+      class="max-w-3xl"
+    >
+      <.walkability_test_form
+        :if={@open && @walkability_stop}
+        walkability_stop={@walkability_stop}
+        walkability_form={@walkability_form}
+        walkability_selected_address={@walkability_selected_address}
+        walkability_selected_lat={@walkability_selected_lat}
+        walkability_selected_lon={@walkability_selected_lon}
+        walkability_error={@walkability_error}
+        walkability_field_errors={@walkability_field_errors}
+        walkability_mode={@walkability_mode}
+        editing_walkability_test={@editing_walkability_test}
+      />
+    </.drawer>
+    """
+  end
+
+  attr :walkability_stop, :any, default: nil
+  attr :walkability_form, :any, required: true
+  attr :walkability_selected_address, :string, default: nil
+  attr :walkability_selected_lat, :any, default: nil
+  attr :walkability_selected_lon, :any, default: nil
+  attr :walkability_error, :string, default: nil
+  attr :walkability_field_errors, :map, default: %{}
+  attr :walkability_mode, :atom, default: :create
+  attr :editing_walkability_test, :any, default: nil
+
+  defp walkability_test_form(assigns) do
+    ~H"""
+    <div class="space-y-6">
+      <div
+        :if={@walkability_error}
+        id="walkability-error"
+        phx-hook="ScrollIntoView"
+        class="px-4 py-3 bg-error/10 border border-error/20 rounded-lg"
+      >
+        <p class="text-sm font-medium text-base-content">{@walkability_error}</p>
+      </div>
+
+      <div class="p-4 bg-base-200 rounded-lg">
+        <h4 class="font-bold text-sm uppercase tracking-wide text-base-content/50 mb-4">
+          Stop Information
+        </h4>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div>
+            <span class="block text-xs font-semibold text-base-content/40">Stop ID</span>
+            <span class="font-medium">{@walkability_stop.stop_id}</span>
+          </div>
+          <div>
+            <span class="block text-xs font-semibold text-base-content/40">Name</span>
+            <span class="font-medium">{@walkability_stop.stop_name || "—"}</span>
+          </div>
+          <div>
+            <span class="block text-xs font-semibold text-base-content/40">Type</span>
+            <span class="font-medium">
+              {Stop.location_type_label(@walkability_stop.location_type)}
+            </span>
+          </div>
+          <div>
+            <span class="block text-xs font-semibold text-base-content/40">Accessible</span>
+            <span class="font-medium">
+              {Stop.wheelchair_boarding_label(@walkability_stop.wheelchair_boarding) || "—"}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h4 class="font-bold text-sm uppercase tracking-wide text-base-content/50 mb-2">
+          Start Address
+        </h4>
+        <p class="text-sm text-base-content/70 mb-4">
+          Search and select a nearby address for where the trip will begin.
+        </p>
+
+        <.form
+          for={@walkability_form}
+          id="walkability-test-form"
+          phx-change="walkability_form_change"
+          phx-submit="save_walkability_test"
+        >
+          <.live_component
+            module={Component}
+            id="walkability_address_autocomplete_component"
+            field={@walkability_form[:address_autocomplete]}
+            options={[]}
+            debounce={300}
+            placeholder="Type at least 3 characters..."
+            update_min_len={3}
+            dropdown_class="bg-base-300 border border-base-content/20 shadow-lg mt-1 text-base-content"
+            option_class="px-4 py-2.5 border-b border-base-content/10 last:border-b-0 text-base-content"
+            active_option_class="bg-primary text-primary-content"
+            available_option_class="hover:bg-base-content/10 cursor-pointer transition-colors"
+            text_input_class="input input-bordered w-full live-select-input"
+          >
+            <:option :let={option}>
+              <div class="flex flex-col">
+                <span class="font-medium">{option.label}</span>
+              </div>
+            </:option>
+          </.live_component>
+
+          <%= if @walkability_selected_lat && @walkability_selected_lon do %>
+            <div class="mt-3 border border-base-content/20 bg-base-200/50 px-3 py-2 rounded-md">
+              <p class="text-sm font-medium mb-2">{@walkability_selected_address}</p>
+              <div class="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span class="text-base-content/70">Lat</span>
+                  <span class="ml-2 font-mono">{@walkability_selected_lat}</span>
+                </div>
+                <div>
+                  <span class="text-base-content/70">Lon</span>
+                  <span class="ml-2 font-mono">{@walkability_selected_lon}</span>
+                </div>
+              </div>
+            </div>
+          <% end %>
+
+          <div class="mt-10 mb-3 uppercase text-base font-semibold text-base-content">
+            Description
+          </div>
+
+          <.input
+            field={@walkability_form[:description]}
+            type="textarea"
+            label="Description"
+            help="What does this test case verify?"
+            placeholder="e.g., Route from hotel entrance to platform 3"
+          />
+
+          <div class="mt-10 mb-3 uppercase text-base font-semibold text-base-content">
+            Expected outcome
+          </div>
+
+          <.input
+            field={@walkability_form[:expected_traversable]}
+            type="checkbox"
+            label="Route is expected to be traversable"
+          />
+          <.input
+            field={@walkability_form[:expected_wheelchair_accessible]}
+            type="checkbox"
+            label="Route is expected to be wheelchair accessible"
+          />
+
+          <div class="mt-10 mb-3 uppercase text-base font-semibold text-base-content">
+            Expected metrics
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <.input
+              field={@walkability_form[:expected_min_duration_seconds]}
+              type="number"
+              label="Min duration (s)"
+              min="0"
+              step="1"
+              help="Acceptable range for walking time."
+              errors={Map.get(@walkability_field_errors, :expected_min_duration_seconds, [])}
+            />
+            <.input
+              field={@walkability_form[:expected_max_duration_seconds]}
+              type="number"
+              label="Max duration (s)"
+              min="0"
+              step="1"
+              errors={Map.get(@walkability_field_errors, :expected_max_duration_seconds, [])}
+            />
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <.input
+              field={@walkability_form[:expected_min_distance_meters]}
+              type="number"
+              label="Min distance (m)"
+              min="0"
+              step="1"
+              help="Acceptable range for walking distance."
+              errors={Map.get(@walkability_field_errors, :expected_min_distance_meters, [])}
+            />
+            <.input
+              field={@walkability_form[:expected_max_distance_meters]}
+              type="number"
+              label="Max distance (m)"
+              min="0"
+              step="1"
+              errors={Map.get(@walkability_field_errors, :expected_max_distance_meters, [])}
+            />
+          </div>
+
+          <div class="mt-6 flex items-center gap-3">
+            <button type="button" class="btn btn-ghost" phx-click="close_walkability_drawer">
+              Cancel
+            </button>
+            <button
+              type="submit"
+              class="btn btn-primary btn-active"
+              disabled={is_nil(@walkability_selected_address)}
+            >
+              {if @walkability_mode == :edit, do: "Save Test Case", else: "Create a Test Case"}
+            </button>
+          </div>
+
+          <div
+            :if={@walkability_mode == :edit && @editing_walkability_test}
+            id="walkability-test-delete-section"
+            class="mt-8 border border-error/30 rounded-lg p-4 bg-error/5"
+          >
+            <h5 class="font-semibold text-sm text-error">Delete this test case</h5>
+            <p class="text-sm text-base-content/70 mt-1">
+              This removes the test case from this stop.
+            </p>
+            <button
+              type="button"
+              id="walkability-test-delete-in-form"
+              class="btn btn-outline btn-error mt-3"
+              phx-click="delete_walkability_test"
+              phx-value-id={@editing_walkability_test.id}
+              data-confirm="Delete this walkability test case?"
+            >
+              Delete Test Case
+            </button>
+          </div>
+        </.form>
+      </div>
+    </div>
+    """
+  end
+
+  # ============================================================================
   # Lists Section
   # ============================================================================
 
@@ -2091,11 +2347,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :unassigned_child_stops, :list, required: true
   attr :pathways_list, :list, required: true
   attr :pathway_error, :string
+  attr :walkability_test_stop_ids, :any, default: %{}
+  attr :walkability_tests_list, :list, default: []
 
   def lists_section(assigns) do
     ~H"""
     <div id="lists-section" class="mt-4 space-y-8">
-      <.child_stops_table child_stops_list={@child_stops_list} />
+      <.child_stops_table
+        child_stops_list={@child_stops_list}
+        walkability_test_stop_ids={@walkability_test_stop_ids}
+      />
+      <.walkability_tests_table walkability_tests_list={@walkability_tests_list} />
       <.unassigned_stops_table
         :if={@unassigned_child_stops != []}
         child_stops_list={@unassigned_child_stops}
@@ -2106,11 +2368,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   attr :child_stops_list, :list, required: true
+  attr :walkability_test_stop_ids, :any, default: %{}
 
   defp child_stops_table(assigns) do
     ~H"""
     <div>
-      <h3 class="text-sm font-semibold mb-2">Child Stops on Level</h3>
+      <h2 class="text-base font-semibold mb-2">Child Stops on Level</h2>
       <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <%= if @child_stops_list == [] do %>
           <p class="px-4 py-3 text-sm text-base-content/60">No child stops on this level.</p>
@@ -2121,7 +2384,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             row_id={&"child-stop-row-#{&1.id}"}
           >
             <:col :let={stop} label="Stop ID">
-              <span class="font-medium">{stop.stop_id}</span>
+              <button
+                type="button"
+                class="link link-primary font-medium"
+                phx-click="edit_child_stop"
+                phx-value-id={stop.id}
+              >
+                {stop.stop_id}
+              </button>
             </:col>
             <:col :let={stop} label="Name">{stop.stop_name || "—"}</:col>
             <:col :let={stop} label="Type">
@@ -2133,16 +2403,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <:col :let={stop} label="Accessible">
               {Stop.wheelchair_boarding_label(stop.wheelchair_boarding) || "—"}
             </:col>
-            <:action :let={stop}>
-              <button
-                type="button"
-                class="link link-primary text-sm"
-                phx-click="edit_child_stop"
-                phx-value-id={stop.id}
-              >
-                Edit
-              </button>
-            </:action>
+            <:col :let={stop} label="Reachability Tests">
+              <div class="space-y-1">
+                <%= if count = Map.get(@walkability_test_stop_ids, stop.stop_id) do %>
+                  <span class="text-sm">
+                    {count} {if count == 1, do: "test case", else: "test cases"}
+                  </span>
+                <% else %>
+                  <span class="text-base-content/30 text-sm">—</span>
+                <% end %>
+                <button
+                  type="button"
+                  class="link text-sm block"
+                  phx-click="open_walkability_drawer"
+                  phx-value-id={stop.id}
+                >
+                  Add a test case
+                </button>
+              </div>
+            </:col>
           </.table>
         <% end %>
       </div>
@@ -2155,9 +2434,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp unassigned_stops_table(assigns) do
     ~H"""
     <div>
-      <h3 class="text-sm font-semibold mb-2 text-base-content">
+      <h2 class="text-base font-semibold mb-2">
         Child Stops Not Assigned to a Level
-      </h3>
+      </h2>
       <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <.table
           id="unassigned-stops-table"
@@ -2165,7 +2444,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           row_id={&"unassigned-stop-row-#{&1.id}"}
         >
           <:col :let={stop} label="Stop ID">
-            <span class="font-medium">{stop.stop_id}</span>
+            <button
+              type="button"
+              class="link link-primary font-medium"
+              phx-click="edit_child_stop"
+              phx-value-id={stop.id}
+            >
+              {stop.stop_id}
+            </button>
           </:col>
           <:col :let={stop} label="Name">{stop.stop_name || "—"}</:col>
           <:col :let={stop} label="Type">
@@ -2177,17 +2463,65 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <:col :let={stop} label="Accessible">
             {Stop.wheelchair_boarding_label(stop.wheelchair_boarding) || "—"}
           </:col>
-          <:action :let={stop}>
-            <button
-              type="button"
-              class="link link-primary text-sm"
-              phx-click="edit_child_stop"
-              phx-value-id={stop.id}
-            >
-              Edit
-            </button>
-          </:action>
         </.table>
+      </div>
+    </div>
+    """
+  end
+
+  attr :walkability_tests_list, :list, default: []
+
+  defp walkability_tests_table(assigns) do
+    ~H"""
+    <div>
+      <h2 class="text-base font-semibold mb-2">Reachability Test Cases</h2>
+      <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
+        <%= if @walkability_tests_list == [] do %>
+          <p class="px-4 py-3 text-sm text-base-content/60">
+            No reachability test cases on this level.
+          </p>
+        <% else %>
+          <.table
+            id="walkability-tests-table"
+            rows={@walkability_tests_list}
+            row_id={&"walkability-test-row-#{&1.id}"}
+          >
+            <:col :let={test_case} label="Stop">
+              <button
+                type="button"
+                id={"walkability-test-stop-#{test_case.id}"}
+                class="link link-primary font-medium"
+                phx-click="edit_walkability_test"
+                phx-value-id={test_case.id}
+              >
+                {test_case.stop_id}
+              </button>
+            </:col>
+            <:col :let={test_case} label="Start Address">
+              <div class="max-w-80">
+                <p class="truncate" title={test_case.address}>{test_case.address}</p>
+              </div>
+            </:col>
+            <:col :let={test_case} label="Expected">
+              <div class="space-y-0.5">
+                <p class="text-sm">
+                  {if test_case.expected_traversable, do: "Traversable", else: "Not traversable"} / {if test_case.expected_wheelchair_accessible,
+                    do: "Wheelchair",
+                    else: "No wheelchair"}
+                </p>
+                <p
+                  :if={present_text?(test_case.description)}
+                  class="text-xs text-base-content/60 truncate"
+                >
+                  {test_case.description}
+                </p>
+              </div>
+            </:col>
+            <:col :let={test_case} label="Updated">
+              <span class="tabular-nums text-sm">{format_timestamp(test_case.updated_at)}</span>
+            </:col>
+          </.table>
+        <% end %>
       </div>
     </div>
     """
@@ -2200,7 +2534,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <div>
       <div class="flex items-center gap-2 mb-2">
-        <h3 class="text-sm font-semibold">Pathways on Level</h3>
+        <h2 class="text-base font-semibold">Pathways on Level</h2>
         <span :if={@pathway_error} class="text-error text-sm">{@pathway_error}</span>
       </div>
       <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
@@ -2212,7 +2546,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             rows={@pathways_list}
             row_id={&"pathway-row-#{&1.id}"}
           >
-            <:col :let={pathway} label="From">{pathway_stop_display(pathway.from_stop)}</:col>
+            <:col :let={pathway} label="From">
+              <button
+                type="button"
+                class="link link-primary font-medium"
+                phx-click="edit_pathway"
+                phx-value-id={pathway.id}
+              >
+                {pathway_stop_display(pathway.from_stop)}
+              </button>
+            </:col>
             <:col :let={pathway} label="To">{pathway_stop_display(pathway.to_stop)}</:col>
             <:col :let={pathway} label="Mode">
               <span class="badge badge-ghost badge-sm">
@@ -2247,16 +2590,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 {format_decimal(pathway.length) || "—"}
               </span>
             </:col>
-            <:action :let={pathway}>
-              <button
-                type="button"
-                class="link link-primary text-sm"
-                phx-click="edit_pathway"
-                phx-value-id={pathway.id}
-              >
-                Edit
-              </button>
-            </:action>
           </.table>
         <% end %>
       </div>
@@ -2270,6 +2603,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp format_decimal(nil), do: nil
   defp format_decimal(%Decimal{} = decimal), do: Decimal.to_string(decimal, :normal)
   defp format_decimal(value), do: to_string(value)
+
+  defp format_timestamp(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M")
+  defp format_timestamp(_), do: "—"
 
   defp present_text?(value) when is_binary(value), do: String.trim(value) != ""
   defp present_text?(_), do: false

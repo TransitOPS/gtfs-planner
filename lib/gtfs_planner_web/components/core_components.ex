@@ -211,11 +211,19 @@ defmodule GtfsPlannerWeb.CoreComponents do
                 multiple pattern placeholder readonly required rows size step)
 
   def input(%{field: %Phoenix.HTML.FormField{} = field} = assigns) do
-    errors = if Phoenix.Component.used_input?(field), do: field.errors, else: []
+    explicit_errors = assigns.errors
+
+    translated_errors =
+      if explicit_errors != [] do
+        explicit_errors
+      else
+        errors = if Phoenix.Component.used_input?(field), do: field.errors, else: []
+        Enum.map(errors, &translate_error(&1))
+      end
 
     assigns
     |> assign(field: nil, id: assigns.id || field.id)
-    |> assign(:errors, Enum.map(errors, &translate_error(&1)))
+    |> assign(:errors, translated_errors)
     |> assign_new(:name, fn -> if assigns.multiple, do: field.name <> "[]", else: field.name end)
     |> assign_new(:value, fn -> field.value end)
     |> input()

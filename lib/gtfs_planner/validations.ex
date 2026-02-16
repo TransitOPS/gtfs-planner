@@ -186,6 +186,19 @@ defmodule GtfsPlanner.Validations do
   end
 
   @doc """
+  Lists walkability tests for a given organization and stop ids.
+  Results are ordered by inserted_at descending.
+  """
+  def list_walkability_tests_for_stop_ids(_organization_id, []), do: []
+
+  def list_walkability_tests_for_stop_ids(organization_id, stop_ids) do
+    WalkabilityTest
+    |> where([wt], wt.organization_id == ^organization_id and wt.stop_id in ^stop_ids)
+    |> order_by([wt], desc: wt.inserted_at)
+    |> Repo.all()
+  end
+
+  @doc """
   Gets a single walkability test, raising if not found.
 
   ## Examples
@@ -199,6 +212,13 @@ defmodule GtfsPlanner.Validations do
   """
   def get_walkability_test!(id) do
     Repo.get!(WalkabilityTest, id)
+  end
+
+  @doc """
+  Gets a single walkability test, returning nil if not found.
+  """
+  def get_walkability_test(id) do
+    Repo.get(WalkabilityTest, id)
   end
 
   @doc """
@@ -264,5 +284,19 @@ defmodule GtfsPlanner.Validations do
   """
   def change_walkability_test(walkability_test, attrs \\ %{}) do
     WalkabilityTest.changeset(walkability_test, attrs)
+  end
+
+  @doc """
+  Returns a map of stop_id => test count for stops that have walkability tests.
+  """
+  def stop_ids_with_walkability_tests(_organization_id, []), do: %{}
+
+  def stop_ids_with_walkability_tests(organization_id, stop_ids) do
+    WalkabilityTest
+    |> where([wt], wt.organization_id == ^organization_id and wt.stop_id in ^stop_ids)
+    |> group_by([wt], wt.stop_id)
+    |> select([wt], {wt.stop_id, count(wt.id)})
+    |> Repo.all()
+    |> Map.new()
   end
 end
