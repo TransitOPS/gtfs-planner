@@ -991,7 +991,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <.cross_level_badges
               stop={stop}
               cross_level_badges_by_stop={@cross_level_badges_by_stop}
-              active_fill={active_fill}
             />
           </g>
         <% end %>
@@ -1058,7 +1057,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :stop, :any, required: true
   attr :cross_level_badges_by_stop, :map, required: true
-  attr :active_fill, :string, required: true
 
   defp cross_level_badges(assigns) do
     badges =
@@ -1117,14 +1115,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               center_x={cx}
               center_y={cy}
               offset_x={badge_offset_x}
-              fill={@active_fill}
+              fill="#06b6d4"
             />
           <% else %>
             <.cross_level_elevator_icon
               center_x={cx}
               center_y={cy}
               offset_x={badge_offset_x}
-              fill={@active_fill}
+              fill="#06b6d4"
             />
           <% end %>
         </g>

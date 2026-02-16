@@ -173,6 +173,12 @@ body:has(#diagram-page[data-immersive="true"]) {
   cursor: default !important;
 }
 
+/* Avoid browser-native SVG focus rings that appear as large donut overlays on click. */
+#diagram-overlay g[tabindex]:focus,
+#diagram-overlay g[tabindex]:focus-visible {
+  outline: none;
+}
+
 #diagram-edit-tooltip {
   position: absolute;
   left: 0;

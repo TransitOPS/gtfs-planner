@@ -440,7 +440,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
              )
     end
 
-    test "view mode selected stop cross-level badge uses emerald fill", %{
+    test "view mode selected stop cross-level badge uses pathway cyan fill", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -507,7 +507,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#child_stops-#{selected_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}'] [data-cross-level-badge-elevator][fill='#059669']"
+               "#child_stops-#{selected_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}'] [data-cross-level-badge-elevator][fill='#06b6d4']"
              )
     end
 
