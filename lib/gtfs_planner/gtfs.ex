@@ -549,6 +549,67 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns a unique stop_id within an organization and GTFS version.
+
+  Uses the provided base stop_id if available, otherwise appends `_2`, `_3`, etc.
+  """
+  def unique_stop_id(organization_id, gtfs_version_id, base_stop_id, exclude_stop_id \\ nil) do
+    escaped_base_stop_id = escape_like_pattern(base_stop_id)
+
+    query =
+      from(s in Stop,
+        where:
+          s.organization_id == ^organization_id and
+            s.gtfs_version_id == ^gtfs_version_id and
+            fragment(
+              "? LIKE ? ESCAPE ?",
+              s.stop_id,
+              ^"#{escaped_base_stop_id}%",
+              ^"\\"
+            ),
+        select: s.stop_id
+      )
+
+    query =
+      if is_nil(exclude_stop_id) do
+        query
+      else
+        where(query, [s], s.stop_id != ^exclude_stop_id)
+      end
+
+    existing_ids =
+      query
+      |> Repo.all()
+      |> MapSet.new()
+
+    if MapSet.member?(existing_ids, base_stop_id) do
+      suffix =
+        Stream.iterate(2, &(&1 + 1))
+        |> Enum.find(fn n ->
+          candidate = "#{base_stop_id}_#{n}"
+          not MapSet.member?(existing_ids, candidate)
+        end)
+
+      case suffix do
+        nil ->
+          raise "Unable to generate unique stop_id for #{inspect(base_stop_id)}"
+
+        n ->
+          "#{base_stop_id}_#{n}"
+      end
+    else
+      base_stop_id
+    end
+  end
+
+  defp escape_like_pattern(value) when is_binary(value) do
+    value
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
+  end
+
+  @doc """
   Creates a stop.
 
   ## Examples

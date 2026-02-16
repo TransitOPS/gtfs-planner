@@ -106,4 +106,39 @@ defmodule GtfsPlanner.Gtfs.Stop do
       _ -> nil
     end
   end
+
+  @doc "Returns slug prefix for location_type."
+  def location_type_slug(location_type) do
+    case location_type do
+      0 -> "platform"
+      1 -> "station"
+      2 -> "entrance"
+      3 -> "node"
+      4 -> "boarding"
+      _ -> "stop"
+    end
+  end
+
+  @doc "Converts stop name text into a lowercase slug."
+  def slugify(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "_")
+    |> String.replace(~r/_{2,}/, "_")
+    |> String.trim("_")
+    |> String.slice(0, 64)
+  end
+
+  def slugify(_), do: ""
+
+  @doc "Generates a stop_id from location type and stop name."
+  def generate_stop_id(location_type, stop_name) when is_binary(stop_name) do
+    case slugify(stop_name) do
+      "" -> ""
+      slug -> "#{location_type_slug(location_type)}_#{slug}"
+    end
+  end
+
+  def generate_stop_id(_location_type, _stop_name), do: ""
 end
