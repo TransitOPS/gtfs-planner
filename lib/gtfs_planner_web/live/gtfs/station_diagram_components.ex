@@ -1848,7 +1848,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           label="Min Width (m)"
           step="0.01"
           min="0"
-          help="Minimum width for accessibility."
+          placeholder="Not specified"
+          help="Optional. Recommended if narrower than 1 meter."
         />
       </div>
 
