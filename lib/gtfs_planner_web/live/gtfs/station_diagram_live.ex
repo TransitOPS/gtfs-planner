@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   import GtfsPlannerWeb.Gtfs.StationDiagramComponents
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   alias LiveSelect.Component, as: LiveSelectComponent
@@ -42,6 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:reposition_stops, [])
      |> assign(:editing_child_stop, nil)
      |> assign(:editing_level, false)
+     |> assign(:stop_id_mode, :auto)
      |> assign(:show_pathway_drawer, false)
      |> assign(:editing_pathway, nil)
      |> assign(:pathway_form, to_form(%{}))
@@ -282,6 +284,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pending_xy={@pending_xy}
           selected_stop_id={@selected_stop_id}
           child_stop_form={@child_stop_form}
+          stop_id_mode={@stop_id_mode}
           mode={@mode}
           all_levels={@all_levels}
           editing_level={@editing_level}
@@ -432,6 +435,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pending_xy, %{x: x, y: y})
          |> assign(:selected_stop_id, nil)
          |> assign(:editing_level, false)
+         |> assign(:stop_id_mode, :auto)
          |> assign(:child_stop_form, form)}
 
       # In :view and :connect modes, stop selection is handled by the SVG
@@ -562,6 +566,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:pending_xy, pending_xy)
      |> assign(:selected_stop_id, stop.id)
      |> assign(:editing_level, false)
+     |> assign(:stop_id_mode, :manual)
      |> assign(:child_stop_form, form)}
   end
 
@@ -572,7 +577,55 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("validate_child_stop", params, socket) do
+    params =
+      case socket.assigns.stop_id_mode do
+        :auto ->
+          generated_stop_id =
+            Stop.generate_stop_id(
+              parse_int(params["location_type"] || "3"),
+              params["stop_name"] || ""
+            )
+
+          Map.put(params, "stop_id", generated_stop_id)
+
+        :manual ->
+          params
+      end
+
     {:noreply, assign(socket, :child_stop_form, to_form(params))}
+  end
+
+  @impl true
+  def handle_event("toggle_stop_id_mode", _params, socket) do
+    case socket.assigns.stop_id_mode do
+      :auto ->
+        {:noreply, assign(socket, :stop_id_mode, :manual)}
+
+      :manual ->
+        current_form = socket.assigns.child_stop_form
+        current_params = current_form.params || %{}
+        stop_name = current_params["stop_name"] || current_form[:stop_name].value || ""
+
+        location_type =
+          current_params["location_type"] || current_form[:location_type].value || "3"
+
+        generated_stop_id =
+          Stop.generate_stop_id(
+            parse_int(location_type),
+            stop_name
+          )
+
+        updated_params =
+          current_params
+          |> Map.put("stop_name", stop_name)
+          |> Map.put("location_type", location_type)
+          |> Map.put("stop_id", generated_stop_id)
+
+        {:noreply,
+         socket
+         |> assign(:stop_id_mode, :auto)
+         |> assign(:child_stop_form, to_form(updated_params))}
+    end
   end
 
   @impl true
@@ -582,8 +635,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     station = socket.assigns.station
     pending_xy = socket.assigns.pending_xy
 
+    stop_id =
+      if socket.assigns.stop_id_mode == :auto and socket.assigns.selected_stop_id == nil and
+           params["stop_id"] not in [nil, ""] do
+        Gtfs.unique_stop_id(organization_id, gtfs_version_id, params["stop_id"])
+      else
+        params["stop_id"]
+      end
+
     stop_attrs = %{
-      stop_id: params["stop_id"],
+      stop_id: stop_id,
       stop_name: params["stop_name"],
       location_type: String.to_integer(params["location_type"]),
       parent_station: station.stop_id,

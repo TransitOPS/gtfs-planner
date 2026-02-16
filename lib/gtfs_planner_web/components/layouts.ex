@@ -223,5 +223,4 @@ defmodule GtfsPlannerWeb.Layouts do
     <.flash_group flash={@flash} />
     """
   end
-
 end
