@@ -7,8 +7,7 @@ const OVERLAY_BASE = {
   hitTargetSize: 3.5,
   rectUprightW: 1.2,
   rectUprightH: 2.4,
-  rectHorizW: 2.4,
-  rectHorizH: 1.2,
+  rectSquareSize: 1.2,
   rectStroke: 0.12,
   entranceStroke: 0.16,
   rectRx: 0.2,
@@ -275,12 +274,11 @@ const DiagramCanvasHook = {
       }
 
       if (locationType === "4") {
-        const width = OVERLAY_BASE.rectHorizW / scale;
-        const height = OVERLAY_BASE.rectHorizH / scale;
-        marker.setAttribute("x", `${cx - width / 2}`);
-        marker.setAttribute("y", `${cy - height / 2}`);
-        marker.setAttribute("width", `${width}`);
-        marker.setAttribute("height", `${height}`);
+        const size = OVERLAY_BASE.rectSquareSize / scale;
+        marker.setAttribute("x", `${cx - size / 2}`);
+        marker.setAttribute("y", `${cy - size / 2}`);
+        marker.setAttribute("width", `${size}`);
+        marker.setAttribute("height", `${size}`);
         marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / scale}`);
         marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / scale}`);
         return;

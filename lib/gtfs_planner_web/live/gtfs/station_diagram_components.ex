@@ -891,9 +891,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 />
               <% 4 -> %>
                 <rect
-                  x={cx - 1.2}
+                  x={cx - 0.6}
                   y={cy - 0.6}
-                  width="2.4"
+                  width="1.2"
                   height="1.2"
                   rx="0.2"
                   fill={active_fill}
@@ -966,7 +966,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     end
   end
 
-  defp label_x_offset(4), do: 1.55
+  defp label_x_offset(4), do: 0.95
   defp label_x_offset(_location_type), do: 0.95
 
   attr :stop, :any, required: true
@@ -1186,8 +1186,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <span>Generic Node</span>
           </div>
           <div class="flex items-center gap-2 text-sm">
-            <svg width="22" height="12" class="shrink-0">
-              <rect x="1" y="1" width="20" height="10" rx="1" fill="#2563EB" />
+            <svg width="14" height="14" class="shrink-0">
+              <rect x="1" y="1" width="12" height="12" rx="1" fill="#2563EB" />
             </svg>
             <span>Boarding Area</span>
           </div>

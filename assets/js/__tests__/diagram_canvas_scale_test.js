@@ -24,6 +24,13 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-center-x="10"
               data-center-y="20"
             ></circle>
+            <rect
+              id="stop-boarding-area"
+              data-stop-marker="true"
+              data-location-type="4"
+              data-center-x="20"
+              data-center-y="30"
+            ></rect>
             <text
               id="stop-label"
               data-stop-label="true"
@@ -107,6 +114,10 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(document.querySelector("#stop-hit").getAttribute("width")).toBe("1.75");
     expect(document.querySelector("#stop-hit").getAttribute("height")).toBe("1.75");
     expect(document.querySelector("#stop-marker").getAttribute("r")).toBe("0.3");
+    expect(document.querySelector("#stop-boarding-area").getAttribute("x")).toBe("19.7");
+    expect(document.querySelector("#stop-boarding-area").getAttribute("y")).toBe("29.7");
+    expect(document.querySelector("#stop-boarding-area").getAttribute("width")).toBe("0.6");
+    expect(document.querySelector("#stop-boarding-area").getAttribute("height")).toBe("0.6");
     expect(document.querySelector("#stop-label").getAttribute("x")).toBe("10.5");
     expect(document.querySelector("#stop-label").getAttribute("font-size")).toBe("0.55");
     expect(document.querySelector("#cross-level-stairs").getAttribute("d")).toBe(
