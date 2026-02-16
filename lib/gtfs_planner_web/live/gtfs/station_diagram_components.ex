@@ -1530,7 +1530,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             Stop ID
           </label>
           <p class="w-full input input-lg bg-base-200 flex items-center font-mono text-sm">
-            {@child_stop_form[:stop_id].value || "Type a name above"}
+            <%= if @child_stop_form[:stop_id].value in [nil, ""],
+              do: "Type a name above",
+              else: @child_stop_form[:stop_id].value %>
           </p>
           <.input field={@child_stop_form[:stop_id]} type="hidden" />
           <button
