@@ -1024,47 +1024,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Returns a MapSet of stop IDs that participate in cross-level pathways.
-
-  This includes both from_stop and to_stop IDs where pathways connect
-  stops on different levels within the same parent station.
-
-  ## Examples
-
-      iex> list_cross_level_stop_ids(org_id, version_id, station_id)
-      #MapSet<[123, 456, 789]>
-  """
-  def list_cross_level_stop_ids(organization_id, gtfs_version_id, station_id) do
-    parent_station = Repo.get!(Stop, station_id)
-
-    query =
-      from(p in Pathway,
-        join: from_stop in Stop,
-        on:
-          p.from_stop_id == from_stop.stop_id and
-            from_stop.organization_id == ^organization_id and
-            from_stop.gtfs_version_id == ^gtfs_version_id,
-        join: to_stop in Stop,
-        on:
-          p.to_stop_id == to_stop.stop_id and
-            to_stop.organization_id == ^organization_id and
-            to_stop.gtfs_version_id == ^gtfs_version_id,
-        where:
-          p.organization_id == ^organization_id and
-            p.gtfs_version_id == ^gtfs_version_id and
-            from_stop.parent_station == ^parent_station.stop_id and
-            to_stop.parent_station == ^parent_station.stop_id and
-            from_stop.level_id != to_stop.level_id,
-        select: {from_stop.id, to_stop.id}
-      )
-
-    query
-    |> Repo.all()
-    |> Enum.flat_map(fn {from_id, to_id} -> [from_id, to_id] end)
-    |> MapSet.new()
-  end
-
-  @doc """
   Returns the count of pathways for an organization and GTFS version.
   """
   def count_pathways(organization_id, gtfs_version_id) do
