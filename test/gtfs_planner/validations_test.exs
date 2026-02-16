@@ -278,6 +278,59 @@ defmodule GtfsPlanner.ValidationsTest do
       assert fetched.organization_id == org.id
     end
 
+    test "list_walkability_tests_for_stop_ids/2 scopes by org and stop ids", %{organization: org} do
+      included_stop_a =
+        walkability_test_fixture(%{
+          organization_id: org.id,
+          stop_id: "stop-included-a",
+          address: "Address A"
+        })
+
+      included_stop_b =
+        walkability_test_fixture(%{
+          organization_id: org.id,
+          stop_id: "stop-included-b",
+          address: "Address B"
+        })
+
+      _excluded_stop =
+        walkability_test_fixture(%{
+          organization_id: org.id,
+          stop_id: "stop-excluded",
+          address: "Address C"
+        })
+
+      other_org = organization_fixture()
+
+      _excluded_org =
+        walkability_test_fixture(%{
+          organization_id: other_org.id,
+          stop_id: "stop-included-a",
+          address: "Address D"
+        })
+
+      assert [] = Validations.list_walkability_tests_for_stop_ids(org.id, [])
+
+      results =
+        Validations.list_walkability_tests_for_stop_ids(org.id, [
+          "stop-included-a",
+          "stop-included-b"
+        ])
+
+      result_ids = Enum.map(results, & &1.id)
+      assert included_stop_a.id in result_ids
+      assert included_stop_b.id in result_ids
+      assert length(results) == 2
+    end
+
+    test "get_walkability_test/1 returns test or nil", %{organization: org} do
+      walkability_test = walkability_test_fixture(%{organization_id: org.id})
+
+      assert %WalkabilityTest{id: id} = Validations.get_walkability_test(walkability_test.id)
+      assert id == walkability_test.id
+      assert nil == Validations.get_walkability_test(Ecto.UUID.generate())
+    end
+
     test "update_walkability_test/2 updates fields", %{organization: org} do
       walkability_test = walkability_test_fixture(%{organization_id: org.id})
 
