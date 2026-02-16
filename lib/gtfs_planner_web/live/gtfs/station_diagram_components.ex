@@ -858,10 +858,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <%= case stop.location_type do %>
               <% 0 -> %>
                 <rect
-                  x={cx - 0.6}
-                  y={cy - 1.2}
-                  width="1.2"
-                  height="2.4"
+                  x={cx - 0.5}
+                  y={cy - 1.0}
+                  width="1.0"
+                  height="2.0"
                   rx="0.2"
                   fill={active_fill}
                   stroke="#FFFFFF"
@@ -875,10 +875,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 />
               <% 2 -> %>
                 <rect
-                  x={cx - 0.6}
-                  y={cy - 1.2}
-                  width="1.2"
-                  height="2.4"
+                  x={cx - 0.5}
+                  y={cy - 1.0}
+                  width="1.0"
+                  height="2.0"
                   rx="0.2"
                   fill="#FFFFFF"
                   stroke={active_fill}
@@ -1160,17 +1160,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <div class="space-y-1.5">
           <div class="flex items-center gap-2 text-sm">
             <svg width="14" height="22" class="shrink-0">
-              <rect x="1" y="1" width="12" height="20" rx="1" fill="#2563EB" />
+              <rect x="2" y="2" width="10" height="18" rx="1" fill="#2563EB" />
             </svg>
             <span>Platform</span>
           </div>
           <div class="flex items-center gap-2 text-sm">
             <svg width="14" height="22" class="shrink-0">
               <rect
-                x="1"
-                y="1"
-                width="12"
-                height="20"
+                x="2"
+                y="2"
+                width="10"
+                height="18"
                 rx="1"
                 fill="#fff"
                 stroke="#2563EB"

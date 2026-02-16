@@ -25,6 +25,20 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-center-y="20"
             ></circle>
             <rect
+              id="stop-platform"
+              data-stop-marker="true"
+              data-location-type="0"
+              data-center-x="14"
+              data-center-y="24"
+            ></rect>
+            <rect
+              id="stop-entrance"
+              data-stop-marker="true"
+              data-location-type="2"
+              data-center-x="16"
+              data-center-y="26"
+            ></rect>
+            <rect
               id="stop-boarding-area"
               data-stop-marker="true"
               data-location-type="4"
@@ -114,6 +128,10 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(document.querySelector("#stop-hit").getAttribute("width")).toBe("1.75");
     expect(document.querySelector("#stop-hit").getAttribute("height")).toBe("1.75");
     expect(document.querySelector("#stop-marker").getAttribute("r")).toBe("0.3");
+    expect(document.querySelector("#stop-platform").getAttribute("width")).toBe("0.5");
+    expect(document.querySelector("#stop-platform").getAttribute("height")).toBe("1");
+    expect(document.querySelector("#stop-entrance").getAttribute("width")).toBe("0.5");
+    expect(document.querySelector("#stop-entrance").getAttribute("height")).toBe("1");
     expect(document.querySelector("#stop-boarding-area").getAttribute("x")).toBe("19.7");
     expect(document.querySelector("#stop-boarding-area").getAttribute("y")).toBe("29.7");
     expect(document.querySelector("#stop-boarding-area").getAttribute("width")).toBe("0.6");
@@ -184,5 +202,18 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(markerWidth).toBeCloseTo(1.2605042017, 5);
     expect(dashed[0]).toBeCloseTo(1.6806722689, 5);
     expect(dashed[1]).toBeCloseTo(0.8403361344, 5);
+
+    const iconRadius = parseFloat(document.querySelector("#stop-marker").getAttribute("r"));
+    const platformHeight = parseFloat(document.querySelector("#stop-platform").getAttribute("height"));
+    const entranceHeight = parseFloat(document.querySelector("#stop-entrance").getAttribute("height"));
+    const boardingWidth = parseFloat(
+      document.querySelector("#stop-boarding-area").getAttribute("width")
+    );
+
+    // Icon visuals should scale down slightly when zoomed out to avoid chunky markers.
+    expect(iconRadius).toBeCloseTo(0.5882352941, 5);
+    expect(platformHeight).toBeCloseTo(2.380952381, 5);
+    expect(entranceHeight).toBeCloseTo(2.380952381, 5);
+    expect(boardingWidth).toBeCloseTo(1.1764705882, 5);
   });
 });

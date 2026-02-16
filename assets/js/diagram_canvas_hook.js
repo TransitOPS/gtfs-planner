@@ -5,8 +5,8 @@
 const OVERLAY_BASE = {
   circleR: 0.6,
   hitTargetSize: 3.5,
-  rectUprightW: 1.2,
-  rectUprightH: 2.4,
+  rectUprightW: 1.0,
+  rectUprightH: 2.0,
   rectSquareSize: 1.2,
   rectStroke: 0.12,
   entranceStroke: 0.16,
@@ -31,6 +31,7 @@ const OVERLAY_BASE = {
   pathwayElevatorBoxStroke: 0.4,
   pathwayElevatorTextSize: 1.2,
   pathwayVisualThinFactor: 1.4,
+  iconVisualThinFactor: 1.2,
   pendingOffsetY: 1,
   pendingOffsetX: 0.75,
   pendingOffsetBottomY: 0.5,
@@ -38,6 +39,19 @@ const OVERLAY_BASE = {
 };
 
 const DiagramCanvasHook = {
+  iconVisualScale(scale) {
+    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+
+    if (safeScale >= 1) {
+      return safeScale;
+    }
+
+    const zoomAdjusted = 1 - (1 - safeScale) * 0.3;
+
+    // Keep icons from becoming visually chunky when zoomed out.
+    return zoomAdjusted * OVERLAY_BASE.iconVisualThinFactor;
+  },
+
   pathwayVisualScale(scale) {
     const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
     const zoomAdjusted =
@@ -233,6 +247,7 @@ const DiagramCanvasHook = {
     }
 
     const scale = this.scale || 1;
+    const iconScale = this.iconVisualScale(scale);
     const pathwayScale = this.pathwayVisualScale(scale);
 
     overlay.querySelectorAll("[data-stop-hit-target]").forEach((hitTarget) => {
@@ -260,34 +275,34 @@ const DiagramCanvasHook = {
       }
 
       if (locationType === "0" || locationType === "2") {
-        const width = OVERLAY_BASE.rectUprightW / scale;
-        const height = OVERLAY_BASE.rectUprightH / scale;
+        const width = OVERLAY_BASE.rectUprightW / iconScale;
+        const height = OVERLAY_BASE.rectUprightH / iconScale;
         marker.setAttribute("x", `${cx - width / 2}`);
         marker.setAttribute("y", `${cy - height / 2}`);
         marker.setAttribute("width", `${width}`);
         marker.setAttribute("height", `${height}`);
-        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / scale}`);
+        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / iconScale}`);
         const strokeWidth =
           locationType === "2" ? OVERLAY_BASE.entranceStroke : OVERLAY_BASE.rectStroke;
-        marker.setAttribute("stroke-width", `${strokeWidth / scale}`);
+        marker.setAttribute("stroke-width", `${strokeWidth / iconScale}`);
         return;
       }
 
       if (locationType === "4") {
-        const size = OVERLAY_BASE.rectSquareSize / scale;
+        const size = OVERLAY_BASE.rectSquareSize / iconScale;
         marker.setAttribute("x", `${cx - size / 2}`);
         marker.setAttribute("y", `${cy - size / 2}`);
         marker.setAttribute("width", `${size}`);
         marker.setAttribute("height", `${size}`);
-        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / scale}`);
-        marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / scale}`);
+        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / iconScale}`);
+        marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
         return;
       }
 
       marker.setAttribute("cx", `${cx}`);
       marker.setAttribute("cy", `${cy}`);
-      marker.setAttribute("r", `${OVERLAY_BASE.circleR / scale}`);
-      marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / scale}`);
+      marker.setAttribute("r", `${OVERLAY_BASE.circleR / iconScale}`);
+      marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
     });
 
     overlay.querySelectorAll("[data-stop-label]").forEach((label) => {
@@ -338,9 +353,9 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const s = OVERLAY_BASE.crossLevelStairsStepUnit / scale;
-      const size = OVERLAY_BASE.crossLevelStairsSize / scale;
-      const x0 = cx + offsetX / scale - size / 2;
+      const s = OVERLAY_BASE.crossLevelStairsStepUnit / iconScale;
+      const size = OVERLAY_BASE.crossLevelStairsSize / iconScale;
+      const x0 = cx + offsetX / iconScale - size / 2;
       const y0 = cy - size / 2;
 
       stairsPath.setAttribute(
@@ -358,10 +373,10 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const iconCx = cx + offsetX / scale;
-      const halfH = OVERLAY_BASE.crossLevelElevatorHalfHeight / scale;
-      const halfW = OVERLAY_BASE.crossLevelElevatorHalfWidth / scale;
-      const gap = OVERLAY_BASE.crossLevelElevatorGap / scale;
+      const iconCx = cx + offsetX / iconScale;
+      const halfH = OVERLAY_BASE.crossLevelElevatorHalfHeight / iconScale;
+      const halfW = OVERLAY_BASE.crossLevelElevatorHalfWidth / iconScale;
+      const gap = OVERLAY_BASE.crossLevelElevatorGap / iconScale;
 
       elevPath.setAttribute(
         "d",
