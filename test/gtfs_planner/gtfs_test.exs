@@ -428,6 +428,43 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "unique_stop_id/4" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "returns base stop_id when there is no collision", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      assert Gtfs.unique_stop_id(org.id, version.id, "node_main") == "node_main"
+    end
+
+    test "returns base_2 when base already exists", %{organization: org, gtfs_version: version} do
+      _stop = stop_fixture(org.id, version.id, %{stop_id: "node_main"})
+      assert Gtfs.unique_stop_id(org.id, version.id, "node_main") == "node_main_2"
+    end
+
+    test "returns first available suffix across multiple collisions", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      _stop1 = stop_fixture(org.id, version.id, %{stop_id: "node_main"})
+      _stop2 = stop_fixture(org.id, version.id, %{stop_id: "node_main_2"})
+      assert Gtfs.unique_stop_id(org.id, version.id, "node_main") == "node_main_3"
+    end
+
+    test "exclude_stop_id ignores the specified stop_id", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      _stop = stop_fixture(org.id, version.id, %{stop_id: "node_main"})
+      assert Gtfs.unique_stop_id(org.id, version.id, "node_main", "node_main") == "node_main"
+    end
+  end
+
   describe "list_stations/2" do
     setup do
       organization = organization_fixture()

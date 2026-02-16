@@ -1227,6 +1227,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :mode, :atom, required: true
   attr :all_levels, :list, required: true
   attr :editing_level, :boolean, default: false
+  attr :stop_id_mode, :atom, default: :auto
   attr :active_level, :any, default: nil
   attr :reposition_mode, :boolean, default: false
   attr :reposition_search, :string, default: ""
@@ -1304,6 +1305,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         pending_xy={@pending_xy}
         all_levels={@all_levels}
         editing_level={@editing_level}
+        stop_id_mode={@stop_id_mode}
         active_level={@active_level}
       />
     </.drawer>
@@ -1463,6 +1465,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :pending_xy, :any, required: true
   attr :all_levels, :list, required: true
   attr :editing_level, :boolean, default: false
+  attr :stop_id_mode, :atom, default: :auto
   attr :active_level, :any, default: nil
 
   defp child_stop_form(assigns) do
@@ -1496,6 +1499,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:wheelchair_boarding_options, wheelchair_boarding_options)
       |> assign(:current_level_id, current_level_id || "")
       |> assign(:current_level_display, current_level_display)
+      |> assign(:is_new_stop, assigns.selected_stop_id == nil)
       |> assign(:show_platform_code, location_type in [0, 4])
 
     ~H"""
@@ -1505,19 +1509,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       phx-submit="save_child_stop"
       phx-change="validate_child_stop"
     >
-      <.input
-        field={@child_stop_form[:stop_id]}
-        type="text"
-        label="Stop ID"
-        placeholder="e.g., stop_001"
-        required
-        readonly={@selected_stop_id != nil}
-        class={[
-          @selected_stop_id && "w-full input input-lg bg-base-200",
-          !@selected_stop_id && "w-full input input-lg"
-        ]}
-      />
-
       <.input
         field={@child_stop_form[:stop_name]}
         type="text"
@@ -1532,6 +1523,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         label="Location Type"
         options={@location_type_options}
       />
+
+      <%= if @stop_id_mode == :auto && @is_new_stop do %>
+        <div class="space-y-2">
+          <label class="text-sm font-medium leading-6 text-zinc-800">
+            Stop ID
+          </label>
+          <p class="w-full input input-lg bg-base-200 flex items-center font-mono text-sm">
+            {@child_stop_form[:stop_id].value || "Type a name above"}
+          </p>
+          <.input field={@child_stop_form[:stop_id]} type="hidden" />
+          <button
+            type="button"
+            class="link link-primary text-xs"
+            phx-click="toggle_stop_id_mode"
+          >
+            Set manually
+          </button>
+        </div>
+      <% else %>
+        <div class="space-y-2">
+          <.input
+            field={@child_stop_form[:stop_id]}
+            type="text"
+            label="Stop ID"
+            placeholder="e.g., stop_001"
+            required
+            readonly={@selected_stop_id != nil}
+            class={[
+              @selected_stop_id && "w-full input input-lg bg-base-200",
+              !@selected_stop_id && "w-full input input-lg"
+            ]}
+          />
+          <button
+            :if={@is_new_stop}
+            type="button"
+            class="link link-primary text-xs"
+            phx-click="toggle_stop_id_mode"
+          >
+            Auto-generate
+          </button>
+        </div>
+      <% end %>
 
       <.input
         field={@child_stop_form[:wheelchair_boarding]}
