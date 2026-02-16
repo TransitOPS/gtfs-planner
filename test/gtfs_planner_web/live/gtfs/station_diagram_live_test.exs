@@ -1753,11 +1753,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert has_element?(view, "#child_stops-#{platform_stop.id} [data-stop-label]", "3A")
-      refute has_element?(view, "#child_stops-#{platform_without_code.id} [data-stop-label]")
-      refute has_element?(view, "#child_stops-#{entrance_stop.id} [data-stop-label]")
-      refute has_element?(view, "#child_stops-#{node_stop.id} [data-stop-label]")
-      refute has_element?(view, "#child_stops-#{boarding_without_code.id} [data-stop-label]")
+      assert has_element?(
+               view,
+               "#child_stops-#{platform_stop.id} [data-stop-label]",
+               "PLATFORM LABEL · 3A"
+             )
+
+      assert has_element?(
+               view,
+               "#child_stops-#{platform_without_code.id} [data-stop-label]",
+               "PLATFORM NO CODE"
+             )
+
+      assert has_element?(
+               view,
+               "#child_stops-#{entrance_stop.id} [data-stop-label]",
+               "ENTRANCE LABEL"
+             )
+
+      assert has_element?(view, "#child_stops-#{node_stop.id} [data-stop-label]", "NODE LABEL")
+
+      assert has_element?(
+               view,
+               "#child_stops-#{boarding_without_code.id} [data-stop-label]",
+               "BOARDING NO CODE"
+             )
     end
   end
 

@@ -8,11 +8,13 @@ const OVERLAY_BASE = {
   rectUprightW: 1.0,
   rectUprightH: 2.0,
   rectSquareSize: 1.2,
+  rectBottomAnchorRatio: 0.8,
   rectStroke: 0.12,
   entranceStroke: 0.16,
   rectRx: 0.2,
-  fontSize: 1.1,
-  textStrokeWidth: 0.24,
+  stopLabelFontSize: 0.72,
+  stopLabelStrokeWidth: 0.17,
+  stopLabelMinScale: 1.1,
   crossLevelStairsSize: 0.9,
   crossLevelStairsStepUnit: 0.3,
   crossLevelElevatorHalfHeight: 0.45,
@@ -278,7 +280,7 @@ const DiagramCanvasHook = {
         const width = OVERLAY_BASE.rectUprightW / iconScale;
         const height = OVERLAY_BASE.rectUprightH / iconScale;
         marker.setAttribute("x", `${cx - width / 2}`);
-        marker.setAttribute("y", `${cy - height / 2}`);
+        marker.setAttribute("y", `${cy - height * OVERLAY_BASE.rectBottomAnchorRatio}`);
         marker.setAttribute("width", `${width}`);
         marker.setAttribute("height", `${height}`);
         marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / iconScale}`);
@@ -291,7 +293,7 @@ const DiagramCanvasHook = {
       if (locationType === "4") {
         const size = OVERLAY_BASE.rectSquareSize / iconScale;
         marker.setAttribute("x", `${cx - size / 2}`);
-        marker.setAttribute("y", `${cy - size / 2}`);
+        marker.setAttribute("y", `${cy - size * OVERLAY_BASE.rectBottomAnchorRatio}`);
         marker.setAttribute("width", `${size}`);
         marker.setAttribute("height", `${size}`);
         marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / iconScale}`);
@@ -309,39 +311,29 @@ const DiagramCanvasHook = {
       const cx = parseFloat(label.getAttribute("data-center-x"));
       const cy = parseFloat(label.getAttribute("data-center-y"));
       const offsetX = parseFloat(label.getAttribute("data-label-offset-x"));
+      const offsetY = parseFloat(label.getAttribute("data-label-offset-y"));
 
-      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX)) {
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX) || !Number.isFinite(offsetY)) {
         return;
       }
 
-      const previousLabelXAttr = label.getAttribute("x");
-      const previousLabelX = previousLabelXAttr !== null ? parseFloat(previousLabelXAttr) : NaN;
-      const newLabelX = cx + offsetX / scale;
+      if (scale < OVERLAY_BASE.stopLabelMinScale) {
+        label.setAttribute("display", "none");
+        return;
+      }
+
+      label.removeAttribute("display");
+      const newLabelX = cx + offsetX / iconScale;
+      const newLabelY = cy + offsetY / iconScale;
 
       label.setAttribute("x", `${newLabelX}`);
-      label.setAttribute("y", `${cy}`);
-      label.setAttribute("font-size", `${OVERLAY_BASE.fontSize / scale}`);
-      label.setAttribute("stroke-width", `${OVERLAY_BASE.textStrokeWidth / scale}`);
+      label.setAttribute("y", `${newLabelY}`);
+      label.setAttribute("font-size", `${OVERLAY_BASE.stopLabelFontSize / iconScale}`);
+      label.setAttribute("stroke-width", `${OVERLAY_BASE.stopLabelStrokeWidth / iconScale}`);
 
-      if (Number.isFinite(previousLabelX)) {
-        const deltaX = newLabelX - previousLabelX;
-
-        label.querySelectorAll("tspan").forEach((tspan) => {
-          const tspanXAttr = tspan.getAttribute("x");
-
-          if (tspanXAttr === null) {
-            return;
-          }
-
-          const tspanX = parseFloat(tspanXAttr);
-
-          if (!Number.isFinite(tspanX)) {
-            return;
-          }
-
-          tspan.setAttribute("x", `${tspanX + deltaX}`);
-        });
-      }
+      label.querySelectorAll("tspan").forEach((tspan) => {
+        tspan.setAttribute("x", `${newLabelX}`);
+      });
     });
 
     overlay.querySelectorAll("[data-cross-level-badge-stairs]").forEach((stairsPath) => {

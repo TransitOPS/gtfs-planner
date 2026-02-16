@@ -832,10 +832,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <% cy = stop.diagram_coordinate["y"] %>
           <% active_fill = if(@active_point_id == stop.id, do: "#059669", else: "#2563EB") %>
           <% label = stop_label_text(stop) %>
-          <% cross_level_badge_count = cross_level_badge_count(stop, @cross_level_badges_by_stop) %>
-          <% label_offset =
-            label_x_offset(stop.location_type) +
-              platform_code_label_shift(stop, cross_level_badge_count, label) %>
+          <% label_offset_x = stop_label_x_offset(stop.location_type) %>
+          <% label_offset_y = stop_label_y_offset(stop.location_type) %>
           <g
             id={dom_id}
             class="pointer-events-auto"
@@ -859,7 +857,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               <% 0 -> %>
                 <rect
                   x={cx - 0.5}
-                  y={cy - 1.0}
+                  y={cy - 1.6}
                   width="1.0"
                   height="2.0"
                   rx="0.2"
@@ -876,7 +874,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               <% 2 -> %>
                 <rect
                   x={cx - 0.5}
-                  y={cy - 1.0}
+                  y={cy - 1.6}
                   width="1.0"
                   height="2.0"
                   rx="0.2"
@@ -892,7 +890,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               <% 4 -> %>
                 <rect
                   x={cx - 0.6}
-                  y={cy - 0.6}
+                  y={cy - 0.96}
                   width="1.2"
                   height="1.2"
                   rx="0.2"
@@ -924,22 +922,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <% end %>
             <text
               :if={label}
-              x={cx + label_offset}
-              y={cy}
+              x={cx + label_offset_x}
+              y={cy + label_offset_y}
               font-family="Inter, sans-serif"
               font-weight="500"
-              font-size="1.1"
-              letter-spacing="0.02em"
+              font-size="0.72"
+              letter-spacing="0.01em"
               fill={active_fill}
               stroke="#FFFFFF"
-              stroke-width="0.24"
+              stroke-width="0.17"
               paint-order="stroke fill"
               text-anchor="start"
-              dominant-baseline="central"
+              dominant-baseline="hanging"
               data-stop-label="true"
               data-center-x={cx}
               data-center-y={cy}
-              data-label-offset-x={label_offset}
+              data-label-offset-x={label_offset_x}
+              data-label-offset-y={label_offset_y}
               class="pointer-events-none"
             >
               {label}
@@ -958,16 +957,39 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp stop_label_text(stop) do
     case stop.location_type do
-      0 -> if stop.platform_code in [nil, ""], do: nil, else: stop.platform_code
-      2 -> nil
-      4 -> if stop.platform_code in [nil, ""], do: nil, else: stop.platform_code
-      3 -> nil
-      _ -> nil
+      0 -> stop_name_with_platform(stop)
+      4 -> stop_name_with_platform(stop)
+      _ -> present_text(stop.stop_name) |> maybe_upcase()
     end
   end
 
-  defp label_x_offset(4), do: 0.95
-  defp label_x_offset(_location_type), do: 0.95
+  defp stop_name_with_platform(stop) do
+    name = present_text(stop.stop_name)
+    platform = present_text(stop.platform_code)
+
+    case {name, platform} do
+      {nil, nil} -> nil
+      {name, nil} -> name
+      {nil, platform} -> platform
+      {name, platform} -> "#{name} · #{platform}"
+    end
+    |> maybe_upcase()
+  end
+
+  defp present_text(value) when is_binary(value) do
+    text = String.trim(value)
+    if text == "", do: nil, else: text
+  end
+
+  defp present_text(_), do: nil
+
+  defp maybe_upcase(nil), do: nil
+  defp maybe_upcase(text), do: String.upcase(text)
+
+  defp stop_label_x_offset(_location_type), do: -0.25
+
+  defp stop_label_y_offset(4), do: 0.72
+  defp stop_label_y_offset(_location_type), do: 0.9
 
   attr :stop, :any, required: true
   attr :cross_level_badges_by_stop, :map, required: true
@@ -1061,20 +1083,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-badge-offset-x={@offset_x}
     />
     """
-  end
-
-  defp cross_level_badge_count(stop, cross_level_badges_by_stop) do
-    cross_level_badges_by_stop
-    |> Map.get(stop.id, [])
-    |> length()
-  end
-
-  defp platform_code_label_shift(stop, cross_level_badge_count, label) do
-    if (stop.location_type in [0, 4] and label) && cross_level_badge_count > 0 do
-      cross_level_badge_count * 1.25 + 0.4
-    else
-      0
-    end
   end
 
   attr :center_x, :float, required: true
