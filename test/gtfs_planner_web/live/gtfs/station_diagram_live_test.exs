@@ -579,9 +579,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
       |> render_click()
 
-      view
-      |> element("button[phx-click='switch_mode'][phx-value-mode='connect']")
-      |> render_click()
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
 
       view
       |> element("#child_stops-#{child_stop.id} [data-stop-hit-target]")
@@ -673,10 +671,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#diagram-page[data-immersive='true']")
 
-      view
-      |> element("#pathways-#{pathway.id}")
-      |> render_click()
-
+      refute has_element?(view, "#pathways-#{pathway.id}[phx-click='edit_pathway']")
       refute has_element?(view, "#pathway-form")
       refute has_element?(view, "#diagram-action-strip", "From:")
     end
@@ -869,6 +864,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       pathway = hd(pathways)
       assert pathway.from_stop_id == child_stop1.stop_id
       assert pathway.to_stop_id == child_stop2.stop_id
+
+      assert has_element?(view, "#pathway-form")
+
+      assert has_element?(
+               view,
+               "#pathway-form input[name='pathway_id'][value='#{pathway.pathway_id}']"
+             )
 
       # Assert selected_from_stop is cleared by checking view state
       # The view should not show "From: ..." message anymore
@@ -1314,9 +1316,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#diagram-page[data-immersive='true']")
 
-      view
-      |> element("button[phx-click='switch_mode'][phx-value-mode='connect']")
-      |> render_click()
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
 
       assert has_element?(view, "#diagram-page[data-immersive='true']")
 
@@ -2250,6 +2250,247 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert length(Regex.scan(~r/id=\"diagram-edit-tooltip\"/, html)) == 1
     end
 
+    test "connect mode pathways omit edit affordances and pathway tooltip triggers", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      from_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_PATHWAY_A",
+          stop_name: "Connect Pathway A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 16.0, "y" => 30.0}
+        })
+
+      to_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_PATHWAY_B",
+          stop_name: "Connect Pathway B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 34.0, "y" => 30.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, from_stop.stop_id, to_stop.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: false
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+
+      assert has_element?(view, "#pathways-#{pathway.id}")
+      refute has_element?(view, "#pathways-#{pathway.id}[phx-click='edit_pathway']")
+      refute has_element?(view, "#pathways-#{pathway.id}[data-tooltip]")
+      refute has_element?(view, "#pathways-#{pathway.id}[tabindex='0']")
+      refute has_element?(view, "#pathways-#{pathway.id} [data-pathway-tooltip-hit]")
+      refute has_element?(view, "#pathways-#{pathway.id} [data-tooltip-trigger='true']")
+    end
+
+    test "connect mode stops render connect-specific tooltip guidance", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_TOOLTIP_STOP",
+          stop_name: "Connect Tooltip Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 18.0, "y" => 18.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='connect']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#child_stops-#{stop.id}[data-tooltip='Select stop to create pathway']"
+             )
+    end
+
+    test "connect mode cross-level badges omit edit attributes and tooltip trigger targets", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "CONNECT_BADGE_L2",
+          level_name: "Connect Badge Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "connect-badge-level-2.png"
+        })
+
+      level_1_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_BADGE_L1",
+          stop_name: "Connect Badge L1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 40.0}
+        })
+
+      level_2_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_BADGE_L2_STOP",
+          stop_name: "Connect Badge L2 Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 32.0, "y" => 52.0}
+        })
+
+      cross_level_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          level_1_stop.stop_id,
+          level_2_stop.stop_id,
+          %{pathway_mode: 2, is_bidirectional: true}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='connect']")
+      |> render_click()
+
+      assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}")
+      refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[phx-click='edit_pathway']")
+      refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[data-tooltip]")
+      refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[tabindex='0']")
+      refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id} [data-cross-level-badge-tooltip-hit]")
+      refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id} [data-tooltip-trigger='true']")
+    end
+
+    test "view mode keeps pathway and cross-level badge edit affordances", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "VIEW_AFFORDANCE_L2",
+          level_name: "View Affordance Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "view-affordance-level-2.png"
+        })
+
+      from_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VIEW_AFFORDANCE_A",
+          stop_name: "View Affordance A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 15.0}
+        })
+
+      same_level_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VIEW_AFFORDANCE_B",
+          stop_name: "View Affordance B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 36.0, "y" => 15.0}
+        })
+
+      level_2_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VIEW_AFFORDANCE_C",
+          stop_name: "View Affordance C",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 42.0, "y" => 30.0}
+        })
+
+      same_level_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          from_stop.stop_id,
+          same_level_stop.stop_id,
+          %{pathway_mode: 1, is_bidirectional: false}
+        )
+
+      cross_level_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          from_stop.stop_id,
+          level_2_stop.stop_id,
+          %{pathway_mode: 1, is_bidirectional: false}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#pathways-#{same_level_pathway.id}[phx-click='edit_pathway']")
+      assert has_element?(view, "#pathways-#{same_level_pathway.id}[data-tooltip='Click to edit pathway']")
+      assert has_element?(view, "#pathways-#{same_level_pathway.id}[tabindex='0']")
+      assert has_element?(view, "#pathways-#{same_level_pathway.id} [data-pathway-tooltip-hit]")
+
+      assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[phx-click='edit_pathway']")
+      assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[data-tooltip]")
+      assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[tabindex='0']")
+      assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id} [data-cross-level-badge-tooltip-hit]")
+      assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id} [data-tooltip-trigger='true']")
+    end
+
     test "renders elevator opacity, cross-level badges, and keeps cross-level pathways out of SVG",
          %{
            conn: conn,
@@ -2844,10 +3085,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
       |> render_click()
 
-      view
-      |> element("#pathways-#{pathway.id}")
-      |> render_click()
-
+      refute has_element?(view, "#pathways-#{pathway.id}[phx-click='edit_pathway']")
       refute has_element?(view, "#pathway-form")
     end
   end

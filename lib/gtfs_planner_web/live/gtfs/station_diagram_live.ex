@@ -386,14 +386,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         socket
       end
 
-    socket = restream_active_stop(socket)
+    socket =
+      socket
+      |> assign(:mode, mode_atom)
+      |> reset_reposition_state()
+      |> assign(:pending_xy, nil)
+      |> assign(:active_point_id, nil)
+      |> restream_active_stop()
+      |> restream_mode_dependent_streams()
 
-    {:noreply,
-     socket
-     |> assign(:mode, mode_atom)
-     |> reset_reposition_state()
-     |> assign(:pending_xy, nil)
-     |> assign(:active_point_id, nil)}
+    {:noreply, socket}
   end
 
   @impl true
@@ -762,19 +764,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:noreply, socket}
     else
       pathway = Gtfs.get_pathway_with_stops!(id)
-
-      form =
-        to_form(%{
-          "pathway_id" => pathway.pathway_id,
-          "pathway_mode" => to_string(pathway.pathway_mode),
-          "is_bidirectional" => pathway.is_bidirectional,
-          "traversal_time" => pathway.traversal_time,
-          "length" => pathway.length,
-          "stair_count" => pathway.stair_count,
-          "min_width" => pathway.min_width,
-          "signposted_as" => pathway.signposted_as,
-          "reversed_signposted_as" => pathway.reversed_signposted_as
-        })
+      form = to_form(pathway_form_params(pathway))
 
       {:noreply,
        socket
@@ -1532,6 +1522,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp to_float(nil), do: 0.0
 
+  defp pathway_form_params(pathway) do
+    %{
+      "pathway_id" => pathway.pathway_id,
+      "pathway_mode" => to_string(pathway.pathway_mode),
+      "is_bidirectional" => pathway.is_bidirectional,
+      "traversal_time" => pathway.traversal_time,
+      "length" => pathway.length,
+      "stair_count" => pathway.stair_count,
+      "min_width" => pathway.min_width,
+      "signposted_as" => pathway.signposted_as,
+      "reversed_signposted_as" => pathway.reversed_signposted_as
+    }
+  end
+
   defp build_diagram_storage_filename(level_id, client_name) do
     extension =
       client_name
@@ -1566,12 +1570,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     }
 
     case Gtfs.create_pathway(attrs) do
-      {:ok, _pathway} ->
+      {:ok, pathway} ->
+        loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
+
         {:noreply,
          socket
          |> refresh_lists()
          # Re-stream to remove highlight
          |> stream_insert(:child_stops, from_stop)
+         |> assign(:editing_pathway, loaded_pathway)
+         |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
+         |> assign(:show_pathway_drawer, true)
          |> assign(:active_point_id, nil)
          |> assign(:selected_from_stop, nil)
          |> assign(:pathway_error, nil)}
@@ -1579,6 +1588,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:error, _changeset} ->
         {:noreply,
          socket
+         |> assign(:show_pathway_drawer, false)
+         |> assign(:editing_pathway, nil)
          |> assign(:active_point_id, nil)
          |> assign(:pathway_error, "Failed to create pathway")}
     end
@@ -1616,6 +1627,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp refresh_lists(socket), do: load_level_data(socket, socket.assigns.active_level)
+
+  defp restream_mode_dependent_streams(socket) do
+    same_level_pathways = Enum.reject(socket.assigns.pathways_list, & &1.is_cross_level)
+
+    socket
+    |> stream(:child_stops, socket.assigns.child_stops_list, reset: true)
+    |> stream(:pathways, same_level_pathways, reset: true)
+  end
 
   defp save_walkability_test_create(socket, organization_id, attrs) do
     case Validations.create_walkability_test(organization_id, attrs) do

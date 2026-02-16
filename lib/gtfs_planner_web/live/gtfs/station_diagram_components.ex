@@ -379,19 +379,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:opacity, opacity)
       |> assign(:has_forward_label?, has_forward_label?)
       |> assign(:has_reverse_label?, has_reverse_label?)
+      |> assign(:editable?, assigns.mode == :view)
 
     ~H"""
     <g
       id={@id}
       opacity={@opacity}
       class="cursor-pointer pointer-events-auto"
-      data-editable="pathway"
-      data-tooltip="Click to edit pathway"
-      data-tooltip-color="#06b6d4"
-      tabindex="0"
-      aria-label={pathway_aria_label(@pathway)}
-      phx-click="edit_pathway"
-      phx-value-id={@pathway.id}
+      data-editable={if @editable?, do: "pathway"}
+      data-tooltip={if @editable?, do: "Click to edit pathway"}
+      data-tooltip-color={if @editable?, do: "#06b6d4"}
+      tabindex={if @editable?, do: "0"}
+      aria-label={if @editable?, do: pathway_aria_label(@pathway)}
+      phx-click={if @editable?, do: "edit_pathway"}
+      phx-value-id={if @editable?, do: @pathway.id}
     >
       <line
         x1={@x1}
@@ -404,6 +405,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-base-stroke="2"
       />
       <line
+        :if={@editable?}
         x1={@x1}
         y1={@y1}
         x2={@x2}
@@ -862,7 +864,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             id={dom_id}
             class="pointer-events-auto"
             data-editable="stop"
-            data-tooltip="Click to edit stop"
+            data-tooltip={stop_tooltip_text(@mode)}
             data-tooltip-color={active_fill}
             tabindex="0"
             aria-label={stop_aria_label}
@@ -990,6 +992,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </text>
             <.cross_level_badges
               stop={stop}
+              mode={@mode}
               cross_level_badges_by_stop={@cross_level_badges_by_stop}
             />
           </g>
@@ -1044,6 +1047,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp stop_label_y_offset(4), do: 0.72
   defp stop_label_y_offset(_location_type), do: 0.9
 
+  defp stop_tooltip_text(:view), do: "Click to edit stop"
+  defp stop_tooltip_text(:connect), do: "Select stop to create pathway"
+  defp stop_tooltip_text(_mode), do: "Click to edit stop"
+
   defp pathway_aria_label(pathway) do
     mode_label = Pathway.mode_label(pathway.pathway_mode)
     from_label = pathway_stop_display(pathway.from_stop)
@@ -1056,6 +1063,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp cross_level_badge_aria_label(mode_label), do: "Cross-level #{mode_label} pathway"
 
   attr :stop, :any, required: true
+  attr :mode, :atom, required: true
   attr :cross_level_badges_by_stop, :map, required: true
 
   defp cross_level_badges(assigns) do
@@ -1064,7 +1072,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> Map.get(assigns.stop.id, [])
       |> Enum.with_index()
 
-    assigns = assign(assigns, :badges, badges)
+    assigns =
+      assigns
+      |> assign(:badges, badges)
+      |> assign(:editable?, assigns.mode == :view)
 
     ~H"""
     <%= if @stop.diagram_coordinate do %>
@@ -1078,12 +1089,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           class="pointer-events-auto cursor-pointer"
           data-cross-level-pathway-badge="true"
           data-pathway-id={badge.pathway_id}
-          data-tooltip={cross_level_badge_tooltip(mode_label)}
-          data-tooltip-color="#06b6d4"
-          tabindex="0"
-          aria-label={cross_level_badge_aria_label(mode_label)}
-          phx-click="edit_pathway"
-          phx-value-id={badge.pathway_id}
+          data-tooltip={if @editable?, do: cross_level_badge_tooltip(mode_label)}
+          data-tooltip-color={if @editable?, do: "#06b6d4"}
+          tabindex={if @editable?, do: "0"}
+          aria-label={if @editable?, do: cross_level_badge_aria_label(mode_label)}
+          phx-click={if @editable?, do: "edit_pathway"}
+          phx-value-id={if @editable?, do: badge.pathway_id}
         >
           <rect
             x={cx + badge_offset_x - 0.65}
@@ -1096,6 +1107,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             data-cross-level-badge-hit-target="true"
           />
           <rect
+            :if={@editable?}
             x={cx + badge_offset_x - 0.45}
             y={cy - 0.45}
             width="0.9"
@@ -1116,6 +1128,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               center_y={cy}
               offset_x={badge_offset_x}
               fill="#06b6d4"
+              editable?={@editable?}
             />
           <% else %>
             <.cross_level_elevator_icon
@@ -1123,6 +1136,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               center_y={cy}
               offset_x={badge_offset_x}
               fill="#06b6d4"
+              editable?={@editable?}
             />
           <% end %>
         </g>
@@ -1135,6 +1149,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :center_y, :float, required: true
   attr :offset_x, :float, required: true
   attr :fill, :string, required: true
+  attr :editable?, :boolean, required: true
 
   defp cross_level_stairs_icon(assigns) do
     s = 0.3
@@ -1159,7 +1174,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <path
       d={@d}
       fill={@fill}
-      data-tooltip-trigger="true"
+      data-tooltip-trigger={if @editable?, do: "true"}
       data-cross-level-badge-stairs="true"
       data-center-x={@center_x}
       data-center-y={@center_y}
@@ -1172,6 +1187,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :center_y, :float, required: true
   attr :offset_x, :float, required: true
   attr :fill, :string, required: true
+  attr :editable?, :boolean, required: true
 
   defp cross_level_elevator_icon(assigns) do
     cx = assigns.center_x + assigns.offset_x
@@ -1193,7 +1209,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <path
       d={@d}
       fill={@fill}
-      data-tooltip-trigger="true"
+      data-tooltip-trigger={if @editable?, do: "true"}
       data-cross-level-badge-elevator="true"
       data-center-x={@center_x}
       data-center-y={@center_y}
@@ -1459,7 +1475,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       open={@pending_xy != nil && (@mode == :add || (@mode == :view && @selected_stop_id != nil))}
       on_close="close_drawer"
       title={@drawer_title}
-      class="max-w-2xl"
+      class="max-w-lg"
     >
       <:header_actions>
         <div :if={@show_toggle} class="join">
@@ -2118,7 +2134,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </button>
         <div class="flex-1"></div>
         <button type="submit" class="btn btn-primary btn-active">
-          Save Pathway
+          Update Pathway
         </button>
       </:actions>
     </.simple_form>
