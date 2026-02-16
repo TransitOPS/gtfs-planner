@@ -126,6 +126,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :mode, :atom, required: true
   attr :selected_from_stop, :any, default: nil
   attr :has_diagram, :boolean, required: true
+  attr :measurement_enabled, :boolean, default: false
+  attr :ruler_point_a, :any, default: nil
+  attr :ruler_point_b, :any, default: nil
+  attr :has_scale, :boolean, default: false
   attr :levels, :list, default: []
   attr :active_level, :any, default: nil
 
@@ -136,7 +140,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         id="diagram-action-strip"
         class="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-blue-50 border-b border-blue-200"
       >
-        <div class="flex items-center gap-2">
+        <div class="flex min-w-0 flex-1 items-center gap-2">
           <form phx-change="switch_level" class="flex items-center gap-2">
             <label class="text-sm font-medium text-blue-900">Level:</label>
             <select class="select select-sm select-bordered bg-white" name="level_id">
@@ -151,7 +155,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <%= cond do %>
               <% @mode == :view -> %>
                 <span class="text-sm text-blue-700 font-medium">
-                  Click a stop to view or edit
+                  {view_mode_instruction(@measurement_enabled, @ruler_point_a, @ruler_point_b)}
                 </span>
               <% @mode == :add -> %>
                 <span class="text-sm text-blue-700 font-medium">
@@ -177,8 +181,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <% end %>
           <% end %>
         </div>
-
-        <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
+        <div class="ml-auto flex items-center gap-2">
+          <%= if @mode == :view and @has_diagram do %>
+            <%= if @measurement_enabled do %>
+              <button
+                type="button"
+                class="btn btn-sm bg-orange-500 text-white hover:bg-orange-600"
+                phx-click="toggle_measurement"
+              >
+                Cancel Establish Scale
+              </button>
+            <% else %>
+              <%= if @has_scale do %>
+                <span class="text-sm font-semibold text-blue-900 px-2">Scale Set</span>
+              <% else %>
+                <button
+                  type="button"
+                  class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
+                  phx-click="toggle_measurement"
+                >
+                  Establish Scale
+                </button>
+              <% end %>
+            <% end %>
+          <% end %>
+          <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
+        </div>
       </div>
     <% end %>
     """
@@ -200,6 +228,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :cross_level_badges_by_stop, :map, default: %{}
   attr :diagram_error, :string, default: nil
   attr :organization_id, :string, required: true
+  attr :ruler_point_a, :any, default: nil
+  attr :ruler_point_b, :any, default: nil
+  attr :scale_point_a, :any, default: nil
+  attr :scale_point_b, :any, default: nil
+  attr :measurement_enabled, :boolean, default: false
 
   def diagram_canvas(assigns) do
     canvas_key = diagram_canvas_key(assigns.active_level, assigns.active_stop_level)
@@ -243,6 +276,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             selected_stop_id={@selected_stop_id}
             mode={@mode}
             cross_level_badges_by_stop={@cross_level_badges_by_stop}
+            ruler_point_a={@ruler_point_a}
+            ruler_point_b={@ruler_point_b}
+            scale_point_a={@scale_point_a}
+            scale_point_b={@scale_point_b}
+            measurement_enabled={@measurement_enabled}
           />
           <div
             id="diagram-edit-tooltip"
@@ -251,7 +289,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             aria-hidden="true"
           >
           </div>
-          <.diagram_hints_and_legend />
+          <.diagram_hints_and_legend has_scale={@scale_point_a != nil and @scale_point_b != nil} />
         <% @active_level -> %>
           <.empty_diagram_state />
         <% true -> %>
@@ -290,6 +328,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :selected_stop_id, :any
   attr :mode, :atom, required: true
   attr :cross_level_badges_by_stop, :map, default: %{}
+  attr :ruler_point_a, :any, default: nil
+  attr :ruler_point_b, :any, default: nil
+  attr :scale_point_a, :any, default: nil
+  attr :scale_point_b, :any, default: nil
+  attr :measurement_enabled, :boolean, default: false
 
   defp diagram_overlay(assigns) do
     ~H"""
@@ -316,6 +359,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </defs>
 
       <.pathways_layer streams={@streams} mode={@mode} />
+      <.ruler_line
+        :if={@measurement_enabled and @ruler_point_a}
+        point_a={@ruler_point_a}
+        point_b={@ruler_point_b}
+        style={:draft}
+      />
+      <.ruler_line
+        :if={(@mode == :view and @scale_point_a) && @scale_point_b}
+        point_a={@scale_point_a}
+        point_b={@scale_point_b}
+        style={:saved}
+      />
       <.stops_layer
         streams={@streams}
         active_point_id={@active_point_id}
@@ -1010,6 +1065,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     end
   end
 
+  defp view_mode_instruction(true, nil, _point_b), do: "Click first ruler point"
+  defp view_mode_instruction(true, _point_a, nil), do: "Click second ruler point"
+  defp view_mode_instruction(true, _point_a, _point_b), do: "Enter real-world distance and save"
+  defp view_mode_instruction(false, _point_a, _point_b), do: "Click a stop to view or edit"
+
   defp stop_name_with_platform(stop) do
     name = present_text(stop.stop_name)
     platform = present_text(stop.platform_code)
@@ -1032,6 +1092,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp maybe_upcase(nil), do: nil
   defp maybe_upcase(text), do: String.upcase(text)
+
+  defp normalize_point(%{} = point) do
+    x = point_value(point, :x)
+    y = point_value(point, :y)
+
+    if is_number(x) and is_number(y), do: %{x: x / 1, y: y / 1}, else: nil
+  end
+
+  defp normalize_point(_), do: nil
+
+  defp point_value(point, key) do
+    Map.get(point, key) || Map.get(point, Atom.to_string(key))
+  end
 
   defp stop_aria_label(stop) do
     stop_id = present_text(stop.stop_id) || "Unknown"
@@ -1233,10 +1306,152 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
+  attr :point_a, :any, required: true
+  attr :point_b, :any, default: nil
+  attr :style, :atom, required: true
+
+  defp ruler_line(assigns) do
+    point_a = normalize_point(assigns.point_a)
+    point_b = normalize_point(assigns.point_b)
+
+    cond do
+      point_a == nil ->
+        ~H""
+
+      point_b == nil and assigns.style == :draft ->
+        assigns =
+          assigns
+          |> assign(:ax, point_a.x)
+          |> assign(:ay, point_a.y)
+          |> assign(:line_color, "#f97316")
+
+        ~H"""
+        <g class="pointer-events-none">
+          <circle
+            cx={@ax}
+            cy={@ay}
+            r="0.35"
+            fill="#ffffff"
+            stroke={@line_color}
+            stroke-width="0.13"
+            data-ruler-endpoint="true"
+            data-center-x={@ax}
+            data-center-y={@ay}
+            data-base-radius="0.35"
+            data-base-stroke="0.13"
+          />
+        </g>
+        """
+
+      point_b == nil ->
+        ~H""
+
+      true ->
+        {mid_x, mid_y} = pathway_midpoint(point_a.x, point_a.y, point_b.x, point_b.y)
+        top_node = if point_a.y <= point_b.y, do: point_a, else: point_b
+        saved_label? = assigns.style == :saved
+        label_anchor_x = if(saved_label?, do: top_node.x, else: mid_x)
+        label_anchor_y = if(saved_label?, do: top_node.y, else: mid_y)
+        label_offset_x = if(saved_label?, do: 0.5, else: 0.0)
+        label_offset_y = if(saved_label?, do: 0.0, else: -0.9)
+
+        assigns =
+          assigns
+          |> assign(:ax, point_a.x)
+          |> assign(:ay, point_a.y)
+          |> assign(:bx, point_b.x)
+          |> assign(:by, point_b.y)
+          |> assign(:mx, mid_x)
+          |> assign(:my, mid_y)
+          |> assign(:line_color, if(saved_label?, do: "#16a34a", else: "#f97316"))
+          |> assign(:label_text, if(saved_label?, do: "SCALE", else: "Measure"))
+          |> assign(:saved_label?, saved_label?)
+          |> assign(:label_anchor_x, label_anchor_x)
+          |> assign(:label_anchor_y, label_anchor_y)
+          |> assign(:label_offset_x, label_offset_x)
+          |> assign(:label_offset_y, label_offset_y)
+
+        ~H"""
+        <g class="pointer-events-none">
+          <line
+            x1={@ax}
+            y1={@ay}
+            x2={@bx}
+            y2={@by}
+            stroke={@line_color}
+            stroke-width="0.25"
+            stroke-dasharray={if @style == :saved, do: "none", else: "0.8 0.5"}
+            data-ruler-line="true"
+            data-base-stroke="0.25"
+            data-base-dash={if @style == :saved, do: nil, else: "0.8,0.5"}
+          />
+          <circle
+            cx={@ax}
+            cy={@ay}
+            r="0.35"
+            fill="#ffffff"
+            stroke={@line_color}
+            stroke-width="0.13"
+            data-ruler-endpoint="true"
+            data-center-x={@ax}
+            data-center-y={@ay}
+            data-base-radius="0.35"
+            data-base-stroke="0.13"
+          />
+          <circle
+            cx={@bx}
+            cy={@by}
+            r="0.35"
+            fill="#ffffff"
+            stroke={@line_color}
+            stroke-width="0.13"
+            data-ruler-endpoint="true"
+            data-center-x={@bx}
+            data-center-y={@by}
+            data-base-radius="0.35"
+            data-base-stroke="0.13"
+          />
+          <text
+            x={@label_anchor_x + @label_offset_x}
+            y={@label_anchor_y + @label_offset_y}
+            fill={@line_color}
+            stroke="#ffffff"
+            stroke-width="0.16"
+            paint-order="stroke fill"
+            font-size="0.72"
+            font-weight="600"
+            text-anchor={if @saved_label?, do: "start", else: "middle"}
+            dominant-baseline="central"
+            data-ruler-label="true"
+            data-midpoint-x={@mx}
+            data-midpoint-y={@my}
+            data-label-anchor-x={if @saved_label?, do: @label_anchor_x}
+            data-label-anchor-y={if @saved_label?, do: @label_anchor_y}
+            data-label-offset-x={if @saved_label?, do: @label_offset_x}
+            data-label-offset-y={@label_offset_y}
+            data-base-font-size="0.72"
+            data-base-stroke="0.16"
+            class="select-none"
+          >
+            {@label_text}
+          </text>
+        </g>
+        """
+    end
+  end
+
+  attr :has_scale, :boolean, default: false
+
   defp diagram_hints_and_legend(assigns) do
     ~H"""
     <div class="absolute bottom-2 left-2 z-10 flex items-center gap-3 bg-black/50 text-white text-xs rounded-lg px-3 py-1.5 backdrop-blur-sm">
       <span>Scroll to pan · Ctrl+Scroll to zoom</span>
+      <span
+        :if={!@has_scale}
+        class="badge badge-xs border bg-amber-100 border-amber-300 text-amber-900"
+      >
+        No scale
+      </span>
       <button
         type="button"
         phx-click={JS.toggle(to: "#diagram-legend-panel")}
@@ -1971,12 +2186,63 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   # ============================================================================
+  # Ruler Drawer
+  # ============================================================================
+
+  attr :open, :boolean, required: true
+  attr :ruler_form, :any, required: true
+  attr :has_scale, :boolean, default: false
+
+  def ruler_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="ruler-drawer"
+      open={@open}
+      on_close="close_ruler_drawer"
+      title="Diagram Scale"
+      class="max-w-xl"
+    >
+      <.simple_form for={@ruler_form} id="ruler-form" phx-submit="save_ruler">
+        <.input
+          field={@ruler_form[:distance_meters]}
+          type="number"
+          label="Distance (meters)"
+          step="0.01"
+          min="0.01"
+          required
+          help="Enter the real-world distance between the two selected points."
+        />
+
+        <:actions>
+          <div class="flex-1"></div>
+          <button type="button" class="btn btn-ghost" phx-click="clear_ruler">
+            Clear Ruler
+          </button>
+          <button
+            :if={@has_scale}
+            type="button"
+            class="btn btn-outline btn-error"
+            phx-click="clear_calibration"
+          >
+            Clear Calibration
+          </button>
+          <button type="submit" class="btn btn-primary btn-active">
+            Save Scale
+          </button>
+        </:actions>
+      </.simple_form>
+    </.drawer>
+    """
+  end
+
+  # ============================================================================
   # Pathway Drawer
   # ============================================================================
 
   attr :open, :boolean, required: true
   attr :pathway_form, :any, required: true
   attr :editing_pathway, :any
+  attr :has_scale, :boolean, default: false
 
   def pathway_drawer(assigns) do
     ~H"""
@@ -1987,13 +2253,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       title="Edit Pathway"
       class="max-w-4xl"
     >
-      <.pathway_form :if={@open} pathway_form={@pathway_form} editing_pathway={@editing_pathway} />
+      <.pathway_form
+        :if={@open}
+        pathway_form={@pathway_form}
+        editing_pathway={@editing_pathway}
+        has_scale={@has_scale}
+      />
     </.drawer>
     """
   end
 
   attr :pathway_form, :any, required: true
   attr :editing_pathway, :any
+  attr :has_scale, :boolean, default: false
 
   defp pathway_form(assigns) do
     # Build pathway mode options using Pathway module functions
@@ -2048,14 +2320,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           help="Average time to traverse in seconds."
         />
 
-        <.input
-          field={@pathway_form[:length]}
-          type="number"
-          label="Length (m)"
-          step="0.01"
-          min="0"
-          help="Horizontal length in meters."
-        />
+        <div>
+          <.input
+            field={@pathway_form[:length]}
+            type="number"
+            label="Length (m)"
+            step="0.01"
+            min="0"
+            help="Horizontal length in meters."
+          />
+          <button
+            :if={
+              @has_scale and @editing_pathway != nil and
+                blank_pathway_length_value?(@pathway_form[:length].value)
+            }
+            type="button"
+            class="mt-1 text-sm font-medium link link-primary justify-start"
+            phx-click="calculate_pathway_length"
+          >
+            Calculate length?
+          </button>
+        </div>
 
         <.input
           field={@pathway_form[:min_width]}
@@ -2160,6 +2445,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     </div>
     """
   end
+
+  defp blank_pathway_length_value?(nil), do: true
+
+  defp blank_pathway_length_value?(value) when is_binary(value) do
+    String.trim(value) == ""
+  end
+
+  defp blank_pathway_length_value?(_value), do: false
 
   # ============================================================================
   # Level Sidebar

@@ -10,6 +10,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   alias LiveSelect.Component, as: LiveSelectComponent
@@ -24,6 +25,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:page_title, "Station Diagram")
      |> assign(:user_roles, user_roles)
      |> assign(:mode, :view)
+     |> assign(:measurement_enabled, false)
+     |> assign(:ruler_point_a, nil)
+     |> assign(:ruler_point_b, nil)
+     |> assign(:show_ruler_drawer, false)
+     |> assign(:ruler_form, to_form(%{"distance_meters" => ""}, as: :ruler))
      |> assign(:pending_xy, nil)
      |> assign(:selected_stop_id, nil)
      |> assign(:active_point_id, nil)
@@ -126,6 +132,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> stream(:child_stops, [], reset: true)
     |> stream(:pathways, [], reset: true)
+    |> reset_ruler_state()
     |> assign(:child_stops_list, [])
     |> assign(:unassigned_child_stops, [])
     |> assign(:pathways_list, [])
@@ -165,6 +172,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> stream(:child_stops, visible_canvas_stops, reset: true)
     |> stream(:pathways, same_level_pathways, reset: true)
+    |> reset_ruler_state()
     |> assign(:child_stops_list, child_stops_on_level)
     |> assign(:unassigned_child_stops, unassigned_child_stops)
     |> assign(:pathways_list, level_pathways)
@@ -243,6 +251,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             mode={@mode}
             selected_from_stop={@selected_from_stop}
             has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
+            measurement_enabled={@measurement_enabled}
+            ruler_point_a={@ruler_point_a}
+            ruler_point_b={@ruler_point_b}
+            has_scale={scale_configured?(@active_stop_level)}
             levels={@levels}
             active_level={@active_level}
           />
@@ -260,6 +272,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               cross_level_badges_by_stop={@cross_level_badges_by_stop}
               diagram_error={@diagram_error}
               organization_id={@current_organization.id}
+              ruler_point_a={@ruler_point_a}
+              ruler_point_b={@ruler_point_b}
+              scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
+              scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
+              measurement_enabled={@measurement_enabled}
             />
           </div>
         </:sub_header>
@@ -282,6 +299,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           open={@show_pathway_drawer}
           pathway_form={@pathway_form}
           editing_pathway={@editing_pathway}
+          has_scale={scale_configured?(@active_stop_level)}
+        />
+
+        <.ruler_drawer
+          open={@show_ruler_drawer}
+          ruler_form={@ruler_form}
+          has_scale={scale_configured?(@active_stop_level)}
         />
 
         <.level_sidebar
@@ -353,6 +377,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       selected_level ->
         {:noreply,
          socket
+         |> disable_measurement()
          |> assign(:active_level, selected_level)
          |> assign(:pending_xy, nil)
          |> assign(:diagram_error, nil)
@@ -377,25 +402,50 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("switch_mode", %{"mode" => mode}, socket) do
-    mode_atom = String.to_existing_atom(mode)
+    case parse_mode(mode) do
+      {:ok, mode_atom} ->
+        socket =
+          if socket.assigns.mode == :connect do
+            assign(socket, :selected_from_stop, nil)
+          else
+            socket
+          end
 
-    socket =
-      if socket.assigns.mode == :connect do
-        assign(socket, :selected_from_stop, nil)
-      else
+        socket =
+          socket
+          |> assign(:mode, mode_atom)
+          |> reset_reposition_state()
+          |> assign(:pending_xy, nil)
+          |> assign(:active_point_id, nil)
+          |> maybe_disable_measurement_for_mode(mode_atom)
+          |> restream_active_stop()
+          |> restream_mode_dependent_streams()
+
+        {:noreply, socket}
+
+      :error ->
+        {:noreply, put_flash(socket, :error, "Invalid mode selection")}
+    end
+  end
+
+  def handle_event("switch_mode", _params, socket) do
+    {:noreply, put_flash(socket, :error, "Invalid mode selection")}
+  end
+
+  @impl true
+  def handle_event("toggle_measurement", _params, socket) do
+    if socket.assigns.mode != :view do
+      {:noreply, socket}
+    else
+      measurement_enabled = not socket.assigns.measurement_enabled
+
+      socket =
         socket
-      end
+        |> assign(:measurement_enabled, measurement_enabled)
+        |> maybe_reset_ruler_for_measurement_toggle(measurement_enabled)
 
-    socket =
-      socket
-      |> assign(:mode, mode_atom)
-      |> reset_reposition_state()
-      |> assign(:pending_xy, nil)
-      |> assign(:active_point_id, nil)
-      |> restream_active_stop()
-      |> restream_mode_dependent_streams()
-
-    {:noreply, socket}
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -404,6 +454,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     y = to_float(y)
 
     case socket.assigns.mode do
+      :view ->
+        {:noreply, handle_view_measure_click(socket, x, y)}
+
       :add ->
         level_id =
           if socket.assigns.active_level, do: socket.assigns.active_level.level_id, else: ""
@@ -427,7 +480,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:stop_id_mode, :auto)
          |> assign(:child_stop_form, form)}
 
-      # In :view and :connect modes, stop selection is handled by the SVG
+      # In :connect mode, stop selection is handled by the SVG
       # hit-target circles via phx-click="stop_clicked" — no proximity search needed.
       _ ->
         {:noreply, socket}
@@ -531,8 +584,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       :add ->
         {:noreply, socket}
 
-      _view ->
-        handle_event("edit_child_stop", %{"id" => id}, socket)
+      :view ->
+        if socket.assigns.measurement_enabled do
+          {:noreply, socket}
+        else
+          handle_event("edit_child_stop", %{"id" => id}, socket)
+        end
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -800,6 +860,89 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("save_ruler", %{"ruler" => %{"distance_meters" => distance_input}}, socket) do
+    active_stop_level = socket.assigns.active_stop_level
+    point_a = socket.assigns.ruler_point_a
+    point_b = socket.assigns.ruler_point_b
+
+    socket =
+      assign(socket, :ruler_form, to_form(%{"distance_meters" => distance_input}, as: :ruler))
+
+    with %{} <- point_a,
+         %{} <- point_b,
+         %Decimal{} = distance_meters <- parse_positive_decimal(distance_input),
+         svg_distance when svg_distance >= 0.001 <- euclidean_distance(point_a, point_b),
+         %StopLevel{} = stop_level <- active_stop_level do
+      meters_per_unit = Decimal.div(distance_meters, Decimal.from_float(svg_distance))
+
+      attrs = %{
+        scale_point_a: point_a,
+        scale_point_b: point_b,
+        scale_distance_meters: distance_meters,
+        scale_meters_per_unit: meters_per_unit
+      }
+
+      case Gtfs.update_stop_level_scale(stop_level, attrs) do
+        {:ok, updated_stop_level} ->
+          {:noreply,
+           socket
+           |> assign(:active_stop_level, updated_stop_level)
+           |> assign(:measurement_enabled, false)
+           |> reset_ruler_state()}
+
+        {:error, _changeset} ->
+          {:noreply,
+           socket
+           |> assign(:ruler_form, to_form(%{"distance_meters" => distance_input}, as: :ruler))
+           |> put_flash(:error, "Failed to save diagram scale")}
+      end
+    else
+      nil ->
+        {:noreply, put_flash(socket, :error, "Distance must be greater than 0 meters")}
+
+      svg_distance when is_float(svg_distance) ->
+        {:noreply, put_flash(socket, :error, "Choose two distinct points for calibration")}
+
+      _ ->
+        {:noreply, put_flash(socket, :error, "Choose two points and enter a valid distance")}
+    end
+  end
+
+  def handle_event("save_ruler", _params, socket) do
+    {:noreply, put_flash(socket, :error, "Choose two points and enter a valid distance")}
+  end
+
+  @impl true
+  def handle_event("clear_ruler", _params, socket) do
+    {:noreply, reset_ruler_state(socket)}
+  end
+
+  @impl true
+  def handle_event("close_ruler_drawer", _params, socket) do
+    {:noreply, reset_ruler_state(socket)}
+  end
+
+  @impl true
+  def handle_event("clear_calibration", _params, socket) do
+    case socket.assigns.active_stop_level do
+      %StopLevel{} = stop_level ->
+        case Gtfs.clear_stop_level_scale(stop_level) do
+          {:ok, cleared_stop_level} ->
+            {:noreply,
+             socket
+             |> assign(:active_stop_level, cleared_stop_level)
+             |> reset_ruler_state()}
+
+          {:error, _changeset} ->
+            {:noreply, put_flash(socket, :error, "Failed to clear diagram scale")}
+        end
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_event("open_walkability_drawer", %{"id" => id}, socket) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
@@ -1032,6 +1175,52 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("calculate_pathway_length", _params, socket) do
+    editing_pathway = socket.assigns.editing_pathway
+    active_stop_level = socket.assigns.active_stop_level
+
+    cond do
+      is_nil(editing_pathway) ->
+        {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
+
+      not scale_configured?(active_stop_level) ->
+        {:noreply, assign(socket, :pathway_error, "Scale is not configured for this level.")}
+
+      is_nil(editing_pathway.from_stop) or is_nil(editing_pathway.to_stop) ->
+        {:noreply, assign(socket, :pathway_error, "Pathway is not fully associated with stops.")}
+
+      editing_pathway.from_stop.level_id != editing_pathway.to_stop.level_id ->
+        {:noreply,
+         assign(socket, :pathway_error, "Length calculation requires stops on the same level.")}
+
+      true ->
+        case Gtfs.calculate_pathway_length(
+               active_stop_level,
+               editing_pathway.from_stop,
+               editing_pathway.to_stop
+             ) do
+          %Decimal{} = calculated_length ->
+            current_params = socket.assigns.pathway_form.params || %{}
+            formatted_length = format_pathway_length_for_form(calculated_length)
+            updated_params = Map.put(current_params, "length", formatted_length)
+
+            {:noreply,
+             socket
+             |> assign(:pathway_form, to_form(updated_params))
+             |> assign(:pathway_error, nil)}
+
+          _ ->
+            {:noreply,
+             assign(
+               socket,
+               :pathway_error,
+               "Could not calculate length from current stop coordinates."
+             )}
+        end
+    end
+  end
+
+  @impl true
   def handle_event("save_pathway", params, socket) do
     editing_pathway = socket.assigns.editing_pathway
 
@@ -1158,6 +1347,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   {:noreply,
                    socket
                    |> assign(:active_stop_level, updated_stop_level)
+                   |> disable_measurement()
                    |> assign(:diagram_error, nil)}
 
                 {:error, _changeset} ->
@@ -1522,6 +1712,151 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp to_float(nil), do: 0.0
 
+  defp parse_mode("view"), do: {:ok, :view}
+  defp parse_mode("add"), do: {:ok, :add}
+  defp parse_mode("connect"), do: {:ok, :connect}
+  defp parse_mode(_), do: :error
+
+  defp maybe_disable_measurement_for_mode(socket, :view), do: socket
+  defp maybe_disable_measurement_for_mode(socket, _mode), do: disable_measurement(socket)
+
+  defp maybe_reset_ruler_for_measurement_toggle(socket, true), do: reset_ruler_state(socket)
+  defp maybe_reset_ruler_for_measurement_toggle(socket, false), do: reset_ruler_state(socket)
+
+  defp disable_measurement(socket) do
+    socket
+    |> assign(:measurement_enabled, false)
+    |> reset_ruler_state()
+  end
+
+  defp reset_ruler_state(socket) do
+    socket
+    |> assign(:ruler_point_a, nil)
+    |> assign(:ruler_point_b, nil)
+    |> assign(:show_ruler_drawer, false)
+    |> assign(:ruler_form, to_form(%{"distance_meters" => ""}, as: :ruler))
+  end
+
+  defp handle_view_measure_click(socket, x, y) do
+    if socket.assigns.measurement_enabled do
+      handle_measure_click(socket, x, y)
+    else
+      socket
+    end
+  end
+
+  defp handle_measure_click(socket, x, y) do
+    point = %{"x" => x, "y" => y}
+
+    cond do
+      is_nil(socket.assigns.ruler_point_a) ->
+        socket
+        |> assign(:ruler_point_a, point)
+        |> assign(:ruler_point_b, nil)
+        |> assign(:show_ruler_drawer, false)
+
+      is_nil(socket.assigns.ruler_point_b) ->
+        socket
+        |> assign(:ruler_point_b, point)
+        |> assign(:show_ruler_drawer, true)
+
+      true ->
+        socket
+        |> assign(:ruler_point_a, point)
+        |> assign(:ruler_point_b, nil)
+        |> assign(:show_ruler_drawer, false)
+        |> assign(:ruler_form, to_form(%{"distance_meters" => ""}, as: :ruler))
+    end
+  end
+
+  defp parse_positive_decimal(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    case Decimal.parse(trimmed) do
+      {decimal, ""} ->
+        if Decimal.compare(decimal, Decimal.new(0)) == :gt, do: decimal, else: nil
+
+      _ ->
+        nil
+    end
+  end
+
+  defp parse_positive_decimal(_), do: nil
+
+  defp euclidean_distance(point_a, point_b) do
+    with %{x: ax, y: ay} <- normalize_point(point_a),
+         %{x: bx, y: by} <- normalize_point(point_b) do
+      :math.sqrt(:math.pow(bx - ax, 2) + :math.pow(by - ay, 2))
+    else
+      _ -> 0.0
+    end
+  end
+
+  defp normalize_point(%{} = point) do
+    x = point_value(point, :x)
+    y = point_value(point, :y)
+
+    if is_number(x) and is_number(y), do: %{x: x / 1, y: y / 1}, else: nil
+  end
+
+  defp normalize_point(_), do: nil
+
+  defp point_value(point, key) do
+    Map.get(point, key) || Map.get(point, Atom.to_string(key))
+  end
+
+  defp scale_point(nil, _field), do: nil
+
+  defp scale_point(stop_level, field) do
+    value = Map.get(stop_level, field)
+    if normalize_point(value), do: value, else: nil
+  end
+
+  defp scale_configured?(nil), do: false
+
+  defp scale_configured?(stop_level) do
+    not is_nil(scale_point(stop_level, :scale_point_a)) and
+      not is_nil(scale_point(stop_level, :scale_point_b)) and
+      match?(%Decimal{}, stop_level.scale_distance_meters) and
+      match?(%Decimal{}, stop_level.scale_meters_per_unit)
+  end
+
+  defp maybe_put_auto_pathway_length(attrs, socket, from_stop, to_stop) do
+    active_level = socket.assigns.active_level
+    active_stop_level = socket.assigns.active_stop_level
+
+    same_level? =
+      active_level &&
+        from_stop.level_id == active_level.level_id &&
+        to_stop.level_id == active_level.level_id
+
+    length =
+      if same_level? and scale_configured?(active_stop_level) do
+        Gtfs.calculate_pathway_length(active_stop_level, from_stop, to_stop)
+      else
+        nil
+      end
+
+    if length do
+      Map.put(attrs, :length, length)
+    else
+      attrs
+    end
+  end
+
+  defp format_pathway_length_for_form(%Decimal{} = length) do
+    rounded = Decimal.round(length, 2)
+    normalized = Decimal.to_string(rounded, :normal)
+
+    case String.split(normalized, ".", parts: 2) do
+      [integer] ->
+        integer <> ".00"
+
+      [integer, fractional] ->
+        integer <> "." <> String.pad_trailing(String.slice(fractional, 0, 2), 2, "0")
+    end
+  end
+
   defp pathway_form_params(pathway) do
     %{
       "pathway_id" => pathway.pathway_id,
@@ -1559,15 +1894,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
 
-    attrs = %{
-      pathway_id: pathway_id,
-      from_stop_id: from_stop.stop_id,
-      to_stop_id: to_stop.stop_id,
-      pathway_mode: 1,
-      is_bidirectional: true,
-      organization_id: organization_id,
-      gtfs_version_id: gtfs_version_id
-    }
+    attrs =
+      %{
+        pathway_id: pathway_id,
+        from_stop_id: from_stop.stop_id,
+        to_stop_id: to_stop.stop_id,
+        pathway_mode: 1,
+        is_bidirectional: true,
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id
+      }
+      |> maybe_put_auto_pathway_length(socket, from_stop, to_stop)
 
     case Gtfs.create_pathway(attrs) do
       {:ok, pathway} ->
