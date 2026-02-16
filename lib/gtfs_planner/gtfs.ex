@@ -576,12 +576,19 @@ defmodule GtfsPlanner.Gtfs do
       |> MapSet.new()
 
     if MapSet.member?(existing_ids, base_stop_id) do
-      case Enum.find(2..999, fn n ->
-             candidate = "#{base_stop_id}_#{n}"
-             not MapSet.member?(existing_ids, candidate)
-           end) do
-        nil -> base_stop_id
-        n -> "#{base_stop_id}_#{n}"
+      suffix =
+        Stream.iterate(2, &(&1 + 1))
+        |> Enum.find(fn n ->
+          candidate = "#{base_stop_id}_#{n}"
+          not MapSet.member?(existing_ids, candidate)
+        end)
+
+      case suffix do
+        nil ->
+          raise "Unable to generate unique stop_id for #{inspect(base_stop_id)}"
+
+        n ->
+          "#{base_stop_id}_#{n}"
       end
     else
       base_stop_id
