@@ -32,6 +32,15 @@ const OVERLAY_BASE = {
   pathwayElevatorBoxHeight: 2,
   pathwayElevatorBoxStroke: 0.4,
   pathwayElevatorTextSize: 1.2,
+  rulerLineStroke: 0.25,
+  rulerEndpointRadius: 0.35,
+  rulerEndpointStroke: 0.13,
+  rulerLabelFontSize: 0.72,
+  rulerLabelStroke: 0.16,
+  rulerLabelMinScale: 0.85,
+  savedRulerLabelMinScale: 2,
+  rulerEndpointHideNearOneMinScale: 0.9,
+  rulerEndpointHideNearOneMaxScale: 1.1,
   pathwayVisualThinFactor: 1.4,
   iconVisualThinFactor: 1.2,
   pendingOffsetY: 1,
@@ -44,6 +53,23 @@ const TOOLTIP_POINTER_OFFSET = 12;
 const TOOLTIP_VIEWPORT_PADDING = 8;
 
 const DiagramCanvasHook = {
+  rulerEndpointVisualScale(scale) {
+    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+
+    if (safeScale >= 1) {
+      // Slightly slim endpoints when zoomed in, especially around ~2x.
+      const zoomInBoost = Math.min(safeScale - 1, 1) * 0.4;
+      return safeScale + zoomInBoost;
+    }
+
+    // Keep scale endpoints smaller when zoomed out, with extra slimming in
+    // the mid-zoom range where markers otherwise appear visually heavy.
+    const baseShrink = 1 + (1 - safeScale) * 0.8;
+    const midZoomBoost = safeScale >= 0.65 ? (1 - safeScale) * 0.6 : 0;
+
+    return baseShrink + midZoomBoost;
+  },
+
   iconVisualScale(scale) {
     const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
 
@@ -573,6 +599,7 @@ const DiagramCanvasHook = {
     const scale = this.scale || 1;
     const iconScale = this.iconVisualScale(scale);
     const pathwayScale = this.pathwayVisualScale(scale);
+    const rulerEndpointScale = this.rulerEndpointVisualScale(scale);
 
     overlay.querySelectorAll("[data-stop-hit-target]").forEach((hitTarget) => {
       const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
@@ -871,6 +898,109 @@ const DiagramCanvasHook = {
       label.setAttribute("y", `${midpointY + offsetY / scale}`);
       label.setAttribute("font-size", `${baseFontSize / scale}`);
       label.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
+    });
+
+    overlay.querySelectorAll("[data-ruler-line]").forEach((line) => {
+      const baseStroke = parseFloat(
+        line.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.rulerLineStroke}`
+      );
+
+      if (!Number.isFinite(baseStroke)) {
+        return;
+      }
+
+      line.setAttribute("stroke-width", `${baseStroke / scale}`);
+
+      const baseDash = line.getAttribute("data-base-dash");
+      if (baseDash) {
+        const scaled = baseDash
+          .split(",")
+          .map((part) => parseFloat(part.trim()))
+          .filter((value) => Number.isFinite(value))
+          .map((value) => value / scale);
+
+        if (scaled.length > 0) {
+          line.setAttribute("stroke-dasharray", scaled.join(" "));
+        }
+      }
+    });
+
+    overlay.querySelectorAll("[data-ruler-endpoint]").forEach((endpoint) => {
+      const cx = parseFloat(endpoint.getAttribute("data-center-x"));
+      const cy = parseFloat(endpoint.getAttribute("data-center-y"));
+      const baseRadius = parseFloat(
+        endpoint.getAttribute("data-base-radius") ?? `${OVERLAY_BASE.rulerEndpointRadius}`
+      );
+      const baseStroke = parseFloat(
+        endpoint.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.rulerEndpointStroke}`
+      );
+
+      if (
+        !Number.isFinite(cx) ||
+        !Number.isFinite(cy) ||
+        !Number.isFinite(baseRadius) ||
+        !Number.isFinite(baseStroke)
+      ) {
+        return;
+      }
+
+      if (
+        scale >= OVERLAY_BASE.rulerEndpointHideNearOneMinScale &&
+        scale <= OVERLAY_BASE.rulerEndpointHideNearOneMaxScale
+      ) {
+        endpoint.setAttribute("display", "none");
+        return;
+      }
+
+      endpoint.removeAttribute("display");
+      endpoint.setAttribute("cx", `${cx}`);
+      endpoint.setAttribute("cy", `${cy}`);
+      endpoint.setAttribute("r", `${baseRadius / rulerEndpointScale}`);
+      endpoint.setAttribute("stroke-width", `${baseStroke / rulerEndpointScale}`);
+    });
+
+    overlay.querySelectorAll("[data-ruler-label]").forEach((label) => {
+      const midpointX = parseFloat(label.getAttribute("data-midpoint-x"));
+      const midpointY = parseFloat(label.getAttribute("data-midpoint-y"));
+      const anchorX = parseFloat(label.getAttribute("data-label-anchor-x"));
+      const anchorY = parseFloat(label.getAttribute("data-label-anchor-y"));
+      const offsetX = parseFloat(label.getAttribute("data-label-offset-x") ?? "0");
+      const offsetY = parseFloat(label.getAttribute("data-label-offset-y"));
+      const baseFontSize = parseFloat(
+        label.getAttribute("data-base-font-size") ?? `${OVERLAY_BASE.rulerLabelFontSize}`
+      );
+      const baseStroke = parseFloat(
+        label.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.rulerLabelStroke}`
+      );
+      const hasSavedAnchor = Number.isFinite(anchorX) && Number.isFinite(anchorY);
+      const labelMinScale = hasSavedAnchor
+        ? OVERLAY_BASE.savedRulerLabelMinScale
+        : OVERLAY_BASE.rulerLabelMinScale;
+
+      if (
+        !hasSavedAnchor &&
+          (!Number.isFinite(midpointX) || !Number.isFinite(midpointY)) ||
+        !Number.isFinite(offsetX) ||
+        !Number.isFinite(offsetY) ||
+        !Number.isFinite(baseFontSize) ||
+        !Number.isFinite(baseStroke)
+      ) {
+        return;
+      }
+
+      if (scale < labelMinScale) {
+        label.setAttribute("display", "none");
+        return;
+      }
+
+      label.removeAttribute("display");
+      const labelX = hasSavedAnchor ? anchorX + offsetX / scale : midpointX;
+      const labelY = hasSavedAnchor ? anchorY + offsetY / scale : midpointY + offsetY / scale;
+
+      label.setAttribute("x", `${labelX}`);
+      label.setAttribute("y", `${labelY}`);
+      label.setAttribute("font-size", `${baseFontSize / scale}`);
+      label.setAttribute("stroke-width", `${baseStroke / scale}`);
     });
 
     const pending = overlay.querySelector("polygon[data-cx][data-cy]");

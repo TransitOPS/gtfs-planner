@@ -2395,11 +2395,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}")
-      refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[phx-click='edit_pathway']")
+
+      refute has_element?(
+               view,
+               "#cross-level-badge-#{cross_level_pathway.id}[phx-click='edit_pathway']"
+             )
+
       refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[data-tooltip]")
       refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[tabindex='0']")
-      refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id} [data-cross-level-badge-tooltip-hit]")
-      refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id} [data-tooltip-trigger='true']")
+
+      refute has_element?(
+               view,
+               "#cross-level-badge-#{cross_level_pathway.id} [data-cross-level-badge-tooltip-hit]"
+             )
+
+      refute has_element?(
+               view,
+               "#cross-level-badge-#{cross_level_pathway.id} [data-tooltip-trigger='true']"
+             )
     end
 
     test "view mode keeps pathway and cross-level badge edit affordances", %{
@@ -2480,15 +2493,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       assert has_element?(view, "#pathways-#{same_level_pathway.id}[phx-click='edit_pathway']")
-      assert has_element?(view, "#pathways-#{same_level_pathway.id}[data-tooltip='Click to edit pathway']")
+
+      assert has_element?(
+               view,
+               "#pathways-#{same_level_pathway.id}[data-tooltip='Click to edit pathway']"
+             )
+
       assert has_element?(view, "#pathways-#{same_level_pathway.id}[tabindex='0']")
       assert has_element?(view, "#pathways-#{same_level_pathway.id} [data-pathway-tooltip-hit]")
 
-      assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[phx-click='edit_pathway']")
+      assert has_element?(
+               view,
+               "#cross-level-badge-#{cross_level_pathway.id}[phx-click='edit_pathway']"
+             )
+
       assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[data-tooltip]")
       assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[tabindex='0']")
-      assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id} [data-cross-level-badge-tooltip-hit]")
-      assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id} [data-tooltip-trigger='true']")
+
+      assert has_element?(
+               view,
+               "#cross-level-badge-#{cross_level_pathway.id} [data-cross-level-badge-tooltip-hit]"
+             )
+
+      assert has_element?(
+               view,
+               "#cross-level-badge-#{cross_level_pathway.id} [data-tooltip-trigger='true']"
+             )
     end
 
     test "renders elevator opacity, cross-level badges, and keeps cross-level pathways out of SVG",
@@ -3593,6 +3623,530 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#walkability-test-row-#{walkability_test.id}")
       refute has_element?(view, "#child-stop-row-#{child_stop.id}", "1 test case")
       assert is_nil(Validations.get_walkability_test(walkability_test.id))
+    end
+  end
+
+  describe "StationDiagramLive - diagram measurement" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_MEASURE",
+          stop_name: "Measure Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_MEASURE_1",
+          level_name: "Level 1",
+          level_index: 0.0
+        })
+
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_MEASURE_2",
+          level_name: "Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "measure-level-1.png")
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level_2, "measure-level-2.png")
+
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MEASURE_STOP_A",
+          stop_name: "Measure Stop A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MEASURE_STOP_B",
+          stop_name: "Measure Stop B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 13.0, "y" => 14.0}
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        level_2: level_2,
+        stop_a: stop_a,
+        stop_b: stop_b
+      }
+    end
+
+    test "establish scale control is available in view mode when diagram exists and ordered before mode switch",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      assert has_element?(view, "button[phx-click='toggle_measurement']", "Establish Scale")
+
+      assert has_element?(
+               view,
+               "#diagram-action-strip .ml-auto > button[phx-click='toggle_measurement'] + div.join button[phx-value-mode='view']"
+             )
+
+      assert has_element?(view, "#diagram-overlay[data-mode='view']")
+    end
+
+    test "establish scale control is hidden in non-view modes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      refute has_element?(view, "button[phx-click='toggle_measurement']")
+    end
+
+    test "first click while establishing scale renders a draft endpoint", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("button[phx-click='toggle_measurement']") |> render_click()
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "20"})
+
+      assert has_element?(view, "#diagram-overlay circle[data-ruler-endpoint]")
+      refute has_element?(view, "#diagram-overlay line[data-ruler-line]")
+    end
+
+    test "two clicks while establishing scale open ruler drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("button[phx-click='toggle_measurement']") |> render_click()
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "20"})
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "20"})
+
+      assert has_element?(view, "#ruler-form")
+    end
+
+    test "saving ruler persists calibration and shows Scale Set as non-clickable text", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("button[phx-click='toggle_measurement']") |> render_click()
+      render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "10"})
+
+      view
+      |> form("#ruler-form", %{"ruler" => %{"distance_meters" => "25"}})
+      |> render_submit()
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      refute is_nil(stop_level.scale_point_a)
+      refute is_nil(stop_level.scale_point_b)
+      assert has_element?(view, "#diagram-action-strip span", "Scale Set")
+      refute has_element?(view, "button[phx-click='toggle_measurement']", "Scale Set")
+      refute has_element?(view, ".badge", "Scale set")
+    end
+
+    test "saved scale label uses top-node anchor attributes with right offset", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+
+      {:ok, _} =
+        Gtfs.update_stop_level_scale(stop_level, %{
+          scale_point_a: %{"x" => 10.0, "y" => 10.0},
+          scale_point_b: %{"x" => 24.0, "y" => 30.0},
+          scale_distance_meters: Decimal.new("25"),
+          scale_meters_per_unit: Decimal.new("1.25")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      html = render(view)
+      assert html =~ ~r/data-ruler-label="true"/
+      assert html =~ ~r/data-label-anchor-x="10(?:\.0)?"/
+      assert html =~ ~r/data-label-anchor-y="10(?:\.0)?"/
+      assert html =~ ~r/data-label-offset-x="0\.5"/
+      assert html =~ ~r/text-anchor="start"/
+      assert has_element?(view, "#diagram-overlay text[data-ruler-label]", "SCALE")
+    end
+
+    test "clear calibration removes saved scale fields", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+
+      {:ok, _} =
+        Gtfs.update_stop_level_scale(stop_level, %{
+          scale_point_a: %{"x" => 10.0, "y" => 10.0},
+          scale_point_b: %{"x" => 20.0, "y" => 10.0},
+          scale_distance_meters: Decimal.new("25"),
+          scale_meters_per_unit: Decimal.new("2.5")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "toggle_measurement", %{})
+      render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "10"})
+      view |> element("button[phx-click='clear_calibration']") |> render_click()
+
+      cleared = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      assert is_nil(cleared.scale_point_a)
+      assert is_nil(cleared.scale_point_b)
+      assert has_element?(view, ".badge", "No scale")
+    end
+
+    test "switching level clears in-progress measurement state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level_2: level_2
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("button[phx-click='toggle_measurement']") |> render_click()
+      render_hook(view, "canvas_click", %{"x" => "15", "y" => "15"})
+      render_hook(view, "switch_level", %{"level_id" => level_2.id})
+
+      assert has_element?(view, "button[phx-click='toggle_measurement']", "Establish Scale")
+      assert has_element?(view, "#diagram-action-strip", "Click a stop to view or edit")
+    end
+
+    test "same-level pathway creation auto-populates length when calibrated", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+
+      {:ok, _} =
+        Gtfs.update_stop_level_scale(stop_level, %{
+          scale_point_a: %{"x" => 0.0, "y" => 0.0},
+          scale_point_b: %{"x" => 10.0, "y" => 0.0},
+          scale_distance_meters: Decimal.new("20"),
+          scale_meters_per_unit: Decimal.new("2")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+      render_hook(view, "stop_clicked", %{"id" => stop_a.id})
+      render_hook(view, "stop_clicked", %{"id" => stop_b.id})
+
+      assert has_element?(view, "#pathway-form input[name='length'][value='10.00']")
+    end
+
+    test "edit pathway with configured scale and blank length shows calculate length action", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+
+      {:ok, _} =
+        Gtfs.update_stop_level_scale(stop_level, %{
+          scale_point_a: %{"x" => 0.0, "y" => 0.0},
+          scale_point_b: %{"x" => 10.0, "y" => 0.0},
+          scale_distance_meters: Decimal.new("20"),
+          scale_meters_per_unit: Decimal.new("2")
+        })
+
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          stop_a.stop_id,
+          stop_b.stop_id,
+          %{length: nil}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#pathway-form button[phx-click='calculate_pathway_length']",
+               "Calculate length?"
+             )
+    end
+
+    test "clicking calculate length populates pathway form length without persisting", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+
+      {:ok, _} =
+        Gtfs.update_stop_level_scale(stop_level, %{
+          scale_point_a: %{"x" => 0.0, "y" => 0.0},
+          scale_point_b: %{"x" => 10.0, "y" => 0.0},
+          scale_distance_meters: Decimal.new("20"),
+          scale_meters_per_unit: Decimal.new("2")
+        })
+
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          stop_a.stop_id,
+          stop_b.stop_id,
+          %{length: nil}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> element("#pathway-form button[phx-click='calculate_pathway_length']")
+      |> render_click()
+
+      assert has_element?(view, "#pathway-form")
+      assert has_element?(view, "#pathway-form input[name='length'][value='10.00']")
+
+      reloaded_pathway = Gtfs.get_pathway!(pathway.id)
+      assert is_nil(reloaded_pathway.length)
+    end
+
+    test "calculate length action is hidden when length is already set", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+
+      {:ok, _} =
+        Gtfs.update_stop_level_scale(stop_level, %{
+          scale_point_a: %{"x" => 0.0, "y" => 0.0},
+          scale_point_b: %{"x" => 10.0, "y" => 0.0},
+          scale_distance_meters: Decimal.new("20"),
+          scale_meters_per_unit: Decimal.new("2")
+        })
+
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          stop_a.stop_id,
+          stop_b.stop_id,
+          %{length: Decimal.new("7.50")}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      refute has_element?(view, "#pathway-form button[phx-click='calculate_pathway_length']")
+    end
+
+    test "calculate length action is hidden when scale is not configured", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          stop_a.stop_id,
+          stop_b.stop_id,
+          %{length: nil}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      refute has_element?(view, "#pathway-form button[phx-click='calculate_pathway_length']")
+    end
+
+    test "calculate length fails for cross-level pathway and sets pathway error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      level_2: level_2,
+      stop_a: stop_a
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+
+      {:ok, _} =
+        Gtfs.update_stop_level_scale(stop_level, %{
+          scale_point_a: %{"x" => 0.0, "y" => 0.0},
+          scale_point_b: %{"x" => 10.0, "y" => 0.0},
+          scale_distance_meters: Decimal.new("20"),
+          scale_meters_per_unit: Decimal.new("2")
+        })
+
+      stop_c =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MEASURE_STOP_C",
+          stop_name: "Measure Stop C",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 13.0, "y" => 14.0}
+        })
+
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          stop_a.stop_id,
+          stop_c.stop_id,
+          %{length: nil}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> element("#pathway-form button[phx-click='calculate_pathway_length']")
+      |> render_click()
+
+      refute has_element?(view, "#pathway-form input[name='length'][value='10.00']")
+
+      assert has_element?(
+               view,
+               "span.text-error",
+               "Length calculation requires stops on the same level."
+             )
+    end
+
+    test "invalid mode payload does not crash", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "switch_mode", %{"mode" => "nope"})
+      assert has_element?(view, "#diagram-page")
     end
   end
 

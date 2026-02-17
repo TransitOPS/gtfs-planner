@@ -1111,4 +1111,135 @@ defmodule GtfsPlanner.GtfsTest do
       assert route4.id in route_ids
     end
   end
+
+  describe "stop level scale calibration" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_SCALE",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_SCALE",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      from_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SCALE_FROM",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      to_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SCALE_TO",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 13.0, y: 14.0}
+        })
+
+      %{stop_level: stop_level, from_stop: from_stop, to_stop: to_stop}
+    end
+
+    test "update_stop_level_scale/2 saves valid calibration", %{stop_level: stop_level} do
+      attrs = %{
+        scale_point_a: %{"x" => 10.0, "y" => 10.0},
+        scale_point_b: %{"x" => 20.0, "y" => 10.0},
+        scale_distance_meters: Decimal.new("25.0"),
+        scale_meters_per_unit: Decimal.new("2.5")
+      }
+
+      assert {:ok, updated} = Gtfs.update_stop_level_scale(stop_level, attrs)
+      assert updated.scale_point_a == attrs.scale_point_a
+      assert updated.scale_point_b == attrs.scale_point_b
+      assert Decimal.equal?(updated.scale_distance_meters, Decimal.new("25.0"))
+      assert Decimal.equal?(updated.scale_meters_per_unit, Decimal.new("2.5"))
+    end
+
+    test "all-or-none validation fails partial payloads", %{stop_level: stop_level} do
+      assert {:error, changeset} =
+               Gtfs.update_stop_level_scale(stop_level, %{
+                 scale_point_a: %{"x" => 10.0, "y" => 10.0}
+               })
+
+      assert "scale calibration requires both points, distance, and ratio" in errors_on(changeset).scale_point_a
+    end
+
+    test "invalid distance and ratio are rejected", %{stop_level: stop_level} do
+      assert {:error, changeset} =
+               Gtfs.update_stop_level_scale(stop_level, %{
+                 scale_point_a: %{"x" => 10.0, "y" => 10.0},
+                 scale_point_b: %{"x" => 20.0, "y" => 20.0},
+                 scale_distance_meters: Decimal.new("-1"),
+                 scale_meters_per_unit: Decimal.new("0")
+               })
+
+      assert "must be greater than 0" in errors_on(changeset).scale_distance_meters
+      assert "must be greater than 0" in errors_on(changeset).scale_meters_per_unit
+    end
+
+    test "clear_stop_level_scale/1 clears all fields", %{stop_level: stop_level} do
+      {:ok, calibrated} =
+        Gtfs.update_stop_level_scale(stop_level, %{
+          scale_point_a: %{"x" => 10.0, "y" => 10.0},
+          scale_point_b: %{"x" => 20.0, "y" => 20.0},
+          scale_distance_meters: Decimal.new("20"),
+          scale_meters_per_unit: Decimal.new("1")
+        })
+
+      assert {:ok, cleared} = Gtfs.clear_stop_level_scale(calibrated)
+      assert is_nil(cleared.scale_point_a)
+      assert is_nil(cleared.scale_point_b)
+      assert is_nil(cleared.scale_distance_meters)
+      assert is_nil(cleared.scale_meters_per_unit)
+    end
+
+    test "update_stop_level_diagram/2 clears existing calibration", %{stop_level: stop_level} do
+      {:ok, calibrated} =
+        Gtfs.update_stop_level_scale(stop_level, %{
+          scale_point_a: %{"x" => 10.0, "y" => 10.0},
+          scale_point_b: %{"x" => 20.0, "y" => 20.0},
+          scale_distance_meters: Decimal.new("20"),
+          scale_meters_per_unit: Decimal.new("1")
+        })
+
+      assert {:ok, updated} = Gtfs.update_stop_level_diagram(calibrated, "diagram.png")
+      assert updated.diagram_filename == "diagram.png"
+      assert is_nil(updated.scale_point_a)
+      assert is_nil(updated.scale_point_b)
+      assert is_nil(updated.scale_distance_meters)
+      assert is_nil(updated.scale_meters_per_unit)
+    end
+
+    test "calculate_pathway_length/3 returns rounded decimal", %{
+      stop_level: stop_level,
+      from_stop: from_stop,
+      to_stop: to_stop
+    } do
+      {:ok, calibrated} =
+        Gtfs.update_stop_level_scale(stop_level, %{
+          scale_point_a: %{"x" => 0.0, "y" => 0.0},
+          scale_point_b: %{"x" => 10.0, "y" => 0.0},
+          scale_distance_meters: Decimal.new("20"),
+          scale_meters_per_unit: Decimal.new("2")
+        })
+
+      assert Gtfs.calculate_pathway_length(calibrated, from_stop, to_stop) == Decimal.new("10.00")
+    end
+  end
 end
