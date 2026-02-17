@@ -3009,9 +3009,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :walkability_tests_list, :list, default: []
 
   defp walkability_tests_table(assigns) do
+    assigns = assign(assigns, :has_walkability_tests, assigns.walkability_tests_list != [])
+
     ~H"""
     <div>
-      <h2 class="text-base font-semibold mb-2">Reachability Test Cases</h2>
+      <div class="mb-2 flex items-center justify-between gap-3">
+        <h2 class="text-base font-semibold">Reachability Test Cases</h2>
+        <button
+          type="button"
+          id="run-reachability-tests-button"
+          class="btn btn-sm btn-primary"
+          phx-click="run_walkability_tests"
+          disabled={!@has_walkability_tests}
+        >
+          Run Reachability Tests
+        </button>
+      </div>
       <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <%= if @walkability_tests_list == [] do %>
           <p class="px-4 py-3 text-sm text-base-content/60">
