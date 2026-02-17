@@ -11,6 +11,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.BookingRule
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
+  alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareLegJoinRule
   alias GtfsPlanner.Gtfs.FareLegRule
@@ -338,10 +339,61 @@ defmodule GtfsPlanner.Gtfs do
   """
   def update_stop_level_diagram(%StopLevel{} = stop_level, filename) do
     stop_level
-    |> StopLevel.changeset(%{diagram_filename: filename})
+    |> StopLevel.changeset(%{
+      diagram_filename: filename,
+      scale_point_a: nil,
+      scale_point_b: nil,
+      scale_distance_meters: nil,
+      scale_meters_per_unit: nil
+    })
     |> Repo.update()
     |> broadcast([:stop_levels, :updated])
   end
+
+  @doc """
+  Updates a stop_level's diagram calibration.
+  """
+  def update_stop_level_scale(%StopLevel{} = stop_level, attrs) do
+    stop_level
+    |> StopLevel.scale_changeset(attrs)
+    |> Repo.update()
+    |> broadcast([:stop_levels, :updated])
+  end
+
+  @doc """
+  Clears a stop_level's diagram calibration.
+  """
+  def clear_stop_level_scale(%StopLevel{} = stop_level) do
+    update_stop_level_scale(stop_level, %{
+      scale_point_a: nil,
+      scale_point_b: nil,
+      scale_distance_meters: nil,
+      scale_meters_per_unit: nil
+    })
+  end
+
+  @doc """
+  Calculates a pathway length in meters from two stops and a calibrated stop_level.
+  Returns nil when calibration or coordinates are unavailable.
+  """
+  def calculate_pathway_length(%StopLevel{} = stop_level, %Stop{} = from_stop, %Stop{} = to_stop) do
+    with %{x: from_x, y: from_y} <- Coordinates.normalize_point(from_stop.diagram_coordinate),
+         %{x: to_x, y: to_y} <- Coordinates.normalize_point(to_stop.diagram_coordinate),
+         %Decimal{} = meters_per_unit <- stop_level.scale_meters_per_unit,
+         :gt <- Decimal.compare(meters_per_unit, Decimal.new(0)) do
+      svg_distance =
+        :math.sqrt(:math.pow(to_x - from_x, 2) + :math.pow(to_y - from_y, 2))
+
+      svg_distance
+      |> Decimal.from_float()
+      |> Decimal.mult(meters_per_unit)
+      |> Decimal.round(2)
+    else
+      _ -> nil
+    end
+  end
+
+  def calculate_pathway_length(_, _, _), do: nil
 
   @doc """
   Deletes a level.

@@ -143,6 +143,45 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-base-stroke="0.2"
             ></text>
           </g>
+          <g id="ruler-layer">
+            <line
+              id="ruler-line"
+              data-ruler-line="true"
+              data-base-stroke="0.25"
+              data-base-dash="0.8,0.5"
+              x1="10"
+              y1="10"
+              x2="20"
+              y2="20"
+            ></line>
+            <circle
+              id="ruler-endpoint-a"
+              data-ruler-endpoint="true"
+              data-center-x="10"
+              data-center-y="10"
+              data-base-radius="0.35"
+              data-base-stroke="0.13"
+            ></circle>
+            <text
+              id="ruler-label"
+              data-ruler-label="true"
+              data-midpoint-x="15"
+              data-midpoint-y="15"
+              data-label-offset-y="-0.9"
+              data-base-font-size="0.72"
+              data-base-stroke="0.16"
+            ></text>
+            <text
+              id="ruler-label-saved"
+              data-ruler-label="true"
+              data-label-anchor-x="10"
+              data-label-anchor-y="10"
+              data-label-offset-x="0.5"
+              data-label-offset-y="0"
+              data-base-font-size="0.72"
+              data-base-stroke="0.16"
+            ></text>
+          </g>
           <polygon
             id="pending"
             data-cx="10"
@@ -292,6 +331,33 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
       document.querySelector("#path-label").getAttribute("stroke-width"),
     ).toBe("0.07142857142857144");
 
+    expect(document.querySelector("#ruler-line").getAttribute("stroke-width")).toBe(
+      "0.125",
+    );
+    expect(document.querySelector("#ruler-line").getAttribute("stroke-dasharray")).toBe(
+      "0.4 0.25",
+    );
+    expect(document.querySelector("#ruler-endpoint-a").getAttribute("r")).toBe(
+      "0.14583333333333334",
+    );
+    expect(
+      document.querySelector("#ruler-endpoint-a").getAttribute("stroke-width"),
+    ).toBe("0.05416666666666667");
+    expect(document.querySelector("#ruler-label").getAttribute("x")).toBe("15");
+    expect(document.querySelector("#ruler-label").getAttribute("y")).toBe("14.55");
+    expect(document.querySelector("#ruler-label").getAttribute("font-size")).toBe(
+      "0.36",
+    );
+    expect(
+      document.querySelector("#ruler-label").getAttribute("stroke-width"),
+    ).toBe("0.08");
+    expect(document.querySelector("#ruler-label-saved").getAttribute("x")).toBe(
+      "10.25",
+    );
+    expect(document.querySelector("#ruler-label-saved").getAttribute("y")).toBe(
+      "10",
+    );
+
     expect(
       document.querySelector("#pending").getAttribute("stroke-width"),
     ).toBe("0.075");
@@ -351,6 +417,110 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(document.querySelector("#stop-label").getAttribute("display")).toBe(
       "none",
     );
+    expect(
+      document.querySelector("#ruler-endpoint-a").getAttribute("r"),
+    ).toBe("0.25");
+    expect(
+      document.querySelector("#ruler-endpoint-a").getAttribute("stroke-width"),
+    ).toBe("0.09285714285714286");
+  });
+
+  it("keeps ruler elements anchored while scaling with zoom", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    hook.scale = 1;
+    hook.scaleOverlayElements();
+    const initialY = document.querySelector("#ruler-label").getAttribute("y");
+
+    hook.scale = 3;
+    hook.scaleOverlayElements();
+
+    expect(document.querySelector("#ruler-endpoint-a").getAttribute("cx")).toBe("10");
+    expect(document.querySelector("#ruler-endpoint-a").getAttribute("cy")).toBe("10");
+    expect(document.querySelector("#ruler-label").getAttribute("x")).toBe("15");
+    expect(document.querySelector("#ruler-label").getAttribute("y")).not.toBe(initialY);
+  });
+
+  it("hides ruler labels when zoomed out below threshold and restores above threshold", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    hook.scale = 0.8;
+    hook.scaleOverlayElements();
+    expect(document.querySelector("#ruler-label").getAttribute("display")).toBe(
+      "none",
+    );
+    expect(
+      document.querySelector("#ruler-label-saved").getAttribute("display"),
+    ).toBe("none");
+
+    hook.scale = 1;
+    hook.scaleOverlayElements();
+    expect(document.querySelector("#ruler-label").getAttribute("display")).toBe(
+      null,
+    );
+    expect(
+      document.querySelector("#ruler-label-saved").getAttribute("display"),
+    ).toBe("none");
+
+    hook.scale = 2;
+    hook.scaleOverlayElements();
+    expect(
+      document.querySelector("#ruler-label-saved").getAttribute("display"),
+    ).toBe(null);
+  });
+
+  it("hides ruler endpoints at or near 1x zoom and shows them outside that range", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    hook.scale = 1;
+    hook.scaleOverlayElements();
+    expect(
+      document.querySelector("#ruler-endpoint-a").getAttribute("display"),
+    ).toBe("none");
+
+    hook.scale = 1.05;
+    hook.scaleOverlayElements();
+    expect(
+      document.querySelector("#ruler-endpoint-a").getAttribute("display"),
+    ).toBe("none");
+
+    hook.scale = 0.8;
+    hook.scaleOverlayElements();
+    expect(
+      document.querySelector("#ruler-endpoint-a").getAttribute("display"),
+    ).toBe(null);
+
+    hook.scale = 2;
+    hook.scaleOverlayElements();
+    expect(
+      document.querySelector("#ruler-endpoint-a").getAttribute("display"),
+    ).toBe(null);
+  });
+
+  it("slims ruler endpoints in mid-level zoom", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    hook.scale = 0.8;
+    hook.scaleOverlayElements();
+
+    expect(document.querySelector("#ruler-endpoint-a").getAttribute("r")).toBe(
+      "0.2734375",
+    );
+    expect(
+      document.querySelector("#ruler-endpoint-a").getAttribute("stroke-width"),
+    ).toBe("0.1015625");
   });
 
   it("shows and hides tooltip on hover for stop and pathway targets", () => {
