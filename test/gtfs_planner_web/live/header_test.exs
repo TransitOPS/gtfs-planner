@@ -5,11 +5,11 @@ defmodule GtfsPlannerWeb.HeaderTest do
   import GtfsPlanner.AccountsFixtures
 
   describe "Header - Unauthenticated Users (Auth Layout)" do
-    test "displays GTFS Planner logo text", %{conn: conn} do
+    test "displays Pathways Studio logo text", %{conn: conn} do
       {:ok, _view, html} = live(conn, ~p"/users/log_in")
 
       # Auth layout displays logo text in a span, not a link
-      assert html =~ "GTFS Planner"
+      assert html =~ "Pathways Studio"
     end
 
     test "does not display logout button", %{conn: conn} do
@@ -20,14 +20,14 @@ defmodule GtfsPlannerWeb.HeaderTest do
   end
 
   describe "Header - Authenticated Users" do
-    test "displays GTFS Planner logo text", %{conn: conn} do
+    test "displays Pathways Studio logo text", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
       {:ok, view, html} = live(conn, ~p"/")
 
-      assert html =~ "GTFS Planner"
-      assert has_element?(view, "a[href='/']", "GTFS Planner")
+      assert html =~ "Pathways Studio"
+      assert has_element?(view, "a[href='/']", "Pathways Studio")
     end
 
     test "displays logout button", %{conn: conn} do

@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Authorization.Roles do
   @moduledoc """
-  Canonical role definitions for the GTFS Planner application.
+  Canonical role definitions for the Pathways Studio application.
 
   Defines three distinct roles with specific scopes and permissions:
   - `administrator`: System-level role for managing organizations

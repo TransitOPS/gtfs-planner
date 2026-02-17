@@ -75,7 +75,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
       available_versions={assigns[:available_versions] || []}
     >
       <.header>
-        Welcome to GTFS Planner
+        Welcome to Pathways Studio
         <:subtitle>You are logged in as {@current_user.email}</:subtitle>
         <:actions>
           <%= if @is_administrator do %>

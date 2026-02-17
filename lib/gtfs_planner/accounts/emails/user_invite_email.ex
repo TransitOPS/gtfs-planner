@@ -21,8 +21,8 @@ defmodule GtfsPlanner.Accounts.Emails.UserInviteEmail do
 
     new()
     |> to({user.email})
-    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
-    |> subject("You're invited to join GTFS Planner")
+    |> from({"Pathways Studio", "no-reply@#{mail_domain}"})
+    |> subject("You're invited to join Pathways Studio")
     |> html_body(html_template(user, url))
     |> text_body(text_template(user, url))
     |> Mailer.deliver()
@@ -93,7 +93,7 @@ defmodule GtfsPlanner.Accounts.Emails.UserInviteEmail do
           </div>
           <div class="content">
             <p>Hello,</p>
-            <p>You've been invited to join GTFS Planner. Click the button below to accept your invitation and set up your account.</p>
+            <p>You've been invited to join Pathways Studio. Click the button below to accept your invitation and set up your account.</p>
             <p>
               <a href="#{url}" class="button">Accept Invitation</a>
             </p>
@@ -103,7 +103,7 @@ defmodule GtfsPlanner.Accounts.Emails.UserInviteEmail do
           </div>
           <div class="footer">
             <p>If you didn't expect this invitation, you can safely ignore this email.</p>
-            <p>&copy; #{DateTime.utc_now().year} GTFS Planner. All rights reserved.</p>
+            <p>&copy; #{DateTime.utc_now().year} Pathways Studio. All rights reserved.</p>
           </div>
         </div>
       </body>
@@ -113,11 +113,11 @@ defmodule GtfsPlanner.Accounts.Emails.UserInviteEmail do
 
   defp text_template(_user, url) do
     """
-    You're invited to join GTFS Planner
+    You're invited to join Pathways Studio
 
     Hello,
 
-    You've been invited to join GTFS Planner. Please visit the following link to accept your invitation and set up your account:
+    You've been invited to join Pathways Studio. Please visit the following link to accept your invitation and set up your account:
 
     #{url}
 
@@ -125,7 +125,7 @@ defmodule GtfsPlanner.Accounts.Emails.UserInviteEmail do
 
     If you didn't expect this invitation, you can safely ignore this email.
 
-    © #{DateTime.utc_now().year} GTFS Planner. All rights reserved.
+    © #{DateTime.utc_now().year} Pathways Studio. All rights reserved.
     """
   end
 end

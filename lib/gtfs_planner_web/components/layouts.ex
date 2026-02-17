@@ -69,11 +69,11 @@ defmodule GtfsPlannerWeb.Layouts do
       class="navbar bg-base-100 px-4 sm:px-6 lg:px-8 py-3 border-b border-base-300 items-center"
     >
       <div class="flex-none">
-        <.link href={~p"/"} class="flex items-center gap-2" aria-label="GTFS Planner - Go to homepage">
+        <.link href={~p"/"} class="flex items-center gap-2" aria-label="Pathways Studio - Go to homepage">
           <div class="bg-emerald-600 p-2 rounded-lg">
             <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
           </div>
-          <span class="text-xl font-semibold tracking-tight text-emerald-700">GTFS Planner</span>
+          <span class="text-xl font-semibold tracking-tight text-emerald-700">Pathways Studio</span>
         </.link>
       </div>
 
@@ -211,7 +211,7 @@ defmodule GtfsPlannerWeb.Layouts do
               <div class="bg-emerald-600 p-2 rounded-lg">
                 <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
               </div>
-              <span class="text-xl font-semibold tracking-tight text-emerald-700">GTFS Planner</span>
+              <span class="text-xl font-semibold tracking-tight text-emerald-700">Pathways Studio</span>
             </div>
 
             {render_slot(@inner_block)}
