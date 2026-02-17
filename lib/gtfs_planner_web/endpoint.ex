@@ -28,6 +28,7 @@ defmodule GtfsPlannerWeb.Endpoint do
     from: :gtfs_planner,
     gzip: not code_reloading?,
     only: GtfsPlannerWeb.static_paths(),
+    only_matching: ~w(favicon),
     raise_on_missing_only: code_reloading?
 
   # Code reloading can be explicitly enabled under the
