@@ -56,6 +56,45 @@ defmodule GtfsPlanner.Otp.MaterializerTest do
       assert second_meta.content_hash == first_meta.content_hash
       assert second_meta.file_size_bytes == first_meta.file_size_bytes
     end
+
+    test "lenient preflight still builds and persists artifact with incomplete GTFS", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      _agency = agency_fixture(organization.id, gtfs_version.id)
+
+      assert {:ok, zip_path, meta} =
+               Materializer.get_or_build_gtfs_zip(
+                 organization.id,
+                 gtfs_version.id,
+                 preflight_mode: :lenient
+               )
+
+      refute meta.reused
+      assert File.regular?(zip_path)
+
+      assert {:ok, artifact} = Otp.fetch_artifact(organization.id, gtfs_version.id)
+      assert artifact.zip_path == zip_path
+    end
+
+    test "strict preflight returns issues and does not persist artifact with incomplete GTFS", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      _agency = agency_fixture(organization.id, gtfs_version.id)
+
+      assert {:error, issues} =
+               Materializer.get_or_build_gtfs_zip(
+                 organization.id,
+                 gtfs_version.id,
+                 preflight_mode: :strict
+               )
+
+      issue_codes = Enum.map(issues, & &1.code)
+      assert :missing_required_file_data in issue_codes
+
+      assert {:error, :not_found} = Otp.fetch_artifact(organization.id, gtfs_version.id)
+    end
   end
 
   defp seed_minimum_required_gtfs!(organization_id, gtfs_version_id) do

@@ -64,7 +64,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert has_element?(view, "input[phx-value-validation='mobility_data'][checked]")
     end
 
-    test "clicking 'Run Validation' without selecting validator shows info flash", %{
+    test "clicking 'Run Validation' with no selection shows guidance flash", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -75,7 +75,22 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       view |> element("button", "Run Validation") |> render_click()
 
-      assert render(view) =~ "Select &#39;MobilityData GTFS Validator&#39; to run validation"
+      assert render(view) =~ "Select at least one validation check before running validation"
+    end
+
+    test "pathways trip tests selection shows preparation progress after run click", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      assert render(view) =~ "Checking existing export..."
     end
 
     test "starts validation when validator is selected and button is clicked", %{

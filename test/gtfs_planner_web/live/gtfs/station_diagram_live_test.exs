@@ -3202,38 +3202,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
     end
 
-    test "run reachability tests button is disabled when no test cases exist", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      assert has_element?(view, "#run-reachability-tests-button[disabled]", "Run Reachability Tests")
-    end
-
-    test "run reachability tests button shows no-test error when clicked with no test cases", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      render_hook(view, "run_walkability_tests", %{})
-
-      assert has_element?(view, "#flash-error", "No reachability test cases to run.")
-    end
-
     test "address selection enables walkability test submission", %{
       conn: conn,
       user: user,

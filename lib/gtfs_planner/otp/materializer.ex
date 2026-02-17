@@ -12,6 +12,7 @@ defmodule GtfsPlanner.Otp.Materializer do
   alias GtfsPlanner.Otp.Preflight
 
   @type issues :: [map()]
+  @type preflight_mode :: :strict | :lenient
   @type status_phase :: :cache_check | :preflight | :exporting | :packaging | :persisting | :done | :failed
   @type status_payload :: %{required(:phase) => status_phase(), optional(atom()) => term()}
   @type meta :: %{
@@ -25,6 +26,7 @@ defmodule GtfsPlanner.Otp.Materializer do
           {:ok, String.t(), meta()} | {:error, issues()}
   def get_or_build_gtfs_zip(organization_id, gtfs_version_id, opts) when is_list(opts) do
     status_callback = Keyword.get(opts, :status_callback)
+    preflight_mode = Keyword.get(opts, :preflight_mode, :strict)
 
     emit_status(status_callback, %{phase: :cache_check})
 
@@ -35,7 +37,7 @@ defmodule GtfsPlanner.Otp.Materializer do
 
       :miss ->
         emit_status(status_callback, %{phase: :preflight})
-        build_and_persist(organization_id, gtfs_version_id, status_callback)
+        build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode)
     end
   end
 
@@ -74,15 +76,36 @@ defmodule GtfsPlanner.Otp.Materializer do
     end
   end
 
-  defp build_and_persist(organization_id, gtfs_version_id, status_callback) do
+  defp build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode) do
     case Preflight.run(organization_id, gtfs_version_id) do
       :ok ->
         do_build_and_persist(organization_id, gtfs_version_id, status_callback)
 
       {:error, issues} ->
-        emit_status(status_callback, %{phase: :failed, reason: :preflight_failed})
-        {:error, issues}
+        handle_preflight_issues(
+          organization_id,
+          gtfs_version_id,
+          status_callback,
+          preflight_mode,
+          issues
+        )
     end
+  end
+
+  defp handle_preflight_issues(
+         organization_id,
+         gtfs_version_id,
+         status_callback,
+         :lenient,
+         issues
+       ) do
+    emit_status(status_callback, %{phase: :preflight, preflight_issues_count: length(issues)})
+    do_build_and_persist(organization_id, gtfs_version_id, status_callback)
+  end
+
+  defp handle_preflight_issues(_organization_id, _gtfs_version_id, status_callback, :strict, issues) do
+    emit_status(status_callback, %{phase: :failed, reason: :preflight_failed})
+    {:error, issues}
   end
 
   defp do_build_and_persist(organization_id, gtfs_version_id, status_callback) do
