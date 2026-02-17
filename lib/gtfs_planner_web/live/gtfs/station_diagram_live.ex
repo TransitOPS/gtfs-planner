@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   import GtfsPlannerWeb.Gtfs.StationDiagramComponents
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Validations
@@ -1784,32 +1785,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp parse_positive_decimal(_), do: nil
 
   defp euclidean_distance(point_a, point_b) do
-    with %{x: ax, y: ay} <- normalize_point(point_a),
-         %{x: bx, y: by} <- normalize_point(point_b) do
+    with %{x: ax, y: ay} <- Coordinates.normalize_point(point_a),
+         %{x: bx, y: by} <- Coordinates.normalize_point(point_b) do
       :math.sqrt(:math.pow(bx - ax, 2) + :math.pow(by - ay, 2))
     else
       _ -> 0.0
     end
   end
 
-  defp normalize_point(%{} = point) do
-    x = point_value(point, :x)
-    y = point_value(point, :y)
-
-    if is_number(x) and is_number(y), do: %{x: x / 1, y: y / 1}, else: nil
-  end
-
-  defp normalize_point(_), do: nil
-
-  defp point_value(point, key) do
-    Map.get(point, key) || Map.get(point, Atom.to_string(key))
-  end
-
   defp scale_point(nil, _field), do: nil
 
   defp scale_point(stop_level, field) do
     value = Map.get(stop_level, field)
-    if normalize_point(value), do: value, else: nil
+    if Coordinates.normalize_point(value), do: value, else: nil
   end
 
   defp scale_configured?(nil), do: false

@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.StopLevel do
   use Ecto.Schema
   import Ecto.Changeset
+  alias GtfsPlanner.Gtfs.Coordinates
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t(),
@@ -104,15 +105,11 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
   end
 
   defp valid_scale_point?(%{} = point) do
-    x = point_value(point, :x)
-    y = point_value(point, :y)
+    x = Coordinates.point_value(point, :x)
+    y = Coordinates.point_value(point, :y)
 
     is_number(x) and is_number(y) and x >= 0 and x <= 100 and y >= 0 and y <= 100
   end
 
   defp valid_scale_point?(_), do: false
-
-  defp point_value(point, key) do
-    Map.get(point, key) || Map.get(point, Atom.to_string(key))
-  end
 end

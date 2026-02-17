@@ -11,6 +11,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.BookingRule
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
+  alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareLegJoinRule
   alias GtfsPlanner.Gtfs.FareLegRule
@@ -376,8 +377,8 @@ defmodule GtfsPlanner.Gtfs do
   Returns nil when calibration or coordinates are unavailable.
   """
   def calculate_pathway_length(%StopLevel{} = stop_level, %Stop{} = from_stop, %Stop{} = to_stop) do
-    with %{x: from_x, y: from_y} <- normalize_point(from_stop.diagram_coordinate),
-         %{x: to_x, y: to_y} <- normalize_point(to_stop.diagram_coordinate),
+    with %{x: from_x, y: from_y} <- Coordinates.normalize_point(from_stop.diagram_coordinate),
+         %{x: to_x, y: to_y} <- Coordinates.normalize_point(to_stop.diagram_coordinate),
          %Decimal{} = meters_per_unit <- stop_level.scale_meters_per_unit,
          :gt <- Decimal.compare(meters_per_unit, Decimal.new(0)) do
       svg_distance =
@@ -2023,23 +2024,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp paginate(query, _page, _per_page), do: paginate(query, 1, 25)
-
-  defp normalize_point(%{} = point) do
-    x = point_value(point, :x)
-    y = point_value(point, :y)
-
-    if is_number(x) and is_number(y) do
-      %{x: x / 1, y: y / 1}
-    else
-      nil
-    end
-  end
-
-  defp normalize_point(_), do: nil
-
-  defp point_value(point, key) do
-    Map.get(point, key) || Map.get(point, Atom.to_string(key))
-  end
 
   defp broadcast({:ok, result}, event_topic) do
     broadcast_result =

@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   import GtfsPlannerWeb.CoreComponents
 
+  alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Pathway
   alias LiveSelect.Component
@@ -1093,19 +1094,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp maybe_upcase(nil), do: nil
   defp maybe_upcase(text), do: String.upcase(text)
 
-  defp normalize_point(%{} = point) do
-    x = point_value(point, :x)
-    y = point_value(point, :y)
-
-    if is_number(x) and is_number(y), do: %{x: x / 1, y: y / 1}, else: nil
-  end
-
-  defp normalize_point(_), do: nil
-
-  defp point_value(point, key) do
-    Map.get(point, key) || Map.get(point, Atom.to_string(key))
-  end
-
   defp stop_aria_label(stop) do
     stop_id = present_text(stop.stop_id) || "Unknown"
 
@@ -1311,8 +1299,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :style, :atom, required: true
 
   defp ruler_line(assigns) do
-    point_a = normalize_point(assigns.point_a)
-    point_b = normalize_point(assigns.point_b)
+    point_a = Coordinates.normalize_point(assigns.point_a)
+    point_b = Coordinates.normalize_point(assigns.point_b)
 
     cond do
       point_a == nil ->
