@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
     ~H"""
     <Layouts.auth flash={@flash}>
       <.header class="text-center">
-        Welcome to GTFS Planner
+        Welcome to Pathways Studio
         <:subtitle>Set up your administrator account and organization</:subtitle>
       </.header>
 

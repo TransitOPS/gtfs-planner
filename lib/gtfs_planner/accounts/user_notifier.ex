@@ -23,8 +23,8 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
 
     new()
     |> to(user.email)
-    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
-    |> subject("Confirm your GTFS Planner email")
+    |> from({"Pathways Studio", "no-reply@#{mail_domain}"})
+    |> subject("Confirm your Pathways Studio email")
     |> html_body(email_body)
     |> Mailer.deliver()
   end
@@ -44,8 +44,8 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
 
     new()
     |> to(user.email)
-    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
-    |> subject("Update your GTFS Planner email")
+    |> from({"Pathways Studio", "no-reply@#{mail_domain}"})
+    |> subject("Update your Pathways Studio email")
     |> html_body(email_body)
     |> Mailer.deliver()
   end
@@ -65,8 +65,8 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
 
     new()
     |> to(user.email)
-    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
-    |> subject("Reset your GTFS Planner password")
+    |> from({"Pathways Studio", "no-reply@#{mail_domain}"})
+    |> subject("Reset your Pathways Studio password")
     |> html_body(email_body)
     |> Mailer.deliver()
   end
@@ -88,8 +88,8 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
 
     new()
     |> to(user.email)
-    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
-    |> subject("You're invited to join GTFS Planner")
+    |> from({"Pathways Studio", "no-reply@#{mail_domain}"})
+    |> subject("You're invited to join Pathways Studio")
     |> html_body(email_body)
     |> Mailer.deliver()
   end
@@ -152,7 +152,7 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
       Hi #{user.email},
     </p>
     <p>
-      You have been invited to join GTFS Planner. You can set your password by visiting the URL below:
+      You have been invited to join Pathways Studio. You can set your password by visiting the URL below:
     </p>
     <p>
       <a href="#{url}">Set your password</a>

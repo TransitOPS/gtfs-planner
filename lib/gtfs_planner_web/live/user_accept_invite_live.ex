@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLive do
     ~H"""
     <Layouts.auth flash={@flash}>
       <.header class="text-center">
-        Welcome to GTFS Planner
+        Welcome to Pathways Studio
         <:subtitle>Create a password to complete your account setup</:subtitle>
       </.header>
 
