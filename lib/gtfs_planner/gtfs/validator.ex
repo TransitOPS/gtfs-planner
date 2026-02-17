@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Gtfs.Validator do
   @behaviour GtfsPlanner.Gtfs.ValidatorBehaviour
 
   alias GtfsPlanner.Gtfs.{Export, Validator.Result}
+  alias GtfsPlanner.Otp.Lifecycle
   alias GtfsPlanner.Validations
 
   require Logger
@@ -85,9 +86,13 @@ defmodule GtfsPlanner.Gtfs.Validator do
             fn -> Validations.mark_completed(run, validation_result) end
           )
 
+          purge_otp_artifact_after_success(organization_id, gtfs_version_id)
+
           {:ok, validation_result}
 
         {:error, _reason} = error ->
+          # Preserve OTP artifacts on failed validation attempts so retries can
+          # reuse current materialization.
           handle_db_operation(
             "mark validation run as failed",
             fn -> Validations.mark_failed(run, error) end
@@ -149,6 +154,40 @@ defmodule GtfsPlanner.Gtfs.Validator do
         Logger.error("Exception while trying to #{operation_name}: #{inspect(exception)}")
         :ok
     end
+  end
+
+  defp handle_lifecycle_operation(operation_name, operation_fn) when is_function(operation_fn, 0) do
+    try do
+      case operation_fn.() do
+        {:ok, :purged} ->
+          :ok
+
+        {:ok, :not_found} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.error("Failed to #{operation_name}: #{inspect(reason)}")
+          :ok
+
+        unexpected ->
+          Logger.warning(
+            "Unexpected return value while trying to #{operation_name}: #{inspect(unexpected)}"
+          )
+
+          :ok
+      end
+    rescue
+      exception ->
+        Logger.error("Exception while trying to #{operation_name}: #{inspect(exception)}")
+        :ok
+    end
+  end
+
+  defp purge_otp_artifact_after_success(organization_id, gtfs_version_id) do
+    handle_lifecycle_operation(
+      "purge OTP artifact on successful validation",
+      fn -> Lifecycle.purge_artifact_on_success(organization_id, gtfs_version_id) end
+    )
   end
 
   @doc false
