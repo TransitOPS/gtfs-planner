@@ -28,7 +28,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
 
       {:ok, _view, html} = live(conn, ~p"/")
 
-      assert html =~ "Welcome to GTFS Planner"
+      assert html =~ "Welcome to Pathways Studio"
       assert html =~ "You are logged in as #{user.email}"
     end
 

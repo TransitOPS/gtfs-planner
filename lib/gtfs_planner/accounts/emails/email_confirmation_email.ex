@@ -21,8 +21,8 @@ defmodule GtfsPlanner.Accounts.Emails.EmailConfirmationEmail do
 
     new()
     |> to({user.email})
-    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
-    |> subject("Confirm your GTFS Planner email")
+    |> from({"Pathways Studio", "no-reply@#{mail_domain}"})
+    |> subject("Confirm your Pathways Studio email")
     |> html_body(html_template(user, url))
     |> text_body(text_template(user, url))
     |> Mailer.deliver()
@@ -103,7 +103,7 @@ defmodule GtfsPlanner.Accounts.Emails.EmailConfirmationEmail do
           </div>
           <div class="footer">
             <p>If you didn't request this email confirmation, you can safely ignore this email.</p>
-            <p>&copy; #{DateTime.utc_now().year} GTFS Planner. All rights reserved.</p>
+            <p>&copy; #{DateTime.utc_now().year} Pathways Studio. All rights reserved.</p>
           </div>
         </div>
       </body>
@@ -113,7 +113,7 @@ defmodule GtfsPlanner.Accounts.Emails.EmailConfirmationEmail do
 
   defp text_template(_user, url) do
     """
-    Confirm your GTFS Planner email
+    Confirm your Pathways Studio email
 
     Hello,
 
@@ -125,7 +125,7 @@ defmodule GtfsPlanner.Accounts.Emails.EmailConfirmationEmail do
 
     If you didn't request this email confirmation, you can safely ignore this email.
 
-    © #{DateTime.utc_now().year} GTFS Planner. All rights reserved.
+    © #{DateTime.utc_now().year} Pathways Studio. All rights reserved.
     """
   end
 end

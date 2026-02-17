@@ -21,8 +21,8 @@ defmodule GtfsPlanner.Accounts.Emails.ResetPasswordEmail do
 
     new()
     |> to({user.email})
-    |> from({"GTFS Planner", "no-reply@#{mail_domain}"})
-    |> subject("Reset your GTFS Planner password")
+    |> from({"Pathways Studio", "no-reply@#{mail_domain}"})
+    |> subject("Reset your Pathways Studio password")
     |> html_body(html_template(user, url))
     |> text_body(text_template(user, url))
     |> Mailer.deliver()
@@ -93,7 +93,7 @@ defmodule GtfsPlanner.Accounts.Emails.ResetPasswordEmail do
           </div>
           <div class="content">
             <p>Hello,</p>
-            <p>We received a request to reset your password for your GTFS Planner account. Click the button below to choose a new password.</p>
+            <p>We received a request to reset your password for your Pathways Studio account. Click the button below to choose a new password.</p>
             <p>
               <a href="#{url}" class="button">Reset Password</a>
             </p>
@@ -103,7 +103,7 @@ defmodule GtfsPlanner.Accounts.Emails.ResetPasswordEmail do
             <p>If you didn't request this password reset, you can safely ignore this email and your password will remain unchanged.</p>
           </div>
           <div class="footer">
-            <p>&copy; #{DateTime.utc_now().year} GTFS Planner. All rights reserved.</p>
+            <p>&copy; #{DateTime.utc_now().year} Pathways Studio. All rights reserved.</p>
           </div>
         </div>
       </body>
@@ -113,11 +113,11 @@ defmodule GtfsPlanner.Accounts.Emails.ResetPasswordEmail do
 
   defp text_template(_user, url) do
     """
-    Reset your GTFS Planner password
+    Reset your Pathways Studio password
 
     Hello,
 
-    We received a request to reset your password for your GTFS Planner account. Please visit the following link to choose a new password:
+    We received a request to reset your password for your Pathways Studio account. Please visit the following link to choose a new password:
 
     #{url}
 
@@ -125,7 +125,7 @@ defmodule GtfsPlanner.Accounts.Emails.ResetPasswordEmail do
 
     If you didn't request this password reset, you can safely ignore this email and your password will remain unchanged.
 
-    © #{DateTime.utc_now().year} GTFS Planner. All rights reserved.
+    © #{DateTime.utc_now().year} Pathways Studio. All rights reserved.
     """
   end
 end
