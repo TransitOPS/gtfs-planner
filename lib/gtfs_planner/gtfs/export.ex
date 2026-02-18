@@ -89,6 +89,45 @@ defmodule GtfsPlanner.Gtfs.Export do
     end
   end
 
+  @doc """
+  Exports selected GTFS file specs to an existing output directory.
+
+  This is a disk-targeted export path used by OTP materialization workflows.
+
+  ## Parameters
+
+  - `organization_id` - UUID of the organization
+  - `gtfs_version_id` - UUID of the GTFS version to export
+  - `file_specs` - List of GTFS file specs to export
+  - `output_dir` - Target directory for generated `*.txt` files
+
+  ## Returns
+
+  - `{:ok, file_paths}` - List of written file paths
+  - `{:error, reason}` - Error tuple with reason
+  """
+  @spec export_specs_to_directory(Ecto.UUID.t(), Ecto.UUID.t(), [map()], String.t()) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def export_specs_to_directory(organization_id, gtfs_version_id, file_specs, output_dir)
+      when is_list(file_specs) and is_binary(output_dir) do
+    try do
+      File.mkdir_p!(output_dir)
+
+      lookup_maps = build_lookup_maps(organization_id, gtfs_version_id)
+
+      Repo.transaction(
+        fn ->
+          export_files(output_dir, file_specs, organization_id, gtfs_version_id, lookup_maps)
+        end,
+        timeout: :infinity
+      )
+    rescue
+      e ->
+        Logger.error("GTFS disk export failed: #{inspect(e)}")
+        {:error, "Export failed: #{Exception.message(e)}"}
+    end
+  end
+
   # Generates unique temporary directory path
   defp generate_temp_dir do
     unique_id = :erlang.unique_integer([:positive])

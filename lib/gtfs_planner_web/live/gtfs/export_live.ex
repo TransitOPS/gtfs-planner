@@ -6,6 +6,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   use GtfsPlannerWeb, :live_view
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Validator
+  alias GtfsPlanner.Otp.Lifecycle
+  alias GtfsPlanner.Otp.Materializer
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -26,6 +28,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:export_error, nil)
      |> assign(:validation_run_id, nil)
      |> assign(:validation_task, nil)
+     |> assign(:pathways_prep_task, nil)
+     |> assign(:pending_mobility_validation, false)
      |> assign(:validating, false)
      |> assign(:validation_progress, nil)
      |> assign(:validation_result, nil)
@@ -129,45 +133,29 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_event("run_validation", _params, socket) do
+    selected_validations = socket.assigns.selected_validations
+
     cond do
       socket.assigns.validating ->
         {:noreply, put_flash(socket, :error, "Validation already in progress")}
 
-      :mobility_data not in socket.assigns.selected_validations ->
+      selected_validations == [] ->
         {:noreply,
-         put_flash(socket, :info, "Select 'MobilityData GTFS Validator' to run validation")}
+         put_flash(
+           socket,
+           :info,
+           "Select at least one validation check before running validation"
+         )}
 
       true ->
         organization_id = socket.assigns.current_organization.id
         gtfs_version_id = socket.assigns.current_gtfs_version.id
+        has_pathways_tests = Enum.member?(selected_validations, :pathways_tests)
 
-        case Validations.create_validation_run(organization_id, gtfs_version_id, "mobility_data") do
-          {:ok, run} ->
-            # Subscribe to PubSub topic for progress updates
-            if connected?(socket) do
-              Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "validation:#{run.id}")
-            end
-
-            validator_module = Application.get_env(:gtfs_planner, :validator_module)
-
-            task =
-              Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-                validator_module.validate(organization_id, gtfs_version_id,
-                  validation_run_id: run.id
-                )
-              end)
-
-            {:noreply,
-             socket
-             |> assign(:validation_run_id, run.id)
-             |> assign(:validation_task, task)
-             |> assign(:validating, true)
-             |> assign(:validation_progress, %{phase: :starting, percent: 0})
-             |> assign(:validation_result, nil)
-             |> assign(:validation_error, nil)}
-
-          {:error, _changeset} ->
-            {:noreply, put_flash(socket, :error, "Failed to create validation run")}
+        if has_pathways_tests do
+          start_pathways_prep(socket, selected_validations, organization_id, gtfs_version_id)
+        else
+          run_mobility_data_validation(socket, organization_id, gtfs_version_id)
         end
     end
   end
@@ -185,6 +173,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      socket
      |> assign(:validation_run_id, nil)
      |> assign(:validation_task, nil)
+     |> assign(:pathways_prep_task, nil)
+     |> assign(:pending_mobility_validation, false)
      |> assign(:validating, false)
      |> assign(:validation_progress, nil)
      |> assign(:validation_result, nil)
@@ -219,8 +209,50 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   @impl Phoenix.LiveView
+  def handle_info({:pathways_prep_progress, payload}, socket) do
+    phase = Map.get(payload, :phase, :cache_check)
+
+    {:noreply,
+     assign(socket, :validation_progress, %{phase: {:pathways_prep, phase}, percent: phase_percent(phase)})}
+  end
+
+  @impl Phoenix.LiveView
   def handle_info({ref, result}, socket) do
     cond do
+      socket.assigns.pathways_prep_task && socket.assigns.pathways_prep_task.ref == ref ->
+        Process.demonitor(ref, [:flush])
+
+        socket = assign(socket, :pathways_prep_task, nil)
+
+        case result do
+          :ok ->
+            if socket.assigns.pending_mobility_validation do
+              run_mobility_data_validation(
+                socket |> assign(:pending_mobility_validation, false),
+                socket.assigns.current_organization.id,
+                socket.assigns.current_gtfs_version.id
+              )
+            else
+              {:noreply,
+               socket
+               |> assign(:pending_mobility_validation, false)
+               |> assign(:validating, false)
+               |> assign(:validation_progress, nil)
+               |> put_flash(
+                 :info,
+                 "Pathways trip test run started. Export preparation complete."
+               )}
+            end
+
+          {:error, {:pathways_export_prep_failed, _issues}} ->
+            {:noreply,
+             socket
+             |> assign(:pending_mobility_validation, false)
+             |> assign(:validating, false)
+             |> assign(:validation_progress, nil)
+             |> put_flash(:error, "Could not prepare GTFS export for pathways trip tests.")}
+        end
+
       socket.assigns.export_task && socket.assigns.export_task.ref == ref ->
         Process.demonitor(ref, [:flush])
 
@@ -307,6 +339,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   @impl Phoenix.LiveView
   def handle_info({:DOWN, ref, :process, _pid, reason}, socket) do
     cond do
+      socket.assigns.pathways_prep_task && socket.assigns.pathways_prep_task.ref == ref ->
+        require Logger
+        Logger.error("Pathways prep task crashed: #{inspect(reason)}")
+
+        {:noreply,
+         socket
+         |> put_flash(:error, "Could not prepare GTFS export for pathways trip tests.")
+         |> assign(:validating, false)
+         |> assign(:pathways_prep_task, nil)
+         |> assign(:pending_mobility_validation, false)
+         |> assign(:validation_progress, nil)}
+
       socket.assigns.export_task && socket.assigns.export_task.ref == ref ->
         require Logger
         Logger.error("Export task crashed: #{inspect(reason)}")
@@ -645,11 +689,96 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_label(:exporting), do: "Exporting GTFS data..."
   defp phase_label(:validating), do: "Running validator..."
   defp phase_label(:processing), do: "Processing results..."
+  defp phase_label({:pathways_prep, :cache_check}), do: "Checking existing export..."
+  defp phase_label({:pathways_prep, :preflight}), do: "Validating export readiness..."
+  defp phase_label({:pathways_prep, :exporting}), do: "Exporting GTFS data..."
+  defp phase_label({:pathways_prep, :packaging}), do: "Packaging GTFS zip..."
+  defp phase_label({:pathways_prep, :persisting}), do: "Saving artifact metadata..."
+  defp phase_label({:pathways_prep, :done}), do: "Export preparation complete"
+  defp phase_label({:pathways_prep, :failed}), do: "Export preparation failed"
   defp phase_label(_), do: "Preparing..."
 
   defp format_run_type("mobility_data"), do: "MobilityData"
   defp format_run_type("pathways_tests"), do: "Pathways Tests"
   defp format_run_type(type), do: type
+
+  defp run_mobility_data_validation(socket, organization_id, gtfs_version_id) do
+    case Validations.create_validation_run(organization_id, gtfs_version_id, "mobility_data") do
+      {:ok, run} ->
+        if connected?(socket) do
+          Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "validation:#{run.id}")
+        end
+
+        validator_module = Application.get_env(:gtfs_planner, :validator_module)
+
+        task =
+          Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
+            validator_module.validate(organization_id, gtfs_version_id,
+              validation_run_id: run.id
+            )
+          end)
+
+        {:noreply,
+         socket
+         |> assign(:validation_run_id, run.id)
+         |> assign(:validation_task, task)
+         |> assign(:pathways_prep_task, nil)
+         |> assign(:pending_mobility_validation, false)
+         |> assign(:validating, true)
+         |> assign(:validation_progress, %{phase: :starting, percent: 0})
+         |> assign(:validation_result, nil)
+         |> assign(:validation_error, nil)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to create validation run")}
+    end
+  end
+
+  defp start_pathways_prep(socket, selected_validations, organization_id, gtfs_version_id) do
+    parent = self()
+    pending_mobility_validation = Enum.member?(selected_validations, :mobility_data)
+
+    task =
+      Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
+        purge_otp_artifact(organization_id, gtfs_version_id)
+
+        status_callback = fn payload -> send(parent, {:pathways_prep_progress, payload}) end
+
+        case Materializer.get_or_build_gtfs_zip(organization_id, gtfs_version_id,
+               status_callback: status_callback,
+               preflight_mode: :lenient
+             ) do
+          {:ok, _zip_path, _meta} -> :ok
+          {:error, issues} -> {:error, {:pathways_export_prep_failed, issues}}
+        end
+      end)
+
+    {:noreply,
+     socket
+     |> assign(:pathways_prep_task, task)
+     |> assign(:pending_mobility_validation, pending_mobility_validation)
+     |> assign(:validation_result, nil)
+     |> assign(:validation_error, nil)
+     |> assign(:validating, true)
+     |> assign(:validation_progress, %{phase: {:pathways_prep, :cache_check}, percent: 10})}
+  end
+
+  defp phase_percent(:cache_check), do: 10
+  defp phase_percent(:preflight), do: 25
+  defp phase_percent(:exporting), do: 50
+  defp phase_percent(:packaging), do: 75
+  defp phase_percent(:persisting), do: 90
+  defp phase_percent(:done), do: 100
+  defp phase_percent(:failed), do: 100
+  defp phase_percent(_), do: 5
+
+  defp purge_otp_artifact(organization_id, gtfs_version_id) do
+    case Lifecycle.purge_artifact_on_success(organization_id, gtfs_version_id) do
+      {:ok, :purged} -> :ok
+      {:ok, :not_found} -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
 
   defp format_date(datetime) do
     Calendar.strftime(datetime, "%b %d, %Y %I:%M %p")

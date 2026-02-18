@@ -12,6 +12,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
+  alias GtfsPlanner.Otp.Lifecycle
+  alias GtfsPlanner.Otp.Materializer
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   alias LiveSelect.Component, as: LiveSelectComponent
@@ -1095,6 +1097,39 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("run_walkability_tests", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    walkability_tests = socket.assigns.walkability_tests_list
+
+    case walkability_tests do
+      [] ->
+        {:noreply, put_flash(socket, :error, "No reachability test cases to run.")}
+
+      _tests ->
+        purge_otp_artifact(organization_id, gtfs_version_id)
+
+        case Materializer.get_or_build_gtfs_zip(organization_id, gtfs_version_id) do
+          {:ok, _zip_path, _meta} ->
+            {:noreply,
+             put_flash(
+               socket,
+               :info,
+               "Reachability test run started. Export preparation complete."
+             )}
+
+          {:error, _issues} ->
+            {:noreply,
+             put_flash(
+               socket,
+               :error,
+               "Could not prepare GTFS export for reachability test run."
+             )}
+        end
+    end
+  end
+
+  @impl true
   def handle_event("save_walkability_test", _params, socket) do
     organization_id = socket.assigns.current_organization.id
     stop = socket.assigns.walkability_stop
@@ -1151,6 +1186,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("delete_walkability_test", %{"id" => id}, socket) do
+    organization_id = socket.assigns.current_organization.id
+
     case Validations.get_walkability_test(id) do
       nil ->
         {:noreply, put_flash(socket, :error, "Walkability test not found.")}
@@ -1160,6 +1197,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:ok, _stop} ->
             case Validations.delete_walkability_test(walkability_test) do
               {:ok, _deleted} ->
+            purge_otp_artifact(organization_id, socket.assigns.current_gtfs_version.id)
+
                 {:noreply,
                  socket
                  |> reset_walkability_drawer()
@@ -1964,7 +2003,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp save_walkability_test_create(socket, organization_id, attrs) do
     case Validations.create_walkability_test(organization_id, attrs) do
       {:ok, _walkability_test} ->
-        {:noreply, socket |> reset_walkability_drawer() |> refresh_lists()}
+        purge_otp_artifact(organization_id, socket.assigns.current_gtfs_version.id)
+
+        {:noreply,
+         socket
+         |> reset_walkability_drawer()
+         |> refresh_lists()}
 
       {:error, changeset} ->
         error_message =
@@ -2005,6 +2049,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               {:ok, _stop} ->
                 case Validations.update_walkability_test(walkability_test, attrs) do
                   {:ok, _walkability_test} ->
+                    purge_otp_artifact(organization_id, socket.assigns.current_gtfs_version.id)
+
                     {:noreply,
                      socket
                      |> reset_walkability_drawer()
@@ -2209,5 +2255,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       _ ->
         false
     end)
+  end
+
+  defp purge_otp_artifact(organization_id, gtfs_version_id) do
+    case Lifecycle.purge_artifact_on_success(organization_id, gtfs_version_id) do
+      {:ok, :purged} -> :ok
+      {:ok, :not_found} -> :ok
+      {:error, _reason} -> :ok
+    end
   end
 end
