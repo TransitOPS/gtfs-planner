@@ -6,8 +6,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   use GtfsPlannerWeb, :live_view
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Validator
-  alias GtfsPlanner.Otp.Lifecycle
-  alias GtfsPlanner.Otp.Materializer
+  alias GtfsPlanner.Otp.Runtime
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -210,7 +209,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_info({:pathways_prep_progress, payload}, socket) do
-    phase = Map.get(payload, :phase, :cache_check)
+    phase = pathways_prep_phase(payload)
 
     {:noreply,
      assign(socket, :validation_progress, %{
@@ -295,6 +294,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         socket =
           case result do
             {:ok, %Validator.Result{} = _validation_result} ->
+              _ =
+                Runtime.cleanup_on_success(
+                  socket.assigns.current_organization.id,
+                  socket.assigns.current_gtfs_version.id
+                )
+
               # Result is now persisted in DB, just show success and keep validation_result for display
               run = Validations.get_validation_run!(socket.assigns.validation_run_id)
 
@@ -699,6 +704,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_label({:pathways_prep, :persisting}), do: "Saving artifact metadata..."
   defp phase_label({:pathways_prep, :done}), do: "Export preparation complete"
   defp phase_label({:pathways_prep, :failed}), do: "Export preparation failed"
+  defp phase_label({:pathways_prep, {:gtfs, :cache_check}}), do: "Checking existing export..."
+  defp phase_label({:pathways_prep, {:gtfs, :preflight}}), do: "Validating export readiness..."
+  defp phase_label({:pathways_prep, {:gtfs, :exporting}}), do: "Exporting GTFS data..."
+  defp phase_label({:pathways_prep, {:gtfs, :packaging}}), do: "Packaging GTFS zip..."
+  defp phase_label({:pathways_prep, {:gtfs, :persisting}}), do: "Saving artifact metadata..."
+  defp phase_label({:pathways_prep, {:gtfs, :done}}), do: "GTFS export preparation complete"
+  defp phase_label({:pathways_prep, {:gtfs, :failed}}), do: "GTFS export preparation failed"
+  defp phase_label({:pathways_prep, {:graph, :cache_check}}), do: "Checking cached graph..."
+  defp phase_label({:pathways_prep, {:graph, :preflight}}), do: "Validating graph build inputs..."
+  defp phase_label({:pathways_prep, {:graph, :building}}), do: "Building OTP graph..."
+  defp phase_label({:pathways_prep, {:graph, :persisting}}), do: "Saving graph metadata..."
+  defp phase_label({:pathways_prep, {:graph, :done}}), do: "Graph preparation complete"
+  defp phase_label({:pathways_prep, {:graph, :failed}}), do: "Graph preparation failed"
   defp phase_label(_), do: "Preparing..."
 
   defp format_run_type("mobility_data"), do: "MobilityData"
@@ -738,18 +756,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp start_pathways_prep(socket, selected_validations, organization_id, gtfs_version_id) do
     parent = self()
     pending_mobility_validation = Enum.member?(selected_validations, :mobility_data)
+    runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module, Runtime)
 
     task =
       Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-        purge_otp_artifact(organization_id, gtfs_version_id)
-
         status_callback = fn payload -> send(parent, {:pathways_prep_progress, payload}) end
 
-        case Materializer.get_or_build_gtfs_zip(organization_id, gtfs_version_id,
+        case runtime_module.prepare_runtime(organization_id, gtfs_version_id,
                status_callback: status_callback,
                preflight_mode: :lenient
              ) do
-          {:ok, _zip_path, _meta} -> :ok
+          {:ok, _runtime} -> :ok
           {:error, issues} -> {:error, {:pathways_export_prep_failed, issues}}
         end
       end)
@@ -771,13 +788,28 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_percent(:persisting), do: 90
   defp phase_percent(:done), do: 100
   defp phase_percent(:failed), do: 100
+  defp phase_percent({:gtfs, :cache_check}), do: 10
+  defp phase_percent({:gtfs, :preflight}), do: 20
+  defp phase_percent({:gtfs, :exporting}), do: 35
+  defp phase_percent({:gtfs, :packaging}), do: 50
+  defp phase_percent({:gtfs, :persisting}), do: 60
+  defp phase_percent({:gtfs, :done}), do: 65
+  defp phase_percent({:gtfs, :failed}), do: 100
+  defp phase_percent({:graph, :cache_check}), do: 70
+  defp phase_percent({:graph, :preflight}), do: 75
+  defp phase_percent({:graph, :building}), do: 90
+  defp phase_percent({:graph, :persisting}), do: 95
+  defp phase_percent({:graph, :done}), do: 100
+  defp phase_percent({:graph, :failed}), do: 100
   defp phase_percent(_), do: 5
 
-  defp purge_otp_artifact(organization_id, gtfs_version_id) do
-    case Lifecycle.purge_artifact_on_success(organization_id, gtfs_version_id) do
-      {:ok, :purged} -> :ok
-      {:ok, :not_found} -> :ok
-      {:error, _reason} -> :ok
+  defp pathways_prep_phase(payload) when is_map(payload) do
+    phase = Map.get(payload, :phase, :cache_check)
+
+    case Map.get(payload, :scope) do
+      :gtfs -> {:gtfs, phase}
+      :graph -> {:graph, phase}
+      _unknown_scope -> phase
     end
   end
 

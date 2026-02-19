@@ -44,6 +44,38 @@ config :gtfs_planner,
            else: "/opt/homebrew/opt/openjdk@21/bin/java"
          )
 
+config :gtfs_planner,
+       :otp_jar_path,
+       System.get_env("OTP_JAR_PATH") ||
+         if(config_env() == :prod,
+           do: nil,
+           else: Path.expand("../priv/otp/opentripplanner.jar", __DIR__)
+         )
+
+config :gtfs_planner,
+       :otp_osm_path,
+       System.get_env("OTP_OSM_PATH") ||
+         if(config_env() == :prod,
+           do: nil,
+           else: Path.expand("../priv/otp/region.osm.pbf", __DIR__)
+         )
+
+config :gtfs_planner,
+       :otp_runtime_path,
+       System.get_env("OTP_RUNTIME_PATH") ||
+         Path.join(System.tmp_dir!(), "gtfs_planner/otp_runtime")
+
+config :gtfs_planner,
+       :otp_graph_build_heap,
+       System.get_env("OTP_GRAPH_BUILD_HEAP") || "4G"
+
+config :gtfs_planner,
+       :otp_graph_build_timeout_ms,
+       System.get_env("OTP_GRAPH_BUILD_TIMEOUT_MS", "600000")
+       |> String.to_integer()
+
+config :gtfs_planner, :otp_jar_sha256, System.get_env("OTP_JAR_SHA256")
+
 config :gtfs_planner, :mail_domain, System.get_env("MAIL_DOMAIN") || "gtfsplanner.com"
 
 if config_env() != :test do
