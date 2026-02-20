@@ -18,6 +18,7 @@ services:
       - PHX_HOST=localhost
       - SECRET_KEY_BASE=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
       - DATABASE_URL=ecto://app@postgres:5432/gtfs_planner
+      - GEOAPIFY_API_KEY=${GEOAPIFY_API_KEY:-}
     ports:
       - '4000:4000'
     volumes:
