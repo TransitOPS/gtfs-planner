@@ -889,7 +889,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           <%!-- Canvas actions --%>
           <div :if={@active_level && @uploads} class="flex items-center gap-2">
             <form
-              id="diagram-upload-form"
+              id="diagram-upload-form-sub-nav"
               phx-change="upload_diagram"
               phx-submit="save_diagram"
               phx-hook="AutoSubmitUpload"
@@ -903,6 +903,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
                 />
               </label>
             </form>
+            <span :for={error <- upload_errors(@uploads.diagram)} class="text-error text-sm">
+              {diagram_upload_error_to_string(error)}
+            </span>
             <span :if={@diagram_error} class="text-error text-sm">{@diagram_error}</span>
           </div>
         </div>
@@ -910,6 +913,19 @@ defmodule GtfsPlannerWeb.CoreComponents do
     </nav>
     """
   end
+
+  defp diagram_upload_error_to_string(:too_large), do: "File is too large (max 10 MB)"
+
+  defp diagram_upload_error_to_string(:not_accepted),
+    do: "File type not accepted (PNG, JPG, JPEG, SVG only)"
+
+  defp diagram_upload_error_to_string(:too_many_files),
+    do: "Only one file can be uploaded at a time"
+
+  defp diagram_upload_error_to_string(:external_client_failure), do: "Upload failed"
+  defp diagram_upload_error_to_string({:error, reason}), do: reason
+  defp diagram_upload_error_to_string(error) when is_binary(error), do: error
+  defp diagram_upload_error_to_string(_), do: "Upload error"
 
   @doc """
   Renders a full-width sub-navigation bar for route pages.

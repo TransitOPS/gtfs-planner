@@ -4150,9 +4150,141 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - diagram upload error handling" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_UPLOAD_ERRORS",
+          stop_name: "Upload Error Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_UPLOAD_ERRORS",
+          level_name: "Upload Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station
+      }
+    end
+
+    test "set_diagram_error timeout reason assigns fixed timeout message", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "set_diagram_error", %{"reason" => "timeout"})
+
+      assert has_element?(view, "span.text-error", "Upload timed out. Please try again.")
+    end
+
+    test "set_diagram_error ignores unknown payload and keeps existing message", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "set_diagram_error", %{"reason" => "timeout"})
+      render_hook(view, "set_diagram_error", %{"reason" => "unknown"})
+
+      assert has_element?(view, "span.text-error", "Upload timed out. Please try again.")
+    end
+
+    test "submitting without file shows explicit select-file message", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> form("#diagram-upload-form-sub-nav")
+      |> render_submit()
+
+      assert has_element?(view, "span.text-error", "Please select a file.")
+    end
+
+    test "invalid file type selection does not set generic upload failure", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      upload =
+        file_input(view, "#diagram-upload-form-sub-nav", :diagram, [
+          %{name: "bad.gif", content: "gif-bytes", type: "image/gif"}
+        ])
+
+      render_upload(upload, "bad.gif")
+
+      refute has_element?(view, "span.text-error", "Upload failed. Please try again.")
+    end
+
+    test "oversized file selection does not set generic upload failure", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      upload =
+        file_input(view, "#diagram-upload-form-sub-nav", :diagram, [
+          %{name: "big.png", content: :binary.copy(<<0>>, 10_000_001), type: "image/png"}
+        ])
+
+      render_upload(upload, "big.png")
+
+      refute has_element?(view, "span.text-error", "Upload failed. Please try again.")
+    end
+  end
+
   defp upload_diagram(view, filename, content) do
     upload =
-      file_input(view, "#diagram-upload-form", :diagram, [
+      file_input(view, "#diagram-upload-form-sub-nav", :diagram, [
         %{
           name: filename,
           content: content,
@@ -4163,7 +4295,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     render_upload(upload, filename)
 
     view
-    |> form("#diagram-upload-form")
+    |> form("#diagram-upload-form-sub-nav")
     |> render_submit()
   end
 end

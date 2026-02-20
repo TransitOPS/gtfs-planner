@@ -1197,7 +1197,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:ok, _stop} ->
             case Validations.delete_walkability_test(walkability_test) do
               {:ok, _deleted} ->
-            purge_otp_artifact(organization_id, socket.assigns.current_gtfs_version.id)
+                purge_otp_artifact(organization_id, socket.assigns.current_gtfs_version.id)
 
                 {:noreply,
                  socket
@@ -1331,6 +1331,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("set_diagram_error", %{"reason" => "timeout"}, socket) do
+    {:noreply, assign(socket, :diagram_error, "Upload timed out. Please try again.")}
+  end
+
+  @impl true
+  def handle_event("set_diagram_error", _params, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_event("save_diagram", _params, socket) do
     station = socket.assigns.station
     active_level = socket.assigns.active_level
@@ -1395,7 +1405,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               end
 
             [] ->
-              {:noreply, socket}
+              {:noreply, assign_empty_diagram_upload_error(socket)}
           end
       end
     end
@@ -2255,6 +2265,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       _ ->
         false
     end)
+  end
+
+  defp assign_empty_diagram_upload_error(socket) do
+    upload = socket.assigns.uploads.diagram
+    validation_errors = upload_errors(upload)
+
+    cond do
+      upload.entries == [] and validation_errors == [] ->
+        assign(socket, :diagram_error, "Please select a file.")
+
+      validation_errors != [] ->
+        socket
+
+      true ->
+        assign(socket, :diagram_error, "Upload failed. Please try again.")
+    end
   end
 
   defp purge_otp_artifact(organization_id, gtfs_version_id) do
