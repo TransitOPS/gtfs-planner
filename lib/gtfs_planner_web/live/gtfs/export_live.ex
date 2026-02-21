@@ -6,10 +6,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   use GtfsPlannerWeb, :live_view
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Validator
+  alias GtfsPlanner.Otp.PathwaysValidity
   alias GtfsPlanner.Otp.Runtime
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.ValidationRun
   alias GtfsPlanner.Versions
-  require Logger
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @impl Phoenix.LiveView
@@ -34,7 +35,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_progress, nil)
      |> assign(:validation_result, nil)
      |> assign(:validation_error, nil)
-     |> assign(:pathways_prep_error, nil)
      |> assign(:recent_validation_runs, [])}
   end
 
@@ -229,41 +229,45 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         socket = assign(socket, :pathways_prep_task, nil)
 
         case result do
-          :ok ->
+          {:ok, pathways_result} ->
+            _ =
+              maybe_mark_pathways_run_completed(socket.assigns.validation_run_id, pathways_result)
+
             if socket.assigns.pending_mobility_validation do
               run_mobility_data_validation(
-                socket |> assign(:pending_mobility_validation, false),
+                socket
+                |> assign(:pending_mobility_validation, false)
+                |> assign(:validation_result, nil),
                 socket.assigns.current_organization.id,
                 socket.assigns.current_gtfs_version.id
               )
             else
+              recent_validation_runs =
+                Validations.list_recent_validation_runs(
+                  socket.assigns.current_organization.id,
+                  socket.assigns.current_gtfs_version.id,
+                  5
+                )
+
               {:noreply,
                socket
                |> assign(:pending_mobility_validation, false)
                |> assign(:validating, false)
                |> assign(:validation_progress, nil)
-               |> put_flash(
-                 :info,
-                 "Pathways trip test run started. Export preparation complete."
-               )}
+               |> assign(:validation_error, nil)
+               |> assign(:recent_validation_runs, recent_validation_runs)
+               |> assign(:validation_result, %{summary: %{errors: 0, warnings: 0, infos: 1}})}
             end
 
-          {:error, {:pathways_export_prep_failed, issues}} ->
-            Logger.error("Pathways export preparation failed",
-              event: "pathways_prep_failed",
-              organization_id: socket.assigns.current_organization.id,
-              gtfs_version_id: socket.assigns.current_gtfs_version.id,
-              phase: :pathways_prep,
-              issue_codes: Enum.map(issues, & &1.code),
-              details: issues
-            )
+          {:error, reason} ->
+            _ = maybe_mark_pathways_run_failed(socket.assigns.validation_run_id, reason)
 
             {:noreply,
              socket
              |> assign(:pending_mobility_validation, false)
              |> assign(:validating, false)
              |> assign(:validation_progress, nil)
-             |> assign(:pathways_prep_error, build_pathways_prep_error(issues))}
+             |> assign(:validation_error, pathways_runtime_error_message(reason))}
         end
 
       socket.assigns.export_task && socket.assigns.export_task.ref == ref ->
@@ -305,24 +309,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         socket =
           case result do
             {:ok, %Validator.Result{} = _validation_result} ->
-              case Runtime.cleanup_on_success(
-                     socket.assigns.current_organization.id,
-                     socket.assigns.current_gtfs_version.id
-                   ) do
-                :ok ->
-                  :ok
-
-                {:error, reason} ->
-                  require Logger
-                  Logger.error("Runtime.cleanup_on_success failed: #{inspect(reason)}")
-
-                other ->
-                  require Logger
-
-                  Logger.error(
-                    "Runtime.cleanup_on_success returned unexpected result: #{inspect(other)}"
-                  )
-              end
+              _ =
+                Runtime.cleanup_on_success(
+                  socket.assigns.current_organization.id,
+                  socket.assigns.current_gtfs_version.id
+                )
 
               # Result is now persisted in DB, just show success and keep validation_result for display
               run = Validations.get_validation_run!(socket.assigns.validation_run_id)
@@ -372,28 +363,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   def handle_info({:DOWN, ref, :process, _pid, reason}, socket) do
     cond do
       socket.assigns.pathways_prep_task && socket.assigns.pathways_prep_task.ref == ref ->
-        Logger.error("Pathways prep task crashed",
-          event: "pathways_prep_failed",
-          organization_id: socket.assigns.current_organization.id,
-          gtfs_version_id: socket.assigns.current_gtfs_version.id,
-          phase: :pathways_prep,
-          reason: inspect(reason)
-        )
+        require Logger
+        Logger.error("Pathways prep task crashed: #{inspect(reason)}")
+        _ = maybe_mark_pathways_run_failed(socket.assigns.validation_run_id, reason)
 
         {:noreply,
          socket
-         |> assign(:pathways_prep_error, %{
-           summary: "Pathways export preparation crashed unexpectedly.",
-           issues: [
-             %{
-               code: :task_crashed,
-               message: inspect(reason),
-               details: %{}
-             }
-           ],
-           phase: :pathways_prep,
-           log_ref: nil
-         })
+         |> assign(:validation_error, "Pathways runtime failed unexpectedly.")
          |> assign(:validating, false)
          |> assign(:pathways_prep_task, nil)
          |> assign(:pending_mobility_validation, false)
@@ -564,25 +540,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 />
               </svg>
               <span>{@validation_error}</span>
-            </div>
-          <% end %>
-
-          <%= if @pathways_prep_error do %>
-            <div
-              id="pathways-prep-error"
-              role="alert"
-              aria-live="assertive"
-              class="alert alert-error alert-soft mb-6"
-            >
-              <div class="w-full space-y-2 text-base-content">
-                <h3 class="font-semibold text-base-content">{@pathways_prep_error.summary}</h3>
-                <ul
-                  id="pathways-prep-error-details"
-                  class="list-disc pl-5 space-y-1 text-base-content"
-                >
-                  <li :for={issue <- @pathways_prep_error.issues}>{issue.message}</li>
-                </ul>
-              </div>
             </div>
           <% end %>
 
@@ -776,6 +733,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_label({:pathways_prep, {:graph, :persisting}}), do: "Saving graph metadata..."
   defp phase_label({:pathways_prep, {:graph, :done}}), do: "Graph preparation complete"
   defp phase_label({:pathways_prep, {:graph, :failed}}), do: "Graph preparation failed"
+  defp phase_label({:pathways_prep, {:otp, :starting}}), do: "Starting OTP runtime..."
+  defp phase_label({:pathways_prep, {:otp, :waiting_ready}}), do: "Waiting for OTP readiness..."
+  defp phase_label({:pathways_prep, {:otp, :ready}}), do: "Running OTP validity checks..."
+  defp phase_label({:pathways_prep, {:otp, :stopping}}), do: "Stopping OTP runtime..."
+  defp phase_label({:pathways_prep, {:otp, :stopped}}), do: "OTP runtime stopped"
+  defp phase_label({:pathways_prep, {:otp, :failed}}), do: "OTP runtime failed"
   defp phase_label(_), do: "Preparing..."
 
   defp format_run_type("mobility_data"), do: "MobilityData"
@@ -813,82 +776,49 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp start_pathways_prep(socket, selected_validations, organization_id, gtfs_version_id) do
-    parent = self()
     pending_mobility_validation = Enum.member?(selected_validations, :mobility_data)
-    runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module, Runtime)
 
-    task =
-      Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-        status_callback = fn payload -> send(parent, {:pathways_prep_progress, payload}) end
+    case Validations.create_validation_run(organization_id, gtfs_version_id, "pathways_tests") do
+      {:ok, %ValidationRun{} = run} ->
+        parent = self()
+        runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module, Runtime)
 
-        case runtime_module.prepare_runtime(organization_id, gtfs_version_id,
-               status_callback: status_callback,
-               preflight_mode: :lenient,
-               force_rebuild: true
-             ) do
-          {:ok, _runtime} -> :ok
-          {:error, issues} -> {:error, {:pathways_export_prep_failed, issues}}
-        end
-      end)
+        pathways_validity_module =
+          Application.get_env(:gtfs_planner, :otp_pathways_validity_module, PathwaysValidity)
 
-    {:noreply,
-     socket
-     |> assign(:pathways_prep_task, task)
-     |> assign(:pending_mobility_validation, pending_mobility_validation)
-     |> assign(:validation_result, nil)
-     |> assign(:validation_error, nil)
-     |> assign(:pathways_prep_error, nil)
-     |> assign(:validating, true)
-     |> assign(:validation_progress, %{phase: {:pathways_prep, :cache_check}, percent: 10})}
-  end
+        task =
+          Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
+            status_callback = fn payload -> send(parent, {:pathways_prep_progress, payload}) end
 
-  defp build_pathways_prep_error(issues) do
-    %{
-      summary: "Pathways export preparation failed.",
-      issues: Enum.map(issues, &format_issue_for_ui/1),
-      phase: :pathways_prep,
-      log_ref: nil
-    }
-  end
+            callback = fn session ->
+              pathways_validity_module.run_in_session(
+                session,
+                organization_id,
+                gtfs_version_id
+              )
+            end
 
-  defp format_issue_for_ui(%{code: :missing_required_file_data, details: %{file: file}} = issue) do
-    %{
-      code: issue.code,
-      message: "Required GTFS file missing: #{file}",
-      details: issue.details
-    }
-  end
+            runtime_module.run_with_otp(
+              organization_id,
+              gtfs_version_id,
+              callback,
+              status_callback: status_callback,
+              preflight_mode: :lenient
+            )
+          end)
 
-  defp format_issue_for_ui(%{code: :build_failed, details: details} = issue) do
-    %{
-      code: issue.code,
-      message: "OTP graph build failed" <> format_build_detail(details),
-      details: details
-    }
-  end
+        {:noreply,
+         socket
+         |> assign(:validation_run_id, run.id)
+         |> assign(:pathways_prep_task, task)
+         |> assign(:pending_mobility_validation, pending_mobility_validation)
+         |> assign(:validation_result, nil)
+         |> assign(:validation_error, nil)
+         |> assign(:validating, true)
+         |> assign(:validation_progress, %{phase: {:pathways_prep, :cache_check}, percent: 10})}
 
-  defp format_issue_for_ui(issue) do
-    %{
-      code: issue.code,
-      message: issue.message,
-      details: issue.details
-    }
-  end
-
-  defp format_build_detail(details) when is_map(details) do
-    labels =
-      [
-        {"reason_code", Map.get(details, :reason_code) || Map.get(details, "reason_code")},
-        {"exit_status", Map.get(details, :exit_status) || Map.get(details, "exit_status")},
-        {"build_log_path",
-         Map.get(details, :build_log_path) || Map.get(details, "build_log_path")}
-      ]
-      |> Enum.filter(fn {_label, value} -> not is_nil(value) end)
-      |> Enum.map(fn {label, value} -> "#{label}=#{value}" end)
-
-    case labels do
-      [] -> ""
-      _ -> " (" <> Enum.join(labels, ", ") <> ")"
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to create validation run")}
     end
   end
 
@@ -910,8 +840,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_percent({:graph, :preflight}), do: 75
   defp phase_percent({:graph, :building}), do: 90
   defp phase_percent({:graph, :persisting}), do: 95
-  defp phase_percent({:graph, :done}), do: 100
+  defp phase_percent({:graph, :done}), do: 96
   defp phase_percent({:graph, :failed}), do: 100
+  defp phase_percent({:otp, :starting}), do: 96
+  defp phase_percent({:otp, :waiting_ready}), do: 97
+  defp phase_percent({:otp, :ready}), do: 98
+  defp phase_percent({:otp, :stopping}), do: 99
+  defp phase_percent({:otp, :stopped}), do: 100
+  defp phase_percent({:otp, :failed}), do: 100
   defp phase_percent(_), do: 5
 
   defp pathways_prep_phase(payload) when is_map(payload) do
@@ -920,9 +856,71 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     case Map.get(payload, :scope) do
       :gtfs -> {:gtfs, phase}
       :graph -> {:graph, phase}
+      :otp -> {:otp, phase}
       _unknown_scope -> phase
     end
   end
+
+  defp maybe_mark_pathways_run_completed(nil, _pathways_result), do: :ok
+
+  defp maybe_mark_pathways_run_completed(validation_run_id, pathways_result) do
+    run = Validations.get_validation_run(validation_run_id)
+
+    if run do
+      completion_result = %{
+        notices: [
+          %{
+            code: "otp_graphql_typename_ok",
+            severity: "INFO",
+            details: pathways_result
+          }
+        ],
+        summary: %{errors: 0, warnings: 0, infos: 1},
+        duration_ms: 0
+      }
+
+      _ = Validations.mark_completed(run, completion_result)
+    end
+
+    :ok
+  end
+
+  defp maybe_mark_pathways_run_failed(nil, _reason), do: :ok
+
+  defp maybe_mark_pathways_run_failed(validation_run_id, reason) do
+    run = Validations.get_validation_run(validation_run_id)
+
+    if run do
+      _ = Validations.mark_failed(run, reason)
+    end
+
+    :ok
+  end
+
+  defp pathways_runtime_error_message([%{code: code}]), do: pathways_runtime_error_message(code)
+
+  defp pathways_runtime_error_message(%{reason: reason}),
+    do: pathways_runtime_error_message(reason)
+
+  defp pathways_runtime_error_message(:otp_runtime_already_running),
+    do: "Another pathways runtime is already active for this organization."
+
+  defp pathways_runtime_error_message(:otp_start_failed),
+    do: "Failed to start OTP runtime."
+
+  defp pathways_runtime_error_message(:otp_ready_timeout),
+    do: "OTP runtime readiness timed out."
+
+  defp pathways_runtime_error_message(:otp_stop_failed),
+    do: "OTP runtime failed while stopping."
+
+  defp pathways_runtime_error_message(:no_walkability_tests),
+    do: "No walkability tests are configured for this organization."
+
+  defp pathways_runtime_error_message(:otp_validity_check_failed),
+    do: "OTP validity check failed."
+
+  defp pathways_runtime_error_message(_), do: "Pathways runtime failed."
 
   defp format_date(datetime) do
     Calendar.strftime(datetime, "%b %d, %Y %I:%M %p")

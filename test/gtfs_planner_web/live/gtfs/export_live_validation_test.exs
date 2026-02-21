@@ -12,30 +12,48 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
   alias GtfsPlanner.Otp
   alias GtfsPlanner.Otp.ArtifactPath
   alias GtfsPlanner.Otp.GraphPath
+  alias GtfsPlanner.Otp.Runtime.Session
   alias GtfsPlanner.Gtfs.ValidatorMock
 
+  defmodule PathwaysValidityMock do
+    def run_in_session(_session, _organization_id, _gtfs_version_id, _opts \\ []) do
+      {:ok, %{check: :otp_graphql_typename, status: 200}}
+    end
+  end
+
   defmodule RuntimeMock do
-    def prepare_runtime(organization_id, gtfs_version_id, opts) do
-      send(self(), {:prepare_runtime_called, organization_id, gtfs_version_id, opts})
+    def run_with_otp(organization_id, gtfs_version_id, callback, opts) do
+      _ = {organization_id, gtfs_version_id}
+
+      session = %Session{
+        command: "java",
+        args: ["-jar", "/tmp/otp.jar"],
+        host: "127.0.0.1",
+        port: 8080,
+        base_url: "http://127.0.0.1:8080",
+        graphql_url: "http://127.0.0.1:8080/otp/routers/default/index/graphql",
+        graph_workspace_dir: "/tmp/runtime",
+        process: make_ref(),
+        runtime_log_path: "/tmp/runtime/runtime.log"
+      }
 
       case opts[:status_callback] do
         callback when is_function(callback, 1) ->
           callback.(%{scope: :gtfs, phase: :cache_check})
           callback.(%{scope: :gtfs, phase: :packaging})
           callback.(%{scope: :graph, phase: :building})
-          Process.sleep(100)
           callback.(%{scope: :graph, phase: :done})
+          callback.(%{scope: :otp, phase: :starting})
+          callback.(%{scope: :otp, phase: :waiting_ready})
+          callback.(%{scope: :otp, phase: :ready})
+          callback.(%{scope: :otp, phase: :stopping})
+          callback.(%{scope: :otp, phase: :stopped})
 
         _other ->
           :ok
       end
 
-      {:ok,
-       %{
-         gtfs_zip_path: "/tmp/gtfs.zip",
-         graph_path: "/tmp/Graph.obj",
-         meta: %{gtfs: %{}, graph: %{}}
-       }}
+      callback.(session)
     end
 
     def cleanup_on_success(_organization_id, _gtfs_version_id) do
@@ -44,16 +62,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
   end
 
   defmodule RuntimeFailMock do
-    def prepare_runtime(_organization_id, _gtfs_version_id, _opts) do
-      {:error,
-       [
-         %{
-           code: :missing_required_file_data,
-           severity: :error,
-           message: "Required GTFS file data is missing",
-           details: %{file: "agency.txt"}
-         }
-       ]}
+    def run_with_otp(_organization_id, _gtfs_version_id, _callback, _opts) do
+      {:error, [%{code: :otp_start_failed}]}
     end
 
     def cleanup_on_success(_organization_id, _gtfs_version_id) do
@@ -61,9 +71,49 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
     end
   end
 
-  defmodule RuntimeCrashMock do
-    def prepare_runtime(_organization_id, _gtfs_version_id, _opts) do
-      raise "runtime crashed"
+  defmodule RuntimeLockConflictMock do
+    def run_with_otp(_organization_id, _gtfs_version_id, _callback, _opts) do
+      {:error, [%{code: :otp_runtime_already_running}]}
+    end
+
+    def cleanup_on_success(_organization_id, _gtfs_version_id) do
+      {:ok, %{graph: :not_found, gtfs: :not_found}}
+    end
+  end
+
+  defmodule RuntimeSlowOtpPhaseMock do
+    def run_with_otp(_organization_id, _gtfs_version_id, callback, opts) do
+      status_callback = Keyword.fetch!(opts, :status_callback)
+
+      status_callback.(%{scope: :gtfs, phase: :cache_check})
+      status_callback.(%{scope: :graph, phase: :building})
+      status_callback.(%{scope: :graph, phase: :done})
+      status_callback.(%{scope: :otp, phase: :starting})
+      Process.sleep(40)
+      status_callback.(%{scope: :otp, phase: :waiting_ready})
+      Process.sleep(120)
+
+      callback.(%Session{
+        command: "java",
+        args: ["-jar", "/tmp/otp.jar"],
+        host: "127.0.0.1",
+        port: 8080,
+        base_url: "http://127.0.0.1:8080",
+        graphql_url: "http://127.0.0.1:8080/otp/routers/default/index/graphql",
+        graph_workspace_dir: "/tmp/runtime",
+        process: make_ref(),
+        runtime_log_path: "/tmp/runtime/runtime.log"
+      })
+    end
+
+    def cleanup_on_success(_organization_id, _gtfs_version_id) do
+      {:ok, %{graph: :not_found, gtfs: :not_found}}
+    end
+  end
+
+  defmodule RuntimeShouldNotBeCalledMock do
+    def run_with_otp(_organization_id, _gtfs_version_id, _callback, _opts) do
+      raise "run_with_otp should not be called in mobility-only path"
     end
 
     def cleanup_on_success(_organization_id, _gtfs_version_id) do
@@ -76,13 +126,28 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
   setup do
     previous_runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module)
+
+    previous_pathways_validity_module =
+      Application.get_env(:gtfs_planner, :otp_pathways_validity_module)
+
     Application.put_env(:gtfs_planner, :otp_runtime_module, RuntimeMock)
+    Application.put_env(:gtfs_planner, :otp_pathways_validity_module, PathwaysValidityMock)
 
     on_exit(fn ->
       if previous_runtime_module do
         Application.put_env(:gtfs_planner, :otp_runtime_module, previous_runtime_module)
       else
         Application.delete_env(:gtfs_planner, :otp_runtime_module)
+      end
+
+      if previous_pathways_validity_module do
+        Application.put_env(
+          :gtfs_planner,
+          :otp_pathways_validity_module,
+          previous_pathways_validity_module
+        )
+      else
+        Application.delete_env(:gtfs_planner, :otp_pathways_validity_module)
       end
     end)
 
@@ -165,10 +230,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
+      Process.sleep(100)
+
       html = render(view)
 
-      assert html =~ "Building OTP graph..." or
-               html =~ "Pathways trip test run started. Export preparation complete."
+      assert html =~ "View Full Results"
+      assert html =~ "Pathways Tests"
     end
 
     test "uses configured runtime module for pathways prep failures", %{
@@ -185,20 +252,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      assert has_element?(view, "#pathways-prep-error")
-
-      html = render(view)
-      assert html =~ "Pathways export preparation failed."
-      assert html =~ "agency.txt"
+      assert render(view) =~ "Failed to start OTP runtime."
     end
 
-    test "shows inline pathways prep error when runtime crashes", %{
+    test "pathways OTP phases are consumed and mapped", %{
       conn: conn,
       user: user,
       organization: organization,
       gtfs_version: version
     } do
-      Application.put_env(:gtfs_planner, :otp_runtime_module, RuntimeCrashMock)
+      Application.put_env(:gtfs_planner, :otp_runtime_module, RuntimeSlowOtpPhaseMock)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
@@ -206,11 +269,49 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      assert eventually(fn -> has_element?(view, "#pathways-prep-error") end)
+      Process.sleep(80)
 
-      assert eventually(fn ->
-               render(view) =~ "Pathways export preparation crashed unexpectedly."
-             end)
+      assert render(view) =~ "Waiting for OTP readiness..."
+    end
+
+    test "pathways lock conflict shows deterministic runtime conflict error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      Application.put_env(:gtfs_planner, :otp_runtime_module, RuntimeLockConflictMock)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      assert render(view) =~ "Another pathways runtime is already active for this organization."
+    end
+
+    test "mobility-only path does not invoke OTP runtime pathway", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      Application.put_env(:gtfs_planner, :otp_runtime_module, RuntimeShouldNotBeCalledMock)
+
+      stub(ValidatorMock, :validate, fn _org_id, _version_id, _opts ->
+        {:error, :validator_path_not_configured}
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='mobility_data']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      Process.sleep(100)
+
+      assert render(view) =~ "Validation failed"
     end
 
     test "starts validation when validator is selected and button is clicked", %{
@@ -450,31 +551,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       # Should be back to initial state
       assert has_element?(view, "button", "Run Validation")
       refute render(view) =~ "View Full Results"
-    end
-  end
-
-  defp eventually(fun, attempts \\ 20)
-  defp eventually(fun, 0), do: safely_eval(fun)
-
-  defp eventually(fun, attempts) when is_function(fun, 0) and attempts > 0 do
-    if safely_eval(fun) do
-      true
-    else
-      receive do
-      after
-        10 -> eventually(fun, attempts - 1)
-      end
-    end
-  end
-
-  defp safely_eval(fun) when is_function(fun, 0) do
-    try do
-      fun.()
-    rescue
-      _ -> false
-    catch
-      :exit, _ -> false
-      :throw, _ -> false
     end
   end
 end
