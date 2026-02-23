@@ -139,6 +139,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-midpoint-y="60"
               data-offset-x="1.4"
               data-offset-y="-1.4"
+              data-rotation="15"
               data-base-font-size="0.9"
               data-base-stroke="0.2"
             ></text>
@@ -330,6 +331,9 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(
       document.querySelector("#path-label").getAttribute("stroke-width"),
     ).toBe("0.07142857142857144");
+    expect(document.querySelector("#path-label").getAttribute("transform")).toBe(
+      "rotate(15, 50.7, 59.3)",
+    );
 
     expect(document.querySelector("#ruler-line").getAttribute("stroke-width")).toBe(
       "0.125",
@@ -442,6 +446,22 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(document.querySelector("#ruler-endpoint-a").getAttribute("cy")).toBe("10");
     expect(document.querySelector("#ruler-label").getAttribute("x")).toBe("15");
     expect(document.querySelector("#ruler-label").getAttribute("y")).not.toBe(initialY);
+  });
+
+  it("skips pathway label transform updates when rotation is non-numeric", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    const pathLabel = document.querySelector("#path-label");
+    pathLabel.setAttribute("data-rotation", "invalid");
+    pathLabel.setAttribute("transform", "rotate(45, 1, 1)");
+
+    hook.scale = 2;
+    hook.scaleOverlayElements();
+
+    expect(pathLabel.getAttribute("transform")).toBe("rotate(45, 1, 1)");
   });
 
   it("hides ruler labels when zoomed out below threshold and restores above threshold", () => {

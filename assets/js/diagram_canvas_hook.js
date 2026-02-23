@@ -876,6 +876,7 @@ const DiagramCanvasHook = {
       const midpointY = parseFloat(label.getAttribute("data-midpoint-y"));
       const offsetX = parseFloat(label.getAttribute("data-offset-x"));
       const offsetY = parseFloat(label.getAttribute("data-offset-y"));
+      const rotation = parseFloat(label.getAttribute("data-rotation"));
       const baseFontSize = parseFloat(
         label.getAttribute("data-base-font-size") ?? `${OVERLAY_BASE.pathwayLabelFontSize}`
       );
@@ -888,16 +889,21 @@ const DiagramCanvasHook = {
         !Number.isFinite(midpointY) ||
         !Number.isFinite(offsetX) ||
         !Number.isFinite(offsetY) ||
+        !Number.isFinite(rotation) ||
         !Number.isFinite(baseFontSize) ||
         !Number.isFinite(baseStroke)
       ) {
         return;
       }
 
-      label.setAttribute("x", `${midpointX + offsetX / scale}`);
-      label.setAttribute("y", `${midpointY + offsetY / scale}`);
+      const x = midpointX + offsetX / scale;
+      const y = midpointY + offsetY / scale;
+
+      label.setAttribute("x", `${x}`);
+      label.setAttribute("y", `${y}`);
       label.setAttribute("font-size", `${baseFontSize / scale}`);
       label.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
+      label.setAttribute("transform", `rotate(${rotation}, ${x}, ${y})`);
     });
 
     overlay.querySelectorAll("[data-ruler-line]").forEach((line) => {

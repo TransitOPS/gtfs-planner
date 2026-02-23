@@ -2257,8 +2257,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-line]")
-      assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-label]", "Forward Sign")
-      assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-label]", "Reverse Sign")
+      assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-label]", "Forward Sign →")
+      assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-label]", "← Reverse Sign")
+      assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-label][data-rotation]")
+
+      assert has_element?(
+               view,
+               "#pathways-#{mode_1.id} [data-pathway-label][transform^='rotate(']",
+               "Forward Sign →"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{mode_1.id} [data-pathway-label][transform^='rotate(']",
+               "← Reverse Sign"
+             )
 
       assert has_element?(view, "#pathways-#{mode_2.id} [data-pathway-tick]")
       assert has_element?(view, "#pathways-#{mode_3.id} [data-base-dash='2,1']")
@@ -2267,6 +2280,205 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#pathways-#{mode_5.id} [data-pathway-connector]")
       assert has_element?(view, "#pathways-#{mode_6.id} [data-pathway-bar]")
       assert has_element?(view, "#pathways-#{mode_7.id} [data-pathway-exit-bar]")
+    end
+
+    test "left-to-right pathways render forward and reverse arrows with non-flipped mapping", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "LTR_ARROW_A",
+          stop_name: "LTR Arrow A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 30.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "LTR_ARROW_B",
+          stop_name: "LTR Arrow B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 30.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "Exit",
+          reversed_signposted_as: "Entrance"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#pathways-#{pathway.id} [data-pathway-label]", "Exit →")
+      assert has_element?(view, "#pathways-#{pathway.id} [data-pathway-label]", "← Entrance")
+    end
+
+    test "right-to-left pathways render forward and reverse arrows with flipped mapping", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "RTL_ARROW_A",
+          stop_name: "RTL Arrow A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 32.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "RTL_ARROW_B",
+          stop_name: "RTL Arrow B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 32.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "Exit",
+          reversed_signposted_as: "Entrance"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#pathways-#{pathway.id} [data-pathway-label]", "← Exit")
+      assert has_element?(view, "#pathways-#{pathway.id} [data-pathway-label]", "Entrance →")
+    end
+
+    test "horizontal pathway labels keep forward above and reverse below via opposite y offsets",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "H_OFFSET_A",
+          stop_name: "Horizontal Offset A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 35.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "H_OFFSET_B",
+          stop_name: "Horizontal Offset B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 32.0, "y" => 35.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "Forward Y",
+          reversed_signposted_as: "Reverse Y"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(
+               view,
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='-1.2']",
+               "Forward Y →"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='1.2']",
+               "← Reverse Y"
+             )
+    end
+
+    test "vertical pathway labels keep forward and reverse on canonical opposite x offsets", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "V_OFFSET_A",
+          stop_name: "Vertical Offset A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 12.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "V_OFFSET_B",
+          stop_name: "Vertical Offset B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 32.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "Forward X",
+          reversed_signposted_as: "Reverse X"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(
+               view,
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='-1.2']",
+               "Forward X →"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='1.2']",
+               "← Reverse X"
+             )
     end
 
     test "applies directional arrow rules for one-way and bidirectional pathways", %{

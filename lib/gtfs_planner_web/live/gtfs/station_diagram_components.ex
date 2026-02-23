@@ -880,6 +880,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     {offset_x, offset_y} =
       label_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, assigns.side)
 
+    {rotation, flipped?} =
+      pathway_label_angle_metadata(assigns.x1, assigns.y1, assigns.x2, assigns.y2)
+
+    display_text = direction_indicator(assigns.text, assigns.side, flipped?)
+
     assigns =
       assigns
       |> assign(:mid_x, mid_x)
@@ -888,11 +893,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:offset_y, offset_y)
       |> assign(:x, mid_x + offset_x)
       |> assign(:y, mid_y + offset_y)
+      |> assign(:rotation, rotation)
+      |> assign(:display_text, display_text)
 
     ~H"""
     <text
       x={@x}
       y={@y}
+      transform={"rotate(#{@rotation}, #{@x}, #{@y})"}
       fill="#06b6d4"
       stroke="#FFFFFF"
       stroke-width="0.2"
@@ -906,11 +914,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-midpoint-y={@mid_y}
       data-offset-x={@offset_x}
       data-offset-y={@offset_y}
+      data-rotation={@rotation}
       data-base-font-size="0.9"
       data-base-stroke="0.2"
       class="pointer-events-none select-none"
     >
-      {@text}
+      {@display_text}
     </text>
     """
   end
@@ -2204,13 +2213,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp label_offset(x1, y1, x2, y2, side) do
     {perp_x, perp_y} = perpendicular_unit(x1, y1, x2, y2)
-    distance = 1.4
+    {above_x, above_y} = canonical_label_side(perp_x, perp_y)
+    distance = 1.2
 
     case side do
-      :reverse -> {-perp_x * distance, -perp_y * distance}
-      _ -> {perp_x * distance, perp_y * distance}
+      :reverse -> {-above_x * distance, -above_y * distance}
+      _ -> {above_x * distance, above_y * distance}
     end
   end
+
+  defp canonical_label_side(perp_x, perp_y) when perp_y < 0, do: {perp_x, perp_y}
+  defp canonical_label_side(perp_x, perp_y) when perp_y > 0, do: {-perp_x, -perp_y}
+  defp canonical_label_side(perp_x, perp_y) when perp_x > 0, do: {-perp_x, -perp_y}
+  defp canonical_label_side(perp_x, perp_y), do: {perp_x, perp_y}
+
+  defp pathway_label_angle_metadata(x1, y1, x2, y2) do
+    angle = :math.atan2(y2 - y1, x2 - x1) * 180 / :math.pi()
+    {pathway_label_rotation(angle), pathway_label_flipped?(angle)}
+  end
+
+  defp pathway_label_flipped?(angle) when angle > 90, do: true
+  defp pathway_label_flipped?(angle) when angle < -90, do: true
+  defp pathway_label_flipped?(_angle), do: false
+
+  defp direction_indicator(text, :forward, false), do: "#{text} →"
+  defp direction_indicator(text, :forward, true), do: "← #{text}"
+  defp direction_indicator(text, :reverse, false), do: "← #{text}"
+  defp direction_indicator(text, :reverse, true), do: "#{text} →"
+
+  defp pathway_label_rotation(angle) when angle > 90, do: angle - 180
+  defp pathway_label_rotation(angle) when angle < -90, do: angle + 180
+  defp pathway_label_rotation(angle), do: angle
 
   # ============================================================================
   # Ruler Drawer
