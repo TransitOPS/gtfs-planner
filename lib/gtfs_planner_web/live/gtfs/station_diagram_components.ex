@@ -2019,6 +2019,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         help="Optional"
       />
 
+      <div class="grid grid-cols-2 gap-4">
+        <.input
+          field={@child_stop_form[:stop_lat]}
+          type="number"
+          label="Latitude"
+          placeholder="e.g., 40.7128"
+          step="0.000001"
+          min="-90"
+          max="90"
+          help="Optional"
+        />
+        <.input
+          field={@child_stop_form[:stop_lon]}
+          type="number"
+          label="Longitude"
+          placeholder="e.g., -74.0060"
+          step="0.000001"
+          min="-180"
+          max="180"
+          help="Optional"
+        />
+      </div>
+
       <%= if @selected_stop_id != nil && @editing_level do %>
         <.input
           field={@child_stop_form[:level_id]}

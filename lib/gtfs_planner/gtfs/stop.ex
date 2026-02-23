@@ -81,6 +81,8 @@ defmodule GtfsPlanner.Gtfs.Stop do
     end)
     |> validate_inclusion(:location_type, 0..4)
     |> validate_inclusion(:wheelchair_boarding, 0..2)
+    |> validate_number(:stop_lat, greater_than_or_equal_to: -90, less_than_or_equal_to: 90)
+    |> validate_number(:stop_lon, greater_than_or_equal_to: -180, less_than_or_equal_to: 180)
     |> unique_constraint([:organization_id, :gtfs_version_id, :stop_id])
     |> foreign_key_constraint(:organization_id)
   end

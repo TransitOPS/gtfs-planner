@@ -156,6 +156,68 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child-stop-form button[phx-click='delete_child_stop']")
     end
 
+    test "new child stop drawer renders latitude and longitude inputs", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "12", "y" => "24"})
+
+      assert has_element?(view, "#child-stop-form input[name='stop_lat'][type='number']")
+      assert has_element?(view, "#child-stop-form input[name='stop_lon'][type='number']")
+      assert has_element?(view, "#child-stop-form input[name='stop_lat'][min='-90'][max='90']")
+      assert has_element?(view, "#child-stop-form input[name='stop_lon'][min='-180'][max='180']")
+    end
+
+    test "creating a child stop persists latitude and longitude", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "child_lat_lon_create",
+        "stop_name" => "Child Lat Lon Create",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "stop_lat" => "40.7128",
+        "stop_lon" => "-74.0060"
+      })
+      |> render_submit()
+
+      created_stop =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> Enum.find(&(&1.stop_name == "Child Lat Lon Create"))
+
+      assert created_stop
+      assert Decimal.equal?(created_stop.stop_lat, Decimal.new("40.7128"))
+      assert Decimal.equal?(created_stop.stop_lon, Decimal.new("-74.0060"))
+    end
+
     test "editing child stop shows change link and toggles level selector", %{
       conn: conn,
       user: user,
@@ -249,6 +311,96 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       updated_stop = Gtfs.get_stop!(child_stop.id)
       assert is_nil(updated_stop.wheelchair_boarding)
+    end
+
+    test "editing child stop pre-populates and updates latitude and longitude", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_LAT_LON_EDIT",
+          stop_name: "Child Lat Lon Edit",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          stop_lat: Decimal.new("40.7128"),
+          stop_lon: Decimal.new("-74.0060"),
+          diagram_coordinate: %{"x" => 45.0, "y" => 55.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-form input[name='stop_lat'][value='40.7128']")
+      assert has_element?(view, "#child-stop-form input[name='stop_lon'][value='-74.0060']")
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => child_stop.stop_id,
+        "stop_name" => child_stop.stop_name,
+        "location_type" => Integer.to_string(child_stop.location_type),
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "stop_lat" => "40.730610",
+        "stop_lon" => "-73.935242"
+      })
+      |> render_submit()
+
+      updated_stop = Gtfs.get_stop!(child_stop.id)
+      assert Decimal.equal?(updated_stop.stop_lat, Decimal.new("40.730610"))
+      assert Decimal.equal?(updated_stop.stop_lon, Decimal.new("-73.935242"))
+    end
+
+    test "out-of-range latitude keeps child stop form open with validation error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "60", "y" => "70"})
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "child_lat_invalid",
+        "stop_name" => "Child Lat Invalid",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "stop_lat" => "91",
+        "stop_lon" => "-74.0060"
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#child-stop-form")
+      assert has_element?(view, "#child-stop-form", "90")
+
+      created_stops =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+
+      refute Enum.any?(created_stops, &(&1.stop_name == "Child Lat Invalid"))
     end
 
     test "view mode background click is a no-op", %{
