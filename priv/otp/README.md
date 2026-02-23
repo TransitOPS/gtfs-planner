@@ -11,4 +11,16 @@ Validate your local setup with:
 mix gtfs.otp.check --create-dir
 ```
 
+Download missing local artifacts automatically:
+
+```bash
+mix gtfs.otp.install
+```
+
+Use custom sources if needed:
+
+```bash
+mix gtfs.otp.install --jar-url <otp_jar_url> --osm-url <osm_pbf_url>
+```
+
 This directory is intentionally kept in git, but large binaries are ignored.

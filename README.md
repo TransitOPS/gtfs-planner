@@ -25,6 +25,18 @@ Use the built-in checker before running Export page graph tests:
 mix gtfs.otp.check --create-dir
 ```
 
+Install missing artifacts automatically:
+
+```bash
+mix gtfs.otp.install
+```
+
+Run in preview mode without downloading:
+
+```bash
+mix gtfs.otp.install --dry-run
+```
+
 `mix setup` runs this checker in warning mode so missing local assets are always surfaced early.
 
 Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
