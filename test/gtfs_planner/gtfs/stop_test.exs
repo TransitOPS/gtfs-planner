@@ -59,4 +59,47 @@ defmodule GtfsPlanner.Gtfs.StopTest do
       assert Stop.generate_stop_id(4, "A") == "boarding_a"
     end
   end
+
+  describe "changeset/2 coordinate validation" do
+    test "accepts in-range latitude and longitude" do
+      attrs =
+        base_stop_attrs()
+        |> Map.put(:stop_lat, "40.7128")
+        |> Map.put(:stop_lon, "-74.0060")
+
+      changeset = Stop.changeset(%Stop{}, attrs)
+
+      assert changeset.valid?
+    end
+
+    test "rejects latitude greater than 90" do
+      attrs = Map.put(base_stop_attrs(), :stop_lat, "91")
+      changeset = Stop.changeset(%Stop{}, attrs)
+
+      refute changeset.valid?
+      assert Keyword.has_key?(changeset.errors, :stop_lat)
+    end
+
+    test "rejects longitude greater than 180" do
+      attrs = Map.put(base_stop_attrs(), :stop_lon, "181")
+      changeset = Stop.changeset(%Stop{}, attrs)
+
+      refute changeset.valid?
+      assert Keyword.has_key?(changeset.errors, :stop_lon)
+    end
+
+    test "accepts missing latitude and longitude" do
+      changeset = Stop.changeset(%Stop{}, base_stop_attrs())
+
+      assert changeset.valid?
+    end
+  end
+
+  defp base_stop_attrs do
+    %{
+      stop_id: "STOP_1",
+      organization_id: Ecto.UUID.generate(),
+      gtfs_version_id: Ecto.UUID.generate()
+    }
+  end
 end
