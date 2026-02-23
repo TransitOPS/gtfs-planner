@@ -880,6 +880,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     {offset_x, offset_y} =
       label_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, assigns.side)
 
+    rotation = pathway_label_rotation(assigns.x1, assigns.y1, assigns.x2, assigns.y2)
+
     assigns =
       assigns
       |> assign(:mid_x, mid_x)
@@ -888,11 +890,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:offset_y, offset_y)
       |> assign(:x, mid_x + offset_x)
       |> assign(:y, mid_y + offset_y)
+      |> assign(:rotation, rotation)
 
     ~H"""
     <text
       x={@x}
       y={@y}
+      transform={"rotate(#{@rotation}, #{@x}, #{@y})"}
       fill="#06b6d4"
       stroke="#FFFFFF"
       stroke-width="0.2"
@@ -906,6 +910,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-midpoint-y={@mid_y}
       data-offset-x={@offset_x}
       data-offset-y={@offset_y}
+      data-rotation={@rotation}
       data-base-font-size="0.9"
       data-base-stroke="0.2"
       class="pointer-events-none select-none"
@@ -2209,6 +2214,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     case side do
       :reverse -> {-perp_x * distance, -perp_y * distance}
       _ -> {perp_x * distance, perp_y * distance}
+    end
+  end
+
+  defp pathway_label_rotation(x1, y1, x2, y2) do
+    angle = :math.atan2(y2 - y1, x2 - x1) * 180 / :math.pi()
+
+    cond do
+      angle > 90 -> angle - 180
+      angle < -90 -> angle + 180
+      true -> angle
     end
   end
 

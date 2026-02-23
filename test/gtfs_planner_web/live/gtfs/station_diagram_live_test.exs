@@ -2259,6 +2259,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-line]")
       assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-label]", "Forward Sign")
       assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-label]", "Reverse Sign")
+      assert has_element?(view, "#pathways-#{mode_1.id} [data-pathway-label][data-rotation]")
+
+      assert has_element?(
+               view,
+               "#pathways-#{mode_1.id} [data-pathway-label][transform^='rotate(']",
+               "Forward Sign"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{mode_1.id} [data-pathway-label][transform^='rotate(']",
+               "Reverse Sign"
+             )
 
       assert has_element?(view, "#pathways-#{mode_2.id} [data-pathway-tick]")
       assert has_element?(view, "#pathways-#{mode_3.id} [data-base-dash='2,1']")
