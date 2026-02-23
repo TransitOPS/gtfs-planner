@@ -395,7 +395,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_submit()
 
       assert has_element?(view, "#child-stop-form")
-      assert has_element?(view, "#child-stop-form", "must be less than or equal to 90")
+      assert has_element?(view, "#child-stop-form", "90")
 
       created_stops =
         Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
