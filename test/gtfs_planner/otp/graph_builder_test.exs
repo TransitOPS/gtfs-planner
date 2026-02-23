@@ -24,7 +24,9 @@ defmodule GtfsPlanner.Otp.GraphBuilderTest do
     Application.put_env(:gtfs_planner, :otp_jar_path, "/opt/otp.jar")
     Application.put_env(:gtfs_planner, :otp_graph_build_heap, "6G")
 
-    workspace_dir = Path.join(System.tmp_dir!(), "graph-builder-test-#{System.unique_integer([:positive])}")
+    workspace_dir =
+      Path.join(System.tmp_dir!(), "graph-builder-test-#{System.unique_integer([:positive])}")
+
     data_dir = Path.join(workspace_dir, "data")
     File.mkdir_p!(data_dir)
 
@@ -56,7 +58,9 @@ defmodule GtfsPlanner.Otp.GraphBuilderTest do
     Application.put_env(:gtfs_planner, :otp_jar_path, "/opt/otp.jar")
     Application.put_env(:gtfs_planner, :otp_graph_build_heap, "4G")
 
-    workspace_dir = Path.join(System.tmp_dir!(), "graph-builder-test-#{System.unique_integer([:positive])}")
+    workspace_dir =
+      Path.join(System.tmp_dir!(), "graph-builder-test-#{System.unique_integer([:positive])}")
+
     data_dir = Path.join(workspace_dir, "data")
     File.mkdir_p!(data_dir)
 
@@ -82,7 +86,9 @@ defmodule GtfsPlanner.Otp.GraphBuilderTest do
     Application.put_env(:gtfs_planner, :otp_jar_path, "/opt/otp.jar")
     Application.put_env(:gtfs_planner, :otp_graph_build_heap, "4G")
 
-    workspace_dir = Path.join(System.tmp_dir!(), "graph-builder-test-#{System.unique_integer([:positive])}")
+    workspace_dir =
+      Path.join(System.tmp_dir!(), "graph-builder-test-#{System.unique_integer([:positive])}")
+
     data_dir = Path.join(workspace_dir, "data")
     File.mkdir_p!(data_dir)
 
@@ -108,7 +114,9 @@ defmodule GtfsPlanner.Otp.GraphBuilderTest do
     Application.put_env(:gtfs_planner, :otp_jar_path, "/opt/otp.jar")
     Application.put_env(:gtfs_planner, :otp_graph_build_heap, "4G")
 
-    workspace_dir = Path.join(System.tmp_dir!(), "graph-builder-test-#{System.unique_integer([:positive])}")
+    workspace_dir =
+      Path.join(System.tmp_dir!(), "graph-builder-test-#{System.unique_integer([:positive])}")
+
     data_dir = Path.join(workspace_dir, "data")
     File.mkdir_p!(data_dir)
 

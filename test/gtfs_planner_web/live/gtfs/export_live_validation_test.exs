@@ -302,10 +302,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       gtfs_version: version
     } do
       runtime_path =
-        Path.join(System.tmp_dir!(), "export-live-runtime-failure-#{System.unique_integer([:positive])}")
+        Path.join(
+          System.tmp_dir!(),
+          "export-live-runtime-failure-#{System.unique_integer([:positive])}"
+        )
 
       artifacts_path =
-        Path.join(System.tmp_dir!(), "export-live-artifacts-failure-#{System.unique_integer([:positive])}")
+        Path.join(
+          System.tmp_dir!(),
+          "export-live-artifacts-failure-#{System.unique_integer([:positive])}"
+        )
 
       previous_runtime_path = Application.get_env(:gtfs_planner, :otp_runtime_path)
       previous_artifacts_path = Application.get_env(:gtfs_planner, :otp_artifacts_path)

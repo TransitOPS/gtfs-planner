@@ -70,8 +70,10 @@ defmodule GtfsPlanner.Otp.Runtime do
   @spec cleanup_on_success(Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, cleanup_result()} | {:error, term()}
   def cleanup_on_success(organization_id, gtfs_version_id) do
-    with {:ok, graph_result} <- GraphLifecycle.purge_graph_on_success(organization_id, gtfs_version_id),
-         {:ok, gtfs_result} <- Lifecycle.purge_artifact_on_success(organization_id, gtfs_version_id) do
+    with {:ok, graph_result} <-
+           GraphLifecycle.purge_graph_on_success(organization_id, gtfs_version_id),
+         {:ok, gtfs_result} <-
+           Lifecycle.purge_artifact_on_success(organization_id, gtfs_version_id) do
       {:ok, %{graph: graph_result, gtfs: gtfs_result}}
     end
   end

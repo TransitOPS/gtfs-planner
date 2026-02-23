@@ -73,6 +73,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
     emit_status(status_callback, %{phase: :building})
 
     data_dir = GraphPath.data_dir(organization_id, gtfs_version_id)
+
     case stage_fun.(organization_id, gtfs_version_id, data_dir) do
       :ok ->
         case build_fun.(data_dir, build_opts) do
@@ -199,7 +200,9 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
   defp map_build_error(reason), do: %{reason_code: :unknown_build_error, reason: inspect(reason)}
 
   defp map_persist_error(reason) when is_atom(reason), do: %{reason_code: reason}
-  defp map_persist_error(reason), do: %{reason_code: :unknown_persist_error, reason: inspect(reason)}
+
+  defp map_persist_error(reason),
+    do: %{reason_code: :unknown_persist_error, reason: inspect(reason)}
 
   defp persist_manifest(organization_id, gtfs_version_id, build_result, _build_opts) do
     with {:ok, artifact} <- Otp.fetch_artifact(organization_id, gtfs_version_id),

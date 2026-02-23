@@ -15,10 +15,16 @@ defmodule GtfsPlanner.Otp.RuntimeCleanupTest do
       gtfs_version = gtfs_version_fixture(organization.id)
 
       runtime_path =
-        Path.join(System.tmp_dir!(), "runtime-cleanup-graph-#{System.unique_integer([:positive])}")
+        Path.join(
+          System.tmp_dir!(),
+          "runtime-cleanup-graph-#{System.unique_integer([:positive])}"
+        )
 
       artifacts_path =
-        Path.join(System.tmp_dir!(), "runtime-cleanup-artifacts-#{System.unique_integer([:positive])}")
+        Path.join(
+          System.tmp_dir!(),
+          "runtime-cleanup-artifacts-#{System.unique_integer([:positive])}"
+        )
 
       previous_runtime_path = Application.get_env(:gtfs_planner, :otp_runtime_path)
       previous_artifacts_path = Application.get_env(:gtfs_planner, :otp_artifacts_path)
@@ -115,7 +121,11 @@ defmodule GtfsPlanner.Otp.RuntimeCleanupTest do
         File.write!(graph_path, "graph")
 
         {:ok, graph_path,
-         %{reused: false, manifest_path: GraphPath.manifest_path(organization_id, gtfs_version_id), manifest_json: %{}}}
+         %{
+           reused: false,
+           manifest_path: GraphPath.manifest_path(organization_id, gtfs_version_id),
+           manifest_json: %{}
+         }}
       end
 
       assert {:ok, prepared} =

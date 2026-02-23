@@ -14,8 +14,11 @@ defmodule GtfsPlanner.Otp.GraphLifecycle do
 
     if File.exists?(workspace_path) do
       case File.rm_rf(workspace_path) do
-        {:ok, _paths} -> {:ok, :purged}
-        {:error, reason, _path} -> {:error, {:graph_workspace_delete_failed, workspace_path, reason}}
+        {:ok, _paths} ->
+          {:ok, :purged}
+
+        {:error, reason, _path} ->
+          {:error, {:graph_workspace_delete_failed, workspace_path, reason}}
       end
     else
       {:ok, :not_found}

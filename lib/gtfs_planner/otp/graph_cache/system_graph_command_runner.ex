@@ -7,7 +7,9 @@ defmodule GtfsPlanner.Otp.SystemGraphCommandRunner do
 
   @impl true
   def run(command, args, options \\ []) do
-    configured_timeout_ms = Application.get_env(:gtfs_planner, :otp_graph_build_timeout_ms, 600_000)
+    configured_timeout_ms =
+      Application.get_env(:gtfs_planner, :otp_graph_build_timeout_ms, 600_000)
+
     {timeout_ms, cmd_options} = Keyword.pop(options, :timeout, configured_timeout_ms)
 
     default_options = [stderr_to_stdout: true]

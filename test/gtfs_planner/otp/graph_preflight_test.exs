@@ -35,7 +35,9 @@ defmodule GtfsPlanner.Otp.GraphPreflightTest do
     organization: organization,
     gtfs_version: gtfs_version
   } do
-    tmp_dir = Path.join(System.tmp_dir!(), "graph-preflight-#{System.unique_integer([:positive])}")
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "graph-preflight-#{System.unique_integer([:positive])}")
+
     java_path = Path.join(tmp_dir, "java")
     otp_jar_path = Path.join(tmp_dir, "otp.jar")
     otp_osm_path = Path.join(tmp_dir, "region.osm.pbf")

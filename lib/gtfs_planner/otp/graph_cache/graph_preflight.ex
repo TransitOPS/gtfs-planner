@@ -42,7 +42,9 @@ defmodule GtfsPlanner.Otp.GraphPreflight do
             [issue(:missing_java_path, "Java path is not configured", %{})]
 
           Path.type(trimmed_path) == :absolute and not File.regular?(trimmed_path) ->
-            [issue(:java_not_found, "Configured Java binary was not found", %{path: trimmed_path})]
+            [
+              issue(:java_not_found, "Configured Java binary was not found", %{path: trimmed_path})
+            ]
 
           Path.type(trimmed_path) != :absolute and is_nil(System.find_executable(trimmed_path)) ->
             [
@@ -73,13 +75,21 @@ defmodule GtfsPlanner.Otp.GraphPreflight do
             [issue(:invalid_otp_jar_path, "OTP jar path must be absolute", %{path: trimmed_path})]
 
           not String.ends_with?(trimmed_path, ".jar") ->
-            [issue(:invalid_otp_jar_extension, "OTP jar must end with .jar", %{path: trimmed_path})]
+            [
+              issue(:invalid_otp_jar_extension, "OTP jar must end with .jar", %{
+                path: trimmed_path
+              })
+            ]
 
           not File.exists?(trimmed_path) ->
             [issue(:otp_jar_not_found, "OTP jar file was not found", %{path: trimmed_path})]
 
           not File.regular?(trimmed_path) ->
-            [issue(:otp_jar_not_regular_file, "OTP jar path is not a regular file", %{path: trimmed_path})]
+            [
+              issue(:otp_jar_not_regular_file, "OTP jar path is not a regular file", %{
+                path: trimmed_path
+              })
+            ]
 
           not readable_file?(trimmed_path) ->
             [issue(:otp_jar_not_readable, "OTP jar file is not readable", %{path: trimmed_path})]
@@ -115,10 +125,18 @@ defmodule GtfsPlanner.Otp.GraphPreflight do
             [issue(:missing_gtfs_zip_path, "GTFS artifact zip path is missing", %{})]
 
           Path.type(gtfs_path) != :absolute ->
-            [issue(:invalid_gtfs_zip_path, "GTFS artifact zip path must be absolute", %{path: gtfs_path})]
+            [
+              issue(:invalid_gtfs_zip_path, "GTFS artifact zip path must be absolute", %{
+                path: gtfs_path
+              })
+            ]
 
           not File.exists?(gtfs_path) ->
-            [issue(:gtfs_zip_not_found, "GTFS artifact zip file was not found", %{path: gtfs_path})]
+            [
+              issue(:gtfs_zip_not_found, "GTFS artifact zip file was not found", %{
+                path: gtfs_path
+              })
+            ]
 
           not File.regular?(gtfs_path) ->
             [
@@ -128,7 +146,11 @@ defmodule GtfsPlanner.Otp.GraphPreflight do
             ]
 
           not readable_file?(gtfs_path) ->
-            [issue(:gtfs_zip_not_readable, "GTFS artifact zip file is not readable", %{path: gtfs_path})]
+            [
+              issue(:gtfs_zip_not_readable, "GTFS artifact zip file is not readable", %{
+                path: gtfs_path
+              })
+            ]
 
           true ->
             []

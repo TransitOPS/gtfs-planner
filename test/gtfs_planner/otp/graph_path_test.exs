@@ -31,6 +31,7 @@ defmodule GtfsPlanner.Otp.GraphPathTest do
     assert GraphPath.base_dir() == runtime_base
     assert GraphPath.workspace_dir(organization_id, gtfs_version_id) == workspace_dir
     assert GraphPath.data_dir(organization_id, gtfs_version_id) == data_dir
+
     assert GraphPath.graph_obj_path(organization_id, gtfs_version_id) ==
              Path.join(data_dir, "Graph.obj")
 

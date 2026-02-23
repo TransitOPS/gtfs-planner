@@ -31,7 +31,10 @@ defmodule GtfsPlanner.Otp.GraphLifecycleTest do
       %{organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "purges existing graph workspace", %{organization: organization, gtfs_version: gtfs_version} do
+    test "purges existing graph workspace", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
       workspace_path = GraphPath.workspace_dir(organization.id, gtfs_version.id)
       graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id)
       build_log_path = GraphPath.build_log_path(organization.id, gtfs_version.id)
@@ -41,7 +44,10 @@ defmodule GtfsPlanner.Otp.GraphLifecycleTest do
       File.write!(build_log_path, "build output")
 
       assert File.exists?(workspace_path)
-      assert {:ok, :purged} = GraphLifecycle.purge_graph_on_success(organization.id, gtfs_version.id)
+
+      assert {:ok, :purged} =
+               GraphLifecycle.purge_graph_on_success(organization.id, gtfs_version.id)
+
       refute File.exists?(workspace_path)
     end
 
@@ -52,7 +58,9 @@ defmodule GtfsPlanner.Otp.GraphLifecycleTest do
       workspace_path = GraphPath.workspace_dir(organization.id, gtfs_version.id)
 
       refute File.exists?(workspace_path)
-      assert {:ok, :not_found} = GraphLifecycle.purge_graph_on_success(organization.id, gtfs_version.id)
+
+      assert {:ok, :not_found} =
+               GraphLifecycle.purge_graph_on_success(organization.id, gtfs_version.id)
     end
 
     test "returns error when graph workspace deletion fails", %{

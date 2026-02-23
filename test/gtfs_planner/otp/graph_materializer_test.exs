@@ -14,7 +14,10 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     runtime_path =
-      Path.join(System.tmp_dir!(), "graph-materializer-test-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "graph-materializer-test-#{System.unique_integer([:positive])}"
+      )
 
     osm_path = Path.join(runtime_path, "region.osm.pbf")
 
@@ -39,7 +42,12 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
       File.rm_rf(runtime_path)
     end)
 
-    %{organization: organization, gtfs_version: gtfs_version, runtime_path: runtime_path, osm_path: osm_path}
+    %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      runtime_path: runtime_path,
+      osm_path: osm_path
+    }
   end
 
   test "get_or_build_graph/3 returns cached graph and emits cache phases" do
@@ -258,7 +266,9 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
   } do
     status_callback = fn payload -> send(self(), {:phase, payload}) end
 
-    source_dir = Path.join(System.tmp_dir!(), "graph-staging-source-#{System.unique_integer([:positive])}")
+    source_dir =
+      Path.join(System.tmp_dir!(), "graph-staging-source-#{System.unique_integer([:positive])}")
+
     gtfs_source_path = Path.join(source_dir, "gtfs-source.zip")
 
     File.mkdir_p!(source_dir)
@@ -299,7 +309,8 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
                  {:ok, build_result}
                end,
                persist_fun: fn _org, _ver, ^build_result, _opts ->
-                 {:ok, GraphPath.manifest_path(organization.id, gtfs_version.id), %{"schema_version" => 1}}
+                 {:ok, GraphPath.manifest_path(organization.id, gtfs_version.id),
+                  %{"schema_version" => 1}}
                end
              )
 
@@ -370,7 +381,9 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
                preflight_fun: fn _org, _ver -> :ok end,
                stage_fun: fn _org, _ver, _data_dir -> :ok end,
                build_fun: fn _data_dir, _opts -> {:ok, build_result} end,
-               persist_fun: fn _org, _ver, ^build_result, _opts -> {:error, :manifest_write_failed} end
+               persist_fun: fn _org, _ver, ^build_result, _opts ->
+                 {:error, :manifest_write_failed}
+               end
              )
 
     assert issue.code == :persist_failed
