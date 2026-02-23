@@ -471,7 +471,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             "location_type" => "3",
             "level_id" => level_id,
             "wheelchair_boarding" => "0",
-            "platform_code" => ""
+            "platform_code" => "",
+            "stop_lat" => "",
+            "stop_lon" => ""
           })
 
         {:noreply,
@@ -612,7 +614,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         "location_type" => to_string(stop.location_type),
         "level_id" => stop.level_id,
         "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
-        "platform_code" => stop.platform_code || ""
+        "platform_code" => stop.platform_code || "",
+        "stop_lat" => to_optional_string(stop.stop_lat),
+        "stop_lon" => to_optional_string(stop.stop_lon)
       })
 
     {:noreply,
@@ -708,6 +712,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       level_id: params["level_id"],
       wheelchair_boarding: parse_optional_int(params["wheelchair_boarding"]),
       platform_code: blank_to_nil(params["platform_code"]),
+      stop_lat: params["stop_lat"],
+      stop_lon: params["stop_lon"],
       diagram_coordinate: %{"x" => pending_xy.x, "y" => pending_xy.y},
       organization_id: organization_id,
       gtfs_version_id: gtfs_version_id
