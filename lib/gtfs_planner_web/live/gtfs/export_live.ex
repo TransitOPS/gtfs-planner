@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Otp.Runtime
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
+  require Logger
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @impl Phoenix.LiveView
@@ -33,6 +34,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_progress, nil)
      |> assign(:validation_result, nil)
      |> assign(:validation_error, nil)
+     |> assign(:pathways_prep_error, nil)
      |> assign(:recent_validation_runs, [])}
   end
 
@@ -246,13 +248,22 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                )}
             end
 
-          {:error, {:pathways_export_prep_failed, _issues}} ->
+          {:error, {:pathways_export_prep_failed, issues}} ->
+            Logger.error("Pathways export preparation failed",
+              event: "pathways_prep_failed",
+              organization_id: socket.assigns.current_organization.id,
+              gtfs_version_id: socket.assigns.current_gtfs_version.id,
+              phase: :pathways_prep,
+              issue_codes: Enum.map(issues, & &1.code),
+              details: issues
+            )
+
             {:noreply,
              socket
              |> assign(:pending_mobility_validation, false)
              |> assign(:validating, false)
              |> assign(:validation_progress, nil)
-             |> put_flash(:error, "Could not prepare GTFS export for pathways trip tests.")}
+             |> assign(:pathways_prep_error, build_pathways_prep_error(issues))}
         end
 
       socket.assigns.export_task && socket.assigns.export_task.ref == ref ->
@@ -348,12 +359,28 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   def handle_info({:DOWN, ref, :process, _pid, reason}, socket) do
     cond do
       socket.assigns.pathways_prep_task && socket.assigns.pathways_prep_task.ref == ref ->
-        require Logger
-        Logger.error("Pathways prep task crashed: #{inspect(reason)}")
+        Logger.error("Pathways prep task crashed",
+          event: "pathways_prep_failed",
+          organization_id: socket.assigns.current_organization.id,
+          gtfs_version_id: socket.assigns.current_gtfs_version.id,
+          phase: :pathways_prep,
+          reason: inspect(reason)
+        )
 
         {:noreply,
          socket
-         |> put_flash(:error, "Could not prepare GTFS export for pathways trip tests.")
+         |> assign(:pathways_prep_error, %{
+           summary: "Pathways export preparation crashed unexpectedly.",
+           issues: [
+             %{
+               code: :task_crashed,
+               message: inspect(reason),
+               details: %{}
+             }
+           ],
+           phase: :pathways_prep,
+           log_ref: nil
+         })
          |> assign(:validating, false)
          |> assign(:pathways_prep_task, nil)
          |> assign(:pending_mobility_validation, false)
@@ -524,6 +551,25 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 />
               </svg>
               <span>{@validation_error}</span>
+            </div>
+          <% end %>
+
+          <%= if @pathways_prep_error do %>
+            <div
+              id="pathways-prep-error"
+              role="alert"
+              aria-live="assertive"
+              class="alert alert-error alert-soft mb-6"
+            >
+              <div class="w-full space-y-2 text-base-content">
+                <h3 class="font-semibold text-base-content">{@pathways_prep_error.summary}</h3>
+                <ul
+                  id="pathways-prep-error-details"
+                  class="list-disc pl-5 space-y-1 text-base-content"
+                >
+                  <li :for={issue <- @pathways_prep_error.issues}>{issue.message}</li>
+                </ul>
+              </div>
             </div>
           <% end %>
 
@@ -777,8 +823,59 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:pending_mobility_validation, pending_mobility_validation)
      |> assign(:validation_result, nil)
      |> assign(:validation_error, nil)
+     |> assign(:pathways_prep_error, nil)
      |> assign(:validating, true)
      |> assign(:validation_progress, %{phase: {:pathways_prep, :cache_check}, percent: 10})}
+  end
+
+  defp build_pathways_prep_error(issues) do
+    %{
+      summary: "Pathways export preparation failed.",
+      issues: Enum.map(issues, &format_issue_for_ui/1),
+      phase: :pathways_prep,
+      log_ref: nil
+    }
+  end
+
+  defp format_issue_for_ui(%{code: :missing_required_file_data, details: %{file: file}} = issue) do
+    %{
+      code: issue.code,
+      message: "Required GTFS file missing: #{file}",
+      details: issue.details
+    }
+  end
+
+  defp format_issue_for_ui(%{code: :build_failed, details: details} = issue) do
+    %{
+      code: issue.code,
+      message: "OTP graph build failed" <> format_build_detail(details),
+      details: details
+    }
+  end
+
+  defp format_issue_for_ui(issue) do
+    %{
+      code: issue.code,
+      message: issue.message,
+      details: issue.details
+    }
+  end
+
+  defp format_build_detail(details) when is_map(details) do
+    labels =
+      [
+        {"reason_code", Map.get(details, :reason_code) || Map.get(details, "reason_code")},
+        {"exit_status", Map.get(details, :exit_status) || Map.get(details, "exit_status")},
+        {"build_log_path",
+         Map.get(details, :build_log_path) || Map.get(details, "build_log_path")}
+      ]
+      |> Enum.filter(fn {_label, value} -> not is_nil(value) end)
+      |> Enum.map(fn {label, value} -> "#{label}=#{value}" end)
+
+    case labels do
+      [] -> ""
+      _ -> " (" <> Enum.join(labels, ", ") <> ")"
+    end
   end
 
   defp phase_percent(:cache_check), do: 10

@@ -45,7 +45,25 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
   defmodule RuntimeFailMock do
     def prepare_runtime(_organization_id, _gtfs_version_id, _opts) do
-      {:error, [%{code: :runtime_prepare_failed}]}
+      {:error,
+       [
+         %{
+           code: :missing_required_file_data,
+           severity: :error,
+           message: "Required GTFS file data is missing",
+           details: %{file: "agency.txt"}
+         }
+       ]}
+    end
+
+    def cleanup_on_success(_organization_id, _gtfs_version_id) do
+      {:ok, %{graph: :not_found, gtfs: :not_found}}
+    end
+  end
+
+  defmodule RuntimeCrashMock do
+    def prepare_runtime(_organization_id, _gtfs_version_id, _opts) do
+      raise "runtime crashed"
     end
 
     def cleanup_on_success(_organization_id, _gtfs_version_id) do
@@ -167,7 +185,32 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      assert render(view) =~ "Could not prepare GTFS export for pathways trip tests."
+      assert has_element?(view, "#pathways-prep-error")
+
+      html = render(view)
+      assert html =~ "Pathways export preparation failed."
+      assert html =~ "agency.txt"
+    end
+
+    test "shows inline pathways prep error when runtime crashes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      Application.put_env(:gtfs_planner, :otp_runtime_module, RuntimeCrashMock)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      assert eventually(fn -> has_element?(view, "#pathways-prep-error") end)
+
+      assert eventually(fn ->
+               render(view) =~ "Pathways export preparation crashed unexpectedly."
+             end)
     end
 
     test "starts validation when validator is selected and button is clicked", %{
@@ -407,6 +450,20 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       # Should be back to initial state
       assert has_element?(view, "button", "Run Validation")
       refute render(view) =~ "View Full Results"
+    end
+  end
+
+  defp eventually(fun, attempts \\ 20)
+  defp eventually(fun, 0), do: fun.()
+
+  defp eventually(fun, attempts) when is_function(fun, 0) and attempts > 0 do
+    if fun.() do
+      true
+    else
+      receive do
+      after
+        10 -> eventually(fun, attempts - 1)
+      end
     end
   end
 end
