@@ -55,6 +55,10 @@ logfile
 pathway-studio
 
 priv/static/uploads
+priv/otp/*.jar
+priv/otp/*.pbf
+priv/otp/*.osm
+priv/otp/*.osm.pbf
 
 # Infra
 .terraform
