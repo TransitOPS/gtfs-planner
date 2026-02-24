@@ -56,6 +56,8 @@ locals {
           "AWS_SECRET_ACCESS_KEY=${aws_iam_access_key.service.secret}",
           "SECRET_KEY_BASE=${random_password.secret_key_base.result}",
           "DATABASE_URL=ecto://${var.db_username}@${var.db_host}:${var.db_name}/${var.db_name}",
+          "OTP_JAR_PATH=/opt/otp/otp.jar",
+          "OTP_OSM_PATH=/opt/otp/data/philadelphia.osm.pbf",
           "GEOAPIFY_API_KEY=${var.geoapify_api_key}"
         ]
         networks = [

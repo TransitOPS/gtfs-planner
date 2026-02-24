@@ -48,7 +48,7 @@ config :gtfs_planner,
        :otp_jar_path,
        System.get_env("OTP_JAR_PATH") ||
          if(config_env() == :prod,
-           do: nil,
+           do: "/opt/otp/otp.jar",
            else: Path.expand("../priv/otp/opentripplanner.jar", __DIR__)
          )
 
@@ -56,7 +56,7 @@ config :gtfs_planner,
        :otp_osm_path,
        System.get_env("OTP_OSM_PATH") ||
          if(config_env() == :prod,
-           do: nil,
+           do: "/opt/otp/data/philadelphia.osm.pbf",
            else: Path.expand("../priv/otp/region.osm.pbf", __DIR__)
          )
 

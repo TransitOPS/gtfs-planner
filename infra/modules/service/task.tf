@@ -8,6 +8,8 @@ locals {
     PORT                    = local.container_port
     DATABASE_URL            = "ecto://${var.db_username}@${var.db_host}:${var.db_port}/${var.db_name}"
     DATABASE_USE_IAM        = true
+    OTP_JAR_PATH            = "/opt/otp/otp.jar"
+    OTP_OSM_PATH            = "/opt/otp/data/philadelphia.osm.pbf"
   }
 }
 
