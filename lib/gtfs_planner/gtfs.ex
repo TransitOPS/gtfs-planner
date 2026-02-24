@@ -714,6 +714,91 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Deletes a child stop and its connected pathways in a single transaction.
+
+  Scopes the lookup to the given organization, version, and parent station
+  to prevent cross-tenant mutations.
+  """
+  @spec delete_child_stop(integer(), integer(), String.t(), integer()) ::
+          {:ok, Stop.t()} | {:error, :not_found}
+  def delete_child_stop(organization_id, gtfs_version_id, station_stop_id, stop_id) do
+    stop_query =
+      from(s in Stop,
+        where:
+          s.id == ^stop_id and
+            s.organization_id == ^organization_id and
+            s.gtfs_version_id == ^gtfs_version_id and
+            s.parent_station == ^station_stop_id
+      )
+
+    case Repo.one(stop_query) do
+      nil ->
+        {:error, :not_found}
+
+      stop ->
+        Ecto.Multi.new()
+        |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
+        |> Ecto.Multi.delete(:stop, stop)
+        |> Repo.transaction()
+        |> case do
+          {:ok, %{stop: deleted_stop}} ->
+            broadcast({:ok, deleted_stop}, [:stops, :deleted])
+
+          {:error, _step, reason, _changes} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  @doc """
+  Removes a child stop from the station diagram by clearing its
+  `diagram_coordinate` and `level_id`, and deletes connected pathways
+  so no dangling references remain.
+
+  Scopes the update to the given organization, version, and parent station
+  to prevent cross-tenant mutations.
+  """
+  @spec remove_child_stop_from_diagram(integer(), integer(), String.t(), integer()) ::
+          {:ok, Stop.t()} | {:error, :not_found}
+  def remove_child_stop_from_diagram(organization_id, gtfs_version_id, station_stop_id, stop_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    stop_query =
+      from(s in Stop,
+        where:
+          s.id == ^stop_id and
+            s.organization_id == ^organization_id and
+            s.gtfs_version_id == ^gtfs_version_id and
+            s.parent_station == ^station_stop_id
+      )
+
+    case Repo.one(stop_query) do
+      nil ->
+        {:error, :not_found}
+
+      stop ->
+        update_query =
+          from(s in Stop, where: s.id == ^stop_id)
+
+        Ecto.Multi.new()
+        |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
+        |> Ecto.Multi.update_all(:stop, update_query,
+          set: [diagram_coordinate: nil, level_id: nil, updated_at: now]
+        )
+        |> Repo.transaction()
+        |> case do
+          {:ok, _} ->
+            Repo.get!(Stop, stop_id)
+            |> then(&{:ok, &1})
+            |> broadcast([:stops, :updated])
+
+          {:error, _step, reason, _changes} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  @doc """
   Returns an `%Ecto.Changeset{}` for tracking stop changes.
 
   ## Examples
@@ -2024,6 +2109,18 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp paginate(query, _page, _per_page), do: paginate(query, 1, 25)
+
+  defp delete_pathways_for_stop_multi(multi, organization_id, gtfs_version_id, stop_id) do
+    pathway_query =
+      from(p in Pathway,
+        where:
+          p.organization_id == ^organization_id and
+            p.gtfs_version_id == ^gtfs_version_id and
+            (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id)
+      )
+
+    Ecto.Multi.delete_all(multi, :pathways, pathway_query)
+  end
 
   defp broadcast({:ok, result}, event_topic) do
     broadcast_result =

@@ -2338,12 +2338,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </:actions>
     </.simple_form>
 
-    <div :if={@selected_stop_id} class="mt-8 pt-6 border-t border-base-200">
+    <div :if={@selected_stop_id} id="remove-from-diagram-section" class="mt-8 pt-6 border-t border-base-200">
+      <div class="bg-warning/5 border border-warning/20 rounded-lg p-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-zinc-700 font-medium">Remove from Diagram</h3>
+            <p class="text-xs text-zinc-500 mt-1">
+              Clears placement. The stop and its pathways are kept.
+            </p>
+          </div>
+          <button
+            id="remove-from-diagram-button"
+            type="button"
+            class="btn btn-warning btn-sm btn-active text-white"
+            phx-click="remove_from_diagram"
+            phx-value-id={@selected_stop_id}
+            data-confirm="Remove this stop from the diagram? It will move to the unassigned list."
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div :if={@selected_stop_id} class="mt-4">
       <div class="bg-error/5 border border-error/20 rounded-lg p-4">
         <div class="flex items-center justify-between">
           <div>
-            <h3 class="text-error font-medium">Delete Child Stop</h3>
-            <p class="text-xs text-error/70 mt-1">
+            <h3 class="text-zinc-700 font-medium">Delete Child Stop</h3>
+            <p class="text-xs text-zinc-500 mt-1">
               This will also delete any pathways connected to this stop.
             </p>
           </div>

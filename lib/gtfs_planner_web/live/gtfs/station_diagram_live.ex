@@ -757,29 +757,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("remove_from_diagram", %{"id" => stop_id}, socket) do
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    station_stop_id = socket.assigns.station.stop_id
+
+    case Gtfs.remove_child_stop_from_diagram(org_id, version_id, station_stop_id, stop_id) do
+      {:ok, _stop} ->
+        {:noreply,
+         socket
+         |> refresh_lists()
+         |> put_flash(:info, "Stop removed from diagram.")
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:active_point_id, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
+
+      {:error, :not_found} ->
+        {:noreply, put_flash(socket, :error, "Stop not found for this station.")}
+    end
+  end
+
+  @impl true
   def handle_event("delete_child_stop", %{"id" => stop_id}, socket) do
-    stop = Gtfs.get_stop!(stop_id)
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    station_stop_id = socket.assigns.station.stop_id
 
-    # Delete any pathways connected to this stop
-    pathways_to_delete =
-      Gtfs.list_pathways_for_stop(organization_id, gtfs_version_id, stop.stop_id)
-
-    # Delete pathways from database and remove from stream
-    socket =
-      Enum.reduce(pathways_to_delete, socket, fn pathway, acc_socket ->
-        case Gtfs.delete_pathway(pathway) do
-          {:ok, _deleted_pathway} ->
-            acc_socket
-
-          {:error, _} ->
-            acc_socket
-        end
-      end)
-
-    # Delete the stop itself
-    case Gtfs.delete_stop(stop) do
+    case Gtfs.delete_child_stop(org_id, version_id, station_stop_id, stop_id) do
       {:ok, _deleted_stop} ->
         {:noreply,
          socket
@@ -789,7 +794,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:active_point_id, nil)
          |> assign(:child_stop_form, to_form(%{}))}
 
-      {:error, _changeset} ->
+      {:error, :not_found} ->
         {:noreply,
          socket
          |> put_flash(:error, "Failed to delete child stop")
