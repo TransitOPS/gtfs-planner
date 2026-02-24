@@ -305,12 +305,21 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         socket =
           case result do
             {:ok, %Validator.Result{} = _validation_result} ->
-              _ =
-                Runtime.cleanup_on_success(
-                  socket.assigns.current_organization.id,
-                  socket.assigns.current_gtfs_version.id
-                )
+              case Runtime.cleanup_on_success(
+                     socket.assigns.current_organization.id,
+                     socket.assigns.current_gtfs_version.id
+                   ) do
+                :ok ->
+                  :ok
 
+                {:error, reason} ->
+                  require Logger
+                  Logger.error("Runtime.cleanup_on_success failed: #{inspect(reason)}")
+
+                other ->
+                  require Logger
+                  Logger.error("Runtime.cleanup_on_success returned unexpected result: #{inspect(other)}")
+              end
               # Result is now persisted in DB, just show success and keep validation_result for display
               run = Validations.get_validation_run!(socket.assigns.validation_run_id)
 
