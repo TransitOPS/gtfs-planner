@@ -242,10 +242,22 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
   end
 
   defp file_sha256(path) do
-    case File.read(path) do
-      {:ok, content} ->
-        digest = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
-        {:ok, digest}
+    case File.open(path, [:read, :binary]) do
+      {:ok, io_device} ->
+        try do
+          digest =
+            io_device
+            |> IO.binstream(2_097_152)
+            |> Enum.reduce(:crypto.hash_init(:sha256), &:crypto.hash_update(&2, &1))
+            |> :crypto.hash_final()
+            |> Base.encode16(case: :lower)
+
+          {:ok, digest}
+        rescue
+          error in File.Error -> {:error, error.reason}
+        after
+          File.close(io_device)
+        end
 
       {:error, reason} ->
         {:error, reason}
