@@ -583,12 +583,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#child_stops-#{selected_stop.id} [data-stop-marker][data-location-type='3'][fill='#059669']"
+               "#child_stops-#{selected_stop.id} [data-stop-marker][data-location-type='3'][fill='#FF4500']"
              )
 
       assert has_element?(
                view,
-               "#child_stops-#{other_stop.id} [data-stop-marker][data-location-type='3'][fill='#2563EB']"
+               "#child_stops-#{other_stop.id} [data-stop-marker][data-location-type='3'][fill='#0080FF']"
              )
     end
 
@@ -659,7 +659,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#child_stops-#{selected_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}'] [data-cross-level-badge-elevator][fill='#06b6d4']"
+               "#child_stops-#{selected_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}'] [data-cross-level-badge-elevator][fill='#FF00FF']"
              )
     end
 
@@ -2115,7 +2115,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       truncated_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
           stop_id: "TRUNC_LABEL_STOP",
-          stop_name: "Very Long Label Name For Multi Segment Connector Through Main Hall And Auxiliary Passage To Platform",
+          stop_name:
+            "Very Long Label Name For Multi Segment Connector Through Main Hall And Auxiliary Passage To Platform",
           location_type: 3,
           parent_station: station.stop_id,
           level_id: level.level_id,
@@ -2469,13 +2470,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='-1.2']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='-0.95']",
                "Forward Y →"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='1.2']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='0.95']",
                "← Reverse Y"
              )
     end
@@ -2523,13 +2524,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='-1.2']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='-0.95']",
                "Forward X →"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='1.2']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='0.95']",
                "← Reverse X"
              )
     end
@@ -3088,7 +3089,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#child_stops-#{level_1_stop_b.id} [data-cross-level-pathway-badge]"
              )
 
-      assert has_element?(view, "#diagram-legend-panel", "Cross-level Badge")
+      assert has_element?(view, "#diagram-legend-panel", "Cross-level Stairs")
+      assert has_element?(view, "#diagram-legend-panel", "Cross-level Elevator")
     end
 
     test "clicking a cross-level badge opens pathway drawer for that pathway only", %{

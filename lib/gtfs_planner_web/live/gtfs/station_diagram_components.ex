@@ -17,7 +17,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   @stop_label_stroke_width 0.17
   @stop_label_line_height 0.84
   @stop_label_char_width 0.42
-  @stop_label_box_padding_x 0.16
+  @stop_label_box_padding_x 0.40
   @stop_label_box_padding_y 0.12
   @stop_label_box_stroke 0.08
   @stop_label_max_line_chars 18
@@ -383,8 +383,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         >
           <path
             d="M 0 0 L 6 3 L 0 6 z"
-            fill="#06b6d4"
-            stroke="#06b6d4"
+            fill="#FF00FF"
+            stroke="#FF00FF"
             stroke-width="0.35"
             stroke-linejoin="round"
           />
@@ -471,10 +471,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <g
       id={@id}
       opacity={@opacity}
-      class="cursor-pointer pointer-events-auto"
+      class="group cursor-pointer pointer-events-auto"
       data-editable={if @editable?, do: "pathway"}
       data-tooltip={if @editable?, do: "Click to edit pathway"}
-      data-tooltip-color={if @editable?, do: "#06b6d4"}
+      data-tooltip-color={if @editable?, do: "#FF00FF"}
       tabindex={if @editable?, do: "0"}
       aria-label={if @editable?, do: pathway_aria_label(@pathway)}
       phx-click={if @editable?, do: "edit_pathway"}
@@ -572,15 +572,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1={@y1}
       x2={@x2}
       y2={@y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="butt"
       marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
       marker-end="url(#pathway-arrow)"
       data-pathway-line="true"
-      data-pathway-end-trim="0.9"
+      data-pathway-end-trim="1.1"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "hover:stroke-[#22d3ee] transition-colors")}
+      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
     />
     """
   end
@@ -606,15 +606,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1={@y1}
       x2={@x2}
       y2={@y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="butt"
       marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
       marker-end="url(#pathway-arrow)"
       data-pathway-line="true"
-      data-pathway-end-trim="0.9"
+      data-pathway-end-trim="1.1"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "hover:stroke-[#22d3ee] transition-colors")}
+      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
     />
     <line
       :for={tick <- @ticks}
@@ -622,12 +622,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1={tick.y1}
       x2={tick.x2}
       y2={tick.y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.26"
       stroke-linecap="round"
       data-pathway-center-tick="true"
       data-base-stroke="0.26"
-      class="pointer-events-none"
+      class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     """
   end
@@ -653,15 +653,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1={@y1}
       x2={@x2}
       y2={@y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="butt"
       marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
       marker-end="url(#pathway-arrow)"
       data-pathway-line="true"
-      data-pathway-end-trim="0.9"
+      data-pathway-end-trim="1.1"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "hover:stroke-[#22d3ee] transition-colors")}
+      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
     />
     <line
       :for={segment <- @cross_segments}
@@ -669,12 +669,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1={segment.y1}
       x2={segment.x2}
       y2={segment.y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.26"
       stroke-linecap="round"
       data-pathway-center-cross="true"
       data-base-stroke="0.26"
-      class="pointer-events-none"
+      class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     """
   end
@@ -700,15 +700,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1={@y1}
       x2={@x2}
       y2={@y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="butt"
       marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
       marker-end="url(#pathway-arrow)"
       data-pathway-line="true"
-      data-pathway-end-trim="0.9"
+      data-pathway-end-trim="1.1"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "hover:stroke-[#22d3ee] transition-colors")}
+      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
     />
     <line
       :for={tick <- @ticks}
@@ -716,12 +716,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1={tick.y1}
       x2={tick.x2}
       y2={tick.y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.26"
       stroke-linecap="round"
       data-pathway-center-bar="true"
       data-base-stroke="0.26"
-      class="pointer-events-none"
+      class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     """
   end
@@ -765,57 +765,57 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1={@y1}
       x2={@connector_to_x}
       y2={@connector_to_y}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.26"
       stroke-linecap="butt"
       marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
       data-pathway-connector="true"
-      data-pathway-end-trim-start="0.9"
+      data-pathway-end-trim-start="1.1"
       data-base-stroke="0.26"
-      class="pointer-events-none"
+      class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     <line
       x1={@connector_from_x}
       y1={@connector_from_y}
       x2={@x2}
       y2={@y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.26"
       stroke-linecap="butt"
       marker-end="url(#pathway-arrow)"
       data-pathway-connector="true"
-      data-pathway-end-trim-end="0.9"
+      data-pathway-end-trim-end="1.1"
       data-base-stroke="0.26"
-      class="pointer-events-none"
+      class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     <rect
-      x={@mid_x - 1}
-      y={@mid_y - 1}
-      width="2"
-      height="2"
+      x={@mid_x - 0.5}
+      y={@mid_y - 0.5}
+      width="1"
+      height="1"
       fill="#FFFFFF"
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.4"
       data-pathway-elevator-box="true"
       data-center-x={@mid_x}
       data-center-y={@mid_y}
-      data-base-width="2"
-      data-base-height="2"
+      data-base-width="1"
+      data-base-height="1"
       data-base-stroke="0.4"
-      class="pointer-events-none"
+      class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     <text
       x={@mid_x}
       y={@mid_y}
-      fill="#06b6d4"
-      font-size="1.2"
+      fill="#FF00FF"
+      font-size="0.275"
       text-anchor="middle"
       dominant-baseline="central"
       data-pathway-elevator-text="true"
       data-center-x={@mid_x}
       data-center-y={@mid_y}
-      data-base-font-size="1.2"
-      class="pointer-events-none select-none"
+      data-base-font-size="0.275"
+      class="pointer-events-none select-none transition-colors group-hover:fill-[#FF4500]"
     >
       ↕
     </text>
@@ -831,10 +831,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp pathway_fare_gate(assigns) do
     {rail_a_x1, rail_a_y1, rail_a_x2, rail_a_y2} =
-      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 0.16)
+      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 0.24)
 
     {rail_b_x1, rail_b_y1, rail_b_x2, rail_b_y2} =
-      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, -0.16)
+      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, -0.24)
 
     assigns =
       assigns
@@ -853,28 +853,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1={@rail_a_y1}
       x2={@rail_a_x2}
       y2={@rail_a_y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="round"
       data-pathway-rail="true"
-      data-rail-base-offset="0.16"
+      data-rail-base-offset="0.24"
       data-rail-base-stroke="0.30"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "hover:stroke-[#22d3ee] transition-colors")}
+      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
     />
     <line
       x1={@rail_b_x1}
       y1={@rail_b_y1}
       x2={@rail_b_x2}
       y2={@rail_b_y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="round"
       data-pathway-rail="true"
-      data-rail-base-offset="-0.16"
+      data-rail-base-offset="-0.24"
       data-rail-base-stroke="0.30"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "hover:stroke-[#22d3ee] transition-colors")}
+      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
     />
     <line
       x1={@x1}
@@ -887,7 +887,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
       marker-end="url(#pathway-arrow)"
       data-pathway-arrow-guide="true"
-      data-pathway-end-trim="0.9"
+      data-pathway-end-trim="1.1"
       data-base-stroke="0.30"
       class="pointer-events-none"
     />
@@ -925,28 +925,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1={@rail_a_y1}
       x2={@rail_a_x2}
       y2={@rail_a_y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="round"
       data-pathway-rail="true"
       data-rail-base-offset="0.16"
       data-rail-base-stroke="0.30"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "hover:stroke-[#22d3ee] transition-colors")}
+      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
     />
     <line
       x1={@rail_b_x1}
       y1={@rail_b_y1}
       x2={@rail_b_x2}
       y2={@rail_b_y2}
-      stroke="#06b6d4"
+      stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="round"
       data-pathway-rail="true"
       data-rail-base-offset="-0.16"
       data-rail-base-stroke="0.30"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "hover:stroke-[#22d3ee] transition-colors")}
+      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
     />
     <line
       x1={@x1}
@@ -959,7 +959,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       marker-start="url(#pathway-arrow)"
       marker-end={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
       data-pathway-arrow-guide="true"
-      data-pathway-end-trim="0.9"
+      data-pathway-end-trim="1.1"
       data-base-stroke="0.30"
       class="pointer-events-none"
     />
@@ -1000,12 +1000,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       x={@x}
       y={@y}
       transform={"rotate(#{@rotation}, #{@x}, #{@y})"}
-      fill="#06b6d4"
+      fill="#FF00FF"
       stroke="#FFFFFF"
       stroke-width="0.2"
       paint-order="stroke fill"
-      font-size="0.9"
-      font-style="italic"
+      font-size="0.78"
       text-anchor="middle"
       dominant-baseline="central"
       data-pathway-label="true"
@@ -1014,9 +1013,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-offset-x={@offset_x}
       data-offset-y={@offset_y}
       data-rotation={@rotation}
-      data-base-font-size="0.9"
+      data-base-font-size="0.78"
       data-base-stroke="0.2"
-      class="pointer-events-none select-none"
+      class="pointer-events-none select-none transition-colors group-hover:fill-[#FF4500]"
     >
       {@display_text}
     </text>
@@ -1044,7 +1043,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <%= if stop.diagram_coordinate do %>
           <% cx = stop.diagram_coordinate["x"] %>
           <% cy = stop.diagram_coordinate["y"] %>
-          <% active_fill = if(@active_point_id == stop.id, do: "#059669", else: "#2563EB") %>
+          <% active_fill = if(@active_point_id == stop.id, do: "#FF4500", else: "#0080FF") %>
           <% label = stop_label_text(stop) %>
           <% label_layout = stop_label_layout(label) %>
           <% label_offset_x = stop_label_x_offset(stop.location_type) %>
@@ -1054,7 +1053,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <% stop_aria_label = stop_aria_label(stop) %>
           <g
             id={dom_id}
-            class="pointer-events-auto"
+            class="group pointer-events-auto"
             data-editable="stop"
             data-tooltip={stop_tooltip_text(@mode)}
             data-tooltip-color={active_fill}
@@ -1104,7 +1103,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   stroke="#FFFFFF"
                   stroke-width="0.12"
                   paint-order="stroke fill"
-                  class="pointer-events-none"
+                  class="pointer-events-none transition-colors group-hover:fill-[#FF4500]"
                   data-stop-marker="true"
                   data-location-type={stop.location_type}
                   data-center-x={cx}
@@ -1120,7 +1119,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   fill="#FFFFFF"
                   stroke={active_fill}
                   stroke-width="0.16"
-                  class="pointer-events-none"
+                  class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
                   data-stop-marker="true"
                   data-location-type={stop.location_type}
                   data-center-x={cx}
@@ -1137,7 +1136,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   stroke="#FFFFFF"
                   stroke-width="0.12"
                   paint-order="stroke fill"
-                  class="pointer-events-none"
+                  class="pointer-events-none transition-colors group-hover:fill-[#FF4500]"
                   data-stop-marker="true"
                   data-location-type={stop.location_type}
                   data-center-x={cx}
@@ -1152,7 +1151,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   stroke="#FFFFFF"
                   stroke-width="0.12"
                   paint-order="stroke fill"
-                  class="pointer-events-none"
+                  class="pointer-events-none transition-colors group-hover:fill-[#FF4500]"
                   data-stop-marker="true"
                   data-location-type={stop.location_type}
                   data-center-x={cx}
@@ -1182,7 +1181,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               data-base-padding-y={@stop_label_box_padding_y}
               data-base-stroke={@stop_label_box_stroke}
               data-label-line-count={label_layout.line_count}
-              class="pointer-events-none"
+              class="pointer-events-none transition-colors group-hover:fill-[#FF4500]"
             />
             <text
               :if={label_layout}
@@ -1208,7 +1207,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               data-base-line-height={@stop_label_line_height}
               data-label-line-count={label_layout.line_count}
               data-label-truncated={if label_layout.truncated?, do: "true", else: "false"}
-              class="pointer-events-none"
+              class="pointer-events-none transition-colors group-hover:fill-[#FF4500]"
             >
               <%= for {line, index} <- Enum.with_index(label_layout.lines) do %>
                 <tspan x={label_x} dy={if(index == 0, do: "0", else: @stop_label_line_height)}>
@@ -1239,7 +1238,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp stop_label_layout(nil), do: nil
 
   defp stop_label_layout(label_text) do
-    {lines, truncated?} = wrap_stop_label_lines(label_text, @stop_label_max_line_chars, @stop_label_max_lines)
+    {lines, truncated?} =
+      wrap_stop_label_lines(label_text, @stop_label_max_line_chars, @stop_label_max_lines)
+
     line_count = length(lines)
     max_line_chars = lines |> Enum.map(&String.length/1) |> Enum.max(fn -> 0 end)
     text_width = max_line_chars * @stop_label_char_width
@@ -1294,7 +1295,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     end
   end
 
-  defp split_long_label_token(token, max_line_chars) when is_binary(token) and max_line_chars > 0 do
+  defp split_long_label_token(token, max_line_chars)
+       when is_binary(token) and max_line_chars > 0 do
     if String.length(token) <= max_line_chars do
       [token]
     else
@@ -1350,7 +1352,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     end
   end
 
-  defp stop_label_x_offset(_location_type), do: -0.25
+  defp stop_label_x_offset(_location_type), do: 0.15
 
   defp stop_label_y_offset(4), do: 0.72
   defp stop_label_y_offset(_location_type), do: 0.9
@@ -1398,7 +1400,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           data-cross-level-pathway-badge="true"
           data-pathway-id={badge.pathway_id}
           data-tooltip={if @editable?, do: cross_level_badge_tooltip(mode_label)}
-          data-tooltip-color={if @editable?, do: "#06b6d4"}
+          data-tooltip-color={if @editable?, do: "#FF00FF"}
           tabindex={if @editable?, do: "0"}
           aria-label={if @editable?, do: cross_level_badge_aria_label(mode_label)}
           phx-click={if @editable?, do: "edit_pathway"}
@@ -1435,7 +1437,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               center_x={cx}
               center_y={cy}
               offset_x={badge_offset_x}
-              fill="#06b6d4"
+              fill="#FF00FF"
               editable?={@editable?}
             />
           <% else %>
@@ -1443,7 +1445,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               center_x={cx}
               center_y={cy}
               offset_x={badge_offset_x}
-              fill="#06b6d4"
+              fill="#FF00FF"
               editable?={@editable?}
             />
           <% end %>
@@ -1653,7 +1655,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             stroke="#ffffff"
             stroke-width="0.16"
             paint-order="stroke fill"
-            font-size="0.72"
+            font-size="0.78"
             font-weight="600"
             text-anchor={if @saved_label?, do: "start", else: "middle"}
             dominant-baseline="central"
@@ -1664,7 +1666,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             data-label-anchor-y={if @saved_label?, do: @label_anchor_y}
             data-label-offset-x={if @saved_label?, do: @label_offset_x}
             data-label-offset-y={@label_offset_y}
-            data-base-font-size="0.72"
+            data-base-font-size="0.78"
             data-base-stroke="0.16"
             class="select-none"
           >
@@ -1718,7 +1720,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <div class="space-y-1.5">
           <div class="flex items-center gap-2 text-sm">
             <svg width="14" height="22" class="shrink-0">
-              <rect x="2" y="2" width="10" height="18" rx="1" fill="#2563EB" />
+              <rect x="2" y="2" width="10" height="18" rx="1" fill="#0080FF" />
             </svg>
             <span>Platform</span>
           </div>
@@ -1731,7 +1733,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 height="18"
                 rx="1"
                 fill="#fff"
-                stroke="#2563EB"
+                stroke="#0080FF"
                 stroke-width="1.5"
               />
             </svg>
@@ -1739,25 +1741,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
           <div class="flex items-center gap-2 text-sm">
             <svg width="14" height="14" class="shrink-0">
-              <circle cx="7" cy="7" r="6" fill="#2563EB" />
+              <circle cx="7" cy="7" r="6" fill="#0080FF" />
             </svg>
             <span>Generic Node</span>
           </div>
           <div class="flex items-center gap-2 text-sm">
             <svg width="14" height="14" class="shrink-0">
-              <rect x="1" y="1" width="12" height="12" rx="1" fill="#2563EB" />
+              <rect x="1" y="1" width="12" height="12" rx="1" fill="#0080FF" />
             </svg>
             <span>Boarding Area</span>
           </div>
           <div class="flex items-center gap-2 text-sm">
             <svg width="16" height="16" class="shrink-0">
-              <path d="M 3 14 L 3 10 L 6 10 L 6 6 L 9 6 L 9 2 L 13 2 L 13 14 Z" fill="#06b6d4" />
+              <path d="M 3 14 L 3 10 L 6 10 L 6 6 L 9 6 L 9 2 L 13 2 L 13 14 Z" fill="#FF00FF" />
             </svg>
             <span>Cross-level Stairs</span>
           </div>
           <div class="flex items-center gap-2 text-sm">
             <svg width="16" height="16" class="shrink-0">
-              <path d="M 8 2 L 12 7 L 4 7 Z M 8 14 L 12 9 L 4 9 Z" fill="#06b6d4" />
+              <path d="M 8 2 L 12 7 L 4 7 Z M 8 14 L 12 9 L 4 9 Z" fill="#FF00FF" />
             </svg>
             <span>Cross-level Elevator</span>
           </div>
@@ -1772,48 +1774,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <%!-- Mode 1: Walkway — solid line, bidirectional arrows --%>
           <div class="flex items-center gap-2 text-sm">
             <svg width="40" height="10" class="shrink-0">
-              <polygon points="3,1 0,5 3,9" fill="#06b6d4" />
-              <line x1="3" y1="5" x2="37" y2="5" stroke="#06b6d4" stroke-width="2" />
-              <polygon points="37,1 40,5 37,9" fill="#06b6d4" />
+              <polygon points="3,1 0,5 3,9" fill="#FF00FF" />
+              <line x1="3" y1="5" x2="37" y2="5" stroke="#FF00FF" stroke-width="2" />
+              <polygon points="37,1 40,5 37,9" fill="#FF00FF" />
             </svg>
             <span>Walkway</span>
           </div>
           <%!-- Mode 2: Stairs — solid line, one center tick, bidirectional arrows --%>
           <div class="flex items-center gap-2 text-sm">
             <svg width="40" height="12" class="shrink-0">
-              <polygon points="3,2 0,6 3,10" fill="#06b6d4" />
-              <line x1="3" y1="6" x2="37" y2="6" stroke="#06b6d4" stroke-width="2" />
-              <line x1="20" y1="1" x2="20" y2="11" stroke="#06b6d4" stroke-width="1.2" />
-              <polygon points="37,2 40,6 37,10" fill="#06b6d4" />
+              <polygon points="3,2 0,6 3,10" fill="#FF00FF" />
+              <line x1="3" y1="6" x2="37" y2="6" stroke="#FF00FF" stroke-width="2" />
+              <line x1="20" y1="1" x2="20" y2="11" stroke="#FF00FF" stroke-width="1.2" />
+              <polygon points="37,2 40,6 37,10" fill="#FF00FF" />
             </svg>
             <span>Stairs</span>
           </div>
           <%!-- Mode 3: Moving Sidewalk — solid line, center X, forward arrow --%>
           <div class="flex items-center gap-2 text-sm">
             <svg width="40" height="12" class="shrink-0">
-              <line x1="0" y1="6" x2="37" y2="6" stroke="#06b6d4" stroke-width="2" />
-              <line x1="16" y1="1" x2="24" y2="11" stroke="#06b6d4" stroke-width="1.2" />
-              <line x1="24" y1="1" x2="16" y2="11" stroke="#06b6d4" stroke-width="1.2" />
-              <polygon points="37,2 40,6 37,10" fill="#06b6d4" />
+              <line x1="0" y1="6" x2="37" y2="6" stroke="#FF00FF" stroke-width="2" />
+              <line x1="16" y1="1" x2="24" y2="11" stroke="#FF00FF" stroke-width="1.2" />
+              <line x1="24" y1="1" x2="16" y2="11" stroke="#FF00FF" stroke-width="1.2" />
+              <polygon points="37,2 40,6 37,10" fill="#FF00FF" />
             </svg>
             <span>Moving Sidewalk</span>
           </div>
           <%!-- Mode 4: Escalator — solid line, three center bars, forward arrow --%>
           <div class="flex items-center gap-2 text-sm">
             <svg width="40" height="12" class="shrink-0">
-              <line x1="0" y1="6" x2="37" y2="6" stroke="#06b6d4" stroke-width="2" />
-              <line x1="16" y1="1" x2="16" y2="11" stroke="#06b6d4" stroke-width="1.2" />
-              <line x1="20" y1="1" x2="20" y2="11" stroke="#06b6d4" stroke-width="1.2" />
-              <line x1="24" y1="1" x2="24" y2="11" stroke="#06b6d4" stroke-width="1.2" />
-              <polygon points="37,2 40,6 37,10" fill="#06b6d4" />
+              <line x1="0" y1="6" x2="37" y2="6" stroke="#FF00FF" stroke-width="2" />
+              <line x1="16" y1="1" x2="16" y2="11" stroke="#FF00FF" stroke-width="1.2" />
+              <line x1="20" y1="1" x2="20" y2="11" stroke="#FF00FF" stroke-width="1.2" />
+              <line x1="24" y1="1" x2="24" y2="11" stroke="#FF00FF" stroke-width="1.2" />
+              <polygon points="37,2 40,6 37,10" fill="#FF00FF" />
             </svg>
             <span>Escalator</span>
           </div>
           <%!-- Mode 5: Elevator — solid line, center box with ↕, bidirectional arrows --%>
           <div class="flex items-center gap-2 text-sm">
             <svg width="40" height="16" class="shrink-0">
-              <polygon points="3,4 0,8 3,12" fill="#06b6d4" />
-              <line x1="3" y1="8" x2="13" y2="8" stroke="#06b6d4" stroke-width="2" />
+              <polygon points="3,4 0,8 3,12" fill="#FF00FF" />
+              <line x1="3" y1="8" x2="13" y2="8" stroke="#FF00FF" stroke-width="2" />
               <rect
                 x="13"
                 y="1"
@@ -1821,7 +1823,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 height="14"
                 rx="2"
                 fill="#fff"
-                stroke="#06b6d4"
+                stroke="#FF00FF"
                 stroke-width="1.5"
               />
               <text
@@ -1831,30 +1833,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 dominant-baseline="central"
                 font-family="Inter, sans-serif"
                 font-size="9"
-                fill="#06b6d4"
+                fill="#FF00FF"
               >
                 ↕
               </text>
-              <line x1="27" y1="8" x2="37" y2="8" stroke="#06b6d4" stroke-width="2" />
-              <polygon points="37,4 40,8 37,12" fill="#06b6d4" />
+              <line x1="27" y1="8" x2="37" y2="8" stroke="#FF00FF" stroke-width="2" />
+              <polygon points="37,4 40,8 37,12" fill="#FF00FF" />
             </svg>
             <span>Elevator</span>
           </div>
           <%!-- Mode 6: Fare Gate — two parallel rails, forward arrow --%>
           <div class="flex items-center gap-2 text-sm">
             <svg width="40" height="12" class="shrink-0">
-              <line x1="0" y1="4" x2="33" y2="4" stroke="#06b6d4" stroke-width="1.5" />
-              <line x1="0" y1="8" x2="33" y2="8" stroke="#06b6d4" stroke-width="1.5" />
-              <polygon points="35,2 40,6 35,10" fill="#06b6d4" />
+              <line x1="0" y1="4" x2="33" y2="4" stroke="#FF00FF" stroke-width="1.5" />
+              <line x1="0" y1="8" x2="33" y2="8" stroke="#FF00FF" stroke-width="1.5" />
+              <polygon points="35,2 40,6 35,10" fill="#FF00FF" />
             </svg>
             <span>Fare Gate</span>
           </div>
           <%!-- Mode 7: Exit Gate — two parallel rails, reverse arrow --%>
           <div class="flex items-center gap-2 text-sm">
             <svg width="40" height="12" class="shrink-0">
-              <polygon points="5,2 0,6 5,10" fill="#06b6d4" />
-              <line x1="7" y1="4" x2="40" y2="4" stroke="#06b6d4" stroke-width="1.5" />
-              <line x1="7" y1="8" x2="40" y2="8" stroke="#06b6d4" stroke-width="1.5" />
+              <polygon points="5,2 0,6 5,10" fill="#FF00FF" />
+              <line x1="7" y1="4" x2="40" y2="4" stroke="#FF00FF" stroke-width="1.5" />
+              <line x1="7" y1="8" x2="40" y2="8" stroke="#FF00FF" stroke-width="1.5" />
             </svg>
             <span>Exit Gate</span>
           </div>
@@ -2477,7 +2479,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp label_offset(x1, y1, x2, y2, side) do
     {perp_x, perp_y} = perpendicular_unit(x1, y1, x2, y2)
     {above_x, above_y} = canonical_label_side(perp_x, perp_y)
-    distance = 1.2
+    distance = 0.95
 
     case side do
       :reverse -> {-above_x * distance, -above_y * distance}

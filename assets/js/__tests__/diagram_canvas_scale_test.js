@@ -20,7 +20,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
             <g
               id="editable-stop"
               data-tooltip="Click to edit stop"
-              data-tooltip-color="#2563EB"
+              data-tooltip-color="#0080FF"
               tabindex="0"
               aria-label="Stop Editable Stop (EDIT_STOP)"
             >
@@ -94,7 +94,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
             <g
               id="editable-pathway"
               data-tooltip="Click to edit pathway"
-              data-tooltip-color="#2563EB"
+              data-tooltip-color="#FF00FF"
               tabindex="0"
               aria-label="Walkway pathway from A to B"
             >
@@ -295,26 +295,26 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     ).toBe("1");
     expect(
       document.querySelector("#path-line").getAttribute("stroke-width"),
-    ).toBe("0.17857142857142858");
+    ).toBe("0.1388888888888889");
     expect(
       document.querySelector("#path-dashed").getAttribute("stroke-width"),
-    ).toBe("0.17857142857142858");
+    ).toBe("0.1388888888888889");
     expect(
       document.querySelector("#path-dashed").getAttribute("stroke-dasharray"),
-    ).toBe("0.7142857142857143 0.35714285714285715");
+    ).toBe("0.5555555555555556 0.2777777777777778");
     expect(
       parseFloat(document.querySelector("#path-arrow-trim").getAttribute("x1")),
-    ).toBeCloseTo(10.45, 5);
+    ).toBeCloseTo(10.25, 5);
     expect(
       parseFloat(document.querySelector("#path-arrow-trim").getAttribute("x2")),
-    ).toBeCloseTo(19.55, 5);
+    ).toBeCloseTo(19.75, 5);
 
     expect(
       document.querySelector("#pathway-arrow").getAttribute("markerWidth"),
-    ).toBe("0.5357142857142857");
+    ).toBe("0.41666666666666663");
     expect(
       document.querySelector("#pathway-arrow").getAttribute("markerHeight"),
-    ).toBe("0.5357142857142857");
+    ).toBe("0.41666666666666663");
 
     expect(document.querySelector("#elevator-box").getAttribute("x")).toBe(
       "29.5",
@@ -330,7 +330,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     );
     expect(
       document.querySelector("#elevator-box").getAttribute("stroke-width"),
-    ).toBe("0.14285714285714288");
+    ).toBe("0.11111111111111112");
 
     expect(
       document.querySelector("#elevator-text").getAttribute("font-size"),
@@ -346,7 +346,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     ).toBe("0.45");
     expect(
       document.querySelector("#path-label").getAttribute("stroke-width"),
-    ).toBe("0.07142857142857144");
+    ).toBe("0.05555555555555556");
     expect(document.querySelector("#path-label").getAttribute("transform")).toBe(
       "rotate(15, 50.7, 59.3)",
     );
@@ -411,10 +411,10 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
       .map((value) => parseFloat(value));
 
     expect(hitStroke).toBeCloseTo(4, 5);
-    expect(lineStroke).toBeCloseTo(0.4201680672, 5);
-    expect(markerWidth).toBeCloseTo(1.2605042017, 5);
-    expect(dashed[0]).toBeCloseTo(1.6806722689, 5);
-    expect(dashed[1]).toBeCloseTo(0.8403361344, 5);
+    expect(lineStroke).toBeCloseTo(0.5555555556, 5);
+    expect(markerWidth).toBeCloseTo(1.6666666667, 5);
+    expect(dashed[0]).toBeCloseTo(2.2222222222, 5);
+    expect(dashed[1]).toBeCloseTo(1.1111111111, 5);
 
     const iconRadius = parseFloat(
       document.querySelector("#stop-marker").getAttribute("r"),

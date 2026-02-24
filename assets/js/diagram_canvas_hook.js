@@ -26,13 +26,13 @@ const OVERLAY_BASE = {
   pathwayTickStroke: 0.26,
   pathwayBarStroke: 0.5,
   pathwayConnectorStroke: 0.26,
-  pathwayLabelFontSize: 0.9,
+  pathwayLabelFontSize: 0.78,
   pathwayLabelStrokeWidth: 0.2,
   pathwayMarkerSize: 1.5,
-  pathwayElevatorBoxWidth: 2,
-  pathwayElevatorBoxHeight: 2,
-  pathwayElevatorBoxStroke: 0.4,
-  pathwayElevatorTextSize: 1.2,
+  pathwayElevatorBoxWidth: 1,
+  pathwayElevatorBoxHeight: 1,
+  pathwayElevatorBoxStroke: 0.30,
+  pathwayElevatorTextSize: 0.275,
   rulerLineStroke: 0.25,
   rulerEndpointRadius: 0.35,
   rulerEndpointStroke: 0.13,
@@ -42,7 +42,7 @@ const OVERLAY_BASE = {
   savedRulerLabelMinScale: 2,
   rulerEndpointHideNearOneMinScale: 0.9,
   rulerEndpointHideNearOneMaxScale: 1.1,
-  pathwayVisualThinFactor: 1.4,
+  pathwayVisualThinFactor: 1.8,
   iconVisualThinFactor: 1.2,
   pendingOffsetY: 1,
   pendingOffsetX: 0.75,
@@ -126,13 +126,10 @@ const DiagramCanvasHook = {
 
   pathwayVisualScale(scale) {
     const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-    const zoomAdjusted =
-      safeScale < 1
-        ? 1 - (1 - safeScale) * 0.3
-        : safeScale;
 
-    // Keep pathway visuals slimmer at baseline and while zoomed out.
-    return zoomAdjusted * OVERLAY_BASE.pathwayVisualThinFactor;
+    // Keep pathway stroke rendering fixed on-screen instead of varying with zoom.
+    // Apply a constant thin factor so lines are consistently lighter.
+    return safeScale * OVERLAY_BASE.pathwayVisualThinFactor;
   },
 
   pathwayLabelVisualScale(scale) {
@@ -662,8 +659,6 @@ const DiagramCanvasHook = {
     const scale = this.scale || 1;
     const iconScale = this.iconVisualScale(scale);
     const pathwayScale = this.pathwayVisualScale(scale);
-    const pathwayLabelScale = this.pathwayLabelVisualScale(scale);
-    const pathwayLabelOffsetScale = this.pathwayLabelOffsetScale(scale);
     const rulerEndpointScale = this.rulerEndpointVisualScale(scale);
 
     overlay.querySelectorAll("[data-stop-hit-target]").forEach((hitTarget) => {
@@ -977,8 +972,8 @@ const DiagramCanvasHook = {
         const endTrimBase = Number.isFinite(defaultTrim)
           ? defaultTrim
           : parseFloat(element.getAttribute("data-pathway-end-trim-end")) || 0;
-        const startTrim = startTrimBase / iconScale;
-        const endTrim = endTrimBase / iconScale;
+        const startTrim = startTrimBase / pathwayScale;
+        const endTrim = endTrimBase / pathwayScale;
         const trimmed = trimSegmentEnds(baseX1, baseY1, baseX2, baseY2, startTrim, endTrim);
 
         element.setAttribute("x1", `${trimmed.x1}`);
@@ -1045,8 +1040,8 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const width = baseWidth / scale;
-      const height = baseHeight / scale;
+      const width = baseWidth;
+      const height = baseHeight;
       box.setAttribute("x", `${cx - width / 2}`);
       box.setAttribute("y", `${cy - height / 2}`);
       box.setAttribute("width", `${width}`);
@@ -1067,7 +1062,7 @@ const DiagramCanvasHook = {
 
       label.setAttribute("x", `${cx}`);
       label.setAttribute("y", `${cy}`);
-      label.setAttribute("font-size", `${baseFontSize / scale}`);
+      label.setAttribute("font-size", `${baseFontSize}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-label]").forEach((label) => {
@@ -1101,13 +1096,13 @@ const DiagramCanvasHook = {
       }
 
       label.removeAttribute("display");
-      const x = midpointX + offsetX / pathwayLabelOffsetScale;
-      const y = midpointY + offsetY / pathwayLabelOffsetScale;
+      const x = midpointX + offsetX / iconScale;
+      const y = midpointY + offsetY / iconScale;
 
       label.setAttribute("x", `${x}`);
       label.setAttribute("y", `${y}`);
-      label.setAttribute("font-size", `${baseFontSize / pathwayLabelScale}`);
-      label.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
+      label.setAttribute("font-size", `${baseFontSize / iconScale}`);
+      label.setAttribute("stroke-width", `${baseStroke / iconScale}`);
       label.setAttribute("transform", `rotate(${rotation}, ${x}, ${y})`);
     });
 
