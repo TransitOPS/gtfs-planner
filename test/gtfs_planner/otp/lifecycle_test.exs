@@ -20,7 +20,10 @@ defmodule GtfsPlanner.Otp.LifecycleTest do
       %{organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "deletes zip file and artifact record", %{organization: organization, gtfs_version: gtfs_version} do
+    test "deletes zip file and artifact record", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
       zip_path = ArtifactPath.artifact_zip_path(organization.id, gtfs_version.id)
       zip_binary = "otp-zip-binary"
 
@@ -37,7 +40,9 @@ defmodule GtfsPlanner.Otp.LifecycleTest do
                  manifest_json: %{"files" => ["agency.txt"]}
                })
 
-      assert {:ok, :purged} = Lifecycle.purge_artifact_on_success(organization.id, gtfs_version.id)
+      assert {:ok, :purged} =
+               Lifecycle.purge_artifact_on_success(organization.id, gtfs_version.id)
+
       refute File.exists?(zip_path)
       assert {:error, :not_found} = Otp.fetch_artifact(organization.id, gtfs_version.id)
     end
@@ -46,7 +51,8 @@ defmodule GtfsPlanner.Otp.LifecycleTest do
       organization: organization,
       gtfs_version: gtfs_version
     } do
-      assert {:ok, :not_found} = Lifecycle.purge_artifact_on_success(organization.id, gtfs_version.id)
+      assert {:ok, :not_found} =
+               Lifecycle.purge_artifact_on_success(organization.id, gtfs_version.id)
     end
   end
 end

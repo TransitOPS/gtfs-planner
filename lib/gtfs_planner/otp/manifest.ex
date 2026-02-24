@@ -13,7 +13,11 @@ defmodule GtfsPlanner.Otp.Manifest do
 
   alias GtfsPlanner.Gtfs.Export.FileSpec
 
-  @type file_requirement :: %{required: [String.t()], one_of: [String.t()], optional: [String.t()]}
+  @type file_requirement :: %{
+          required: [String.t()],
+          one_of: [String.t()],
+          optional: [String.t()]
+        }
 
   @spec required_base_specs() :: [map()]
   def required_base_specs do

@@ -213,7 +213,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     phase = Map.get(payload, :phase, :cache_check)
 
     {:noreply,
-     assign(socket, :validation_progress, %{phase: {:pathways_prep, phase}, percent: phase_percent(phase)})}
+     assign(socket, :validation_progress, %{
+       phase: {:pathways_prep, phase},
+       percent: phase_percent(phase)
+     })}
   end
 
   @impl Phoenix.LiveView
@@ -713,9 +716,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
         task =
           Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-            validator_module.validate(organization_id, gtfs_version_id,
-              validation_run_id: run.id
-            )
+            validator_module.validate(organization_id, gtfs_version_id, validation_run_id: run.id)
           end)
 
         {:noreply,

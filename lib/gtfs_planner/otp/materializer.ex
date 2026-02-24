@@ -13,7 +13,8 @@ defmodule GtfsPlanner.Otp.Materializer do
 
   @type issues :: [map()]
   @type preflight_mode :: :strict | :lenient
-  @type status_phase :: :cache_check | :preflight | :exporting | :packaging | :persisting | :done | :failed
+  @type status_phase ::
+          :cache_check | :preflight | :exporting | :packaging | :persisting | :done | :failed
   @type status_payload :: %{required(:phase) => status_phase(), optional(atom()) => term()}
   @type meta :: %{
           reused: boolean(),
@@ -103,7 +104,13 @@ defmodule GtfsPlanner.Otp.Materializer do
     do_build_and_persist(organization_id, gtfs_version_id, status_callback)
   end
 
-  defp handle_preflight_issues(_organization_id, _gtfs_version_id, status_callback, :strict, issues) do
+  defp handle_preflight_issues(
+         _organization_id,
+         _gtfs_version_id,
+         status_callback,
+         :strict,
+         issues
+       ) do
     emit_status(status_callback, %{phase: :failed, reason: :preflight_failed})
     {:error, issues}
   end
@@ -116,11 +123,17 @@ defmodule GtfsPlanner.Otp.Materializer do
       emit_status(status_callback, %{phase: :exporting})
 
       with {:ok, file_paths} <-
-             Export.export_specs_to_directory(organization_id, gtfs_version_id, specs, staging_dir),
+             Export.export_specs_to_directory(
+               organization_id,
+               gtfs_version_id,
+               specs,
+               staging_dir
+             ),
            manifest_files <- manifest_files(specs, file_paths),
            zip_path <- ArtifactPath.artifact_zip_path(organization_id, gtfs_version_id),
            _ = emit_status(status_callback, %{phase: :packaging}),
-           {:ok, ^zip_path, file_size_bytes} <- Packager.package_staging_dir(staging_dir, zip_path),
+           {:ok, ^zip_path, file_size_bytes} <-
+             Packager.package_staging_dir(staging_dir, zip_path),
            {:ok, content_hash} <- Hasher.sha256_for_filenames(manifest_files, staging_dir),
            manifest_json = %{"files" => manifest_files},
            _ = emit_status(status_callback, %{phase: :persisting}),
@@ -152,7 +165,8 @@ defmodule GtfsPlanner.Otp.Materializer do
   end
 
   defp build_specs do
-    Manifest.required_base_specs() ++ Manifest.calendar_alternative_specs() ++ Manifest.optional_specs()
+    Manifest.required_base_specs() ++
+      Manifest.calendar_alternative_specs() ++ Manifest.optional_specs()
   end
 
   defp manifest_files(specs, file_paths) do
