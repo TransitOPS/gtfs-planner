@@ -510,6 +510,105 @@ defmodule GtfsPlanner.GtfsTest do
       assert unchanged.diagram_coordinate == %{"x" => 5.0, "y" => 5.0}
       assert unchanged.level_id == level.level_id
     end
+
+    test "delete_child_stop/4 deletes the child stop and connected pathways", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION_DEL", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_DEL",
+          level_name: "Platform",
+          level_index: 0.0
+        })
+
+      child_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_DEL_A",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      child_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_DEL_B",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+        })
+
+      pathway =
+        pathway_fixture(org.id, version.id, child_a.stop_id, child_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      assert {:ok, deleted} =
+               Gtfs.delete_child_stop(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 child_a.id
+               )
+
+      assert deleted.id == child_a.id
+      assert Gtfs.get_stop(child_a.id) == nil
+      assert is_nil(Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id))
+      assert Gtfs.get_stop(child_b.id).id == child_b.id
+    end
+
+    test "delete_child_stop/4 returns :not_found for wrong station scope", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION_DEL_NF", location_type: 1})
+
+      other_station =
+        stop_fixture(org.id, version.id, %{stop_id: "OTHER_DEL_NF", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_DEL_NF",
+          level_name: "Ground",
+          level_index: 0.0
+        })
+
+      child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_DEL_NF",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 5.0, "y" => 5.0}
+        })
+
+      sibling =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SIB_DEL_NF",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 10.0}
+        })
+
+      pathway =
+        pathway_fixture(org.id, version.id, child.stop_id, sibling.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      assert {:error, :not_found} =
+               Gtfs.delete_child_stop(
+                 org.id,
+                 version.id,
+                 other_station.stop_id,
+                 child.id
+               )
+
+      assert Gtfs.get_stop(child.id).id == child.id
+      assert Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id).id == pathway.id
+    end
   end
 
   describe "unique_stop_id/4" do
