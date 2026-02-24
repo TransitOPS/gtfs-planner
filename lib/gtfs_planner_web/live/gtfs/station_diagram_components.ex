@@ -1751,9 +1751,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
           <div class="flex items-center gap-2 text-sm">
             <svg width="16" height="16" class="shrink-0">
-              <path d="M 5 3.5 L 8 7.2 L 2 7.2 Z M 5 12.5 L 8 8.8 L 2 8.8 Z" fill="#06b6d4" />
+              <path d="M 3 14 L 3 10 L 6 10 L 6 6 L 9 6 L 9 2 L 13 2 L 13 14 Z" fill="#06b6d4" />
             </svg>
-            <span>Cross-level Badge</span>
+            <span>Cross-level Stairs</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="16" height="16" class="shrink-0">
+              <path d="M 8 2 L 12 7 L 4 7 Z M 8 14 L 12 9 L 4 9 Z" fill="#06b6d4" />
+            </svg>
+            <span>Cross-level Elevator</span>
           </div>
         </div>
       </div>
@@ -1763,85 +1769,92 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           Pathways
         </h4>
         <div class="space-y-1.5">
+          <%!-- Mode 1: Walkway — solid line, bidirectional arrows --%>
           <div class="flex items-center gap-2 text-sm">
-            <svg width="36" height="8" class="shrink-0">
-              <line x1="0" y1="4" x2="36" y2="4" stroke="#06b6d4" stroke-width="2" />
+            <svg width="40" height="10" class="shrink-0">
+              <polygon points="3,1 0,5 3,9" fill="#06b6d4" />
+              <line x1="3" y1="5" x2="37" y2="5" stroke="#06b6d4" stroke-width="2" />
+              <polygon points="37,1 40,5 37,9" fill="#06b6d4" />
             </svg>
             <span>Walkway</span>
           </div>
+          <%!-- Mode 2: Stairs — solid line, one center tick, bidirectional arrows --%>
           <div class="flex items-center gap-2 text-sm">
-            <svg width="36" height="12" class="shrink-0">
-              <line x1="0" y1="6" x2="36" y2="6" stroke="#06b6d4" stroke-width="2" />
-              <line x1="8" y1="2" x2="8" y2="10" stroke="#06b6d4" stroke-width="1.2" />
-              <line x1="16" y1="2" x2="16" y2="10" stroke="#06b6d4" stroke-width="1.2" />
-              <line x1="24" y1="2" x2="24" y2="10" stroke="#06b6d4" stroke-width="1.2" />
+            <svg width="40" height="12" class="shrink-0">
+              <polygon points="3,2 0,6 3,10" fill="#06b6d4" />
+              <line x1="3" y1="6" x2="37" y2="6" stroke="#06b6d4" stroke-width="2" />
+              <line x1="20" y1="1" x2="20" y2="11" stroke="#06b6d4" stroke-width="1.2" />
+              <polygon points="37,2 40,6 37,10" fill="#06b6d4" />
             </svg>
             <span>Stairs</span>
           </div>
+          <%!-- Mode 3: Moving Sidewalk — solid line, center X, forward arrow --%>
           <div class="flex items-center gap-2 text-sm">
-            <svg width="36" height="12" class="shrink-0">
-              <line x1="0" y1="6" x2="36" y2="6" stroke="#06b6d4" stroke-width="2" />
-              <line x1="8" y1="2" x2="8" y2="10" stroke="#06b6d4" stroke-width="1.2" />
-              <line x1="16" y1="2" x2="16" y2="10" stroke="#06b6d4" stroke-width="1.2" />
-              <line x1="24" y1="2" x2="24" y2="10" stroke="#06b6d4" stroke-width="1.2" />
-              <polygon points="33,3 36,6 33,9" fill="#06b6d4" />
-            </svg>
-            <span>Escalator</span>
-          </div>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="36" height="8" class="shrink-0">
-              <line
-                x1="0"
-                y1="4"
-                x2="32"
-                y2="4"
-                stroke="#06b6d4"
-                stroke-width="2"
-                stroke-dasharray="6 3"
-              />
-              <polygon points="33,1 36,4 33,7" fill="#06b6d4" />
+            <svg width="40" height="12" class="shrink-0">
+              <line x1="0" y1="6" x2="37" y2="6" stroke="#06b6d4" stroke-width="2" />
+              <line x1="16" y1="1" x2="24" y2="11" stroke="#06b6d4" stroke-width="1.2" />
+              <line x1="24" y1="1" x2="16" y2="11" stroke="#06b6d4" stroke-width="1.2" />
+              <polygon points="37,2 40,6 37,10" fill="#06b6d4" />
             </svg>
             <span>Moving Sidewalk</span>
           </div>
+          <%!-- Mode 4: Escalator — solid line, three center bars, forward arrow --%>
           <div class="flex items-center gap-2 text-sm">
-            <svg width="36" height="18" class="shrink-0">
+            <svg width="40" height="12" class="shrink-0">
+              <line x1="0" y1="6" x2="37" y2="6" stroke="#06b6d4" stroke-width="2" />
+              <line x1="16" y1="1" x2="16" y2="11" stroke="#06b6d4" stroke-width="1.2" />
+              <line x1="20" y1="1" x2="20" y2="11" stroke="#06b6d4" stroke-width="1.2" />
+              <line x1="24" y1="1" x2="24" y2="11" stroke="#06b6d4" stroke-width="1.2" />
+              <polygon points="37,2 40,6 37,10" fill="#06b6d4" />
+            </svg>
+            <span>Escalator</span>
+          </div>
+          <%!-- Mode 5: Elevator — solid line, center box with ↕, bidirectional arrows --%>
+          <div class="flex items-center gap-2 text-sm">
+            <svg width="40" height="16" class="shrink-0">
+              <polygon points="3,4 0,8 3,12" fill="#06b6d4" />
+              <line x1="3" y1="8" x2="13" y2="8" stroke="#06b6d4" stroke-width="2" />
               <rect
-                x="6"
+                x="13"
                 y="1"
-                width="16"
-                height="16"
+                width="14"
+                height="14"
                 rx="2"
                 fill="#fff"
                 stroke="#06b6d4"
                 stroke-width="1.5"
               />
               <text
-                x="14"
-                y="9"
+                x="20"
+                y="8"
                 text-anchor="middle"
-                dominant-baseline="middle"
+                dominant-baseline="central"
                 font-family="Inter, sans-serif"
                 font-size="9"
                 fill="#06b6d4"
               >
                 ↕
               </text>
+              <line x1="27" y1="8" x2="37" y2="8" stroke="#06b6d4" stroke-width="2" />
+              <polygon points="37,4 40,8 37,12" fill="#06b6d4" />
             </svg>
             <span>Elevator</span>
           </div>
+          <%!-- Mode 6: Fare Gate — two parallel rails, forward arrow --%>
           <div class="flex items-center gap-2 text-sm">
-            <svg width="36" height="14" class="shrink-0">
-              <line x1="0" y1="7" x2="36" y2="7" stroke="#06b6d4" stroke-width="2" />
-              <line x1="12" y1="2" x2="12" y2="12" stroke="#06b6d4" stroke-width="2" />
-              <line x1="24" y1="2" x2="24" y2="12" stroke="#06b6d4" stroke-width="2" />
+            <svg width="40" height="12" class="shrink-0">
+              <line x1="0" y1="4" x2="33" y2="4" stroke="#06b6d4" stroke-width="1.5" />
+              <line x1="0" y1="8" x2="33" y2="8" stroke="#06b6d4" stroke-width="1.5" />
+              <polygon points="35,2 40,6 35,10" fill="#06b6d4" />
             </svg>
             <span>Fare Gate</span>
           </div>
+          <%!-- Mode 7: Exit Gate — two parallel rails, reverse arrow --%>
           <div class="flex items-center gap-2 text-sm">
-            <svg width="36" height="14" class="shrink-0">
-              <line x1="0" y1="7" x2="32" y2="7" stroke="#06b6d4" stroke-width="2" />
-              <line x1="16" y1="2" x2="16" y2="12" stroke="#06b6d4" stroke-width="2" />
-              <polygon points="33,4 36,7 33,10" fill="#06b6d4" />
+            <svg width="40" height="12" class="shrink-0">
+              <polygon points="5,2 0,6 5,10" fill="#06b6d4" />
+              <line x1="7" y1="4" x2="40" y2="4" stroke="#06b6d4" stroke-width="1.5" />
+              <line x1="7" y1="8" x2="40" y2="8" stroke="#06b6d4" stroke-width="1.5" />
             </svg>
             <span>Exit Gate</span>
           </div>
