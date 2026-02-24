@@ -167,8 +167,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
             :ok
 
           {:error, file_error} ->
-            {:error,
-             {:file_copy_failed, file_type, source_path, destination_path, file_error}}
+            {:error, {:file_copy_failed, file_type, source_path, destination_path, file_error}}
         end
 
       {:error, reason} ->

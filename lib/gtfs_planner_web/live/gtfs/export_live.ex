@@ -318,8 +318,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
                 other ->
                   require Logger
-                  Logger.error("Runtime.cleanup_on_success returned unexpected result: #{inspect(other)}")
+
+                  Logger.error(
+                    "Runtime.cleanup_on_success returned unexpected result: #{inspect(other)}"
+                  )
               end
+
               # Result is now persisted in DB, just show success and keep validation_result for display
               run = Validations.get_validation_run!(socket.assigns.validation_run_id)
 
