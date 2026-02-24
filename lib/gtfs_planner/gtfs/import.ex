@@ -41,6 +41,65 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   @batch_size Application.compile_env(:gtfs_planner, :import_batch_size, 1000)
 
+  @import_specs [
+    # Phase 1
+    {:agencies, "agency.txt", Gtfs.Agency, &RowParser.agency_row_to_attrs/3, :phase_1},
+    {:feed_info, "feed_info.txt", Gtfs.FeedInfo, &RowParser.feed_info_row_to_attrs/3, :phase_1},
+    {:levels, "levels.txt", Gtfs.Level, &RowParser.level_row_to_attrs/3, :phase_1},
+    {:areas, "areas.txt", Gtfs.Area, &RowParser.area_row_to_attrs/3, :phase_1},
+    {:networks, "networks.txt", Gtfs.Network, &RowParser.network_row_to_attrs/3, :phase_1},
+    {:fare_media, "fare_media.txt", Gtfs.FareMedia, &RowParser.fare_media_row_to_attrs/3,
+     :phase_1},
+    {:rider_categories, "rider_categories.txt", Gtfs.RiderCategory,
+     &RowParser.rider_category_row_to_attrs/3, :phase_1},
+    {:booking_rules, "booking_rules.txt", Gtfs.BookingRule,
+     &RowParser.booking_rule_row_to_attrs/3, :phase_1},
+    {:locations, "locations.txt", Gtfs.Location, &RowParser.location_row_to_attrs/3, :phase_1},
+    {:routes, "routes.txt", Gtfs.Route, &RowParser.route_row_to_attrs/3, :phase_1},
+    {:calendars, "calendar.txt", Gtfs.Calendar, &RowParser.calendar_row_to_attrs/3, :phase_1},
+    {:calendar_dates, "calendar_dates.txt", Gtfs.CalendarDate,
+     &RowParser.calendar_date_row_to_attrs/3, :phase_1},
+    {:route_patterns, "route_patterns.txt", Gtfs.RoutePattern,
+     &RowParser.route_pattern_row_to_attrs/3, :phase_1},
+    {:route_networks, "route_networks.txt", Gtfs.RouteNetwork,
+     &RowParser.route_network_row_to_attrs/3, :phase_1},
+    {:fare_attributes, "fare_attributes.txt", Gtfs.FareAttribute,
+     &RowParser.fare_attribute_row_to_attrs/3, :phase_1},
+    {:fare_rules, "fare_rules.txt", Gtfs.FareRule, &RowParser.fare_rule_row_to_attrs/3, :phase_1},
+    {:fare_products, "fare_products.txt", Gtfs.FareProduct,
+     &RowParser.fare_product_row_to_attrs/3, :phase_1},
+    {:timeframes, "timeframes.txt", Gtfs.Timeframe, &RowParser.timeframe_row_to_attrs/3,
+     :phase_1},
+    {:trips, "trips.txt", Gtfs.Trip, &RowParser.trip_row_to_attrs/3, :phase_1},
+    {:stops, "stops.txt", Gtfs.Stop, &RowParser.stop_row_to_attrs/3, :phase_1},
+    {:pathways, "pathways.txt", Gtfs.Pathway, &RowParser.pathway_row_to_attrs/3, :phase_1},
+    {:transfers, "transfers.txt", Gtfs.Transfer, &RowParser.transfer_row_to_attrs/3, :phase_1},
+    {:stop_areas, "stop_areas.txt", Gtfs.StopArea, &RowParser.stop_area_row_to_attrs/3, :phase_1},
+    {:frequencies, "frequencies.txt", Gtfs.Frequency, &RowParser.frequency_row_to_attrs/3,
+     :phase_1},
+    {:attributions, "attributions.txt", Gtfs.Attribution, &RowParser.attribution_row_to_attrs/3,
+     :phase_1},
+    {:fare_leg_rules, "fare_leg_rules.txt", Gtfs.FareLegRule,
+     &RowParser.fare_leg_rule_row_to_attrs/3, :phase_1},
+    {:fare_leg_join_rules, "fare_leg_join_rules.txt", Gtfs.FareLegJoinRule,
+     &RowParser.fare_leg_join_rule_row_to_attrs/3, :phase_1},
+    {:fare_transfer_rules, "fare_transfer_rules.txt", Gtfs.FareTransferRule,
+     &RowParser.fare_transfer_rule_row_to_attrs/3, :phase_1},
+    {:translations, "translations.txt", Gtfs.Translation, &RowParser.translation_row_to_attrs/3,
+     :phase_1},
+    # Phase 2
+    {:stop_times, "stop_times.txt", Gtfs.StopTime, &RowParser.stop_time_row_to_attrs/3, :phase_2},
+    {:shapes, "shapes.txt", Gtfs.Shape, &RowParser.shape_row_to_attrs/3, :phase_2}
+  ]
+
+  @filename_to_spec Map.new(@import_specs, fn {_key, filename, _schema, _parser_fun, _phase} =
+                                                spec ->
+                      {String.downcase(filename), spec}
+                    end)
+  @phase_1_specs Enum.filter(@import_specs, fn {_k, _f, _s, _p, phase} -> phase == :phase_1 end)
+  @phase_2_specs Enum.filter(@import_specs, fn {_k, _f, _s, _p, phase} -> phase == :phase_2 end)
+  @supported_count_keys Enum.map(@import_specs, fn {key, _f, _s, _p, _phase} -> key end)
+
   @doc """
   Imports GTFS data files with optimized transaction handling.
 
@@ -78,189 +137,48 @@ defmodule GtfsPlanner.Gtfs.Import do
     # Generate unique progress topic for PubSub if not provided
     topic = topic || "import:#{:erlang.unique_integer()}"
 
-    # Phase 1: Import all files EXCEPT stop_times in a single transaction
-    # This maintains atomicity for the core data (routes, stops, trips, etc.)
+    # Phase 1: Import core files in a single transaction for atomicity.
     result =
       Repo.transaction(fn ->
-        counts = %{}
-
-        # Process routes
-        counts =
+        Enum.reduce_while(@phase_1_specs, %{}, fn {key, _filename, schema, parser_fun, _phase},
+                                                  counts ->
           case process_file_category(
-                 categorized[:routes] || [],
+                 categorized[key] || [],
                  organization_id,
                  gtfs_version_id,
                  topic,
-                 :routes,
-                 Gtfs.Route,
-                 &RowParser.route_row_to_attrs/3
+                 key,
+                 schema,
+                 parser_fun
                ) do
-            {:ok, count} -> Map.put(counts, :routes, count)
+            {:ok, count} -> {:cont, Map.put(counts, key, count)}
             {:error, reason} -> Repo.rollback(reason)
           end
-
-        # Process calendars
-        counts =
-          case process_file_category(
-                 categorized[:calendars] || [],
-                 organization_id,
-                 gtfs_version_id,
-                 topic,
-                 :calendars,
-                 Gtfs.Calendar,
-                 &RowParser.calendar_row_to_attrs/3
-               ) do
-            {:ok, count} -> Map.put(counts, :calendars, count)
-            {:error, reason} -> Repo.rollback(reason)
-          end
-
-        # Process calendar_dates
-        counts =
-          case process_file_category(
-                 categorized[:calendar_dates] || [],
-                 organization_id,
-                 gtfs_version_id,
-                 topic,
-                 :calendar_dates,
-                 Gtfs.CalendarDate,
-                 &RowParser.calendar_date_row_to_attrs/3
-               ) do
-            {:ok, count} -> Map.put(counts, :calendar_dates, count)
-            {:error, reason} -> Repo.rollback(reason)
-          end
-
-        # Process route_patterns
-        counts =
-          case process_file_category(
-                 categorized[:route_patterns] || [],
-                 organization_id,
-                 gtfs_version_id,
-                 topic,
-                 :route_patterns,
-                 Gtfs.RoutePattern,
-                 &RowParser.route_pattern_row_to_attrs/3
-               ) do
-            {:ok, count} -> Map.put(counts, :route_patterns, count)
-            {:error, reason} -> Repo.rollback(reason)
-          end
-
-        # Process trips
-        counts =
-          case process_file_category(
-                 categorized[:trips] || [],
-                 organization_id,
-                 gtfs_version_id,
-                 topic,
-                 :trips,
-                 Gtfs.Trip,
-                 &RowParser.trip_row_to_attrs/3
-               ) do
-            {:ok, count} -> Map.put(counts, :trips, count)
-            {:error, reason} -> Repo.rollback(reason)
-          end
-
-        # Process levels
-        counts =
-          case process_file_category(
-                 categorized[:levels] || [],
-                 organization_id,
-                 gtfs_version_id,
-                 topic,
-                 :levels,
-                 Gtfs.Level,
-                 &RowParser.level_row_to_attrs/3
-               ) do
-            {:ok, count} -> Map.put(counts, :levels, count)
-            {:error, reason} -> Repo.rollback(reason)
-          end
-
-        # Process stops
-        counts =
-          case process_file_category(
-                 categorized[:stops] || [],
-                 organization_id,
-                 gtfs_version_id,
-                 topic,
-                 :stops,
-                 Gtfs.Stop,
-                 &RowParser.stop_row_to_attrs/3
-               ) do
-            {:ok, count} -> Map.put(counts, :stops, count)
-            {:error, reason} -> Repo.rollback(reason)
-          end
-
-        # NOTE: stop_times are NOT processed here - they're handled separately below
-
-        # Process pathways
-        counts =
-          case process_file_category(
-                 categorized[:pathways] || [],
-                 organization_id,
-                 gtfs_version_id,
-                 topic,
-                 :pathways,
-                 Gtfs.Pathway,
-                 &RowParser.pathway_row_to_attrs/3
-               ) do
-            {:ok, count} -> Map.put(counts, :pathways, count)
-            {:error, reason} -> Repo.rollback(reason)
-          end
-
-        counts
+        end)
       end)
 
     # Check if Phase 1 succeeded
     case result do
       {:ok, counts} ->
-        # Phase 2: Process stop_times separately with batch-level transactions
-        # This prevents long-running transactions that can timeout
-        case process_stop_times_batched(
-               categorized[:stop_times] || [],
-               organization_id,
-               gtfs_version_id,
-               topic
-             ) do
-          {:ok, stop_times_count} ->
-            # Merge stop_times count with other counts
-            counts = Map.put(counts, :stop_times, stop_times_count)
+        phase_2_result =
+          Enum.reduce_while(@phase_2_specs, {:ok, counts}, fn
+            {key, _filename, schema, parser_fun, _phase}, {:ok, acc_counts} ->
+              case process_phase_2_category(
+                     categorized[key] || [],
+                     organization_id,
+                     gtfs_version_id,
+                     topic,
+                     schema,
+                     parser_fun
+                   ) do
+                {:ok, count} -> {:cont, {:ok, Map.put(acc_counts, key, count)}}
+                {:error, reason} -> {:halt, {:error, reason}}
+              end
+          end)
 
-            # Fill in zeros for any file types not imported
-            counts =
-              [
-                :agencies,
-                :areas,
-                :attributions,
-                :booking_rules,
-                :calendars,
-                :calendar_dates,
-                :fare_attributes,
-                :fare_leg_join_rules,
-                :fare_leg_rules,
-                :fare_media,
-                :fare_products,
-                :fare_rules,
-                :fare_transfer_rules,
-                :feed_info,
-                :frequencies,
-                :levels,
-                :locations,
-                :networks,
-                :pathways,
-                :rider_categories,
-                :route_networks,
-                :route_patterns,
-                :routes,
-                :shapes,
-                :stop_areas,
-                :stop_times,
-                :stops,
-                :timeframes,
-                :transfers,
-                :translations,
-                :trips
-              ]
-              |> Enum.reduce(counts, fn key, acc -> Map.put_new(acc, key, 0) end)
-
+        case phase_2_result do
+          {:ok, counts} ->
+            counts = Enum.reduce(@supported_count_keys, counts, &Map.put_new(&2, &1, 0))
             {:ok, {counts, unrecognized_files, topic}}
 
           {:error, reason} ->
@@ -272,18 +190,25 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   end
 
-  # Processes stop_times files with batch-level transactions
+  # Processes phase 2 files with batch-level transactions
   # Each batch gets its own transaction to prevent long-running transactions
-  defp process_stop_times_batched(files, organization_id, gtfs_version_id, topic) do
+  defp process_phase_2_category(
+         files,
+         organization_id,
+         gtfs_version_id,
+         topic,
+         schema,
+         row_to_attrs_fn
+       ) do
     total_count =
       Enum.reduce_while(files, 0, fn file, acc ->
         {rows_stream, total_rows} = parse_csv_content_with_count(file.content)
 
         case BatchProcessor.insert_batched_with_transactions(
                Repo,
-               Gtfs.StopTime,
+               schema,
                rows_stream,
-               &RowParser.stop_time_row_to_attrs/3,
+               row_to_attrs_fn,
                organization_id: organization_id,
                gtfs_version_id: gtfs_version_id,
                file_name: file.filename,
@@ -347,50 +272,16 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   # Categorizes files by filename into file type buckets
   defp categorize_files(files) do
-    initial_acc =
-      {%{
-         routes: [],
-         route_patterns: [],
-         calendars: [],
-         calendar_dates: [],
-         trips: [],
-         levels: [],
-         stops: [],
-         stop_times: [],
-         pathways: []
-       }, []}
+    initial_categorized = Map.new(@supported_count_keys, fn key -> {key, []} end)
+    initial_acc = {initial_categorized, []}
 
     {categorized, unrecognized} =
       Enum.reduce(files, initial_acc, fn file, {acc, unrecognized_acc} ->
-        case String.downcase(file.filename) do
-          "routes.txt" ->
-            {Map.update!(acc, :routes, &[file | &1]), unrecognized_acc}
+        case Map.get(@filename_to_spec, String.downcase(file.filename)) do
+          {key, _filename, _schema, _parser_fun, _phase} ->
+            {Map.update!(acc, key, &[file | &1]), unrecognized_acc}
 
-          "route_patterns.txt" ->
-            {Map.update!(acc, :route_patterns, &[file | &1]), unrecognized_acc}
-
-          "calendar.txt" ->
-            {Map.update!(acc, :calendars, &[file | &1]), unrecognized_acc}
-
-          "calendar_dates.txt" ->
-            {Map.update!(acc, :calendar_dates, &[file | &1]), unrecognized_acc}
-
-          "trips.txt" ->
-            {Map.update!(acc, :trips, &[file | &1]), unrecognized_acc}
-
-          "levels.txt" ->
-            {Map.update!(acc, :levels, &[file | &1]), unrecognized_acc}
-
-          "stops.txt" ->
-            {Map.update!(acc, :stops, &[file | &1]), unrecognized_acc}
-
-          "stop_times.txt" ->
-            {Map.update!(acc, :stop_times, &[file | &1]), unrecognized_acc}
-
-          "pathways.txt" ->
-            {Map.update!(acc, :pathways, &[file | &1]), unrecognized_acc}
-
-          _ ->
+          nil ->
             {acc, [file.filename | unrecognized_acc]}
         end
       end)
@@ -399,6 +290,20 @@ defmodule GtfsPlanner.Gtfs.Import do
       Map.new(categorized, fn {key, files_list} -> {key, Enum.reverse(files_list)} end)
 
     {categorized, Enum.reverse(unrecognized)}
+  end
+
+  @doc """
+  Returns all supported import filenames.
+  """
+  def supported_filenames do
+    Enum.map(@import_specs, fn {_key, filename, _schema, _parser_fun, _phase} -> filename end)
+  end
+
+  @doc """
+  Returns all supported import count keys.
+  """
+  def supported_count_keys do
+    @supported_count_keys
   end
 
   @doc """

@@ -2,6 +2,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
   use GtfsPlanner.DataCase, async: true
 
   alias GtfsPlanner.Gtfs.Import
+  alias GtfsPlannerWeb.Gtfs.ImportLive
 
   describe "parse_csv_content/1" do
     test "parses simple CSV with header and rows" do
@@ -376,6 +377,78 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert pathway.length == nil
     end
 
+    test "imports agencies successfully", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      agency_content = """
+      agency_id,agency_name,agency_url,agency_timezone
+      SEPTA,Southeastern Pennsylvania Transportation Authority,https://www.septa.org,America/New_York
+      """
+
+      files = [
+        %{filename: "agency.txt", content: agency_content}
+      ]
+
+      assert {:ok, {counts, _unrecognized, _topic}} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert counts.agencies == 1
+
+      agencies =
+        GtfsPlanner.Repo.all(Gtfs.Agency)
+        |> Enum.filter(
+          &(&1.organization_id == organization.id && &1.gtfs_version_id == gtfs_version.id)
+        )
+
+      assert length(agencies) == 1
+      agency = hd(agencies)
+      assert agency.agency_id == "SEPTA"
+      assert agency.agency_name == "Southeastern Pennsylvania Transportation Authority"
+      assert agency.agency_timezone == "America/New_York"
+    end
+
+    test "imports shapes in phase 2 batch flow", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      shapes_content = """
+      shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence,shape_dist_traveled
+      shape_a,40.7128,-74.0060,1,0.0
+      """
+
+      files = [
+        %{filename: "shapes.txt", content: shapes_content}
+      ]
+
+      assert {:ok, {counts, _unrecognized, _topic}} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert counts.shapes == 1
+
+      shapes =
+        GtfsPlanner.Repo.all(Gtfs.Shape)
+        |> Enum.filter(
+          &(&1.organization_id == organization.id && &1.gtfs_version_id == gtfs_version.id)
+        )
+
+      assert length(shapes) == 1
+      shape = hd(shapes)
+      assert shape.shape_id == "shape_a"
+      assert shape.shape_pt_sequence == 1
+    end
+
+    test "returns all supported count keys even for empty file list", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      assert {:ok, {counts, _unrecognized, _topic}} =
+               Import.import_files(organization.id, gtfs_version.id, [])
+
+      assert MapSet.new(Map.keys(counts)) == MapSet.new(Import.supported_count_keys())
+      assert Enum.all?(counts, fn {_key, count} -> count == 0 end)
+    end
+
     @tag :skip
     test "rolls back transaction if pathway references unknown stop_id", %{
       organization: organization,
@@ -408,6 +481,12 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert Gtfs.list_pathways(organization.id, gtfs_version.id) == []
       assert Gtfs.list_stops(organization.id, gtfs_version.id) == []
       assert Gtfs.list_levels(organization.id, gtfs_version.id) == []
+    end
+  end
+
+  describe "registry coverage" do
+    test "import and liveview recognized filename sets match" do
+      assert MapSet.new(Import.supported_filenames()) == ImportLive.recognized_gtfs_filenames()
     end
   end
 end
