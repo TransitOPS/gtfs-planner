@@ -324,6 +324,18 @@ defmodule GtfsPlanner.Gtfs.Import.RowParserTest do
       assert {:ok, "25:00:00"} = RowParser.parse_gtfs_time("25:00:00")
     end
 
+    test "parses single-digit hour" do
+      assert {:ok, "6:15:00"} = RowParser.parse_gtfs_time("6:15:00")
+    end
+
+    test "trims and parses space-padded hour" do
+      assert {:ok, "6:15:00"} = RowParser.parse_gtfs_time(" 6:15:00")
+    end
+
+    test "parses three-digit hour" do
+      assert {:ok, "100:00:00"} = RowParser.parse_gtfs_time("100:00:00")
+    end
+
     test "returns ok with nil for nil input" do
       assert {:ok, nil} = RowParser.parse_gtfs_time(nil)
     end
