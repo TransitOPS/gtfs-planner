@@ -116,6 +116,16 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-base-stroke="0.5"
               data-base-dash="2,1"
             ></line>
+            <line
+              id="path-arrow-trim"
+              x1="10"
+              y1="10"
+              x2="20"
+              y2="10"
+              marker-end="url(#pathway-arrow)"
+              data-pathway-end-trim="0.9"
+              data-base-stroke="0.3"
+            ></line>
             <rect
               id="elevator-box"
               data-pathway-elevator-box="true"
@@ -292,6 +302,12 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(
       document.querySelector("#path-dashed").getAttribute("stroke-dasharray"),
     ).toBe("0.7142857142857143 0.35714285714285715");
+    expect(
+      parseFloat(document.querySelector("#path-arrow-trim").getAttribute("x1")),
+    ).toBeCloseTo(10.45, 5);
+    expect(
+      parseFloat(document.querySelector("#path-arrow-trim").getAttribute("x2")),
+    ).toBeCloseTo(19.55, 5);
 
     expect(
       document.querySelector("#pathway-arrow").getAttribute("markerWidth"),
@@ -421,6 +437,9 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(document.querySelector("#stop-label").getAttribute("display")).toBe(
       "none",
     );
+    expect(document.querySelector("#path-label").getAttribute("display")).toBe(
+      "none",
+    );
     expect(
       document.querySelector("#ruler-endpoint-a").getAttribute("r"),
     ).toBe("0.25");
@@ -462,6 +481,31 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     hook.scaleOverlayElements();
 
     expect(pathLabel.getAttribute("transform")).toBe("rotate(45, 1, 1)");
+  });
+
+  it("hides pathway labels at baseline scale and restores above threshold", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    const pathLabel = document.querySelector("#path-label");
+
+    hook.scale = 1;
+    hook.scaleOverlayElements();
+    expect(pathLabel.getAttribute("display")).toBe("none");
+
+    hook.scale = 1.2;
+    hook.scaleOverlayElements();
+    expect(pathLabel.getAttribute("display")).toBe(null);
+
+    expect(parseFloat(pathLabel.getAttribute("x"))).toBeCloseTo(51.1666666667, 5);
+    expect(parseFloat(pathLabel.getAttribute("y"))).toBeCloseTo(58.8333333333, 5);
+    expect(parseFloat(pathLabel.getAttribute("font-size"))).toBeCloseTo(0.75, 5);
+    expect(parseFloat(pathLabel.getAttribute("stroke-width"))).toBeCloseTo(
+      0.119047619,
+      5,
+    );
   });
 
   it("hides ruler labels when zoomed out below threshold and restores above threshold", () => {
