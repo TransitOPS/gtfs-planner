@@ -169,19 +169,20 @@ defmodule GtfsPlanner.Validations do
   # --- Walkability Tests ---
 
   @doc """
-  Lists walkability tests for a given organization.
-  Results are ordered by inserted_at descending.
+  Lists walkability tests for a given organization and GTFS version.
+  Results are ordered deterministically by stop_id, address, and id ascending.
 
   ## Examples
 
-      iex> list_walkability_tests(org_id)
+      iex> list_walkability_tests(org_id, version_id)
       [%WalkabilityTest{}, ...]
 
   """
-  def list_walkability_tests(organization_id) do
+  def list_walkability_tests(organization_id, gtfs_version_id) do
     WalkabilityTest
     |> where([wt], wt.organization_id == ^organization_id)
-    |> order_by([wt], desc: wt.inserted_at)
+    |> where([wt], wt.gtfs_version_id == ^gtfs_version_id)
+    |> order_by([wt], asc: wt.stop_id, asc: wt.address, asc: wt.id)
     |> Repo.all()
   end
 
@@ -222,19 +223,19 @@ defmodule GtfsPlanner.Validations do
   end
 
   @doc """
-  Creates a walkability test for a given organization.
+  Creates a walkability test for a given organization and GTFS version.
 
   ## Examples
 
-      iex> create_walkability_test(org_id, %{stop_id: "stop_123", address: "123 Main St", address_lat: "40.7128", address_lon: "-74.0060"})
+      iex> create_walkability_test(org_id, version_id, %{stop_id: "stop_123", address: "123 Main St", address_lat: "40.7128", address_lon: "-74.0060"})
       {:ok, %WalkabilityTest{}}
 
-      iex> create_walkability_test(org_id, %{})
+      iex> create_walkability_test(org_id, version_id, %{})
       {:error, %Ecto.Changeset{}}
 
   """
-  def create_walkability_test(organization_id, attrs) do
-    %WalkabilityTest{organization_id: organization_id}
+  def create_walkability_test(organization_id, gtfs_version_id, attrs) do
+    %WalkabilityTest{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
     |> WalkabilityTest.changeset(attrs)
     |> Repo.insert()
   end

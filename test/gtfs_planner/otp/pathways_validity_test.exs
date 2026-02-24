@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Otp.PathwaysValidityTest do
   use GtfsPlanner.DataCase, async: true
 
+  import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.ValidationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -24,10 +25,64 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     assert reason.gtfs_version_id == gtfs_version.id
   end
 
+  test "run_in_session/4 does not fall back to org-only walkability tests" do
+    organization = organization_fixture()
+    requested_version = gtfs_version_fixture(organization.id)
+    other_version = gtfs_version_fixture(organization.id)
+
+    _walkability_test =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: other_version.id
+      })
+
+    assert {:error, reason} =
+             PathwaysValidity.run_in_session(
+               session_fixture(),
+               organization.id,
+               requested_version.id
+             )
+
+    assert reason.reason == :no_walkability_tests
+    assert reason.organization_id == organization.id
+    assert reason.gtfs_version_id == requested_version.id
+  end
+
+  test "run_in_session/4 returns no_walkability_tests when only invalid suite cases exist" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    _invalid_only_case =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: "stop-missing-from-version"
+      })
+
+    assert {:error, reason} =
+             PathwaysValidity.run_in_session(
+               session_fixture(),
+               organization.id,
+               gtfs_version.id
+             )
+
+    assert reason.reason == :no_walkability_tests
+    assert reason.organization_id == organization.id
+    assert reason.gtfs_version_id == gtfs_version.id
+  end
+
   test "run_in_session/4 returns success map for 2xx GraphQL response" do
     organization = organization_fixture()
     gtfs_version = gtfs_version_fixture(organization.id)
-    _walkability_test = walkability_test_fixture(%{organization_id: organization.id})
+
+    _stop =
+      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1"})
+
+    walkability_test =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id
+      })
 
     request_fun = fn graphql_url, request_opts ->
       send(self(), {:graphql_request, graphql_url, request_opts})
@@ -48,12 +103,67 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     assert request_opts[:json] == %{query: "{__typename}"}
     assert result.check == :otp_graphql_typename
     assert result.status == 200
+    assert result.selected_test_case_ids == [walkability_test.id]
+    assert result.suite_meta.total == 1
+    assert result.suite_meta.valid == 1
+    assert result.suite_meta.invalid == 0
+    assert result.suite_meta.ordering == "stop_id ASC, address ASC, id ASC"
+  end
+
+  test "run_in_session/4 uses selector output: only valid cases selected and metadata includes invalid cases" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    _stop =
+      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-valid"})
+
+    valid_case =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: "stop-valid",
+        address: "Addr valid"
+      })
+
+    _invalid_case =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: "stop-missing-from-version",
+        address: "Addr invalid"
+      })
+
+    request_fun = fn _graphql_url, _request_opts ->
+      {:ok, %Req.Response{status: 200, body: %{"data" => %{"__typename" => "Query"}}}}
+    end
+
+    assert {:ok, result} =
+             PathwaysValidity.run_in_session(
+               session_fixture(),
+               organization.id,
+               gtfs_version.id,
+               request_fun: request_fun
+             )
+
+    assert result.selected_test_case_ids == [valid_case.id]
+    assert result.suite_meta.total == 2
+    assert result.suite_meta.valid == 1
+    assert result.suite_meta.invalid == 1
+    assert result.suite_meta.ordering == "stop_id ASC, address ASC, id ASC"
   end
 
   test "run_in_session/4 returns validity-check error map for non-2xx GraphQL response" do
     organization = organization_fixture()
     gtfs_version = gtfs_version_fixture(organization.id)
-    _walkability_test = walkability_test_fixture(%{organization_id: organization.id})
+
+    _stop =
+      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1"})
+
+    walkability_test =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id
+      })
 
     request_fun = fn _graphql_url, _request_opts ->
       {:ok, %Req.Response{status: 503, body: %{"errors" => ["unavailable"]}}}
@@ -70,12 +180,25 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     assert reason.reason == :otp_validity_check_failed
     assert reason.status == 503
     assert reason.check == :otp_graphql_typename
+    assert reason.selected_test_case_ids == [walkability_test.id]
+    assert reason.suite_meta.total == 1
+    assert reason.suite_meta.valid == 1
+    assert reason.suite_meta.invalid == 0
+    assert reason.suite_meta.ordering == "stop_id ASC, address ASC, id ASC"
   end
 
   test "run_in_session/4 returns validity-check error map for transport failure" do
     organization = organization_fixture()
     gtfs_version = gtfs_version_fixture(organization.id)
-    _walkability_test = walkability_test_fixture(%{organization_id: organization.id})
+
+    _stop =
+      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1"})
+
+    walkability_test =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id
+      })
 
     request_fun = fn _graphql_url, _request_opts ->
       {:error, :nxdomain}
@@ -92,6 +215,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     assert reason.reason == :otp_validity_check_failed
     assert reason.check == :otp_graphql_typename
     assert reason.details =~ ":nxdomain"
+    assert reason.selected_test_case_ids == [walkability_test.id]
+    assert reason.suite_meta.total == 1
+    assert reason.suite_meta.valid == 1
+    assert reason.suite_meta.invalid == 0
+    assert reason.suite_meta.ordering == "stop_id ASC, address ASC, id ASC"
   end
 
   defp session_fixture do

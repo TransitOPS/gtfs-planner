@@ -234,13 +234,21 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
     stop_calls = :counters.new(1, [:atomics])
 
     assert {:error, [issue]} =
-             Runtime.run_with_otp("org-1", "ver-1", fn _session ->
-               send(parent, :callback_called)
-               {:ok, :unexpected}
-             end,
+             Runtime.run_with_otp(
+               "org-1",
+               "ver-1",
+               fn _session ->
+                 send(parent, :callback_called)
+                 {:ok, :unexpected}
+               end,
                status_callback: status_callback,
                prepare_runtime_fun: fn _org, _ver, _opts ->
-                 {:ok, %{gtfs_zip_path: "/tmp/otp/gtfs.zip", graph_path: "/tmp/otp/Graph.obj", meta: %{}}}
+                 {:ok,
+                  %{
+                    gtfs_zip_path: "/tmp/otp/gtfs.zip",
+                    graph_path: "/tmp/otp/Graph.obj",
+                    meta: %{}
+                  }}
                end,
                start_server_fun: fn _graph_path, _opts ->
                  {:ok, session}
@@ -287,12 +295,20 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
     stop_calls = :counters.new(1, [:atomics])
 
     assert {:error, %{reason: :suite_failed}} =
-             Runtime.run_with_otp("org-1", "ver-1", fn ^session ->
-               send(parent, :callback_called)
-               {:error, %{reason: :suite_failed}}
-             end,
+             Runtime.run_with_otp(
+               "org-1",
+               "ver-1",
+               fn ^session ->
+                 send(parent, :callback_called)
+                 {:error, %{reason: :suite_failed}}
+               end,
                prepare_runtime_fun: fn _org, _ver, _opts ->
-                 {:ok, %{gtfs_zip_path: "/tmp/otp/gtfs.zip", graph_path: "/tmp/otp/Graph.obj", meta: %{}}}
+                 {:ok,
+                  %{
+                    gtfs_zip_path: "/tmp/otp/gtfs.zip",
+                    graph_path: "/tmp/otp/Graph.obj",
+                    meta: %{}
+                  }}
                end,
                start_server_fun: fn _graph_path, _opts ->
                  {:ok, session}
@@ -316,12 +332,20 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
     parent = self()
 
     assert {:error, [issue]} =
-             Runtime.run_with_otp("org-1", "ver-1", fn _session ->
-               send(parent, :callback_called)
-               {:ok, :noop}
-             end,
+             Runtime.run_with_otp(
+               "org-1",
+               "ver-1",
+               fn _session ->
+                 send(parent, :callback_called)
+                 {:ok, :noop}
+               end,
                prepare_runtime_fun: fn _org, _ver, _opts ->
-                 {:ok, %{gtfs_zip_path: "/tmp/otp/gtfs.zip", graph_path: "/tmp/otp/Graph.obj", meta: %{}}}
+                 {:ok,
+                  %{
+                    gtfs_zip_path: "/tmp/otp/gtfs.zip",
+                    graph_path: "/tmp/otp/Graph.obj",
+                    meta: %{}
+                  }}
                end,
                start_server_fun: fn _graph_path, _opts ->
                  {:error, %{reason: :start_failed, details: :enoent}}
@@ -351,11 +375,15 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
     stop_calls = :counters.new(1, [:atomics])
 
     assert_raise RuntimeError, "suite crashed", fn ->
-      Runtime.run_with_otp("org-1", "ver-1", fn ^session ->
-        raise "suite crashed"
-      end,
+      Runtime.run_with_otp(
+        "org-1",
+        "ver-1",
+        fn ^session ->
+          raise "suite crashed"
+        end,
         prepare_runtime_fun: fn _org, _ver, _opts ->
-          {:ok, %{gtfs_zip_path: "/tmp/otp/gtfs.zip", graph_path: "/tmp/otp/Graph.obj", meta: %{}}}
+          {:ok,
+           %{gtfs_zip_path: "/tmp/otp/gtfs.zip", graph_path: "/tmp/otp/Graph.obj", meta: %{}}}
         end,
         start_server_fun: fn _graph_path, _opts ->
           {:ok, session}
@@ -391,7 +419,12 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
     assert {:error, [issue]} =
              Runtime.run_with_otp("org-1", "ver-1", fn ^session -> {:ok, :done} end,
                prepare_runtime_fun: fn _org, _ver, _opts ->
-                 {:ok, %{gtfs_zip_path: "/tmp/otp/gtfs.zip", graph_path: "/tmp/otp/Graph.obj", meta: %{}}}
+                 {:ok,
+                  %{
+                    gtfs_zip_path: "/tmp/otp/gtfs.zip",
+                    graph_path: "/tmp/otp/Graph.obj",
+                    meta: %{}
+                  }}
                end,
                start_server_fun: fn _graph_path, _opts ->
                  {:ok, session}
@@ -421,7 +454,13 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
                end,
                prepare_runtime_fun: fn _org, _ver, _opts ->
                  send(parent, :prepared)
-                 {:ok, %{gtfs_zip_path: "/tmp/otp/gtfs.zip", graph_path: "/tmp/otp/Graph.obj", meta: %{}}}
+
+                 {:ok,
+                  %{
+                    gtfs_zip_path: "/tmp/otp/gtfs.zip",
+                    graph_path: "/tmp/otp/Graph.obj",
+                    meta: %{}
+                  }}
                end
              )
 
@@ -457,7 +496,12 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
                  :ok
                end,
                prepare_runtime_fun: fn _org, _ver, _opts ->
-                 {:ok, %{gtfs_zip_path: "/tmp/otp/gtfs.zip", graph_path: "/tmp/otp/Graph.obj", meta: %{}}}
+                 {:ok,
+                  %{
+                    gtfs_zip_path: "/tmp/otp/gtfs.zip",
+                    graph_path: "/tmp/otp/Graph.obj",
+                    meta: %{}
+                  }}
                end,
                start_server_fun: fn _graph_path, _opts -> {:ok, session} end,
                wait_ready_fun: fn ^session, _opts -> :ok end,
@@ -484,9 +528,12 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
     }
 
     assert_raise RuntimeError, "suite crashed", fn ->
-      Runtime.run_with_otp("org-1", "ver-1", fn ^session ->
-        raise "suite crashed"
-      end,
+      Runtime.run_with_otp(
+        "org-1",
+        "ver-1",
+        fn ^session ->
+          raise "suite crashed"
+        end,
         acquire_lock_fun: fn "org-1" ->
           send(parent, :lock_acquired)
           :ok
@@ -496,7 +543,8 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
           :ok
         end,
         prepare_runtime_fun: fn _org, _ver, _opts ->
-          {:ok, %{gtfs_zip_path: "/tmp/otp/gtfs.zip", graph_path: "/tmp/otp/Graph.obj", meta: %{}}}
+          {:ok,
+           %{gtfs_zip_path: "/tmp/otp/gtfs.zip", graph_path: "/tmp/otp/Graph.obj", meta: %{}}}
         end,
         start_server_fun: fn _graph_path, _opts -> {:ok, session} end,
         wait_ready_fun: fn ^session, _opts -> :ok end,

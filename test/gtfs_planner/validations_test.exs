@@ -197,10 +197,14 @@ defmodule GtfsPlanner.ValidationsTest do
   describe "walkability_tests" do
     setup do
       organization = organization_fixture()
-      %{organization: organization}
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "create_walkability_test/2 creates with valid attrs", %{organization: org} do
+    test "create_walkability_test/3 creates with valid attrs", %{
+      organization: org,
+      gtfs_version: version
+    } do
       attrs = %{
         stop_id: "stop-1",
         address: "123 Main St",
@@ -209,7 +213,7 @@ defmodule GtfsPlanner.ValidationsTest do
       }
 
       assert {:ok, %WalkabilityTest{} = walkability_test} =
-               Validations.create_walkability_test(org.id, attrs)
+               Validations.create_walkability_test(org.id, version.id, attrs)
 
       assert walkability_test.organization_id == org.id
       assert walkability_test.stop_id == "stop-1"
@@ -218,10 +222,11 @@ defmodule GtfsPlanner.ValidationsTest do
       assert walkability_test.address_lon == Decimal.new("-71.0589")
     end
 
-    test "create_walkability_test/2 returns error with missing required field", %{
-      organization: org
+    test "create_walkability_test/3 returns error with missing required field", %{
+      organization: org,
+      gtfs_version: version
     } do
-      assert {:error, changeset} = Validations.create_walkability_test(org.id, %{})
+      assert {:error, changeset} = Validations.create_walkability_test(org.id, version.id, %{})
 
       assert %{
                stop_id: ["can't be blank"],
@@ -231,57 +236,118 @@ defmodule GtfsPlanner.ValidationsTest do
              } = errors_on(changeset)
     end
 
-    test "create_walkability_test/2 returns error for duplicate (org_id, stop_id, address)", %{
-      organization: org
+    test "create_walkability_test/3 returns error for duplicate within same org and version", %{
+      organization: org,
+      gtfs_version: version
     } do
       walkability_test_fixture(%{
         organization_id: org.id,
+        gtfs_version_id: version.id,
         stop_id: "stop-dup",
         address: "456 Elm St"
       })
 
       assert {:error, changeset} =
-               Validations.create_walkability_test(org.id, %{
+               Validations.create_walkability_test(org.id, version.id, %{
                  stop_id: "stop-dup",
                  address: "456 Elm St",
                  address_lat: Decimal.new("42.3601"),
                  address_lon: Decimal.new("-71.0589")
                })
 
-      assert "has already been taken" in errors_on(changeset).organization_id
+      assert "has already been taken" in errors_on(changeset).address
     end
 
-    test "list_walkability_tests/1 returns tests scoped to the given org", %{organization: org} do
+    test "create_walkability_test/3 allows same stop/address across different versions", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      other_version = gtfs_version_fixture(org.id)
+
+      attrs = %{
+        stop_id: "stop-shared",
+        address: "789 Oak St",
+        address_lat: Decimal.new("42.3601"),
+        address_lon: Decimal.new("-71.0589")
+      }
+
+      assert {:ok, %WalkabilityTest{} = first} =
+               Validations.create_walkability_test(org.id, version.id, attrs)
+
+      assert {:ok, %WalkabilityTest{} = second} =
+               Validations.create_walkability_test(org.id, other_version.id, attrs)
+
+      assert first.id != second.id
+      assert first.organization_id == second.organization_id
+      assert first.gtfs_version_id != second.gtfs_version_id
+      assert first.stop_id == second.stop_id
+      assert first.address == second.address
+    end
+
+    test "list_walkability_tests/2 returns tests scoped to org and version in deterministic order",
+         %{
+           organization: org,
+           gtfs_version: version
+         } do
       wt1 =
-        walkability_test_fixture(%{organization_id: org.id, stop_id: "stop-a", address: "Addr A"})
-
-      other_org = organization_fixture()
-
-      _wt2 =
         walkability_test_fixture(%{
-          organization_id: other_org.id,
+          organization_id: org.id,
+          gtfs_version_id: version.id,
           stop_id: "stop-b",
           address: "Addr B"
         })
 
-      results = Validations.list_walkability_tests(org.id)
+      wt2 =
+        walkability_test_fixture(%{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          stop_id: "stop-a",
+          address: "Addr A"
+        })
 
-      assert length(results) == 1
-      assert hd(results).id == wt1.id
+      other_version = gtfs_version_fixture(org.id)
+
+      _wt3 =
+        walkability_test_fixture(%{
+          organization_id: org.id,
+          gtfs_version_id: other_version.id,
+          stop_id: "stop-c",
+          address: "Addr C"
+        })
+
+      other_org = organization_fixture()
+      other_org_version = gtfs_version_fixture(other_org.id)
+
+      _wt4 =
+        walkability_test_fixture(%{
+          organization_id: other_org.id,
+          gtfs_version_id: other_org_version.id,
+          stop_id: "stop-d",
+          address: "Addr D"
+        })
+
+      results = Validations.list_walkability_tests(org.id, version.id)
+
+      assert Enum.map(results, & &1.id) == [wt2.id, wt1.id]
     end
 
-    test "get_walkability_test!/1 returns the test", %{organization: org} do
-      walkability_test = walkability_test_fixture(%{organization_id: org.id})
+    test "get_walkability_test!/1 returns the test", %{organization: org, gtfs_version: version} do
+      walkability_test =
+        walkability_test_fixture(%{organization_id: org.id, gtfs_version_id: version.id})
 
       fetched = Validations.get_walkability_test!(walkability_test.id)
       assert fetched.id == walkability_test.id
       assert fetched.organization_id == org.id
     end
 
-    test "list_walkability_tests_for_stop_ids/2 scopes by org and stop ids", %{organization: org} do
+    test "list_walkability_tests_for_stop_ids/2 scopes by org and stop ids", %{
+      organization: org,
+      gtfs_version: version
+    } do
       included_stop_a =
         walkability_test_fixture(%{
           organization_id: org.id,
+          gtfs_version_id: version.id,
           stop_id: "stop-included-a",
           address: "Address A"
         })
@@ -289,6 +355,7 @@ defmodule GtfsPlanner.ValidationsTest do
       included_stop_b =
         walkability_test_fixture(%{
           organization_id: org.id,
+          gtfs_version_id: version.id,
           stop_id: "stop-included-b",
           address: "Address B"
         })
@@ -296,15 +363,18 @@ defmodule GtfsPlanner.ValidationsTest do
       _excluded_stop =
         walkability_test_fixture(%{
           organization_id: org.id,
+          gtfs_version_id: version.id,
           stop_id: "stop-excluded",
           address: "Address C"
         })
 
       other_org = organization_fixture()
+      other_version = gtfs_version_fixture(other_org.id)
 
       _excluded_org =
         walkability_test_fixture(%{
           organization_id: other_org.id,
+          gtfs_version_id: other_version.id,
           stop_id: "stop-included-a",
           address: "Address D"
         })
@@ -323,16 +393,18 @@ defmodule GtfsPlanner.ValidationsTest do
       assert length(results) == 2
     end
 
-    test "get_walkability_test/1 returns test or nil", %{organization: org} do
-      walkability_test = walkability_test_fixture(%{organization_id: org.id})
+    test "get_walkability_test/1 returns test or nil", %{organization: org, gtfs_version: version} do
+      walkability_test =
+        walkability_test_fixture(%{organization_id: org.id, gtfs_version_id: version.id})
 
       assert %WalkabilityTest{id: id} = Validations.get_walkability_test(walkability_test.id)
       assert id == walkability_test.id
       assert nil == Validations.get_walkability_test(Ecto.UUID.generate())
     end
 
-    test "update_walkability_test/2 updates fields", %{organization: org} do
-      walkability_test = walkability_test_fixture(%{organization_id: org.id})
+    test "update_walkability_test/2 updates fields", %{organization: org, gtfs_version: version} do
+      walkability_test =
+        walkability_test_fixture(%{organization_id: org.id, gtfs_version_id: version.id})
 
       assert {:ok, %WalkabilityTest{} = updated} =
                Validations.update_walkability_test(walkability_test, %{
@@ -345,8 +417,12 @@ defmodule GtfsPlanner.ValidationsTest do
       assert updated.expected_traversable == true
     end
 
-    test "delete_walkability_test/1 removes the record", %{organization: org} do
-      walkability_test = walkability_test_fixture(%{organization_id: org.id})
+    test "delete_walkability_test/1 removes the record", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      walkability_test =
+        walkability_test_fixture(%{organization_id: org.id, gtfs_version_id: version.id})
 
       assert {:ok, %WalkabilityTest{}} = Validations.delete_walkability_test(walkability_test)
 

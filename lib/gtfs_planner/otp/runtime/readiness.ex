@@ -32,7 +32,11 @@ defmodule GtfsPlanner.Otp.Runtime.Readiness do
       Keyword.get(
         opts,
         :timeout_ms,
-        Application.get_env(:gtfs_planner, :otp_server_ready_timeout_ms, @default_ready_timeout_ms)
+        Application.get_env(
+          :gtfs_planner,
+          :otp_server_ready_timeout_ms,
+          @default_ready_timeout_ms
+        )
       )
 
     poll_interval_ms =
@@ -107,9 +111,14 @@ defmodule GtfsPlanner.Otp.Runtime.Readiness do
 
   defp default_request(graphql_url) do
     case Req.post(url: graphql_url, json: %{query: "{__typename}"}, retry: false) do
-      {:ok, %Req.Response{status: status}} when status in 200..299 -> :ok
-      {:ok, %Req.Response{status: status}} -> {:error, %{reason: :unexpected_status, status: status}}
-      {:error, reason} -> {:error, %{reason: :request_failed, details: inspect(reason)}}
+      {:ok, %Req.Response{status: status}} when status in 200..299 ->
+        :ok
+
+      {:ok, %Req.Response{status: status}} ->
+        {:error, %{reason: :unexpected_status, status: status}}
+
+      {:error, reason} ->
+        {:error, %{reason: :request_failed, details: inspect(reason)}}
     end
   end
 end

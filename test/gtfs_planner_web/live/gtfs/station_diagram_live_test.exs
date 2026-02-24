@@ -4251,6 +4251,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       _existing_test =
         walkability_test_fixture(%{
           organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
           stop_id: child_stop.stop_id,
           address: "123 Main St, Boston, MA, USA"
         })
@@ -4303,6 +4304,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       in_level_test =
         walkability_test_fixture(%{
           organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
           stop_id: child_stop.stop_id,
           address: "10 Active Level Way"
         })
@@ -4310,6 +4312,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       off_level_test =
         walkability_test_fixture(%{
           organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
           stop_id: off_level_child_stop.stop_id,
           address: "20 Off Level Way"
         })
@@ -4335,6 +4338,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       walkability_test =
         walkability_test_fixture(%{
           organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
           stop_id: child_stop.stop_id,
           address: "123 Edit Street, Boston, MA, USA",
           description: "Prepopulated description",
@@ -4369,6 +4373,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       walkability_test =
         walkability_test_fixture(%{
           organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
           stop_id: child_stop.stop_id,
           address: "500 Update Ave, Boston, MA, USA",
           description: "Before update",
@@ -4423,6 +4428,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       existing =
         walkability_test_fixture(%{
           organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
           stop_id: child_stop.stop_id,
           address: "111 Existing Address, Boston, MA, USA"
         })
@@ -4430,6 +4436,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       editing =
         walkability_test_fixture(%{
           organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
           stop_id: child_stop.stop_id,
           address: "222 Editable Address, Boston, MA, USA"
         })
@@ -4482,6 +4489,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       walkability_test =
         walkability_test_fixture(%{
           organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
           stop_id: child_stop.stop_id,
           address: "999 Delete Me Ave"
         })

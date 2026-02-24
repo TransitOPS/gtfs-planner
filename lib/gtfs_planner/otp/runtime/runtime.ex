@@ -139,8 +139,8 @@ defmodule GtfsPlanner.Otp.Runtime do
         catch
           :throw, {:otp_stop_failed, stop_reason, session} ->
             {:error, [runtime_issue(:otp_stop_failed, stop_reason, session)]}
-          after
-            _ = release_lock_fun.(organization_id)
+        after
+          _ = release_lock_fun.(organization_id)
         end
       end
 
@@ -222,8 +222,7 @@ defmodule GtfsPlanner.Otp.Runtime do
   defp runtime_issue(code, details, %Session{} = session) when is_atom(code) do
     %{
       code: code,
-      details:
-        Map.merge(%{session: session}, normalize_issue_details(details))
+      details: Map.merge(%{session: session}, normalize_issue_details(details))
     }
   end
 

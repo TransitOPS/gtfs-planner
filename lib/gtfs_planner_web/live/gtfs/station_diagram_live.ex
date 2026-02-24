@@ -2107,9 +2107,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp save_walkability_test_create(socket, organization_id, attrs) do
-    case Validations.create_walkability_test(organization_id, attrs) do
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    case Validations.create_walkability_test(organization_id, gtfs_version_id, attrs) do
       {:ok, _walkability_test} ->
-        purge_otp_artifact(organization_id, socket.assigns.current_gtfs_version.id)
+        purge_otp_artifact(organization_id, gtfs_version_id)
 
         {:noreply,
          socket
@@ -2360,7 +2362,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     Enum.any?(changeset.errors, fn
       {_field, {_message, opts}} ->
         opts[:constraint] == :unique and
-          opts[:constraint_name] == "walkability_tests_organization_id_stop_id_address_index"
+          opts[:constraint_name] in [
+            "walkability_tests_organization_id_stop_id_address_index",
+            "walkability_tests_organization_id_gtfs_version_id_stop_id_address_index",
+            "walkability_tests_organization_id_gtfs_version_id_stop_id_addre"
+          ]
 
       _ ->
         false
