@@ -188,7 +188,7 @@ body:has(#diagram-page[data-immersive="true"]) {
   padding: 0.35rem 0.55rem;
   border-radius: 0.375rem;
   border: 1px solid transparent;
-  background: #2563EB;
+  background: #0080FF;
   color: #FFFFFF;
   font-size: 0.75rem;
   font-weight: 500;

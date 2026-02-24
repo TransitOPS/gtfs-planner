@@ -20,7 +20,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
             <g
               id="editable-stop"
               data-tooltip="Click to edit stop"
-              data-tooltip-color="#2563EB"
+              data-tooltip-color="#0080FF"
               tabindex="0"
               aria-label="Stop Editable Stop (EDIT_STOP)"
             >
@@ -94,7 +94,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
             <g
               id="editable-pathway"
               data-tooltip="Click to edit pathway"
-              data-tooltip-color="#2563EB"
+              data-tooltip-color="#FF00FF"
               tabindex="0"
               aria-label="Walkway pathway from A to B"
             >
@@ -115,6 +115,16 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-pathway-line="true"
               data-base-stroke="0.5"
               data-base-dash="2,1"
+            ></line>
+            <line
+              id="path-arrow-trim"
+              x1="10"
+              y1="10"
+              x2="20"
+              y2="10"
+              marker-end="url(#pathway-arrow)"
+              data-pathway-end-trim="0.9"
+              data-base-stroke="0.3"
             ></line>
             <rect
               id="elevator-box"
@@ -285,20 +295,26 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     ).toBe("1");
     expect(
       document.querySelector("#path-line").getAttribute("stroke-width"),
-    ).toBe("0.17857142857142858");
+    ).toBe("0.1388888888888889");
     expect(
       document.querySelector("#path-dashed").getAttribute("stroke-width"),
-    ).toBe("0.17857142857142858");
+    ).toBe("0.1388888888888889");
     expect(
       document.querySelector("#path-dashed").getAttribute("stroke-dasharray"),
-    ).toBe("0.7142857142857143 0.35714285714285715");
+    ).toBe("0.5555555555555556 0.2777777777777778");
+    expect(
+      parseFloat(document.querySelector("#path-arrow-trim").getAttribute("x1")),
+    ).toBeCloseTo(10.25, 5);
+    expect(
+      parseFloat(document.querySelector("#path-arrow-trim").getAttribute("x2")),
+    ).toBeCloseTo(19.75, 5);
 
     expect(
       document.querySelector("#pathway-arrow").getAttribute("markerWidth"),
-    ).toBe("0.5357142857142857");
+    ).toBe("0.41666666666666663");
     expect(
       document.querySelector("#pathway-arrow").getAttribute("markerHeight"),
-    ).toBe("0.5357142857142857");
+    ).toBe("0.41666666666666663");
 
     expect(document.querySelector("#elevator-box").getAttribute("x")).toBe(
       "29.5",
@@ -314,7 +330,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     );
     expect(
       document.querySelector("#elevator-box").getAttribute("stroke-width"),
-    ).toBe("0.14285714285714288");
+    ).toBe("0.11111111111111112");
 
     expect(
       document.querySelector("#elevator-text").getAttribute("font-size"),
@@ -330,7 +346,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     ).toBe("0.45");
     expect(
       document.querySelector("#path-label").getAttribute("stroke-width"),
-    ).toBe("0.07142857142857144");
+    ).toBe("0.05555555555555556");
     expect(document.querySelector("#path-label").getAttribute("transform")).toBe(
       "rotate(15, 50.7, 59.3)",
     );
@@ -395,10 +411,10 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
       .map((value) => parseFloat(value));
 
     expect(hitStroke).toBeCloseTo(4, 5);
-    expect(lineStroke).toBeCloseTo(0.4201680672, 5);
-    expect(markerWidth).toBeCloseTo(1.2605042017, 5);
-    expect(dashed[0]).toBeCloseTo(1.6806722689, 5);
-    expect(dashed[1]).toBeCloseTo(0.8403361344, 5);
+    expect(lineStroke).toBeCloseTo(0.5555555556, 5);
+    expect(markerWidth).toBeCloseTo(1.6666666667, 5);
+    expect(dashed[0]).toBeCloseTo(2.2222222222, 5);
+    expect(dashed[1]).toBeCloseTo(1.1111111111, 5);
 
     const iconRadius = parseFloat(
       document.querySelector("#stop-marker").getAttribute("r"),
@@ -419,6 +435,9 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(entranceHeight).toBeCloseTo(1.9607843137, 5);
     expect(boardingWidth).toBeCloseTo(1.1764705882, 5);
     expect(document.querySelector("#stop-label").getAttribute("display")).toBe(
+      "none",
+    );
+    expect(document.querySelector("#path-label").getAttribute("display")).toBe(
       "none",
     );
     expect(
@@ -462,6 +481,31 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     hook.scaleOverlayElements();
 
     expect(pathLabel.getAttribute("transform")).toBe("rotate(45, 1, 1)");
+  });
+
+  it("hides pathway labels at baseline scale and restores above threshold", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    const pathLabel = document.querySelector("#path-label");
+
+    hook.scale = 1;
+    hook.scaleOverlayElements();
+    expect(pathLabel.getAttribute("display")).toBe("none");
+
+    hook.scale = 1.2;
+    hook.scaleOverlayElements();
+    expect(pathLabel.getAttribute("display")).toBe(null);
+
+    expect(parseFloat(pathLabel.getAttribute("x"))).toBeCloseTo(51.1666666667, 5);
+    expect(parseFloat(pathLabel.getAttribute("y"))).toBeCloseTo(58.8333333333, 5);
+    expect(parseFloat(pathLabel.getAttribute("font-size"))).toBeCloseTo(0.75, 5);
+    expect(parseFloat(pathLabel.getAttribute("stroke-width"))).toBeCloseTo(
+      0.119047619,
+      5,
+    );
   });
 
   it("hides ruler labels when zoomed out below threshold and restores above threshold", () => {

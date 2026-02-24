@@ -583,12 +583,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#child_stops-#{selected_stop.id} [data-stop-marker][data-location-type='3'][fill='#059669']"
+               "#child_stops-#{selected_stop.id} [data-stop-marker][data-location-type='3'][fill='#FF4500']"
              )
 
       assert has_element?(
                view,
-               "#child_stops-#{other_stop.id} [data-stop-marker][data-location-type='3'][fill='#2563EB']"
+               "#child_stops-#{other_stop.id} [data-stop-marker][data-location-type='3'][fill='#0080FF']"
              )
     end
 
@@ -659,7 +659,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#child_stops-#{selected_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}'] [data-cross-level-badge-elevator][fill='#06b6d4']"
+               "#child_stops-#{selected_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}'] [data-cross-level-badge-elevator][fill='#FF00FF']"
              )
     end
 
@@ -2093,6 +2093,58 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "BOARDING NO CODE"
              )
     end
+
+    test "renders bounded and wrapped stop labels for long names", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      wrapped_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WRAP_LABEL_STOP",
+          stop_name: "Long Label For Platform Concourse Connector East Wing",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 18.0, "y" => 18.0}
+        })
+
+      truncated_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TRUNC_LABEL_STOP",
+          stop_name:
+            "Very Long Label Name For Multi Segment Connector Through Main Hall And Auxiliary Passage To Platform",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 22.0, "y" => 22.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(
+               view,
+               "#child_stops-#{wrapped_stop.id} [data-stop-label-box][data-base-width][data-base-height]"
+             )
+
+      assert has_element?(
+               view,
+               "#child_stops-#{wrapped_stop.id} [data-stop-label] tspan:nth-of-type(2)"
+             )
+
+      assert has_element?(
+               view,
+               "#child_stops-#{truncated_stop.id} [data-stop-label][data-label-truncated='true']"
+             )
+
+      assert has_element?(view, "#child_stops-#{truncated_stop.id} [data-stop-label]", "...")
+    end
   end
 
   describe "StationDiagramLive - pathway mode rendering" do
@@ -2273,13 +2325,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "← Reverse Sign"
              )
 
-      assert has_element?(view, "#pathways-#{mode_2.id} [data-pathway-tick]")
-      assert has_element?(view, "#pathways-#{mode_3.id} [data-base-dash='2,1']")
-      assert has_element?(view, "#pathways-#{mode_4.id} [data-pathway-tick]")
+      assert has_element?(view, "#pathways-#{mode_2.id} [data-pathway-center-tick]")
+      assert has_element?(view, "#pathways-#{mode_3.id} [data-pathway-center-cross]")
+      assert has_element?(view, "#pathways-#{mode_4.id} [data-pathway-center-bar]")
       assert has_element?(view, "#pathways-#{mode_5.id} [data-pathway-elevator-box]")
       assert has_element?(view, "#pathways-#{mode_5.id} [data-pathway-connector]")
-      assert has_element?(view, "#pathways-#{mode_6.id} [data-pathway-bar]")
-      assert has_element?(view, "#pathways-#{mode_7.id} [data-pathway-exit-bar]")
+      assert has_element?(view, "#pathways-#{mode_6.id} [data-pathway-rail]")
+      assert has_element?(view, "#pathways-#{mode_6.id} [data-pathway-arrow-guide]")
+      assert has_element?(view, "#pathways-#{mode_7.id} [data-pathway-rail]")
+      assert has_element?(view, "#pathways-#{mode_7.id} [data-pathway-arrow-guide]")
     end
 
     test "left-to-right pathways render forward and reverse arrows with non-flipped mapping", %{
@@ -2416,13 +2470,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='-1.2']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='-0.95']",
                "Forward Y →"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='1.2']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='0.95']",
                "← Reverse Y"
              )
     end
@@ -2470,13 +2524,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='-1.2']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='-0.95']",
                "Forward X →"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='1.2']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='0.95']",
                "← Reverse X"
              )
     end
@@ -2549,10 +2603,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute has_element?(
                view,
-               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-end]"
+               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-start='url(#pathway-arrow)']"
              )
 
-      refute has_element?(
+      assert has_element?(
+               view,
+               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-start='url(#pathway-arrow)']"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-end='url(#pathway-arrow)']"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-start='url(#pathway-arrow)']"
+             )
+
+      assert has_element?(
                view,
                "#pathways-#{two_way_moving.id} [data-pathway-line][marker-end='url(#pathway-arrow)']"
              )
@@ -2993,7 +3062,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert has_element?(view, "#pathways-#{elevator_pathway.id}[opacity='0.5']")
+      assert has_element?(view, "#pathways-#{elevator_pathway.id}[opacity='1']")
       assert has_element?(view, "#pathways-#{normal_pathway.id}[opacity='1']")
 
       refute has_element?(view, "#pathways-#{cross_level_pathway.id}")
@@ -3020,7 +3089,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#child_stops-#{level_1_stop_b.id} [data-cross-level-pathway-badge]"
              )
 
-      assert has_element?(view, "#diagram-legend-panel", "Cross-level Badge")
+      assert has_element?(view, "#diagram-legend-panel", "Cross-level Stairs")
+      assert has_element?(view, "#diagram-legend-panel", "Cross-level Elevator")
     end
 
     test "clicking a cross-level badge opens pathway drawer for that pathway only", %{
