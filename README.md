@@ -12,6 +12,33 @@ To start your Phoenix server:
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
+### OTP Export Prerequisites
+
+Manual end-to-end export graph builds require local OTP assets that are not committed:
+
+- `priv/otp/opentripplanner.jar`
+- `priv/otp/region.osm.pbf`
+
+Use the built-in checker before running Export page graph tests:
+
+```bash
+mix gtfs.otp.check --create-dir
+```
+
+Install missing artifacts automatically:
+
+```bash
+mix gtfs.otp.install
+```
+
+Run in preview mode without downloading:
+
+```bash
+mix gtfs.otp.install --dry-run
+```
+
+`mix setup` runs this checker in warning mode so missing local assets are always surfaced early.
+
 Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
 
 ## Docker

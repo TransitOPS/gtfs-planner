@@ -18,6 +18,8 @@ services:
       - PHX_HOST=localhost
       - SECRET_KEY_BASE=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
       - DATABASE_URL=ecto://app@postgres:5432/gtfs_planner
+      - OTP_JAR_PATH=/opt/otp/otp.jar
+      - OTP_OSM_PATH=/opt/otp/data/philadelphia.osm.pbf
       - GEOAPIFY_API_KEY=${GEOAPIFY_API_KEY:-}
     ports:
       - '4000:4000'

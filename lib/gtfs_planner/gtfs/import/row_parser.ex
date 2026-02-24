@@ -1261,7 +1261,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   end
 
   @doc """
-  Parses GTFS time format HH:MM:SS (supports times > 24:00:00).
+  Parses GTFS time format H+:MM:SS (supports times > 24:00:00).
 
   ## Returns
 
@@ -1273,10 +1273,12 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
   def parse_gtfs_time(""), do: {:ok, nil}
 
   def parse_gtfs_time(string) when is_binary(string) do
-    if String.match?(string, ~r/^\d{2}:\d{2}:\d{2}$/) do
-      {:ok, string}
+    trimmed = String.trim(string)
+
+    if String.match?(trimmed, ~r/^\d{1,}:\d{2}:\d{2}$/) do
+      {:ok, trimmed}
     else
-      {:error, "invalid GTFS time format (expected HH:MM:SS): #{string}"}
+      {:error, "invalid GTFS time format (expected H+:MM:SS): #{string}"}
     end
   end
 

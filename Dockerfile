@@ -72,8 +72,10 @@ RUN apt-get update --allow-releaseinfo-change && apt-get upgrade -y --no-install
 
 # Install OpenTripPlanner 2.8.1 (not started automatically)
 RUN mkdir -p /opt/otp/data && \
-    curl -L -o /opt/otp/otp.jar \
-    "https://github.com/opentripplanner/OpenTripPlanner/releases/download/v2.8.1/otp-2.8.1-shaded.jar" && \
+    curl -fL --retry 3 --retry-delay 2 -o /opt/otp/otp.jar \
+    "https://github.com/opentripplanner/OpenTripPlanner/releases/download/v2.8.1/otp-shaded-2.8.1.jar" && \
+    curl -fL --retry 3 --retry-delay 2 -o /opt/otp/data/philadelphia.osm.pbf \
+    "https://download.bbbike.org/osm/bbbike/Philadelphia/Philadelphia.osm.pbf" && \
     chown -R nobody:root /opt/otp
 
 # Install MobilityData GTFS Validator 7.1.0 (not started automatically)

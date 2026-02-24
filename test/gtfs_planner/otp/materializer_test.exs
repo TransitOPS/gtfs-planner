@@ -95,6 +95,36 @@ defmodule GtfsPlanner.Otp.MaterializerTest do
 
       assert {:error, :not_found} = Otp.fetch_artifact(organization.id, gtfs_version.id)
     end
+
+    test "force_rebuild ignores cache and rebuilds artifact", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      assert {:ok, _zip_path, first_meta} =
+               Materializer.get_or_build_gtfs_zip(organization.id, gtfs_version.id)
+
+      assert first_meta.reused == false
+
+      status_callback = fn %{phase: phase} -> send(self(), {:phase, phase}) end
+
+      assert {:ok, _zip_path, second_meta} =
+               Materializer.get_or_build_gtfs_zip(
+                 organization.id,
+                 gtfs_version.id,
+                 status_callback: status_callback,
+                 force_rebuild: true
+               )
+
+      assert second_meta.reused == false
+      assert_receive {:phase, :cache_check}
+      assert_receive {:phase, :preflight}
+      assert_receive {:phase, :exporting}
+      assert_receive {:phase, :packaging}
+      assert_receive {:phase, :persisting}
+      assert_receive {:phase, :done}
+    end
   end
 
   defp seed_minimum_required_gtfs!(organization_id, gtfs_version_id) do
