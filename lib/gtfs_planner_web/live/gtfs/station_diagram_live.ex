@@ -774,7 +774,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:child_stop_form, to_form(%{}))}
 
       {:error, :not_found} ->
-        {:noreply, put_flash(socket, :error, "Stop not found for this station.")}
+        {:noreply,
+         socket
+         |> put_flash(:error, "Stop not found for this station.")
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
     end
   end
 
