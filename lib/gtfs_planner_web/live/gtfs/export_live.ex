@@ -940,7 +940,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               </svg>
               <div class="space-y-1">
                 <h3 class="font-semibold text-base-content">{@pathways_prep_error.summary}</h3>
-                <p class="text-sm text-base-content/80">Fix the issues below, then run validation again.</p>
+                <p class="text-sm text-base-content/80">
+                  Fix the issues below, then run validation again.
+                </p>
                 <ul class="list-disc pl-5 text-sm text-base-content/80" id="pathways-prep-error-list">
                   <li :for={issue <- @pathways_prep_error.issues}>{issue.message}</li>
                 </ul>
