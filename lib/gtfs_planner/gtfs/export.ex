@@ -219,7 +219,10 @@ defmodule GtfsPlanner.Gtfs.Export do
     entries
   rescue
     e ->
-      Logger.warning("Extensions export failed, continuing without extensions: #{Exception.message(e)}")
+      Logger.warning(
+        "Extensions export failed, continuing without extensions: #{Exception.message(e)}"
+      )
+
       []
   end
 end

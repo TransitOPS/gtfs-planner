@@ -475,7 +475,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       </div>
                       <%= if Map.get(counts, :extensions_stop_coordinates, 0) + Map.get(counts, :extensions_stop_levels, 0) + Map.get(counts, :extensions_route_flags, 0) + Map.get(counts, :extensions_images, 0) > 0 do %>
                         <div class="text-xs mt-1">
-                          Extensions: {Map.get(counts, :extensions_stop_coordinates, 0)} diagram coordinates, {Map.get(counts, :extensions_stop_levels, 0)} stop levels, {Map.get(counts, :extensions_route_flags, 0)} route flags, {Map.get(counts, :extensions_images, 0)} images.
+                          Extensions: {Map.get(counts, :extensions_stop_coordinates, 0)} diagram coordinates, {Map.get(
+                            counts,
+                            :extensions_stop_levels,
+                            0
+                          )} stop levels, {Map.get(counts, :extensions_route_flags, 0)} route flags, {Map.get(
+                            counts,
+                            :extensions_images,
+                            0
+                          )} images.
                         </div>
                       <% end %>
                     </div>

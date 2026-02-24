@@ -121,7 +121,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
           []
         )
 
-      assert {:ok, _} = Import.import_extensions(org_id, version_id, Manifest.encode(manifest1), %{})
+      assert {:ok, _} =
+               Import.import_extensions(org_id, version_id, Manifest.encode(manifest1), %{})
 
       # Second import with updated data
       manifest2 =

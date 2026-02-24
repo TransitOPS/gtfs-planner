@@ -31,11 +31,23 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
       `:extensions_route_flags`, `:extensions_images`
     - `{:error, reason}`
   """
-  def import_extensions(organization_id, gtfs_version_id, manifest_json, image_files_by_zip_path, _opts \\ []) do
+  def import_extensions(
+        organization_id,
+        gtfs_version_id,
+        manifest_json,
+        image_files_by_zip_path,
+        _opts \\ []
+      ) do
     with {:ok, manifest} <- Manifest.decode(manifest_json),
          lookups <- build_lookups(organization_id, gtfs_version_id),
          :ok <- validate_references(manifest, lookups) do
-      apply_db_writes(organization_id, gtfs_version_id, manifest, lookups, image_files_by_zip_path)
+      apply_db_writes(
+        organization_id,
+        gtfs_version_id,
+        manifest,
+        lookups,
+        image_files_by_zip_path
+      )
     end
   end
 
@@ -61,8 +73,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
   defp validate_references(manifest, lookups) do
     missing_stops =
-      (manifest.stop_diagram_coordinates |> Enum.map(& &1.stop_id)) ++
-        (manifest.stop_levels |> Enum.map(& &1.stop_id))
+      ((manifest.stop_diagram_coordinates |> Enum.map(& &1.stop_id)) ++
+         (manifest.stop_levels |> Enum.map(& &1.stop_id)))
       |> Enum.uniq()
       |> Enum.reject(&Map.has_key?(lookups.stop_id_to_uuid, &1))
 
@@ -96,13 +108,22 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
   # -- DB writes in transaction -----------------------------------------------
 
-  defp apply_db_writes(organization_id, gtfs_version_id, manifest, lookups, image_files_by_zip_path) do
+  defp apply_db_writes(
+         organization_id,
+         gtfs_version_id,
+         manifest,
+         lookups,
+         image_files_by_zip_path
+       ) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     result =
       Repo.transaction(fn ->
         coord_count = update_stop_coordinates(manifest.stop_diagram_coordinates, lookups)
-        sl_count = upsert_stop_levels(organization_id, gtfs_version_id, manifest.stop_levels, lookups, now)
+
+        sl_count =
+          upsert_stop_levels(organization_id, gtfs_version_id, manifest.stop_levels, lookups, now)
+
         flag_count = update_route_flags(manifest.route_active_flags, lookups)
 
         %{
@@ -114,7 +135,9 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
     case result do
       {:ok, counts} ->
-        image_count = restore_images(organization_id, manifest.diagram_images, image_files_by_zip_path)
+        image_count =
+          restore_images(organization_id, manifest.diagram_images, image_files_by_zip_path)
+
         {:ok, Map.put(counts, :extensions_images, image_count)}
 
       {:error, reason} ->
@@ -204,12 +227,18 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
                   true
 
                 {:error, reason} ->
-                  Logger.warning("Extensions import: failed to write image #{dest_path}: #{inspect(reason)}")
+                  Logger.warning(
+                    "Extensions import: failed to write image #{dest_path}: #{inspect(reason)}"
+                  )
+
                   false
               end
 
             {:error, reason} ->
-              Logger.warning("Extensions import: failed to create directory #{dest_dir}: #{inspect(reason)}")
+              Logger.warning(
+                "Extensions import: failed to create directory #{dest_dir}: #{inspect(reason)}"
+              )
+
               false
           end
 

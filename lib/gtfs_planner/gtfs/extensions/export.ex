@@ -149,9 +149,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
           [{String.to_charlist(entry.zip_path), binary}]
 
         {:error, reason} ->
-          Logger.warning(
-            "Extensions export: skipping image #{disk_path}: #{inspect(reason)}"
-          )
+          Logger.warning("Extensions export: skipping image #{disk_path}: #{inspect(reason)}")
 
           []
       end

@@ -507,10 +507,14 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       # Create a zip in memory
       {:ok, {_name, zip_binary}} =
-        :zip.create(~c"gtfs.zip", [
-          {~c"levels.txt", levels_content},
-          {~c"stops.txt", stops_content}
-        ], [:memory])
+        :zip.create(
+          ~c"gtfs.zip",
+          [
+            {~c"levels.txt", levels_content},
+            {~c"stops.txt", stops_content}
+          ],
+          [:memory]
+        )
 
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
@@ -530,11 +534,15 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       manifest_json = Jason.encode!(%{"version" => 1, "exported_at" => "2026-01-01T00:00:00Z"})
 
       {:ok, {_name, zip_binary}} =
-        :zip.create(~c"gtfs.zip", [
-          {~c"levels.txt", levels_content},
-          {~c"_pathways_extensions.json", manifest_json},
-          {~c"_pathways_extensions/diagrams/station/img.png", "fake png"}
-        ], [:memory])
+        :zip.create(
+          ~c"gtfs.zip",
+          [
+            {~c"levels.txt", levels_content},
+            {~c"_pathways_extensions.json", manifest_json},
+            {~c"_pathways_extensions/diagrams/station/img.png", "fake png"}
+          ],
+          [:memory]
+        )
 
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
