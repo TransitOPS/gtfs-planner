@@ -22,6 +22,5 @@ defmodule GtfsPlanner.Repo.Migrations.CreateOtpGtfsArtifacts do
     create unique_index(:otp_gtfs_artifacts, [:organization_id, :gtfs_version_id],
              name: :otp_gtfs_artifacts_org_version_unique_index
            )
-
   end
 end

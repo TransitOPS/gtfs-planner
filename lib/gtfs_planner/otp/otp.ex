@@ -34,13 +34,14 @@ defmodule GtfsPlanner.Otp do
     |> Repo.insert(
       conflict_target: [:organization_id, :gtfs_version_id],
       on_conflict:
-        {:replace, [
-          :zip_path,
-          :content_hash,
-          :file_size_bytes,
-          :manifest_json,
-          :updated_at
-        ]},
+        {:replace,
+         [
+           :zip_path,
+           :content_hash,
+           :file_size_bytes,
+           :manifest_json,
+           :updated_at
+         ]},
       returning: true
     )
   end

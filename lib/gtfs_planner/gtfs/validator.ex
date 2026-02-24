@@ -156,7 +156,8 @@ defmodule GtfsPlanner.Gtfs.Validator do
     end
   end
 
-  defp handle_lifecycle_operation(operation_name, operation_fn) when is_function(operation_fn, 0) do
+  defp handle_lifecycle_operation(operation_name, operation_fn)
+       when is_function(operation_fn, 0) do
     try do
       case operation_fn.() do
         {:ok, :purged} ->

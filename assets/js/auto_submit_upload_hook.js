@@ -5,6 +5,7 @@
 const POLL_INTERVAL_MS = 100;
 const MAX_NO_REF_POLLS = 3;
 const UPLOAD_TIMEOUT_MS = 60_000;
+const FORCE_SUBMIT_ON_ACTIVE_STALL = process.env.NODE_ENV === "development";
 
 const AutoSubmitUploadHook = {
   mounted() {
@@ -14,6 +15,7 @@ const AutoSubmitUploadHook = {
     this.timeoutTimer = null;
     this.sawUploadActivity = false;
     this.noRefPollCount = 0;
+    this.activeNoPreflightPollCount = 0;
 
     if (!this.fileInput) return;
 
@@ -35,6 +37,7 @@ const AutoSubmitUploadHook = {
     this.clearUploadWait();
     this.sawUploadActivity = false;
     this.noRefPollCount = 0;
+    this.activeNoPreflightPollCount = 0;
 
     this.pollTimer = window.setInterval(() => {
       if (this.shouldSubmit()) {
@@ -58,8 +61,21 @@ const AutoSubmitUploadHook = {
 
     if (activeRefs.size > 0) {
       this.sawUploadActivity = true;
+
+      if (FORCE_SUBMIT_ON_ACTIVE_STALL && preflightedRefs.size === 0 && doneRefs.size === 0) {
+        this.activeNoPreflightPollCount += 1;
+
+        if (this.activeNoPreflightPollCount >= 5) {
+          return true;
+        }
+      } else {
+        this.activeNoPreflightPollCount = 0;
+      }
+
       return false;
     }
+
+    this.activeNoPreflightPollCount = 0;
 
     if (this.sawUploadActivity) {
       return true;
@@ -121,6 +137,7 @@ const AutoSubmitUploadHook = {
     }
 
     this.noRefPollCount = 0;
+    this.activeNoPreflightPollCount = 0;
   }
 };
 

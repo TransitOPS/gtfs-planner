@@ -43,7 +43,8 @@ defmodule GtfsPlanner.Gtfs.ValidatorArtifactLifecycleTest do
                  manifest_json: %{"files" => ["agency.txt"]}
                })
 
-      {:ok, run} = Validations.create_validation_run(organization.id, gtfs_version.id, "mobility_data")
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, gtfs_version.id, "mobility_data")
 
       original_validator_path = Application.get_env(:gtfs_planner, :gtfs_validator_path)
       Application.put_env(:gtfs_planner, :gtfs_validator_path, nil)
