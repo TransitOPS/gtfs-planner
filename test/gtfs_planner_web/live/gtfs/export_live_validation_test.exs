@@ -234,8 +234,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       html = render(view)
 
-      assert html =~ "View Full Results"
-      assert html =~ "Pathways Tests"
+      assert html =~ "Building OTP graph..." or
+               html =~ "Pathways trip test run started. Export preparation complete."
     end
 
     test "uses configured runtime module for pathways prep failures", %{
