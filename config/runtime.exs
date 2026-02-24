@@ -66,6 +66,11 @@ config :gtfs_planner,
          Path.join(System.tmp_dir!(), "gtfs_planner/otp_runtime")
 
 config :gtfs_planner,
+       :otp_artifacts_path,
+       System.get_env("OTP_ARTIFACTS_PATH") ||
+         Path.join(System.tmp_dir!(), "gtfs_planner_otp_artifacts")
+
+config :gtfs_planner,
        :otp_graph_build_heap,
        System.get_env("OTP_GRAPH_BUILD_HEAP") || "4G"
 
