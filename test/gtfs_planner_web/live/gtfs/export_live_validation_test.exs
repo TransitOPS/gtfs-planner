@@ -454,16 +454,27 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
   end
 
   defp eventually(fun, attempts \\ 20)
-  defp eventually(fun, 0), do: fun.()
+  defp eventually(fun, 0), do: safely_eval(fun)
 
   defp eventually(fun, attempts) when is_function(fun, 0) and attempts > 0 do
-    if fun.() do
+    if safely_eval(fun) do
       true
     else
       receive do
       after
         10 -> eventually(fun, attempts - 1)
       end
+    end
+  end
+
+  defp safely_eval(fun) when is_function(fun, 0) do
+    try do
+      fun.()
+    rescue
+      _ -> false
+    catch
+      :exit, _ -> false
+      :throw, _ -> false
     end
   end
 end
