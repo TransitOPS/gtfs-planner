@@ -153,16 +153,26 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
          {:ok, osm_path} <- OsmPath.resolve(),
          gtfs_staged_path <- GraphPath.staged_gtfs_zip_path(organization_id, gtfs_version_id),
          osm_staged_path <- GraphPath.staged_osm_path(organization_id, gtfs_version_id, osm_path),
-         :ok <- copy_file(artifact.zip_path, gtfs_staged_path),
-         :ok <- copy_file(osm_path, osm_staged_path) do
+         :ok <- copy_file(:gtfs, artifact.zip_path, gtfs_staged_path),
+         :ok <- copy_file(:osm, osm_path, osm_staged_path) do
       :ok
     end
   end
 
-  defp copy_file(source_path, destination_path) do
-    with :ok <- File.mkdir_p(Path.dirname(destination_path)),
-         {:ok, _bytes_copied} <- File.copy(source_path, destination_path) do
-      :ok
+  defp copy_file(file_type, source_path, destination_path) do
+    case File.mkdir_p(Path.dirname(destination_path)) do
+      :ok ->
+        case File.copy(source_path, destination_path) do
+          {:ok, _bytes_copied} ->
+            :ok
+
+          {:error, file_error} ->
+            {:error,
+             {:file_copy_failed, file_type, source_path, destination_path, file_error}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
