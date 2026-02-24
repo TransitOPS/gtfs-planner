@@ -972,7 +972,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#remove-from-diagram-button")
     end
 
-    test "clicking remove moves stop from child-stops-table to unassigned-stops-table and preserves pathways",
+    test "clicking remove moves stop from child-stops-table to unassigned-stops-table and deletes pathways",
          %{
            conn: conn,
            user: user,
