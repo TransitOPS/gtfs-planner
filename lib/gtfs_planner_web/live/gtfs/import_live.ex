@@ -4,43 +4,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   Requires the pathways_studio_editor role (editor only, not viewer).
   """
   use GtfsPlannerWeb, :live_view
+  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Versions
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_editor}
 
   # List of recognized GTFS filenames
-  @recognized_gtfs_files MapSet.new([
-                           "agency.txt",
-                           "areas.txt",
-                           "attributions.txt",
-                           "booking_rules.txt",
-                           "calendar.txt",
-                           "calendar_dates.txt",
-                           "fare_attributes.txt",
-                           "fare_leg_join_rules.txt",
-                           "fare_leg_rules.txt",
-                           "fare_media.txt",
-                           "fare_products.txt",
-                           "fare_rules.txt",
-                           "fare_transfer_rules.txt",
-                           "feed_info.txt",
-                           "frequencies.txt",
-                           "levels.txt",
-                           "locations.txt",
-                           "networks.txt",
-                           "pathways.txt",
-                           "rider_categories.txt",
-                           "route_networks.txt",
-                           "route_patterns.txt",
-                           "routes.txt",
-                           "shapes.txt",
-                           "stop_areas.txt",
-                           "stop_times.txt",
-                           "stops.txt",
-                           "timeframes.txt",
-                           "transfers.txt",
-                           "translations.txt",
-                           "trips.txt"
-                         ])
+  @recognized_gtfs_files MapSet.new(Import.supported_filenames())
+
+  def recognized_gtfs_filenames do
+    @recognized_gtfs_files
+  end
 
   @impl true
   def mount(_params, _session, socket) do
@@ -478,7 +451,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             <div class="mt-6 pt-6 border-t border-base-300">
               <%= case @import_result do %>
                 <% {:ok, counts, unrecognized} -> %>
-                  <div class="alert alert-success">
+                  <div class="alert border border-green-300 bg-green-100 text-black">
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
                       class="stroke-current shrink-0 h-6 w-6"
