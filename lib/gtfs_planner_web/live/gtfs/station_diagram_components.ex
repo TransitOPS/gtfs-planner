@@ -580,7 +580,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-pathway-line="true"
       data-pathway-end-trim="1.1"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
+      class={
+        if(@mode == :add,
+          do: "",
+          else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
+        )
+      }
     />
     """
   end
@@ -614,7 +619,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-pathway-line="true"
       data-pathway-end-trim="1.1"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
+      class={
+        if(@mode == :add,
+          do: "",
+          else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
+        )
+      }
     />
     <line
       :for={tick <- @ticks}
@@ -661,7 +671,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-pathway-line="true"
       data-pathway-end-trim="1.1"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
+      class={
+        if(@mode == :add,
+          do: "",
+          else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
+        )
+      }
     />
     <line
       :for={segment <- @cross_segments}
@@ -708,7 +723,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-pathway-line="true"
       data-pathway-end-trim="1.1"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
+      class={
+        if(@mode == :add,
+          do: "",
+          else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
+        )
+      }
     />
     <line
       :for={tick <- @ticks}
@@ -860,7 +880,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-rail-base-offset="0.24"
       data-rail-base-stroke="0.30"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
+      class={
+        if(@mode == :add,
+          do: "",
+          else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
+        )
+      }
     />
     <line
       x1={@rail_b_x1}
@@ -874,7 +899,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-rail-base-offset="-0.24"
       data-rail-base-stroke="0.30"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
+      class={
+        if(@mode == :add,
+          do: "",
+          else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
+        )
+      }
     />
     <line
       x1={@x1}
@@ -932,7 +962,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-rail-base-offset="0.16"
       data-rail-base-stroke="0.30"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
+      class={
+        if(@mode == :add,
+          do: "",
+          else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
+        )
+      }
     />
     <line
       x1={@rail_b_x1}
@@ -946,7 +981,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-rail-base-offset="-0.16"
       data-rail-base-stroke="0.30"
       data-base-stroke="0.30"
-      class={if(@mode == :add, do: "", else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]")}
+      class={
+        if(@mode == :add,
+          do: "",
+          else: "pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
+        )
+      }
     />
     <line
       x1={@x1}
@@ -2338,7 +2378,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </:actions>
     </.simple_form>
 
-    <div :if={@selected_stop_id} id="remove-from-diagram-section" class="mt-8 pt-6 border-t border-base-200">
+    <div
+      :if={@selected_stop_id}
+      id="remove-from-diagram-section"
+      class="mt-8 pt-6 border-t border-base-200"
+    >
       <div class="bg-warning/5 border border-warning/20 rounded-lg p-4">
         <div class="flex items-center justify-between">
           <div>

@@ -720,7 +720,7 @@ defmodule GtfsPlanner.Gtfs do
   to prevent cross-tenant mutations.
   """
   @spec delete_child_stop(integer(), integer(), String.t(), integer()) ::
-          {:ok, Stop.t()} | {:error, :not_found}
+          {:ok, Stop.t()} | {:error, :not_found | term()}
   def delete_child_stop(organization_id, gtfs_version_id, station_stop_id, stop_id) do
     stop_query =
       from(s in Stop,
@@ -759,7 +759,7 @@ defmodule GtfsPlanner.Gtfs do
   to prevent cross-tenant mutations.
   """
   @spec remove_child_stop_from_diagram(integer(), integer(), String.t(), integer()) ::
-          {:ok, Stop.t()} | {:error, :not_found}
+          {:ok, Stop.t()} | {:error, :not_found | term()}
   def remove_child_stop_from_diagram(organization_id, gtfs_version_id, station_stop_id, stop_id) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
