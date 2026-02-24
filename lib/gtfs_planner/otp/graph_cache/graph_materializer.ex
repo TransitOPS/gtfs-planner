@@ -29,10 +29,11 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
     persist_fun = Keyword.get(opts, :persist_fun, &persist_manifest/4)
     stage_fun = Keyword.get(opts, :stage_fun, &stage_inputs/3)
     build_opts = Keyword.get(opts, :build_opts, [])
+    force_rebuild? = Keyword.get(opts, :force_rebuild, false)
 
     emit_status(status_callback, %{phase: :cache_check})
 
-    case cache_lookup_fun.(organization_id, gtfs_version_id) do
+    case if(force_rebuild?, do: :miss, else: cache_lookup_fun.(organization_id, gtfs_version_id)) do
       {:ok, graph_path, manifest_path, manifest_json} ->
         emit_status(status_callback, %{phase: :done, reused: true})
 

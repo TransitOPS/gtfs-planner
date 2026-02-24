@@ -131,6 +131,47 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
     assert_receive {:phase, %{phase: :failed, reason: :preflight_failed}}
   end
 
+  test "get_or_build_graph/3 force_rebuild ignores cache and builds graph", %{
+    organization: organization,
+    gtfs_version: gtfs_version
+  } do
+    status_callback = fn payload -> send(self(), {:phase, payload}) end
+
+    build_result = %{
+      command: "java",
+      args: ["-jar", "otp.jar"],
+      graph_path: "/tmp/runtime/data/Graph.obj",
+      build_log_path: "/tmp/runtime/build.log",
+      output: "ok"
+    }
+
+    assert {:ok, "/tmp/runtime/data/Graph.obj", meta} =
+             GraphMaterializer.get_or_build_graph(organization.id, gtfs_version.id,
+               status_callback: status_callback,
+               force_rebuild: true,
+               cache_lookup_fun: fn _org, _ver ->
+                 send(self(), :cache_lookup_called)
+
+                 {:ok, "/tmp/graph/Graph.obj", "/tmp/graph/manifest.json",
+                  %{"schema_version" => 1}}
+               end,
+               preflight_fun: fn _org, _ver -> :ok end,
+               stage_fun: fn _org, _ver, _data_dir -> :ok end,
+               build_fun: fn _data_dir, _opts -> {:ok, build_result} end,
+               persist_fun: fn _org, _ver, ^build_result, _opts ->
+                 {:ok, "/tmp/runtime/manifest.json", %{"schema_version" => 1}}
+               end
+             )
+
+    refute_received :cache_lookup_called
+    refute meta.reused
+    assert_receive {:phase, %{phase: :cache_check}}
+    assert_receive {:phase, %{phase: :preflight}}
+    assert_receive {:phase, %{phase: :building}}
+    assert_receive {:phase, %{phase: :persisting}}
+    assert_receive {:phase, %{phase: :done, reused: false}}
+  end
+
   test "get_or_build_graph/3 reuses graph when manifest and fingerprints match", %{
     organization: organization,
     gtfs_version: gtfs_version,

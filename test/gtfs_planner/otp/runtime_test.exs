@@ -77,4 +77,29 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
 
     refute_received :graph_called
   end
+
+  test "prepare_runtime/3 forwards force_rebuild to GTFS and graph materializers" do
+    gtfs_fun = fn "org-1", "ver-1", opts ->
+      send(self(), {:gtfs_opts, opts})
+      {:ok, "/tmp/otp/gtfs.zip", %{}}
+    end
+
+    graph_fun = fn "org-1", "ver-1", opts ->
+      send(self(), {:graph_opts, opts})
+      {:ok, "/tmp/otp/Graph.obj", %{}}
+    end
+
+    assert {:ok, _result} =
+             Runtime.prepare_runtime("org-1", "ver-1",
+               force_rebuild: true,
+               gtfs_materializer_fun: gtfs_fun,
+               graph_materializer_fun: graph_fun
+             )
+
+    assert_receive {:gtfs_opts, gtfs_opts}
+    assert gtfs_opts[:force_rebuild]
+
+    assert_receive {:graph_opts, graph_opts}
+    assert graph_opts[:force_rebuild]
+  end
 end

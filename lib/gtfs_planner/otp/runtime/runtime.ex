@@ -33,6 +33,7 @@ defmodule GtfsPlanner.Otp.Runtime do
   def prepare_runtime(organization_id, gtfs_version_id, opts \\ []) when is_list(opts) do
     status_callback = Keyword.get(opts, :status_callback)
     preflight_mode = Keyword.get(opts, :preflight_mode, :strict)
+    force_rebuild? = Keyword.get(opts, :force_rebuild, false)
 
     gtfs_materializer_fun =
       Keyword.get(opts, :gtfs_materializer_fun, &Materializer.get_or_build_gtfs_zip/3)
@@ -44,11 +45,13 @@ defmodule GtfsPlanner.Otp.Runtime do
       opts
       |> Keyword.get(:gtfs_opts, [])
       |> Keyword.put_new(:preflight_mode, preflight_mode)
+      |> Keyword.put_new(:force_rebuild, force_rebuild?)
       |> Keyword.put(:status_callback, scoped_status_callback(status_callback, :gtfs))
 
     graph_opts =
       opts
       |> Keyword.get(:graph_opts, [])
+      |> Keyword.put_new(:force_rebuild, force_rebuild?)
       |> Keyword.put(:status_callback, scoped_status_callback(status_callback, :graph))
 
     with {:ok, gtfs_zip_path, gtfs_meta} <-

@@ -810,7 +810,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
         case runtime_module.prepare_runtime(organization_id, gtfs_version_id,
                status_callback: status_callback,
-               preflight_mode: :lenient
+               preflight_mode: :lenient,
+               force_rebuild: true
              ) do
           {:ok, _runtime} -> :ok
           {:error, issues} -> {:error, {:pathways_export_prep_failed, issues}}
