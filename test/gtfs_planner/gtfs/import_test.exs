@@ -489,4 +489,62 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert MapSet.new(Import.supported_filenames()) == ImportLive.recognized_gtfs_filenames()
     end
   end
+
+  describe "zip expansion" do
+    setup do
+      organization = GtfsPlanner.OrganizationsFixtures.organization_fixture()
+      gtfs_version = GtfsPlanner.VersionsFixtures.gtfs_version_fixture(organization.id)
+
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "expands .zip archive and imports contained GTFS files", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      levels_content = "level_id,level_index,level_name\nL1,0.0,Ground Floor"
+      stops_content = "stop_id,stop_name,stop_lat,stop_lon,level_id\nS1,Stop 1,40.7,-74.0,L1"
+
+      # Create a zip in memory
+      {:ok, {_name, zip_binary}} =
+        :zip.create(~c"gtfs.zip", [
+          {~c"levels.txt", levels_content},
+          {~c"stops.txt", stops_content}
+        ], [:memory])
+
+      files = [%{filename: "gtfs.zip", content: zip_binary}]
+
+      assert {:ok, {counts, unrecognized, _topic}} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert counts.levels == 1
+      assert counts.stops == 1
+      assert unrecognized == []
+    end
+
+    test "zip with extensions files categorizes them separately", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      levels_content = "level_id,level_index,level_name\nL1,0.0,Ground Floor"
+      manifest_json = Jason.encode!(%{"version" => 1, "exported_at" => "2026-01-01T00:00:00Z"})
+
+      {:ok, {_name, zip_binary}} =
+        :zip.create(~c"gtfs.zip", [
+          {~c"levels.txt", levels_content},
+          {~c"_pathways_extensions.json", manifest_json},
+          {~c"_pathways_extensions/diagrams/station/img.png", "fake png"}
+        ], [:memory])
+
+      files = [%{filename: "gtfs.zip", content: zip_binary}]
+
+      # Should not error - extensions with no references are logged and skipped
+      assert {:ok, {counts, unrecognized, _topic}} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert counts.levels == 1
+      # Extensions files should not appear in unrecognized
+      assert unrecognized == []
+    end
+  end
 end
