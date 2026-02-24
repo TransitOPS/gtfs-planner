@@ -15,23 +15,24 @@ const OVERLAY_BASE = {
   stopLabelFontSize: 0.72,
   stopLabelStrokeWidth: 0.17,
   stopLabelMinScale: 1.1,
+  pathwayLabelMinScale: 1.1,
   crossLevelStairsSize: 0.9,
   crossLevelStairsStepUnit: 0.3,
   crossLevelElevatorHalfHeight: 0.45,
   crossLevelElevatorHalfWidth: 0.35,
   crossLevelElevatorGap: 0.05,
-  pathwayStroke: 0.35,
+  pathwayStroke: 0.30,
   pathwayHitStroke: 2,
-  pathwayTickStroke: 0.3,
+  pathwayTickStroke: 0.26,
   pathwayBarStroke: 0.5,
-  pathwayConnectorStroke: 0.3,
-  pathwayLabelFontSize: 0.9,
+  pathwayConnectorStroke: 0.26,
+  pathwayLabelFontSize: 0.78,
   pathwayLabelStrokeWidth: 0.2,
   pathwayMarkerSize: 1.5,
-  pathwayElevatorBoxWidth: 2,
-  pathwayElevatorBoxHeight: 2,
-  pathwayElevatorBoxStroke: 0.4,
-  pathwayElevatorTextSize: 1.2,
+  pathwayElevatorBoxWidth: 1,
+  pathwayElevatorBoxHeight: 1,
+  pathwayElevatorBoxStroke: 0.30,
+  pathwayElevatorTextSize: 0.275,
   rulerLineStroke: 0.25,
   rulerEndpointRadius: 0.35,
   rulerEndpointStroke: 0.13,
@@ -41,7 +42,7 @@ const OVERLAY_BASE = {
   savedRulerLabelMinScale: 2,
   rulerEndpointHideNearOneMinScale: 0.9,
   rulerEndpointHideNearOneMaxScale: 1.1,
-  pathwayVisualThinFactor: 1.4,
+  pathwayVisualThinFactor: 1.8,
   iconVisualThinFactor: 1.2,
   pendingOffsetY: 1,
   pendingOffsetX: 0.75,
@@ -51,6 +52,46 @@ const OVERLAY_BASE = {
 
 const TOOLTIP_POINTER_OFFSET = 12;
 const TOOLTIP_VIEWPORT_PADDING = 8;
+
+function parallelOffsetFromSegment(x1, y1, x2, y2, offset) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const length = Math.sqrt(dx * dx + dy * dy);
+
+  if (!(length > 0)) {
+    return {x1, y1, x2, y2};
+  }
+
+  const perpX = -dy / length;
+  const perpY = dx / length;
+
+  return {
+    x1: x1 + perpX * offset,
+    y1: y1 + perpY * offset,
+    x2: x2 + perpX * offset,
+    y2: y2 + perpY * offset
+  };
+}
+
+function trimSegmentEnds(x1, y1, x2, y2, trimStart, trimEnd) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const length = Math.sqrt(dx * dx + dy * dy);
+
+  if (!(length > 0) || trimStart < 0 || trimEnd < 0 || trimStart + trimEnd >= length) {
+    return {x1, y1, x2, y2};
+  }
+
+  const unitX = dx / length;
+  const unitY = dy / length;
+
+  return {
+    x1: x1 + unitX * trimStart,
+    y1: y1 + unitY * trimStart,
+    x2: x2 - unitX * trimEnd,
+    y2: y2 - unitY * trimEnd
+  };
+}
 
 const DiagramCanvasHook = {
   rulerEndpointVisualScale(scale) {
@@ -85,13 +126,32 @@ const DiagramCanvasHook = {
 
   pathwayVisualScale(scale) {
     const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-    const zoomAdjusted =
-      safeScale < 1
-        ? 1 - (1 - safeScale) * 0.3
-        : safeScale;
 
-    // Keep pathway visuals slimmer at baseline and while zoomed out.
-    return zoomAdjusted * OVERLAY_BASE.pathwayVisualThinFactor;
+    // Keep pathway stroke rendering fixed on-screen instead of varying with zoom.
+    // Apply a constant thin factor so lines are consistently lighter.
+    return safeScale * OVERLAY_BASE.pathwayVisualThinFactor;
+  },
+
+  pathwayLabelVisualScale(scale) {
+    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+
+    if (safeScale >= 1) {
+      return safeScale;
+    }
+
+    // When zoomed out, keep labels a bit tighter and smaller than strict 1/scale.
+    return safeScale + (1 - safeScale) * 0.4;
+  },
+
+  pathwayLabelOffsetScale(scale) {
+    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+
+    if (safeScale >= 1) {
+      return safeScale;
+    }
+
+    // Keep label offsets tighter to pathway lines when zoomed out.
+    return safeScale + (1 - safeScale) * 0.7;
   },
 
   handleWheel(e) {
@@ -676,28 +736,84 @@ const DiagramCanvasHook = {
       const cy = parseFloat(label.getAttribute("data-center-y"));
       const offsetX = parseFloat(label.getAttribute("data-label-offset-x"));
       const offsetY = parseFloat(label.getAttribute("data-label-offset-y"));
+      const baseFontSize = parseFloat(
+        label.getAttribute("data-base-font-size") ?? `${OVERLAY_BASE.stopLabelFontSize}`
+      );
+      const baseStroke = parseFloat(
+        label.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.stopLabelStrokeWidth}`
+      );
+      const baseLineHeight = parseFloat(
+        label.getAttribute("data-base-line-height") ?? `${OVERLAY_BASE.stopLabelFontSize * 1.16}`
+      );
+      const labelBox = label.parentElement?.querySelector("[data-stop-label-box]");
 
-      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX) || !Number.isFinite(offsetY)) {
+      if (
+        !Number.isFinite(cx) ||
+        !Number.isFinite(cy) ||
+        !Number.isFinite(offsetX) ||
+        !Number.isFinite(offsetY) ||
+        !Number.isFinite(baseFontSize) ||
+        !Number.isFinite(baseStroke) ||
+        !Number.isFinite(baseLineHeight)
+      ) {
         return;
       }
 
       if (scale < OVERLAY_BASE.stopLabelMinScale) {
         label.setAttribute("display", "none");
+        if (labelBox) {
+          labelBox.setAttribute("display", "none");
+        }
         return;
       }
 
       label.removeAttribute("display");
+      if (labelBox) {
+        labelBox.removeAttribute("display");
+      }
       const newLabelX = cx + offsetX / iconScale;
       const newLabelY = cy + offsetY / iconScale;
 
       label.setAttribute("x", `${newLabelX}`);
       label.setAttribute("y", `${newLabelY}`);
-      label.setAttribute("font-size", `${OVERLAY_BASE.stopLabelFontSize / iconScale}`);
-      label.setAttribute("stroke-width", `${OVERLAY_BASE.stopLabelStrokeWidth / iconScale}`);
+      label.setAttribute("font-size", `${baseFontSize / iconScale}`);
+      label.setAttribute("stroke-width", `${baseStroke / iconScale}`);
 
-      label.querySelectorAll("tspan").forEach((tspan) => {
+      label.querySelectorAll("tspan").forEach((tspan, index) => {
         tspan.setAttribute("x", `${newLabelX}`);
+        tspan.setAttribute("dy", `${index === 0 ? 0 : baseLineHeight / iconScale}`);
       });
+
+      if (!labelBox) {
+        return;
+      }
+
+      const baseWidth = parseFloat(labelBox.getAttribute("data-base-width"));
+      const baseHeight = parseFloat(labelBox.getAttribute("data-base-height"));
+      const basePaddingX = parseFloat(labelBox.getAttribute("data-base-padding-x"));
+      const basePaddingY = parseFloat(labelBox.getAttribute("data-base-padding-y"));
+      const baseBoxStroke = parseFloat(labelBox.getAttribute("data-base-stroke"));
+
+      if (
+        !Number.isFinite(baseWidth) ||
+        !Number.isFinite(baseHeight) ||
+        !Number.isFinite(basePaddingX) ||
+        !Number.isFinite(basePaddingY) ||
+        !Number.isFinite(baseBoxStroke)
+      ) {
+        return;
+      }
+
+      const scaledWidth = baseWidth / iconScale;
+      const scaledHeight = baseHeight / iconScale;
+      const scaledPaddingX = basePaddingX / iconScale;
+      const scaledPaddingY = basePaddingY / iconScale;
+
+      labelBox.setAttribute("x", `${newLabelX - scaledPaddingX}`);
+      labelBox.setAttribute("y", `${newLabelY - scaledPaddingY}`);
+      labelBox.setAttribute("width", `${scaledWidth}`);
+      labelBox.setAttribute("height", `${scaledHeight}`);
+      labelBox.setAttribute("stroke-width", `${baseBoxStroke / iconScale}`);
     });
 
     overlay.querySelectorAll("[data-cross-level-badge-stairs]").forEach((stairsPath) => {
@@ -823,6 +939,84 @@ const DiagramCanvasHook = {
       pathwayMarker.setAttribute("markerHeight", `${OVERLAY_BASE.pathwayMarkerSize / pathwayScale}`);
     }
 
+    overlay
+      .querySelectorAll(
+        "#pathways-svg [data-pathway-end-trim], #pathways-svg [data-pathway-end-trim-start], #pathways-svg [data-pathway-end-trim-end]"
+      )
+      .forEach((element) => {
+        if (!element.hasAttribute("data-base-x1")) {
+          element.setAttribute("data-base-x1", element.getAttribute("x1") ?? "");
+          element.setAttribute("data-base-y1", element.getAttribute("y1") ?? "");
+          element.setAttribute("data-base-x2", element.getAttribute("x2") ?? "");
+          element.setAttribute("data-base-y2", element.getAttribute("y2") ?? "");
+        }
+
+        const baseX1 = parseFloat(element.getAttribute("data-base-x1"));
+        const baseY1 = parseFloat(element.getAttribute("data-base-y1"));
+        const baseX2 = parseFloat(element.getAttribute("data-base-x2"));
+        const baseY2 = parseFloat(element.getAttribute("data-base-y2"));
+
+        if (
+          !Number.isFinite(baseX1) ||
+          !Number.isFinite(baseY1) ||
+          !Number.isFinite(baseX2) ||
+          !Number.isFinite(baseY2)
+        ) {
+          return;
+        }
+
+        const defaultTrim = parseFloat(element.getAttribute("data-pathway-end-trim"));
+        const startTrimBase = Number.isFinite(defaultTrim)
+          ? defaultTrim
+          : parseFloat(element.getAttribute("data-pathway-end-trim-start")) || 0;
+        const endTrimBase = Number.isFinite(defaultTrim)
+          ? defaultTrim
+          : parseFloat(element.getAttribute("data-pathway-end-trim-end")) || 0;
+        const startTrim = startTrimBase / pathwayScale;
+        const endTrim = endTrimBase / pathwayScale;
+        const trimmed = trimSegmentEnds(baseX1, baseY1, baseX2, baseY2, startTrim, endTrim);
+
+        element.setAttribute("x1", `${trimmed.x1}`);
+        element.setAttribute("y1", `${trimmed.y1}`);
+        element.setAttribute("x2", `${trimmed.x2}`);
+        element.setAttribute("y2", `${trimmed.y2}`);
+      });
+
+    overlay.querySelectorAll("#pathways-svg [data-pathway-arrow-guide]").forEach((guide) => {
+      const x1 = parseFloat(guide.getAttribute("x1"));
+      const y1 = parseFloat(guide.getAttribute("y1"));
+      const x2 = parseFloat(guide.getAttribute("x2"));
+      const y2 = parseFloat(guide.getAttribute("y2"));
+
+      if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+        return;
+      }
+
+      const pathwayGroup = guide.closest("g");
+      if (!pathwayGroup) {
+        return;
+      }
+
+      pathwayGroup.querySelectorAll("[data-pathway-rail][data-rail-base-offset]").forEach((rail) => {
+        const baseOffset = parseFloat(rail.getAttribute("data-rail-base-offset"));
+        const baseStroke = parseFloat(rail.getAttribute("data-rail-base-stroke") ?? "0.35");
+
+        if (!Number.isFinite(baseOffset) || !Number.isFinite(baseStroke)) {
+          return;
+        }
+
+        const minCenterOffset = (baseStroke * 0.6) / pathwayScale;
+        const scaledOffset = Math.abs(baseOffset) / pathwayScale;
+        const dynamicOffset = Math.sign(baseOffset) * Math.max(scaledOffset, minCenterOffset);
+        const adjusted = parallelOffsetFromSegment(x1, y1, x2, y2, dynamicOffset);
+
+        rail.setAttribute("x1", `${adjusted.x1}`);
+        rail.setAttribute("y1", `${adjusted.y1}`);
+        rail.setAttribute("x2", `${adjusted.x2}`);
+        rail.setAttribute("y2", `${adjusted.y2}`);
+      });
+    });
+
     overlay.querySelectorAll("#pathways-svg [data-pathway-elevator-box]").forEach((box) => {
       const cx = parseFloat(box.getAttribute("data-center-x"));
       const cy = parseFloat(box.getAttribute("data-center-y"));
@@ -846,8 +1040,8 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const width = baseWidth / scale;
-      const height = baseHeight / scale;
+      const width = baseWidth;
+      const height = baseHeight;
       box.setAttribute("x", `${cx - width / 2}`);
       box.setAttribute("y", `${cy - height / 2}`);
       box.setAttribute("width", `${width}`);
@@ -868,7 +1062,7 @@ const DiagramCanvasHook = {
 
       label.setAttribute("x", `${cx}`);
       label.setAttribute("y", `${cy}`);
-      label.setAttribute("font-size", `${baseFontSize / scale}`);
+      label.setAttribute("font-size", `${baseFontSize}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-label]").forEach((label) => {
@@ -896,13 +1090,19 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const x = midpointX + offsetX / scale;
-      const y = midpointY + offsetY / scale;
+      if (scale < OVERLAY_BASE.pathwayLabelMinScale) {
+        label.setAttribute("display", "none");
+        return;
+      }
+
+      label.removeAttribute("display");
+      const x = midpointX + offsetX / iconScale;
+      const y = midpointY + offsetY / iconScale;
 
       label.setAttribute("x", `${x}`);
       label.setAttribute("y", `${y}`);
-      label.setAttribute("font-size", `${baseFontSize / scale}`);
-      label.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
+      label.setAttribute("font-size", `${baseFontSize / iconScale}`);
+      label.setAttribute("stroke-width", `${baseStroke / iconScale}`);
       label.setAttribute("transform", `rotate(${rotation}, ${x}, ${y})`);
     });
 
