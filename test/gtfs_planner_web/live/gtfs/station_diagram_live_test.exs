@@ -881,6 +881,162 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - remove from diagram" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_RM",
+          stop_name: "Remove Test Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_RM",
+          level_name: "Level RM",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "remove button is hidden in create drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "10", "y" => "20"})
+
+      refute has_element?(view, "#remove-from-diagram-section")
+    end
+
+    test "remove button is visible in edit drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_RM_VIS",
+          stop_name: "Visible Remove",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert has_element?(view, "#remove-from-diagram-button")
+    end
+
+    test "clicking remove moves stop from child-stops-table to unassigned-stops-table and deletes pathways",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      child_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_RM_A",
+          stop_name: "Child A",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      child_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_RM_B",
+          stop_name: "Child B",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+        })
+
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          child_a.stop_id,
+          child_b.stop_id,
+          %{pathway_mode: 1, is_bidirectional: true}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # Verify child_a is in the child stops table
+      assert has_element?(view, "#child-stop-row-#{child_a.id}")
+
+      # Open the edit drawer for child_a
+      view
+      |> element("#child-stop-row-#{child_a.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      # Click remove from diagram
+      view
+      |> element("#remove-from-diagram-button")
+      |> render_click()
+
+      # The stop should no longer be in the child stops table
+      refute has_element?(view, "#child-stop-row-#{child_a.id}")
+
+      # The stop should appear in the unassigned stops table
+      assert has_element?(view, "#unassigned-stop-row-#{child_a.id}")
+
+      # The pathway should be deleted (no dangling pathways)
+      refute Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id)
+    end
+  end
+
   describe "StationDiagramLive - cross-level pathway creation" do
     setup do
       organization = organization_fixture()
