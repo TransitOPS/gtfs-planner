@@ -17,7 +17,7 @@ defmodule GtfsPlannerWeb do
   those modules here.
   """
 
-  def static_paths, do: ~w(assets fonts images favicon.svg robots.txt)
+  def static_paths, do: ~w(assets fonts images .well-known favicon.svg robots.txt)
 
   def router do
     quote do
