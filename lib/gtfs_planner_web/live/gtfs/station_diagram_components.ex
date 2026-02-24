@@ -2388,7 +2388,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <div>
             <h3 class="text-zinc-700 font-medium">Remove from Diagram</h3>
             <p class="text-xs text-zinc-500 mt-1">
-              Clears placement. The stop and its pathways are kept.
+              Clears placement. The stop record is kept, but connected pathways are deleted.
             </p>
           </div>
           <button
