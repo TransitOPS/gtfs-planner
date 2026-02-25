@@ -68,7 +68,7 @@ RUN apt-get update --allow-releaseinfo-change && apt-get install -y --no-install
     && echo "deb [signed-by=/etc/apt/keyrings/adoptium.asc] https://packages.adoptium.net/artifactory/deb bookworm main" > /etc/apt/sources.list.d/adoptium.list \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get update \
-    && apt-get install -y --no-install-recommends temurin-21-jre-headless \
+    && apt-get install -y --no-install-recommends temurin-21-jre \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives && \
     export DATABASE_URL= SECRET_KEY_BASE= GEOAPIFY_API_KEY= && \
     /app/bin/gtfs_planner eval "[_ | _] = :crypto.supports()" || exit 1 && \
