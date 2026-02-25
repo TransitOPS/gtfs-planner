@@ -24,7 +24,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:page_title, "Import GTFS")
      |> assign(:user_roles, user_roles)
      |> allow_upload(:gtfs_files,
-       accept: ~w(.txt .csv),
+       accept: ~w(.txt .csv .zip),
        max_entries: 50,
        max_file_size: 200_000_000
      )
@@ -78,11 +78,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     form = to_form(form_data, as: :gtfs_import_form, errors: errors)
 
-    # Check for unrecognized files in uploads
+    # Check for unrecognized files in uploads (.zip archives are always recognized)
     unrecognized_files =
       socket.assigns.uploads.gtfs_files.entries
       |> Enum.map(& &1.client_name)
-      |> Enum.reject(&MapSet.member?(@recognized_gtfs_files, String.downcase(&1)))
+      |> Enum.reject(fn name ->
+        lower = String.downcase(name)
+        MapSet.member?(@recognized_gtfs_files, lower) or String.ends_with?(lower, ".zip")
+      end)
 
     # Reset version_name_touched when not creating a new version, so that
     # re-enabling "Create a new GTFS version" doesn't immediately show errors.
@@ -268,7 +271,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                     <span class="text-primary">Click to upload</span> or drag and drop
                   </p>
                   <p class="text-xs text-base-content/60">
-                    agency.txt, areas.txt, attributions.txt, booking_rules.txt, calendar.txt, calendar_dates.txt, fare_attributes.txt, fare_leg_join_rules.txt, fare_leg_rules.txt, fare_media.txt, fare_products.txt, fare_rules.txt, fare_transfer_rules.txt, feed_info.txt, frequencies.txt, levels.txt, locations.txt, networks.txt, pathways.txt, rider_categories.txt, route_networks.txt, route_patterns.txt, routes.txt, shapes.txt, stop_areas.txt, stop_times.txt, stops.txt, timeframes.txt, transfers.txt, translations.txt, trips.txt (max 50 files, 200MB each)
+                    GTFS .txt/.csv files or a .zip archive (max 50 files, 200MB each)
                   </p>
                 </div>
                 <.live_file_input upload={@uploads.gtfs_files} class="sr-only" />
@@ -470,6 +473,19 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       <div class="text-xs">
                         Imported {counts.agencies} agencies, {counts.areas} areas, {counts.attributions} attributions, {counts.booking_rules} booking rules, {counts.calendars} calendars, {counts.calendar_dates} calendar dates, {counts.fare_attributes} fare attributes, {counts.fare_leg_join_rules} fare leg join rules, {counts.fare_leg_rules} fare leg rules, {counts.fare_media} fare media, {counts.fare_products} fare products, {counts.fare_rules} fare rules, {counts.fare_transfer_rules} fare transfer rules, {counts.feed_info} feed info, {counts.frequencies} frequencies, {counts.levels} levels, {counts.locations} locations, {counts.networks} networks, {counts.pathways} pathways, {counts.rider_categories} rider categories, {counts.route_networks} route networks, {counts.route_patterns} route patterns, {counts.routes} routes, {counts.shapes} shapes, {counts.stop_areas} stop areas, {counts.stop_times} stop times, {counts.stops} stops, {counts.timeframes} timeframes, {counts.transfers} transfers, {counts.translations} translations, {counts.trips} trips.
                       </div>
+                      <%= if Map.get(counts, :extensions_stop_coordinates, 0) + Map.get(counts, :extensions_stop_levels, 0) + Map.get(counts, :extensions_route_flags, 0) + Map.get(counts, :extensions_images, 0) > 0 do %>
+                        <div class="text-xs mt-1">
+                          Extensions: {Map.get(counts, :extensions_stop_coordinates, 0)} diagram coordinates, {Map.get(
+                            counts,
+                            :extensions_stop_levels,
+                            0
+                          )} stop levels, {Map.get(counts, :extensions_route_flags, 0)} route flags, {Map.get(
+                            counts,
+                            :extensions_images,
+                            0
+                          )} images.
+                        </div>
+                      <% end %>
                     </div>
                   </div>
                   <%= if unrecognized != [] do %>
@@ -539,7 +555,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   defp upload_error_to_string(:too_large), do: "File exceeds 200MB limit"
   defp upload_error_to_string(:too_many_files), do: "Maximum 50 files allowed"
-  defp upload_error_to_string(:not_accepted), do: "Only .txt and .csv files accepted"
+  defp upload_error_to_string(:not_accepted), do: "Only .txt, .csv, and .zip files accepted"
   defp upload_error_to_string(:external_client_failure), do: "Upload failed"
   defp upload_error_to_string({:error, reason}), do: reason
   defp upload_error_to_string(error) when is_binary(error), do: error
