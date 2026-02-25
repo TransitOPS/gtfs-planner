@@ -365,11 +365,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/import")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
 
       # Import button should be disabled when no files are uploaded
-      assert html =~ "disabled"
-      assert html =~ "Import Files"
+      assert has_element?(
+               view,
+               "#gtfs-import-form button[type='submit'][disabled]",
+               "Import Files"
+             )
     end
 
     test "import button is enabled when files are uploaded", %{
@@ -397,9 +400,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       |> render_upload("levels.txt")
 
       # Import button should be enabled
-      html = render(view)
-      refute html =~ "disabled"
-      assert html =~ "Import Files"
+      refute has_element?(view, "#gtfs-import-form button[type='submit'][disabled]")
+      assert has_element?(view, "#gtfs-import-form button[type='submit']", "Import Files")
     end
 
     @tag :skip
