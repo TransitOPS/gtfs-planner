@@ -942,7 +942,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                           :if={decision.user_edited}
                           class="text-xs text-base-content/50"
                         >
-                           (edited)
+                          (edited)
                         </span>
                       </td>
                       <td class="text-xs max-w-md">

@@ -4,11 +4,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.Gtfs.StationReportComponents
+
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.StationReport
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+  @methodology_sections ["data_integrity", "accessibility", "attribute_completeness"]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -20,7 +23,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
      |> assign(:user_roles, user_roles)
      |> assign(:station, nil)
      |> assign(:report, nil)
-     |> assign(:stop_id, nil)}
+     |> assign(:stop_id, nil)
+     |> assign(:methodology_by_section, default_methodology_by_section())}
   end
 
   @impl true
@@ -66,6 +70,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
   end
 
   @impl true
+  def handle_event("toggle_methodology", %{"section_id" => section_id}, socket)
+      when section_id in @methodology_sections do
+    methodology_by_section =
+      Map.update!(
+        socket.assigns.methodology_by_section,
+        section_id,
+        fn methodology_mode? -> not methodology_mode? end
+      )
+
+    {:noreply, assign(socket, :methodology_by_section, methodology_by_section)}
+  end
+
+  def handle_event("toggle_methodology", _params, socket), do: {:noreply, socket}
+
+  @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app
@@ -96,46 +115,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
             Station has no child stops or pathways yet. Report sections remain available for readiness tracking.
           </div>
 
-          <section
-            :for={section <- @report.sections}
-            id={"report-section-#{section.id}"}
-            class="rounded-xl border border-base-300 bg-base-100"
-          >
-            <header class="border-b border-base-300 px-4 py-3">
-              <h2 class="text-base font-semibold">{section.title}</h2>
-            </header>
+          <.summary_strip report={@report} />
 
-            <ul class="divide-y divide-base-300">
-              <li :for={item <- section.items} id={"report-item-#{item.id}"} class="px-4 py-4">
-                <div class="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p class="font-medium">{item.label}</p>
-                    <p class="text-sm text-base-content/70">Status: {status_text(item.status)}</p>
-                  </div>
-                  <div class="text-sm text-base-content/80">{format_value(item.value)}</div>
-                </div>
+          <.integrity_section
+            section={find_section(@report, "data_integrity")}
+            gps_section={find_section(@report, "gps")}
+            methodology_mode={Map.get(@methodology_by_section, "data_integrity", false)}
+          />
 
-                <div
-                  :if={details_lines(item.details) != []}
-                  id={"report-item-#{item.id}-details"}
-                  class="mt-3"
-                >
-                  <ul class="list-disc pl-5 text-sm text-base-content/80">
-                    <li
-                      :for={{line, idx} <- Enum.with_index(details_lines(item.details), 1)}
-                      id={"report-item-#{item.id}-detail-#{idx}"}
-                    >
-                      {line}
-                    </li>
-                  </ul>
-                </div>
-              </li>
-            </ul>
-          </section>
+          <.accessibility_section
+            section={find_section(@report, "accessibility")}
+            methodology_mode={Map.get(@methodology_by_section, "accessibility", false)}
+          />
+
+          <.inventory_section section={find_section(@report, "inventory")} />
+
+          <.completeness_section
+            section={find_section(@report, "attribute_completeness")}
+            methodology_mode={Map.get(@methodology_by_section, "attribute_completeness", false)}
+          />
+
+          <.unavailable_section section={find_section(@report, "not_available")} />
         <% end %>
       </div>
     </Layouts.app>
     """
+  end
+
+  defp find_section(report, id) do
+    Enum.find(report.sections, &(&1.id == id))
   end
 
   defp empty_station?(%{sections: sections}) do
@@ -161,49 +169,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
 
   defp map_values_sum(_), do: 0
 
-  defp status_text(:pass), do: "pass"
-  defp status_text(:fail), do: "fail"
-  defp status_text(:warn), do: "warn"
-  defp status_text(:info), do: "info"
-
-  defp format_value(value) when is_map(value), do: inspect(sort_map(value), pretty: true)
-  defp format_value(value) when is_list(value), do: inspect(value, pretty: true)
-  defp format_value(value), do: to_string(value)
-
-  defp details_lines(nil), do: []
-  defp details_lines([]), do: []
-
-  defp details_lines(details) when is_list(details) do
-    Enum.map(details, &format_detail_line/1)
-  end
-
-  defp details_lines(details) when is_map(details) do
-    details
-    |> sort_map()
-    |> Enum.map(fn {key, value} -> "#{key}: #{detail_value_to_string(value)}" end)
-  end
-
-  defp details_lines(details), do: [detail_value_to_string(details)]
-
-  defp format_detail_line(value) when is_map(value) do
-    value
-    |> sort_map()
-    |> Enum.map_join(", ", fn {key, map_value} ->
-      "#{key}=#{detail_value_to_string(map_value)}"
-    end)
-  end
-
-  defp format_detail_line(value), do: detail_value_to_string(value)
-
-  defp detail_value_to_string(value) when is_map(value), do: inspect(sort_map(value))
-  defp detail_value_to_string(value) when is_list(value), do: inspect(value)
-  defp detail_value_to_string(value), do: to_string(value)
-
-  defp sort_map(map) do
-    map
-    |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
-  end
-
   defp valid_version_for_org?(version_id, organization_id) do
     try do
       case Versions.get_gtfs_version(version_id) do
@@ -213,5 +178,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
     rescue
       Ecto.Query.CastError -> false
     end
+  end
+
+  defp default_methodology_by_section do
+    %{
+      "data_integrity" => false,
+      "accessibility" => false,
+      "attribute_completeness" => false
+    }
   end
 end

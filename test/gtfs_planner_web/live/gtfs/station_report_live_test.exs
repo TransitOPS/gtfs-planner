@@ -122,12 +122,106 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(view, "#report-item-node_inventory")
       assert has_element?(view, "#report-item-step_free_routes")
       assert has_element?(view, "#report-item-unavailable_metrics")
+      assert has_element?(view, "#report-summary-completeness-methodology-toggle", "methodology")
+
+      assert has_element?(
+               view,
+               "#report-section-data_integrity-methodology-toggle",
+               "methodology"
+             )
+
+      assert has_element?(view, "#report-section-accessibility-methodology-toggle", "methodology")
+
+      assert has_element?(
+               view,
+               "#report-section-attribute_completeness-methodology-toggle",
+               "methodology"
+             )
 
       assert has_element?(
                view,
                "#station-sub-nav a[aria-current='page']",
                "Report"
              )
+    end
+
+    test "toggles methodology mode in data quality section on and off", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(view, "#report-item-isolated_nodes")
+      refute has_element?(view, "#report-section-data_integrity-methodology")
+
+      view
+      |> element("#report-section-data_integrity-methodology-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#report-section-data_integrity-methodology")
+
+      assert has_element?(
+               view,
+               "#report-method-data_integrity-isolated_nodes"
+             )
+
+      refute has_element?(view, "#report-item-isolated_nodes")
+      assert has_element?(view, "#report-section-data_integrity-methodology-toggle", "back")
+
+      view
+      |> element("#report-section-data_integrity-methodology-toggle")
+      |> render_click()
+
+      refute has_element?(view, "#report-section-data_integrity-methodology")
+      assert has_element?(view, "#report-item-isolated_nodes")
+
+      assert has_element?(
+               view,
+               "#report-section-data_integrity-methodology-toggle",
+               "methodology"
+             )
+    end
+
+    test "accessibility and attribute methodology toggles are independent", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      view
+      |> element("#report-section-accessibility-methodology-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#report-section-accessibility-methodology")
+      assert has_element?(view, "#report-method-accessibility-step_free_routes")
+      refute has_element?(view, "#report-item-step_free_routes")
+      assert has_element?(view, "#report-item-pathway_attribute_completeness")
+
+      view
+      |> element("#report-section-attribute_completeness-methodology-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#report-section-accessibility-methodology")
+      assert has_element?(view, "#report-section-attribute_completeness-methodology")
+      assert has_element?(view, "#report-method-attribute_completeness-signage_completeness")
+      refute has_element?(view, "#report-item-pathway_attribute_completeness")
+      assert has_element?(view, "#report-section-not_available")
+
+      view
+      |> element("#report-section-accessibility-methodology-toggle")
+      |> render_click()
+
+      refute has_element?(view, "#report-section-accessibility-methodology")
+      assert has_element?(view, "#report-item-step_free_routes")
+      assert has_element?(view, "#report-section-attribute_completeness-methodology")
     end
 
     test "redirects with flash when station is missing", %{
