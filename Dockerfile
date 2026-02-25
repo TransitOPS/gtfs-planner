@@ -36,6 +36,7 @@ RUN mkdir -p priv/static/uploads
 RUN mix compile
 
 COPY assets assets
+RUN chmod +x /app/_build/esbuild-* /app/_build/tailwind-* 2>/dev/null || true
 RUN mix assets.deploy
 
 COPY config/runtime.exs config
