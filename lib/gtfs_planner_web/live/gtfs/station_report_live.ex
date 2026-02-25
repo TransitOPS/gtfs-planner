@@ -11,7 +11,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
-  @methodology_sections ["data_integrity", "accessibility", "attribute_completeness"]
+
+  @methodology_sections [
+    "data_integrity",
+    "accessibility",
+    "entrance_platform_connectivity",
+    "attribute_completeness"
+  ]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -128,6 +134,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
             methodology_mode={Map.get(@methodology_by_section, "accessibility", false)}
           />
 
+          <.entrance_platform_connectivity_section
+            section={find_section(@report, "entrance_platform_connectivity")}
+            methodology_mode={
+              Map.get(@methodology_by_section, "entrance_platform_connectivity", false)
+            }
+          />
+
           <.inventory_section section={find_section(@report, "inventory")} />
 
           <.completeness_section
@@ -184,6 +197,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
     %{
       "data_integrity" => false,
       "accessibility" => false,
+      "entrance_platform_connectivity" => false,
       "attribute_completeness" => false
     }
   end

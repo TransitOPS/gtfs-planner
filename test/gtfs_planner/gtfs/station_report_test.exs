@@ -17,6 +17,7 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
                "gps",
                "data_integrity",
                "accessibility",
+               "entrance_platform_connectivity",
                "attribute_completeness",
                "not_available"
              ]
@@ -40,7 +41,7 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
 
       accessibility = section(report, "accessibility")
       step_free = item(accessibility, "step_free_routes")
-      assert step_free.status == :pass
+      assert step_free.status == :fail
       assert step_free.value.connected_pairs == 1
 
       unavailable = section(report, "not_available")
@@ -76,15 +77,15 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
           station: stop("STATION", 1),
           child_stops: [
             stop("E1", 2, parent_station: "STATION", level_id: "L1"),
-            stop("P1", 0, parent_station: "STATION", level_id: "L2")
+            stop("B1", 4, parent_station: "P1", level_id: "L2")
           ],
           levels: [
             %{level: level("L1", 0.0), stop_count: 1},
             %{level: level("L2", 1.0), stop_count: 1}
           ],
           pathways: [
-            pathway("STAIRS", "E1", "P1", 2, true),
-            pathway("ESC", "E1", "P1", 4, false)
+            pathway("STAIRS", "E1", "B1", 2, true),
+            pathway("ESC", "E1", "B1", 4, false)
           ]
         })
 
@@ -93,8 +94,160 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
 
       assert step_free.status == :fail
 
-      assert [%{entrance_stop_id: "E1", platform_stop_id: "P1", reachable: false}] =
+      assert [%{entrance_stop_id: "E1", platform_stop_id: "B1", reachable: false}] =
                step_free.details
+    end
+
+    test "entrance to platform paths include direct reachable metadata" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("ENT_A", 2, parent_station: "STATION"),
+            stop("BOARD_A", 4, parent_station: "PLAT_A")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_DIRECT", "ENT_A", "BOARD_A", 5, false)
+          ]
+        })
+
+      section = section(report, "entrance_platform_connectivity")
+      item = item(section, "entrance_platform_paths")
+
+      assert item.status == :pass
+      assert item.value == %{entrances: 1, boarding_areas: 1, connected_pairs: 1, total_pairs: 1}
+
+      assert [
+               %{
+                 entrance_stop_id: "ENT_A",
+                 platform_stop_id: "BOARD_A",
+                 reachable: true,
+                 path: [
+                   %{stop_id: "ENT_A", pathway_id: nil, pathway_mode: nil},
+                   %{stop_id: "BOARD_A", pathway_id: "PW_DIRECT", pathway_mode: 5}
+                 ]
+               }
+             ] = item.details
+    end
+
+    test "entrance to platform paths respect pathway directionality" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("ENT_A", 2, parent_station: "STATION"),
+            stop("BOARD_A", 4, parent_station: "PLAT_A")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_REVERSE", "BOARD_A", "ENT_A", 1, false)
+          ]
+        })
+
+      section = section(report, "entrance_platform_connectivity")
+      item = item(section, "entrance_platform_paths")
+
+      assert item.status == :fail
+
+      assert [
+               %{
+                 entrance_stop_id: "ENT_A",
+                 platform_stop_id: "BOARD_A",
+                 reachable: false,
+                 path: []
+               }
+             ] = item.details
+    end
+
+    test "entrance to platform paths include multi-hop routes with hop metadata" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("ENT_A", 2, parent_station: "STATION"),
+            stop("GEN_A", 3, parent_station: "STATION"),
+            stop("BOARD_A", 4, parent_station: "PLAT_A")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_A", "ENT_A", "GEN_A", 1, false),
+            pathway("PW_B", "GEN_A", "BOARD_A", 3, false)
+          ]
+        })
+
+      section = section(report, "entrance_platform_connectivity")
+      item = item(section, "entrance_platform_paths")
+      [row] = item.details
+
+      assert row.reachable
+
+      assert Enum.map(row.path, & &1.stop_id) == ["ENT_A", "GEN_A", "BOARD_A"]
+
+      assert row.path == [
+               %{stop_id: "ENT_A", pathway_id: nil, pathway_mode: nil},
+               %{stop_id: "GEN_A", pathway_id: "PW_A", pathway_mode: 1},
+               %{stop_id: "BOARD_A", pathway_id: "PW_B", pathway_mode: 3}
+             ]
+    end
+
+    test "entrance to platform paths are deterministic with duplicate directional edges" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("ENT_B", 2, parent_station: "STATION"),
+            stop("ENT_A", 2, parent_station: "STATION"),
+            stop("BOARD_B", 4, parent_station: "PLAT_B"),
+            stop("BOARD_A", 4, parent_station: "PLAT_A")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_200", "ENT_A", "BOARD_A", 1, false),
+            pathway("PW_100", "ENT_A", "BOARD_A", 1, false),
+            pathway("PW_300", "ENT_B", "BOARD_B", 1, false),
+            pathway("PW_400", "ENT_A", "BOARD_B", 1, false),
+            pathway("PW_500", "ENT_B", "BOARD_A", 1, false)
+          ]
+        })
+
+      section = section(report, "entrance_platform_connectivity")
+      item = item(section, "entrance_platform_paths")
+
+      assert Enum.map(item.details, &{&1.entrance_stop_id, &1.platform_stop_id}) == [
+               {"ENT_A", "BOARD_A"},
+               {"ENT_A", "BOARD_B"},
+               {"ENT_B", "BOARD_A"},
+               {"ENT_B", "BOARD_B"}
+             ]
+
+      detail =
+        Enum.find(
+          item.details,
+          &(&1.entrance_stop_id == "ENT_A" and &1.platform_stop_id == "BOARD_A")
+        )
+
+      assert detail.path == [
+               %{stop_id: "ENT_A", pathway_id: nil, pathway_mode: nil},
+               %{stop_id: "BOARD_A", pathway_id: "PW_100", pathway_mode: 1}
+             ]
+    end
+
+    test "entrance to platform paths warn when entrances or platforms are missing" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [stop("PLAT_A", 0, parent_station: "STATION")],
+          levels: [],
+          pathways: []
+        })
+
+      section = section(report, "entrance_platform_connectivity")
+      item = item(section, "entrance_platform_paths")
+
+      assert item.status == :warn
+      assert item.value == %{entrances: 0, boarding_areas: 0, connected_pairs: 0, total_pairs: 0}
+      assert item.details == []
     end
 
     test "raises on invalid snapshot shape" do
@@ -145,7 +298,8 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       pathways: [
         pathway("PW_STAIRS", "ENT_A", "B_A_1", 2, true, stair_count: 10),
         pathway("PW_ESC", "B_A_1", "B_A_2", 4, false),
-        pathway("PW_ELEV", "ENT_A", "PLAT_A", 5, true, min_width: Decimal.new("1.2"))
+        pathway("PW_ELEV", "ENT_A", "PLAT_A", 5, true, min_width: Decimal.new("1.2")),
+        pathway("PW_ELEV_BOARD", "ENT_A", "B_A_1", 5, true, min_width: Decimal.new("1.2"))
       ]
     }
   end

@@ -95,6 +95,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
         gps_section(station, child_stops),
         data_integrity_section(station, child_stops, undirected, directed, stop_index),
         accessibility_section(child_stops, core_pathways, stop_index, level_index),
+        entrance_platform_connectivity_section(child_stops, core_pathways),
         attribute_completeness_section(station_pathways),
         unavailable_section()
       ]
@@ -310,7 +311,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
 
   defp accessibility_section(child_stops, pathways, stop_index, level_index) do
     entrances = Enum.filter(child_stops, &(&1.location_type == 2))
-    platforms = Enum.filter(child_stops, &(&1.location_type == 0))
+    boarding_areas = Enum.filter(child_stops, &(&1.location_type == 4))
 
     step_free_directed =
       pathways
@@ -324,7 +325,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       )
       |> build_directed_adjacency()
 
-    step_free_result = step_free_result(entrances, platforms, step_free_directed)
+    step_free_result = step_free_result(entrances, boarding_areas, step_free_directed)
 
     wheelchair_distribution =
       child_stops
@@ -355,7 +356,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       items: [
         item(
           "step_free_routes",
-          "Step-free routes (entrance x platform)",
+          "Step-free routes (entrance x boarding)",
           case step_free_result.status do
             :ok -> :pass
             :missing_pairs -> :warn
@@ -452,6 +453,73 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     }
   end
 
+  defp entrance_platform_connectivity_section(child_stops, pathways) do
+    {entrances, boarding_areas} = entrances_and_boarding_areas(child_stops)
+
+    cond do
+      entrances == [] or boarding_areas == [] ->
+        %{
+          id: "entrance_platform_connectivity",
+          title: "Entrance -> Boarding Connectivity",
+          items: [
+            item(
+              "entrance_platform_paths",
+              "Entrance-to-boarding directed shortest paths",
+              :warn,
+              %{entrances: 0, boarding_areas: 0, connected_pairs: 0, total_pairs: 0},
+              []
+            )
+          ]
+        }
+
+      true ->
+        adjacency = build_path_traversal_adjacency(pathways)
+
+        details =
+          for entrance <- entrances, boarding_area <- boarding_areas do
+            case shortest_directed_path(adjacency, entrance.stop_id, boarding_area.stop_id) do
+              {:found, path} ->
+                %{
+                  entrance_stop_id: entrance.stop_id,
+                  platform_stop_id: boarding_area.stop_id,
+                  reachable: true,
+                  path: path
+                }
+
+              :not_found ->
+                %{
+                  entrance_stop_id: entrance.stop_id,
+                  platform_stop_id: boarding_area.stop_id,
+                  reachable: false,
+                  path: []
+                }
+            end
+          end
+
+        connected_pairs = Enum.count(details, & &1.reachable)
+        total_pairs = length(details)
+
+        %{
+          id: "entrance_platform_connectivity",
+          title: "Entrance -> Boarding Connectivity",
+          items: [
+            item(
+              "entrance_platform_paths",
+              "Entrance-to-boarding directed shortest paths",
+              if(connected_pairs == total_pairs and total_pairs > 0, do: :pass, else: :fail),
+              %{
+                entrances: length(entrances),
+                boarding_areas: length(boarding_areas),
+                connected_pairs: connected_pairs,
+                total_pairs: total_pairs
+              },
+              details
+            )
+          ]
+        }
+    end
+  end
+
   defp unavailable_section do
     %{
       id: "not_available",
@@ -505,14 +573,14 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     }
   end
 
-  defp step_free_result(entrances, platforms, directed) do
+  defp step_free_result(entrances, boarding_areas, directed) do
     cond do
-      entrances == [] or platforms == [] ->
+      entrances == [] or boarding_areas == [] ->
         %{
           status: :missing_pairs,
           summary: %{
             entrances: length(entrances),
-            platforms: length(platforms),
+            boarding_areas: length(boarding_areas),
             connected_pairs: 0,
             total_pairs: 0
           },
@@ -521,12 +589,13 @@ defmodule GtfsPlanner.Gtfs.StationReport do
 
       true ->
         matrix =
-          for entrance <- entrances, platform <- platforms do
-            reachable = reachable?(entrance.stop_id, MapSet.new([platform.stop_id]), directed)
+          for entrance <- entrances, boarding_area <- boarding_areas do
+            reachable =
+              reachable?(entrance.stop_id, MapSet.new([boarding_area.stop_id]), directed)
 
             %{
               entrance_stop_id: entrance.stop_id,
-              platform_stop_id: platform.stop_id,
+              platform_stop_id: boarding_area.stop_id,
               reachable: reachable
             }
           end
@@ -538,7 +607,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
           status: if(connected_pairs == total_pairs, do: :ok, else: :gaps),
           summary: %{
             entrances: length(entrances),
-            platforms: length(platforms),
+            boarding_areas: length(boarding_areas),
             connected_pairs: connected_pairs,
             total_pairs: total_pairs
           },
@@ -712,6 +781,132 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       end
     end)
   end
+
+  defp build_path_traversal_adjacency(pathways) do
+    pathways
+    |> Enum.sort_by(&pathway_id_sort_key/1)
+    |> Enum.reduce(%{}, fn pathway, acc ->
+      acc = put_path_edge(acc, pathway.from_stop_id, pathway.to_stop_id, pathway)
+
+      if pathway.is_bidirectional do
+        put_path_edge(acc, pathway.to_stop_id, pathway.from_stop_id, pathway)
+      else
+        acc
+      end
+    end)
+    |> Enum.into(%{}, fn {from_stop_id, edges} ->
+      {from_stop_id, Enum.sort_by(edges, &{&1.to_stop_id, &1.pathway_id})}
+    end)
+  end
+
+  defp put_path_edge(adjacency, from_stop_id, to_stop_id, pathway) do
+    edge = %{
+      to_stop_id: to_stop_id,
+      pathway_id: pathway.pathway_id,
+      pathway_mode: normalize_pathway_mode(pathway.pathway_mode)
+    }
+
+    Map.update(adjacency, from_stop_id, [edge], &[edge | &1])
+  end
+
+  defp shortest_directed_path(adjacency, start_stop_id, target_stop_id) do
+    queue = :queue.from_list([start_stop_id])
+    visited = MapSet.new([start_stop_id])
+
+    do_shortest_directed_path(
+      queue,
+      visited,
+      %{},
+      adjacency,
+      start_stop_id,
+      target_stop_id
+    )
+  end
+
+  defp do_shortest_directed_path(
+         queue,
+         visited,
+         came_from,
+         adjacency,
+         start_stop_id,
+         target_stop_id
+       ) do
+    case :queue.out(queue) do
+      {{:value, current}, rest} ->
+        if current == target_stop_id do
+          {:found, reconstruct_path(came_from, start_stop_id, target_stop_id)}
+        else
+          neighbors = Map.get(adjacency, current, [])
+
+          {next_queue, next_visited, next_came_from} =
+            Enum.reduce(neighbors, {rest, visited, came_from}, fn edge, {q, v, c} ->
+              next_stop_id = edge.to_stop_id
+
+              if MapSet.member?(v, next_stop_id) do
+                {q, v, c}
+              else
+                {
+                  :queue.in(next_stop_id, q),
+                  MapSet.put(v, next_stop_id),
+                  Map.put(c, next_stop_id, %{
+                    prev_stop_id: current,
+                    pathway_id: edge.pathway_id,
+                    pathway_mode: edge.pathway_mode
+                  })
+                }
+              end
+            end)
+
+          do_shortest_directed_path(
+            next_queue,
+            next_visited,
+            next_came_from,
+            adjacency,
+            start_stop_id,
+            target_stop_id
+          )
+        end
+
+      {:empty, _} ->
+        :not_found
+    end
+  end
+
+  defp reconstruct_path(came_from, start_stop_id, target_stop_id) do
+    path = reconstruct_path_hops(came_from, target_stop_id, [])
+
+    [%{stop_id: start_stop_id, pathway_id: nil, pathway_mode: nil} | path]
+  end
+
+  defp reconstruct_path_hops(_came_from, nil, acc), do: acc
+
+  defp reconstruct_path_hops(came_from, stop_id, acc) do
+    case Map.get(came_from, stop_id) do
+      nil ->
+        acc
+
+      %{prev_stop_id: prev_stop_id, pathway_id: pathway_id, pathway_mode: pathway_mode} ->
+        reconstruct_path_hops(came_from, prev_stop_id, [
+          %{stop_id: stop_id, pathway_id: pathway_id, pathway_mode: pathway_mode} | acc
+        ])
+    end
+  end
+
+  defp entrances_and_boarding_areas(child_stops) do
+    entrances =
+      child_stops
+      |> Enum.filter(&(&1.location_type == 2))
+      |> Enum.sort_by(& &1.stop_id)
+
+    boarding_areas =
+      child_stops
+      |> Enum.filter(&(&1.location_type == 4))
+      |> Enum.sort_by(& &1.stop_id)
+
+    {entrances, boarding_areas}
+  end
+
+  defp pathway_id_sort_key(pathway), do: pathway.pathway_id || ""
 
   defp build_undirected_adjacency(pathways) do
     Enum.reduce(pathways, %{}, fn pathway, acc ->
