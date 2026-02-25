@@ -72,9 +72,13 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
   # -- reference validation ---------------------------------------------------
 
   defp validate_references(manifest, lookups) do
+    expected_image_pairs = expected_image_pairs(manifest.stop_levels)
+    image_pairs = diagram_image_pairs(manifest.diagram_images)
+
     missing_stops =
       ((manifest.stop_diagram_coordinates |> Enum.map(& &1.stop_id)) ++
-         (manifest.stop_levels |> Enum.map(& &1.stop_id)))
+         (manifest.stop_levels |> Enum.map(& &1.stop_id)) ++
+         (manifest.diagram_images |> Enum.map(& &1.station_stop_id)))
       |> Enum.uniq()
       |> Enum.reject(&Map.has_key?(lookups.stop_id_to_uuid, &1))
 
@@ -90,11 +94,20 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
       |> Enum.uniq()
       |> Enum.reject(&Map.has_key?(lookups.route_id_to_uuid, &1))
 
+    invalid_diagram_images =
+      image_pairs
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(expected_image_pairs, &1))
+      |> Enum.map(fn {station_stop_id, filename} ->
+        %{station_stop_id: station_stop_id, filename: filename}
+      end)
+
     missing =
       %{}
       |> maybe_put(:stops, missing_stops)
       |> maybe_put(:levels, missing_levels)
       |> maybe_put(:routes, missing_routes)
+      |> maybe_put(:diagram_images, invalid_diagram_images)
 
     if map_size(missing) == 0 do
       :ok
@@ -105,6 +118,17 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
   defp maybe_put(map, _key, []), do: map
   defp maybe_put(map, key, list), do: Map.put(map, key, list)
+
+  defp expected_image_pairs(stop_levels) do
+    stop_levels
+    |> Enum.filter(&(is_binary(&1.diagram_filename) and &1.diagram_filename != ""))
+    |> Enum.map(&{&1.stop_id, &1.diagram_filename})
+    |> MapSet.new()
+  end
+
+  defp diagram_image_pairs(diagram_images) do
+    Enum.map(diagram_images, &{&1.station_stop_id, &1.filename})
+  end
 
   # -- DB writes in transaction -----------------------------------------------
 

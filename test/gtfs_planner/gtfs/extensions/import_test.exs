@@ -235,6 +235,74 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
       refute Map.has_key?(refs, :levels)
       refute Map.has_key?(refs, :routes)
     end
+
+    test "returns error when diagram image references unknown station stop", %{
+      org_id: org_id,
+      version_id: version_id
+    } do
+      level_fixture(org_id, version_id, level_id: "L1")
+
+      manifest =
+        Manifest.build(
+          [],
+          [],
+          [],
+          [
+            %{
+              station_stop_id: "missing_station",
+              filename: "floor.png",
+              zip_path: "_pathways_extensions/diagrams/missing_station/floor.png"
+            }
+          ]
+        )
+
+      json = Manifest.encode(manifest)
+
+      assert {:error, {:missing_references, refs}} =
+               Import.import_extensions(org_id, version_id, json, %{})
+
+      assert "missing_station" in refs.stops
+      assert %{station_stop_id: "missing_station", filename: "floor.png"} in refs.diagram_images
+    end
+
+    test "returns error when diagram image does not match stop_level diagram filename", %{
+      org_id: org_id,
+      version_id: version_id
+    } do
+      stop_fixture(org_id, version_id, stop_id: "station_main", location_type: 1)
+      level_fixture(org_id, version_id, level_id: "L1")
+
+      manifest =
+        Manifest.build(
+          [],
+          [
+            %{
+              stop_id: "station_main",
+              level_id: "L1",
+              diagram_filename: "expected.png",
+              scale_point_a: nil,
+              scale_point_b: nil,
+              scale_distance_meters: nil,
+              scale_meters_per_unit: nil
+            }
+          ],
+          [],
+          [
+            %{
+              station_stop_id: "station_main",
+              filename: "unexpected.png",
+              zip_path: "_pathways_extensions/diagrams/station_main/unexpected.png"
+            }
+          ]
+        )
+
+      json = Manifest.encode(manifest)
+
+      assert {:error, {:missing_references, refs}} =
+               Import.import_extensions(org_id, version_id, json, %{})
+
+      assert %{station_stop_id: "station_main", filename: "unexpected.png"} in refs.diagram_images
+    end
   end
 
   describe "import_extensions/5 - image restore" do
