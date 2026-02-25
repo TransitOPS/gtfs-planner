@@ -38,7 +38,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       {:ok, _} = Gtfs.update_stop_diagram_coordinate(stop, %{x: 50.5, y: 25.0})
 
       assert {:ok, entries} = Export.build_zip_entries(org_id, version_id)
-      assert length(entries) >= 1
+      refute Enum.empty?(entries)
 
       {name, content} = Enum.find(entries, fn {n, _} -> n == ~c"_pathways_extensions.json" end)
       assert name == ~c"_pathways_extensions.json"
@@ -172,6 +172,37 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       assert length(entries) == 1
       {name, _} = hd(entries)
       assert name == ~c"_pathways_extensions.json"
+    end
+
+    test "rejects unsafe traversal filename when reading exported image", %{
+      org_id: org_id,
+      version_id: version_id
+    } do
+      station = stop_fixture(org_id, version_id, stop_id: "station_x", location_type: 1)
+      level = level_fixture(org_id, version_id, level_id: "L1")
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: level.id,
+          organization_id: org_id,
+          gtfs_version_id: version_id,
+          diagram_filename: "../secret.txt"
+        })
+
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+      safe_dir = Path.join([uploads_path, "diagrams", org_id, "station_x"])
+      File.mkdir_p!(safe_dir)
+      File.write!(Path.join([uploads_path, "diagrams", org_id, "secret.txt"]), "sensitive")
+
+      assert {:ok, entries} = Export.build_zip_entries(org_id, version_id)
+
+      refute Enum.any?(entries, fn {name, _} ->
+               String.contains?(to_string(name), "secret.txt")
+             end)
+    after
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+      File.rm_rf(Path.join(uploads_path, "diagrams"))
     end
   end
 end
