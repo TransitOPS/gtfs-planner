@@ -601,6 +601,38 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns a station-scoped snapshot used to build deterministic station reports.
+
+  The snapshot includes the parent station stop, station child stops, station levels,
+  and pathways touching station child stops (with `from_stop` and `to_stop` populated).
+  """
+  @spec get_station_report_snapshot(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok,
+           %{
+             station: Stop.t(),
+             child_stops: [Stop.t()],
+             levels: [map()],
+             pathways: [Pathway.t()]
+           }}
+          | {:error, :not_found}
+  def get_station_report_snapshot(organization_id, gtfs_version_id, stop_id) do
+    case get_stop_by_stop_id(organization_id, gtfs_version_id, stop_id) do
+      %Stop{} = station ->
+        snapshot = %{
+          station: station,
+          child_stops: list_child_stops_for_parent(organization_id, gtfs_version_id, station.id),
+          levels: list_levels_for_station(organization_id, gtfs_version_id, station.id),
+          pathways: list_pathways_for_station(organization_id, gtfs_version_id, station.id)
+        }
+
+        {:ok, snapshot}
+
+      nil ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
   Returns a unique stop_id within an organization and GTFS version.
 
   Uses the provided base stop_id if available, otherwise appends `_2`, `_3`, etc.
