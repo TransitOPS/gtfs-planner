@@ -580,7 +580,9 @@ defmodule GtfsPlanner.Gtfs.Import do
     filename == "" or
       String.ends_with?(filename, "/") or
       String.starts_with?(lower, "__macosx/") or
-      String.starts_with?(basename, "._")
+      String.starts_with?(basename, "._") or
+      basename == ".ds_store" or
+      basename == "thumbs.db"
   end
 
   defp extract_extensions_image_zip_path(filename) do
