@@ -1,0 +1,268 @@
+defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
+  use GtfsPlannerWeb.ConnCase
+
+  import Phoenix.LiveViewTest
+  import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.GtfsFixtures
+  import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.VersionsFixtures
+
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs
+
+  describe "StationReportLive" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_1",
+          stop_name: "Station One",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      level_1 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L1",
+          level_name: "Street",
+          level_index: 0.0
+        })
+
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L2",
+          level_name: "Platform",
+          level_index: 1.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_1.id
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id
+        })
+
+      entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_1",
+          stop_name: "Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_1",
+          stop_name: "Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L2"
+        })
+
+      _boarding =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BOARD_1",
+          stop_name: "Boarding 1",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: "L2"
+        })
+
+      _pathway =
+        pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, platform.stop_id, %{
+          pathway_id: "PATH_1",
+          pathway_mode: 5,
+          is_bidirectional: true,
+          min_width: Decimal.new("1.5")
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station
+      }
+    end
+
+    test "renders report route with stable section and item IDs", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(view, "#station-sub-nav")
+      assert has_element?(view, "#station-report")
+      assert has_element?(view, "#report-section-inventory")
+      assert has_element?(view, "#report-section-data_integrity")
+      assert has_element?(view, "#report-item-node_inventory")
+      assert has_element?(view, "#report-item-step_free_routes")
+      assert has_element?(view, "#report-item-unavailable_metrics")
+      assert has_element?(view, "#report-summary-completeness-methodology-toggle", "methodology")
+
+      assert has_element?(
+               view,
+               "#report-section-data_integrity-methodology-toggle",
+               "methodology"
+             )
+
+      assert has_element?(view, "#report-section-accessibility-methodology-toggle", "methodology")
+
+      assert has_element?(
+               view,
+               "#report-section-attribute_completeness-methodology-toggle",
+               "methodology"
+             )
+
+      assert has_element?(
+               view,
+               "#station-sub-nav a[aria-current='page']",
+               "Report"
+             )
+    end
+
+    test "toggles methodology mode in data quality section on and off", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(view, "#report-item-isolated_nodes")
+      refute has_element?(view, "#report-section-data_integrity-methodology")
+
+      view
+      |> element("#report-section-data_integrity-methodology-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#report-section-data_integrity-methodology")
+
+      assert has_element?(
+               view,
+               "#report-method-data_integrity-isolated_nodes"
+             )
+
+      refute has_element?(view, "#report-item-isolated_nodes")
+      assert has_element?(view, "#report-section-data_integrity-methodology-toggle", "back")
+
+      view
+      |> element("#report-section-data_integrity-methodology-toggle")
+      |> render_click()
+
+      refute has_element?(view, "#report-section-data_integrity-methodology")
+      assert has_element?(view, "#report-item-isolated_nodes")
+
+      assert has_element?(
+               view,
+               "#report-section-data_integrity-methodology-toggle",
+               "methodology"
+             )
+    end
+
+    test "accessibility and attribute methodology toggles are independent", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      view
+      |> element("#report-section-accessibility-methodology-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#report-section-accessibility-methodology")
+      assert has_element?(view, "#report-method-accessibility-step_free_routes")
+      refute has_element?(view, "#report-item-step_free_routes")
+      assert has_element?(view, "#report-item-pathway_attribute_completeness")
+
+      view
+      |> element("#report-section-attribute_completeness-methodology-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#report-section-accessibility-methodology")
+      assert has_element?(view, "#report-section-attribute_completeness-methodology")
+      assert has_element?(view, "#report-method-attribute_completeness-signage_completeness")
+      refute has_element?(view, "#report-item-pathway_attribute_completeness")
+      assert has_element?(view, "#report-section-not_available")
+
+      view
+      |> element("#report-section-accessibility-methodology-toggle")
+      |> render_click()
+
+      refute has_element?(view, "#report-section-accessibility-methodology")
+      assert has_element?(view, "#report-item-step_free_routes")
+      assert has_element?(view, "#report-section-attribute_completeness-methodology")
+    end
+
+    test "redirects with flash when station is missing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      assert {:error, {:live_redirect, %{to: to_path, flash: %{"error" => "Station not found"}}}} =
+               live(conn, "/gtfs/#{gtfs_version.id}/stops/UNKNOWN/report")
+
+      assert to_path == "/gtfs/#{gtfs_version.id}/stops"
+    end
+
+    test "station sub-nav renders report tab on details and diagram pages", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, details_view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}")
+
+      assert has_element?(
+               details_view,
+               "#station-sub-nav a[href='/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report']",
+               "Report"
+             )
+
+      {:ok, diagram_view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      assert has_element?(
+               diagram_view,
+               "#station-sub-nav a[href='/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report']",
+               "Report"
+             )
+    end
+  end
+end
