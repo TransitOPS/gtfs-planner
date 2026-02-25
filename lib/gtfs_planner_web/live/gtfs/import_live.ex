@@ -1410,12 +1410,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp managed_fields_for(:stop),
     do: [
       :stop_name,
+      :stop_desc,
       :stop_lat,
       :stop_lon,
       :location_type,
       :platform_code,
       :level_id,
-      :parent_station
+      :parent_station,
+      :wheelchair_boarding
     ]
 
   defp managed_fields_for(:pathway),
