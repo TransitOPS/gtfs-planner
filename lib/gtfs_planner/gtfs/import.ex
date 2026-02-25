@@ -502,13 +502,18 @@ defmodule GtfsPlanner.Gtfs.Import do
   @max_zip_entries 10_000
   @max_zip_uncompressed_bytes 100 * 1024 * 1024
 
-  # Expands any .zip file entries into their constituent files.
-  # Non-zip entries pass through unchanged.
-  # Applies basic safety limits to avoid resource exhaustion and rejects
-  # nested archives inside a zip. On unzip failure or limit violation,
-  # the original archive file is passed through so it can be surfaced
-  # by later processing instead of being silently dropped.
-  defp expand_archives(files) do
+  @doc """
+  Expands uploaded `.zip` archives into individual file entries.
+
+  Non-zip entries pass through unchanged.
+
+  Safety behavior is intentionally unchanged:
+  - ignores hidden/system zip entries
+  - rejects nested archives inside archives
+  - enforces entry-count and total-uncompressed-size limits
+  - returns the original archive entry when unzip fails or limits are exceeded
+  """
+  def expand_archives(files) do
     Enum.flat_map(files, fn file ->
       if String.ends_with?(String.downcase(file.filename), ".zip") do
         case :zip.unzip(file.content, [:memory]) do
@@ -586,9 +591,12 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   defp extract_extensions_image_zip_path(filename) do
-    case Regex.run(~r/_pathways_extensions\//i, filename, return: :index) do
-      [{idx, _len}] -> binary_part(filename, idx, byte_size(filename) - idx)
-      nil -> nil
+    marker = "_pathways_extensions/"
+    lower = String.downcase(filename)
+
+    case :binary.match(lower, marker) do
+      {idx, _len} -> binary_part(filename, idx, byte_size(filename) - idx)
+      :nomatch -> nil
     end
   end
 
