@@ -32,6 +32,7 @@ RUN mix deps.compile
 
 COPY lib lib
 COPY priv priv
+RUN rm -rf priv/otp priv/gtfs_validator priv/static/uploads
 RUN mkdir -p priv/static/uploads
 RUN mix compile
 
