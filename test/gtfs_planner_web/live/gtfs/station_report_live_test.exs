@@ -119,8 +119,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(view, "#station-report")
       assert has_element?(view, "#report-section-inventory")
       assert has_element?(view, "#report-section-data_integrity")
+      assert has_element?(view, "#report-section-entrance_platform_connectivity")
       assert has_element?(view, "#report-item-node_inventory")
       assert has_element?(view, "#report-item-step_free_routes")
+      assert has_element?(view, "#report-item-entrance_platform_paths")
       assert has_element?(view, "#report-item-unavailable_metrics")
       assert has_element?(view, "#report-summary-completeness-methodology-toggle", "methodology")
 
@@ -131,6 +133,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
              )
 
       assert has_element?(view, "#report-section-accessibility-methodology-toggle", "methodology")
+
+      assert has_element?(
+               view,
+               "#report-section-entrance_platform_connectivity-methodology-toggle",
+               "methodology"
+             )
 
       assert has_element?(
                view,
@@ -186,13 +194,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
              )
     end
 
-    test "accessibility and attribute methodology toggles are independent", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
-    } do
+    test "methodology toggles remain independent across accessibility, connectivity, and completeness",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station
+         } do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
@@ -203,6 +212,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(view, "#report-section-accessibility-methodology")
       assert has_element?(view, "#report-method-accessibility-step_free_routes")
       refute has_element?(view, "#report-item-step_free_routes")
+      assert has_element?(view, "#report-item-entrance_platform_paths")
+      assert has_element?(view, "#report-item-pathway_attribute_completeness")
+
+      view
+      |> element("#report-section-entrance_platform_connectivity-methodology-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#report-section-accessibility-methodology")
+      assert has_element?(view, "#report-section-entrance_platform_connectivity-methodology")
+
+      assert has_element?(
+               view,
+               "#report-method-entrance_platform_connectivity-entrance_platform_paths"
+             )
+
+      refute has_element?(view, "#report-item-entrance_platform_paths")
       assert has_element?(view, "#report-item-pathway_attribute_completeness")
 
       view
@@ -210,6 +235,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       |> render_click()
 
       assert has_element?(view, "#report-section-accessibility-methodology")
+      assert has_element?(view, "#report-section-entrance_platform_connectivity-methodology")
       assert has_element?(view, "#report-section-attribute_completeness-methodology")
       assert has_element?(view, "#report-method-attribute_completeness-signage_completeness")
       refute has_element?(view, "#report-item-pathway_attribute_completeness")
@@ -221,6 +247,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
 
       refute has_element?(view, "#report-section-accessibility-methodology")
       assert has_element?(view, "#report-item-step_free_routes")
+      assert has_element?(view, "#report-section-entrance_platform_connectivity-methodology")
       assert has_element?(view, "#report-section-attribute_completeness-methodology")
     end
 
