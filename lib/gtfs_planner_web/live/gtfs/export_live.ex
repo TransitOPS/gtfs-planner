@@ -791,6 +791,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_label({:pathways_prep, {:otp, :stopping}}), do: "Stopping OTP runtime..."
   defp phase_label({:pathways_prep, {:otp, :stopped}}), do: "OTP runtime stopped"
   defp phase_label({:pathways_prep, {:otp, :failed}}), do: "OTP runtime failed"
+  defp phase_label({:pathways_prep, {:suite, :running, completed, total, _test_case_id}}),
+    do: "Running pathways suite (#{completed} of #{total})"
+
+  defp phase_label({:pathways_prep, {:suite, :finishing, _completed, _total, _test_case_id}}),
+    do: "Finalizing pathways suite results..."
+
+  defp phase_label({:pathways_prep, {:suite, :finished, _completed, _total, _test_case_id}}),
+    do: "Pathways suite finished"
+
   defp phase_label(_), do: "Preparing..."
 
   defp format_run_type("mobility_data"), do: "MobilityData"
@@ -840,7 +849,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         status_callback = fn payload -> send(parent, {:pathways_prep_progress, payload}) end
 
         callback = fn session ->
-          case pathways_validity_module.run_in_session(session, organization_id, gtfs_version_id) do
+          case pathways_validity_module.run_in_session(
+                 session,
+                 organization_id,
+                 gtfs_version_id,
+                 status_callback: status_callback
+               ) do
             {:ok, _result} -> {:ok, :ok}
             {:error, reason} -> {:error, reason}
           end
@@ -987,15 +1001,22 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_percent({:otp, :stopping}), do: 99
   defp phase_percent({:otp, :stopped}), do: 100
   defp phase_percent({:otp, :failed}), do: 100
+  defp phase_percent({:suite, :running, _completed, _total, _test_case_id}), do: 98
+  defp phase_percent({:suite, :finishing, _completed, _total, _test_case_id}), do: 99
+  defp phase_percent({:suite, :finished, _completed, _total, _test_case_id}), do: 100
   defp phase_percent(_), do: 5
 
   defp pathways_prep_phase(payload) when is_map(payload) do
     phase = Map.get(payload, :phase, :cache_check)
+    completed = Map.get(payload, :completed)
+    total = Map.get(payload, :total)
+    test_case_id = Map.get(payload, :test_case_id)
 
     case Map.get(payload, :scope) do
       :gtfs -> {:gtfs, phase}
       :graph -> {:graph, phase}
       :otp -> {:otp, phase}
+      :suite -> {:suite, phase, completed, total, test_case_id}
       _unknown_scope -> phase
     end
   end

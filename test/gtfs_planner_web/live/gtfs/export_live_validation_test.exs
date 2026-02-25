@@ -46,6 +46,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
           callback.(%{scope: :otp, phase: :starting})
           callback.(%{scope: :otp, phase: :waiting_ready})
           callback.(%{scope: :otp, phase: :ready})
+          callback.(%{scope: :suite, phase: :running, completed: 0, total: 2, test_case_id: "case-1"})
+          Process.sleep(180)
+          callback.(%{scope: :suite, phase: :running, completed: 1, total: 2, test_case_id: "case-2"})
+          Process.sleep(25)
+          callback.(%{scope: :suite, phase: :finishing, completed: 2, total: 2})
+          Process.sleep(25)
+          callback.(%{scope: :suite, phase: :finished, completed: 2, total: 2})
           callback.(%{scope: :otp, phase: :stopping})
           callback.(%{scope: :otp, phase: :stopped})
 
@@ -91,6 +98,38 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       status_callback.(%{scope: :otp, phase: :starting})
       Process.sleep(40)
       status_callback.(%{scope: :otp, phase: :waiting_ready})
+      Process.sleep(120)
+
+      callback.(%Session{
+        command: "java",
+        args: ["-jar", "/tmp/otp.jar"],
+        host: "127.0.0.1",
+        port: 8080,
+        base_url: "http://127.0.0.1:8080",
+        graphql_url: "http://127.0.0.1:8080/otp/routers/default/index/graphql",
+        graph_workspace_dir: "/tmp/runtime",
+        process: make_ref(),
+        runtime_log_path: "/tmp/runtime/runtime.log"
+      })
+    end
+
+    def cleanup_on_success(_organization_id, _gtfs_version_id) do
+      {:ok, %{graph: :not_found, gtfs: :not_found}}
+    end
+  end
+
+  defmodule RuntimeFinishedSuitePhaseMock do
+    def run_with_otp(_organization_id, _gtfs_version_id, callback, opts) do
+      status_callback = Keyword.fetch!(opts, :status_callback)
+
+      status_callback.(%{scope: :gtfs, phase: :cache_check})
+      status_callback.(%{scope: :graph, phase: :building})
+      status_callback.(%{scope: :graph, phase: :done})
+      status_callback.(%{scope: :otp, phase: :ready})
+      status_callback.(%{scope: :suite, phase: :running, completed: 0, total: 1, test_case_id: "case-1"})
+      status_callback.(%{scope: :suite, phase: :finishing, completed: 1, total: 1})
+      status_callback.(%{scope: :suite, phase: :finished, completed: 1, total: 1})
+
       Process.sleep(120)
 
       callback.(%Session{
@@ -235,7 +274,46 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       html = render(view)
 
       assert html =~ "Building OTP graph..." or
+               html =~ "Running pathways suite" or
                html =~ "Pathways trip test run started. Export preparation complete."
+    end
+
+    test "pathways suite phase progress is consumed and rendered", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      Process.sleep(100)
+
+      html = render(view)
+      assert html =~ "Running pathways suite"
+    end
+
+    test "pathways suite finished phase is consumed and rendered", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      Application.put_env(:gtfs_planner, :otp_runtime_module, RuntimeFinishedSuitePhaseMock)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      Process.sleep(50)
+
+      html = render(view)
+      assert html =~ "Pathways suite finished"
     end
 
     test "uses configured runtime module for pathways prep failures", %{
