@@ -63,12 +63,12 @@ RUN apt-get update --allow-releaseinfo-change && apt-get install -y --no-install
     ca-certificates \
     curl \
     dumb-init \
-    gnupg \
     && mkdir -p /etc/apt/keyrings \
-    && curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public | gpg --dearmor -o /etc/apt/keyrings/adoptium.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb bookworm main" > /etc/apt/sources.list.d/adoptium.list \
+    && curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public -o /etc/apt/keyrings/adoptium.asc \
+    && echo "deb [signed-by=/etc/apt/keyrings/adoptium.asc] https://packages.adoptium.net/artifactory/deb bookworm main" > /etc/apt/sources.list.d/adoptium.list \
+    && rm -rf /var/lib/apt/lists/* \
     && apt-get update \
-    && apt-get install -y --no-install-recommends temurin-21-jre \
+    && apt-get install -y --no-install-recommends temurin-21-jre-headless \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives && \
     export DATABASE_URL= SECRET_KEY_BASE= GEOAPIFY_API_KEY= && \
     /app/bin/gtfs_planner eval "[_ | _] = :crypto.supports()" || exit 1 && \
