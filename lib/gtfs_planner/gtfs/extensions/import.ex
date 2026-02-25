@@ -301,6 +301,26 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
   end
 
   defp parse_decimal(nil), do: nil
-  defp parse_decimal(val) when is_binary(val), do: Decimal.new(val)
+
+  defp parse_decimal(val) when is_binary(val) do
+    case Decimal.parse(val) do
+      {decimal, ""} ->
+        decimal
+
+      {decimal, rest} ->
+        Logger.warning(
+          "Extensions import: decimal value #{inspect(val)} has unparsed remainder #{inspect(rest)}, skipping"
+        )
+
+        decimal
+
+      :error ->
+        Logger.warning(
+          "Extensions import: invalid decimal value #{inspect(val)} in manifest, skipping"
+        )
+
+        nil
+    end
+  end
   defp parse_decimal(%Decimal{} = d), do: d
 end
