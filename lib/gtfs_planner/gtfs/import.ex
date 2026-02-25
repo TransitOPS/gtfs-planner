@@ -584,12 +584,9 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   defp extract_extensions_image_zip_path(filename) do
-    marker = "_pathways_extensions/"
-    lower = String.downcase(filename)
-
-    case :binary.match(lower, marker) do
-      {idx, _len} -> binary_part(filename, idx, byte_size(filename) - idx)
-      :nomatch -> nil
+    case Regex.run(~r/_pathways_extensions\//i, filename, return: :index) do
+      [{idx, _len}] -> binary_part(filename, idx, byte_size(filename) - idx)
+      nil -> nil
     end
   end
 
