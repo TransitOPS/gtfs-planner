@@ -286,23 +286,29 @@ defmodule GtfsPlanner.Gtfs.Import do
 
     {categorized, unrecognized, extensions} =
       Enum.reduce(files, initial_acc, fn file, {acc, unrecognized_acc, ext_acc} ->
-        lower = String.downcase(file.filename)
+        normalized_filename = normalize_uploaded_filename(file.filename)
+        lower = String.downcase(normalized_filename)
+        basename = Path.basename(lower)
 
         cond do
-          Map.has_key?(@filename_to_spec, lower) ->
-            {key, _filename, _schema, _parser_fun, _phase} = Map.fetch!(@filename_to_spec, lower)
-            {Map.update!(acc, key, &[file | &1]), unrecognized_acc, ext_acc}
+          Map.has_key?(@filename_to_spec, basename) ->
+            {key, _filename, _schema, _parser_fun, _phase} =
+              Map.fetch!(@filename_to_spec, basename)
 
-          lower == "_pathways_extensions.json" ->
+            normalized_file = %{file | filename: basename}
+            {Map.update!(acc, key, &[normalized_file | &1]), unrecognized_acc, ext_acc}
+
+          basename == "_pathways_extensions.json" ->
             {acc, unrecognized_acc, Map.put(ext_acc, :json, file.content)}
 
-          String.starts_with?(lower, "_pathways_extensions/") ->
+          is_binary(extract_extensions_image_zip_path(normalized_filename)) ->
+            image_zip_path = extract_extensions_image_zip_path(normalized_filename)
             images = Map.get(ext_acc, :images, %{})
-            images = Map.put(images, file.filename, file.content)
+            images = Map.put(images, image_zip_path, file.content)
             {acc, unrecognized_acc, Map.put(ext_acc, :images, images)}
 
           true ->
-            {acc, [file.filename | unrecognized_acc], ext_acc}
+            {acc, [normalized_filename | unrecognized_acc], ext_acc}
         end
       end)
 
@@ -510,16 +516,21 @@ defmodule GtfsPlanner.Gtfs.Import do
             # Normalize entries and reject nested archives.
             normalized_entries =
               Enum.flat_map(entries, fn {name, content} ->
-                filename = to_string(name)
+                filename = normalize_uploaded_filename(to_string(name))
 
-                if String.ends_with?(String.downcase(filename), ".zip") do
-                  Logger.warning(
-                    "Rejecting nested zip entry #{filename} in archive #{file.filename}"
-                  )
+                cond do
+                  ignore_zip_entry?(filename) ->
+                    []
 
-                  []
-                else
-                  [%{filename: filename, content: content}]
+                  String.ends_with?(String.downcase(filename), ".zip") ->
+                    Logger.warning(
+                      "Rejecting nested zip entry #{filename} in archive #{file.filename}"
+                    )
+
+                    []
+
+                  true ->
+                    [%{filename: filename, content: content}]
                 end
               end)
 
@@ -543,9 +554,7 @@ defmodule GtfsPlanner.Gtfs.Import do
             end
 
           {:error, reason} ->
-            Logger.warning(
-              "Failed to expand zip archive #{file.filename}: #{inspect(reason)}"
-            )
+            Logger.warning("Failed to expand zip archive #{file.filename}: #{inspect(reason)}")
 
             # Pass through the original archive so that it is not silently
             # dropped and can be surfaced by later stages.
@@ -555,6 +564,33 @@ defmodule GtfsPlanner.Gtfs.Import do
         [file]
       end
     end)
+  end
+
+  defp normalize_uploaded_filename(filename) when is_binary(filename) do
+    filename
+    |> String.replace("\\", "/")
+    |> String.trim_leading("./")
+    |> String.trim_leading("/")
+  end
+
+  defp ignore_zip_entry?(filename) do
+    lower = String.downcase(filename)
+    basename = Path.basename(lower)
+
+    filename == "" or
+      String.ends_with?(filename, "/") or
+      String.starts_with?(lower, "__macosx/") or
+      String.starts_with?(basename, "._")
+  end
+
+  defp extract_extensions_image_zip_path(filename) do
+    marker = "_pathways_extensions/"
+    lower = String.downcase(filename)
+
+    case :binary.match(lower, marker) do
+      {idx, _len} -> binary_part(filename, idx, byte_size(filename) - idx)
+      :nomatch -> nil
+    end
   end
 
   # Runs the extensions import phase after standard GTFS phases complete.

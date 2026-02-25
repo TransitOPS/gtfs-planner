@@ -322,5 +322,6 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
         nil
     end
   end
+
   defp parse_decimal(%Decimal{} = d), do: d
 end
