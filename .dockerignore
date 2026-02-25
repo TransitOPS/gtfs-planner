@@ -1,0 +1,17 @@
+.git
+.github
+.elixir_ls
+.formatter.exs
+_build
+deps
+node_modules
+assets/node_modules
+cover
+tmp
+logfile
+*.log
+
+# Large local/dev artifacts not needed in production image
+priv/otp
+priv/gtfs_validator
+priv/static/uploads
