@@ -13,6 +13,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
   alias GtfsPlanner.Gtfs.Extensions.Manifest
 
   require Logger
+  @safe_path_component ~r/^[A-Za-z0-9._-]+$/
 
   @doc """
   Imports extensions data from manifest JSON and image binaries.
@@ -235,36 +236,12 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
   defp restore_images(organization_id, diagram_images, image_files_by_zip_path) do
     uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+    uploads_root = Path.expand(Path.join([uploads_path, "diagrams", organization_id]))
 
     Enum.count(diagram_images, fn entry ->
       case Map.fetch(image_files_by_zip_path, entry.zip_path) do
         {:ok, binary} ->
-          dest_dir =
-            Path.join([uploads_path, "diagrams", organization_id, entry.station_stop_id])
-
-          dest_path = Path.join(dest_dir, entry.filename)
-
-          case File.mkdir_p(dest_dir) do
-            :ok ->
-              case File.write(dest_path, binary) do
-                :ok ->
-                  true
-
-                {:error, reason} ->
-                  Logger.warning(
-                    "Extensions import: failed to write image #{dest_path}: #{inspect(reason)}"
-                  )
-
-                  false
-              end
-
-            {:error, reason} ->
-              Logger.warning(
-                "Extensions import: failed to create directory #{dest_dir}: #{inspect(reason)}"
-              )
-
-              false
-          end
+          write_image_file(uploads_root, entry, binary)
 
         :error ->
           Logger.warning("Extensions import: missing image binary for #{entry.zip_path}")
@@ -274,6 +251,54 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
   end
 
   # -- helpers ----------------------------------------------------------------
+
+  defp write_image_file(uploads_root, entry, binary) do
+    if safe_path_component?(entry.station_stop_id) and safe_path_component?(entry.filename) do
+      dest_dir = Path.join(uploads_root, entry.station_stop_id)
+      dest_path = Path.join(dest_dir, entry.filename)
+
+      with :ok <- ensure_within_root(uploads_root, dest_dir),
+           :ok <- ensure_within_root(uploads_root, dest_path),
+           :ok <- File.mkdir_p(dest_dir),
+           :ok <- File.write(dest_path, binary) do
+        true
+      else
+        {:error, reason} ->
+          Logger.warning(
+            "Extensions import: failed to restore image #{entry.zip_path}: #{inspect(reason)}"
+          )
+
+          false
+      end
+    else
+      Logger.warning(
+        "Extensions import: rejected unsafe image path components for #{entry.zip_path}"
+      )
+
+      false
+    end
+  end
+
+  defp safe_path_component?(value) when is_binary(value) do
+    value != "" and
+      value != "." and
+      value != ".." and
+      not String.contains?(value, ["/", "\\", <<0>>]) and
+      String.match?(value, @safe_path_component)
+  end
+
+  defp safe_path_component?(_), do: false
+
+  defp ensure_within_root(root, path) do
+    expanded_root = Path.expand(root)
+    expanded_path = Path.expand(path)
+
+    if expanded_path == expanded_root or String.starts_with?(expanded_path, expanded_root <> "/") do
+      :ok
+    else
+      {:error, :path_traversal}
+    end
+  end
 
   defp parse_decimal(nil), do: nil
   defp parse_decimal(val) when is_binary(val), do: Decimal.new(val)

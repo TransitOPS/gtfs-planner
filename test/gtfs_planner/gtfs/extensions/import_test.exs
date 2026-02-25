@@ -390,5 +390,52 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
       assert counts.extensions_images == 0
       assert counts.extensions_stop_levels == 1
     end
+
+    test "rejects unsafe filename path traversal attempts", %{
+      org_id: org_id,
+      version_id: version_id
+    } do
+      stop_fixture(org_id, version_id, stop_id: "station_main", location_type: 1)
+      level_fixture(org_id, version_id, level_id: "L1")
+
+      manifest =
+        Manifest.build(
+          [],
+          [
+            %{
+              stop_id: "station_main",
+              level_id: "L1",
+              diagram_filename: "../escape.png",
+              scale_point_a: nil,
+              scale_point_b: nil,
+              scale_distance_meters: nil,
+              scale_meters_per_unit: nil
+            }
+          ],
+          [],
+          [
+            %{
+              station_stop_id: "station_main",
+              filename: "../escape.png",
+              zip_path: "_pathways_extensions/diagrams/station_main/../escape.png"
+            }
+          ]
+        )
+
+      images = %{
+        "_pathways_extensions/diagrams/station_main/../escape.png" => "fake png"
+      }
+
+      assert {:ok, counts} =
+               Import.import_extensions(org_id, version_id, Manifest.encode(manifest), images)
+
+      assert counts.extensions_images == 0
+
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+      refute File.exists?(Path.join([uploads_path, "diagrams", org_id, "escape.png"]))
+    after
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+      File.rm_rf(Path.join(uploads_path, "diagrams"))
+    end
   end
 end
