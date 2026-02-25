@@ -57,8 +57,9 @@ ENV MIX_ENV=prod TERM=xterm LANG="C.UTF-8" PORT=4000
 
 COPY --from=elixir-builder --chown=nobody:root /app/_build/prod/rel/gtfs_planner .
 
-# Install dependencies including Java 21 from Eclipse Temurin
-RUN apt-get update --allow-releaseinfo-change && apt-get upgrade -y --no-install-recommends && apt-get install -y --no-install-recommends \
+# Install runtime dependencies including Java 21 from Eclipse Temurin.
+# Avoid full distro upgrades during image builds to reduce CI disk pressure.
+RUN apt-get update --allow-releaseinfo-change && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     dumb-init \
