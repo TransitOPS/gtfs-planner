@@ -493,20 +493,63 @@ defmodule GtfsPlanner.Gtfs.Import do
     parse_csv_fields(line)
   end
 
+  @max_zip_entries 10_000
+  @max_zip_uncompressed_bytes 100 * 1024 * 1024
+
   # Expands any .zip file entries into their constituent files.
   # Non-zip entries pass through unchanged.
+  # Applies basic safety limits to avoid resource exhaustion and rejects
+  # nested archives inside a zip. On unzip failure or limit violation,
+  # the original archive file is passed through so it can be surfaced
+  # by later processing instead of being silently dropped.
   defp expand_archives(files) do
     Enum.flat_map(files, fn file ->
       if String.ends_with?(String.downcase(file.filename), ".zip") do
         case :zip.unzip(file.content, [:memory]) do
           {:ok, entries} ->
-            Enum.map(entries, fn {name, content} ->
-              %{filename: to_string(name), content: content}
-            end)
+            # Normalize entries and reject nested archives.
+            normalized_entries =
+              Enum.flat_map(entries, fn {name, content} ->
+                filename = to_string(name)
+
+                if String.ends_with?(String.downcase(filename), ".zip") do
+                  Logger.warning(
+                    "Rejecting nested zip entry #{filename} in archive #{file.filename}"
+                  )
+
+                  []
+                else
+                  [%{filename: filename, content: content}]
+                end
+              end)
+
+            entries_count = length(normalized_entries)
+
+            total_bytes =
+              Enum.reduce(normalized_entries, 0, fn %{content: content}, acc ->
+                acc + byte_size(content)
+              end)
+
+            if entries_count > @max_zip_entries or
+                 total_bytes > @max_zip_uncompressed_bytes do
+              Logger.warning(
+                "Zip archive #{file.filename} exceeds safety limits " <>
+                  "(entries=#{entries_count}, bytes=#{total_bytes}), skipping expansion"
+              )
+
+              [file]
+            else
+              normalized_entries
+            end
 
           {:error, reason} ->
-            Logger.warning("Failed to expand zip archive #{file.filename}: #{inspect(reason)}")
-            []
+            Logger.warning(
+              "Failed to expand zip archive #{file.filename}: #{inspect(reason)}"
+            )
+
+            # Pass through the original archive so that it is not silently
+            # dropped and can be surfaced by later stages.
+            [file]
         end
       else
         [file]
