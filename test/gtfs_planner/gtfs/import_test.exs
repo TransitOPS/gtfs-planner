@@ -554,5 +554,141 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       # Extensions files should not appear in unrecognized
       assert unrecognized == []
     end
+
+    test "zip with top-level folder imports extensions and restores image files", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      levels_content = "level_id,level_index,level_name\n32095_BUSWAY,0.0,Busway"
+
+      stops_content =
+        "stop_id,stop_name,stop_lat,stop_lon,location_type\n32095,Olney Transit Center,40.0,-75.0,1"
+
+      manifest_json =
+        Jason.encode!(%{
+          "version" => 1,
+          "exported_at" => "2026-02-25T00:00:00Z",
+          "stop_diagram_coordinates" => [
+            %{"stop_id" => "32095", "diagram_coordinate" => %{"x" => 49.4, "y" => 19.6}}
+          ],
+          "stop_levels" => [
+            %{
+              "stop_id" => "32095",
+              "level_id" => "32095_BUSWAY",
+              "diagram_filename" => "lvl_busway.png",
+              "scale_point_a" => %{"x" => 10.0, "y" => 20.0},
+              "scale_point_b" => %{"x" => 20.0, "y" => 20.0},
+              "scale_distance_meters" => "3.0",
+              "scale_meters_per_unit" => "0.3"
+            }
+          ],
+          "route_active_flags" => [],
+          "diagram_images" => [
+            %{
+              "station_stop_id" => "32095",
+              "filename" => "lvl_busway.png",
+              "zip_path" => "_pathways_extensions/diagrams/32095/lvl_busway.png"
+            }
+          ]
+        })
+
+      {:ok, {_name, zip_binary}} =
+        :zip.create(
+          ~c"gtfs.zip",
+          [
+            {~c"gtfs_export/levels.txt", levels_content},
+            {~c"gtfs_export/stops.txt", stops_content},
+            {~c"gtfs_export/_pathways_extensions.json", manifest_json},
+            {~c"gtfs_export/_pathways_extensions/diagrams/32095/lvl_busway.png", "fake png"},
+            {~c"__MACOSX/._levels.txt", "ignored"}
+          ],
+          [:memory]
+        )
+
+      files = [%{filename: "gtfs.zip", content: zip_binary}]
+
+      assert {:ok, {counts, unrecognized, _topic}} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert counts.levels == 1
+      assert counts.stops == 1
+      assert counts.extensions_stop_coordinates == 1
+      assert counts.extensions_stop_levels == 1
+      assert counts.extensions_images == 1
+      assert unrecognized == []
+
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+      restored = Path.join([uploads_path, "diagrams", organization.id, "32095", "lvl_busway.png"])
+      assert File.read!(restored) == "fake png"
+    end
+
+    test "zip without root folder imports extensions and restores image files", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      levels_content = "level_id,level_index,level_name\n32095_BUSWAY,0.0,Busway"
+
+      stops_content =
+        "stop_id,stop_name,stop_lat,stop_lon,location_type\n32095,Olney Transit Center,40.0,-75.0,1"
+
+      manifest_json =
+        Jason.encode!(%{
+          "version" => 1,
+          "exported_at" => "2026-02-25T00:00:00Z",
+          "stop_diagram_coordinates" => [
+            %{"stop_id" => "32095", "diagram_coordinate" => %{"x" => 49.4, "y" => 19.6}}
+          ],
+          "stop_levels" => [
+            %{
+              "stop_id" => "32095",
+              "level_id" => "32095_BUSWAY",
+              "diagram_filename" => "lvl_busway_no_root.png",
+              "scale_point_a" => %{"x" => 10.0, "y" => 20.0},
+              "scale_point_b" => %{"x" => 20.0, "y" => 20.0},
+              "scale_distance_meters" => "3.0",
+              "scale_meters_per_unit" => "0.3"
+            }
+          ],
+          "route_active_flags" => [],
+          "diagram_images" => [
+            %{
+              "station_stop_id" => "32095",
+              "filename" => "lvl_busway_no_root.png",
+              "zip_path" => "_pathways_extensions/diagrams/32095/lvl_busway_no_root.png"
+            }
+          ]
+        })
+
+      {:ok, {_name, zip_binary}} =
+        :zip.create(
+          ~c"gtfs.zip",
+          [
+            {~c"levels.txt", levels_content},
+            {~c"stops.txt", stops_content},
+            {~c"_pathways_extensions.json", manifest_json},
+            {~c"_pathways_extensions/diagrams/32095/lvl_busway_no_root.png", "fake png no root"}
+          ],
+          [:memory]
+        )
+
+      files = [%{filename: "gtfs.zip", content: zip_binary}]
+
+      assert {:ok, {counts, unrecognized, _topic}} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert counts.levels == 1
+      assert counts.stops == 1
+      assert counts.extensions_stop_coordinates == 1
+      assert counts.extensions_stop_levels == 1
+      assert counts.extensions_images == 1
+      assert unrecognized == []
+
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+
+      restored =
+        Path.join([uploads_path, "diagrams", organization.id, "32095", "lvl_busway_no_root.png"])
+
+      assert File.read!(restored) == "fake png no root"
+    end
   end
 end
