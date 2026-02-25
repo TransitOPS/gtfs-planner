@@ -21,6 +21,7 @@ defmodule GtfsPlanner.Gtfs.Export do
 
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Export.{FileSpec, CsvWriter, StreamBuilder}
+  alias GtfsPlanner.Gtfs.Extensions
 
   require Logger
 
@@ -72,8 +73,10 @@ defmodule GtfsPlanner.Gtfs.Export do
 
       case result do
         {:ok, file_paths} ->
-          # Create ZIP from exported files
-          zip_binary = create_zip_archive(file_paths)
+          # Create ZIP from exported files, appending extensions entries
+          zip_binary =
+            create_zip_archive(file_paths, organization_id, gtfs_version_id)
+
           {:ok, zip_binary}
 
         {:error, reason} ->
@@ -189,7 +192,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   end
 
   # Creates ZIP archive from file paths and returns binary
-  defp create_zip_archive(file_paths) do
+  defp create_zip_archive(file_paths, organization_id, gtfs_version_id) do
     # Convert file paths to charlist tuples for :zip.create
     files =
       Enum.map(file_paths, fn path ->
@@ -197,6 +200,9 @@ defmodule GtfsPlanner.Gtfs.Export do
         file_content = File.read!(path)
         {filename, file_content}
       end)
+
+    # Append extensions entries (diagram coordinates, stop levels, route flags, images)
+    files = files ++ extensions_zip_entries(organization_id, gtfs_version_id)
 
     # Create ZIP in memory, with explicit error handling
     case :zip.create(~c"gtfs.zip", files, [:memory]) do
@@ -206,5 +212,17 @@ defmodule GtfsPlanner.Gtfs.Export do
       {:error, reason} ->
         raise "Failed to create GTFS ZIP archive: #{inspect(reason)}"
     end
+  end
+
+  defp extensions_zip_entries(organization_id, gtfs_version_id) do
+    {:ok, entries} = Extensions.Export.build_zip_entries(organization_id, gtfs_version_id)
+    entries
+  rescue
+    e ->
+      Logger.warning(
+        "Extensions export failed, continuing without extensions: #{Exception.message(e)}"
+      )
+
+      []
   end
 end

@@ -38,6 +38,9 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   alias GtfsPlanner.{Repo, Gtfs}
   alias GtfsPlanner.Gtfs.Import.{BatchProcessor, RowParser}
+  alias GtfsPlanner.Gtfs.Extensions
+
+  require Logger
 
   @batch_size Application.compile_env(:gtfs_planner, :import_batch_size, 1000)
 
@@ -131,8 +134,11 @@ defmodule GtfsPlanner.Gtfs.Import do
       {:ok, {%{routes: 1, stops: 0, ...}, [], "import:123456"}}
   """
   def import_files(organization_id, gtfs_version_id, files, topic \\ nil) do
+    # Expand any uploaded .zip archives into individual file entries
+    files = expand_archives(files)
+
     # Categorize files by filename (case-insensitive)
-    {categorized, unrecognized_files} = categorize_files(files)
+    {categorized, unrecognized_files, extensions} = categorize_files(files)
 
     # Generate unique progress topic for PubSub if not provided
     topic = topic || "import:#{:erlang.unique_integer()}"
@@ -179,6 +185,7 @@ defmodule GtfsPlanner.Gtfs.Import do
         case phase_2_result do
           {:ok, counts} ->
             counts = Enum.reduce(@supported_count_keys, counts, &Map.put_new(&2, &1, 0))
+            counts = import_extensions_phase(organization_id, gtfs_version_id, extensions, counts)
             {:ok, {counts, unrecognized_files, topic}}
 
           {:error, reason} ->
@@ -270,26 +277,39 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   end
 
-  # Categorizes files by filename into file type buckets
+  # Categorizes files by filename into file type buckets.
+  # Returns {categorized, unrecognized, extensions} where extensions is a map
+  # with optional :json and :images keys for _pathways_extensions data.
   defp categorize_files(files) do
     initial_categorized = Map.new(@supported_count_keys, fn key -> {key, []} end)
-    initial_acc = {initial_categorized, []}
+    initial_acc = {initial_categorized, [], %{}}
 
-    {categorized, unrecognized} =
-      Enum.reduce(files, initial_acc, fn file, {acc, unrecognized_acc} ->
-        case Map.get(@filename_to_spec, String.downcase(file.filename)) do
-          {key, _filename, _schema, _parser_fun, _phase} ->
-            {Map.update!(acc, key, &[file | &1]), unrecognized_acc}
+    {categorized, unrecognized, extensions} =
+      Enum.reduce(files, initial_acc, fn file, {acc, unrecognized_acc, ext_acc} ->
+        lower = String.downcase(file.filename)
 
-          nil ->
-            {acc, [file.filename | unrecognized_acc]}
+        cond do
+          Map.has_key?(@filename_to_spec, lower) ->
+            {key, _filename, _schema, _parser_fun, _phase} = Map.fetch!(@filename_to_spec, lower)
+            {Map.update!(acc, key, &[file | &1]), unrecognized_acc, ext_acc}
+
+          lower == "_pathways_extensions.json" ->
+            {acc, unrecognized_acc, Map.put(ext_acc, :json, file.content)}
+
+          String.starts_with?(lower, "_pathways_extensions/") ->
+            images = Map.get(ext_acc, :images, %{})
+            images = Map.put(images, file.filename, file.content)
+            {acc, unrecognized_acc, Map.put(ext_acc, :images, images)}
+
+          true ->
+            {acc, [file.filename | unrecognized_acc], ext_acc}
         end
       end)
 
     categorized =
       Map.new(categorized, fn {key, files_list} -> {key, Enum.reverse(files_list)} end)
 
-    {categorized, Enum.reverse(unrecognized)}
+    {categorized, Enum.reverse(unrecognized), extensions}
   end
 
   @doc """
@@ -471,6 +491,95 @@ defmodule GtfsPlanner.Gtfs.Import do
   """
   def parse_csv_line(line) do
     parse_csv_fields(line)
+  end
+
+  @max_zip_entries 10_000
+  @max_zip_uncompressed_bytes 100 * 1024 * 1024
+
+  # Expands any .zip file entries into their constituent files.
+  # Non-zip entries pass through unchanged.
+  # Applies basic safety limits to avoid resource exhaustion and rejects
+  # nested archives inside a zip. On unzip failure or limit violation,
+  # the original archive file is passed through so it can be surfaced
+  # by later processing instead of being silently dropped.
+  defp expand_archives(files) do
+    Enum.flat_map(files, fn file ->
+      if String.ends_with?(String.downcase(file.filename), ".zip") do
+        case :zip.unzip(file.content, [:memory]) do
+          {:ok, entries} ->
+            # Normalize entries and reject nested archives.
+            normalized_entries =
+              Enum.flat_map(entries, fn {name, content} ->
+                filename = to_string(name)
+
+                if String.ends_with?(String.downcase(filename), ".zip") do
+                  Logger.warning(
+                    "Rejecting nested zip entry #{filename} in archive #{file.filename}"
+                  )
+
+                  []
+                else
+                  [%{filename: filename, content: content}]
+                end
+              end)
+
+            entries_count = length(normalized_entries)
+
+            total_bytes =
+              Enum.reduce(normalized_entries, 0, fn %{content: content}, acc ->
+                acc + byte_size(content)
+              end)
+
+            if entries_count > @max_zip_entries or
+                 total_bytes > @max_zip_uncompressed_bytes do
+              Logger.warning(
+                "Zip archive #{file.filename} exceeds safety limits " <>
+                  "(entries=#{entries_count}, bytes=#{total_bytes}), skipping expansion"
+              )
+
+              [file]
+            else
+              normalized_entries
+            end
+
+          {:error, reason} ->
+            Logger.warning(
+              "Failed to expand zip archive #{file.filename}: #{inspect(reason)}"
+            )
+
+            # Pass through the original archive so that it is not silently
+            # dropped and can be surfaced by later stages.
+            [file]
+        end
+      else
+        [file]
+      end
+    end)
+  end
+
+  # Runs the extensions import phase after standard GTFS phases complete.
+  # On failure, logs warning and returns counts unchanged.
+  defp import_extensions_phase(_organization_id, _gtfs_version_id, extensions, counts)
+       when not is_map_key(extensions, :json) do
+    counts
+  end
+
+  defp import_extensions_phase(organization_id, gtfs_version_id, extensions, counts) do
+    image_files = Map.get(extensions, :images, %{})
+
+    case Extensions.Import.import_extensions(
+           organization_id,
+           gtfs_version_id,
+           extensions.json,
+           image_files
+         ) do
+      {:ok, ext_counts} ->
+        Map.merge(counts, ext_counts)
+
+      {:error, reason} ->
+        Logger.warning("Extensions import failed: #{inspect(reason)}")
+        counts
+    end
   end
 
   # Recursive CSV field parser that handles quoted fields and escaped quotes

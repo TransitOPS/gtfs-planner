@@ -37,9 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       assert html =~ "Import GTFS"
       assert html =~ "GTFS Files"
-      assert html =~ "levels.txt"
-      assert html =~ "stops.txt"
-      assert html =~ "pathways.txt"
+      assert html =~ ".zip archive"
     end
 
     test "redirects with error for invalid version UUID", %{
@@ -449,6 +447,75 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # Assert result box is shown with correct counts
       assert html =~ "Import Successful"
       assert html =~ "Imported 1 levels, 1 stops, 0 pathways"
+    end
+  end
+
+  describe "ImportLive zip upload acceptance" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      %{user: user, organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test ".zip upload is accepted and shows in entries", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      # Create a minimal zip binary
+      {:ok, {_name, zip_binary}} =
+        :zip.create(~c"gtfs.zip", [{~c"levels.txt", "level_id,level_index\nL1,0.0"}], [:memory])
+
+      view
+      |> file_input("#gtfs-import-form", :gtfs_files, [
+        %{name: "gtfs_export.zip", content: zip_binary, type: "application/zip"}
+      ])
+      |> render_upload("gtfs_export.zip")
+
+      html = render(view)
+
+      # .zip file should show in upload entries without errors
+      assert html =~ "gtfs_export.zip"
+      assert html =~ "uploaded"
+    end
+
+    test ".zip upload does not appear in unrecognized files warning", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      {:ok, {_name, zip_binary}} =
+        :zip.create(~c"gtfs.zip", [{~c"levels.txt", "level_id,level_index\nL1,0.0"}], [:memory])
+
+      view
+      |> file_input("#gtfs-import-form", :gtfs_files, [
+        %{name: "gtfs_export.zip", content: zip_binary, type: "application/zip"}
+      ])
+      |> render_upload("gtfs_export.zip")
+
+      html = render(view)
+
+      # Should not show unrecognized files warning
+      refute html =~ "Unrecognized Files"
     end
   end
 end
