@@ -497,7 +497,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
                 </td>
                 <td :for={pid <- @platform_ids} class="px-2 py-1 text-center">
                   <%= if Map.get(@cell_map, {eid, pid}) do %>
-                    <span class="text-success">&#10003;</span>
+                    <span class="text-emerald-700">&#10003;</span>
                   <% else %>
                     <span class="text-base-content/40">&#10005;</span>
                   <% end %>
@@ -509,9 +509,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
       <% else %>
         <p class="text-sm text-base-content/60">
           {cond do
-            Map.get(@summary, :entrances, 0) == 0 -> "No entrances defined"
-            Map.get(@summary, :platforms, 0) == 0 -> "No platforms defined"
-            true -> "No route data"
+            Map.get(@summary, :entrances, 0) == 0 ->
+              "No entrances defined"
+
+            Map.get(@summary, :boarding_areas, Map.get(@summary, :platforms, 0)) == 0 ->
+              "No boarding areas defined"
+
+            true ->
+              "No route data"
           end}
         </p>
       <% end %>
@@ -648,6 +653,219 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     </div>
     """
   end
+
+  # ============================================================================
+  # Entrance -> Platform Connectivity section
+  # ============================================================================
+
+  attr :section, :map, required: true
+  attr :methodology_mode, :boolean, default: false
+
+  def entrance_platform_connectivity_section(assigns) do
+    item = find_item(assigns.section, "entrance_platform_paths")
+    details = if item, do: item.details || [], else: []
+    summary = if item, do: item.value || %{}, else: %{}
+    {entrance_ids, platform_ids, cell_map} = build_matrix_data(details)
+    grouped_details = group_connectivity_details_by_entrance(details)
+
+    assigns =
+      assigns
+      |> assign(:item, item)
+      |> assign(:details, details)
+      |> assign(:summary, summary)
+      |> assign(:entrance_ids, entrance_ids)
+      |> assign(:platform_ids, platform_ids)
+      |> assign(:cell_map, cell_map)
+      |> assign(:grouped_details, grouped_details)
+
+    ~H"""
+    <section
+      id="report-section-entrance_platform_connectivity"
+      class="rounded-xl border border-base-content/20 bg-base-100"
+    >
+      <header class="border-b border-base-content/20 px-4 py-3 flex items-center justify-between gap-3">
+        <h2 class="text-base font-semibold">{@section.title}</h2>
+        <button
+          id="report-section-entrance_platform_connectivity-methodology-toggle"
+          type="button"
+          phx-click="toggle_methodology"
+          phx-value-section_id="entrance_platform_connectivity"
+          class="text-xs font-medium lowercase text-primary hover:text-primary/80 hover:underline transition-colors"
+        >
+          {if @methodology_mode, do: "back", else: "methodology"}
+        </button>
+      </header>
+
+      <%= if @methodology_mode do %>
+        <div id="report-section-entrance_platform_connectivity-methodology" class="px-4 py-4">
+          <.methodology_table
+            section_id="entrance_platform_connectivity"
+            entries={methodology_entries("entrance_platform_connectivity", @section)}
+          />
+        </div>
+      <% else %>
+        <.entrance_platform_paths_item
+          :if={@item}
+          item={@item}
+          details={@details}
+          summary={@summary}
+          entrance_ids={@entrance_ids}
+          platform_ids={@platform_ids}
+          cell_map={@cell_map}
+          grouped_details={@grouped_details}
+        />
+      <% end %>
+    </section>
+    """
+  end
+
+  attr :item, :map, required: true
+  attr :details, :list, required: true
+  attr :summary, :map, required: true
+  attr :entrance_ids, :list, required: true
+  attr :platform_ids, :list, required: true
+  attr :cell_map, :map, required: true
+  attr :grouped_details, :list, required: true
+
+  defp entrance_platform_paths_item(assigns) do
+    ~H"""
+    <div id="report-item-entrance_platform_paths" class="px-4 py-4 space-y-3">
+      <div class="flex items-start gap-2">
+        <.status_dot status={@item.status} />
+        <div>
+          <p class="text-sm font-medium">{@item.label}</p>
+          <p class="text-xs text-base-content/60 mt-0.5">
+            {Map.get(@summary, :connected_pairs, 0)}/{Map.get(@summary, :total_pairs, 0)} pairs connected
+            · {Map.get(@summary, :entrances, 0)} entrances · {Map.get(
+              @summary,
+              :boarding_areas,
+              Map.get(@summary, :platforms, 0)
+            )} boarding areas
+          </p>
+        </div>
+      </div>
+
+      <%= if @details != [] and @entrance_ids != [] and @platform_ids != [] do %>
+        <div class="overflow-x-auto">
+          <table class="text-xs">
+            <thead>
+              <tr>
+                <th class="pr-6 pb-1 text-left font-medium text-base-content/60 min-w-[8rem]"></th>
+                <th
+                  :for={pid <- @platform_ids}
+                  class="px-2 pb-1 text-center font-mono font-medium text-base-content/60"
+                  title={pid}
+                >
+                  {truncate_id(pid)}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={eid <- @entrance_ids} class="border-t border-base-200">
+                <td class="pr-6 py-1 font-mono text-base-content/60 min-w-[14rem]" title={eid}>
+                  {eid}
+                </td>
+                <td :for={pid <- @platform_ids} class="px-2 py-1 text-center">
+                  <%= if Map.get(@cell_map, {eid, pid}) do %>
+                    <span class="text-emerald-700">&#10003;</span>
+                  <% else %>
+                    <span class="text-base-content/40">&#10005;</span>
+                  <% end %>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      <% else %>
+        <p class="text-sm text-base-content/60">No entrance-platform pairs available.</p>
+      <% end %>
+
+      <div :if={@grouped_details != []} class="space-y-2">
+        <details
+          :for={group <- @grouped_details}
+          id={"report-entrance-#{dom_token(group.entrance_stop_id)}"}
+          class="rounded-lg border border-base-content/15 px-3 py-2"
+        >
+          <summary class="cursor-pointer text-xs font-mono text-base-content/75">
+            Entrance {group.entrance_stop_id}
+          </summary>
+
+          <div class="mt-2 space-y-2">
+            <details
+              :for={detail <- group.pairs}
+              id={pair_details_dom_id(detail.entrance_stop_id, detail.platform_stop_id)}
+              class="rounded-md border border-base-content/10 px-3 py-2"
+            >
+              <summary class="cursor-pointer text-xs font-mono text-base-content/75">
+                {detail.platform_stop_id}
+                <span class={[
+                  "ml-2 font-medium",
+                  detail.reachable && "text-success",
+                  !detail.reachable && "text-error"
+                ]}>
+                  {if detail.reachable, do: "reachable", else: "not reachable"}
+                </span>
+              </summary>
+
+              <%= if detail.reachable and detail.path != [] do %>
+                <div class="mt-2 overflow-x-auto">
+                  <table class="w-full text-xs">
+                    <thead>
+                      <tr class="text-left text-base-content/55">
+                        <th class="pb-1 font-medium">Hop</th>
+                        <th class="pb-1 font-medium">Stop</th>
+                        <th class="pb-1 font-medium">Pathway</th>
+                        <th class="pb-1 font-medium">Mode</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        :for={{hop, index} <- Enum.with_index(detail.path, 1)}
+                        class="border-t border-base-200"
+                      >
+                        <td class="py-1 font-mono">{index}</td>
+                        <td class="py-1 font-mono">{hop.stop_id}</td>
+                        <td class="py-1 font-mono">{hop.pathway_id || "-"}</td>
+                        <td class="py-1">
+                          {if is_integer(hop.pathway_mode),
+                            do: Pathway.mode_label(hop.pathway_mode),
+                            else: "-"}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              <% else %>
+                <p class="mt-2 text-xs text-base-content/60">No directed path found.</p>
+              <% end %>
+            </details>
+          </div>
+        </details>
+      </div>
+    </div>
+    """
+  end
+
+  defp pair_details_dom_id(entrance_stop_id, platform_stop_id) do
+    "report-pair-#{dom_token(entrance_stop_id)}-#{dom_token(platform_stop_id)}"
+  end
+
+  defp dom_token(value) do
+    value
+    |> to_string()
+    |> String.replace(~r/[^A-Za-z0-9_-]/u, "_")
+  end
+
+  defp group_connectivity_details_by_entrance(details) when is_list(details) do
+    details
+    |> Enum.group_by(& &1.entrance_stop_id)
+    |> Enum.map(fn {entrance_stop_id, pairs} ->
+      %{entrance_stop_id: entrance_stop_id, pairs: Enum.sort_by(pairs, & &1.platform_stop_id)}
+    end)
+    |> Enum.sort_by(& &1.entrance_stop_id)
+  end
+
+  defp group_connectivity_details_by_entrance(_), do: []
 
   # ============================================================================
   # Inventory section
@@ -1118,9 +1336,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     [
       %{
         item_id: "step_free_routes",
-        reporting_unit: "connected_pairs/total_pairs + entrance x platform matrix",
+        reporting_unit: "connected_pairs/total_pairs + entrance x boarding matrix",
         methodology:
-          "Build directed adjacency using only pathway modes 1, 3, 5, 6, and 7; evaluate reachability for each entrance-platform pair."
+          "Build directed adjacency using only pathway modes 1, 3, 5, 6, and 7; evaluate reachability for each entrance-boarding pair."
       },
       %{
         item_id: "wheelchair_boarding_distribution",
@@ -1165,6 +1383,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         reporting_unit: "present/total + percent for signage fields",
         methodology:
           "Count signposted_as on all pathways and reversed_signposted_as only when pathway is bidirectional, then compute percentages."
+      }
+    ]
+    |> apply_methodology_labels(item_labels)
+  end
+
+  defp methodology_entries("entrance_platform_connectivity", section) do
+    item_labels = items_for(section) |> Map.new(fn item -> {item.id, item.label} end)
+
+    [
+      %{
+        item_id: "entrance_platform_paths",
+        reporting_unit: "connected_pairs/total_pairs + pair matrix + hop paths",
+        methodology:
+          "Build directed adjacency from all station pathways, then run deterministic shortest-path BFS for each entrance-boarding pair and report hop-by-hop pathway metadata."
       }
     ]
     |> apply_methodology_labels(item_labels)
