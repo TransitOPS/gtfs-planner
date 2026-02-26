@@ -1204,7 +1204,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
         socket
         |> assign(:decisions_by_id, Map.put(socket.assigns.decisions_by_id, id, updated_decision))
-        |> stream_insert(:diff_decisions, updated_decision)
+        |> stream_filtered_diff_decisions()
 
       :error ->
         socket
