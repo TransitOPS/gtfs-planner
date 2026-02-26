@@ -197,7 +197,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     all_child_stops
     |> Enum.filter(&(&1.location_type == 0 and &1.parent_station == station_stop_id))
     |> Enum.sort_by(&(&1.stop_name || &1.stop_id), :asc)
-    |> Enum.map(&{&1.stop_name || &1.stop_id, &1.stop_id})
+    |> Enum.map(fn stop ->
+      label =
+        if stop.stop_name,
+          do: "#{stop.stop_id} - #{stop.stop_name}",
+          else: stop.stop_id
+
+      {label, stop.stop_id}
+    end)
   end
 
   defp stop_belongs_to_station?(stop, station_stop_id, platform_stop_ids) do

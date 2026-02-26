@@ -471,7 +471,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(
                view,
                "#child-stop-form select[name='parent_platform'] option[value='#{platform.stop_id}']",
-               platform.stop_name
+               "#{platform.stop_id} - #{platform.stop_name}"
              )
 
       {:ok, view_without_platforms, _html} =
