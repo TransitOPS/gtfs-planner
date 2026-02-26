@@ -1204,7 +1204,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
         socket
         |> assign(:decisions_by_id, Map.put(socket.assigns.decisions_by_id, id, updated_decision))
-        |> stream_filtered_diff_decisions()
+        |> stream_insert(:diff_decisions, updated_decision)
 
       :error ->
         socket
@@ -1249,7 +1249,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp apply_decision(%DiffDecision{action: :add, entity_type: :stop, uploaded_attrs: attrs})
        when is_map(attrs) do
     attrs
-    |> Gtfs.create_stop()
+    |> Gtfs.import_create_stop()
     |> normalize_apply_result()
   end
 
@@ -1297,7 +1297,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       ])
 
     current_record
-    |> Gtfs.update_stop(managed_attrs)
+    |> Gtfs.import_update_stop(managed_attrs)
     |> normalize_apply_result()
   end
 

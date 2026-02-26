@@ -95,6 +95,31 @@ defmodule GtfsPlanner.Gtfs.StopTest do
     end
   end
 
+  describe "changeset/2 and import_changeset/2 level requirements" do
+    test "changeset/2 requires level_id when parent_station is set" do
+      attrs =
+        base_stop_attrs()
+        |> Map.put(:parent_station, "PARENT_STATION")
+        |> Map.put(:level_id, nil)
+
+      changeset = Stop.changeset(%Stop{}, attrs)
+
+      refute changeset.valid?
+      assert Keyword.has_key?(changeset.errors, :level_id)
+    end
+
+    test "import_changeset/2 allows nil level_id when parent_station is set" do
+      attrs =
+        base_stop_attrs()
+        |> Map.put(:parent_station, "PARENT_STATION")
+        |> Map.put(:level_id, nil)
+
+      changeset = Stop.import_changeset(%Stop{}, attrs)
+
+      assert changeset.valid?
+    end
+  end
+
   defp base_stop_attrs do
     %{
       stop_id: "STOP_1",

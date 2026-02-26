@@ -236,6 +236,27 @@ defmodule GtfsPlanner.GtfsTest do
       assert %{level_id: ["can't be blank"]} = errors_on(changeset)
     end
 
+    test "import_create_stop/1 allows nil level_id when parent_station is set", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{stop_id: "PARENT_STATION_IMPORT", location_type: 1})
+
+      attrs =
+        valid_stop_attrs(%{
+          stop_id: "CHILD_IMPORT_NO_LEVEL",
+          parent_station: station.stop_id,
+          level_id: nil,
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
+
+      assert {:ok, stop} = Gtfs.import_create_stop(attrs)
+      assert stop.parent_station == station.stop_id
+      assert stop.level_id == nil
+    end
+
     test "list_stops/2 returns stops for the given organization and version", %{
       organization: org,
       gtfs_version: version
@@ -335,6 +356,32 @@ defmodule GtfsPlanner.GtfsTest do
 
       assert {:error, changeset} = Gtfs.update_stop(stop, %{stop_id: nil})
       assert %{stop_id: ["can't be blank"]} = errors_on(changeset)
+    end
+
+    test "import_update_stop/2 allows nil level_id when parent_station is set", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{stop_id: "PARENT_UPDATE_IMPORT", location_type: 1})
+
+      level = level_fixture(org.id, version.id, %{level_id: "L_UPDATE_IMPORT", level_index: 0.0})
+
+      child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_UPDATE_IMPORT",
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      assert {:ok, updated_stop} =
+               Gtfs.import_update_stop(child, %{
+                 parent_station: station.stop_id,
+                 level_id: nil
+               })
+
+      assert updated_stop.parent_station == station.stop_id
+      assert updated_stop.level_id == nil
     end
 
     test "delete_stop/1 deletes the stop", %{organization: org, gtfs_version: version} do
