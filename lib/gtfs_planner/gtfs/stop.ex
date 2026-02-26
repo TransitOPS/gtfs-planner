@@ -56,6 +56,23 @@ defmodule GtfsPlanner.Gtfs.Stop do
   @doc "Creates a changeset for a stop."
   def changeset(stop, attrs) do
     stop
+    |> base_changeset(attrs)
+    |> then(fn changeset ->
+      if get_field(changeset, :parent_station) not in [nil, ""] do
+        validate_required(changeset, [:level_id])
+      else
+        changeset
+      end
+    end)
+  end
+
+  @doc "Creates an import changeset for a stop with permissive parent/level validation."
+  def import_changeset(stop, attrs) do
+    base_changeset(stop, attrs)
+  end
+
+  defp base_changeset(stop, attrs) do
+    stop
     |> cast(attrs, [
       :stop_id,
       :stop_name,
@@ -72,13 +89,6 @@ defmodule GtfsPlanner.Gtfs.Stop do
       :level_id
     ])
     |> validate_required([:stop_id, :organization_id, :gtfs_version_id])
-    |> then(fn changeset ->
-      if get_field(changeset, :parent_station) not in [nil, ""] do
-        validate_required(changeset, [:level_id])
-      else
-        changeset
-      end
-    end)
     |> validate_inclusion(:location_type, 0..4)
     |> validate_inclusion(:wheelchair_boarding, 0..2)
     |> validate_number(:stop_lat, greater_than_or_equal_to: -90, less_than_or_equal_to: 90)
