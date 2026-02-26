@@ -522,6 +522,67 @@ defmodule GtfsPlanner.GtfsTest do
       assert is_nil(Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id))
     end
 
+    test "remove_child_stop_from_diagram/4 clears nested boarding area and deletes connected pathways",
+         %{
+           organization: org,
+           gtfs_version: version
+         } do
+      station =
+        stop_fixture(org.id, version.id, %{stop_id: "STATION_RM_NESTED", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_RM_NESTED",
+          level_name: "Nested",
+          level_index: 0.0
+        })
+
+      platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_RM_NESTED",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      boarding_area =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARDING_RM_NESTED",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 22.0}
+        })
+
+      sibling =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SIBLING_RM_NESTED",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 14.0, "y" => 24.0}
+        })
+
+      pathway =
+        pathway_fixture(org.id, version.id, boarding_area.stop_id, sibling.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      assert {:ok, updated} =
+               Gtfs.remove_child_stop_from_diagram(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 boarding_area.id
+               )
+
+      assert is_nil(updated.diagram_coordinate)
+      assert is_nil(updated.level_id)
+      assert is_nil(Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id))
+    end
+
     test "remove_child_stop_from_diagram/4 returns :not_found for wrong station scope", %{
       organization: org,
       gtfs_version: version
@@ -605,6 +666,51 @@ defmodule GtfsPlanner.GtfsTest do
       assert Gtfs.get_stop(child_a.id) == nil
       assert is_nil(Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id))
       assert Gtfs.get_stop(child_b.id).id == child_b.id
+    end
+
+    test "delete_child_stop/4 deletes nested boarding area within station scope", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{stop_id: "STATION_DEL_NESTED", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_DEL_NESTED",
+          level_name: "Nested",
+          level_index: 0.0
+        })
+
+      platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_DEL_NESTED",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      boarding_area =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARDING_DEL_NESTED",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 22.0}
+        })
+
+      assert {:ok, deleted} =
+               Gtfs.delete_child_stop(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 boarding_area.id
+               )
+
+      assert deleted.id == boarding_area.id
+      assert Gtfs.get_stop(boarding_area.id) == nil
+      assert Gtfs.get_stop(platform.id).id == platform.id
     end
 
     test "delete_child_stop/4 returns :not_found for wrong station scope", %{

@@ -1952,6 +1952,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :reposition_mode, :boolean, default: false
   attr :reposition_search, :string, default: ""
   attr :reposition_stops, :list, default: []
+  attr :platform_options, :list, default: []
 
   def child_stop_drawer(assigns) do
     show_toggle =
@@ -2021,6 +2022,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <.child_stop_form
         :if={@pending_xy && !(@reposition_mode && @selected_stop_id == nil)}
         child_stop_form={@child_stop_form}
+        platform_options={@platform_options}
         selected_stop_id={@selected_stop_id}
         pending_xy={@pending_xy}
         all_levels={@all_levels}
@@ -2187,6 +2189,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :editing_level, :boolean, default: false
   attr :stop_id_mode, :atom, default: :auto
   attr :active_level, :any, default: nil
+  attr :platform_options, :list, default: []
 
   defp child_stop_form(assigns) do
     # Location type options for select (GTFS spec allows 0-4 for child stops)
@@ -2220,6 +2223,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:current_level_id, current_level_id || "")
       |> assign(:current_level_display, current_level_display)
       |> assign(:is_new_stop, assigns.selected_stop_id == nil)
+      |> assign(:location_type, location_type)
       |> assign(:show_platform_code, location_type in [0, 4])
 
     ~H"""
@@ -2304,6 +2308,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         placeholder="e.g., 2A"
         help="Optional"
       />
+
+      <.input
+        :if={@location_type == 4 && @platform_options != []}
+        field={@child_stop_form[:parent_platform]}
+        type="select"
+        label="Parent Platform"
+        options={[{"— None (under station)", ""} | @platform_options]}
+        help="Optional"
+      />
+
+      <p
+        :if={@location_type == 4 && @platform_options == []}
+        id="parent-platform-info"
+        class="text-sm text-base-content/70"
+      >
+        No platforms defined for this station yet.
+      </p>
 
       <div class="grid grid-cols-2 gap-4">
         <.input

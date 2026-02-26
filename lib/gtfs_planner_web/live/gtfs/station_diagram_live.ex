@@ -49,6 +49,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:reposition_mode, false)
      |> assign(:reposition_search, "")
      |> assign(:reposition_stops, [])
+     |> assign(:platform_options, [])
+     |> assign(:platform_stop_ids, MapSet.new())
      |> assign(:editing_child_stop, nil)
      |> assign(:editing_level, false)
      |> assign(:stop_id_mode, :auto)
@@ -143,6 +145,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:cross_level_badges_by_stop, %{})
     |> assign(:walkability_test_stop_ids, %{})
     |> assign(:walkability_tests_list, [])
+    |> assign(:platform_options, [])
+    |> assign(:platform_stop_ids, MapSet.new())
   end
 
   defp load_level_data(socket, level) do
@@ -154,6 +158,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     all_child_stops = Gtfs.list_child_stops_for_level(station.id, level.id)
     child_stops_on_level = Enum.filter(all_child_stops, & &1.on_active_level)
     child_stop_ids = Enum.map(child_stops_on_level, & &1.stop_id)
+    platforms_for_station = station_platform_options(all_child_stops, station.stop_id)
+    platform_stop_ids = platforms_for_station |> Enum.map(&elem(&1, 1)) |> MapSet.new()
 
     walkability_test_stop_ids =
       Validations.stop_ids_with_walkability_tests(organization_id, child_stop_ids)
@@ -183,6 +189,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:cross_level_badges_by_stop, cross_level_badges_by_stop)
     |> assign(:walkability_test_stop_ids, walkability_test_stop_ids)
     |> assign(:walkability_tests_list, walkability_tests_list)
+    |> assign(:platform_options, platforms_for_station)
+    |> assign(:platform_stop_ids, platform_stop_ids)
+  end
+
+  defp station_platform_options(all_child_stops, station_stop_id) do
+    all_child_stops
+    |> Enum.filter(&(&1.location_type == 0 and &1.parent_station == station_stop_id))
+    |> Enum.sort_by(&(&1.stop_name || &1.stop_id), :asc)
+    |> Enum.map(&{&1.stop_name || &1.stop_id, &1.stop_id})
   end
 
   defp active_level_stop_ids(all_child_stops, level) do
@@ -288,6 +303,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pending_xy={@pending_xy}
           selected_stop_id={@selected_stop_id}
           child_stop_form={@child_stop_form}
+          platform_options={@platform_options}
           stop_id_mode={@stop_id_mode}
           mode={@mode}
           all_levels={@all_levels}
@@ -540,9 +556,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_event("reposition_stop", %{"id" => id}, socket) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
     pending_xy = socket.assigns.pending_xy
     active_level = socket.assigns.active_level
+    reposition_stops = socket.assigns.reposition_stops
     stop = Gtfs.get_stop(id)
 
     cond do
@@ -552,7 +568,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       stop.organization_id != organization_id or stop.gtfs_version_id != gtfs_version_id ->
         {:noreply, put_flash(socket, :error, "Invalid stop selection")}
 
-      stop.parent_station != station.stop_id ->
+      not Enum.any?(reposition_stops, &(&1.id == stop.id)) ->
         {:noreply, put_flash(socket, :error, "Invalid stop selection")}
 
       is_nil(pending_xy) or is_nil(active_level) ->
@@ -606,12 +622,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     stop = Gtfs.get_stop!(id)
     coord = stop.diagram_coordinate
     pending_xy = %{x: to_float(coord["x"]), y: to_float(coord["y"])}
+    station = socket.assigns.station
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
+
+    parent_platform =
+      if stop.location_type == 4 and
+           MapSet.member?(platform_stop_ids, stop.parent_station) do
+        stop.parent_station
+      else
+        ""
+      end
 
     form =
       to_form(%{
         "stop_id" => stop.stop_id,
         "stop_name" => stop.stop_name,
         "location_type" => to_string(stop.location_type),
+        "parent_platform" => parent_platform,
         "level_id" => stop.level_id,
         "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
         "platform_code" => stop.platform_code || "",
@@ -651,6 +680,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         :manual ->
           params
+      end
+
+    location_type = parse_int(params["location_type"] || "3")
+
+    params =
+      if location_type == 4 do
+        Map.put_new(params, "parent_platform", "")
+      else
+        Map.put(params, "parent_platform", "")
       end
 
     {:noreply, assign(socket, :child_stop_form, to_form(params))}
@@ -695,6 +733,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
     pending_xy = socket.assigns.pending_xy
+    location_type = parse_int(params["location_type"] || "3")
+    selected_parent_platform = blank_to_nil(params["parent_platform"])
+    platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
+
+    parent_station =
+      if location_type == 4 and MapSet.member?(platform_stop_ids, selected_parent_platform) do
+        selected_parent_platform
+      else
+        station.stop_id
+      end
 
     stop_id =
       if socket.assigns.stop_id_mode == :auto and socket.assigns.selected_stop_id == nil and
@@ -707,8 +755,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     stop_attrs = %{
       stop_id: stop_id,
       stop_name: params["stop_name"],
-      location_type: String.to_integer(params["location_type"]),
-      parent_station: station.stop_id,
+      location_type: location_type,
+      parent_station: parent_station,
       level_id: params["level_id"],
       wheelchair_boarding: parse_optional_int(params["wheelchair_boarding"]),
       platform_code: blank_to_nil(params["platform_code"]),
@@ -2017,6 +2065,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp refresh_lists(socket), do: load_level_data(socket, socket.assigns.active_level)
+
+  defp platform_stop_ids_for_station(organization_id, gtfs_version_id, station) do
+    Gtfs.list_child_stops_for_parent(organization_id, gtfs_version_id, station.id)
+    |> Enum.filter(&(&1.location_type == 0 and &1.parent_station == station.stop_id))
+    |> Enum.map(& &1.stop_id)
+    |> MapSet.new()
+  end
 
   defp restream_mode_dependent_streams(socket) do
     same_level_pathways = Enum.reject(socket.assigns.pathways_list, & &1.is_cross_level)
