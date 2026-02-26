@@ -774,13 +774,15 @@ defmodule GtfsPlanner.Gtfs do
   @spec delete_child_stop(integer(), integer(), String.t(), integer()) ::
           {:ok, Stop.t()} | {:error, :not_found | term()}
   def delete_child_stop(organization_id, gtfs_version_id, station_stop_id, stop_id) do
+    descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
+
     stop_query =
       from(s in Stop,
         where:
           s.id == ^stop_id and
             s.organization_id == ^organization_id and
             s.gtfs_version_id == ^gtfs_version_id and
-            s.parent_station == ^station_stop_id
+            s.stop_id in subquery(descendants)
       )
 
     case Repo.one(stop_query) do
@@ -814,6 +816,7 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, Stop.t()} | {:error, :not_found | term()}
   def remove_child_stop_from_diagram(organization_id, gtfs_version_id, station_stop_id, stop_id) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
+    descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
 
     stop_query =
       from(s in Stop,
@@ -821,7 +824,7 @@ defmodule GtfsPlanner.Gtfs do
           s.id == ^stop_id and
             s.organization_id == ^organization_id and
             s.gtfs_version_id == ^gtfs_version_id and
-            s.parent_station == ^station_stop_id
+            s.stop_id in subquery(descendants)
       )
 
     case Repo.one(stop_query) do

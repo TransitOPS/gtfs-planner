@@ -403,6 +403,298 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute Enum.any?(created_stops, &(&1.stop_name == "Child Lat Invalid"))
     end
 
+    test "boarding area form shows parent platform options and no-platform info message", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLATFORM_PARENT_SELECT",
+          stop_name: "Platform Parent Select",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 14.0, "y" => 22.0}
+        })
+
+      station_without_platforms =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_NO_PLATFORM_OPTIONS",
+          stop_name: "Station No Platform Options",
+          location_type: 1
+        })
+
+      level_without_platforms =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_NO_PLATFORM_OPTIONS",
+          level_name: "No Platform Level",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_without_platforms.id,
+          level_id: level_without_platforms.id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "12", "y" => "24"})
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_name" => "Boarding Area Candidate",
+        "location_type" => "4",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_change()
+
+      assert has_element?(view, "#child-stop-form select[name='parent_platform']")
+
+      assert has_element?(
+               view,
+               "#child-stop-form select[name='parent_platform'] option[value='']",
+               "— None (under station)"
+             )
+
+      assert has_element?(
+               view,
+               "#child-stop-form select[name='parent_platform'] option[value='#{platform.stop_id}']",
+               platform.stop_name
+             )
+
+      {:ok, view_without_platforms, _html} =
+        live(
+          conn,
+          "/gtfs/#{gtfs_version.id}/stops/#{station_without_platforms.stop_id}/diagram",
+          on_error: :warn
+        )
+
+      render_hook(view_without_platforms, "switch_mode", %{"mode" => "add"})
+      render_hook(view_without_platforms, "canvas_click", %{"x" => "14", "y" => "26"})
+
+      view_without_platforms
+      |> form("#child-stop-form", %{
+        "stop_name" => "No Platform Boarding Area",
+        "location_type" => "4",
+        "level_id" => level_without_platforms.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_change()
+
+      refute has_element?(
+               view_without_platforms,
+               "#child-stop-form select[name='parent_platform']"
+             )
+
+      assert has_element?(
+               view_without_platforms,
+               "#parent-platform-info",
+               "No platforms defined for this station yet."
+             )
+    end
+
+    test "boarding area create and edit persist selected parent platform", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLATFORM_PARENT_SAVE",
+          stop_name: "Platform Parent Save",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 16.0, "y" => 24.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "42"})
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "BOARDING_PARENT_SAVE",
+        "stop_name" => "Boarding Parent Save",
+        "location_type" => "4",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_change()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "BOARDING_PARENT_SAVE",
+        "stop_name" => "Boarding Parent Save",
+        "location_type" => "4",
+        "parent_platform" => platform.stop_id,
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_submit()
+
+      boarding_area =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> Enum.find(&(&1.stop_id == "BOARDING_PARENT_SAVE"))
+
+      assert boarding_area.parent_station == platform.stop_id
+
+      view
+      |> element("#child-stop-row-#{boarding_area.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#child-stop-form select[name='parent_platform'] option[value='#{platform.stop_id}'][selected]"
+             )
+    end
+
+    test "changing location type from boarding area clears parent platform and saves under station",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLATFORM_PARENT_CLEAR",
+          stop_name: "Platform Parent Clear",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 24.0}
+        })
+
+      boarding_area =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BOARDING_PARENT_CLEAR",
+          stop_name: "Boarding Parent Clear",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 26.0, "y" => 34.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{boarding_area.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#child-stop-form select[name='parent_platform'] option[value='#{platform.stop_id}'][selected]"
+             )
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => boarding_area.stop_id,
+        "stop_name" => boarding_area.stop_name,
+        "location_type" => "3",
+        "parent_platform" => platform.stop_id,
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "platform_code" => ""
+      })
+      |> render_change()
+
+      refute has_element?(view, "#child-stop-form select[name='parent_platform']")
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => boarding_area.stop_id,
+        "stop_name" => boarding_area.stop_name,
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_submit()
+
+      updated_stop = Gtfs.get_stop!(boarding_area.id)
+      assert updated_stop.parent_station == station.stop_id
+    end
+
+    test "reposition allows boarding areas nested under platform", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLATFORM_REPOSITION_NESTED",
+          stop_name: "Platform Reposition Nested",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 22.0, "y" => 30.0}
+        })
+
+      boarding_area =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BOARDING_REPOSITION_NESTED",
+          stop_name: "Boarding Reposition Nested",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 28.0, "y" => 36.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "70", "y" => "80"})
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      assert has_element?(view, "#positioned-stop-row-#{boarding_area.id}")
+
+      view
+      |> element("#positioned-stop-row-#{boarding_area.id} button[phx-click='reposition_stop']")
+      |> render_click()
+
+      refute render(view) =~ "Invalid stop selection"
+
+      updated_stop = Gtfs.get_stop!(boarding_area.id)
+      assert updated_stop.diagram_coordinate == %{"x" => 70.0, "y" => 80.0}
+    end
+
     test "view mode background click is a no-op", %{
       conn: conn,
       user: user,
