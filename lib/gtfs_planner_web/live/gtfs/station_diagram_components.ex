@@ -2656,6 +2656,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :pathway_form, :any, required: true
   attr :editing_pathway, :any
   attr :has_scale, :boolean, default: false
+  attr :pathway_error, :string, default: nil
 
   def pathway_drawer(assigns) do
     ~H"""
@@ -2671,6 +2672,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         pathway_form={@pathway_form}
         editing_pathway={@editing_pathway}
         has_scale={@has_scale}
+        pathway_error={@pathway_error}
       />
     </.drawer>
     """
@@ -2679,11 +2681,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :pathway_form, :any, required: true
   attr :editing_pathway, :any
   attr :has_scale, :boolean, default: false
+  attr :pathway_error, :string, default: nil
 
   defp pathway_form(assigns) do
     # Build pathway mode options using Pathway module functions
     pathway_mode_options =
       Pathway.pathway_modes()
+      |> Enum.sort_by(fn {_name, mode_value} -> mode_value end)
       |> Enum.map(fn {_name, mode_value} ->
         {Pathway.mode_label(mode_value), to_string(mode_value)}
       end)
@@ -2694,6 +2698,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <.simple_form for={@pathway_form} id="pathway-form" phx-submit="save_pathway">
       <%!-- ID is hidden as it's auto-managed or readonly --%>
       <.input field={@pathway_form[:pathway_id]} type="hidden" />
+      <p :if={@pathway_error} id="pathway-form-error" class="mb-4 text-error text-sm">
+        {@pathway_error}
+      </p>
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
         <.input

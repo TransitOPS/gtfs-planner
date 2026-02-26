@@ -471,7 +471,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(
                view,
                "#child-stop-form select[name='parent_platform'] option[value='#{platform.stop_id}']",
-               platform.stop_name
+               "#{platform.stop_id} - #{platform.stop_name}"
              )
 
       {:ok, view_without_platforms, _html} =
@@ -4505,6 +4505,281 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#walkability-test-row-#{walkability_test.id}")
       refute has_element?(view, "#child-stop-row-#{child_stop.id}", "1 test case")
       assert is_nil(Validations.get_walkability_test(walkability_test.id))
+    end
+  end
+
+  describe "StationDiagramLive - nested platform scope validation" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NESTED_SCOPE_STATION",
+          stop_name: "Nested Scope Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "NESTED_SCOPE_L1",
+          level_name: "Nested Scope Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      platform_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NESTED_SCOPE_PLATFORM",
+          stop_name: "Nested Scope Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 20.0}
+        })
+
+      boarding_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NESTED_SCOPE_BOARDING_A",
+          stop_name: "Nested Scope Boarding A",
+          location_type: 4,
+          parent_station: platform_stop.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 24.0, "y" => 24.0}
+        })
+
+      boarding_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NESTED_SCOPE_BOARDING_B",
+          stop_name: "Nested Scope Boarding B",
+          location_type: 4,
+          parent_station: platform_stop.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 34.0, "y" => 24.0}
+        })
+
+      nested_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          boarding_a.stop_id,
+          boarding_b.stop_id,
+          %{pathway_mode: 1, is_bidirectional: true}
+        )
+
+      foreign_station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NESTED_SCOPE_FOREIGN_STATION",
+          stop_name: "Nested Scope Foreign Station",
+          location_type: 1
+        })
+
+      foreign_platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NESTED_SCOPE_FOREIGN_PLATFORM",
+          stop_name: "Nested Scope Foreign Platform",
+          location_type: 0,
+          parent_station: foreign_station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+        })
+
+      foreign_boarding =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NESTED_SCOPE_FOREIGN_BOARDING",
+          stop_name: "Nested Scope Foreign Boarding",
+          location_type: 4,
+          parent_station: foreign_platform.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 44.0, "y" => 44.0}
+        })
+
+      unauthorized_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          boarding_a.stop_id,
+          foreign_boarding.stop_id,
+          %{pathway_mode: 1, is_bidirectional: true}
+        )
+
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          stop_id: boarding_a.stop_id,
+          address: "700 Nested Scope Ave, Boston, MA, USA"
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        boarding_a: boarding_a,
+        nested_pathway: nested_pathway,
+        unauthorized_pathway: unauthorized_pathway,
+        walkability_test: walkability_test
+      }
+    end
+
+    test "save_pathway accepts boarding areas nested under platform parents", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      nested_pathway: nested_pathway
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{nested_pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> form("#pathway-form", %{
+        "pathway_mode" => "3",
+        "is_bidirectional" => "false",
+        "traversal_time" => "45",
+        "length" => "12.50",
+        "min_width" => "1.25",
+        "signposted_as" => "Updated Nested Sign",
+        "reversed_signposted_as" => ""
+      })
+      |> render_submit()
+
+      updated_pathway = Gtfs.get_pathway!(nested_pathway.id)
+      assert updated_pathway.pathway_mode == 3
+      assert updated_pathway.is_bidirectional == false
+      assert updated_pathway.traversal_time == 45
+      assert Decimal.equal?(updated_pathway.length, Decimal.new("12.50"))
+      assert Decimal.equal?(updated_pathway.min_width, Decimal.new("1.25"))
+      assert updated_pathway.signposted_as == "Updated Nested Sign"
+      refute has_element?(view, "#lists-section", "Unauthorized pathway access.")
+    end
+
+    test "save_pathway authorization failure keeps submitted form values and shows drawer error",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           unauthorized_pathway: unauthorized_pathway
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "edit_pathway", %{"id" => unauthorized_pathway.id})
+
+      view
+      |> form("#pathway-form", %{
+        "pathway_mode" => "7",
+        "is_bidirectional" => "true",
+        "traversal_time" => "88",
+        "length" => "18.75",
+        "min_width" => "1.10",
+        "signposted_as" => "Unauthorized Attempt",
+        "reversed_signposted_as" => "Reverse Unauthorized Attempt"
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#pathway-form")
+      assert has_element?(view, "#pathway-form-error", "Unauthorized pathway access.")
+      assert has_element?(view, "#pathway-form input[name='traversal_time'][value='88']")
+
+      assert has_element?(
+               view,
+               "#pathway-form input[name='signposted_as'][value='Unauthorized Attempt']"
+             )
+
+      assert has_element?(
+               view,
+               "#pathway-form select[name='pathway_mode'] option[value='7'][selected]"
+             )
+    end
+
+    test "open_walkability_drawer accepts boarding areas nested under platform parents", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      boarding_a: boarding_a
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#child-stop-row-#{boarding_a.id} button[phx-click='open_walkability_drawer']")
+      |> render_click()
+
+      assert has_element?(view, "#walkability-test-form")
+    end
+
+    test "edit and delete walkability test succeed for boarding area nested under platform parent",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           walkability_test: walkability_test
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#walkability-test-stop-#{walkability_test.id}")
+      |> render_click()
+
+      assert has_element?(view, "#walkability-test-form button[type='submit']", "Save Test Case")
+
+      view
+      |> element("#walkability-test-delete-in-form")
+      |> render_click()
+
+      refute has_element?(view, "#walkability-test-row-#{walkability_test.id}")
+      assert is_nil(Validations.get_walkability_test(walkability_test.id))
+    end
+
+    test "pathway mode options render in deterministic numeric order", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      nested_pathway: nested_pathway
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{nested_pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      Enum.each(1..7, fn mode ->
+        assert has_element?(
+                 view,
+                 "#pathway-form select[name='pathway_mode'] option:nth-child(#{mode})[value='#{mode}']"
+               )
+      end)
     end
   end
 
