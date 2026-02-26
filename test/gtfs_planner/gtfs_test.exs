@@ -827,6 +827,33 @@ defmodule GtfsPlanner.GtfsTest do
       assert hd(result).id == child.id
       assert hd(result).level_id == level.id
     end
+
+    test "includes boarding-area grandchildren", %{organization: org, gtfs_version: version} do
+      level = level_fixture(org.id, version.id, %{level_id: "L_CHILD", level_index: 0.0})
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION", location_type: 1})
+
+      platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      boarding_area =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARDING_A",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id
+        })
+
+      result = Gtfs.list_child_stops_for_parent(org.id, version.id, station.id)
+      result_stop_ids = Enum.map(result, & &1.stop_id)
+
+      assert platform.stop_id in result_stop_ids
+      assert boarding_area.stop_id in result_stop_ids
+    end
   end
 
   describe "list_levels_for_station/3" do
@@ -995,6 +1022,83 @@ defmodule GtfsPlanner.GtfsTest do
                level.id == stop_level_only_level.id and count == 0 and is_nil(filename)
              end)
     end
+
+    test "counts boarding-area grandchildren in level stop_count", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION_LVL", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_WITH_BOARDING",
+          level_index: 0.0,
+          level_name: "Platform Level"
+        })
+
+      platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_LVL",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      _boarding_area =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARDING_LVL",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id
+        })
+
+      result = Gtfs.list_levels_for_station(org.id, version.id, station.id)
+
+      assert Enum.any?(result, fn %{level: listed_level, stop_count: stop_count} ->
+               listed_level.id == level.id and stop_count == 2
+             end)
+    end
+  end
+
+  describe "list_child_stops_for_level/2" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "includes boarding-area grandchildren and preserves on_active_level", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION_LEVEL", location_type: 1})
+      active_level = level_fixture(org.id, version.id, %{level_id: "L_ACTIVE", level_index: 0.0})
+      other_level = level_fixture(org.id, version.id, %{level_id: "L_OTHER", level_index: 1.0})
+
+      platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_LEVEL",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id
+        })
+
+      boarding_area =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARDING_LEVEL",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: other_level.level_id
+        })
+
+      result = Gtfs.list_child_stops_for_level(station.id, active_level.id)
+      result_by_stop_id = Map.new(result, fn stop -> {stop.stop_id, stop} end)
+
+      assert Map.has_key?(result_by_stop_id, platform.stop_id)
+      assert Map.has_key?(result_by_stop_id, boarding_area.stop_id)
+      assert result_by_stop_id[platform.stop_id].on_active_level == true
+      assert result_by_stop_id[boarding_area.stop_id].on_active_level == false
+    end
   end
 
   describe "get_routes_for_stops/3" do
@@ -1108,6 +1212,134 @@ defmodule GtfsPlanner.GtfsTest do
       assert hd(result).id == pathway.id
       assert hd(result).from_stop.id == child1.id
       assert hd(result).to_stop.id == child2.id
+    end
+
+    test "includes pathways where one endpoint is a boarding-area grandchild", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "PARENT_BA", location_type: 1})
+      level = level_fixture(org.id, version.id, %{level_id: "L_BA", level_index: 0.0})
+
+      platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_BA",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      boarding_area =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARDING_BA",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id
+        })
+
+      pathway =
+        pathway_fixture(org.id, version.id, platform.stop_id, boarding_area.stop_id, %{
+          pathway_id: "P_BA",
+          pathway_mode: 1
+        })
+
+      result = Gtfs.list_pathways_for_station(org.id, version.id, station.id)
+
+      assert Enum.any?(result, fn listed_pathway -> listed_pathway.id == pathway.id end)
+    end
+  end
+
+  describe "list_pathways_for_level/4" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "includes boarding-area grandchild endpoints and keeps cross-level flags", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "PARENT_LEVEL", location_type: 1})
+      level_a = level_fixture(org.id, version.id, %{level_id: "L_A", level_index: 0.0})
+      level_b = level_fixture(org.id, version.id, %{level_id: "L_B", level_index: 1.0})
+
+      platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_LEVEL_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_a.level_id
+        })
+
+      boarding_area =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARDING_LEVEL_B",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level_b.level_id
+        })
+
+      pathway =
+        pathway_fixture(org.id, version.id, platform.stop_id, boarding_area.stop_id, %{
+          pathway_id: "P_LEVEL",
+          pathway_mode: 1
+        })
+
+      result = Gtfs.list_pathways_for_level(org.id, version.id, level_a.id, station.id)
+      listed_pathway = Enum.find(result, fn entry -> entry.id == pathway.id end)
+
+      assert listed_pathway
+      assert listed_pathway.from_on_active_level == true
+      assert listed_pathway.to_on_active_level == false
+      assert listed_pathway.is_cross_level == true
+    end
+  end
+
+  describe "get_station_report_snapshot/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "includes boarding-area grandchildren in child stops and pathways", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "SNAP_STATION", location_type: 1})
+      level = level_fixture(org.id, version.id, %{level_id: "SNAP_LVL", level_index: 0.0})
+
+      platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SNAP_PLATFORM",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      boarding_area =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SNAP_BOARDING",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id
+        })
+
+      pathway =
+        pathway_fixture(org.id, version.id, platform.stop_id, boarding_area.stop_id, %{
+          pathway_id: "SNAP_PATH",
+          pathway_mode: 1
+        })
+
+      assert {:ok, snapshot} =
+               Gtfs.get_station_report_snapshot(org.id, version.id, station.stop_id)
+
+      child_stop_ids = Enum.map(snapshot.child_stops, & &1.stop_id)
+      pathway_ids = Enum.map(snapshot.pathways, & &1.id)
+
+      assert boarding_area.stop_id in child_stop_ids
+      assert pathway.id in pathway_ids
     end
   end
 
