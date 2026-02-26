@@ -712,6 +712,16 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Creates a stop for import workflows using permissive parent/level validation.
+  """
+  def import_create_stop(attrs \\ %{}) do
+    %Stop{}
+    |> Stop.import_changeset(attrs)
+    |> Repo.insert()
+    |> broadcast([:stops, :created])
+  end
+
+  @doc """
   Updates a stop.
 
   ## Examples
@@ -725,6 +735,16 @@ defmodule GtfsPlanner.Gtfs do
   def update_stop(%Stop{} = stop, attrs) do
     stop
     |> Stop.changeset(attrs)
+    |> Repo.update()
+    |> broadcast([:stops, :updated])
+  end
+
+  @doc """
+  Updates a stop for import workflows using permissive parent/level validation.
+  """
+  def import_update_stop(%Stop{} = stop, attrs) do
+    stop
+    |> Stop.import_changeset(attrs)
     |> Repo.update()
     |> broadcast([:stops, :updated])
   end

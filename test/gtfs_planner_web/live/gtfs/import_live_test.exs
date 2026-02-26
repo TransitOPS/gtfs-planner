@@ -3,10 +3,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs
 
   describe "ImportLive" do
     setup do
@@ -518,6 +520,73 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       # Should not show unrecognized files warning
       refute html =~ "Unrecognized Files"
+    end
+  end
+
+  describe "ImportLive station diff apply" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      %{user: user, organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "applies add stop decision when parent_station is set and level_id is blank", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      _parent_station =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "PARENT_STATION_DIFF",
+          stop_name: "Parent Station",
+          location_type: 1
+        })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      stops_content =
+        "stop_id,stop_name,stop_lat,stop_lon,parent_station,level_id\n" <>
+          "CHILD_DIFF_NO_LEVEL,Child Diff Stop,1.0,1.0,PARENT_STATION_DIFF,\n"
+
+      upload =
+        view
+        |> file_input("#diff-upload-form", :diff_files, [
+          %{name: "stops.txt", content: stops_content, type: "text/plain"}
+        ])
+
+      render_upload(upload, "stops.txt")
+
+      view
+      |> form("#diff-upload-form", %{})
+      |> render_submit()
+
+      view
+      |> element("button[phx-click='approve-all'][phx-value-action='add']")
+      |> render_click()
+
+      html =
+        view
+        |> element("#diff-apply-btn")
+        |> render_click()
+
+      assert html =~ "Applied 1 decisions successfully, 0 failed."
+      refute html =~ "level_id: can't be blank"
+
+      child_stop = Gtfs.get_stop_by_stop_id(organization.id, version.id, "CHILD_DIFF_NO_LEVEL")
+      assert child_stop.parent_station == "PARENT_STATION_DIFF"
+      assert child_stop.level_id == nil
     end
   end
 end
