@@ -200,6 +200,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> Enum.map(&{&1.stop_name || &1.stop_id, &1.stop_id})
   end
 
+  defp stop_belongs_to_station?(stop, station_stop_id, platform_stop_ids) do
+    stop.parent_station == station_stop_id or
+      MapSet.member?(platform_stop_ids, stop.parent_station)
+  end
+
   defp active_level_stop_ids(all_child_stops, level) do
     all_child_stops
     |> Enum.filter(&(&1.level_id == level.level_id))
@@ -319,6 +324,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pathway_form={@pathway_form}
           editing_pathway={@editing_pathway}
           has_scale={scale_configured?(@active_stop_level)}
+          pathway_error={@pathway_error}
         />
 
         <.ruler_drawer
@@ -1023,7 +1029,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       stop.organization_id != organization_id or stop.gtfs_version_id != gtfs_version_id ->
         {:noreply, put_flash(socket, :error, "Invalid stop selection")}
 
-      stop.parent_station != station.stop_id ->
+      not stop_belongs_to_station?(
+        stop,
+        station.stop_id,
+        socket.assigns.platform_stop_ids
+      ) ->
         {:noreply, put_flash(socket, :error, "Invalid stop selection")}
 
       true ->
@@ -1350,26 +1360,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> assign(:pathway_error, "Pathway not found.")
-         |> assign(:pathway_form, to_form(%{}))}
+         |> assign(:pathway_form, to_form(params))}
 
       pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
         {:noreply,
          socket
          |> assign(:pathway_error, "Unauthorized pathway access.")
-         |> assign(:pathway_form, to_form(%{}))}
+         |> assign(:pathway_form, to_form(params))}
 
       is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
         {:noreply,
          socket
          |> assign(:pathway_error, "Pathway is not fully associated with stops.")
-         |> assign(:pathway_form, to_form(%{}))}
+         |> assign(:pathway_form, to_form(params))}
 
-      pathway.from_stop.parent_station != station.stop_id or
-          pathway.to_stop.parent_station != station.stop_id ->
+      not stop_belongs_to_station?(
+        pathway.from_stop,
+        station.stop_id,
+        socket.assigns.platform_stop_ids
+      ) or
+          not stop_belongs_to_station?(
+            pathway.to_stop,
+            station.stop_id,
+            socket.assigns.platform_stop_ids
+          ) ->
         {:noreply,
          socket
          |> assign(:pathway_error, "Unauthorized pathway access.")
-         |> assign(:pathway_form, to_form(%{}))}
+         |> assign(:pathway_form, to_form(params))}
 
       true ->
         case Gtfs.update_pathway(pathway, attrs) do
@@ -2225,7 +2243,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       is_nil(stop) ->
         {:error, "Walkability test stop not found."}
 
-      stop.parent_station != station.stop_id ->
+      not stop_belongs_to_station?(
+        stop,
+        station.stop_id,
+        socket.assigns.platform_stop_ids
+      ) ->
         {:error, "Unauthorized walkability test access."}
 
       not MapSet.member?(active_level_stop_ids, walkability_test.stop_id) ->
