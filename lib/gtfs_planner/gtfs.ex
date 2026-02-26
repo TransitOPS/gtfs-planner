@@ -873,6 +873,9 @@ defmodule GtfsPlanner.Gtfs do
   def list_child_stops_for_parent(organization_id, gtfs_version_id, parent_station_id) do
     parent_station = Repo.get!(Stop, parent_station_id)
 
+    descendants =
+      descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
+
     from(s in Stop,
       left_join: l in Level,
       on:
@@ -882,7 +885,7 @@ defmodule GtfsPlanner.Gtfs do
       where:
         s.organization_id == ^organization_id and
           s.gtfs_version_id == ^gtfs_version_id and
-          s.parent_station == ^parent_station.stop_id,
+          s.stop_id in subquery(descendants),
       order_by: [asc: s.stop_name],
       select: s,
       select_merge: %{level: l}
@@ -902,6 +905,9 @@ defmodule GtfsPlanner.Gtfs do
   def list_levels_for_station(organization_id, gtfs_version_id, parent_station_id) do
     parent_station = Repo.get!(Stop, parent_station_id)
 
+    descendants =
+      descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
+
     # Query 1: Levels from child stops that have a level_id set
     levels_from_stops =
       from(s in Stop,
@@ -913,7 +919,7 @@ defmodule GtfsPlanner.Gtfs do
         where:
           s.organization_id == ^organization_id and
             s.gtfs_version_id == ^gtfs_version_id and
-            s.parent_station == ^parent_station.stop_id and
+            s.stop_id in subquery(descendants) and
             not is_nil(s.level_id),
         group_by: l.id,
         select: %{level_id: l.id, stop_count: count(s.id)}
@@ -1087,9 +1093,16 @@ defmodule GtfsPlanner.Gtfs do
     parent_station = Repo.get!(Stop, parent_station_id)
     level = Repo.get!(Level, level_id)
 
+    descendants =
+      descendant_stop_ids_query(
+        parent_station.organization_id,
+        parent_station.gtfs_version_id,
+        parent_station.stop_id
+      )
+
     from(s in Stop,
       where:
-        s.parent_station == ^parent_station.stop_id and
+        s.stop_id in subquery(descendants) and
           s.organization_id == ^parent_station.organization_id and
           s.gtfs_version_id == ^parent_station.gtfs_version_id,
       order_by: [asc: s.stop_name]
@@ -1114,6 +1127,9 @@ defmodule GtfsPlanner.Gtfs do
     parent_station = Repo.get!(Stop, parent_station_id)
     level = Repo.get!(Level, level_id)
 
+    descendants =
+      descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
+
     from(p in Pathway,
       join: from_stop in Stop,
       on:
@@ -1129,8 +1145,8 @@ defmodule GtfsPlanner.Gtfs do
         p.organization_id == ^organization_id and
           p.gtfs_version_id == ^gtfs_version_id and
           (from_stop.level_id == ^level.level_id or to_stop.level_id == ^level.level_id) and
-          from_stop.parent_station == ^parent_station.stop_id and
-          to_stop.parent_station == ^parent_station.stop_id,
+          from_stop.stop_id in subquery(descendants) and
+          to_stop.stop_id in subquery(descendants),
       order_by: [asc: p.pathway_id],
       select: p,
       select_merge: %{from_stop: from_stop, to_stop: to_stop}
@@ -1161,14 +1177,8 @@ defmodule GtfsPlanner.Gtfs do
   def list_pathways_for_station(organization_id, gtfs_version_id, parent_station_id) do
     parent_station = Repo.get!(Stop, parent_station_id)
 
-    child_stop_ids =
-      from(s in Stop,
-        where:
-          s.organization_id == ^organization_id and
-            s.gtfs_version_id == ^gtfs_version_id and
-            s.parent_station == ^parent_station.stop_id,
-        select: s.stop_id
-      )
+    descendants =
+      descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
 
     from(p in Pathway,
       join: from_stop in Stop,
@@ -1184,13 +1194,33 @@ defmodule GtfsPlanner.Gtfs do
       where:
         p.organization_id == ^organization_id and
           p.gtfs_version_id == ^gtfs_version_id and
-          (p.from_stop_id in subquery(child_stop_ids) or
-             p.to_stop_id in subquery(child_stop_ids)),
+          (p.from_stop_id in subquery(descendants) or
+             p.to_stop_id in subquery(descendants)),
       order_by: [asc: p.pathway_id],
       select: p,
       select_merge: %{from_stop: from_stop, to_stop: to_stop}
     )
     |> Repo.all()
+  end
+
+  defp descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id) do
+    direct_child_ids =
+      from(s in Stop,
+        where:
+          s.organization_id == ^organization_id and
+            s.gtfs_version_id == ^gtfs_version_id and
+            s.parent_station == ^station_stop_id,
+        select: s.stop_id
+      )
+
+    from(s in Stop,
+      where:
+        s.organization_id == ^organization_id and
+          s.gtfs_version_id == ^gtfs_version_id and
+          (s.parent_station == ^station_stop_id or
+             (s.location_type == 4 and s.parent_station in subquery(direct_child_ids))),
+      select: s.stop_id
+    )
   end
 
   @doc """
