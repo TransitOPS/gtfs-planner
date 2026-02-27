@@ -124,7 +124,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           <.header>
             Validation Results
             <:subtitle>
-              Results of MobilityData GTFS validation.
+              {validation_subtitle(@run)}
             </:subtitle>
             <:actions>
               <label for="validation-history-drawer" class="btn btn-outline btn-sm">
@@ -1201,5 +1201,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     rescue
       _ -> false
     end
+  end
+
+  defp validation_subtitle(%{run_type: "pathways_tests"}) do
+    "Results of Open Trip Planner GTFS validation."
+  end
+
+  defp validation_subtitle(_run) do
+    "Results of MobilityData GTFS validation."
   end
 end
