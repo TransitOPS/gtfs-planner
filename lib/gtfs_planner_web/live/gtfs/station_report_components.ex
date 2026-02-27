@@ -1091,7 +1091,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     efficiency =
       cond do
         not is_number(assigns.totals.effective_speed) -> "Unknown"
-        assigns.totals.effective_speed >= 1.4 -> "At or above baseline"
+        assigns.totals.effective_speed >= 1.33 -> "At or above baseline"
         true -> "Below baseline"
       end
 

@@ -57,21 +57,21 @@ defmodule GtfsPlanner.Gtfs.TraversalCalculatorTest do
     test "elevator uses board slack and level diff estimate when traversal_time is absent" do
       pathway = %Pathway{pathway_mode: 5, traversal_time: nil}
 
-      assert %{calculation_method: :elevator_level_diff_estimate, time_seconds: 36.0} =
+      assert %{calculation_method: :elevator_level_diff_estimate, time_seconds: 150.0} =
                TraversalCalculator.calculate(pathway, 3)
     end
 
     test "elevator uses board slack with single hop fallback when level diff is absent" do
       pathway = %Pathway{pathway_mode: 5, traversal_time: nil}
 
-      assert %{calculation_method: :elevator_single_level_estimate, time_seconds: 20.0} =
+      assert %{calculation_method: :elevator_single_level_estimate, time_seconds: 110.0} =
                TraversalCalculator.calculate(pathway, nil)
     end
 
     test "elevator uses board slack plus explicit traversal_time when present" do
       pathway = %Pathway{pathway_mode: 5, traversal_time: 18}
 
-      assert %{calculation_method: :elevator_traversal_time, time_seconds: 30.0} =
+      assert %{calculation_method: :elevator_traversal_time, time_seconds: 108.0} =
                TraversalCalculator.calculate(pathway, 99)
     end
   end

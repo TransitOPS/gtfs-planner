@@ -3,11 +3,11 @@ defmodule GtfsPlanner.Gtfs.TraversalCalculator do
   Estimates traversal burden for a single pathway segment.
   """
 
-  @walk_speed 1.4
-  @escalator_speed 0.5
-  @elevator_board_slack 12.0
-  @elevator_hop_time 8.0
-  @stair_step_meters 0.17
+  @walk_speed 1.33
+  @escalator_speed 0.45
+  @elevator_board_slack 90.0
+  @elevator_hop_time 20.0
+  @stair_step_meters 0.4
 
   @type result :: %{
           time_seconds: number(),
