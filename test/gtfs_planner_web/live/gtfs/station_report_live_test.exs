@@ -96,6 +96,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
           min_width: Decimal.new("1.5")
         })
 
+      _pathway_to_boarding =
+        pathway_fixture(organization.id, gtfs_version.id, platform.stop_id, "BOARD_1", %{
+          pathway_id: "PATH_2",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          length: Decimal.new("8.0"),
+          signposted_as: "Boarding 1"
+        })
+
       %{
         user: user,
         organization: organization,
@@ -249,6 +258,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(view, "#report-item-step_free_routes")
       assert has_element?(view, "#report-section-entrance_platform_connectivity-methodology")
       assert has_element?(view, "#report-section-attribute_completeness-methodology")
+    end
+
+    test "toggles path direction and renders trip visualization containers", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      pair_dom = "ENT_1__BOARD_1"
+
+      view
+      |> element("#report-entrance-ENT_1 > summary")
+      |> render_click()
+
+      assert has_element?(view, "#report-trip-visualization-#{pair_dom}")
+      assert has_element?(view, "#report-trip-summary-#{pair_dom}")
+      assert has_element?(view, "#report-trip-timeline-#{pair_dom}")
+      assert has_element?(view, "#report-trip-steps-#{pair_dom}")
+      assert has_element?(view, "#report-trip-profile-#{pair_dom}")
+      assert has_element?(view, "#report-trip-analysis-#{pair_dom}")
+      assert has_element?(view, "#report-trip-direction-button-#{pair_dom}", "Forward view")
+
+      view
+      |> element("#report-trip-direction-button-#{pair_dom}")
+      |> render_click()
+
+      assert has_element?(view, "#report-trip-direction-button-#{pair_dom}", "Reverse view")
     end
 
     test "redirects with flash when station is missing", %{
