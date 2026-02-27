@@ -916,6 +916,28 @@ defmodule GtfsPlanner.ValidationsTest do
       case_id_1 = Ecto.UUID.generate()
       case_id_2 = Ecto.UUID.generate()
       case_id_3 = Ecto.UUID.generate()
+      itinerary_start_time = DateTime.from_naive!(~N[2026-02-27 13:00:00.000000], "Etc/UTC")
+      itinerary_end_time = DateTime.from_naive!(~N[2026-02-27 13:07:00.000000], "Etc/UTC")
+
+      itinerary_steps = %{
+        legs: [
+          %{
+            index: 0,
+            mode: "WALK",
+            from_name: "Origin",
+            to_name: "Destination",
+            steps: [
+              %{
+                index: 0,
+                street_name: "Main St",
+                distance_meters: 360.5,
+                absolute_direction: "NORTH",
+                relative_direction: "DEPART"
+              }
+            ]
+          }
+        ]
+      }
 
       run_result = %{
         suite_meta: %{
@@ -935,7 +957,16 @@ defmodule GtfsPlanner.ValidationsTest do
           %{
             test_case_id: case_id_1,
             status: :passed,
-            route_output: %{route_exists: true, duration_seconds: 420, distance_meters: 360.5},
+            route_output: %{
+              route_exists: true,
+              duration_seconds: 420,
+              distance_meters: 360.5,
+              itinerary_start_time: itinerary_start_time,
+              itinerary_end_time: itinerary_end_time,
+              leg_count: 1,
+              step_count: 1,
+              itinerary_steps: itinerary_steps
+            },
             wheelchair_output: %{
               route_exists: true,
               duration_seconds: 500,
@@ -992,6 +1023,11 @@ defmodule GtfsPlanner.ValidationsTest do
                  route_exists: true,
                  duration_seconds: 420.0,
                  distance_meters: 360.5,
+                 itinerary_start_time: itinerary_start_time,
+                 itinerary_end_time: itinerary_end_time,
+                 leg_count: 1,
+                 step_count: 1,
+                 itinerary_steps_json: itinerary_steps,
                  wheelchair_route_exists: true,
                  wheelchair_duration_seconds: 500.0,
                  wheelchair_distance_meters: 400.0,
@@ -1005,6 +1041,11 @@ defmodule GtfsPlanner.ValidationsTest do
                  route_exists: nil,
                  duration_seconds: nil,
                  distance_meters: nil,
+                 itinerary_start_time: nil,
+                 itinerary_end_time: nil,
+                 leg_count: nil,
+                 step_count: nil,
+                 itinerary_steps_json: nil,
                  wheelchair_route_exists: nil,
                  wheelchair_duration_seconds: nil,
                  wheelchair_distance_meters: nil,
@@ -1018,6 +1059,11 @@ defmodule GtfsPlanner.ValidationsTest do
                  route_exists: true,
                  duration_seconds: 900.0,
                  distance_meters: 1200.0,
+                 itinerary_start_time: nil,
+                 itinerary_end_time: nil,
+                 leg_count: nil,
+                 step_count: nil,
+                 itinerary_steps_json: nil,
                  wheelchair_route_exists: nil,
                  wheelchair_duration_seconds: nil,
                  wheelchair_distance_meters: nil,
@@ -1049,6 +1095,14 @@ defmodule GtfsPlanner.ValidationsTest do
     test "updates pathways run status and persists report payload with case rows in a transaction" do
       organization = organization_fixture()
       gtfs_version = gtfs_version_fixture(organization.id)
+      itinerary_start_time = DateTime.from_unix!(1_772_219_600_000, :millisecond)
+      itinerary_end_time = DateTime.from_unix!(1_772_219_750_000, :millisecond)
+
+      expected_itinerary_start_time =
+        %{itinerary_start_time | microsecond: {0, 6}}
+
+      expected_itinerary_end_time =
+        %{itinerary_end_time | microsecond: {0, 6}}
 
       walkability_test =
         walkability_test_fixture(%{
@@ -1067,7 +1121,56 @@ defmodule GtfsPlanner.ValidationsTest do
           %{
             test_case_id: walkability_test.id,
             status: :passed,
-            route_output: %{route_exists: true, duration_seconds: 123, distance_meters: 456},
+            route_output: %{
+              route_exists: true,
+              duration_seconds: 123,
+              distance_meters: 456,
+              itinerary_start_time: itinerary_start_time,
+              itinerary_end_time: itinerary_end_time,
+              leg_count: 2,
+              step_count: 3,
+              itinerary_steps: %{
+                legs: [
+                  %{
+                    index: 0,
+                    mode: "WALK",
+                    from_name: "Origin",
+                    to_name: "Midpoint",
+                    steps: [
+                      %{
+                        index: 0,
+                        street_name: "Main St",
+                        distance_meters: 120.0,
+                        absolute_direction: "NORTH",
+                        relative_direction: "DEPART"
+                      }
+                    ]
+                  },
+                  %{
+                    index: 1,
+                    mode: "WALK",
+                    from_name: "Midpoint",
+                    to_name: "Destination",
+                    steps: [
+                      %{
+                        index: 0,
+                        street_name: "Oak Ave",
+                        distance_meters: 336.0,
+                        absolute_direction: "EAST",
+                        relative_direction: "RIGHT"
+                      },
+                      %{
+                        index: 1,
+                        street_name: "Elm St",
+                        distance_meters: 0.0,
+                        absolute_direction: nil,
+                        relative_direction: "ARRIVE"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
             wheelchair_output: %{route_exists: true, duration_seconds: 130, distance_meters: 500}
           }
         ]
@@ -1093,6 +1196,53 @@ defmodule GtfsPlanner.ValidationsTest do
       assert row.status == "passed"
       assert row.duration_seconds == 123.0
       assert row.distance_meters == 456.0
+      assert row.itinerary_start_time == expected_itinerary_start_time
+      assert row.itinerary_end_time == expected_itinerary_end_time
+      assert row.leg_count == 2
+      assert row.step_count == 3
+
+      assert row.itinerary_steps_json == %{
+               "legs" => [
+                 %{
+                   "index" => 0,
+                   "mode" => "WALK",
+                   "from_name" => "Origin",
+                   "to_name" => "Midpoint",
+                   "steps" => [
+                     %{
+                       "index" => 0,
+                       "street_name" => "Main St",
+                       "distance_meters" => 120.0,
+                       "absolute_direction" => "NORTH",
+                       "relative_direction" => "DEPART"
+                     }
+                   ]
+                 },
+                 %{
+                   "index" => 1,
+                   "mode" => "WALK",
+                   "from_name" => "Midpoint",
+                   "to_name" => "Destination",
+                   "steps" => [
+                     %{
+                       "index" => 0,
+                       "street_name" => "Oak Ave",
+                       "distance_meters" => 336.0,
+                       "absolute_direction" => "EAST",
+                       "relative_direction" => "RIGHT"
+                     },
+                     %{
+                       "index" => 1,
+                       "street_name" => "Elm St",
+                       "distance_meters" => 0.0,
+                       "absolute_direction" => nil,
+                       "relative_direction" => "ARRIVE"
+                     }
+                   ]
+                 }
+               ]
+             }
+
       assert row.wheelchair_duration_seconds == 130.0
       assert row.wheelchair_distance_meters == 500.0
     end

@@ -21,7 +21,12 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
   @type case_query_output :: %{
           required(:route_exists) => boolean(),
           required(:duration_seconds) => number() | nil,
-          required(:distance_meters) => number() | nil
+          required(:distance_meters) => number() | nil,
+          required(:step_count) => non_neg_integer() | nil,
+          required(:leg_count) => non_neg_integer() | nil,
+          required(:itinerary_start_time) => DateTime.t() | nil,
+          required(:itinerary_end_time) => DateTime.t() | nil,
+          required(:itinerary_steps) => %{required(:legs) => [map()]}
         }
 
   @typedoc "Single case scoring outcome with explicit failure attribution."
@@ -62,6 +67,23 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
       itineraries {
         duration
         walkDistance
+        startTime
+        endTime
+        legs {
+          mode
+          from {
+            name
+          }
+          to {
+            name
+          }
+          steps {
+            streetName
+            distance
+            absoluteDirection
+            relativeDirection
+          }
+        }
       }
     }
   }
@@ -301,7 +323,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
 
   @spec extract_route_from_itineraries([map()]) :: {:ok, case_query_output()} | {:error, map()}
   defp extract_route_from_itineraries([]) do
-    {:ok, normalize_route_output(false, nil, nil)}
+    {:ok, normalize_route_output(false, nil, nil, %{legs: []}, nil, nil)}
   end
 
   defp extract_route_from_itineraries([first_itinerary | _rest]) do
@@ -309,22 +331,171 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
   end
 
   @spec extract_first_itinerary(map()) :: {:ok, case_query_output()} | {:error, map()}
-  defp extract_first_itinerary(%{"duration" => duration, "walkDistance" => walk_distance}) do
-    {:ok, normalize_route_output(true, duration, walk_distance)}
+  defp extract_first_itinerary(%{
+         "duration" => duration,
+         "walkDistance" => walk_distance,
+         "startTime" => start_time,
+         "endTime" => end_time
+       } = itinerary) do
+    with {:ok, itinerary_start_time} <- normalize_itinerary_datetime(start_time, itinerary),
+         {:ok, itinerary_end_time} <- normalize_itinerary_datetime(end_time, itinerary),
+         {:ok, itinerary_steps} <- normalize_itinerary_steps(itinerary) do
+      {:ok,
+       normalize_route_output(
+         true,
+         duration,
+         walk_distance,
+         itinerary_steps,
+         itinerary_start_time,
+         itinerary_end_time
+       )}
+    end
   end
 
   defp extract_first_itinerary(first_itinerary) do
     {:error, %{reason: :invalid_graphql_payload, body: first_itinerary}}
   end
 
-  @spec normalize_route_output(boolean(), number() | nil, number() | nil) :: case_query_output()
-  defp normalize_route_output(route_exists, duration_seconds, distance_meters) do
+  @spec normalize_route_output(
+          boolean(),
+          number() | nil,
+          number() | nil,
+          %{required(:legs) => [map()]},
+          DateTime.t() | nil,
+          DateTime.t() | nil
+        ) :: case_query_output()
+  defp normalize_route_output(
+         route_exists,
+         duration_seconds,
+         distance_meters,
+         itinerary_steps,
+         itinerary_start_time,
+         itinerary_end_time
+       ) do
     %{
       route_exists: route_exists,
       duration_seconds: duration_seconds,
-      distance_meters: distance_meters
+      distance_meters: distance_meters,
+      step_count: nil,
+      leg_count: nil,
+      itinerary_start_time: itinerary_start_time,
+      itinerary_end_time: itinerary_end_time,
+      itinerary_steps: itinerary_steps
     }
   end
+
+  @spec normalize_itinerary_datetime(term(), map()) :: {:ok, DateTime.t()} | {:error, map()}
+  defp normalize_itinerary_datetime(value, itinerary) when is_integer(value) do
+    case DateTime.from_unix(value, :millisecond) do
+      {:ok, datetime} -> {:ok, datetime}
+      {:error, _reason} -> {:error, %{reason: :invalid_graphql_payload, body: itinerary}}
+    end
+  end
+
+  defp normalize_itinerary_datetime(_value, itinerary),
+    do: {:error, %{reason: :invalid_graphql_payload, body: itinerary}}
+
+  @spec normalize_itinerary_steps(map()) ::
+          {:ok, %{required(:legs) => [map()]}} | {:error, map()}
+  defp normalize_itinerary_steps(%{"legs" => legs}) when is_list(legs) do
+    legs
+    |> Enum.with_index(0)
+    |> Enum.reduce_while({:ok, []}, fn {leg, index}, {:ok, normalized_legs} ->
+      case normalize_leg(leg, index) do
+        {:ok, normalized_leg} -> {:cont, {:ok, [normalized_leg | normalized_legs]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, normalized_legs} -> {:ok, %{legs: Enum.reverse(normalized_legs)}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_itinerary_steps(itinerary),
+    do: {:error, %{reason: :invalid_graphql_payload, body: itinerary}}
+
+  @spec normalize_leg(term(), non_neg_integer()) :: {:ok, map()} | {:error, map()}
+  defp normalize_leg(
+         %{"mode" => mode, "from" => from_stop, "to" => to_stop, "steps" => steps} = leg,
+         index
+       )
+       when is_binary(mode) and is_map(from_stop) and is_map(to_stop) and is_list(steps) do
+    with {:ok, from_name} <- normalize_nullable_string(Map.get(from_stop, "name"), leg),
+         {:ok, to_name} <- normalize_nullable_string(Map.get(to_stop, "name"), leg),
+         {:ok, normalized_steps} <- normalize_leg_steps(steps, leg) do
+      {:ok,
+       %{
+         index: index,
+         mode: mode,
+         from_name: from_name,
+         to_name: to_name,
+         steps: normalized_steps
+       }}
+    end
+  end
+
+  defp normalize_leg(leg, _index), do: {:error, %{reason: :invalid_graphql_payload, body: leg}}
+
+  @spec normalize_leg_steps([term()], map()) :: {:ok, [map()]} | {:error, map()}
+  defp normalize_leg_steps(steps, leg) do
+    steps
+    |> Enum.with_index(0)
+    |> Enum.reduce_while({:ok, []}, fn {step, index}, {:ok, normalized_steps} ->
+      case normalize_step(step, index) do
+        {:ok, normalized_step} -> {:cont, {:ok, [normalized_step | normalized_steps]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, normalized_steps} -> {:ok, Enum.reverse(normalized_steps)}
+      {:error, _reason} = error -> error
+      _other -> {:error, %{reason: :invalid_graphql_payload, body: leg}}
+    end
+  end
+
+  @spec normalize_step(term(), non_neg_integer()) :: {:ok, map()} | {:error, map()}
+  defp normalize_step(
+         %{
+           "streetName" => street_name,
+           "distance" => distance,
+           "absoluteDirection" => absolute_direction,
+           "relativeDirection" => relative_direction
+         } = step,
+         index
+       ) do
+    with {:ok, normalized_street_name} <- normalize_nullable_string(street_name, step),
+         {:ok, normalized_distance} <- normalize_nullable_number(distance, step),
+         {:ok, normalized_absolute_direction} <-
+           normalize_nullable_string(absolute_direction, step),
+         {:ok, normalized_relative_direction} <-
+           normalize_nullable_string(relative_direction, step) do
+      {:ok,
+       %{
+         index: index,
+         street_name: normalized_street_name,
+         distance_meters: normalized_distance,
+         absolute_direction: normalized_absolute_direction,
+         relative_direction: normalized_relative_direction
+       }}
+    end
+  end
+
+  defp normalize_step(step, _index), do: {:error, %{reason: :invalid_graphql_payload, body: step}}
+
+  @spec normalize_nullable_string(term(), map()) :: {:ok, String.t() | nil} | {:error, map()}
+  defp normalize_nullable_string(value, _source) when is_binary(value) or is_nil(value),
+    do: {:ok, value}
+
+  defp normalize_nullable_string(_value, source),
+    do: {:error, %{reason: :invalid_graphql_payload, body: source}}
+
+  @spec normalize_nullable_number(term(), map()) :: {:ok, number() | nil} | {:error, map()}
+  defp normalize_nullable_number(value, _source) when is_number(value) or is_nil(value),
+    do: {:ok, value}
+
+  defp normalize_nullable_number(_value, source),
+    do: {:error, %{reason: :invalid_graphql_payload, body: source}}
 
   @spec score_case(map(), case_query_output(), case_query_output() | nil) ::
           {:passed, case_query_output(), case_query_output() | nil}
@@ -361,8 +532,8 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
     %{
       test_case_id: test_case_id,
       status: :passed,
-      route_output: route_output,
-      wheelchair_output: wheelchair_output
+      route_output: normalize_case_route_payload(route_output),
+      wheelchair_output: normalize_case_route_payload(wheelchair_output)
     }
   end
 
@@ -374,9 +545,25 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
       test_case_id: test_case_id,
       status: :failed,
       failure_category: :scoring_failure,
-      route_output: route_output,
-      wheelchair_output: wheelchair_output,
+      route_output: normalize_case_route_payload(route_output),
+      wheelchair_output: normalize_case_route_payload(wheelchair_output),
       details: details
+    }
+  end
+
+  @spec normalize_case_route_payload(case_query_output() | nil) :: case_query_output() | nil
+  defp normalize_case_route_payload(nil), do: nil
+
+  defp normalize_case_route_payload(route_output) do
+    %{
+      route_exists: Map.fetch!(route_output, :route_exists),
+      duration_seconds: Map.fetch!(route_output, :duration_seconds),
+      distance_meters: Map.fetch!(route_output, :distance_meters),
+      step_count: Map.fetch!(route_output, :step_count),
+      leg_count: Map.fetch!(route_output, :leg_count),
+      itinerary_start_time: Map.fetch!(route_output, :itinerary_start_time),
+      itinerary_end_time: Map.fetch!(route_output, :itinerary_end_time),
+      itinerary_steps: Map.fetch!(route_output, :itinerary_steps)
     }
   end
 

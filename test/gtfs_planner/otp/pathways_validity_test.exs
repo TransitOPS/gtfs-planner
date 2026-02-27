@@ -97,7 +97,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
          status: 200,
          body: %{
            "data" => %{
-             "plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 300.5}]}
+             "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 300.5})]}
            }
          }
        }}
@@ -121,6 +121,16 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     assert request_opts[:json][:query] =~ "itineraries"
     assert request_opts[:json][:query] =~ "duration"
     assert request_opts[:json][:query] =~ "walkDistance"
+    assert request_opts[:json][:query] =~ "startTime"
+    assert request_opts[:json][:query] =~ "endTime"
+    assert request_opts[:json][:query] =~ "legs"
+    assert request_opts[:json][:query] =~ "mode"
+    assert request_opts[:json][:query] =~ "from"
+    assert request_opts[:json][:query] =~ "to"
+    assert request_opts[:json][:query] =~ "steps"
+    assert request_opts[:json][:query] =~ "streetName"
+    assert request_opts[:json][:query] =~ "absoluteDirection"
+    assert request_opts[:json][:query] =~ "relativeDirection"
     assert request_opts[:json][:variables]["fromLat"] == 42.3601
     assert request_opts[:json][:variables]["fromLon"] == -71.0589
     assert result.summary.total == 1
@@ -164,7 +174,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
          status: 200,
          body: %{
            "data" => %{
-             "plan" => %{"itineraries" => [%{"duration" => 150, "walkDistance" => 250.0}]}
+             "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 150, "walkDistance" => 250.0})]}
            }
          }
        }}
@@ -232,7 +242,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
              status: 200,
              body: %{
                "data" => %{
-                 "plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 200.0}]}
+                 "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 200.0})]}
                }
              }
            }}
@@ -328,7 +338,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
              status: 200,
              body: %{
                "data" => %{
-                 "plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 200.0}]}
+                 "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 200.0})]}
                }
              }
            }}
@@ -339,7 +349,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
              status: 200,
              body: %{
                "data" => %{
-                 "plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 300.0}]}
+                 "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 300.0})]}
                }
              }
            }}
@@ -405,7 +415,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
          status: 200,
          body: %{
            "data" => %{
-             "plan" => %{"itineraries" => [%{"duration" => 100, "walkDistance" => 100.0}]}
+             "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 100, "walkDistance" => 100.0})]}
            }
          }
        }}
@@ -452,7 +462,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
          status: 200,
          body: %{
            "data" => %{
-             "plan" => %{"itineraries" => [%{"duration" => 100, "walkDistance" => 100.0}]}
+             "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 100, "walkDistance" => 100.0})]}
            }
          }
        }}
@@ -596,7 +606,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
          status: 200,
          body: %{
            "data" => %{
-             "plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 300.0}]}
+             "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 300.0})]}
            }
          }
        }}
@@ -657,8 +667,352 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     assert case_result.route_output == %{
              route_exists: false,
              duration_seconds: nil,
-             distance_meters: nil
+             distance_meters: nil,
+             step_count: nil,
+             leg_count: nil,
+             itinerary_start_time: nil,
+             itinerary_end_time: nil,
+             itinerary_steps: %{legs: []}
            }
+  end
+
+  test "run_in_session/4 normalizes itinerary start and end timestamps to UTC datetimes" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    _stop =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
+
+    walkability_test =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        expected_traversable: true
+      })
+
+    start_time = 1_739_676_000_000
+    end_time = 1_739_676_120_000
+
+    request_fun = fn _graphql_url, _request_opts ->
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{
+           "data" => %{
+             "plan" => %{
+               "itineraries" => [
+                 walk_itinerary(%{"startTime" => start_time, "endTime" => end_time})
+               ]
+             }
+           }
+         }
+       }}
+    end
+
+    assert {:ok, result} =
+             PathwaysValidity.run_in_session(
+               session_fixture(),
+               organization.id,
+               gtfs_version.id,
+               request_fun: request_fun
+             )
+
+    assert [%{test_case_id: case_id, status: :passed, route_output: route_output}] = result.cases
+    assert case_id == walkability_test.id
+
+    assert route_output.itinerary_start_time == DateTime.from_unix!(start_time, :millisecond)
+    assert route_output.itinerary_end_time == DateTime.from_unix!(end_time, :millisecond)
+  end
+
+  test "run_in_session/4 attributes invalid itinerary timestamps as query_failure" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    _stop =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
+
+    walkability_test_fixture(%{
+      organization_id: organization.id,
+      gtfs_version_id: gtfs_version.id,
+      expected_traversable: true
+    })
+
+    request_fun = fn _graphql_url, _request_opts ->
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{
+           "data" => %{
+             "plan" => %{
+               "itineraries" => [
+                 walk_itinerary(%{"startTime" => "invalid", "endTime" => 1_739_676_120_000})
+               ]
+             }
+           }
+         }
+       }}
+    end
+
+    assert {:ok, result} =
+             PathwaysValidity.run_in_session(
+               session_fixture(),
+               organization.id,
+               gtfs_version.id,
+               request_fun: request_fun
+             )
+
+    assert [%{status: :failed, failure_category: :query_failure, details: details}] = result.cases
+    assert details.reason == :invalid_graphql_payload
+  end
+
+  test "run_in_session/4 normalizes itinerary legs and steps in deterministic order" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    _stop =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
+
+    walkability_test =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        expected_traversable: true
+      })
+
+    request_fun = fn _graphql_url, _request_opts ->
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{
+           "data" => %{
+             "plan" => %{
+               "itineraries" => [
+                 %{
+                   "duration" => 120,
+                   "walkDistance" => 300.5,
+                   "startTime" => 1_739_676_000_000,
+                   "endTime" => 1_739_676_120_000,
+                   "legs" => [
+                     %{
+                       "mode" => "WALK",
+                       "from" => %{"name" => "Start A"},
+                       "to" => %{"name" => "Mid B"},
+                       "steps" => [
+                         %{
+                           "streetName" => "First St",
+                           "distance" => 50.0,
+                           "absoluteDirection" => "NORTH",
+                           "relativeDirection" => "RIGHT"
+                         },
+                         %{
+                           "streetName" => "Second St",
+                           "distance" => 25.5,
+                           "absoluteDirection" => "EAST",
+                           "relativeDirection" => "LEFT"
+                         }
+                       ]
+                     },
+                     %{
+                       "mode" => "WALK",
+                       "from" => %{"name" => "Mid B"},
+                       "to" => %{"name" => "Stop C"},
+                       "steps" => [
+                         %{
+                           "streetName" => "Third St",
+                           "distance" => 10.0,
+                           "absoluteDirection" => "SOUTH",
+                           "relativeDirection" => "CONTINUE"
+                         }
+                       ]
+                     }
+                   ]
+                 }
+               ]
+             }
+           }
+         }
+       }}
+    end
+
+    assert {:ok, result} =
+             PathwaysValidity.run_in_session(
+               session_fixture(),
+               organization.id,
+               gtfs_version.id,
+               request_fun: request_fun
+             )
+
+    assert [%{test_case_id: case_id, status: :passed, route_output: route_output}] = result.cases
+    assert case_id == walkability_test.id
+
+    assert route_output.itinerary_steps == %{
+             legs: [
+               %{
+                 index: 0,
+                 mode: "WALK",
+                 from_name: "Start A",
+                 to_name: "Mid B",
+                 steps: [
+                   %{
+                     index: 0,
+                     street_name: "First St",
+                     distance_meters: 50.0,
+                     absolute_direction: "NORTH",
+                     relative_direction: "RIGHT"
+                   },
+                   %{
+                     index: 1,
+                     street_name: "Second St",
+                     distance_meters: 25.5,
+                     absolute_direction: "EAST",
+                     relative_direction: "LEFT"
+                   }
+                 ]
+               },
+               %{
+                 index: 1,
+                 mode: "WALK",
+                 from_name: "Mid B",
+                 to_name: "Stop C",
+                 steps: [
+                   %{
+                     index: 0,
+                     street_name: "Third St",
+                     distance_meters: 10.0,
+                     absolute_direction: "SOUTH",
+                     relative_direction: "CONTINUE"
+                   }
+                 ]
+               }
+             ]
+           }
+  end
+
+  test "run_in_session/4 attributes malformed legs steps payload as query_failure" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    _stop =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
+
+    walkability_test_fixture(%{
+      organization_id: organization.id,
+      gtfs_version_id: gtfs_version.id,
+      expected_traversable: true
+    })
+
+    request_fun = fn _graphql_url, _request_opts ->
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{
+           "data" => %{
+             "plan" => %{
+               "itineraries" => [
+                 walk_itinerary(%{
+                  "legs" => [
+                     %{
+                       "mode" => "WALK",
+                       "from" => %{"name" => "Start"},
+                       "to" => %{"name" => "Stop"},
+                       "steps" => [
+                         %{
+                           "streetName" => "Main St",
+                           "distance" => "invalid-distance",
+                           "absoluteDirection" => "NORTH",
+                           "relativeDirection" => "CONTINUE"
+                         }
+                       ]
+                     }
+                   ]
+                 })
+               ]
+             }
+           }
+         }
+       }}
+    end
+
+    assert {:ok, result} =
+             PathwaysValidity.run_in_session(
+               session_fixture(),
+               organization.id,
+               gtfs_version.id,
+               request_fun: request_fun
+             )
+
+    assert [%{status: :failed, failure_category: :query_failure, details: details}] = result.cases
+    assert details.reason == :invalid_graphql_payload
+  end
+
+  test "run_in_session/4 attributes malformed leg payload as query_failure" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    _stop =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
+
+    walkability_test_fixture(%{
+      organization_id: organization.id,
+      gtfs_version_id: gtfs_version.id,
+      expected_traversable: true
+    })
+
+    request_fun = fn _graphql_url, _request_opts ->
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{
+           "data" => %{
+             "plan" => %{
+               "itineraries" => [
+                 walk_itinerary(%{
+                   "legs" => [
+                     %{
+                       "mode" => 123,
+                       "from" => %{"name" => "Start"},
+                       "to" => %{"name" => "Stop"},
+                       "steps" => []
+                     }
+                   ]
+                 })
+               ]
+             }
+           }
+         }
+       }}
+    end
+
+    assert {:ok, result} =
+             PathwaysValidity.run_in_session(
+               session_fixture(),
+               organization.id,
+               gtfs_version.id,
+               request_fun: request_fun
+             )
+
+    assert [%{status: :failed, failure_category: :query_failure, details: details}] = result.cases
+    assert details.reason == :invalid_graphql_payload
   end
 
   test "run_in_session/4 emits suite progress with running completed/total and finishing/finished phases" do
@@ -754,5 +1108,32 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
       process: make_ref(),
       runtime_log_path: "/tmp/runtime/runtime.log"
     }
+  end
+
+  defp walk_itinerary(attrs) do
+    Map.merge(
+      %{
+        "duration" => 100,
+        "walkDistance" => 100.0,
+        "startTime" => 1_739_676_000_000,
+        "endTime" => 1_739_676_120_000,
+        "legs" => [
+          %{
+            "mode" => "WALK",
+            "from" => %{"name" => "Start"},
+            "to" => %{"name" => "Stop"},
+            "steps" => [
+              %{
+                "streetName" => "Main St",
+                "distance" => 100.0,
+                "absoluteDirection" => "NORTH",
+                "relativeDirection" => "CONTINUE"
+              }
+            ]
+          }
+        ]
+      },
+      attrs
+    )
   end
 end

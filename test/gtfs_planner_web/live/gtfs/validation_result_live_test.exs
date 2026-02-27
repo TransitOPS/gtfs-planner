@@ -237,7 +237,49 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
           %{
             test_case_id: walkability_test_1.id,
             status: :passed,
-            route_output: %{route_exists: true, duration_seconds: 180.0, distance_meters: 320.0},
+            route_output: %{
+              route_exists: true,
+              duration_seconds: 180.0,
+              distance_meters: 320.0,
+              step_count: 6,
+              leg_count: 2,
+              itinerary_start_time: ~U[2026-01-01 12:00:00.000000Z],
+              itinerary_end_time: ~U[2026-01-01 12:03:00.000000Z],
+              itinerary_steps: %{
+                legs: [
+                  %{
+                    index: 0,
+                    mode: "WALK",
+                    from_name: "Origin",
+                    to_name: "Transfer",
+                    steps: [
+                      %{
+                        index: 0,
+                        street_name: "Main St",
+                        distance_meters: 120.5,
+                        absolute_direction: "NORTH",
+                        relative_direction: "DEPART"
+                      }
+                    ]
+                  },
+                  %{
+                    index: 1,
+                    mode: "WALK",
+                    from_name: "Transfer",
+                    to_name: "Destination",
+                    steps: [
+                      %{
+                        index: 0,
+                        street_name: "Oak Ave",
+                        distance_meters: 199.5,
+                        absolute_direction: "EAST",
+                        relative_direction: "RIGHT"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
             wheelchair_output: %{
               route_exists: true,
               duration_seconds: 200.0,
@@ -261,11 +303,39 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert has_element?(view, "#pathways-result-summary")
       assert has_element?(view, "#pathways-top-failure-categories")
       assert has_element?(view, "#pathways-case-results")
+      assert has_element?(view, "#pathways-case-results th", "Steps")
+      assert has_element?(view, "#pathways-case-results th", "Legs")
+      assert has_element?(view, "#pathways-case-results th", "Start Time")
+      assert has_element?(view, "#pathways-case-results th", "End Time")
       assert render(view) =~ "Pass Rate"
       assert render(view) =~ "50.0%"
       assert render(view) =~ "query_failure: 1"
       assert has_element?(view, "#pathways-case-row-0", walkability_test_1.id)
       assert has_element?(view, "#pathways-case-row-1", walkability_test_2.id)
+      assert render(view |> element("#pathways-case-row-0")) =~ "2026-01-01 12:00:00 UTC"
+      assert render(view |> element("#pathways-case-row-0")) =~ "2026-01-01 12:03:00 UTC"
+
+      assert has_element?(view, "#pathways-case-itinerary-details-0 summary", "Step-by-step itinerary")
+      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Step")
+      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Leg Mode")
+      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Street")
+      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Relative")
+      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Absolute")
+      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Distance (m)")
+      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "From")
+      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "To")
+
+      assert render(view |> element("#pathways-case-itinerary-step-0-0-0")) =~ "Main St"
+      assert render(view |> element("#pathways-case-itinerary-step-0-0-0")) =~ "Origin"
+      assert render(view |> element("#pathways-case-itinerary-step-0-1-0")) =~ "Oak Ave"
+      assert render(view |> element("#pathways-case-itinerary-step-0-1-0")) =~ "Destination"
+
+      rendered_html = render(view)
+      {first_step_position, _} = :binary.match(rendered_html, "pathways-case-itinerary-step-0-0-0")
+      {second_step_position, _} = :binary.match(rendered_html, "pathways-case-itinerary-step-0-1-0")
+      assert first_step_position < second_step_position
+
+      assert has_element?(view, "#pathways-case-itinerary-empty-1", "No itinerary steps available.")
     end
 
     test "poll refresh updates pathways run from running to completed", %{

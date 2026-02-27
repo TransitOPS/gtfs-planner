@@ -239,24 +239,94 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                         <th>Failure Category</th>
                         <th>Duration (s)</th>
                         <th>Distance (m)</th>
+                        <th>Steps</th>
+                        <th>Legs</th>
+                        <th>Start Time</th>
+                        <th>End Time</th>
                       </tr>
                     </thead>
                     <tbody>
-                      <tr
-                        :for={row <- @pathways_case_results}
-                        id={"pathways-case-row-#{row.order_index}"}
-                      >
-                        <td>{row.order_index}</td>
-                        <td class="font-mono text-xs">{row.walkability_test_id}</td>
-                        <td>
-                          <span class={["badge badge-sm", case_status_badge_class(row.status)]}>
-                            {String.upcase(to_string(row.status))}
-                          </span>
-                        </td>
-                        <td>{row.failure_category || "-"}</td>
-                        <td>{row.duration_seconds || "-"}</td>
-                        <td>{row.distance_meters || "-"}</td>
-                      </tr>
+                      <%= for row <- @pathways_case_results do %>
+                        <% itinerary_step_rows = pathways_itinerary_step_rows(row.itinerary_steps_json) %>
+
+                        <tr id={"pathways-case-row-#{row.order_index}"}>
+                          <td>{row.order_index}</td>
+                          <td class="font-mono text-xs">{row.walkability_test_id}</td>
+                          <td>
+                            <span class={["badge badge-sm", case_status_badge_class(row.status)]}>
+                              {String.upcase(to_string(row.status))}
+                            </span>
+                          </td>
+                          <td>{row.failure_category || "-"}</td>
+                          <td>{row.duration_seconds || "-"}</td>
+                          <td>{format_pathways_distance(row.distance_meters)}</td>
+                          <td>{row.step_count || "-"}</td>
+                          <td>{row.leg_count || "-"}</td>
+                          <td>{format_pathways_time(row.itinerary_start_time)}</td>
+                          <td>{format_pathways_time(row.itinerary_end_time)}</td>
+                        </tr>
+
+                        <tr id={"pathways-case-itinerary-row-#{row.order_index}"} class="bg-base-100">
+                          <td colspan="10" class="p-0">
+                            <details
+                              id={"pathways-case-itinerary-details-#{row.order_index}"}
+                              class="border-t border-base-300"
+                            >
+                              <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-base-content/80">
+                                Step-by-step itinerary
+                              </summary>
+
+                              <div class="px-3 pb-3">
+                                <%= if pathways_empty_itinerary?(itinerary_step_rows) do %>
+                                  <p
+                                    id={"pathways-case-itinerary-empty-#{row.order_index}"}
+                                    class="text-xs text-base-content/70"
+                                  >
+                                    {pathways_empty_itinerary_text()}
+                                  </p>
+                                <% else %>
+                                  <div class="overflow-x-auto">
+                                    <table
+                                      id={"pathways-case-itinerary-table-#{row.order_index}"}
+                                      class="table table-xs"
+                                    >
+                                      <thead>
+                                        <tr>
+                                          <th>Step</th>
+                                          <th>Leg Mode</th>
+                                          <th>Street</th>
+                                          <th>Relative</th>
+                                          <th>Absolute</th>
+                                          <th>Distance (m)</th>
+                                          <th>From</th>
+                                          <th>To</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        <tr
+                                          :for={step <- itinerary_step_rows}
+                                          id={
+                                            "pathways-case-itinerary-step-#{row.order_index}-#{step.leg_index}-#{step.step_index}"
+                                          }
+                                        >
+                                          <td>{step.step_index}</td>
+                                          <td>{step.mode}</td>
+                                          <td>{step.street_name}</td>
+                                          <td>{step.relative_direction}</td>
+                                          <td>{step.absolute_direction}</td>
+                                          <td>{format_pathways_distance(step.distance_meters)}</td>
+                                          <td>{step.from_name}</td>
+                                          <td>{step.to_name}</td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                <% end %>
+                              </div>
+                            </details>
+                          </td>
+                        </tr>
+                      <% end %>
                     </tbody>
                   </table>
                 </div>
@@ -592,6 +662,88 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp pathways_top_failure_categories(run) do
     Map.get(run.result_json || %{}, "top_failure_categories", [])
   end
+
+  defp format_pathways_time(nil), do: "-"
+
+  defp format_pathways_time(%DateTime{} = value) do
+    Calendar.strftime(value, "%Y-%m-%d %H:%M:%S UTC")
+  end
+
+  defp format_pathways_time(_value), do: "-"
+
+  defp pathways_itinerary_step_rows(itinerary_steps_json) when is_map(itinerary_steps_json) do
+    itinerary_steps_json
+    |> pathways_map_value(:legs)
+    |> ensure_list()
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {leg, leg_position} ->
+      leg_index = normalize_index(pathways_map_value(leg, :index), leg_position)
+      leg_mode = normalize_text(pathways_map_value(leg, :mode))
+      from_name = normalize_text(pathways_map_value(leg, :from_name))
+      to_name = normalize_text(pathways_map_value(leg, :to_name))
+
+      leg
+      |> pathways_map_value(:steps)
+      |> ensure_list()
+      |> Enum.with_index()
+      |> Enum.map(fn {step, step_position} ->
+        %{
+          leg_index: leg_index,
+          step_index: normalize_index(pathways_map_value(step, :index), step_position),
+          mode: leg_mode,
+          street_name: normalize_text(pathways_map_value(step, :street_name)),
+          relative_direction: normalize_text(pathways_map_value(step, :relative_direction)),
+          absolute_direction: normalize_text(pathways_map_value(step, :absolute_direction)),
+          distance_meters: normalize_distance(pathways_map_value(step, :distance_meters)),
+          from_name: from_name,
+          to_name: to_name
+        }
+      end)
+    end)
+  end
+
+  defp pathways_itinerary_step_rows(_itinerary_steps_json), do: []
+
+  defp pathways_map_value(map, key) when is_map(map) do
+    string_key = Atom.to_string(key)
+
+    cond do
+      Map.has_key?(map, key) -> Map.get(map, key)
+      Map.has_key?(map, string_key) -> Map.get(map, string_key)
+      true -> nil
+    end
+  end
+
+  defp pathways_map_value(_map, _key), do: nil
+
+  defp ensure_list(value) when is_list(value), do: value
+  defp ensure_list(_value), do: []
+
+  defp normalize_index(value, _fallback) when is_integer(value) and value >= 0, do: value
+  defp normalize_index(_value, fallback), do: fallback
+
+  defp normalize_text(value) when is_binary(value) and value != "", do: value
+  defp normalize_text(_value), do: "-"
+
+  defp normalize_distance(value) when is_float(value), do: value
+  defp normalize_distance(value) when is_integer(value), do: value * 1.0
+  defp normalize_distance(_value), do: nil
+
+  defp format_pathways_distance(nil), do: "-"
+
+  defp format_pathways_distance(value) when is_float(value) do
+    value
+    |> Float.round(1)
+    |> :erlang.float_to_binary(decimals: 1)
+  end
+
+  defp format_pathways_distance(value) when is_integer(value), do: Integer.to_string(value)
+  defp format_pathways_distance(_value), do: "-"
+
+  defp pathways_empty_itinerary?(rows) when is_list(rows), do: rows == []
+  defp pathways_empty_itinerary?(_rows), do: true
+
+  defp pathways_empty_itinerary_text, do: "No itinerary steps available."
 
   defp maybe_schedule_pathways_status_poll(socket, %{
          run_type: "pathways_tests",

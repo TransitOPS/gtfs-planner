@@ -654,6 +654,11 @@ defmodule GtfsPlanner.Validations do
         route_exists: route_field(route_output, :route_exists),
         duration_seconds: route_float_field(route_output, :duration_seconds),
         distance_meters: route_float_field(route_output, :distance_meters),
+        itinerary_start_time: route_datetime_field(route_output, :itinerary_start_time),
+        itinerary_end_time: route_datetime_field(route_output, :itinerary_end_time),
+        leg_count: route_non_negative_integer_field(route_output, :leg_count),
+        step_count: route_non_negative_integer_field(route_output, :step_count),
+        itinerary_steps_json: route_map_field(route_output, :itinerary_steps),
         wheelchair_route_exists: route_field(wheelchair_output, :route_exists),
         wheelchair_duration_seconds: route_float_field(wheelchair_output, :duration_seconds),
         wheelchair_distance_meters: route_float_field(wheelchair_output, :distance_meters),
@@ -700,6 +705,27 @@ defmodule GtfsPlanner.Validations do
     |> normalize_optional_float(field)
   end
 
+  @spec route_datetime_field(map() | nil, atom()) :: DateTime.t() | nil
+  defp route_datetime_field(route_output, field) do
+    route_output
+    |> route_field(field)
+    |> normalize_optional_datetime(field)
+  end
+
+  @spec route_non_negative_integer_field(map() | nil, atom()) :: non_neg_integer() | nil
+  defp route_non_negative_integer_field(route_output, field) do
+    route_output
+    |> route_field(field)
+    |> normalize_optional_non_negative_integer(field)
+  end
+
+  @spec route_map_field(map() | nil, atom()) :: map() | nil
+  defp route_map_field(route_output, field) do
+    route_output
+    |> route_field(field)
+    |> normalize_optional_map(field)
+  end
+
   @spec normalize_optional_float(term(), atom()) :: float() | nil
   defp normalize_optional_float(nil, _field), do: nil
   defp normalize_optional_float(value, _field) when is_float(value), do: value
@@ -708,6 +734,40 @@ defmodule GtfsPlanner.Validations do
   defp normalize_optional_float(value, field) do
     raise ArgumentError,
           "invalid pathways route field #{inspect(field)}: #{inspect(value)}; expected float, integer, or nil"
+  end
+
+  @spec normalize_optional_datetime(term(), atom()) :: DateTime.t() | nil
+  defp normalize_optional_datetime(nil, _field), do: nil
+
+  defp normalize_optional_datetime(%DateTime{} = value, _field) do
+    {microsecond, _precision} = value.microsecond
+    %{value | microsecond: {microsecond, 6}}
+  end
+
+  defp normalize_optional_datetime(value, field) do
+    raise ArgumentError,
+          "invalid pathways route field #{inspect(field)}: #{inspect(value)}; expected DateTime or nil"
+  end
+
+  @spec normalize_optional_non_negative_integer(term(), atom()) :: non_neg_integer() | nil
+  defp normalize_optional_non_negative_integer(nil, _field), do: nil
+
+  defp normalize_optional_non_negative_integer(value, _field)
+       when is_integer(value) and value >= 0,
+       do: value
+
+  defp normalize_optional_non_negative_integer(value, field) do
+    raise ArgumentError,
+          "invalid pathways route field #{inspect(field)}: #{inspect(value)}; expected non-negative integer or nil"
+  end
+
+  @spec normalize_optional_map(term(), atom()) :: map() | nil
+  defp normalize_optional_map(nil, _field), do: nil
+  defp normalize_optional_map(value, _field) when is_map(value), do: value
+
+  defp normalize_optional_map(value, field) do
+    raise ArgumentError,
+          "invalid pathways route field #{inspect(field)}: #{inspect(value)}; expected map or nil"
   end
 
   @spec pass_rate_percent(non_neg_integer(), non_neg_integer()) :: float()

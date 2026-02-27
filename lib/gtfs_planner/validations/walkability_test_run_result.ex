@@ -18,6 +18,11 @@ defmodule GtfsPlanner.Validations.WalkabilityTestRunResult do
           route_exists: boolean() | nil,
           duration_seconds: float() | nil,
           distance_meters: float() | nil,
+          itinerary_start_time: DateTime.t() | nil,
+          itinerary_end_time: DateTime.t() | nil,
+          leg_count: non_neg_integer() | nil,
+          step_count: non_neg_integer() | nil,
+          itinerary_steps_json: map() | nil,
           wheelchair_route_exists: boolean() | nil,
           wheelchair_duration_seconds: float() | nil,
           wheelchair_distance_meters: float() | nil,
@@ -34,6 +39,11 @@ defmodule GtfsPlanner.Validations.WalkabilityTestRunResult do
     field :route_exists, :boolean
     field :duration_seconds, :float
     field :distance_meters, :float
+    field :itinerary_start_time, :utc_datetime_usec
+    field :itinerary_end_time, :utc_datetime_usec
+    field :leg_count, :integer
+    field :step_count, :integer
+    field :itinerary_steps_json, :map
 
     field :wheelchair_route_exists, :boolean
     field :wheelchair_duration_seconds, :float
@@ -59,6 +69,11 @@ defmodule GtfsPlanner.Validations.WalkabilityTestRunResult do
       :route_exists,
       :duration_seconds,
       :distance_meters,
+      :itinerary_start_time,
+      :itinerary_end_time,
+      :leg_count,
+      :step_count,
+      :itinerary_steps_json,
       :wheelchair_route_exists,
       :wheelchair_duration_seconds,
       :wheelchair_distance_meters,
@@ -66,6 +81,8 @@ defmodule GtfsPlanner.Validations.WalkabilityTestRunResult do
     ])
     |> validate_required([:validation_run_id, :walkability_test_id, :order_index, :status])
     |> validate_number(:order_index, greater_than_or_equal_to: 0)
+    |> validate_number(:leg_count, greater_than_or_equal_to: 0)
+    |> validate_number(:step_count, greater_than_or_equal_to: 0)
     |> validate_inclusion(:status, @statuses)
     |> validate_failure_category()
     |> foreign_key_constraint(:validation_run_id)
