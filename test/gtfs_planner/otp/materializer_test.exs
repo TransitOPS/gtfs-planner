@@ -118,7 +118,7 @@ defmodule GtfsPlanner.Otp.MaterializerTest do
                )
 
       assert second_meta.reused == false
-      assert_receive {:phase, :cache_check}
+      refute_receive {:phase, :cache_check}
       assert_receive {:phase, :preflight}
       assert_receive {:phase, :exporting}
       assert_receive {:phase, :packaging}

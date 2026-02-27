@@ -30,16 +30,21 @@ defmodule GtfsPlanner.Otp.Materializer do
     preflight_mode = Keyword.get(opts, :preflight_mode, :strict)
     force_rebuild? = Keyword.get(opts, :force_rebuild, false)
 
-    emit_status(status_callback, %{phase: :cache_check})
+    if force_rebuild? do
+      emit_status(status_callback, %{phase: :preflight})
+      build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode)
+    else
+      emit_status(status_callback, %{phase: :cache_check})
 
-    case if(force_rebuild?, do: :miss, else: cache_hit(organization_id, gtfs_version_id)) do
-      {:ok, zip_path, meta} ->
-        emit_status(status_callback, %{phase: :done, reused: true})
-        {:ok, zip_path, meta}
+      case cache_hit(organization_id, gtfs_version_id) do
+        {:ok, zip_path, meta} ->
+          emit_status(status_callback, %{phase: :done, reused: true})
+          {:ok, zip_path, meta}
 
-      :miss ->
-        emit_status(status_callback, %{phase: :preflight})
-        build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode)
+        :miss ->
+          emit_status(status_callback, %{phase: :preflight})
+          build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode)
+      end
     end
   end
 

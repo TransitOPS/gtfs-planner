@@ -165,7 +165,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
 
     refute_received :cache_lookup_called
     refute meta.reused
-    assert_receive {:phase, %{phase: :cache_check}}
+    refute_receive {:phase, %{phase: :cache_check}}
     assert_receive {:phase, %{phase: :preflight}}
     assert_receive {:phase, %{phase: :building}}
     assert_receive {:phase, %{phase: :persisting}}

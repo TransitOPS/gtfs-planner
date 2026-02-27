@@ -31,34 +31,55 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
     build_opts = Keyword.get(opts, :build_opts, [])
     force_rebuild? = Keyword.get(opts, :force_rebuild, false)
 
-    emit_status(status_callback, %{phase: :cache_check})
+    if force_rebuild? do
+      emit_status(status_callback, %{phase: :preflight})
 
-    case if(force_rebuild?, do: :miss, else: cache_lookup_fun.(organization_id, gtfs_version_id)) do
-      {:ok, graph_path, manifest_path, manifest_json} ->
-        emit_status(status_callback, %{phase: :done, reused: true})
+      case preflight_fun.(organization_id, gtfs_version_id) do
+        :ok ->
+          do_build_and_persist(
+            organization_id,
+            gtfs_version_id,
+            status_callback,
+            build_fun,
+            persist_fun,
+            stage_fun,
+            build_opts
+          )
 
-        {:ok, graph_path,
-         %{reused: true, manifest_path: manifest_path, manifest_json: manifest_json}}
+        {:error, issues} ->
+          emit_status(status_callback, %{phase: :failed, reason: :preflight_failed})
+          {:error, issues}
+      end
+    else
+      emit_status(status_callback, %{phase: :cache_check})
 
-      :miss ->
-        emit_status(status_callback, %{phase: :preflight})
+      case cache_lookup_fun.(organization_id, gtfs_version_id) do
+        {:ok, graph_path, manifest_path, manifest_json} ->
+          emit_status(status_callback, %{phase: :done, reused: true})
 
-        case preflight_fun.(organization_id, gtfs_version_id) do
-          :ok ->
-            do_build_and_persist(
-              organization_id,
-              gtfs_version_id,
-              status_callback,
-              build_fun,
-              persist_fun,
-              stage_fun,
-              build_opts
-            )
+          {:ok, graph_path,
+           %{reused: true, manifest_path: manifest_path, manifest_json: manifest_json}}
 
-          {:error, issues} ->
-            emit_status(status_callback, %{phase: :failed, reason: :preflight_failed})
-            {:error, issues}
-        end
+        :miss ->
+          emit_status(status_callback, %{phase: :preflight})
+
+          case preflight_fun.(organization_id, gtfs_version_id) do
+            :ok ->
+              do_build_and_persist(
+                organization_id,
+                gtfs_version_id,
+                status_callback,
+                build_fun,
+                persist_fun,
+                stage_fun,
+                build_opts
+              )
+
+            {:error, issues} ->
+              emit_status(status_callback, %{phase: :failed, reason: :preflight_failed})
+              {:error, issues}
+          end
+      end
     end
   end
 

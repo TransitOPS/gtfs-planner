@@ -288,7 +288,7 @@ defmodule GtfsPlanner.ValidationsTest do
       assert_receive {:pathways_runner_started, ^run_id, ^org_id, ^version_id}
     end
 
-    test "start_pathways_trip_test/2 reuses active run and does not spawn another runner", %{
+    test "start_pathways_trip_test/2 always creates a new run even when one is active", %{
       organization: org,
       gtfs_version: version
     } do
@@ -323,14 +323,19 @@ defmodule GtfsPlanner.ValidationsTest do
       {:ok, existing_started_run} = Validations.create_pathways_validation_run(org.id, version.id)
       {:ok, existing_running_run} = Validations.mark_pathways_running(existing_started_run)
 
-      assert {:ok, reused_run} = Validations.start_pathways_trip_test(org.id, version.id)
-      assert reused_run.id == existing_running_run.id
-      assert reused_run.status == "running"
+      assert {:ok, new_run} = Validations.start_pathways_trip_test(org.id, version.id)
+      assert new_run.status == "running"
+      refute new_run.id == existing_running_run.id
 
-      refute_receive {:pathways_runner_started, _, _, _}
+      new_run_id = new_run.id
+      org_id = org.id
+      version_id = version.id
 
-      assert [run] = Validations.list_validation_runs(org.id, version.id)
-      assert run.id == existing_running_run.id
+      assert_receive {:pathways_runner_started, ^new_run_id, ^org_id, ^version_id}
+
+      runs = Validations.list_validation_runs(org.id, version.id)
+      assert Enum.any?(runs, &(&1.id == existing_running_run.id))
+      assert Enum.any?(runs, &(&1.id == new_run.id))
     end
 
     test "start_pathways_trip_test/2 marks run failed when runner cannot be spawned", %{

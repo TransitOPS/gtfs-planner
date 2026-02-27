@@ -86,19 +86,13 @@ defmodule GtfsPlanner.Validations do
   @doc """
   Starts a pathways trip test run for the given organization and GTFS version.
 
-  This creates a run, transitions it to `running`, and spawns the dedicated
-  runner process under `GtfsPlanner.TaskSupervisor`.
+  Always creates a new run, transitions it to `running`, and spawns the
+  dedicated runner process under `GtfsPlanner.TaskSupervisor`.
   """
   @spec start_pathways_trip_test(Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, ValidationRun.t()} | {:error, term()}
   def start_pathways_trip_test(organization_id, gtfs_version_id) do
-    case get_active_pathways_trip_test(organization_id, gtfs_version_id) do
-      %ValidationRun{} = active_run ->
-        {:ok, active_run}
-
-      nil ->
-        start_new_pathways_trip_test(organization_id, gtfs_version_id)
-    end
+    start_new_pathways_trip_test(organization_id, gtfs_version_id)
   end
 
   @spec start_new_pathways_trip_test(Ecto.UUID.t(), Ecto.UUID.t()) ::
