@@ -1136,12 +1136,50 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   end
 
   defp display_path(%{hops: hops}, true) do
-    hops
-    |> Enum.reverse()
-    |> Enum.map(fn hop ->
-      display_signposted_as = hop.reversed_signposted_as || hop.signposted_as
-      Map.put(hop, :display_signposted_as, display_signposted_as)
-    end)
+    case Enum.reverse(hops) do
+      [] ->
+        []
+
+      [start_hop | rest] ->
+        {rebuilt, _last_source} =
+          Enum.map_reduce(rest, start_hop, fn hop, source_segment_hop ->
+            display_signposted_as =
+              source_segment_hop.reversed_signposted_as || source_segment_hop.signposted_as
+
+            rebuilt_hop =
+              hop
+              |> Map.put(:pathway_id, source_segment_hop.pathway_id)
+              |> Map.put(:pathway_mode, source_segment_hop.pathway_mode)
+              |> Map.put(:pathway_mode_label, source_segment_hop.pathway_mode_label)
+              |> Map.put(:is_bidirectional, source_segment_hop.is_bidirectional)
+              |> Map.put(:signposted_as, source_segment_hop.signposted_as)
+              |> Map.put(:reversed_signposted_as, source_segment_hop.reversed_signposted_as)
+              |> Map.put(:level_diff, source_segment_hop.level_diff)
+              |> Map.put(:time_seconds, source_segment_hop.time_seconds)
+              |> Map.put(:distance_meters, source_segment_hop.distance_meters)
+              |> Map.put(:calculation_method, source_segment_hop.calculation_method)
+              |> Map.put(:display_signposted_as, display_signposted_as)
+
+            {rebuilt_hop, hop}
+          end)
+
+        [origin_display_hop(start_hop) | rebuilt]
+    end
+  end
+
+  defp origin_display_hop(hop) do
+    hop
+    |> Map.put(:pathway_id, nil)
+    |> Map.put(:pathway_mode, nil)
+    |> Map.put(:pathway_mode_label, nil)
+    |> Map.put(:is_bidirectional, nil)
+    |> Map.put(:signposted_as, nil)
+    |> Map.put(:reversed_signposted_as, nil)
+    |> Map.put(:level_diff, nil)
+    |> Map.put(:time_seconds, 0.0)
+    |> Map.put(:distance_meters, nil)
+    |> Map.put(:calculation_method, :origin)
+    |> Map.put(:display_signposted_as, nil)
   end
 
   defp pair_id(detail) do
