@@ -95,7 +95,6 @@ defmodule GtfsPlanner.Gtfs.StationReport do
         inventory_section(station, child_stops, levels, station_pathways),
         gps_section(station, child_stops),
         data_integrity_section(station, child_stops, undirected, directed, stop_index),
-        accessibility_section(child_stops, core_pathways, stop_index, level_index),
         entrance_platform_connectivity_section(
           child_stops,
           core_pathways,
@@ -103,6 +102,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
           stop_index,
           level_index
         ),
+        accessibility_section(child_stops, core_pathways, stop_index, level_index),
         attribute_completeness_section(station_pathways),
         unavailable_section()
       ]
