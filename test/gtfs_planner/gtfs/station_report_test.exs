@@ -16,8 +16,8 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
                "inventory",
                "gps",
                "data_integrity",
-               "accessibility",
                "entrance_platform_connectivity",
+               "accessibility",
                "attribute_completeness",
                "not_available"
              ]
@@ -231,6 +231,46 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
                %{stop_id: "ENT_A", pathway_id: nil, pathway_mode: nil},
                %{stop_id: "BOARD_A", pathway_id: "PW_100", pathway_mode: 1}
              ]
+    end
+
+    test "entrance to platform paths include enriched traversal totals and bidirectionality" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("ENT_A", 2, parent_station: "STATION", level_id: "L1"),
+            stop("GEN_A", 3, parent_station: "STATION", level_id: "L1"),
+            stop("BOARD_A", 4, parent_station: "PLAT_A", level_id: "L2")
+          ],
+          levels: [
+            %{level: level("L1", 0.0), stop_count: 2},
+            %{level: level("L2", 1.0), stop_count: 1}
+          ],
+          pathways: [
+            pathway("PW_WALK", "ENT_A", "GEN_A", 1, true,
+              length: Decimal.new("10"),
+              signposted_as: "Platform"
+            ),
+            pathway("PW_ELEV", "GEN_A", "BOARD_A", 5, false, reversed_signposted_as: "Street")
+          ]
+        })
+
+      section = section(report, "entrance_platform_connectivity")
+      item = item(section, "entrance_platform_paths")
+      [detail] = item.details
+
+      assert detail.reachable
+      assert detail.enriched.hops |> Enum.map(& &1.stop_id) == ["ENT_A", "GEN_A", "BOARD_A"]
+
+      assert detail.enriched.hops |> Enum.at(2) |> Map.get(:calculation_method) ==
+               :elevator_level_diff_estimate
+
+      assert detail.enriched.totals.segment_count == 2
+      assert detail.enriched.totals.has_elevator
+      assert detail.enriched.totals.has_stairs == false
+      assert detail.enriched.totals.level_changes == 1
+      assert detail.enriched.totals.signposted_segments == 1
+      assert detail.enriched.all_bidirectional == false
     end
 
     test "entrance to platform paths warn when entrances or platforms are missing" do

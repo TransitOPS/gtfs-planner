@@ -1,0 +1,1558 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trip Analysis: In-Station Wayfinding Evaluation</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --ink: #1a1a1a;
+        --ink-secondary: #555;
+        --ink-tertiary: #888;
+        --surface: #fff;
+        --surface-alt: #f7f7f7;
+        --border: #ddd;
+        --border-light: #eee;
+        --accent-bus: #0066cc;
+        --accent-rail: #cc3300;
+        --accent-walk: #2a7a2a;
+        --accent-elevator: #7a5c00;
+        --accent-stairs: #8b4513;
+        --accent-entrance: #444;
+        --accent-sign: #0066cc;
+        --accent-warn: #b8860b;
+        --accessible: #2a7a2a;
+        --grid-unit: 8px;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family:
+          "Inter",
+          -apple-system,
+          "Helvetica Neue",
+          sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--ink);
+        background: var(--surface);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* --- Grid --- */
+      .page {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: calc(var(--grid-unit) * 6) calc(var(--grid-unit) * 4);
+      }
+
+      /* --- Typography --- */
+      h1 {
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: -0.3px;
+        margin-bottom: calc(var(--grid-unit) * 0.5);
+      }
+      h2 {
+        font-size: 13px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--ink-secondary);
+        margin-bottom: calc(var(--grid-unit) * 2);
+        padding-bottom: calc(var(--grid-unit) * 1);
+        border-bottom: 1px solid var(--border);
+      }
+      h3 {
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: calc(var(--grid-unit) * 1);
+      }
+
+      .subtitle {
+        font-size: 13px;
+        color: var(--ink-secondary);
+        margin-bottom: calc(var(--grid-unit) * 4);
+      }
+
+      /* --- Header --- */
+      .page-header {
+        margin-bottom: calc(var(--grid-unit) * 5);
+      }
+
+      /* --- Trip Summary Bar --- */
+      .trip-summary {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 1px;
+        background: var(--border);
+        border: 1px solid var(--border);
+        margin-bottom: calc(var(--grid-unit) * 5);
+      }
+      .trip-summary .metric {
+        background: var(--surface);
+        padding: calc(var(--grid-unit) * 2) calc(var(--grid-unit) * 2.5);
+      }
+      .metric-label {
+        font-size: 11px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        color: var(--ink-tertiary);
+        margin-bottom: 2px;
+      }
+      .metric-value {
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.5px;
+        line-height: 1.2;
+      }
+      .metric-unit {
+        font-size: 12px;
+        font-weight: 400;
+        color: var(--ink-secondary);
+        margin-left: 2px;
+      }
+      .metric-detail {
+        font-size: 11px;
+        color: var(--ink-tertiary);
+        margin-top: 2px;
+      }
+
+      /* --- Timeline --- */
+      .timeline-section {
+        margin-bottom: calc(var(--grid-unit) * 6);
+      }
+      .timeline {
+        position: relative;
+      }
+      .timeline-bar {
+        display: flex;
+        height: 36px;
+        border: 1px solid var(--border);
+        overflow: hidden;
+      }
+      .timeline-segment {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 600;
+        color: #fff;
+        position: relative;
+        min-width: 24px;
+      }
+      .timeline-segment.bus {
+        background: var(--accent-bus);
+      }
+      .timeline-segment.walk {
+        background: var(--accent-walk);
+      }
+      .timeline-segment.rail {
+        background: var(--accent-rail);
+      }
+
+      .timeline-labels {
+        display: flex;
+        margin-top: 6px;
+      }
+      .timeline-label {
+        font-size: 11px;
+        color: var(--ink-secondary);
+      }
+      .timeline-label.start {
+        text-align: left;
+      }
+      .timeline-label.end {
+        text-align: right;
+        margin-left: auto;
+      }
+
+      .timeline-ticks {
+        display: flex;
+        justify-content: space-between;
+        margin-top: calc(var(--grid-unit) * 1);
+        padding: 0;
+      }
+      .timeline-tick {
+        font-size: 10px;
+        color: var(--ink-tertiary);
+        text-align: center;
+        flex-shrink: 0;
+      }
+
+      /* --- Leg Cards --- */
+      .legs {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 1px;
+        background: var(--border);
+        border: 1px solid var(--border);
+        margin-bottom: calc(var(--grid-unit) * 6);
+      }
+      .leg-card {
+        background: var(--surface);
+        padding: calc(var(--grid-unit) * 2.5);
+      }
+      .leg-mode {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        padding: 2px 6px;
+        color: #fff;
+        margin-bottom: calc(var(--grid-unit) * 1);
+      }
+      .leg-mode.bus {
+        background: var(--accent-bus);
+      }
+      .leg-mode.walk {
+        background: var(--accent-walk);
+      }
+      .leg-mode.rail {
+        background: var(--accent-rail);
+      }
+
+      .leg-route {
+        font-size: 13px;
+        font-weight: 500;
+        margin-bottom: calc(var(--grid-unit) * 1.5);
+      }
+      .leg-stats {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: calc(var(--grid-unit) * 1) calc(var(--grid-unit) * 2);
+      }
+      .leg-stat-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        color: var(--ink-tertiary);
+      }
+      .leg-stat-value {
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      /* --- Station Walk Detail --- */
+      .station-walk-section {
+        margin-bottom: calc(var(--grid-unit) * 6);
+      }
+
+      .walk-overview {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: calc(var(--grid-unit) * 4);
+        margin-bottom: calc(var(--grid-unit) * 4);
+      }
+
+      /* --- Step-by-Step Table --- */
+      .steps-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: calc(var(--grid-unit) * 4);
+      }
+      .steps-table th {
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        color: var(--ink-tertiary);
+        text-align: left;
+        padding: calc(var(--grid-unit) * 1) calc(var(--grid-unit) * 1.5);
+        border-bottom: 2px solid var(--ink);
+        white-space: nowrap;
+      }
+      .steps-table th.num {
+        text-align: right;
+      }
+      .steps-table td {
+        padding: calc(var(--grid-unit) * 1.5) calc(var(--grid-unit) * 1.5);
+        border-bottom: 1px solid var(--border-light);
+        vertical-align: top;
+        font-size: 13px;
+      }
+      .steps-table td.num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .steps-table tr:last-child td {
+        border-bottom: 2px solid var(--ink);
+      }
+
+      .step-number {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--ink-secondary);
+        border: 1px solid var(--border);
+        border-radius: 2px;
+        flex-shrink: 0;
+      }
+
+      .step-action {
+        font-weight: 500;
+      }
+      .step-instruction {
+        font-size: 13px;
+        color: var(--ink);
+      }
+      .step-meta {
+        font-size: 11px;
+        color: var(--ink-tertiary);
+        margin-top: 2px;
+      }
+
+      .badge {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        padding: 1px 5px;
+        border-radius: 2px;
+        vertical-align: middle;
+      }
+      .badge-entrance {
+        background: #e8e8e8;
+        color: var(--accent-entrance);
+      }
+      .badge-sign {
+        background: #e6f0ff;
+        color: var(--accent-sign);
+      }
+      .badge-stairs {
+        background: #faf0e6;
+        color: var(--accent-stairs);
+      }
+      .badge-elevator {
+        background: #fff8e1;
+        color: var(--accent-elevator);
+      }
+      .badge-area {
+        background: #f0f7f0;
+        color: var(--accent-walk);
+      }
+      .badge-accessible {
+        background: #e8f5e9;
+        color: var(--accessible);
+      }
+
+      /* --- Vertical Profile --- */
+      .profile-section {
+        margin-bottom: calc(var(--grid-unit) * 6);
+      }
+      .vertical-profile {
+        position: relative;
+        height: 200px;
+        border-left: 1px solid var(--ink);
+        border-bottom: 1px solid var(--ink);
+        margin: calc(var(--grid-unit) * 2) 0;
+        margin-left: 80px;
+        margin-right: 20px;
+      }
+      .profile-y-label {
+        position: absolute;
+        left: -80px;
+        font-size: 10px;
+        color: var(--ink-tertiary);
+        text-align: right;
+        width: 70px;
+        transform: translateY(-50%);
+      }
+      .profile-gridline {
+        position: absolute;
+        left: 0;
+        right: 0;
+        border-top: 1px solid var(--border-light);
+      }
+      .profile-point {
+        position: absolute;
+        width: 8px;
+        height: 8px;
+        background: var(--ink);
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 2;
+      }
+      .profile-point-label {
+        position: absolute;
+        font-size: 10px;
+        color: var(--ink-secondary);
+        white-space: nowrap;
+        transform: translateX(-50%);
+        text-align: center;
+        max-width: 90px;
+        line-height: 1.2;
+      }
+      .profile-line {
+        position: absolute;
+        background: var(--ink);
+        z-index: 1;
+      }
+      .profile-line-h {
+        height: 2px;
+      }
+      .profile-line-v {
+        width: 2px;
+      }
+
+      /* --- SVG Profile --- */
+      .svg-profile {
+        margin: calc(var(--grid-unit) * 3) 0 calc(var(--grid-unit) * 2);
+      }
+      .svg-profile text {
+        font-family: "Inter", sans-serif;
+      }
+
+      /* --- Analysis Panel --- */
+      .analysis-section {
+        margin-bottom: calc(var(--grid-unit) * 6);
+      }
+      .analysis-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: calc(var(--grid-unit) * 3);
+      }
+      .analysis-card {
+        border: 1px solid var(--border);
+        padding: calc(var(--grid-unit) * 3);
+      }
+      .analysis-card h3 {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        color: var(--ink-secondary);
+        margin-bottom: calc(var(--grid-unit) * 2);
+        padding-bottom: calc(var(--grid-unit) * 1);
+        border-bottom: 1px solid var(--border-light);
+      }
+      .analysis-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding: 4px 0;
+        font-size: 13px;
+      }
+      .analysis-row + .analysis-row {
+        border-top: 1px solid var(--border-light);
+      }
+      .analysis-key {
+        color: var(--ink-secondary);
+      }
+      .analysis-val {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .analysis-val.warn {
+        color: var(--accent-warn);
+      }
+      .analysis-val.good {
+        color: var(--accessible);
+      }
+
+      /* --- Wayfinding Quality --- */
+      .wayfinding-bar-track {
+        height: 6px;
+        background: var(--border-light);
+        margin-top: 6px;
+        margin-bottom: 12px;
+      }
+      .wayfinding-bar-fill {
+        height: 100%;
+      }
+
+      /* --- Rider Narrative --- */
+      .narrative-section {
+        margin-bottom: calc(var(--grid-unit) * 6);
+      }
+      .narrative {
+        border-left: 3px solid var(--border);
+        padding-left: calc(var(--grid-unit) * 3);
+      }
+      .narrative p {
+        font-size: 13px;
+        line-height: 1.65;
+        color: var(--ink-secondary);
+        margin-bottom: calc(var(--grid-unit) * 1.5);
+      }
+      .narrative p:last-child {
+        margin-bottom: 0;
+      }
+      .narrative strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      /* --- Footer --- */
+      .page-footer {
+        margin-top: calc(var(--grid-unit) * 6);
+        padding-top: calc(var(--grid-unit) * 2);
+        border-top: 1px solid var(--border);
+        font-size: 11px;
+        color: var(--ink-tertiary);
+        display: flex;
+        justify-content: space-between;
+      }
+
+      /* --- Distance bar sparkline --- */
+      .dist-bar {
+        display: inline-block;
+        height: 10px;
+        background: var(--accent-walk);
+        opacity: 0.3;
+        vertical-align: middle;
+        margin-right: 6px;
+        min-width: 1px;
+      }
+
+      /* --- Accessibility row --- */
+      .a11y-indicator {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 4px;
+        vertical-align: middle;
+      }
+      .a11y-indicator.ok {
+        background: var(--accessible);
+      }
+      .a11y-indicator.caution {
+        background: var(--accent-warn);
+      }
+      .a11y-indicator.blocked {
+        background: var(--accent-rail);
+      }
+
+      /* --- Print --- */
+      @media print {
+        .page {
+          padding: 20px;
+          max-width: 100%;
+        }
+        .trip-summary {
+          break-inside: avoid;
+        }
+        .steps-table {
+          break-inside: avoid;
+        }
+        .analysis-grid {
+          break-inside: avoid;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <!-- Header -->
+      <header class="page-header">
+        <h1>Trip Analysis: Grand Central In-Station Wayfinding</h1>
+        <div class="subtitle">
+          5th Ave &amp; Market St &rarr; 125th Street Station &middot; Scheduled
+          2025-03-15 08:00 &ndash; 08:45 &middot; 3 legs, 1 transfer station
+        </div>
+      </header>
+
+      <!-- Trip Summary -->
+      <section>
+        <h2>Trip Summary</h2>
+        <div class="trip-summary">
+          <div class="metric">
+            <div class="metric-label">Total Duration</div>
+            <div class="metric-value">
+              43<span class="metric-unit">min</span>
+            </div>
+            <div class="metric-detail">2,580 seconds</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">In-Vehicle Time</div>
+            <div class="metric-value">
+              35<span class="metric-unit">min</span>
+            </div>
+            <div class="metric-detail">81% of trip</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Station Walk</div>
+            <div class="metric-value">
+              7:15<span class="metric-unit">min</span>
+            </div>
+            <div class="metric-detail">435s &middot; 17% of trip</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Walk Distance</div>
+            <div class="metric-value">
+              412<span class="metric-unit">m</span>
+            </div>
+            <div class="metric-detail">7 segments</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Level Changes</div>
+            <div class="metric-value">2</div>
+            <div class="metric-detail">Stairs up, Elevator down</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Timeline -->
+      <section class="timeline-section">
+        <h2>Time Allocation</h2>
+        <div class="timeline">
+          <div class="timeline-bar">
+            <div
+              class="timeline-segment bus"
+              style="flex-grow: 900"
+              title="Bus: 15 min"
+            >
+              BUS 15m
+            </div>
+            <div
+              class="timeline-segment walk"
+              style="flex-grow: 435"
+              title="Station Walk: 7m 15s"
+            >
+              WALK 7m
+            </div>
+            <div
+              class="timeline-segment"
+              style="
+                flex-grow: 165;
+                background: var(--border-light);
+                color: var(--ink-tertiary);
+              "
+              title="Wait: 2m 45s"
+            >
+              2:45
+            </div>
+            <div
+              class="timeline-segment rail"
+              style="flex-grow: 1200"
+              title="Rail: 20 min"
+            >
+              RAIL 20m
+            </div>
+          </div>
+          <div class="timeline-labels">
+            <div class="timeline-label start">08:00 depart</div>
+            <div
+              class="timeline-label"
+              style="margin-left: auto; margin-right: auto"
+            >
+              08:15 arrive Grand Central &rarr; 08:25 board
+            </div>
+            <div class="timeline-label end">08:45 arrive</div>
+          </div>
+        </div>
+        <div
+          style="
+            margin-top: calc(var(--grid-unit) * 2);
+            font-size: 12px;
+            color: var(--ink-secondary);
+          "
+        >
+          The 7-minute station walk plus 2:45 platform wait constitute the
+          transfer penalty&mdash;the time cost of changing modes. At 10 minutes,
+          this is 23% of total trip time spent not moving toward the
+          destination.
+        </div>
+      </section>
+
+      <!-- Leg Cards -->
+      <section>
+        <h2>Leg Breakdown</h2>
+        <div class="legs">
+          <div class="leg-card">
+            <div class="leg-mode bus">Bus</div>
+            <div class="leg-route">
+              5th Ave &amp; Market St &rarr; Grand Central
+            </div>
+            <div class="leg-stats">
+              <div>
+                <div class="leg-stat-label">Duration</div>
+                <div class="leg-stat-value">15:00</div>
+              </div>
+              <div>
+                <div class="leg-stat-label">Distance</div>
+                <div class="leg-stat-value">3.2 km</div>
+              </div>
+              <div>
+                <div class="leg-stat-label">Speed</div>
+                <div class="leg-stat-value">12.8 km/h</div>
+              </div>
+              <div>
+                <div class="leg-stat-label">Depart</div>
+                <div class="leg-stat-value">08:00</div>
+              </div>
+            </div>
+          </div>
+          <div class="leg-card">
+            <div class="leg-mode walk">Station Walk</div>
+            <div class="leg-route">
+              Grand Central: Entrance &rarr; Platform 12
+            </div>
+            <div class="leg-stats">
+              <div>
+                <div class="leg-stat-label">Duration</div>
+                <div class="leg-stat-value">7:15</div>
+              </div>
+              <div>
+                <div class="leg-stat-label">Distance</div>
+                <div class="leg-stat-value">412 m</div>
+              </div>
+              <div>
+                <div class="leg-stat-label">Pace</div>
+                <div class="leg-stat-value">0.95 m/s</div>
+              </div>
+              <div>
+                <div class="leg-stat-label">Steps</div>
+                <div class="leg-stat-value">7</div>
+              </div>
+            </div>
+          </div>
+          <div class="leg-card">
+            <div class="leg-mode rail">Rail</div>
+            <div class="leg-route">
+              Grand Central Platform 12 &rarr; 125th St
+            </div>
+            <div class="leg-stats">
+              <div>
+                <div class="leg-stat-label">Duration</div>
+                <div class="leg-stat-value">20:00</div>
+              </div>
+              <div>
+                <div class="leg-stat-label">Distance</div>
+                <div class="leg-stat-value">15.4 km</div>
+              </div>
+              <div>
+                <div class="leg-stat-label">Speed</div>
+                <div class="leg-stat-value">46.2 km/h</div>
+              </div>
+              <div>
+                <div class="leg-stat-label">Depart</div>
+                <div class="leg-stat-value">08:25</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Station Walk Detail -->
+      <section class="station-walk-section">
+        <h2>Station Wayfinding: Step-by-Step</h2>
+        <table class="steps-table">
+          <thead>
+            <tr>
+              <th style="width: 36px">#</th>
+              <th>Action</th>
+              <th>Instruction</th>
+              <th>Direction</th>
+              <th>Infrastructure</th>
+              <th class="num">Distance</th>
+              <th class="num" style="width: 100px">Proportion</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="step-number">1</span></td>
+              <td>
+                <span class="badge badge-entrance">Enter</span>
+              </td>
+              <td>
+                <div class="step-instruction">Enter through Main Entrance</div>
+                <div class="step-meta">
+                  Public code "A" &middot;
+                  <span class="a11y-indicator ok"></span>Wheelchair accessible
+                </div>
+              </td>
+              <td>E</td>
+              <td>Entrance</td>
+              <td class="num">5.0 m</td>
+              <td class="num">
+                <span class="dist-bar" style="width: 3px"></span>1%
+              </td>
+            </tr>
+            <tr>
+              <td><span class="step-number">2</span></td>
+              <td>
+                <span class="badge badge-sign">Signs</span>
+              </td>
+              <td>
+                <div class="step-instruction">
+                  Follow signs to Platforms 10&ndash;15
+                </div>
+                <div class="step-meta">
+                  Signposted pathway &middot; 150 m NE through main hall
+                </div>
+              </td>
+              <td>NE</td>
+              <td>Walkway</td>
+              <td class="num">150.0 m</td>
+              <td class="num">
+                <span class="dist-bar" style="width: 73px"></span>36%
+              </td>
+            </tr>
+            <tr>
+              <td><span class="step-number">3</span></td>
+              <td>
+                <span class="badge badge-stairs">Stairs</span>
+              </td>
+              <td>
+                <div class="step-instruction">Stairs to Mezzanine</div>
+                <div class="step-meta">
+                  Ground (0) &rarr; Mezzanine (1) &middot; Up
+                </div>
+              </td>
+              <td>N</td>
+              <td>Stairs &uarr;</td>
+              <td class="num">12.0 m</td>
+              <td class="num">
+                <span class="dist-bar" style="width: 6px"></span>3%
+              </td>
+            </tr>
+            <tr>
+              <td><span class="step-number">4</span></td>
+              <td>
+                <span class="badge badge-sign">Signs</span>
+              </td>
+              <td>
+                <div class="step-instruction">Tap card at fare gate</div>
+                <div class="step-meta">
+                  Fare gate &middot; signposted pathway
+                </div>
+              </td>
+              <td>N</td>
+              <td>Fare gate</td>
+              <td class="num">2.0 m</td>
+              <td class="num">
+                <span class="dist-bar" style="width: 1px"></span>&lt;1%
+              </td>
+            </tr>
+            <tr>
+              <td><span class="step-number">5</span></td>
+              <td>
+                <span class="badge badge-elevator">Elevator</span>
+              </td>
+              <td>
+                <div class="step-instruction">Elevator to Platform Level</div>
+                <div class="step-meta">
+                  Mezzanine (1) &rarr; Platform Level (&minus;1) &middot; Down 2
+                  levels
+                </div>
+              </td>
+              <td>&mdash;</td>
+              <td>Elevator &darr;</td>
+              <td class="num">0.0 m</td>
+              <td class="num">
+                <span class="dist-bar" style="width: 0"></span>0%
+              </td>
+            </tr>
+            <tr>
+              <td><span class="step-number">6</span></td>
+              <td>
+                <span class="badge badge-sign">Signs</span>
+              </td>
+              <td>
+                <div class="step-instruction">Follow signs to Platform 12</div>
+                <div class="step-meta">
+                  Signposted pathway &middot; 85 m east
+                </div>
+              </td>
+              <td>E</td>
+              <td>Walkway</td>
+              <td class="num">85.0 m</td>
+              <td class="num">
+                <span class="dist-bar" style="width: 41px"></span>21%
+              </td>
+            </tr>
+            <tr>
+              <td><span class="step-number">7</span></td>
+              <td>
+                <span class="badge badge-area">Platform</span>
+              </td>
+              <td>
+                <div class="step-instruction">Cross Platform 12</div>
+                <div class="step-meta">
+                  Open area &middot; boarding position
+                </div>
+              </td>
+              <td>E</td>
+              <td>Platform</td>
+              <td class="num">30.0 m</td>
+              <td class="num">
+                <span class="dist-bar" style="width: 15px"></span>7%
+              </td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr style="border-top: 2px solid var(--ink)">
+              <td
+                colspan="5"
+                style="
+                  font-weight: 600;
+                  font-size: 12px;
+                  padding-top: 8px;
+                  border-bottom: none;
+                "
+              >
+                Total &middot; 7 steps &middot; 2 level changes &middot; 3
+                signposted segments
+              </td>
+              <td
+                class="num"
+                style="font-weight: 600; padding-top: 8px; border-bottom: none"
+              >
+                284.0 m
+              </td>
+              <td
+                class="num"
+                style="padding-top: 8px; border-bottom: none"
+              ></td>
+            </tr>
+          </tfoot>
+        </table>
+        <div style="font-size: 11px; color: var(--ink-tertiary)">
+          Note: OTP reports 412.3 m total walk distance for this leg. The 128.3
+          m difference accounts for pathway segments with explicit
+          traversal_time where distance does not contribute to the walk distance
+          calculation.
+        </div>
+      </section>
+
+      <!-- Vertical Profile -->
+      <section class="profile-section">
+        <h2>Vertical Profile: Level Changes Through Station</h2>
+        <svg
+          class="svg-profile"
+          viewBox="0 0 800 220"
+          width="100%"
+          height="220"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <!-- Grid lines -->
+          <line
+            x1="80"
+            y1="40"
+            x2="780"
+            y2="40"
+            stroke="#eee"
+            stroke-width="1"
+          />
+          <line
+            x1="80"
+            y1="100"
+            x2="780"
+            y2="100"
+            stroke="#eee"
+            stroke-width="1"
+          />
+          <line
+            x1="80"
+            y1="160"
+            x2="780"
+            y2="160"
+            stroke="#eee"
+            stroke-width="1"
+          />
+
+          <!-- Axes -->
+          <line
+            x1="80"
+            y1="30"
+            x2="80"
+            y2="175"
+            stroke="#1a1a1a"
+            stroke-width="1"
+          />
+          <line
+            x1="75"
+            y1="170"
+            x2="785"
+            y2="170"
+            stroke="#1a1a1a"
+            stroke-width="1"
+          />
+
+          <!-- Y-axis labels -->
+          <text x="72" y="44" text-anchor="end" font-size="10" fill="#888">
+            Level 1 &middot; Mezzanine
+          </text>
+          <text x="72" y="104" text-anchor="end" font-size="10" fill="#888">
+            Level 0 &middot; Ground
+          </text>
+          <text x="72" y="164" text-anchor="end" font-size="10" fill="#888">
+            Level −1 &middot; Platform
+          </text>
+
+          <!-- Path segments -->
+          <!-- Step 1: Entrance at Ground (level 0) -->
+          <!-- Step 2: Walk at Ground -->
+          <line
+            x1="100"
+            y1="100"
+            x2="300"
+            y2="100"
+            stroke="#1a1a1a"
+            stroke-width="2.5"
+          />
+          <!-- Step 3: Stairs up Ground → Mezzanine -->
+          <line
+            x1="300"
+            y1="100"
+            x2="340"
+            y2="40"
+            stroke="#8b4513"
+            stroke-width="2.5"
+            stroke-dasharray="4,3"
+          />
+          <!-- Step 4: Fare gate at Mezzanine -->
+          <line
+            x1="340"
+            y1="40"
+            x2="400"
+            y2="40"
+            stroke="#1a1a1a"
+            stroke-width="2.5"
+          />
+          <!-- Step 5: Elevator Mezzanine → Platform Level -->
+          <line
+            x1="400"
+            y1="40"
+            x2="420"
+            y2="160"
+            stroke="#7a5c00"
+            stroke-width="2.5"
+            stroke-dasharray="2,4"
+          />
+          <!-- Steps 6-7: Walk at Platform Level -->
+          <line
+            x1="420"
+            y1="160"
+            x2="700"
+            y2="160"
+            stroke="#1a1a1a"
+            stroke-width="2.5"
+          />
+
+          <!-- Points -->
+          <circle cx="100" cy="100" r="5" fill="#444" />
+          <circle cx="300" cy="100" r="4" fill="#1a1a1a" />
+          <circle cx="340" cy="40" r="4" fill="#8b4513" />
+          <circle cx="400" cy="40" r="4" fill="#1a1a1a" />
+          <circle cx="420" cy="160" r="4" fill="#7a5c00" />
+          <circle cx="700" cy="160" r="5" fill="#cc3300" />
+
+          <!-- Point labels -->
+          <text x="100" y="120" text-anchor="middle" font-size="10" fill="#555">
+            Entrance A
+          </text>
+          <text x="300" y="120" text-anchor="middle" font-size="10" fill="#555">
+            Stairs
+          </text>
+          <text x="340" y="30" text-anchor="middle" font-size="10" fill="#555">
+            Mezzanine
+          </text>
+          <text x="400" y="30" text-anchor="middle" font-size="10" fill="#555">
+            Fare gate
+          </text>
+          <text x="420" y="180" text-anchor="middle" font-size="10" fill="#555">
+            Elevator
+          </text>
+          <text x="700" y="180" text-anchor="middle" font-size="10" fill="#555">
+            Platform 12
+          </text>
+
+          <!-- Distance annotations -->
+          <text x="200" y="93" text-anchor="middle" font-size="9" fill="#888">
+            155 m
+          </text>
+          <text x="370" y="33" text-anchor="middle" font-size="9" fill="#888">
+            2 m
+          </text>
+          <text x="560" y="153" text-anchor="middle" font-size="9" fill="#888">
+            115 m
+          </text>
+
+          <!-- Legend -->
+          <line
+            x1="100"
+            y1="205"
+            x2="130"
+            y2="205"
+            stroke="#1a1a1a"
+            stroke-width="2"
+          />
+          <text x="135" y="208" font-size="10" fill="#888">
+            Horizontal walk
+          </text>
+          <line
+            x1="260"
+            y1="205"
+            x2="290"
+            y2="205"
+            stroke="#8b4513"
+            stroke-width="2"
+            stroke-dasharray="4,3"
+          />
+          <text x="295" y="208" font-size="10" fill="#888">Stairs</text>
+          <line
+            x1="370"
+            y1="205"
+            x2="400"
+            y2="205"
+            stroke="#7a5c00"
+            stroke-width="2"
+            stroke-dasharray="2,4"
+          />
+          <text x="405" y="208" font-size="10" fill="#888">Elevator</text>
+        </svg>
+        <div style="font-size: 12px; color: var(--ink-secondary)">
+          The rider traverses 3 distinct levels. Vertical transitions account
+          for 2 of 7 steps but add significant time cost (elevator wait, stair
+          climb). The stairs-then-elevator path suggests no single vertical
+          route connects all levels&mdash;a common source of rider confusion in
+          complex stations.
+        </div>
+      </section>
+
+      <!-- Analytical Assessment -->
+      <section class="analysis-section">
+        <h2>Analytical Assessment</h2>
+        <div class="analysis-grid">
+          <div class="analysis-card">
+            <h3>Wayfinding Quality</h3>
+            <div class="analysis-row">
+              <span class="analysis-key">Signposted segments</span>
+              <span class="analysis-val good">3 of 7</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Unsigned segments</span>
+              <span class="analysis-val warn">4 of 7</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Sign coverage (by distance)</span>
+              <span class="analysis-val">237 m of 284 m (83%)</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Direction changes</span>
+              <span class="analysis-val">3</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Signposted direction changes</span>
+              <span class="analysis-val good">2 of 3</span>
+            </div>
+            <div class="wayfinding-bar-track">
+              <div
+                class="wayfinding-bar-fill"
+                style="width: 83%; background: var(--accessible)"
+              ></div>
+            </div>
+            <div style="font-size: 11px; color: var(--ink-tertiary)">
+              83% of horizontal distance is covered by signage. Unsigned
+              segments are the entrance (5 m), stairs (12 m), and platform (30
+              m)&mdash;all recognizable infrastructure that may not need signs.
+            </div>
+          </div>
+
+          <div class="analysis-card">
+            <h3>Accessibility</h3>
+            <div class="analysis-row">
+              <span class="analysis-key">Entrance</span>
+              <span class="analysis-val good"
+                ><span class="a11y-indicator ok"></span>Accessible</span
+              >
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Vertical route</span>
+              <span class="analysis-val warn"
+                ><span class="a11y-indicator caution"></span>Mixed</span
+              >
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Stairs present</span>
+              <span class="analysis-val warn">Yes (Step 3)</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Elevator present</span>
+              <span class="analysis-val good">Yes (Step 5)</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Wheelchair reroute needed</span>
+              <span class="analysis-val warn">Yes</span>
+            </div>
+            <div
+              style="
+                font-size: 11px;
+                color: var(--ink-tertiary);
+                margin-top: 12px;
+              "
+            >
+              Wheelchair users require an alternate route for Step 3 (stairs).
+              OTP applies 25&times; reluctance to stair pathways in wheelchair
+              mode. The elevator at Step 5 is usable. A fully accessible path
+              may exist but would differ from this itinerary.
+            </div>
+          </div>
+
+          <div class="analysis-card">
+            <h3>Transfer Penalty</h3>
+            <div class="analysis-row">
+              <span class="analysis-key">Walk time</span>
+              <span class="analysis-val">7:15</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Platform wait</span>
+              <span class="analysis-val">2:45</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Total transfer penalty</span>
+              <span class="analysis-val warn">10:00</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">% of trip as penalty</span>
+              <span class="analysis-val warn">23%</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Effective walk speed</span>
+              <span class="analysis-val">0.95 m/s</span>
+            </div>
+            <div
+              style="
+                font-size: 11px;
+                color: var(--ink-tertiary);
+                margin-top: 12px;
+              "
+            >
+              Standard walk speed is 1.4 m/s. The effective 0.95 m/s suggests
+              vertical transitions and fare gates add ~32% time overhead beyond
+              horizontal distance alone. Transfers should be fast, obvious, and
+              comfortable. A 10-min penalty is significant.
+            </div>
+          </div>
+
+          <div class="analysis-card">
+            <h3>GTFS Data Completeness</h3>
+            <div class="analysis-row">
+              <span class="analysis-key">Pathways with signage</span>
+              <span class="analysis-val">3 of 7</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Steps with feature data</span>
+              <span class="analysis-val good">4 of 7</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Level names present</span>
+              <span class="analysis-val good">Yes (all)</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Entrance public code</span>
+              <span class="analysis-val good">Yes ("A")</span>
+            </div>
+            <div class="analysis-row">
+              <span class="analysis-key">Bogus names in response</span>
+              <span class="analysis-val good">0</span>
+            </div>
+            <div
+              style="
+                font-size: 11px;
+                color: var(--ink-tertiary);
+                margin-top: 12px;
+              "
+            >
+              No system-generated names (bogusName: false on all steps). All
+              level transitions include floor names. Entrance has public code.
+              Data quality is high&mdash;the OTP response carries real
+              wayfinding information rather than fallback defaults.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Rider Narrative -->
+      <section class="narrative-section">
+        <h2>Rider Narrative</h2>
+        <div class="narrative">
+          <p>
+            <strong>You arrive at Grand Central by bus at 08:15.</strong>
+            Enter through Main Entrance (marked "A"), which is wheelchair
+            accessible. The entrance faces east.
+          </p>
+          <p>
+            Inside, follow signs toward <strong>Platforms 10&ndash;15</strong>.
+            This is a 150-meter walk northeast through the main hall&mdash;the
+            longest single segment of your station walk.
+          </p>
+          <p>
+            <strong>Take the stairs up to the Mezzanine level.</strong>
+            At the top, tap your card at the fare gate and continue north.
+          </p>
+          <p>
+            <strong>Take the elevator down to the Platform Level</strong>
+            (two levels below the Mezzanine). When you exit, follow signs east
+            85 meters to <strong>Platform 12</strong>.
+          </p>
+          <p>
+            Cross the platform to your boarding position. Your train departs at
+            <strong>08:25</strong>&mdash;you have approximately
+            <strong>2 minutes 45 seconds</strong> of margin.
+          </p>
+          <p>
+            <strong>Analytical note:</strong> The up-then-down vertical path
+            (Ground &rarr; Mezzanine &rarr; Platform Level) adds complexity.
+            Riders unfamiliar with the station may find this counterintuitive.
+            The fare gate placement on the Mezzanine level forces this routing.
+          </p>
+        </div>
+      </section>
+
+      <!-- Distance Composition -->
+      <section style="margin-bottom: calc(var(--grid-unit) * 6)">
+        <h2>Distance Composition</h2>
+        <svg
+          viewBox="0 0 800 80"
+          width="100%"
+          height="80"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <!-- Stacked bar -->
+          <!-- Total = 284m, scale: 700px = 284m, 1m = 2.46px -->
+          <rect x="80" y="10" width="12" height="30" fill="#444" />
+          <!-- 5m entrance -->
+          <rect x="92" y="10" width="369" height="30" fill="#0066cc" />
+          <!-- 150m signs -->
+          <rect x="461" y="10" width="30" height="30" fill="#8b4513" />
+          <!-- 12m stairs -->
+          <rect x="491" y="10" width="5" height="30" fill="#0066cc" />
+          <!-- 2m fare gate -->
+          <rect x="496" y="10" width="0" height="30" fill="#7a5c00" />
+          <!-- 0m elevator -->
+          <rect x="496" y="10" width="209" height="30" fill="#0066cc" />
+          <!-- 85m signs -->
+          <rect x="705" y="10" width="74" height="30" fill="#2a7a2a" />
+          <!-- 30m platform -->
+
+          <!-- Labels -->
+          <text
+            x="86"
+            y="58"
+            font-size="9"
+            fill="#888"
+            font-family="Inter, sans-serif"
+          >
+            5m
+          </text>
+          <text
+            x="260"
+            y="58"
+            font-size="9"
+            fill="#888"
+            font-family="Inter, sans-serif"
+          >
+            150m walkway
+          </text>
+          <text
+            x="465"
+            y="58"
+            font-size="9"
+            fill="#888"
+            font-family="Inter, sans-serif"
+          >
+            12m
+          </text>
+          <text
+            x="580"
+            y="58"
+            font-size="9"
+            fill="#888"
+            font-family="Inter, sans-serif"
+          >
+            87m walkway
+          </text>
+          <text
+            x="725"
+            y="58"
+            font-size="9"
+            fill="#888"
+            font-family="Inter, sans-serif"
+          >
+            30m
+          </text>
+
+          <!-- Legend -->
+          <rect x="80" y="70" width="10" height="6" fill="#444" />
+          <text
+            x="94"
+            y="76"
+            font-size="9"
+            fill="#888"
+            font-family="Inter, sans-serif"
+          >
+            Entrance
+          </text>
+          <rect x="160" y="70" width="10" height="6" fill="#0066cc" />
+          <text
+            x="174"
+            y="76"
+            font-size="9"
+            fill="#888"
+            font-family="Inter, sans-serif"
+          >
+            Signposted
+          </text>
+          <rect x="260" y="70" width="10" height="6" fill="#8b4513" />
+          <text
+            x="274"
+            y="76"
+            font-size="9"
+            fill="#888"
+            font-family="Inter, sans-serif"
+          >
+            Stairs
+          </text>
+          <rect x="340" y="70" width="10" height="6" fill="#7a5c00" />
+          <text
+            x="354"
+            y="76"
+            font-size="9"
+            fill="#888"
+            font-family="Inter, sans-serif"
+          >
+            Elevator
+          </text>
+          <rect x="430" y="70" width="10" height="6" fill="#2a7a2a" />
+          <text
+            x="444"
+            y="76"
+            font-size="9"
+            fill="#888"
+            font-family="Inter, sans-serif"
+          >
+            Platform
+          </text>
+        </svg>
+      </section>
+
+      <!-- Source Data -->
+      <section style="margin-bottom: calc(var(--grid-unit) * 4)">
+        <h2>Source Data</h2>
+        <table class="steps-table" style="font-size: 11px">
+          <thead>
+            <tr>
+              <th>Step</th>
+              <th>streetName</th>
+              <th>relativeDirection</th>
+              <th>absoluteDirection</th>
+              <th>feature type</th>
+              <th class="num">distance</th>
+              <th class="num">lat</th>
+              <th class="num">lon</th>
+              <th>area</th>
+              <th>bogusName</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>Main Entrance</td>
+              <td>ENTER_STATION</td>
+              <td>EAST</td>
+              <td>Entrance</td>
+              <td class="num">5.0</td>
+              <td class="num">40.7527</td>
+              <td class="num">−73.9772</td>
+              <td>false</td>
+              <td>false</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Follow signs to Platforms 10-15</td>
+              <td>FOLLOW_SIGNS</td>
+              <td>NORTHEAST</td>
+              <td>&mdash;</td>
+              <td class="num">150.0</td>
+              <td class="num">40.7528</td>
+              <td class="num">−73.9770</td>
+              <td>false</td>
+              <td>false</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>Stairs to Mezzanine</td>
+              <td>CONTINUE</td>
+              <td>NORTH</td>
+              <td>StairsUse</td>
+              <td class="num">12.0</td>
+              <td class="num">40.7531</td>
+              <td class="num">−73.9765</td>
+              <td>false</td>
+              <td>false</td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>Tap card at fare gate</td>
+              <td>FOLLOW_SIGNS</td>
+              <td>NORTH</td>
+              <td>&mdash;</td>
+              <td class="num">2.0</td>
+              <td class="num">40.7532</td>
+              <td class="num">−73.9764</td>
+              <td>false</td>
+              <td>false</td>
+            </tr>
+            <tr>
+              <td>5</td>
+              <td>Elevator to Platform Level</td>
+              <td>ELEVATOR</td>
+              <td>&mdash;</td>
+              <td>ElevatorUse</td>
+              <td class="num">0.0</td>
+              <td class="num">40.7533</td>
+              <td class="num">−73.9763</td>
+              <td>false</td>
+              <td>false</td>
+            </tr>
+            <tr>
+              <td>6</td>
+              <td>Follow signs to Platform 12</td>
+              <td>FOLLOW_SIGNS</td>
+              <td>EAST</td>
+              <td>&mdash;</td>
+              <td class="num">85.0</td>
+              <td class="num">40.7533</td>
+              <td class="num">−73.9762</td>
+              <td>false</td>
+              <td>false</td>
+            </tr>
+            <tr>
+              <td>7</td>
+              <td>Platform 12</td>
+              <td>CONTINUE</td>
+              <td>EAST</td>
+              <td>&mdash;</td>
+              <td class="num">30.0</td>
+              <td class="num">40.7534</td>
+              <td class="num">−73.9755</td>
+              <td>true</td>
+              <td>false</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </body>
+</html>

@@ -4,6 +4,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   Transforms raw report data into structured, information-dense displays.
   """
   use Phoenix.Component
+  import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
 
   alias GtfsPlanner.Gtfs.{Stop, Pathway}
 
@@ -660,6 +661,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
 
   attr :section, :map, required: true
   attr :methodology_mode, :boolean, default: false
+  attr :reversed_pairs, :any, default: MapSet.new()
+  attr :expanded_entrances, :any, default: MapSet.new()
 
   def entrance_platform_connectivity_section(assigns) do
     item = find_item(assigns.section, "entrance_platform_paths")
@@ -713,6 +716,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
           platform_ids={@platform_ids}
           cell_map={@cell_map}
           grouped_details={@grouped_details}
+          reversed_pairs={@reversed_pairs}
+          expanded_entrances={@expanded_entrances}
         />
       <% end %>
     </section>
@@ -726,6 +731,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   attr :platform_ids, :list, required: true
   attr :cell_map, :map, required: true
   attr :grouped_details, :list, required: true
+  attr :reversed_pairs, :any, default: MapSet.new()
+  attr :expanded_entrances, :any, default: MapSet.new()
 
   defp entrance_platform_paths_item(assigns) do
     ~H"""
@@ -784,61 +791,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         <details
           :for={group <- @grouped_details}
           id={"report-entrance-#{dom_token(group.entrance_stop_id)}"}
-          class="rounded-lg border border-base-content/15 px-3 py-2"
+          class="group rounded-lg border border-base-content/15 px-3 py-2"
+          open={MapSet.member?(@expanded_entrances, group.entrance_stop_id)}
         >
-          <summary class="cursor-pointer text-xs font-mono text-base-content/75">
-            Entrance {group.entrance_stop_id}
+          <summary
+            class="cursor-pointer list-none text-xs font-mono text-base-content/75 flex items-center justify-between gap-2"
+            phx-click="toggle_connectivity_entrance"
+            phx-value-entrance_id={group.entrance_stop_id}
+          >
+            <span>Entrance {group.entrance_stop_id}</span>
+            <.icon
+              name="hero-chevron-down"
+              class="h-4 w-4 text-base-content/70 transition-transform duration-200 group-open:rotate-180"
+            />
           </summary>
 
-          <div class="mt-2 space-y-2">
-            <details
+          <div class="mt-3 space-y-5">
+            <div
               :for={detail <- group.pairs}
               id={pair_details_dom_id(detail.entrance_stop_id, detail.platform_stop_id)}
-              class="rounded-md border border-base-content/10 px-3 py-2"
+              class="px-3 py-3 space-y-2 border-t border-base-content/10 first:border-t-0"
             >
-              <summary class="cursor-pointer text-xs font-mono text-base-content/75">
+              <div class="text-lg font-bold tracking-tight text-base-content">
                 {detail.platform_stop_id}
                 <span class={[
                   "ml-2 font-medium",
-                  detail.reachable && "text-success",
+                  detail.reachable && "text-emerald-800",
                   !detail.reachable && "text-error"
                 ]}>
                   {if detail.reachable, do: "reachable", else: "not reachable"}
                 </span>
-              </summary>
+              </div>
 
-              <%= if detail.reachable and detail.path != [] do %>
-                <div class="mt-2 overflow-x-auto">
-                  <table class="w-full text-xs">
-                    <thead>
-                      <tr class="text-left text-base-content/55">
-                        <th class="pb-1 font-medium">Hop</th>
-                        <th class="pb-1 font-medium">Stop</th>
-                        <th class="pb-1 font-medium">Pathway</th>
-                        <th class="pb-1 font-medium">Mode</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr
-                        :for={{hop, index} <- Enum.with_index(detail.path, 1)}
-                        class="border-t border-base-200"
-                      >
-                        <td class="py-1 font-mono">{index}</td>
-                        <td class="py-1 font-mono">{hop.stop_id}</td>
-                        <td class="py-1 font-mono">{hop.pathway_id || "-"}</td>
-                        <td class="py-1">
-                          {if is_integer(hop.pathway_mode),
-                            do: Pathway.mode_label(hop.pathway_mode),
-                            else: "-"}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
+              <%= if detail.reachable and detail.enriched do %>
+                <.trip_visualization
+                  detail={detail}
+                  pair_id={pair_id(detail)}
+                  reversed?={MapSet.member?(@reversed_pairs, pair_id(detail))}
+                />
               <% else %>
                 <p class="mt-2 text-xs text-base-content/60">No directed path found.</p>
               <% end %>
-            </details>
+            </div>
           </div>
         </details>
       </div>
@@ -866,6 +860,422 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   end
 
   defp group_connectivity_details_by_entrance(_), do: []
+
+  attr :detail, :map, required: true
+  attr :pair_id, :string, required: true
+  attr :reversed?, :boolean, required: true
+
+  defp trip_visualization(assigns) do
+    display_hops = display_path(assigns.detail.enriched, assigns.reversed?)
+    totals = assigns.detail.enriched.totals
+
+    assigns =
+      assigns
+      |> assign(:display_hops, display_hops)
+      |> assign(:totals, totals)
+      |> assign(:has_unidirectional, not assigns.detail.enriched.all_bidirectional)
+
+    ~H"""
+    <div id={"report-trip-visualization-#{dom_token(@pair_id)}"} class="mt-3 space-y-3">
+      <.direction_toggle pair_id={@pair_id} reversed?={@reversed?} />
+
+      <p
+        :if={@reversed? and @has_unidirectional}
+        id={"report-trip-direction-warning-#{dom_token(@pair_id)}"}
+        class="text-xs text-warning"
+      >
+        Reverse display may not represent a traversable direction because one or more segments are unidirectional.
+      </p>
+
+      <.walk_summary_strip pair_id={@pair_id} totals={@totals} />
+      <.segment_timeline_bar pair_id={@pair_id} hops={@display_hops} totals={@totals} />
+      <.step_table pair_id={@pair_id} hops={@display_hops} totals={@totals} />
+      <.vertical_profile_svg pair_id={@pair_id} hops={@display_hops} />
+      <.analysis_cards pair_id={@pair_id} hops={@display_hops} totals={@totals} />
+    </div>
+    """
+  end
+
+  attr :pair_id, :string, required: true
+  attr :reversed?, :boolean, required: true
+
+  defp direction_toggle(assigns) do
+    ~H"""
+    <div id={"report-trip-direction-toggle-#{dom_token(@pair_id)}"} class="flex justify-end">
+      <button
+        id={"report-trip-direction-button-#{dom_token(@pair_id)}"}
+        type="button"
+        phx-click="toggle_path_direction"
+        phx-value-pair_id={@pair_id}
+        class={[
+          "btn btn-xs transition-colors",
+          @reversed? && "btn-primary shadow-none",
+          !@reversed? && "btn-outline border-base-content/20"
+        ]}
+      >
+        {if @reversed?, do: "Reverse view", else: "Forward view"}
+      </button>
+    </div>
+    """
+  end
+
+  attr :pair_id, :string, required: true
+  attr :totals, :map, required: true
+
+  defp walk_summary_strip(assigns) do
+    ~H"""
+    <div
+      id={"report-trip-summary-#{dom_token(@pair_id)}"}
+      class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"
+    >
+      <div class="rounded-md border border-base-content/15 px-2 py-1.5">
+        <p class="text-base-content/55">Time</p>
+        <p class="font-mono">{format_seconds(@totals.time_seconds)}</p>
+      </div>
+      <div class="rounded-md border border-base-content/15 px-2 py-1.5">
+        <p class="text-base-content/55">Distance</p>
+        <p class="font-mono">{format_meters(@totals.distance_meters)}</p>
+      </div>
+      <div class="rounded-md border border-base-content/15 px-2 py-1.5">
+        <p class="text-base-content/55">Speed</p>
+        <p class="font-mono">{format_speed(@totals.effective_speed)}</p>
+      </div>
+      <div class="rounded-md border border-base-content/15 px-2 py-1.5">
+        <p class="text-base-content/55">Vertical</p>
+        <p class="font-mono">{@totals.level_changes} changes · {@totals.unique_levels} levels</p>
+      </div>
+    </div>
+    """
+  end
+
+  attr :pair_id, :string, required: true
+  attr :hops, :list, required: true
+  attr :totals, :map, required: true
+
+  defp segment_timeline_bar(assigns) do
+    segments = Enum.drop(assigns.hops, 1)
+    widths = segment_widths(segments, assigns.totals.distance_meters)
+    legend = segments |> Enum.map(& &1.pathway_mode) |> Enum.filter(&is_integer/1) |> Enum.uniq()
+
+    assigns =
+      assigns
+      |> assign(:segments, Enum.zip(segments, widths))
+      |> assign(:legend, legend)
+
+    ~H"""
+    <div id={"report-trip-timeline-#{dom_token(@pair_id)}"} class="space-y-2">
+      <div class="flex h-3 overflow-hidden rounded-full border border-base-content/20">
+        <div
+          :for={{hop, width} <- @segments}
+          class={["h-full", mode_color_class(hop.pathway_mode)]}
+          style={"width: #{Float.round(width, 2)}%"}
+          title={"#{hop.pathway_mode_label || "Unknown"} · #{format_seconds(hop.time_seconds)}"}
+        />
+      </div>
+      <div class="flex flex-wrap gap-2 text-[11px] text-base-content/70">
+        <span :for={mode <- @legend} class="inline-flex items-center gap-1">
+          <span class={["inline-block h-2 w-2 rounded-full", mode_color_class(mode)]} />
+          {Pathway.mode_label(mode)}
+        </span>
+      </div>
+    </div>
+    """
+  end
+
+  attr :pair_id, :string, required: true
+  attr :hops, :list, required: true
+  attr :totals, :map, required: true
+
+  defp step_table(assigns) do
+    segments = Enum.drop(assigns.hops, 1)
+
+    total_distance =
+      if is_number(assigns.totals.distance_meters), do: assigns.totals.distance_meters, else: 0.0
+
+    assigns = assign(assigns, :segments, segments) |> assign(:total_distance, total_distance)
+
+    ~H"""
+    <div id={"report-trip-steps-#{dom_token(@pair_id)}"} class="overflow-x-auto">
+      <table class="w-full text-xs">
+        <thead>
+          <tr class="text-left text-base-content/55">
+            <th class="pb-1 font-medium">Step</th>
+            <th class="pb-1 font-medium">Mode</th>
+            <th class="pb-1 font-medium">Stop</th>
+            <th class="pb-1 font-medium">Instruction</th>
+            <th class="pb-1 font-medium">Time</th>
+            <th class="pb-1 font-medium">Distance</th>
+            <th class="pb-1 font-medium">Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr :for={{hop, idx} <- Enum.with_index(@segments, 1)} class="border-t border-base-200">
+            <td class="py-1 font-mono">{idx}</td>
+            <td class="py-1">
+              <span class={["badge badge-xs text-white", mode_color_class(hop.pathway_mode)]}>
+                {hop.pathway_mode_label || "Unknown"}
+              </span>
+            </td>
+            <td class="py-1">
+              <span class="font-mono">{hop.stop_id}</span>
+            </td>
+            <td class="py-1 text-base-content/65">
+              {hop.display_signposted_as || "-"}
+            </td>
+            <td class="py-1 font-mono">{format_seconds(hop.time_seconds)}</td>
+            <td class="py-1 font-mono">{format_meters(hop.distance_meters)}</td>
+            <td class="py-1 font-mono">
+              {distance_share(hop.distance_meters, @total_distance)}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    """
+  end
+
+  attr :pair_id, :string, required: true
+  attr :hops, :list, required: true
+
+  defp vertical_profile_svg(assigns) do
+    points = profile_points(assigns.hops)
+
+    unique_levels =
+      points |> Enum.map(& &1.level_index) |> Enum.filter(&is_number/1) |> Enum.uniq()
+
+    assigns = assign(assigns, :points, points) |> assign(:unique_levels, unique_levels)
+
+    ~H"""
+    <div id={"report-trip-profile-#{dom_token(@pair_id)}"}>
+      <%= if length(@unique_levels) < 2 do %>
+        <p class="text-xs text-base-content/60">
+          Vertical profile not available for a single level path.
+        </p>
+      <% else %>
+        <svg viewBox="0 0 420 120" class="w-full rounded-md border border-base-content/15 bg-base-50">
+          <line x1="20" y1="100" x2="400" y2="100" stroke="currentColor" opacity="0.25" />
+          <line x1="20" y1="15" x2="20" y2="100" stroke="currentColor" opacity="0.25" />
+          <line
+            :for={{from, to} <- Enum.zip(@points, Enum.drop(@points, 1))}
+            x1={from.x}
+            y1={from.y}
+            x2={to.x}
+            y2={to.y}
+            stroke="#0f766e"
+            stroke-width="2"
+            stroke-dasharray={if(from.level_index != to.level_index, do: "4 3", else: "none")}
+          />
+          <circle
+            :for={point <- @points}
+            cx={point.x}
+            cy={point.y}
+            r="2.5"
+            fill="#0f766e"
+          />
+        </svg>
+      <% end %>
+    </div>
+    """
+  end
+
+  attr :pair_id, :string, required: true
+  attr :hops, :list, required: true
+  attr :totals, :map, required: true
+
+  defp analysis_cards(assigns) do
+    segments = Enum.drop(assigns.hops, 1)
+    segment_count = max(length(segments), 1)
+    signage_pct = Float.round(assigns.totals.signposted_segments * 100.0 / segment_count, 1)
+    method_breakdown = Enum.frequencies_by(segments, &(&1.calculation_method || :unknown))
+
+    efficiency =
+      cond do
+        not is_number(assigns.totals.effective_speed) -> "Unknown"
+        assigns.totals.effective_speed >= 1.33 -> "At or above baseline"
+        true -> "Below baseline"
+      end
+
+    assigns =
+      assigns
+      |> assign(:signage_pct, signage_pct)
+      |> assign(:method_breakdown, method_breakdown)
+      |> assign(:efficiency, efficiency)
+
+    ~H"""
+    <div id={"report-trip-analysis-#{dom_token(@pair_id)}"} class="grid gap-2 md:grid-cols-4 text-xs">
+      <div class="rounded-md border border-base-content/15 px-2 py-2">
+        <p class="text-base-content/55">Wayfinding</p>
+        <p class="font-mono">{@signage_pct}% signposted</p>
+      </div>
+      <div class="rounded-md border border-base-content/15 px-2 py-2">
+        <p class="text-base-content/55">Accessibility</p>
+        <p class="font-mono">
+          stairs={bool_flag(@totals.has_stairs)} esc={bool_flag(@totals.has_escalator)} elev={bool_flag(
+            @totals.has_elevator
+          )}
+        </p>
+      </div>
+      <div class="rounded-md border border-base-content/15 px-2 py-2">
+        <p class="text-base-content/55">Efficiency</p>
+        <p class="font-mono">{@efficiency}</p>
+      </div>
+      <div class="rounded-md border border-base-content/15 px-2 py-2">
+        <p class="text-base-content/55">Data completeness</p>
+        <p class="font-mono truncate" title={inspect(@method_breakdown)}>
+          {Enum.map_join(@method_breakdown, ", ", fn {method, count} -> "#{method}:#{count}" end)}
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  defp display_path(nil, _reversed?), do: []
+
+  defp display_path(%{hops: hops}, false) do
+    Enum.map(hops, &Map.put(&1, :display_signposted_as, &1.signposted_as))
+  end
+
+  defp display_path(%{hops: hops}, true) do
+    case Enum.reverse(hops) do
+      [] ->
+        []
+
+      [start_hop | rest] ->
+        {rebuilt, _last_source} =
+          Enum.map_reduce(rest, start_hop, fn hop, source_segment_hop ->
+            display_signposted_as =
+              source_segment_hop.reversed_signposted_as || source_segment_hop.signposted_as
+
+            rebuilt_hop =
+              hop
+              |> Map.put(:pathway_id, source_segment_hop.pathway_id)
+              |> Map.put(:pathway_mode, source_segment_hop.pathway_mode)
+              |> Map.put(:pathway_mode_label, source_segment_hop.pathway_mode_label)
+              |> Map.put(:is_bidirectional, source_segment_hop.is_bidirectional)
+              |> Map.put(:signposted_as, source_segment_hop.signposted_as)
+              |> Map.put(:reversed_signposted_as, source_segment_hop.reversed_signposted_as)
+              |> Map.put(:level_diff, source_segment_hop.level_diff)
+              |> Map.put(:time_seconds, source_segment_hop.time_seconds)
+              |> Map.put(:distance_meters, source_segment_hop.distance_meters)
+              |> Map.put(:calculation_method, source_segment_hop.calculation_method)
+              |> Map.put(:display_signposted_as, display_signposted_as)
+
+            {rebuilt_hop, hop}
+          end)
+
+        [origin_display_hop(start_hop) | rebuilt]
+    end
+  end
+
+  defp origin_display_hop(hop) do
+    hop
+    |> Map.put(:pathway_id, nil)
+    |> Map.put(:pathway_mode, nil)
+    |> Map.put(:pathway_mode_label, nil)
+    |> Map.put(:is_bidirectional, nil)
+    |> Map.put(:signposted_as, nil)
+    |> Map.put(:reversed_signposted_as, nil)
+    |> Map.put(:level_diff, nil)
+    |> Map.put(:time_seconds, 0.0)
+    |> Map.put(:distance_meters, nil)
+    |> Map.put(:calculation_method, :origin)
+    |> Map.put(:display_signposted_as, nil)
+  end
+
+  defp pair_id(detail) do
+    "#{detail.entrance_stop_id}::#{detail.platform_stop_id}"
+  end
+
+  defp segment_widths([], _total_distance), do: []
+
+  defp segment_widths(segments, total_distance)
+       when is_number(total_distance) and total_distance > 0 do
+    Enum.map(segments, fn segment ->
+      distance = if is_number(segment.distance_meters), do: segment.distance_meters, else: 0.0
+      distance * 100.0 / total_distance
+    end)
+  end
+
+  defp segment_widths(segments, _total_distance) do
+    equal = 100.0 / max(length(segments), 1)
+    Enum.map(segments, fn _ -> equal end)
+  end
+
+  defp mode_color_class(1), do: "bg-sky-500"
+  defp mode_color_class(2), do: "bg-amber-500"
+  defp mode_color_class(3), do: "bg-cyan-500"
+  defp mode_color_class(4), do: "bg-fuchsia-500"
+  defp mode_color_class(5), do: "bg-emerald-600"
+  defp mode_color_class(6), do: "bg-zinc-500"
+  defp mode_color_class(7), do: "bg-rose-500"
+  defp mode_color_class(_), do: "bg-base-content/35"
+
+  defp profile_points(hops) do
+    {points, _, max_distance, min_level, max_level} =
+      Enum.reduce(hops, {[], 0.0, 0.0, nil, nil}, fn hop,
+                                                     {acc, cum_dist, max_dist, min_lvl, max_lvl} ->
+        new_cum_dist =
+          cum_dist + if(is_number(hop.distance_meters), do: hop.distance_meters, else: 0.0)
+
+        min_level = min_level(min_lvl, hop.level_index)
+        max_level = max_level(max_lvl, hop.level_index)
+
+        {
+          acc ++ [%{cum_distance: new_cum_dist, level_index: hop.level_index}],
+          new_cum_dist,
+          max(max_dist, new_cum_dist),
+          min_level,
+          max_level
+        }
+      end)
+
+    Enum.map(points, fn point ->
+      x = 20.0 + scale(point.cum_distance, 0.0, max_distance, 380.0)
+      y = 100.0 - scale(point.level_index || 0.0, min_level || 0.0, max_level || 0.0, 85.0)
+      %{x: x, y: y, level_index: point.level_index}
+    end)
+  end
+
+  defp min_level(nil, value) when is_number(value), do: value
+
+  defp min_level(current, value) when is_number(current) and is_number(value),
+    do: min(current, value)
+
+  defp min_level(current, _), do: current
+
+  defp max_level(nil, value) when is_number(value), do: value
+
+  defp max_level(current, value) when is_number(current) and is_number(value),
+    do: max(current, value)
+
+  defp max_level(current, _), do: current
+
+  defp scale(_value, min_value, max_value, _output_range) when min_value == max_value, do: 0.0
+
+  defp scale(value, min_value, max_value, output_range) when is_number(value) do
+    (value - min_value) * output_range / (max_value - min_value)
+  end
+
+  defp scale(_value, _min_value, _max_value, _output_range), do: 0.0
+
+  defp format_seconds(value) when is_number(value), do: "#{Float.round(value, 1)}s"
+  defp format_seconds(_), do: "-"
+
+  defp format_meters(value) when is_number(value), do: "#{Float.round(value, 1)}m"
+  defp format_meters(_), do: "-"
+
+  defp format_speed(value) when is_number(value), do: "#{Float.round(value, 2)} m/s"
+  defp format_speed(_), do: "-"
+
+  defp distance_share(distance, total_distance)
+       when is_number(distance) and is_number(total_distance) and total_distance > 0 do
+    "#{Float.round(distance * 100.0 / total_distance, 1)}%"
+  end
+
+  defp distance_share(_distance, _total_distance), do: "-"
+
+  defp bool_flag(true), do: "yes"
+  defp bool_flag(false), do: "no"
 
   # ============================================================================
   # Inventory section
