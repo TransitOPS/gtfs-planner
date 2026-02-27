@@ -236,11 +236,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                         <th>Order</th>
                         <th>Test Case</th>
                         <th>Status</th>
-                        <th>Failure Category</th>
+                        <th>Issue</th>
                         <th>Duration (s)</th>
                         <th>Distance (m)</th>
-                        <th>Steps</th>
-                        <th>Legs</th>
+                        <th>Origin</th>
+                        <th>Destination</th>
                         <th>Start Time</th>
                         <th>End Time</th>
                       </tr>
@@ -253,15 +253,22 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                           <td>{row.order_index}</td>
                           <td class="font-mono text-xs">{row.walkability_test_id}</td>
                           <td>
-                            <span class={["badge badge-sm", case_status_badge_class(row.status)]}>
-                              {String.upcase(to_string(row.status))}
+                            <span class={[
+                              "badge badge-sm",
+                              case_status_badge_class(pathways_case_display_status(row))
+                            ]}>
+                              {String.upcase(to_string(pathways_case_display_status(row)))}
                             </span>
                           </td>
-                          <td>{row.failure_category || "-"}</td>
+                          <td>
+                            <ol class="list-decimal list-inside text-xs leading-5 space-y-0.5 marker:text-base-content/60">
+                              <li :for={issue <- pathways_case_issues(row)}>{issue}</li>
+                            </ol>
+                          </td>
                           <td>{row.duration_seconds || "-"}</td>
                           <td>{format_pathways_distance(row.distance_meters)}</td>
-                          <td>{row.step_count || "-"}</td>
-                          <td>{row.leg_count || "-"}</td>
+                          <td>{pathways_case_origin(row)}</td>
+                          <td>{pathways_case_destination(row)}</td>
                           <td>{format_pathways_time(row.itinerary_start_time)}</td>
                           <td>{format_pathways_time(row.itinerary_end_time)}</td>
                         </tr>
@@ -277,6 +284,67 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                               </summary>
 
                               <div class="px-3 pb-3">
+                                <% criteria_checks = pathways_criteria_checks(row) %>
+
+                                <div class="mb-3" id={"pathways-case-criteria-#{row.order_index}"}>
+                                  <h4 class="text-xs font-semibold text-base-content/80 mb-2">
+                                    Criteria checks
+                                  </h4>
+
+                                  <%= if criteria_checks == [] do %>
+                                    <p
+                                      id={"pathways-case-criteria-empty-#{row.order_index}"}
+                                      class="text-xs text-base-content/70"
+                                    >
+                                      No expected criteria configured.
+                                    </p>
+                                  <% else %>
+                                    <div class="overflow-x-auto">
+                                      <table
+                                        id={"pathways-case-criteria-table-#{row.order_index}"}
+                                        class="table table-xs"
+                                      >
+                                        <thead>
+                                          <tr>
+                                            <th>Criterion</th>
+                                            <th>Expected</th>
+                                            <th>Actual</th>
+                                            <th>Status</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          <tr
+                                            :for={check <- criteria_checks}
+                                            id={
+                                              "pathways-case-criteria-check-#{row.order_index}-#{check.kind}"
+                                            }
+                                          >
+                                            <td>{check.label}</td>
+                                            <td class="font-mono">
+                                              {format_pathways_criteria_value(check.expected)}
+                                            </td>
+                                            <td class="font-mono">
+                                              {format_pathways_criteria_value(check.actual)}
+                                            </td>
+                                            <td>
+                                              <span class={[
+                                                "inline-flex items-center gap-1 font-semibold",
+                                                pathways_criteria_status_class(check.status)
+                                              ]}>
+                                                <.icon
+                                                  name={pathways_criteria_status_icon(check.status)}
+                                                  class="w-4 h-4"
+                                                />
+                                                {pathways_criteria_status_label(check.status)}
+                                              </span>
+                                            </td>
+                                          </tr>
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  <% end %>
+                                </div>
+
                                 <%= if pathways_empty_itinerary?(itinerary_step_rows) do %>
                                   <p
                                     id={"pathways-case-itinerary-empty-#{row.order_index}"}
@@ -644,9 +712,128 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp status_badge_class("failed"), do: "badge-error"
   defp status_badge_class(_), do: "badge-ghost"
 
-  defp case_status_badge_class("passed"), do: "badge-success"
+  defp case_status_badge_class("pass"), do: "badge-success"
+  defp case_status_badge_class("warning"), do: "badge-warning"
   defp case_status_badge_class("failed"), do: "badge-error"
   defp case_status_badge_class(_), do: "badge-ghost"
+
+  defp pathways_case_display_status(row) do
+    mismatch_map = pathways_mismatch_map(row.details_json)
+
+    traversable_failed? =
+      Map.has_key?(mismatch_map, "expected_traversable")
+
+    other_criteria_failed? =
+      mismatch_map
+      |> Map.drop(["expected_traversable"])
+      |> map_has_entries?()
+
+    cond do
+      row.failure_category == "query_failure" -> "failed"
+      traversable_failed? -> "failed"
+      other_criteria_failed? -> "warning"
+      true -> "pass"
+    end
+  end
+
+  defp pathways_case_issues(row) do
+    case row.failure_category do
+      "query_failure" -> [query_failure_issue(row.details_json)]
+      "scoring_failure" -> scoring_failure_issue(row.details_json)
+      _ -> ["All criteria passed"]
+    end
+  end
+
+  defp query_failure_issue(details_json) when is_map(details_json) do
+    reason = pathways_map_value(details_json, :reason)
+    status = pathways_map_value(details_json, :status)
+
+    case {reason, status} do
+      {reason, status} when reason in ["non_2xx_response", :non_2xx_response] and is_integer(status) ->
+        "Query failed: OTP returned HTTP #{status}"
+
+      {reason, _status} when reason in ["timeout", :timeout] ->
+        "Query failed: OTP request timed out"
+
+      {nil, _status} ->
+        "Query failed"
+
+      {reason, _status} ->
+        "Query failed: #{humanize_issue_token(reason)}"
+    end
+  end
+
+  defp query_failure_issue(_details_json), do: "Query failed"
+
+  defp scoring_failure_issue(details_json) when is_map(details_json) do
+    details_json
+    |> pathways_map_value(:mismatches)
+    |> ensure_list()
+    |> Enum.map(&mismatch_issue_reason/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> case do
+      [] -> ["Criteria checks failed"]
+      reasons -> reasons
+    end
+  end
+
+  defp scoring_failure_issue(_details_json), do: ["Criteria checks failed"]
+
+  defp mismatch_issue_reason(mismatch) do
+    case mismatch_kind(mismatch) do
+      "expected_traversable" -> "Traversability check failed"
+      "expected_wheelchair_accessible" -> "Wheelchair accessibility check failed"
+      "expected_min_duration_seconds" -> "Duration outside expected range"
+      "expected_max_duration_seconds" -> "Duration outside expected range"
+      "expected_min_distance_meters" -> "Distance outside expected range"
+      "expected_max_distance_meters" -> "Distance outside expected range"
+      nil -> nil
+      kind -> "#{humanize_issue_token(kind)} failed"
+    end
+  end
+
+  defp humanize_issue_token(value) when is_atom(value) do
+    value
+    |> Atom.to_string()
+    |> humanize_issue_token()
+  end
+
+  defp humanize_issue_token(value) when is_binary(value) do
+    value
+    |> String.replace_prefix("expected_", "")
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  defp map_has_entries?(map) when is_map(map), do: map_size(map) > 0
+  defp map_has_entries?(_map), do: false
+
+  defp pathways_case_origin(row) do
+    row
+    |> pathways_walkability_test_address()
+    |> normalize_text()
+  end
+
+  defp pathways_case_destination(row) do
+    row
+    |> pathways_walkability_test_stop_id()
+    |> normalize_text()
+  end
+
+  defp pathways_walkability_test_address(%{walkability_test: walkability_test})
+       when is_struct(walkability_test) do
+    walkability_test.address
+  end
+
+  defp pathways_walkability_test_address(_row), do: nil
+
+  defp pathways_walkability_test_stop_id(%{walkability_test: walkability_test})
+       when is_struct(walkability_test) do
+    walkability_test.stop_id
+  end
+
+  defp pathways_walkability_test_stop_id(_row), do: nil
 
   defp pathways_summary(run) do
     summary = Map.get(run.result_json || %{}, "summary", %{})
@@ -666,7 +853,9 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp format_pathways_time(nil), do: "-"
 
   defp format_pathways_time(%DateTime{} = value) do
-    Calendar.strftime(value, "%Y-%m-%d %H:%M:%S UTC")
+    value
+    |> DateTime.add(-5 * 60 * 60, :second)
+    |> Calendar.strftime("%Y-%m-%d %I:%M:%S %p")
   end
 
   defp format_pathways_time(_value), do: "-"
@@ -739,6 +928,212 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp format_pathways_distance(value) when is_integer(value), do: Integer.to_string(value)
   defp format_pathways_distance(_value), do: "-"
+
+  defp pathways_criteria_checks(row) do
+    mismatch_map = pathways_mismatch_map(row.details_json)
+
+    [
+      criteria_check(
+        row,
+        mismatch_map,
+        :expected_traversable,
+        "Traversable",
+        pathways_expected_value(row, :expected_traversable),
+        row.route_exists
+      ),
+      duration_range_check(row, mismatch_map),
+      distance_range_check(row, mismatch_map),
+      criteria_check(
+        row,
+        mismatch_map,
+        :expected_wheelchair_accessible,
+        "Wheelchair accessible",
+        pathways_expected_value(row, :expected_wheelchair_accessible),
+        row.wheelchair_route_exists
+      )
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp criteria_check(_row, _mismatch_map, _kind, _label, nil, _actual), do: nil
+
+  defp criteria_check(row, mismatch_map, kind, label, expected, default_actual) do
+    mismatch = Map.get(mismatch_map, Atom.to_string(kind))
+
+    case {row.failure_category, mismatch} do
+      {"query_failure", _} ->
+        %{kind: Atom.to_string(kind), label: label, expected: expected, actual: default_actual, status: :not_evaluated}
+
+      {_, nil} ->
+        %{kind: Atom.to_string(kind), label: label, expected: expected, actual: default_actual, status: :pass}
+
+      {_, mismatch} ->
+        %{
+          kind: Atom.to_string(kind),
+          label: label,
+          expected: pathways_map_value(mismatch, :expected),
+          actual: pathways_map_value(mismatch, :actual),
+          status: :fail
+        }
+    end
+  end
+
+  defp pathways_expected_value(%{walkability_test: walkability_test}, field) when is_struct(walkability_test) do
+    Map.get(walkability_test, field)
+  end
+
+  defp pathways_expected_value(_row, _field), do: nil
+
+  defp duration_range_check(row, mismatch_map) do
+    min_duration = pathways_expected_value(row, :expected_min_duration_seconds)
+    max_duration = pathways_expected_value(row, :expected_max_duration_seconds)
+
+    if is_integer(min_duration) or is_integer(max_duration) do
+      min_mismatch = Map.get(mismatch_map, "expected_min_duration_seconds")
+      max_mismatch = Map.get(mismatch_map, "expected_max_duration_seconds")
+
+      status = duration_range_status(row, min_mismatch, max_mismatch)
+
+      %{
+        kind: "duration_seconds_range",
+        label: "Duration range (s)",
+        expected: duration_range_expected_value(min_duration, max_duration),
+        actual: duration_range_actual_value(row.duration_seconds, min_mismatch, max_mismatch),
+        status: status
+      }
+    else
+      nil
+    end
+  end
+
+  defp duration_range_status(%{failure_category: "query_failure"}, _min_mismatch, _max_mismatch),
+    do: :not_evaluated
+
+  defp duration_range_status(_row, nil, nil), do: :pass
+  defp duration_range_status(_row, _min_mismatch, _max_mismatch), do: :fail
+
+  defp duration_range_expected_value(min_duration, max_duration)
+       when is_integer(min_duration) and is_integer(max_duration) do
+    "#{min_duration} - #{max_duration}"
+  end
+
+  defp duration_range_expected_value(min_duration, _max_duration) when is_integer(min_duration),
+    do: ">= #{min_duration}"
+
+  defp duration_range_expected_value(_min_duration, max_duration) when is_integer(max_duration),
+    do: "<= #{max_duration}"
+
+  defp duration_range_actual_value(default_actual, nil, nil), do: default_actual
+
+  defp duration_range_actual_value(default_actual, min_mismatch, max_mismatch) do
+    min_actual = mismatch_actual_value(min_mismatch)
+    max_actual = mismatch_actual_value(max_mismatch)
+    min_actual || max_actual || default_actual
+  end
+
+  defp mismatch_actual_value(nil), do: nil
+
+  defp mismatch_actual_value(mismatch) when is_map(mismatch) do
+    pathways_map_value(mismatch, :actual)
+  end
+
+  defp mismatch_actual_value(_mismatch), do: nil
+
+  defp distance_range_check(row, mismatch_map) do
+    min_distance = pathways_expected_value(row, :expected_min_distance_meters)
+    max_distance = pathways_expected_value(row, :expected_max_distance_meters)
+
+    if is_integer(min_distance) or is_integer(max_distance) do
+      min_mismatch = Map.get(mismatch_map, "expected_min_distance_meters")
+      max_mismatch = Map.get(mismatch_map, "expected_max_distance_meters")
+
+      status = distance_range_status(row, min_mismatch, max_mismatch)
+
+      %{
+        kind: "distance_meters_range",
+        label: "Distance range (m)",
+        expected: distance_range_expected_value(min_distance, max_distance),
+        actual: distance_range_actual_value(row.distance_meters, min_mismatch, max_mismatch),
+        status: status
+      }
+    else
+      nil
+    end
+  end
+
+  defp distance_range_status(%{failure_category: "query_failure"}, _min_mismatch, _max_mismatch),
+    do: :not_evaluated
+
+  defp distance_range_status(_row, nil, nil), do: :pass
+  defp distance_range_status(_row, _min_mismatch, _max_mismatch), do: :fail
+
+  defp distance_range_expected_value(min_distance, max_distance)
+       when is_integer(min_distance) and is_integer(max_distance) do
+    "#{min_distance} - #{max_distance}"
+  end
+
+  defp distance_range_expected_value(min_distance, _max_distance) when is_integer(min_distance),
+    do: ">= #{min_distance}"
+
+  defp distance_range_expected_value(_min_distance, max_distance) when is_integer(max_distance),
+    do: "<= #{max_distance}"
+
+  defp distance_range_actual_value(default_actual, nil, nil), do: default_actual
+
+  defp distance_range_actual_value(default_actual, min_mismatch, max_mismatch) do
+    min_actual = mismatch_actual_value(min_mismatch)
+    max_actual = mismatch_actual_value(max_mismatch)
+    min_actual || max_actual || default_actual
+  end
+
+  defp pathways_mismatch_map(details_json) when is_map(details_json) do
+    details_json
+    |> pathways_map_value(:mismatches)
+    |> ensure_list()
+    |> Enum.reduce(%{}, fn mismatch, acc ->
+      case mismatch_kind(mismatch) do
+        nil -> acc
+        kind -> Map.put(acc, kind, mismatch)
+      end
+    end)
+  end
+
+  defp pathways_mismatch_map(_details_json), do: %{}
+
+  defp mismatch_kind(mismatch) when is_map(mismatch) do
+    case pathways_map_value(mismatch, :kind) do
+      kind when is_atom(kind) -> Atom.to_string(kind)
+      kind when is_binary(kind) -> kind
+      _ -> nil
+    end
+  end
+
+  defp mismatch_kind(_mismatch), do: nil
+
+  defp format_pathways_criteria_value(nil), do: "-"
+  defp format_pathways_criteria_value(value) when is_binary(value), do: value
+  defp format_pathways_criteria_value(value) when is_boolean(value), do: to_string(value)
+  defp format_pathways_criteria_value(value) when is_integer(value), do: Integer.to_string(value)
+
+  defp format_pathways_criteria_value(value) when is_float(value) do
+    value
+    |> Float.round(1)
+    |> :erlang.float_to_binary(decimals: 1)
+  end
+
+  defp format_pathways_criteria_value(value), do: inspect(value)
+
+  defp pathways_criteria_status_label(:pass), do: "PASS"
+  defp pathways_criteria_status_label(:fail), do: "FAIL"
+  defp pathways_criteria_status_label(:not_evaluated), do: "N/A"
+
+  defp pathways_criteria_status_icon(:pass), do: "hero-check-circle"
+  defp pathways_criteria_status_icon(:fail), do: "hero-x-circle"
+  defp pathways_criteria_status_icon(:not_evaluated), do: "hero-minus-circle"
+
+  defp pathways_criteria_status_class(:pass), do: "text-success"
+  defp pathways_criteria_status_class(:fail), do: "text-error"
+  defp pathways_criteria_status_class(:not_evaluated), do: "text-base-content/70"
 
   defp pathways_empty_itinerary?(rows) when is_list(rows), do: rows == []
   defp pathways_empty_itinerary?(_rows), do: true

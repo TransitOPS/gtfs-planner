@@ -206,6 +206,7 @@ defmodule GtfsPlanner.Validations do
   def list_walkability_test_run_results(validation_run_id) do
     WalkabilityTestRunResult
     |> where([result], result.validation_run_id == ^validation_run_id)
+    |> preload([:walkability_test])
     |> order_by([result], asc: result.order_index, asc: result.walkability_test_id)
     |> Repo.all()
   end

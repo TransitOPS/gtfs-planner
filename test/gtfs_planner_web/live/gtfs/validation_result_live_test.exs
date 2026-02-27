@@ -301,10 +301,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
       assert has_element?(view, "#pathways-result-summary")
-      assert has_element?(view, "#pathways-top-failure-categories")
+      assert has_element?(view, "#pathways-case-results th", "Issue")
       assert has_element?(view, "#pathways-case-results")
-      assert has_element?(view, "#pathways-case-results th", "Steps")
-      assert has_element?(view, "#pathways-case-results th", "Legs")
+      assert has_element?(view, "#pathways-case-results th", "Origin")
+      assert has_element?(view, "#pathways-case-results th", "Destination")
       assert has_element?(view, "#pathways-case-results th", "Start Time")
       assert has_element?(view, "#pathways-case-results th", "End Time")
       assert render(view) =~ "Pass Rate"
@@ -312,8 +312,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert render(view) =~ "query_failure: 1"
       assert has_element?(view, "#pathways-case-row-0", walkability_test_1.id)
       assert has_element?(view, "#pathways-case-row-1", walkability_test_2.id)
-      assert render(view |> element("#pathways-case-row-0")) =~ "2026-01-01 12:00:00 UTC"
-      assert render(view |> element("#pathways-case-row-0")) =~ "2026-01-01 12:03:00 UTC"
+      assert render(view |> element("#pathways-case-row-0")) =~ "2026-01-01 07:00:00 AM"
+      assert render(view |> element("#pathways-case-row-0")) =~ "2026-01-01 07:03:00 AM"
+      assert render(view |> element("#pathways-case-row-0")) =~ walkability_test_1.address
+      assert render(view |> element("#pathways-case-row-0")) =~ walkability_test_1.stop_id
+      assert render(view |> element("#pathways-case-row-1")) =~ "456 Oak St"
+      assert render(view |> element("#pathways-case-row-1")) =~ "stop-2"
+      assert render(view |> element("#pathways-case-row-1")) =~ "Query failed: OTP returned HTTP 500"
 
       assert has_element?(view, "#pathways-case-itinerary-details-0 summary", "Step-by-step itinerary")
       assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Step")
@@ -336,6 +341,215 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert first_step_position < second_step_position
 
       assert has_element?(view, "#pathways-case-itinerary-empty-1", "No itinerary steps available.")
+    end
+
+    test "renders criteria checks with pass and fail statuses for scoring failures", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          expected_traversable: true,
+          expected_min_duration_seconds: 100,
+          expected_max_duration_seconds: 300,
+          expected_min_distance_meters: 50,
+          expected_max_distance_meters: 500,
+          expected_wheelchair_accessible: true
+        })
+
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+      run_result = %{
+        suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},
+        selected_test_case_ids: [walkability_test.id],
+        summary: %{total: 1, passed: 0, failed: 1, query_failure: 0, scoring_failure: 1},
+        cases: [
+          %{
+            test_case_id: walkability_test.id,
+            status: :failed,
+            failure_category: :scoring_failure,
+            route_output: %{
+              route_exists: false,
+              duration_seconds: 400.0,
+              distance_meters: 200.0
+            },
+            wheelchair_output: %{
+              route_exists: false,
+              duration_seconds: 430.0,
+              distance_meters: 240.0
+            },
+            details: %{
+              mismatches: [
+                %{kind: :expected_traversable, expected: true, actual: false},
+                %{kind: :expected_max_duration_seconds, expected: 300, actual: 400.0},
+                %{kind: :expected_wheelchair_accessible, expected: true, actual: false}
+              ]
+            }
+          }
+        ]
+      }
+
+      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 25)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#pathways-case-criteria-0")
+      assert has_element?(view, "#pathways-case-criteria-table-0 th", "Criterion")
+      assert has_element?(view, "#pathways-case-criteria-table-0 th", "Expected")
+      assert has_element?(view, "#pathways-case-criteria-table-0 th", "Actual")
+      assert has_element?(view, "#pathways-case-criteria-table-0 th", "Status")
+
+      assert has_element?(view, "#pathways-case-criteria-check-0-expected_traversable", "FAIL")
+
+      assert has_element?(view, "#pathways-case-criteria-check-0-duration_seconds_range", "FAIL")
+
+      assert has_element?(view, "#pathways-case-criteria-check-0-duration_seconds_range", "100 - 300")
+
+      assert has_element?(view, "#pathways-case-criteria-check-0-distance_meters_range", "PASS")
+
+      assert has_element?(view, "#pathways-case-criteria-check-0-distance_meters_range", "50 - 500")
+
+      assert has_element?(
+               view,
+               "#pathways-case-criteria-check-0-expected_wheelchair_accessible",
+               "FAIL"
+             )
+
+      assert has_element?(view, "#pathways-case-row-0 .badge-error", "FAILED")
+      assert render(view |> element("#pathways-case-row-0")) =~ "Traversability check failed"
+    end
+
+    test "renders per-test status as FAILED when traversable fails", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          expected_traversable: true
+        })
+
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+      run_result = %{
+        suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},
+        selected_test_case_ids: [walkability_test.id],
+        summary: %{total: 1, passed: 0, failed: 1, query_failure: 0, scoring_failure: 1},
+        cases: [
+          %{
+            test_case_id: walkability_test.id,
+            status: :failed,
+            failure_category: :scoring_failure,
+            route_output: %{route_exists: false, duration_seconds: 120.0, distance_meters: 150.0},
+            details: %{
+              mismatches: [
+                %{kind: :expected_traversable, expected: true, actual: false}
+              ]
+            }
+          }
+        ]
+      }
+
+      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 20)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#pathways-case-row-0 .badge-error", "FAILED")
+    end
+
+    test "renders per-test status as PASS when no criteria fail", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          expected_traversable: true
+        })
+
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+      run_result = %{
+        suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},
+        selected_test_case_ids: [walkability_test.id],
+        summary: %{total: 1, passed: 1, failed: 0, query_failure: 0, scoring_failure: 0},
+        cases: [
+          %{
+            test_case_id: walkability_test.id,
+            status: :passed,
+            route_output: %{route_exists: true, duration_seconds: 120.0, distance_meters: 150.0},
+            details: %{mismatches: []}
+          }
+        ]
+      }
+
+      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 20)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#pathways-case-row-0 .badge-success", "PASS")
+      assert render(view |> element("#pathways-case-row-0")) =~ "All criteria passed"
+    end
+
+    test "renders per-test status as WARNING when traversable passes but other criteria fail", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          expected_traversable: true,
+          expected_max_duration_seconds: 300
+        })
+
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+      run_result = %{
+        suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},
+        selected_test_case_ids: [walkability_test.id],
+        summary: %{total: 1, passed: 0, failed: 1, query_failure: 0, scoring_failure: 1},
+        cases: [
+          %{
+            test_case_id: walkability_test.id,
+            status: :failed,
+            failure_category: :scoring_failure,
+            route_output: %{route_exists: true, duration_seconds: 400.0, distance_meters: 150.0},
+            details: %{
+              mismatches: [
+                %{kind: :expected_max_duration_seconds, expected: 300, actual: 400.0}
+              ]
+            }
+          }
+        ]
+      }
+
+      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 20)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#pathways-case-row-0 .badge-warning", "WARNING")
+      assert render(view |> element("#pathways-case-row-0")) =~ "Duration outside expected range"
     end
 
     test "poll refresh updates pathways run from running to completed", %{
