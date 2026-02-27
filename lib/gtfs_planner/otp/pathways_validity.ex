@@ -57,7 +57,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
       to: { lat: $toLat, lon: $toLon }
       transportModes: [{ mode: WALK }]
       numItineraries: 1
-      wheelchairAccessible: $wheelchair
+      wheelchair: $wheelchair
     ) {
       itineraries {
         duration

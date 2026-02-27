@@ -16,6 +16,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @pathways_failure_messages %{
     no_walkability_tests: "No pathways tests are configured for this GTFS version.",
+    otp_runtime_failed: "Pathways validation failed during OTP runtime.",
     otp_runtime_already_running:
       "Another pathways runtime is already active for this organization.",
     otp_start_failed: "Failed to start OTP runtime.",
@@ -1261,12 +1262,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp pathways_failure_message(error_payload) when is_map(error_payload) do
-    error_payload
-    |> pathways_failure_tokens()
-    |> Enum.find_value(&normalize_pathways_failure_code/1)
-    |> case do
-      nil -> "Pathways validation failed"
-      failure_code -> Map.get(@pathways_failure_messages, failure_code, "Pathways validation failed")
+    base_message =
+      error_payload
+      |> pathways_failure_tokens()
+      |> Enum.find_value(&normalize_pathways_failure_code/1)
+      |> case do
+        nil -> "Pathways validation failed"
+        failure_code ->
+          Map.get(@pathways_failure_messages, failure_code, "Pathways validation failed")
+      end
+
+    case pathways_failure_diagnostic(error_payload) do
+      nil -> base_message
+      diagnostic -> base_message <> " " <> diagnostic
     end
   end
 
@@ -1306,6 +1314,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     do: :otp_runtime_already_running
 
   defp normalize_pathways_failure_code(:otp_start_failed), do: :otp_start_failed
+  defp normalize_pathways_failure_code(:otp_runtime_failed), do: :otp_runtime_failed
   defp normalize_pathways_failure_code(:otp_ready_timeout), do: :otp_ready_timeout
   defp normalize_pathways_failure_code(:otp_stop_failed), do: :otp_stop_failed
   defp normalize_pathways_failure_code(:query_failure), do: :query_failure
@@ -1321,6 +1330,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
       "otp_start_failed" ->
         :otp_start_failed
+
+      "otp_runtime_failed" ->
+        :otp_runtime_failed
 
       "otp_ready_timeout" ->
         :otp_ready_timeout
@@ -1346,11 +1358,70 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       String.contains?(value, "no_walkability_tests") -> :no_walkability_tests
       String.contains?(value, "otp_runtime_already_running") -> :otp_runtime_already_running
       String.contains?(value, "otp_start_failed") -> :otp_start_failed
+      String.contains?(value, "otp_runtime_failed") -> :otp_runtime_failed
       String.contains?(value, "otp_ready_timeout") -> :otp_ready_timeout
       String.contains?(value, "otp_stop_failed") -> :otp_stop_failed
       String.contains?(value, "query_failure") -> :query_failure
       String.contains?(value, "scoring_failure") -> :scoring_failure
       true -> nil
+    end
+  end
+
+  defp pathways_failure_diagnostic(error_payload) do
+    reason_text = payload_value(error_payload, :reason)
+
+    if is_binary(reason_text) and String.contains?(reason_text, "build_command_failed") do
+      exit_status =
+        case Regex.run(~r/exit_status:\s*(\d+)/, reason_text, capture: :all_but_first) do
+          [status] -> status
+          _ -> nil
+        end
+
+      build_log_path =
+        case Regex.run(~r|(\/[^\s,\"]+\/build\.log)|, reason_text, capture: :all_but_first) do
+          [path] -> path
+          _ -> nil
+        end
+
+      build_log_hint =
+        case build_log_path do
+          nil ->
+            nil
+
+          path ->
+            case read_graph_build_log_hint(path) do
+              nil -> "Graph build log: #{path}."
+              hint -> "Graph build log: #{path}. #{hint}"
+            end
+        end
+
+      case {exit_status, build_log_hint} do
+        {nil, nil} -> "OTP graph build command failed."
+        {status, nil} -> "OTP graph build command failed (exit status #{status})."
+        {nil, hint} -> "OTP graph build command failed. #{hint}"
+        {status, hint} -> "OTP graph build command failed (exit status #{status}). #{hint}"
+      end
+    else
+      nil
+    end
+  end
+
+  defp read_graph_build_log_hint(path) do
+    case File.read(path) do
+      {:ok, body} ->
+        cond do
+          String.contains?(body, "BoardingArea") and String.contains?(body, "NullPointerException") ->
+            "OTP reported a BoardingArea NullPointerException while mapping GTFS stops."
+
+          String.contains?(body, "NullPointerException") ->
+            "OTP reported a NullPointerException during graph build."
+
+          true ->
+            nil
+        end
+
+      {:error, _reason} ->
+        nil
     end
   end
 

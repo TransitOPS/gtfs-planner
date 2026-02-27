@@ -108,6 +108,8 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
 
     assert request_opts[:json][:query] =~ "transportModes: [{ mode: WALK }]"
     assert request_opts[:json][:query] =~ "numItineraries: 1"
+    assert request_opts[:json][:query] =~ "wheelchair: $wheelchair"
+    refute request_opts[:json][:query] =~ "wheelchairAccessible"
     assert request_opts[:json][:query] =~ "itineraries"
     assert request_opts[:json][:query] =~ "duration"
     assert request_opts[:json][:query] =~ "walkDistance"
