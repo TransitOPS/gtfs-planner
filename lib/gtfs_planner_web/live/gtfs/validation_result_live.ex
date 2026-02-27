@@ -242,7 +242,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                       </tr>
                     </thead>
                     <tbody>
-                      <tr :for={row <- @pathways_case_results} id={"pathways-case-row-#{row.order_index}"}>
+                      <tr
+                        :for={row <- @pathways_case_results}
+                        id={"pathways-case-row-#{row.order_index}"}
+                      >
                         <td>{row.order_index}</td>
                         <td class="font-mono text-xs">{row.walkability_test_id}</td>
                         <td>
@@ -590,7 +593,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     Map.get(run.result_json || %{}, "top_failure_categories", [])
   end
 
-  defp maybe_schedule_pathways_status_poll(socket, %{run_type: "pathways_tests", status: status, id: id})
+  defp maybe_schedule_pathways_status_poll(socket, %{
+         run_type: "pathways_tests",
+         status: status,
+         id: id
+       })
        when status in ["started", "running"] do
     schedule_pathways_status_poll(id)
     socket

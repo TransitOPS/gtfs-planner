@@ -43,6 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_run_id, nil)
      |> assign(:validation_task, nil)
      |> assign(:pathways_prep_task, nil)
+     |> assign(:pathways_prep_detailed_progress, false)
      |> assign(:pending_mobility_validation, false)
      |> assign(:validating, false)
      |> assign(:validation_progress, nil)
@@ -189,6 +190,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_run_id, nil)
      |> assign(:validation_task, nil)
      |> assign(:pathways_prep_task, nil)
+     |> assign(:pathways_prep_detailed_progress, false)
      |> assign(:pending_mobility_validation, false)
      |> assign(:validating, false)
      |> assign(:validation_progress, nil)
@@ -229,7 +231,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     phase = pathways_prep_phase(payload)
 
     {:noreply,
-     assign(socket, :validation_progress, %{
+     socket
+     |> assign(:pathways_prep_detailed_progress, true)
+     |> assign(:validation_progress, %{
        phase: {:pathways_prep, phase},
        percent: phase_percent(phase)
      })}
@@ -242,12 +246,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         {:ok, %{status: "started"}} ->
           schedule_pathways_status_poll(validation_run_id)
 
-          {:noreply, assign(socket, :validation_progress, pathways_status_progress("started"))}
+          {:noreply, maybe_assign_pathways_status_progress(socket, "started")}
 
         {:ok, %{status: "running"}} ->
           schedule_pathways_status_poll(validation_run_id)
 
-          {:noreply, assign(socket, :validation_progress, pathways_status_progress("running"))}
+          {:noreply, maybe_assign_pathways_status_progress(socket, "running")}
 
         {:ok, %{status: "completed"}} ->
           handle_pathways_trip_test_completed(socket, validation_run_id)
@@ -257,6 +261,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            socket
            |> assign(:pending_mobility_validation, false)
            |> assign(:validating, false)
+           |> assign(:pathways_prep_detailed_progress, false)
            |> assign(:validation_progress, nil)
            |> assign(:validation_error, pathways_failure_message(error_payload))}
 
@@ -265,6 +270,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            socket
            |> assign(:pending_mobility_validation, false)
            |> assign(:validating, false)
+           |> assign(:pathways_prep_detailed_progress, false)
            |> assign(:validation_progress, nil)
            |> assign(:validation_error, "Pathways validation status was unavailable")}
 
@@ -273,6 +279,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            socket
            |> assign(:pending_mobility_validation, false)
            |> assign(:validating, false)
+           |> assign(:pathways_prep_detailed_progress, false)
            |> assign(:validation_progress, nil)
            |> assign(:validation_error, "Pathways validation run was not found")}
 
@@ -281,6 +288,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            socket
            |> assign(:pending_mobility_validation, false)
            |> assign(:validating, false)
+           |> assign(:pathways_prep_detailed_progress, false)
            |> assign(:validation_progress, nil)
            |> assign(:validation_error, "Invalid pathways validation run type")}
       end
@@ -307,7 +315,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   pathways_summary_from_result_json(completed_run.result_json || %{})
 
                 top_failure_categories =
-                  pathways_top_failure_categories_from_result_json(completed_run.result_json || %{})
+                  pathways_top_failure_categories_from_result_json(
+                    completed_run.result_json || %{}
+                  )
 
                 socket =
                   socket
@@ -737,7 +747,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   <div class="grid grid-cols-2 gap-2" id="pathways-summary-metrics">
                     <div class="stat p-2 bg-base-200 rounded-lg text-center">
                       <div class="stat-title text-[10px] uppercase opacity-60">Total</div>
-                      <div class="stat-value text-sm">{@validation_result.pathways_summary.total}</div>
+                      <div class="stat-value text-sm">
+                        {@validation_result.pathways_summary.total}
+                      </div>
                     </div>
                     <div class="stat p-2 bg-base-200 rounded-lg text-center">
                       <div class="stat-title text-[10px] uppercase opacity-60">Passed</div>
@@ -753,13 +765,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                     </div>
                     <div class="stat p-2 bg-base-200 rounded-lg text-center">
                       <div class="stat-title text-[10px] uppercase opacity-60">Pass Rate</div>
-                      <div class="stat-value text-sm">{@validation_result.pathways_summary.pass_rate}%</div>
+                      <div class="stat-value text-sm">
+                        {@validation_result.pathways_summary.pass_rate}%
+                      </div>
                     </div>
                   </div>
 
                   <%= if @validation_result.top_failure_categories != [] do %>
                     <div class="space-y-2" id="pathways-top-failure-categories">
-                      <h3 class="text-xs font-semibold uppercase opacity-60">Top Failure Categories</h3>
+                      <h3 class="text-xs font-semibold uppercase opacity-60">
+                        Top Failure Categories
+                      </h3>
                       <ul class="space-y-1 text-sm">
                         <li :for={category <- @validation_result.top_failure_categories}>
                           {category.category}: {category.count}
@@ -950,6 +966,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_label({:pathways_prep, {:otp, :stopping}}), do: "Stopping OTP runtime..."
   defp phase_label({:pathways_prep, {:otp, :stopped}}), do: "OTP runtime stopped"
   defp phase_label({:pathways_prep, {:otp, :failed}}), do: "OTP runtime failed"
+
   defp phase_label({:pathways_prep, {:suite, :running, completed, total, _test_case_id}}),
     do: "Running pathways suite (#{completed} of #{total})"
 
@@ -1031,7 +1048,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          organization_id,
          gtfs_version_id
        ) do
-    case Validations.start_pathways_trip_test(organization_id, gtfs_version_id) do
+    live_view_pid = self()
+
+    case Validations.start_pathways_trip_test(organization_id, gtfs_version_id,
+           status_callback: pathways_prep_status_callback(live_view_pid)
+         ) do
       {:ok, run} ->
         send(self(), {:poll_pathways_trip_test_status, run.id})
 
@@ -1039,6 +1060,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          socket
          |> assign(:validation_run_id, run.id)
          |> assign(:pathways_prep_task, nil)
+         |> assign(:pathways_prep_detailed_progress, false)
          |> assign(:pending_mobility_validation, pending_mobility_validation)
          |> assign(:validation_result, nil)
          |> assign(:validation_error, nil)
@@ -1051,6 +1073,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          socket
          |> assign(:pending_mobility_validation, false)
          |> assign(:validating, false)
+         |> assign(:pathways_prep_detailed_progress, false)
          |> assign(:validation_progress, nil)
          |> assign(:validation_error, "Pathways validation could not start: #{inspect(reason)}")}
 
@@ -1059,8 +1082,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          socket
          |> assign(:pending_mobility_validation, false)
          |> assign(:validating, false)
+         |> assign(:pathways_prep_detailed_progress, false)
          |> assign(:validation_progress, nil)
          |> assign(:validation_error, "Pathways validation could not start: #{inspect(reason)}")}
+    end
+  end
+
+  defp pathways_prep_status_callback(live_view_pid) do
+    fn payload ->
+      send(live_view_pid, {:pathways_prep_progress, payload})
     end
   end
 
@@ -1206,9 +1236,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     do: %{phase: {:pathways_prep, :cache_check}, percent: 10}
 
   defp pathways_status_progress("running"),
-    do: %{phase: {:pathways_prep, :cache_check}, percent: 50}
+    do: %{phase: {:pathways_prep, :running}, percent: 50}
 
   defp pathways_status_progress(_status), do: %{phase: :processing, percent: 95}
+
+  defp maybe_assign_pathways_status_progress(socket, status) do
+    if socket.assigns.pathways_prep_detailed_progress do
+      socket
+    else
+      assign(socket, :validation_progress, pathways_status_progress(status))
+    end
+  end
 
   defp handle_pathways_trip_test_completed(socket, validation_run_id) do
     case Validations.get_pathways_trip_test_results(validation_run_id) do
@@ -1239,6 +1277,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             socket
             |> assign(:pending_mobility_validation, false)
             |> assign(:validating, false)
+            |> assign(:pathways_prep_detailed_progress, false)
             |> assign(:validation_progress, nil),
             socket.assigns.current_organization.id,
             socket.assigns.current_gtfs_version.id
@@ -1248,6 +1287,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            socket
            |> assign(:pending_mobility_validation, false)
            |> assign(:validating, false)
+           |> assign(:pathways_prep_detailed_progress, false)
            |> assign(:validation_progress, nil)}
         end
 
@@ -1256,8 +1296,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          socket
          |> assign(:pending_mobility_validation, false)
          |> assign(:validating, false)
+         |> assign(:pathways_prep_detailed_progress, false)
          |> assign(:validation_progress, nil)
-         |> assign(:validation_error, "Pathways validation results unavailable: #{inspect(reason)}")}
+         |> assign(
+           :validation_error,
+           "Pathways validation results unavailable: #{inspect(reason)}"
+         )}
     end
   end
 
@@ -1267,7 +1311,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> pathways_failure_tokens()
       |> Enum.find_value(&normalize_pathways_failure_code/1)
       |> case do
-        nil -> "Pathways validation failed"
+        nil ->
+          "Pathways validation failed"
+
         failure_code ->
           Map.get(@pathways_failure_messages, failure_code, "Pathways validation failed")
       end
@@ -1410,7 +1456,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     case File.read(path) do
       {:ok, body} ->
         cond do
-          String.contains?(body, "BoardingArea") and String.contains?(body, "NullPointerException") ->
+          String.contains?(body, "BoardingArea") and
+              String.contains?(body, "NullPointerException") ->
             "OTP reported a BoardingArea NullPointerException while mapping GTFS stops."
 
           String.contains?(body, "NullPointerException") ->

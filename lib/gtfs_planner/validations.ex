@@ -59,7 +59,7 @@ defmodule GtfsPlanner.Validations do
     |> where([run], run.gtfs_version_id == ^gtfs_version_id)
     |> where([run], run.run_type == "pathways_tests")
     |> where([run], run.status in ["started", "running"])
-    |> order_by([run], [desc: run.started_at, desc: run.inserted_at, desc: run.id])
+    |> order_by([run], desc: run.started_at, desc: run.inserted_at, desc: run.id)
     |> limit(1)
     |> Repo.one()
   end
@@ -78,7 +78,12 @@ defmodule GtfsPlanner.Validations do
     |> where([run], run.gtfs_version_id == ^gtfs_version_id)
     |> where([run], run.run_type == "pathways_tests")
     |> where([run], run.status == "completed")
-    |> order_by([run], [desc: run.completed_at, desc: run.started_at, desc: run.inserted_at, desc: run.id])
+    |> order_by([run],
+      desc: run.completed_at,
+      desc: run.started_at,
+      desc: run.inserted_at,
+      desc: run.id
+    )
     |> limit(1)
     |> Repo.one()
   end
@@ -89,18 +94,21 @@ defmodule GtfsPlanner.Validations do
   Always creates a new run, transitions it to `running`, and spawns the
   dedicated runner process under `GtfsPlanner.TaskSupervisor`.
   """
-  @spec start_pathways_trip_test(Ecto.UUID.t(), Ecto.UUID.t()) ::
+  @spec start_pathways_trip_test(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
           {:ok, ValidationRun.t()} | {:error, term()}
-  def start_pathways_trip_test(organization_id, gtfs_version_id) do
-    start_new_pathways_trip_test(organization_id, gtfs_version_id)
+  def start_pathways_trip_test(organization_id, gtfs_version_id, opts \\ [])
+
+  def start_pathways_trip_test(organization_id, gtfs_version_id, opts) do
+    start_new_pathways_trip_test(organization_id, gtfs_version_id, opts)
   end
 
-  @spec start_new_pathways_trip_test(Ecto.UUID.t(), Ecto.UUID.t()) ::
+  @spec start_new_pathways_trip_test(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
           {:ok, ValidationRun.t()} | {:error, term()}
-  defp start_new_pathways_trip_test(organization_id, gtfs_version_id) do
+  defp start_new_pathways_trip_test(organization_id, gtfs_version_id, opts) do
     with {:ok, started_run} <- create_pathways_validation_run(organization_id, gtfs_version_id),
          {:ok, running_run} <- mark_pathways_running(started_run),
-         :ok <- spawn_pathways_trip_test_runner(running_run, organization_id, gtfs_version_id) do
+         :ok <-
+           spawn_pathways_trip_test_runner(running_run, organization_id, gtfs_version_id, opts) do
       {:ok, running_run}
     else
       {:error, {:runner_spawn_failed, reason, running_run}} ->
@@ -389,7 +397,11 @@ defmodule GtfsPlanner.Validations do
   """
   @spec mark_pathways_completed(ValidationRun.t(), map(), non_neg_integer()) ::
           {:ok, ValidationRun.t()} | {:error, term()}
-  def mark_pathways_completed(%ValidationRun{run_type: "pathways_tests"} = run, run_result, duration_ms) do
+  def mark_pathways_completed(
+        %ValidationRun{run_type: "pathways_tests"} = run,
+        run_result,
+        duration_ms
+      ) do
     %{result_json: result_json, case_row_attrs: case_row_attrs} =
       transform_pathways_run_result(run_result)
 
@@ -640,11 +652,11 @@ defmodule GtfsPlanner.Validations do
         status: normalize_case_status(pathways_case),
         failure_category: normalize_failure_category(pathways_case),
         route_exists: route_field(route_output, :route_exists),
-        duration_seconds: route_field(route_output, :duration_seconds),
-        distance_meters: route_field(route_output, :distance_meters),
+        duration_seconds: route_float_field(route_output, :duration_seconds),
+        distance_meters: route_float_field(route_output, :distance_meters),
         wheelchair_route_exists: route_field(wheelchair_output, :route_exists),
-        wheelchair_duration_seconds: route_field(wheelchair_output, :duration_seconds),
-        wheelchair_distance_meters: route_field(wheelchair_output, :distance_meters),
+        wheelchair_duration_seconds: route_float_field(wheelchair_output, :duration_seconds),
+        wheelchair_distance_meters: route_float_field(wheelchair_output, :distance_meters),
         details_json: Map.get(pathways_case, :details)
       }
     end)
@@ -680,6 +692,23 @@ defmodule GtfsPlanner.Validations do
   @spec route_field(map() | nil, atom()) :: term()
   defp route_field(nil, _field), do: nil
   defp route_field(route_output, field), do: Map.get(route_output, field)
+
+  @spec route_float_field(map() | nil, atom()) :: float() | nil
+  defp route_float_field(route_output, field) do
+    route_output
+    |> route_field(field)
+    |> normalize_optional_float(field)
+  end
+
+  @spec normalize_optional_float(term(), atom()) :: float() | nil
+  defp normalize_optional_float(nil, _field), do: nil
+  defp normalize_optional_float(value, _field) when is_float(value), do: value
+  defp normalize_optional_float(value, _field) when is_integer(value), do: value * 1.0
+
+  defp normalize_optional_float(value, field) do
+    raise ArgumentError,
+          "invalid pathways route field #{inspect(field)}: #{inspect(value)}; expected float, integer, or nil"
+  end
 
   @spec pass_rate_percent(non_neg_integer(), non_neg_integer()) :: float()
   defp pass_rate_percent(_passed, 0), do: 0.0
@@ -761,18 +790,31 @@ defmodule GtfsPlanner.Validations do
 
   defp decode_pathways_error_payload(_status, _error_details), do: nil
 
-  @spec spawn_pathways_trip_test_runner(ValidationRun.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+  @spec spawn_pathways_trip_test_runner(
+          ValidationRun.t(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          keyword()
+        ) ::
           :ok | {:error, {:runner_spawn_failed, term(), ValidationRun.t()}}
-  defp spawn_pathways_trip_test_runner(validation_run, organization_id, gtfs_version_id) do
+  defp spawn_pathways_trip_test_runner(validation_run, organization_id, gtfs_version_id, opts) do
     runner_module =
-      Application.get_env(:gtfs_planner, :pathways_trip_test_runner_module, PathwaysTripTestRunner)
+      Application.get_env(
+        :gtfs_planner,
+        :pathways_trip_test_runner_module,
+        PathwaysTripTestRunner
+      )
 
     task_supervisor =
-      Application.get_env(:gtfs_planner, :pathways_trip_test_task_supervisor, GtfsPlanner.TaskSupervisor)
+      Application.get_env(
+        :gtfs_planner,
+        :pathways_trip_test_task_supervisor,
+        GtfsPlanner.TaskSupervisor
+      )
 
     try do
       case Task.Supervisor.start_child(task_supervisor, fn ->
-             runner_module.run(validation_run, organization_id, gtfs_version_id, [])
+             runner_module.run(validation_run, organization_id, gtfs_version_id, opts)
            end) do
         {:ok, _pid} ->
           :ok

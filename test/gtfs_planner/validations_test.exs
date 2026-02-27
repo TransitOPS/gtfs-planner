@@ -13,7 +13,10 @@ defmodule GtfsPlanner.ValidationsTest do
       listener = Application.get_env(:gtfs_planner, :pathways_trip_test_runner_test_listener)
 
       if is_pid(listener) do
-        send(listener, {:pathways_runner_started, validation_run.id, organization_id, gtfs_version_id})
+        send(
+          listener,
+          {:pathways_runner_started, validation_run.id, organization_id, gtfs_version_id}
+        )
       end
 
       {:ok, validation_run}
@@ -265,13 +268,21 @@ defmodule GtfsPlanner.ValidationsTest do
 
       on_exit(fn ->
         if previous_runner_module do
-          Application.put_env(:gtfs_planner, :pathways_trip_test_runner_module, previous_runner_module)
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_module,
+            previous_runner_module
+          )
         else
           Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_module)
         end
 
         if previous_listener do
-          Application.put_env(:gtfs_planner, :pathways_trip_test_runner_test_listener, previous_listener)
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_test_listener,
+            previous_listener
+          )
         else
           Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_test_listener)
         end
@@ -308,13 +319,21 @@ defmodule GtfsPlanner.ValidationsTest do
 
       on_exit(fn ->
         if previous_runner_module do
-          Application.put_env(:gtfs_planner, :pathways_trip_test_runner_module, previous_runner_module)
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_module,
+            previous_runner_module
+          )
         else
           Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_module)
         end
 
         if previous_listener do
-          Application.put_env(:gtfs_planner, :pathways_trip_test_runner_test_listener, previous_listener)
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_test_listener,
+            previous_listener
+          )
         else
           Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_test_listener)
         end
@@ -432,10 +451,11 @@ defmodule GtfsPlanner.ValidationsTest do
       assert status.error_payload == nil
     end
 
-    test "get_pathways_trip_test_status/1 returns decoded error payload for failed pathways run", %{
-      organization: org,
-      gtfs_version: version
-    } do
+    test "get_pathways_trip_test_status/1 returns decoded error payload for failed pathways run",
+         %{
+           organization: org,
+           gtfs_version: version
+         } do
       {:ok, run} = Validations.create_pathways_validation_run(org.id, version.id)
 
       failure_reason = %{
@@ -494,7 +514,11 @@ defmodule GtfsPlanner.ValidationsTest do
             test_case_id: walkability_test_2.id,
             status: :passed,
             route_output: %{route_exists: true, duration_seconds: 180.0, distance_meters: 320.0},
-            wheelchair_output: %{route_exists: true, duration_seconds: 200.0, distance_meters: 360.0}
+            wheelchair_output: %{
+              route_exists: true,
+              duration_seconds: 200.0,
+              distance_meters: 360.0
+            }
           },
           %{
             test_case_id: walkability_test_1.id,
@@ -513,6 +537,7 @@ defmodule GtfsPlanner.ValidationsTest do
       assert payload.run_type == "pathways_tests"
       assert payload.status == "completed"
       assert payload.result_json["report_version"] == 1
+
       assert payload.result_json["selected_test_case_ids"] == [
                walkability_test_2.id,
                walkability_test_1.id
@@ -543,10 +568,11 @@ defmodule GtfsPlanner.ValidationsTest do
              ]
     end
 
-    test "get_pathways_trip_test_results/1 returns run_not_completed for non-terminal pathways run", %{
-      organization: org,
-      gtfs_version: version
-    } do
+    test "get_pathways_trip_test_results/1 returns run_not_completed for non-terminal pathways run",
+         %{
+           organization: org,
+           gtfs_version: version
+         } do
       {:ok, run} = Validations.create_pathways_validation_run(org.id, version.id)
 
       assert {:error, :run_not_completed} = Validations.get_pathways_trip_test_results(run.id)
@@ -569,6 +595,7 @@ defmodule GtfsPlanner.ValidationsTest do
     test "get_latest_completed_pathways_trip_test/2 returns newest completed pathways run by completed_at then started_at",
          %{organization: org, gtfs_version: version} do
       {:ok, older_completed_run} = Validations.create_pathways_validation_run(org.id, version.id)
+
       {:ok, newer_started_same_completed_at_run} =
         Validations.create_pathways_validation_run(org.id, version.id)
 
@@ -909,7 +936,11 @@ defmodule GtfsPlanner.ValidationsTest do
             test_case_id: case_id_1,
             status: :passed,
             route_output: %{route_exists: true, duration_seconds: 420, distance_meters: 360.5},
-            wheelchair_output: %{route_exists: true, duration_seconds: 500, distance_meters: 400.0}
+            wheelchair_output: %{
+              route_exists: true,
+              duration_seconds: 500,
+              distance_meters: 400.0
+            }
           },
           %{
             test_case_id: case_id_2,
@@ -923,7 +954,9 @@ defmodule GtfsPlanner.ValidationsTest do
             failure_category: :scoring_failure,
             route_output: %{route_exists: true, duration_seconds: 900, distance_meters: 1200.0},
             wheelchair_output: nil,
-            details: %{mismatches: [%{kind: :expected_max_duration_seconds, expected: 700, actual: 900}]}
+            details: %{
+              mismatches: [%{kind: :expected_max_duration_seconds, expected: 700, actual: 900}]
+            }
           }
         ]
       }
@@ -932,7 +965,9 @@ defmodule GtfsPlanner.ValidationsTest do
 
       assert transformed.result_json["report_version"] == 1
       assert transformed.result_json["suite_meta"] == run_result.suite_meta
-      assert transformed.result_json["selected_test_case_ids"] == run_result.selected_test_case_ids
+
+      assert transformed.result_json["selected_test_case_ids"] ==
+               run_result.selected_test_case_ids
 
       assert transformed.result_json["summary"] == %{
                "total" => 3,
@@ -955,10 +990,10 @@ defmodule GtfsPlanner.ValidationsTest do
                  status: "passed",
                  failure_category: nil,
                  route_exists: true,
-                 duration_seconds: 420,
+                 duration_seconds: 420.0,
                  distance_meters: 360.5,
                  wheelchair_route_exists: true,
-                 wheelchair_duration_seconds: 500,
+                 wheelchair_duration_seconds: 500.0,
                  wheelchair_distance_meters: 400.0,
                  details_json: nil
                },
@@ -981,7 +1016,7 @@ defmodule GtfsPlanner.ValidationsTest do
                  status: "failed",
                  failure_category: "scoring_failure",
                  route_exists: true,
-                 duration_seconds: 900,
+                 duration_seconds: 900.0,
                  distance_meters: 1200.0,
                  wheelchair_route_exists: nil,
                  wheelchair_duration_seconds: nil,
@@ -1032,8 +1067,8 @@ defmodule GtfsPlanner.ValidationsTest do
           %{
             test_case_id: walkability_test.id,
             status: :passed,
-            route_output: %{route_exists: true, duration_seconds: 123.0, distance_meters: 456.7},
-            wheelchair_output: %{route_exists: true, duration_seconds: 130.0, distance_meters: 500.0}
+            route_output: %{route_exists: true, duration_seconds: 123, distance_meters: 456},
+            wheelchair_output: %{route_exists: true, duration_seconds: 130, distance_meters: 500}
           }
         ]
       }
@@ -1056,6 +1091,10 @@ defmodule GtfsPlanner.ValidationsTest do
       assert row.walkability_test_id == walkability_test.id
       assert row.order_index == 0
       assert row.status == "passed"
+      assert row.duration_seconds == 123.0
+      assert row.distance_meters == 456.0
+      assert row.wheelchair_duration_seconds == 130.0
+      assert row.wheelchair_distance_meters == 500.0
     end
   end
 

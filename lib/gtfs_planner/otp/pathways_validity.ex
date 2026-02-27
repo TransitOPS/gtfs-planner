@@ -91,6 +91,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
 
         selected_test_case_ids = Enum.map(suite, & &1.test_case_id)
         selected_stop_ids = suite |> Enum.map(& &1.stop_id) |> Enum.uniq()
+
         destination_stops_by_stop_id =
           build_destination_stops_by_stop_id(organization_id, gtfs_version_id, selected_stop_ids)
 
@@ -108,7 +109,12 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
               test_case_id: suite_case.test_case_id
             })
 
-            execute_case(suite_case, destination_stops_by_stop_id, session.graphql_url, request_fun)
+            execute_case(
+              suite_case,
+              destination_stops_by_stop_id,
+              session.graphql_url,
+              request_fun
+            )
           end)
 
         emit_status(status_callback, %{
@@ -145,7 +151,8 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
         classify_case_outcome(suite_case.test_case_id, {:query_failure, reason})
 
       {:ok, destination} ->
-        with {:ok, route_output} <- execute_walk_query(suite_case, destination, graphql_url, request_fun),
+        with {:ok, route_output} <-
+               execute_walk_query(suite_case, destination, graphql_url, request_fun),
              {:ok, wheelchair_output} <-
                maybe_execute_wheelchair_query(
                  suite_case,
@@ -242,7 +249,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
     }
   end
 
-  @spec execute_plan_request(String.t(), %{required(:query) => String.t(), required(:variables) => map()}, function()) ::
+  @spec execute_plan_request(
+          String.t(),
+          %{required(:query) => String.t(), required(:variables) => map()},
+          function()
+        ) ::
           {:ok, case_query_output()} | {:error, map()}
   defp execute_plan_request(graphql_url, request_payload, request_fun) do
     case execute_graphql_request(graphql_url, request_payload, request_fun) do
@@ -254,7 +265,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
     end
   end
 
-  @spec execute_graphql_request(String.t(), %{required(:query) => String.t(), required(:variables) => map()}, function()) ::
+  @spec execute_graphql_request(
+          String.t(),
+          %{required(:query) => String.t(), required(:variables) => map()},
+          function()
+        ) ::
           {:ok, term()} | {:error, {:query_failure, map()}}
   defp execute_graphql_request(graphql_url, request_payload, request_fun) do
     request_opts = [json: request_payload]
@@ -327,7 +342,8 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
     end
   end
 
-  @spec classify_case_outcome(Ecto.UUID.t(),
+  @spec classify_case_outcome(
+          Ecto.UUID.t(),
           {:query_failure, map()}
           | {:passed, case_query_output(), case_query_output() | nil}
           | {:scoring_failure, map(), case_query_output(), case_query_output() | nil}
@@ -391,7 +407,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
       mismatches
     else
       [
-        %{kind: :expected_traversable, expected: suite_case.expected_traversable, actual: route_output.route_exists}
+        %{
+          kind: :expected_traversable,
+          expected: suite_case.expected_traversable,
+          actual: route_output.route_exists
+        }
         | mismatches
       ]
     end
@@ -420,7 +440,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
       mismatches
     else
       [
-        %{kind: :expected_min_duration_seconds, expected: suite_case.expected_min_duration_seconds, actual: duration}
+        %{
+          kind: :expected_min_duration_seconds,
+          expected: suite_case.expected_min_duration_seconds,
+          actual: duration
+        }
         | mismatches
       ]
     end
@@ -442,7 +466,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
       mismatches
     else
       [
-        %{kind: :expected_max_duration_seconds, expected: suite_case.expected_max_duration_seconds, actual: duration}
+        %{
+          kind: :expected_max_duration_seconds,
+          expected: suite_case.expected_max_duration_seconds,
+          actual: duration
+        }
         | mismatches
       ]
     end
@@ -471,7 +499,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
       mismatches
     else
       [
-        %{kind: :expected_min_distance_meters, expected: suite_case.expected_min_distance_meters, actual: distance}
+        %{
+          kind: :expected_min_distance_meters,
+          expected: suite_case.expected_min_distance_meters,
+          actual: distance
+        }
         | mismatches
       ]
     end
@@ -493,7 +525,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
       mismatches
     else
       [
-        %{kind: :expected_max_distance_meters, expected: suite_case.expected_max_distance_meters, actual: distance}
+        %{
+          kind: :expected_max_distance_meters,
+          expected: suite_case.expected_max_distance_meters,
+          actual: distance
+        }
         | mismatches
       ]
     end
@@ -510,7 +546,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
 
   defp maybe_add_wheelchair_mismatch(mismatches, suite_case, nil) do
     [
-      %{kind: :expected_wheelchair_accessible, expected: suite_case.expected_wheelchair_accessible, actual: nil}
+      %{
+        kind: :expected_wheelchair_accessible,
+        expected: suite_case.expected_wheelchair_accessible,
+        actual: nil
+      }
       | mismatches
     ]
   end
@@ -522,7 +562,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
       mismatches
     else
       [
-        %{kind: :expected_wheelchair_accessible, expected: suite_case.expected_wheelchair_accessible, actual: actual}
+        %{
+          kind: :expected_wheelchair_accessible,
+          expected: suite_case.expected_wheelchair_accessible,
+          actual: actual
+        }
         | mismatches
       ]
     end
@@ -544,18 +588,15 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
   end
 
   defp update_summary_from_case(%{status: :failed, failure_category: :query_failure}, acc) do
-    %{acc |
-      total: acc.total + 1,
-      failed: acc.failed + 1,
-      query_failure: acc.query_failure + 1
-    }
+    %{acc | total: acc.total + 1, failed: acc.failed + 1, query_failure: acc.query_failure + 1}
   end
 
   defp update_summary_from_case(%{status: :failed, failure_category: :scoring_failure}, acc) do
-    %{acc |
-      total: acc.total + 1,
-      failed: acc.failed + 1,
-      scoring_failure: acc.scoring_failure + 1
+    %{
+      acc
+      | total: acc.total + 1,
+        failed: acc.failed + 1,
+        scoring_failure: acc.scoring_failure + 1
     }
   end
 
@@ -584,7 +625,9 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
 
     organization_id
     |> Gtfs.list_stops(gtfs_version_id)
-    |> Enum.filter(fn %Stop{stop_id: stop_id} -> MapSet.member?(selected_stop_ids_set, stop_id) end)
+    |> Enum.filter(fn %Stop{stop_id: stop_id} ->
+      MapSet.member?(selected_stop_ids_set, stop_id)
+    end)
     |> Map.new(fn %Stop{} = stop -> {stop.stop_id, stop} end)
   end
 end

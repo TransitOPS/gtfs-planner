@@ -116,7 +116,9 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunnerTest do
     assert_receive {:status_callback_payload,
                     %{scope: :suite, phase: :running, completed: 0, total: 1}}
 
-    assert_receive {:mark_pathways_completed_called, ^validation_run, :pathways_result, duration_ms}
+    assert_receive {:mark_pathways_completed_called, ^validation_run, :pathways_result,
+                    duration_ms}
+
     assert is_integer(duration_ms)
     assert duration_ms >= 0
   end
@@ -138,7 +140,11 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunnerTest do
       end
 
       if previous_pathways_module do
-        Application.put_env(:gtfs_planner, :otp_pathways_validity_module, previous_pathways_module)
+        Application.put_env(
+          :gtfs_planner,
+          :otp_pathways_validity_module,
+          previous_pathways_module
+        )
       else
         Application.delete_env(:gtfs_planner, :otp_pathways_validity_module)
       end

@@ -76,7 +76,10 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunner do
         end
 
       {:error, issues} when is_list(issues) ->
-        persist_failed_run(validations_module, validation_run, %{reason: :otp_runtime_failed, issues: issues})
+        persist_failed_run(validations_module, validation_run, %{
+          reason: :otp_runtime_failed,
+          issues: issues
+        })
 
       {:error, reason} ->
         persist_failed_run(validations_module, validation_run, normalize_failure_reason(reason))

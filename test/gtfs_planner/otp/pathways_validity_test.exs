@@ -76,7 +76,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     _stop =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
 
     walkability_test =
       walkability_test_fixture(%{
@@ -91,7 +95,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
       {:ok,
        %Req.Response{
          status: 200,
-         body: %{"data" => %{"plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 300.5}]}}}
+         body: %{
+           "data" => %{
+             "plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 300.5}]}
+           }
+         }
        }}
     end
 
@@ -154,7 +162,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
       {:ok,
        %Req.Response{
          status: 200,
-         body: %{"data" => %{"plan" => %{"itineraries" => [%{"duration" => 150, "walkDistance" => 250.0}]}}}
+         body: %{
+           "data" => %{
+             "plan" => %{"itineraries" => [%{"duration" => 150, "walkDistance" => 250.0}]}
+           }
+         }
        }}
     end
 
@@ -178,10 +190,18 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     _stop_1 =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
 
     _stop_2 =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-2", stop_lat: 42.37, stop_lon: -71.06})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-2",
+        stop_lat: 42.37,
+        stop_lon: -71.06
+      })
 
     first_case =
       walkability_test_fixture(%{
@@ -211,8 +231,9 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
            %Req.Response{
              status: 200,
              body: %{
-               "data" =>
-                 %{"plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 200.0}]}}
+               "data" => %{
+                 "plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 200.0}]}
+               }
              }
            }}
 
@@ -248,13 +269,25 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     _stop_1 =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
 
     _stop_2 =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-2", stop_lat: 42.37, stop_lon: -71.06})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-2",
+        stop_lat: 42.37,
+        stop_lon: -71.06
+      })
 
     _stop_3 =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-3", stop_lat: 42.38, stop_lon: -71.07})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-3",
+        stop_lat: 42.38,
+        stop_lon: -71.07
+      })
 
     first_case =
       walkability_test_fixture(%{
@@ -294,8 +327,9 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
            %Req.Response{
              status: 200,
              body: %{
-               "data" =>
-                 %{"plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 200.0}]}}
+               "data" => %{
+                 "plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 200.0}]}
+               }
              }
            }}
 
@@ -304,8 +338,9 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
            %Req.Response{
              status: 200,
              body: %{
-               "data" =>
-                 %{"plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 300.0}]}}
+               "data" => %{
+                 "plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 300.0}]}
+               }
              }
            }}
 
@@ -348,7 +383,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     _stop =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
 
     _walkability_test =
       walkability_test_fixture(%{
@@ -364,7 +403,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
       {:ok,
        %Req.Response{
          status: 200,
-         body: %{"data" => %{"plan" => %{"itineraries" => [%{"duration" => 100, "walkDistance" => 100.0}]}}}
+         body: %{
+           "data" => %{
+             "plan" => %{"itineraries" => [%{"duration" => 100, "walkDistance" => 100.0}]}
+           }
+         }
        }}
     end
 
@@ -387,7 +430,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     _stop =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
 
     _walkability_test =
       walkability_test_fixture(%{
@@ -403,7 +450,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
       {:ok,
        %Req.Response{
          status: 200,
-         body: %{"data" => %{"plan" => %{"itineraries" => [%{"duration" => 100, "walkDistance" => 100.0}]}}}
+         body: %{
+           "data" => %{
+             "plan" => %{"itineraries" => [%{"duration" => 100, "walkDistance" => 100.0}]}
+           }
+         }
        }}
     end
 
@@ -426,7 +477,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     _stop =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
 
     walkability_test_fixture(%{
       organization_id: organization.id,
@@ -455,7 +510,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     _stop =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
 
     walkability_test_fixture(%{
       organization_id: organization.id,
@@ -485,7 +544,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     _stop =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
 
     walkability_test_fixture(%{
       organization_id: organization.id,
@@ -514,7 +577,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     _stop =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
 
     walkability_test_fixture(%{
       organization_id: organization.id,
@@ -527,7 +594,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
       {:ok,
        %Req.Response{
          status: 200,
-         body: %{"data" => %{"plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 300.0}]}}}
+         body: %{
+           "data" => %{
+             "plan" => %{"itineraries" => [%{"duration" => 120, "walkDistance" => 300.0}]}
+           }
+         }
        }}
     end
 
@@ -539,7 +610,9 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
                request_fun: request_fun
              )
 
-    assert [%{status: :failed, failure_category: :scoring_failure, details: details}] = result.cases
+    assert [%{status: :failed, failure_category: :scoring_failure, details: details}] =
+             result.cases
+
     assert Enum.any?(details.mismatches, &(&1.kind == :expected_max_duration_seconds))
   end
 
@@ -548,7 +621,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     _stop =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
 
     walkability_test =
       walkability_test_fixture(%{
@@ -576,7 +653,12 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     assert [case_result] = result.cases
     assert case_result.test_case_id == walkability_test.id
     assert case_result.status == :passed
-    assert case_result.route_output == %{route_exists: false, duration_seconds: nil, distance_meters: nil}
+
+    assert case_result.route_output == %{
+             route_exists: false,
+             duration_seconds: nil,
+             distance_meters: nil
+           }
   end
 
   test "run_in_session/4 emits suite progress with running completed/total and finishing/finished phases" do
@@ -584,10 +666,18 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     gtfs_version = gtfs_version_fixture(organization.id)
 
     _stop_1 =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-1",
+        stop_lat: 42.36,
+        stop_lon: -71.05
+      })
 
     _stop_2 =
-      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-2", stop_lat: 42.37, stop_lon: -71.06})
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "stop-2",
+        stop_lat: 42.37,
+        stop_lon: -71.06
+      })
 
     first_case =
       walkability_test_fixture(%{
@@ -627,10 +717,22 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
              )
 
     assert_receive {:suite_status,
-                    %{scope: :suite, phase: :running, completed: 0, total: 2, test_case_id: first_id}}
+                    %{
+                      scope: :suite,
+                      phase: :running,
+                      completed: 0,
+                      total: 2,
+                      test_case_id: first_id
+                    }}
 
     assert_receive {:suite_status,
-                    %{scope: :suite, phase: :running, completed: 1, total: 2, test_case_id: second_id}}
+                    %{
+                      scope: :suite,
+                      phase: :running,
+                      completed: 1,
+                      total: 2,
+                      test_case_id: second_id
+                    }}
 
     assert first_id == first_case.id
     assert second_id == second_case.id

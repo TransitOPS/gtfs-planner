@@ -226,7 +226,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
           address: "456 Oak St"
         })
 
-      {:ok, run} = Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
 
       run_result = %{
         suite_meta: %{total_candidates: 2, selected_count: 2, malformed_count: 0},
@@ -237,7 +238,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
             test_case_id: walkability_test_1.id,
             status: :passed,
             route_output: %{route_exists: true, duration_seconds: 180.0, distance_meters: 320.0},
-            wheelchair_output: %{route_exists: true, duration_seconds: 200.0, distance_meters: 360.0}
+            wheelchair_output: %{
+              route_exists: true,
+              duration_seconds: 200.0,
+              distance_meters: 360.0
+            }
           },
           %{
             test_case_id: walkability_test_2.id,
@@ -272,7 +277,9 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       walkability_test =
         walkability_test_fixture(%{organization_id: organization.id, gtfs_version_id: version.id})
 
-      {:ok, run} = Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
       {:ok, run} = Validations.mark_pathways_running(run)
 
       conn = log_in_user(conn, user, organization: organization)
@@ -289,7 +296,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
             test_case_id: walkability_test.id,
             status: :passed,
             route_output: %{route_exists: true, duration_seconds: 95.0, distance_meters: 140.0},
-            wheelchair_output: %{route_exists: true, duration_seconds: 110.0, distance_meters: 160.0}
+            wheelchair_output: %{
+              route_exists: true,
+              duration_seconds: 110.0,
+              distance_meters: 160.0
+            }
           }
         ]
       }
