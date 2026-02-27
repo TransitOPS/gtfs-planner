@@ -93,7 +93,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
           pathway_id: "PATH_1",
           pathway_mode: 5,
           is_bidirectional: true,
-          min_width: Decimal.new("1.5")
+          min_width: Decimal.new("1.5"),
+          signposted_as: "To platform",
+          reversed_signposted_as: "To entrance"
+        })
+
+      _pathway_to_boarding =
+        pathway_fixture(organization.id, gtfs_version.id, platform.stop_id, "BOARD_1", %{
+          pathway_id: "PATH_2",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          length: Decimal.new("8.0"),
+          signposted_as: "Boarding 1",
+          reversed_signposted_as: "From boarding"
         })
 
       %{
@@ -249,6 +261,41 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(view, "#report-item-step_free_routes")
       assert has_element?(view, "#report-section-entrance_platform_connectivity-methodology")
       assert has_element?(view, "#report-section-attribute_completeness-methodology")
+    end
+
+    test "toggles path direction and renders trip visualization containers", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      pair_dom = "ENT_1__BOARD_1"
+
+      view
+      |> element("#report-entrance-ENT_1 > summary")
+      |> render_click()
+
+      assert has_element?(view, "#report-trip-visualization-#{pair_dom}")
+      assert has_element?(view, "#report-trip-summary-#{pair_dom}")
+      assert has_element?(view, "#report-trip-timeline-#{pair_dom}")
+      assert has_element?(view, "#report-trip-steps-#{pair_dom}")
+      assert has_element?(view, "#report-trip-profile-#{pair_dom}")
+      assert has_element?(view, "#report-trip-analysis-#{pair_dom}")
+      assert has_element?(view, "#report-trip-direction-button-#{pair_dom}", "Forward view")
+      assert has_element?(view, "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)", "To platform")
+      assert has_element?(view, "#report-trip-steps-#{pair_dom} tbody tr:nth-child(2) td:nth-child(4)", "Boarding 1")
+
+      view
+      |> element("#report-trip-direction-button-#{pair_dom}")
+      |> render_click()
+
+      assert has_element?(view, "#report-trip-direction-button-#{pair_dom}", "Reverse view")
+      assert has_element?(view, "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)", "From boarding")
+      assert has_element?(view, "#report-trip-steps-#{pair_dom} tbody tr:nth-child(2) td:nth-child(4)", "To entrance")
     end
 
     test "redirects with flash when station is missing", %{

@@ -30,6 +30,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
      |> assign(:station, nil)
      |> assign(:report, nil)
      |> assign(:stop_id, nil)
+     |> assign(:reversed_pairs, MapSet.new())
+     |> assign(:expanded_entrances, MapSet.new())
      |> assign(:methodology_by_section, default_methodology_by_section())}
   end
 
@@ -46,7 +48,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
          socket
          |> assign(:stop_id, stop_id)
          |> assign(:station, snapshot.station)
-         |> assign(:report, report)}
+         |> assign(:report, report)
+         |> assign(:reversed_pairs, MapSet.new())
+         |> assign(:expanded_entrances, MapSet.new())}
 
       {:error, :not_found} ->
         {:noreply,
@@ -91,6 +95,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
   def handle_event("toggle_methodology", _params, socket), do: {:noreply, socket}
 
   @impl true
+  def handle_event("toggle_path_direction", %{"pair_id" => pair_id}, socket) do
+    reversed_pairs = socket.assigns.reversed_pairs
+
+    next_reversed_pairs =
+      if MapSet.member?(reversed_pairs, pair_id) do
+        MapSet.delete(reversed_pairs, pair_id)
+      else
+        MapSet.put(reversed_pairs, pair_id)
+      end
+
+    {:noreply, assign(socket, :reversed_pairs, next_reversed_pairs)}
+  end
+
+  def handle_event("toggle_path_direction", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("toggle_connectivity_entrance", %{"entrance_id" => entrance_id}, socket) do
+    {:noreply, toggle_mapset_assign(socket, :expanded_entrances, entrance_id)}
+  end
+
+  def handle_event("toggle_connectivity_entrance", _params, socket), do: {:noreply, socket}
+
+  @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app
@@ -129,16 +156,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
             methodology_mode={Map.get(@methodology_by_section, "data_integrity", false)}
           />
 
-          <.accessibility_section
-            section={find_section(@report, "accessibility")}
-            methodology_mode={Map.get(@methodology_by_section, "accessibility", false)}
-          />
-
           <.entrance_platform_connectivity_section
             section={find_section(@report, "entrance_platform_connectivity")}
             methodology_mode={
               Map.get(@methodology_by_section, "entrance_platform_connectivity", false)
             }
+            reversed_pairs={@reversed_pairs}
+            expanded_entrances={@expanded_entrances}
+          />
+
+          <.accessibility_section
+            section={find_section(@report, "accessibility")}
+            methodology_mode={Map.get(@methodology_by_section, "accessibility", false)}
           />
 
           <.inventory_section section={find_section(@report, "inventory")} />
@@ -200,5 +229,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
       "entrance_platform_connectivity" => false,
       "attribute_completeness" => false
     }
+  end
+
+  defp toggle_mapset_assign(socket, key, value) do
+    current = Map.get(socket.assigns, key, MapSet.new())
+
+    next =
+      if MapSet.member?(current, value) do
+        MapSet.delete(current, value)
+      else
+        MapSet.put(current, value)
+      end
+
+    assign(socket, key, next)
   end
 end

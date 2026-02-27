@@ -6,7 +6,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
   rendered in LiveViews or reused by other interfaces.
   """
 
-  alias GtfsPlanner.Gtfs.{Pathway, Stop}
+  alias GtfsPlanner.Gtfs.{Pathway, Stop, TraversalCalculator}
 
   @type status :: :pass | :fail | :warn | :info
 
@@ -79,6 +79,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
   def build(%{station: station, child_stops: child_stops, levels: levels, pathways: pathways}) do
     stop_index = index_by_stop_id([station | child_stops])
     level_index = index_levels(levels)
+    pathway_index = pathway_index(pathways)
     node_set = MapSet.new(Enum.map(child_stops, & &1.stop_id))
 
     station_pathways = Enum.filter(pathways, &pathway_touches_nodes?(&1, node_set))
@@ -94,8 +95,14 @@ defmodule GtfsPlanner.Gtfs.StationReport do
         inventory_section(station, child_stops, levels, station_pathways),
         gps_section(station, child_stops),
         data_integrity_section(station, child_stops, undirected, directed, stop_index),
+        entrance_platform_connectivity_section(
+          child_stops,
+          core_pathways,
+          pathway_index,
+          stop_index,
+          level_index
+        ),
         accessibility_section(child_stops, core_pathways, stop_index, level_index),
-        entrance_platform_connectivity_section(child_stops, core_pathways),
         attribute_completeness_section(station_pathways),
         unavailable_section()
       ]
@@ -453,7 +460,13 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     }
   end
 
-  defp entrance_platform_connectivity_section(child_stops, pathways) do
+  defp entrance_platform_connectivity_section(
+         child_stops,
+         pathways,
+         pathway_index,
+         stop_index,
+         level_index
+       ) do
     {entrances, boarding_areas} = entrances_and_boarding_areas(child_stops)
 
     cond do
@@ -483,7 +496,8 @@ defmodule GtfsPlanner.Gtfs.StationReport do
                   entrance_stop_id: entrance.stop_id,
                   platform_stop_id: boarding_area.stop_id,
                   reachable: true,
-                  path: path
+                  path: path,
+                  enriched: enrich_path(path, pathway_index, stop_index, level_index)
                 }
 
               :not_found ->
@@ -491,7 +505,8 @@ defmodule GtfsPlanner.Gtfs.StationReport do
                   entrance_stop_id: entrance.stop_id,
                   platform_stop_id: boarding_area.stop_id,
                   reachable: false,
-                  path: []
+                  path: [],
+                  enriched: nil
                 }
             end
           end
@@ -907,6 +922,158 @@ defmodule GtfsPlanner.Gtfs.StationReport do
   end
 
   defp pathway_id_sort_key(pathway), do: pathway.pathway_id || ""
+
+  defp pathway_index(pathways) do
+    Enum.reduce(pathways, %{}, fn pathway, acc ->
+      Map.put(acc, pathway.pathway_id, pathway)
+    end)
+  end
+
+  defp compute_level_diff(from_stop, to_stop, level_index) do
+    from_level = level_for_stop(from_stop, level_index)
+    to_level = level_for_stop(to_stop, level_index)
+
+    if from_level && to_level && is_number(from_level.level_index) &&
+         is_number(to_level.level_index) do
+      abs(to_level.level_index - from_level.level_index)
+    else
+      nil
+    end
+  end
+
+  defp level_for_stop(nil, _level_index), do: nil
+
+  defp level_for_stop(stop, level_index) do
+    Map.get(level_index, stop.level_id)
+  end
+
+  defp path_segments(path), do: do_path_segments(path, [])
+
+  defp do_path_segments([from_hop, to_hop | rest], acc) do
+    do_path_segments([to_hop | rest], [{from_hop, to_hop} | acc])
+  end
+
+  defp do_path_segments(_path, acc), do: Enum.reverse(acc)
+
+  defp enrich_path([], _pathway_index, _stop_index, _level_index), do: nil
+
+  defp enrich_path(path, pathway_index, stop_index, level_index) do
+    [start_hop | _] = path
+    start_stop = Map.get(stop_index, start_hop.stop_id)
+
+    start_enriched =
+      build_enriched_hop(
+        start_hop,
+        start_stop,
+        nil,
+        %{time_seconds: 0.0, distance_meters: nil, calculation_method: :origin},
+        nil,
+        level_index
+      )
+
+    enriched_hops =
+      path_segments(path)
+      |> Enum.map(fn {from_hop, to_hop} ->
+        pathway = Map.get(pathway_index, to_hop.pathway_id)
+        to_stop = Map.get(stop_index, to_hop.stop_id)
+        from_stop = Map.get(stop_index, from_hop.stop_id)
+        level_diff = compute_level_diff(from_stop, to_stop, level_index)
+        traversal = if pathway, do: TraversalCalculator.calculate(pathway, level_diff), else: nil
+        build_enriched_hop(to_hop, to_stop, pathway, traversal, level_diff, level_index)
+      end)
+
+    hops = [start_enriched | enriched_hops]
+    pathway_hops = Enum.filter(hops, &present?(&1.pathway_id))
+    totals = path_totals(hops, pathway_hops)
+
+    %{
+      hops: hops,
+      totals: totals,
+      all_bidirectional: Enum.all?(pathway_hops, & &1.is_bidirectional)
+    }
+  end
+
+  defp build_enriched_hop(hop, stop, pathway, traversal, level_diff, level_index) do
+    stop_level = if stop, do: stop.level_id, else: nil
+
+    level_data =
+      case stop do
+        nil -> nil
+        _ -> level_for_stop(stop, level_index)
+      end
+
+    %{
+      stop_id: hop.stop_id,
+      stop_name: stop && stop.stop_name,
+      location_type: stop && normalize_location_type(stop.location_type),
+      location_type_label:
+        stop && Stop.location_type_label(normalize_location_type(stop.location_type)),
+      level_id: stop_level,
+      level_name: level_data && level_data.level_name,
+      level_index: level_data && level_data.level_index,
+      pathway_id: hop.pathway_id,
+      pathway_mode: hop.pathway_mode,
+      pathway_mode_label:
+        if(is_integer(hop.pathway_mode), do: Pathway.mode_label(hop.pathway_mode), else: nil),
+      is_bidirectional: pathway && pathway.is_bidirectional,
+      signposted_as: pathway && pathway.signposted_as,
+      reversed_signposted_as: pathway && pathway.reversed_signposted_as,
+      level_diff: level_diff,
+      time_seconds: traversal && traversal.time_seconds,
+      distance_meters: traversal && traversal.distance_meters,
+      calculation_method: traversal && traversal.calculation_method
+    }
+  end
+
+  defp path_totals(hops, pathway_hops) do
+    segment_count = max(length(hops) - 1, 0)
+
+    time_seconds =
+      Enum.reduce(pathway_hops, 0.0, fn hop, acc ->
+        acc + if(is_number(hop.time_seconds), do: hop.time_seconds, else: 0.0)
+      end)
+
+    distance_meters =
+      Enum.reduce(pathway_hops, 0.0, fn hop, acc ->
+        acc + if(is_number(hop.distance_meters), do: hop.distance_meters, else: 0.0)
+      end)
+
+    level_changes =
+      path_segments(hops)
+      |> Enum.count(fn {from_hop, to_hop} ->
+        is_number(from_hop.level_index) and is_number(to_hop.level_index) and
+          from_hop.level_index != to_hop.level_index
+      end)
+
+    unique_levels =
+      hops
+      |> Enum.map(& &1.level_id)
+      |> Enum.filter(&present?/1)
+      |> Enum.uniq()
+      |> length()
+
+    signposted_segments = Enum.count(pathway_hops, &present?(&1.signposted_as))
+    has_stairs = Enum.any?(pathway_hops, &(&1.pathway_mode == 2))
+    has_escalator = Enum.any?(pathway_hops, &(&1.pathway_mode == 4))
+    has_elevator = Enum.any?(pathway_hops, &(&1.pathway_mode == 5))
+
+    %{
+      time_seconds: Float.round(time_seconds, 2),
+      distance_meters: Float.round(distance_meters, 2),
+      segment_count: segment_count,
+      level_changes: level_changes,
+      unique_levels: unique_levels,
+      signposted_segments: signposted_segments,
+      has_stairs: has_stairs,
+      has_escalator: has_escalator,
+      has_elevator: has_elevator,
+      effective_speed:
+        if(time_seconds > 0 and distance_meters > 0,
+          do: Float.round(distance_meters / time_seconds, 2),
+          else: nil
+        )
+    }
+  end
 
   defp build_undirected_adjacency(pathways) do
     Enum.reduce(pathways, %{}, fn pathway, acc ->
