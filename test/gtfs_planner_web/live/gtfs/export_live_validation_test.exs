@@ -1895,6 +1895,113 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert render(view) =~ "No pathways tests are configured for this GTFS version."
     end
 
+    test "renders graph build diagnostics for OTP runtime failure", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_runner_module =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_runner_module)
+
+      previous_runner_test_pid =
+        Application.get_env(:gtfs_planner, :pathways_runner_test_pid)
+
+      previous_failure_reason =
+        Application.get_env(:gtfs_planner, :pathways_runner_failure_reason)
+
+      temp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "pathways-build-log-#{System.unique_integer([:positive])}"
+        )
+
+      build_log_path = Path.join(temp_dir, "build.log")
+
+      File.mkdir_p!(temp_dir)
+
+      File.write!(
+        build_log_path,
+        """
+        java.lang.NullPointerException
+        at org.opentripplanner.transit.model.site.BoardingArea.<init>(BoardingArea.java:17)
+        """
+      )
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_trip_test_runner_module,
+        PathwaysRunnerFailReasonMock
+      )
+
+      Application.put_env(:gtfs_planner, :pathways_runner_test_pid, self())
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_runner_failure_reason,
+        %{
+          reason: :otp_runtime_failed,
+          issues: [
+            %{
+              code: :build_failed,
+              details: %{
+                reason_code: :build_command_failed,
+                exit_status: 255,
+                graph_path: "/tmp/Graph.obj",
+                build_log_path: build_log_path
+              }
+            }
+          ]
+        }
+      )
+
+      on_exit(fn ->
+        if previous_runner_module do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_module,
+            previous_runner_module
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_module)
+        end
+
+        if previous_runner_test_pid do
+          Application.put_env(:gtfs_planner, :pathways_runner_test_pid, previous_runner_test_pid)
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_test_pid)
+        end
+
+        if previous_failure_reason do
+          Application.put_env(:gtfs_planner, :pathways_runner_failure_reason, previous_failure_reason)
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_failure_reason)
+        end
+
+        File.rm_rf(temp_dir)
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      assert_receive {:pathways_runner_failed, run_id, %{reason: :otp_runtime_failed}}, 500
+
+      Process.sleep(300)
+
+      run = Validations.get_validation_run!(run_id)
+      assert run.status == "failed"
+
+      html = render(view)
+      assert html =~ "Pathways validation failed during OTP runtime."
+      assert html =~ "OTP graph build command failed"
+      assert html =~ "exit status 255"
+      assert html =~ "BoardingArea NullPointerException"
+      assert html =~ build_log_path
+    end
+
     test "pathways start delegates to context entrypoint runner path", %{
       conn: conn,
       user: user,
