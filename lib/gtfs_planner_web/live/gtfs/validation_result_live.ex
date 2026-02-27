@@ -5,6 +5,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   alias GtfsPlannerWeb.Layouts
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
+  @pathways_trip_test_poll_interval_ms 250
+
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -13,7 +15,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
      socket
      |> assign(:page_title, "Validation Results")
      |> assign(:user_roles, user_roles)
-     |> assign(:expanded_codes, MapSet.new())}
+     |> assign(:expanded_codes, MapSet.new())
+     |> assign(:pathways_case_results, [])}
   end
 
   @impl Phoenix.LiveView
@@ -32,11 +35,41 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
       validation_runs_history =
         Validations.list_validation_runs(organization_id, gtfs_version_id)
 
+      {run, pathways_case_results} = load_pathways_render_data(run)
+
       {:noreply,
        socket
        |> assign(:validation_id, validation_id)
        |> assign(:run, run)
-       |> stream(:validation_runs, validation_runs_history)}
+       |> assign(:pathways_case_results, pathways_case_results)
+       |> stream(:validation_runs, validation_runs_history)
+       |> maybe_schedule_pathways_status_poll(run)}
+    end
+  end
+
+  @impl Phoenix.LiveView
+  def handle_info({:poll_pathways_trip_test_status, validation_run_id}, socket) do
+    if poll_current_pathways_run?(socket, validation_run_id) do
+      case Validations.get_pathways_trip_test_status(validation_run_id) do
+        {:ok, %{status: "started"}} ->
+          schedule_pathways_status_poll(validation_run_id)
+          {:noreply, refresh_pathways_run(socket, validation_run_id)}
+
+        {:ok, %{status: "running"}} ->
+          schedule_pathways_status_poll(validation_run_id)
+          {:noreply, refresh_pathways_run(socket, validation_run_id)}
+
+        {:ok, %{status: "completed"}} ->
+          {:noreply, refresh_pathways_run(socket, validation_run_id)}
+
+        {:ok, %{status: "failed"}} ->
+          {:noreply, refresh_pathways_run(socket, validation_run_id)}
+
+        {:error, _reason} ->
+          {:noreply, socket}
+      end
+    else
+      {:noreply, socket}
     end
   end
 
@@ -150,7 +183,82 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                   </p>
                 </div>
               </div>
-            <% @run.status == "completed" and @run.result_json -> %>
+            <% @run.status == "completed" and not is_nil(@run.result_json) and @run.run_type == "pathways_tests" -> %>
+              <% summary = pathways_summary(@run) %>
+
+              <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6" id="pathways-result-summary">
+                <div class="stats bg-base-100 border border-base-300">
+                  <div class="stat">
+                    <div class="stat-title">Total</div>
+                    <div class="stat-value text-base-content">{summary.total}</div>
+                  </div>
+                </div>
+
+                <div class="stats bg-base-100 border border-base-300">
+                  <div class="stat">
+                    <div class="stat-title">Passed</div>
+                    <div class="stat-value text-success">{summary.passed}</div>
+                  </div>
+                </div>
+
+                <div class="stats bg-base-100 border border-base-300">
+                  <div class="stat">
+                    <div class="stat-title">Failed</div>
+                    <div class="stat-value text-error">{summary.failed}</div>
+                  </div>
+                </div>
+
+                <div class="stats bg-base-100 border border-base-300">
+                  <div class="stat">
+                    <div class="stat-title">Pass Rate</div>
+                    <div class="stat-value text-info">{summary.pass_rate}%</div>
+                  </div>
+                </div>
+              </div>
+
+              <%= if pathways_top_failure_categories(@run) != [] do %>
+                <div class="mt-6" id="pathways-top-failure-categories">
+                  <h3 class="text-sm font-semibold mb-2">Top Failure Categories</h3>
+                  <ul class="space-y-1 text-sm">
+                    <li :for={category <- pathways_top_failure_categories(@run)}>
+                      {category["category"]}: {category["count"]}
+                    </li>
+                  </ul>
+                </div>
+              <% end %>
+
+              <div class="mt-8" id="pathways-case-results">
+                <h3 class="text-sm font-semibold mb-3">Per-Test Results</h3>
+                <div class="overflow-x-auto">
+                  <table class="table table-zebra table-sm">
+                    <thead>
+                      <tr>
+                        <th>Order</th>
+                        <th>Test Case</th>
+                        <th>Status</th>
+                        <th>Failure Category</th>
+                        <th>Duration (s)</th>
+                        <th>Distance (m)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr :for={row <- @pathways_case_results} id={"pathways-case-row-#{row.order_index}"}>
+                        <td>{row.order_index}</td>
+                        <td class="font-mono text-xs">{row.walkability_test_id}</td>
+                        <td>
+                          <span class={["badge badge-sm", case_status_badge_class(row.status)]}>
+                            {String.upcase(to_string(row.status))}
+                          </span>
+                        </td>
+                        <td>{row.failure_category || "-"}</td>
+                        <td>{row.duration_seconds || "-"}</td>
+                        <td>{row.distance_meters || "-"}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            <% @run.status == "completed" and not is_nil(@run.result_json) -> %>
               <%!-- Completed State with Results --%>
               <%!-- Summary Stats --%>
               <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
@@ -462,6 +570,73 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp status_badge_class("completed"), do: "badge-success badge-outline"
   defp status_badge_class("failed"), do: "badge-error"
   defp status_badge_class(_), do: "badge-ghost"
+
+  defp case_status_badge_class("passed"), do: "badge-success"
+  defp case_status_badge_class("failed"), do: "badge-error"
+  defp case_status_badge_class(_), do: "badge-ghost"
+
+  defp pathways_summary(run) do
+    summary = Map.get(run.result_json || %{}, "summary", %{})
+
+    %{
+      total: Map.get(summary, "total", 0),
+      passed: Map.get(summary, "passed", 0),
+      failed: Map.get(summary, "failed", 0),
+      pass_rate: Map.get(summary, "pass_rate", 0.0)
+    }
+  end
+
+  defp pathways_top_failure_categories(run) do
+    Map.get(run.result_json || %{}, "top_failure_categories", [])
+  end
+
+  defp maybe_schedule_pathways_status_poll(socket, %{run_type: "pathways_tests", status: status, id: id})
+       when status in ["started", "running"] do
+    schedule_pathways_status_poll(id)
+    socket
+  end
+
+  defp maybe_schedule_pathways_status_poll(socket, _run), do: socket
+
+  defp poll_current_pathways_run?(socket, validation_run_id) do
+    case socket.assigns[:run] do
+      %{id: ^validation_run_id, run_type: "pathways_tests", status: status}
+      when status in ["started", "running"] ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  defp schedule_pathways_status_poll(validation_run_id) do
+    Process.send_after(
+      self(),
+      {:poll_pathways_trip_test_status, validation_run_id},
+      @pathways_trip_test_poll_interval_ms
+    )
+  end
+
+  defp refresh_pathways_run(socket, validation_run_id) do
+    run = Validations.get_validation_run!(validation_run_id)
+    {run, pathways_case_results} = load_pathways_render_data(run)
+
+    socket
+    |> assign(:run, run)
+    |> assign(:pathways_case_results, pathways_case_results)
+  end
+
+  defp load_pathways_render_data(%{run_type: "pathways_tests", status: "completed"} = run) do
+    case Validations.get_pathways_trip_test_results(run.id) do
+      {:ok, %{result_json: result_json, walkability_test_run_results: case_rows}} ->
+        {%{run | result_json: result_json}, case_rows}
+
+      {:error, _reason} ->
+        {%{run | result_json: nil}, []}
+    end
+  end
+
+  defp load_pathways_render_data(run), do: {run, []}
 
   defp valid_version_for_org?(version_id, organization_id) do
     try do

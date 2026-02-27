@@ -5,12 +5,18 @@ defmodule GtfsPlanner.Validations.ValidationRun do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
+  @run_types ["mobility_data", "pathways_tests"]
+  @statuses ["started", "running", "completed", "failed"]
+
+  @type run_type :: String.t()
+  @type status :: String.t()
+
   @type t :: %__MODULE__{
           id: Ecto.UUID.t(),
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
-          run_type: String.t(),
-          status: String.t(),
+          run_type: run_type(),
+          status: status(),
           errors_count: integer(),
           warnings_count: integer(),
           infos_count: integer(),
@@ -37,6 +43,8 @@ defmodule GtfsPlanner.Validations.ValidationRun do
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
+    has_many :walkability_test_run_results, GtfsPlanner.Validations.WalkabilityTestRunResult,
+      foreign_key: :validation_run_id
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -60,6 +68,8 @@ defmodule GtfsPlanner.Validations.ValidationRun do
       :completed_at
     ])
     |> validate_required([:run_type, :status, :started_at])
+    |> validate_inclusion(:run_type, @run_types)
+    |> validate_inclusion(:status, @statuses)
     |> foreign_key_constraint(:organization_id)
     |> foreign_key_constraint(:gtfs_version_id)
   end

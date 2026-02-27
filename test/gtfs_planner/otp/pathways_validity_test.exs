@@ -541,6 +541,42 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     assert Enum.any?(details.mismatches, &(&1.kind == :expected_max_duration_seconds))
   end
 
+  test "run_in_session/4 normalizes route output with explicit keys when no itinerary exists" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    _stop =
+      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1", stop_lat: 42.36, stop_lon: -71.05})
+
+    walkability_test =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        expected_traversable: false
+      })
+
+    request_fun = fn _graphql_url, _request_opts ->
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{"data" => %{"plan" => %{"itineraries" => []}}}
+       }}
+    end
+
+    assert {:ok, result} =
+             PathwaysValidity.run_in_session(
+               session_fixture(),
+               organization.id,
+               gtfs_version.id,
+               request_fun: request_fun
+             )
+
+    assert [case_result] = result.cases
+    assert case_result.test_case_id == walkability_test.id
+    assert case_result.status == :passed
+    assert case_result.route_output == %{route_exists: false, duration_seconds: nil, distance_meters: nil}
+  end
+
   test "run_in_session/4 emits suite progress with running completed/total and finishing/finished phases" do
     organization = organization_fixture()
     gtfs_version = gtfs_version_fixture(organization.id)

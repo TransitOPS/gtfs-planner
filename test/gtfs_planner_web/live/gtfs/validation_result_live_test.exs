@@ -4,6 +4,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.ValidationsFixtures
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
@@ -206,6 +207,101 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       # Should display success message
       assert html =~ "No validation issues found!"
       assert html =~ "Your GTFS data passed all checks."
+    end
+
+    test "renders pathways report summary for pathways run type", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      walkability_test_1 =
+        walkability_test_fixture(%{organization_id: organization.id, gtfs_version_id: version.id})
+
+      walkability_test_2 =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          stop_id: "stop-2",
+          address: "456 Oak St"
+        })
+
+      {:ok, run} = Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+      run_result = %{
+        suite_meta: %{total_candidates: 2, selected_count: 2, malformed_count: 0},
+        selected_test_case_ids: [walkability_test_1.id, walkability_test_2.id],
+        summary: %{total: 2, passed: 1, failed: 1, query_failure: 1, scoring_failure: 0},
+        cases: [
+          %{
+            test_case_id: walkability_test_1.id,
+            status: :passed,
+            route_output: %{route_exists: true, duration_seconds: 180.0, distance_meters: 320.0},
+            wheelchair_output: %{route_exists: true, duration_seconds: 200.0, distance_meters: 360.0}
+          },
+          %{
+            test_case_id: walkability_test_2.id,
+            status: :failed,
+            failure_category: :query_failure,
+            details: %{reason: :non_2xx_response, status: 500}
+          }
+        ]
+      }
+
+      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 250)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#pathways-result-summary")
+      assert has_element?(view, "#pathways-top-failure-categories")
+      assert has_element?(view, "#pathways-case-results")
+      assert render(view) =~ "Pass Rate"
+      assert render(view) =~ "50.0%"
+      assert render(view) =~ "query_failure: 1"
+      assert has_element?(view, "#pathways-case-row-0", walkability_test_1.id)
+      assert has_element?(view, "#pathways-case-row-1", walkability_test_2.id)
+    end
+
+    test "poll refresh updates pathways run from running to completed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      walkability_test =
+        walkability_test_fixture(%{organization_id: organization.id, gtfs_version_id: version.id})
+
+      {:ok, run} = Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+      {:ok, run} = Validations.mark_pathways_running(run)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "div.badge-info", "RUNNING")
+
+      run_result = %{
+        suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},
+        selected_test_case_ids: [walkability_test.id],
+        summary: %{total: 1, passed: 1, failed: 0, query_failure: 0, scoring_failure: 0},
+        cases: [
+          %{
+            test_case_id: walkability_test.id,
+            status: :passed,
+            route_output: %{route_exists: true, duration_seconds: 95.0, distance_meters: 140.0},
+            wheelchair_output: %{route_exists: true, duration_seconds: 110.0, distance_meters: 160.0}
+          }
+        ]
+      }
+
+      {:ok, _updated_run} = Validations.mark_pathways_completed(run, run_result, 10)
+
+      send(view.pid, {:poll_pathways_trip_test_status, run.id})
+
+      assert has_element?(view, "div.badge-success.badge-outline", "COMPLETED")
+      assert has_element?(view, "#pathways-result-summary")
+      assert has_element?(view, "#pathways-case-row-0", walkability_test.id)
+      refute render(view) =~ "Validation in progress..."
     end
 
     test "history drawer contains links to past validation runs", %{

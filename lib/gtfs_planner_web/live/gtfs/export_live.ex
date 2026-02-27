@@ -6,12 +6,24 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   use GtfsPlannerWeb, :live_view
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Validator
-  alias GtfsPlanner.Otp.PathwaysValidity
   alias GtfsPlanner.Otp.Runtime
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   require Logger
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  @pathways_trip_test_poll_interval_ms 250
+
+  @pathways_failure_messages %{
+    no_walkability_tests: "No pathways tests are configured for this GTFS version.",
+    otp_runtime_already_running:
+      "Another pathways runtime is already active for this organization.",
+    otp_start_failed: "Failed to start OTP runtime.",
+    otp_ready_timeout: "OTP runtime readiness timed out.",
+    otp_stop_failed: "OTP runtime failed while stopping.",
+    query_failure: "Pathways validation failed due to route query errors.",
+    scoring_failure: "Pathways validation failed due to scoring errors."
+  }
 
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
@@ -180,7 +192,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validating, false)
      |> assign(:validation_progress, nil)
      |> assign(:validation_result, nil)
-     |> assign(:validation_error, nil)}
+     |> assign(:validation_error, nil)
+     |> assign(:pathways_prep_error, nil)}
   end
 
   @impl Phoenix.LiveView
@@ -222,6 +235,60 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   @impl Phoenix.LiveView
+  def handle_info({:poll_pathways_trip_test_status, validation_run_id}, socket) do
+    if poll_current_pathways_run?(socket, validation_run_id) do
+      case Validations.get_pathways_trip_test_status(validation_run_id) do
+        {:ok, %{status: "started"}} ->
+          schedule_pathways_status_poll(validation_run_id)
+
+          {:noreply, assign(socket, :validation_progress, pathways_status_progress("started"))}
+
+        {:ok, %{status: "running"}} ->
+          schedule_pathways_status_poll(validation_run_id)
+
+          {:noreply, assign(socket, :validation_progress, pathways_status_progress("running"))}
+
+        {:ok, %{status: "completed"}} ->
+          handle_pathways_trip_test_completed(socket, validation_run_id)
+
+        {:ok, %{status: "failed", error_payload: error_payload}} ->
+          {:noreply,
+           socket
+           |> assign(:pending_mobility_validation, false)
+           |> assign(:validating, false)
+           |> assign(:validation_progress, nil)
+           |> assign(:validation_error, pathways_failure_message(error_payload))}
+
+        {:ok, _status_payload} ->
+          {:noreply,
+           socket
+           |> assign(:pending_mobility_validation, false)
+           |> assign(:validating, false)
+           |> assign(:validation_progress, nil)
+           |> assign(:validation_error, "Pathways validation status was unavailable")}
+
+        {:error, :not_found} ->
+          {:noreply,
+           socket
+           |> assign(:pending_mobility_validation, false)
+           |> assign(:validating, false)
+           |> assign(:validation_progress, nil)
+           |> assign(:validation_error, "Pathways validation run was not found")}
+
+        {:error, :invalid_run_type} ->
+          {:noreply,
+           socket
+           |> assign(:pending_mobility_validation, false)
+           |> assign(:validating, false)
+           |> assign(:validation_progress, nil)
+           |> assign(:validation_error, "Invalid pathways validation run type")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl Phoenix.LiveView
   def handle_info({ref, result}, socket) do
     cond do
       socket.assigns.pathways_prep_task && socket.assigns.pathways_prep_task.ref == ref ->
@@ -230,23 +297,63 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         socket = assign(socket, :pathways_prep_task, nil)
 
         case result do
-          :ok ->
-            if socket.assigns.pending_mobility_validation do
-              run_mobility_data_validation(
-                socket |> assign(:pending_mobility_validation, false),
-                socket.assigns.current_organization.id,
-                socket.assigns.current_gtfs_version.id
-              )
-            else
-              {:noreply,
-               socket
-               |> assign(:pending_mobility_validation, false)
-               |> assign(:validating, false)
-               |> assign(:validation_progress, nil)
-               |> put_flash(
-                 :info,
-                 "Pathways trip test run started. Export preparation complete."
-               )}
+          {:ok, %{run_result: run_result, duration_ms: duration_ms}} ->
+            validation_run = Validations.get_validation_run!(socket.assigns.validation_run_id)
+
+            case Validations.mark_pathways_completed(validation_run, run_result, duration_ms) do
+              {:ok, completed_run} ->
+                persisted_summary =
+                  pathways_summary_from_result_json(completed_run.result_json || %{})
+
+                top_failure_categories =
+                  pathways_top_failure_categories_from_result_json(completed_run.result_json || %{})
+
+                socket =
+                  socket
+                  |> assign(:validation_result, %{
+                    run_type: "pathways_tests",
+                    pathways_summary: persisted_summary,
+                    top_failure_categories: top_failure_categories
+                  })
+                  |> assign(
+                    :recent_validation_runs,
+                    Validations.list_recent_validation_runs(
+                      socket.assigns.current_organization.id,
+                      socket.assigns.current_gtfs_version.id,
+                      5
+                    )
+                  )
+
+                if socket.assigns.pending_mobility_validation do
+                  run_mobility_data_validation(
+                    socket |> assign(:pending_mobility_validation, false),
+                    socket.assigns.current_organization.id,
+                    socket.assigns.current_gtfs_version.id
+                  )
+                else
+                  {:noreply,
+                   socket
+                   |> assign(:pending_mobility_validation, false)
+                   |> assign(:validating, false)
+                   |> assign(:validation_progress, nil)}
+                end
+
+              {:error, reason} ->
+                _ =
+                  maybe_mark_pathways_run_failed(socket, %{
+                    reason: :pathways_persistence_failed,
+                    details: %{error: inspect(reason)}
+                  })
+
+                {:noreply,
+                 socket
+                 |> assign(:pending_mobility_validation, false)
+                 |> assign(:validating, false)
+                 |> assign(:validation_progress, nil)
+                 |> assign(
+                   :validation_error,
+                   "Pathways validation persistence failed: #{inspect(reason)}"
+                 )}
             end
 
           {:error, {:pathways_export_prep_failed, issues}} ->
@@ -258,6 +365,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               issue_codes: Enum.map(issues, & &1.code),
               details: issues
             )
+
+            _ =
+              maybe_mark_pathways_run_failed(socket, %{
+                reason: :pathways_export_prep_failed,
+                issues: issues
+              })
 
             {:noreply,
              socket
@@ -311,6 +424,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                      socket.assigns.current_gtfs_version.id
                    ) do
                 :ok ->
+                  :ok
+
+                {:ok, _cleanup_result} ->
                   :ok
 
                 {:error, reason} ->
@@ -380,6 +496,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           phase: :pathways_prep,
           reason: inspect(reason)
         )
+
+        _ =
+          maybe_mark_pathways_run_failed(socket, %{
+            reason: :task_crashed,
+            details: %{reason: inspect(reason)}
+          })
 
         {:noreply,
          socket
@@ -610,26 +732,62 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               </div>
             <% @validation_result -> %>
               <div class="space-y-6">
-                <div class="grid grid-cols-3 gap-2">
-                  <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                    <div class="stat-title text-[10px] uppercase opacity-60">Errors</div>
-                    <div class="stat-value text-sm text-error">
-                      {@validation_result.summary.errors}
+                <%= if @validation_result[:run_type] == "pathways_tests" do %>
+                  <div class="grid grid-cols-2 gap-2" id="pathways-summary-metrics">
+                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                      <div class="stat-title text-[10px] uppercase opacity-60">Total</div>
+                      <div class="stat-value text-sm">{@validation_result.pathways_summary.total}</div>
+                    </div>
+                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                      <div class="stat-title text-[10px] uppercase opacity-60">Passed</div>
+                      <div class="stat-value text-sm text-success">
+                        {@validation_result.pathways_summary.passed}
+                      </div>
+                    </div>
+                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                      <div class="stat-title text-[10px] uppercase opacity-60">Failed</div>
+                      <div class="stat-value text-sm text-error">
+                        {@validation_result.pathways_summary.failed}
+                      </div>
+                    </div>
+                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                      <div class="stat-title text-[10px] uppercase opacity-60">Pass Rate</div>
+                      <div class="stat-value text-sm">{@validation_result.pathways_summary.pass_rate}%</div>
                     </div>
                   </div>
-                  <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                    <div class="stat-title text-[10px] uppercase opacity-60">Warnings</div>
-                    <div class="stat-value text-sm text-warning">
-                      {@validation_result.summary.warnings}
+
+                  <%= if @validation_result.top_failure_categories != [] do %>
+                    <div class="space-y-2" id="pathways-top-failure-categories">
+                      <h3 class="text-xs font-semibold uppercase opacity-60">Top Failure Categories</h3>
+                      <ul class="space-y-1 text-sm">
+                        <li :for={category <- @validation_result.top_failure_categories}>
+                          {category.category}: {category.count}
+                        </li>
+                      </ul>
+                    </div>
+                  <% end %>
+                <% else %>
+                  <div class="grid grid-cols-3 gap-2">
+                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                      <div class="stat-title text-[10px] uppercase opacity-60">Errors</div>
+                      <div class="stat-value text-sm text-error">
+                        {@validation_result.summary.errors}
+                      </div>
+                    </div>
+                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                      <div class="stat-title text-[10px] uppercase opacity-60">Warnings</div>
+                      <div class="stat-value text-sm text-warning">
+                        {@validation_result.summary.warnings}
+                      </div>
+                    </div>
+                    <div class="stat p-2 bg-base-200 rounded-lg text-center">
+                      <div class="stat-title text-[10px] uppercase opacity-60">Infos</div>
+                      <div class="stat-value text-sm text-info">
+                        {@validation_result.summary.infos}
+                      </div>
                     </div>
                   </div>
-                  <div class="stat p-2 bg-base-200 rounded-lg text-center">
-                    <div class="stat-title text-[10px] uppercase opacity-60">Infos</div>
-                    <div class="stat-value text-sm text-info">
-                      {@validation_result.summary.infos}
-                    </div>
-                  </div>
-                </div>
+                <% end %>
 
                 <div class="flex flex-col gap-2">
                   <.link
@@ -800,11 +958,35 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp phase_label({:pathways_prep, {:suite, :finished, _completed, _total, _test_case_id}}),
     do: "Pathways suite finished"
 
+  defp phase_label({:pathways_prep, :running}), do: "Running pathways trip test..."
+
   defp phase_label(_), do: "Preparing..."
 
   defp format_run_type("mobility_data"), do: "MobilityData"
   defp format_run_type("pathways_tests"), do: "Pathways Tests"
   defp format_run_type(type), do: type
+
+  defp pathways_summary_from_result_json(result_json) do
+    summary = Map.get(result_json, "summary", %{})
+
+    %{
+      total: Map.get(summary, "total", 0),
+      passed: Map.get(summary, "passed", 0),
+      failed: Map.get(summary, "failed", 0),
+      pass_rate: Map.get(summary, "pass_rate", 0.0)
+    }
+  end
+
+  defp pathways_top_failure_categories_from_result_json(result_json) do
+    result_json
+    |> Map.get("top_failure_categories", [])
+    |> Enum.map(fn category ->
+      %{
+        category: Map.get(category, "category", "unknown"),
+        count: Map.get(category, "count", 0)
+      }
+    end)
+  end
 
   defp run_mobility_data_validation(socket, organization_id, gtfs_version_id) do
     case Validations.create_validation_run(organization_id, gtfs_version_id, "mobility_data") do
@@ -837,66 +1019,48 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp start_pathways_prep(socket, selected_validations, organization_id, gtfs_version_id) do
-    parent = self()
     pending_mobility_validation = Enum.member?(selected_validations, :mobility_data)
-    runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module, Runtime)
 
-    pathways_validity_module =
-      Application.get_env(:gtfs_planner, :otp_pathways_validity_module, PathwaysValidity)
+    start_new_pathways_prep(socket, pending_mobility_validation, organization_id, gtfs_version_id)
+  end
 
-    task =
-      Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-        status_callback = fn payload -> send(parent, {:pathways_prep_progress, payload}) end
+  defp start_new_pathways_prep(
+         socket,
+         pending_mobility_validation,
+         organization_id,
+         gtfs_version_id
+       ) do
+    case Validations.start_pathways_trip_test(organization_id, gtfs_version_id) do
+      {:ok, run} ->
+        send(self(), {:poll_pathways_trip_test_status, run.id})
 
-        callback = fn session ->
-          case pathways_validity_module.run_in_session(
-                 session,
-                 organization_id,
-                 gtfs_version_id,
-                 status_callback: status_callback
-               ) do
-            {:ok, _result} -> {:ok, :ok}
-            {:error, reason} -> {:error, reason}
-          end
-        end
+        {:noreply,
+         socket
+         |> assign(:validation_run_id, run.id)
+         |> assign(:pathways_prep_task, nil)
+         |> assign(:pending_mobility_validation, pending_mobility_validation)
+         |> assign(:validation_result, nil)
+         |> assign(:validation_error, nil)
+         |> assign(:pathways_prep_error, nil)
+         |> assign(:validating, true)
+         |> assign(:validation_progress, pathways_status_progress(run.status))}
 
-        case runtime_module.run_with_otp(
-               organization_id,
-               gtfs_version_id,
-               callback,
-               status_callback: status_callback,
-               preflight_mode: :lenient,
-               force_rebuild: true
-             ) do
-          {:ok, _runtime} ->
-            :ok
+      {:error, {:pathways_runner_spawn_failed, reason}} ->
+        {:noreply,
+         socket
+         |> assign(:pending_mobility_validation, false)
+         |> assign(:validating, false)
+         |> assign(:validation_progress, nil)
+         |> assign(:validation_error, "Pathways validation could not start: #{inspect(reason)}")}
 
-          {:error, issues} when is_list(issues) ->
-            {:error, {:pathways_export_prep_failed, issues}}
-
-          {:error, reason} ->
-            {:error,
-             {:pathways_export_prep_failed,
-              [
-                %{
-                  code: :otp_runtime_failed,
-                  severity: :error,
-                  message: "Pathways runtime failed",
-                  details: %{reason: inspect(reason)}
-                }
-              ]}}
-        end
-      end)
-
-    {:noreply,
-     socket
-     |> assign(:pathways_prep_task, task)
-     |> assign(:pending_mobility_validation, pending_mobility_validation)
-     |> assign(:validation_result, nil)
-     |> assign(:validation_error, nil)
-     |> assign(:pathways_prep_error, nil)
-     |> assign(:validating, true)
-     |> assign(:validation_progress, %{phase: {:pathways_prep, :cache_check}, percent: 10})}
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:pending_mobility_validation, false)
+         |> assign(:validating, false)
+         |> assign(:validation_progress, nil)
+         |> assign(:validation_error, "Pathways validation could not start: #{inspect(reason)}")}
+    end
   end
 
   defp build_pathways_prep_error(issues) do
@@ -1023,5 +1187,185 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp format_date(datetime) do
     Calendar.strftime(datetime, "%b %d, %Y %I:%M %p")
+  end
+
+  defp poll_current_pathways_run?(socket, validation_run_id) do
+    socket.assigns[:validating] && socket.assigns[:validation_run_id] == validation_run_id
+  end
+
+  defp schedule_pathways_status_poll(validation_run_id) do
+    Process.send_after(
+      self(),
+      {:poll_pathways_trip_test_status, validation_run_id},
+      @pathways_trip_test_poll_interval_ms
+    )
+  end
+
+  defp pathways_status_progress("started"),
+    do: %{phase: {:pathways_prep, :cache_check}, percent: 10}
+
+  defp pathways_status_progress("running"),
+    do: %{phase: {:pathways_prep, :cache_check}, percent: 50}
+
+  defp pathways_status_progress(_status), do: %{phase: :processing, percent: 95}
+
+  defp handle_pathways_trip_test_completed(socket, validation_run_id) do
+    case Validations.get_pathways_trip_test_results(validation_run_id) do
+      {:ok, result_payload} ->
+        persisted_summary = pathways_summary_from_result_json(result_payload.result_json || %{})
+
+        top_failure_categories =
+          pathways_top_failure_categories_from_result_json(result_payload.result_json || %{})
+
+        socket =
+          socket
+          |> assign(:validation_result, %{
+            run_type: "pathways_tests",
+            pathways_summary: persisted_summary,
+            top_failure_categories: top_failure_categories
+          })
+          |> assign(
+            :recent_validation_runs,
+            Validations.list_recent_validation_runs(
+              socket.assigns.current_organization.id,
+              socket.assigns.current_gtfs_version.id,
+              5
+            )
+          )
+
+        if socket.assigns.pending_mobility_validation do
+          run_mobility_data_validation(
+            socket
+            |> assign(:pending_mobility_validation, false)
+            |> assign(:validating, false)
+            |> assign(:validation_progress, nil),
+            socket.assigns.current_organization.id,
+            socket.assigns.current_gtfs_version.id
+          )
+        else
+          {:noreply,
+           socket
+           |> assign(:pending_mobility_validation, false)
+           |> assign(:validating, false)
+           |> assign(:validation_progress, nil)}
+        end
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:pending_mobility_validation, false)
+         |> assign(:validating, false)
+         |> assign(:validation_progress, nil)
+         |> assign(:validation_error, "Pathways validation results unavailable: #{inspect(reason)}")}
+    end
+  end
+
+  defp pathways_failure_message(error_payload) when is_map(error_payload) do
+    error_payload
+    |> pathways_failure_tokens()
+    |> Enum.find_value(&normalize_pathways_failure_code/1)
+    |> case do
+      nil -> "Pathways validation failed"
+      failure_code -> Map.get(@pathways_failure_messages, failure_code, "Pathways validation failed")
+    end
+  end
+
+  defp pathways_failure_message(_error_payload), do: "Pathways validation failed"
+
+  defp pathways_failure_tokens(error_payload) do
+    reason = payload_value(error_payload, :reason)
+
+    details_reason =
+      error_payload
+      |> payload_value(:details)
+      |> payload_value(:reason)
+
+    issue_codes =
+      error_payload
+      |> payload_value(:issues)
+      |> issue_code_tokens()
+
+    [reason, details_reason | issue_codes]
+  end
+
+  defp issue_code_tokens(issues) when is_list(issues),
+    do: Enum.map(issues, &payload_value(&1, :code))
+
+  defp issue_code_tokens(_issues), do: []
+
+  defp payload_value(nil, _key), do: nil
+
+  defp payload_value(payload, key) when is_map(payload),
+    do: Map.get(payload, key) || Map.get(payload, Atom.to_string(key))
+
+  defp payload_value(_payload, _key), do: nil
+
+  defp normalize_pathways_failure_code(:no_walkability_tests), do: :no_walkability_tests
+
+  defp normalize_pathways_failure_code(:otp_runtime_already_running),
+    do: :otp_runtime_already_running
+
+  defp normalize_pathways_failure_code(:otp_start_failed), do: :otp_start_failed
+  defp normalize_pathways_failure_code(:otp_ready_timeout), do: :otp_ready_timeout
+  defp normalize_pathways_failure_code(:otp_stop_failed), do: :otp_stop_failed
+  defp normalize_pathways_failure_code(:query_failure), do: :query_failure
+  defp normalize_pathways_failure_code(:scoring_failure), do: :scoring_failure
+
+  defp normalize_pathways_failure_code(value) when is_binary(value) do
+    case value do
+      "no_walkability_tests" ->
+        :no_walkability_tests
+
+      "otp_runtime_already_running" ->
+        :otp_runtime_already_running
+
+      "otp_start_failed" ->
+        :otp_start_failed
+
+      "otp_ready_timeout" ->
+        :otp_ready_timeout
+
+      "otp_stop_failed" ->
+        :otp_stop_failed
+
+      "query_failure" ->
+        :query_failure
+
+      "scoring_failure" ->
+        :scoring_failure
+
+      _other ->
+        normalize_pathways_failure_code_from_text(value)
+    end
+  end
+
+  defp normalize_pathways_failure_code(_value), do: nil
+
+  defp normalize_pathways_failure_code_from_text(value) when is_binary(value) do
+    cond do
+      String.contains?(value, "no_walkability_tests") -> :no_walkability_tests
+      String.contains?(value, "otp_runtime_already_running") -> :otp_runtime_already_running
+      String.contains?(value, "otp_start_failed") -> :otp_start_failed
+      String.contains?(value, "otp_ready_timeout") -> :otp_ready_timeout
+      String.contains?(value, "otp_stop_failed") -> :otp_stop_failed
+      String.contains?(value, "query_failure") -> :query_failure
+      String.contains?(value, "scoring_failure") -> :scoring_failure
+      true -> nil
+    end
+  end
+
+  defp maybe_mark_pathways_run_failed(socket, reason) do
+    case socket.assigns[:validation_run_id] do
+      nil ->
+        :ok
+
+      validation_run_id ->
+        validation_run_id
+        |> Validations.get_validation_run()
+        |> case do
+          nil -> :ok
+          run -> Validations.mark_pathways_failed(run, reason)
+        end
+    end
   end
 end
