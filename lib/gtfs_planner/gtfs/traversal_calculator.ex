@@ -28,6 +28,7 @@ defmodule GtfsPlanner.Gtfs.TraversalCalculator do
     traversal_time = normalize_number(pathway.traversal_time)
     length_meters = normalize_number(pathway.length)
     stair_count = normalize_number(pathway.stair_count)
+    stair_count_abs = abs_or_nil(stair_count)
 
     cond do
       positive?(traversal_time) ->
@@ -44,8 +45,8 @@ defmodule GtfsPlanner.Gtfs.TraversalCalculator do
           calculation_method: :length_walk_speed
         }
 
-      positive?(stair_count) ->
-        distance_meters = stair_count * @stair_step_meters
+      positive?(stair_count_abs) ->
+        distance_meters = stair_count_abs * @stair_step_meters
 
         %{
           time_seconds: distance_meters / @walk_speed,
@@ -112,6 +113,9 @@ defmodule GtfsPlanner.Gtfs.TraversalCalculator do
 
   defp positive_or_nil(value) when is_number(value) and value > 0, do: value
   defp positive_or_nil(_), do: nil
+
+  defp abs_or_nil(value) when is_number(value), do: abs(value)
+  defp abs_or_nil(_), do: nil
 
   defp normalize_number(%Decimal{} = value), do: Decimal.to_float(value)
   defp normalize_number(value) when is_integer(value), do: value * 1.0

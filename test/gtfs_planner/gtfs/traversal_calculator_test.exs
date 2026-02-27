@@ -35,6 +35,15 @@ defmodule GtfsPlanner.Gtfs.TraversalCalculatorTest do
       assert distance_meters > 0
     end
 
+    test "uses absolute stair_count for descending stairs fallback" do
+      pathway = %Pathway{pathway_mode: 2, traversal_time: nil, length: nil, stair_count: -20}
+
+      assert %{calculation_method: :stair_count_estimate, distance_meters: distance_meters} =
+               TraversalCalculator.calculate(pathway, nil)
+
+      assert distance_meters > 0
+    end
+
     test "normalizes decimal and integer inputs" do
       pathway = %Pathway{pathway_mode: 1, traversal_time: nil, length: Decimal.new("7.25")}
 
