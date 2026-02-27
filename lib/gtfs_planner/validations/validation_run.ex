@@ -43,6 +43,8 @@ defmodule GtfsPlanner.Validations.ValidationRun do
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
+    has_many :walkability_test_run_results, GtfsPlanner.Validations.WalkabilityTestRunResult,
+      foreign_key: :validation_run_id
 
     has_many :walkability_test_run_results, GtfsPlanner.Validations.WalkabilityTestRunResult,
       foreign_key: :validation_run_id

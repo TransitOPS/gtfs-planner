@@ -1391,9 +1391,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp start_pathways_prep(socket, selected_validations, organization_id, gtfs_version_id) do
-    parent = self()
     pending_mobility_validation = Enum.member?(selected_validations, :mobility_data)
-    runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module, Runtime)
 
     start_new_pathways_prep(socket, pending_mobility_validation, organization_id, gtfs_version_id)
   end

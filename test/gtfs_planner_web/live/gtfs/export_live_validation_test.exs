@@ -190,17 +190,28 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
   defmodule RuntimeFinishedSuitePhaseMock do
     def run_with_otp(_organization_id, _gtfs_version_id, callback, opts) do
-      status_callback = Keyword.fetch!(opts, :status_callback)
+      case opts[:status_callback] do
+        status_callback when is_function(status_callback, 1) ->
+          status_callback.(%{scope: :gtfs, phase: :cache_check})
+          status_callback.(%{scope: :graph, phase: :building})
+          status_callback.(%{scope: :graph, phase: :done})
+          status_callback.(%{scope: :otp, phase: :ready})
 
-      status_callback.(%{scope: :gtfs, phase: :cache_check})
-      status_callback.(%{scope: :graph, phase: :building})
-      status_callback.(%{scope: :graph, phase: :done})
-      status_callback.(%{scope: :otp, phase: :ready})
-      status_callback.(%{scope: :suite, phase: :running, completed: 0, total: 1, test_case_id: "case-1"})
-      status_callback.(%{scope: :suite, phase: :finishing, completed: 1, total: 1})
-      status_callback.(%{scope: :suite, phase: :finished, completed: 1, total: 1})
+          status_callback.(%{
+            scope: :suite,
+            phase: :running,
+            completed: 0,
+            total: 1,
+            test_case_id: "case-1"
+          })
 
-      Process.sleep(120)
+          status_callback.(%{scope: :suite, phase: :finishing, completed: 1, total: 1})
+          status_callback.(%{scope: :suite, phase: :finished, completed: 1, total: 1})
+          Process.sleep(120)
+
+        _other ->
+          Process.sleep(120)
+      end
 
       callback.(%Session{
         command: "java",
@@ -860,7 +871,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert html =~ "Failed to start OTP runtime." or html =~ "OTP pathways build failed"
     end
 
-    test "pathways suite phase progress is consumed and rendered", %{
+    test "pathways run start shows initial progress label", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -872,13 +883,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(100)
+      Process.sleep(400)
 
-      html = render(view)
-      assert html =~ "Running pathways suite"
+      assert has_element?(view, "progress.progress") || has_element?(view, "#pathways-summary-metrics")
     end
 
-    test "pathways suite finished phase is consumed and rendered", %{
+    test "pathways run completes in persistence when runtime succeeds", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -892,10 +902,84 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(50)
+      Process.sleep(250)
+
+      [latest_run | _rest] = Validations.list_recent_validation_runs(organization.id, version.id, 5)
+      assert latest_run.run_type == "pathways_tests"
+      assert latest_run.status == "completed"
+    end
+
+    test "pathways run persists summary metrics", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      Process.sleep(250)
+
+      [latest_run | _rest] = Validations.list_recent_validation_runs(organization.id, version.id, 5)
+      assert latest_run.run_type == "pathways_tests"
+      assert latest_run.status == "completed"
+      assert latest_run.result_json["summary"]["total"] == 3
+      assert latest_run.result_json["summary"]["passed"] == 2
+      assert latest_run.result_json["summary"]["failed"] == 1
+      assert latest_run.result_json["summary"]["query_failure"] == 1
+    end
+
+    test "pathways run transitions from status polling to persisted summary rendering", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      Process.sleep(600)
+
+      assert has_element?(view, "#pathways-summary-metrics")
+      assert has_element?(view, "a", "View Full Results")
 
       html = render(view)
-      assert html =~ "Pathways suite finished"
+      assert html =~ "Total"
+      assert html =~ "3"
+      assert html =~ "Passed"
+      assert html =~ "2"
+      assert html =~ "Failed"
+      assert html =~ "1"
+    end
+
+    test "pathways validation run is persisted as failed when prep fails", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      Application.put_env(:gtfs_planner, :otp_runtime_module, RuntimeFailMock)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      Process.sleep(600)
+
+      [latest_run | _rest] = Validations.list_recent_validation_runs(organization.id, version.id, 5)
+      assert latest_run.run_type == "pathways_tests"
+      assert latest_run.status == "failed"
+      assert latest_run.error_details =~ "pathways_tests"
+      assert latest_run.error_details =~ "otp_start_failed"
+      assert render(view) =~ "Failed to start OTP runtime."
     end
 
     test "uses configured runtime module for pathways prep failures", %{
@@ -1738,6 +1822,195 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       started_run = Validations.get_validation_run!(run_id)
       assert started_run.run_type == "pathways_tests"
       assert started_run.status in ["running", "failed"]
+      refute started_run.id == completed_run.id
+    end
+
+    test "renders structured pathways failure message from failure reason", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_runner_module =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_runner_module)
+
+      previous_runner_test_pid =
+        Application.get_env(:gtfs_planner, :pathways_runner_test_pid)
+
+      previous_failure_reason =
+        Application.get_env(:gtfs_planner, :pathways_runner_failure_reason)
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_trip_test_runner_module,
+        PathwaysRunnerFailReasonMock
+      )
+
+      Application.put_env(:gtfs_planner, :pathways_runner_test_pid, self())
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_runner_failure_reason,
+        %{reason: :no_walkability_tests, details: %{source: :suite}}
+      )
+
+      on_exit(fn ->
+        if previous_runner_module do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_module,
+            previous_runner_module
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_module)
+        end
+
+        if previous_runner_test_pid do
+          Application.put_env(:gtfs_planner, :pathways_runner_test_pid, previous_runner_test_pid)
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_test_pid)
+        end
+
+        if previous_failure_reason do
+          Application.put_env(:gtfs_planner, :pathways_runner_failure_reason, previous_failure_reason)
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_failure_reason)
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      assert_receive {:pathways_runner_failed, run_id, %{reason: :no_walkability_tests}}, 500
+
+      Process.sleep(300)
+
+      run = Validations.get_validation_run!(run_id)
+      assert run.status == "failed"
+      assert run.error_details =~ "no_walkability_tests"
+
+      assert render(view) =~ "No pathways tests are configured for this GTFS version."
+    end
+
+    test "pathways start delegates to context entrypoint runner path", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module)
+
+      previous_runner_module =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_runner_module)
+
+      previous_runner_test_pid =
+        Application.get_env(:gtfs_planner, :pathways_runner_test_pid)
+
+      Application.put_env(:gtfs_planner, :otp_runtime_module, RuntimeShouldNotBeCalledMock)
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_trip_test_runner_module,
+        PathwaysRunnerNotifyMock
+      )
+
+      Application.put_env(:gtfs_planner, :pathways_runner_test_pid, self())
+
+      on_exit(fn ->
+        if previous_runtime_module do
+          Application.put_env(:gtfs_planner, :otp_runtime_module, previous_runtime_module)
+        else
+          Application.delete_env(:gtfs_planner, :otp_runtime_module)
+        end
+
+        if previous_runner_module do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_module,
+            previous_runner_module
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_module)
+        end
+
+        if previous_runner_test_pid do
+          Application.put_env(:gtfs_planner, :pathways_runner_test_pid, previous_runner_test_pid)
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_test_pid)
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      assert_receive {:pathways_runner_invoked, run_id, org_id, version_id}, 500
+      assert org_id == organization.id
+      assert version_id == version.id
+
+      run = Validations.get_validation_run!(run_id)
+      assert run.run_type == "pathways_tests"
+      assert run.status == "running"
+    end
+
+    test "starts a new pathways run even when a completed run exists", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_runner_module =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_runner_module)
+
+      previous_runner_test_pid =
+        Application.get_env(:gtfs_planner, :pathways_runner_test_pid)
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_trip_test_runner_module,
+        PathwaysRunnerNotifyMock
+      )
+
+      Application.put_env(:gtfs_planner, :pathways_runner_test_pid, self())
+
+      on_exit(fn ->
+        if previous_runner_module do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_module,
+            previous_runner_module
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_module)
+        end
+
+        if previous_runner_test_pid do
+          Application.put_env(:gtfs_planner, :pathways_runner_test_pid, previous_runner_test_pid)
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_test_pid)
+        end
+      end)
+
+      completed_run = completed_pathways_run_fixture(organization.id, version.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      assert_receive {:pathways_runner_invoked, run_id, org_id, version_id}, 500
+      assert org_id == organization.id
+      assert version_id == version.id
+
+      started_run = Validations.get_validation_run!(run_id)
+      assert started_run.run_type == "pathways_tests"
+      assert started_run.status == "running"
       refute started_run.id == completed_run.id
     end
 
