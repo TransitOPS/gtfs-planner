@@ -156,11 +156,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
             methodology_mode={Map.get(@methodology_by_section, "data_integrity", false)}
           />
 
-          <.accessibility_section
-            section={find_section(@report, "accessibility")}
-            methodology_mode={Map.get(@methodology_by_section, "accessibility", false)}
-          />
-
           <.entrance_platform_connectivity_section
             section={find_section(@report, "entrance_platform_connectivity")}
             methodology_mode={
@@ -168,6 +163,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
             }
             reversed_pairs={@reversed_pairs}
             expanded_entrances={@expanded_entrances}
+          />
+
+          <.accessibility_section
+            section={find_section(@report, "accessibility")}
+            methodology_mode={Map.get(@methodology_by_section, "accessibility", false)}
           />
 
           <.inventory_section section={find_section(@report, "inventory")} />
