@@ -7,6 +7,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   @pathways_trip_test_poll_interval_ms 250
 
+  @pathways_criteria_overview_definitions [
+    %{kind: "expected_traversable", label: "Traversable"},
+    %{kind: "duration_seconds_range", label: "Duration range"},
+    %{kind: "distance_meters_range", label: "Distance range"},
+    %{kind: "expected_wheelchair_accessible", label: "Wheelchair accessible"}
+  ]
+
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -184,56 +191,30 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                 </div>
               </div>
             <% @run.status == "completed" and not is_nil(@run.result_json) and @run.run_type == "pathways_tests" -> %>
-              <% summary = pathways_summary(@run) %>
+              <% pathways_trip_overview = pathways_trip_overview(@pathways_case_results) %>
+              <% pathways_case_criteria_checks =
+                pathways_case_criteria_checks(@pathways_case_results) %>
+              <% pathways_criteria_overview_rows = pathways_criteria_overview(@pathways_case_results) %>
 
-              <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6" id="pathways-result-summary">
-                <div class="stats bg-base-100 border border-base-300">
-                  <div class="stat">
-                    <div class="stat-title">Total</div>
-                    <div class="stat-value text-base-content">{summary.total}</div>
-                  </div>
+              <.pathways_trip_visualization_overview_section
+                trip_overview={pathways_trip_overview}
+              />
+
+              <.pathways_criteria_comparison_section
+                criteria_overview_rows={pathways_criteria_overview_rows}
+              />
+
+              <section
+                id="pathways-case-results"
+                class="mt-8 rounded-xl border border-base-content/20 bg-base-100"
+              >
+                <div class="px-4 py-3 border-b border-base-content/15">
+                  <h3 class="text-sm font-semibold">Per-Test Results</h3>
                 </div>
-
-                <div class="stats bg-base-100 border border-base-300">
-                  <div class="stat">
-                    <div class="stat-title">Passed</div>
-                    <div class="stat-value text-success">{summary.passed}</div>
-                  </div>
-                </div>
-
-                <div class="stats bg-base-100 border border-base-300">
-                  <div class="stat">
-                    <div class="stat-title">Failed</div>
-                    <div class="stat-value text-error">{summary.failed}</div>
-                  </div>
-                </div>
-
-                <div class="stats bg-base-100 border border-base-300">
-                  <div class="stat">
-                    <div class="stat-title">Pass Rate</div>
-                    <div class="stat-value text-info">{summary.pass_rate}%</div>
-                  </div>
-                </div>
-              </div>
-
-              <%= if pathways_top_failure_categories(@run) != [] do %>
-                <div class="mt-6" id="pathways-top-failure-categories">
-                  <h3 class="text-sm font-semibold mb-2">Top Failure Categories</h3>
-                  <ul class="space-y-1 text-sm">
-                    <li :for={category <- pathways_top_failure_categories(@run)}>
-                      {category["category"]}: {category["count"]}
-                    </li>
-                  </ul>
-                </div>
-              <% end %>
-
-              <div class="mt-8" id="pathways-case-results">
-                <h3 class="text-sm font-semibold mb-3">Per-Test Results</h3>
                 <div class="overflow-x-auto">
-                  <table class="table table-zebra table-sm">
+                  <table class="table table-sm">
                     <thead>
                       <tr>
-                        <th>Order</th>
                         <th>Test Case</th>
                         <th>Status</th>
                         <th>Issue</th>
@@ -245,12 +226,15 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                         <th>End Time</th>
                       </tr>
                     </thead>
-                    <tbody>
-                      <%= for row <- @pathways_case_results do %>
-                        <% itinerary_step_rows = pathways_itinerary_step_rows(row.itinerary_steps_json) %>
+                    <%= for row <- @pathways_case_results do %>
+                      <% itinerary_step_rows =
+                        pathways_itinerary_step_rows(row.itinerary_steps_json) %>
 
-                        <tr id={"pathways-case-row-#{row.order_index}"}>
-                          <td>{row.order_index}</td>
+                      <tbody
+                        id={"pathways-case-group-#{row.order_index}"}
+                        class="border-t-2 border-base-content/15"
+                      >
+                        <tr id={"pathways-case-row-#{row.order_index}"} class="bg-base-100">
                           <td class="font-mono text-xs">{row.walkability_test_id}</td>
                           <td>
                             <span class={[
@@ -274,7 +258,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                         </tr>
 
                         <tr id={"pathways-case-criteria-row-#{row.order_index}"} class="bg-base-100">
-                          <td colspan="10" class="p-0">
+                          <td colspan="9" class="p-0 border-t border-base-content/10">
                             <details
                               id={"pathways-case-criteria-details-#{row.order_index}"}
                               class="border-t border-base-300"
@@ -284,7 +268,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                               </summary>
 
                               <div class="px-3 pb-3">
-                                <% criteria_checks = pathways_criteria_checks(row) %>
+                                <% criteria_checks =
+                                  Map.get(pathways_case_criteria_checks, row.order_index, []) %>
 
                                 <div class="mb-3" id={"pathways-case-criteria-#{row.order_index}"}>
                                   <%= if criteria_checks == [] do %>
@@ -346,7 +331,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                         </tr>
 
                         <tr id={"pathways-case-itinerary-row-#{row.order_index}"} class="bg-base-100">
-                          <td colspan="10" class="p-0">
+                          <td colspan="9" class="p-0 border-t border-base-content/10">
                             <details
                               id={"pathways-case-itinerary-details-#{row.order_index}"}
                               class="border-t border-base-300"
@@ -377,8 +362,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                                           <th>Relative</th>
                                           <th>Absolute</th>
                                           <th>Distance (m)</th>
-                                          <th>From</th>
-                                          <th>To</th>
                                         </tr>
                                       </thead>
                                       <tbody>
@@ -394,8 +377,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                                           <td>{step.relative_direction}</td>
                                           <td>{step.absolute_direction}</td>
                                           <td>{format_pathways_distance(step.distance_meters)}</td>
-                                          <td>{step.from_name}</td>
-                                          <td>{step.to_name}</td>
                                         </tr>
                                       </tbody>
                                     </table>
@@ -405,11 +386,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                             </details>
                           </td>
                         </tr>
-                      <% end %>
-                    </tbody>
+                      </tbody>
+                    <% end %>
                   </table>
                 </div>
-              </div>
+              </section>
             <% @run.status == "completed" and not is_nil(@run.result_json) -> %>
               <%!-- Completed State with Results --%>
               <%!-- Summary Stats --%>
@@ -707,6 +688,306 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp format_count(count), do: to_string(count)
 
+  defp format_pathways_overview_count(count) when is_integer(count), do: format_count(count)
+  defp format_pathways_overview_count(_count), do: "0"
+
+  defp format_pathways_overview_percentage(value) when is_number(value) do
+    value
+    |> normalize_pathways_numeric_value()
+    |> Float.round(1)
+    |> :erlang.float_to_binary(decimals: 1)
+  end
+
+  defp format_pathways_overview_percentage(_value), do: "0.0"
+
+  attr :criteria_overview_rows, :list, default: []
+
+  def pathways_criteria_comparison_section(assigns) do
+    ~H"""
+    <section
+      id="pathways-criteria-comparison-overview"
+      class="mt-8 rounded-xl border border-base-content/20 bg-base-100"
+    >
+      <div class="px-4 py-3 border-b border-base-content/15">
+        <h3 class="text-sm font-semibold">Criteria Comparison Overview</h3>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="table table-sm">
+          <thead class="text-xs uppercase tracking-wide text-base-content/60">
+            <tr>
+              <th>Criterion</th>
+              <th>Configured</th>
+              <th>Evaluated</th>
+              <th>Pass</th>
+              <th>Fail</th>
+              <th>N/A</th>
+              <th>Pass Rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :if={@criteria_overview_rows == []} id="pathways-criteria-comparison-empty">
+              <td colspan="7" class="text-sm text-base-content/70">
+                No criteria checks available.
+              </td>
+            </tr>
+
+            <tr
+              :for={criterion <- @criteria_overview_rows}
+              id={"pathways-criteria-comparison-row-#{pathways_criteria_overview_kind(criterion)}"}
+            >
+              <th
+                scope="row"
+                id={"pathways-criteria-comparison-label-#{pathways_criteria_overview_kind(criterion)}"}
+              >
+                {Map.get(criterion, :label)}
+              </th>
+              <td
+                id={
+                  "pathways-criteria-comparison-configured-#{pathways_criteria_overview_kind(criterion)}"
+                }
+                class="font-mono tabular-nums"
+              >
+                {format_pathways_overview_count(Map.get(criterion, :configured_count, 0))}
+              </td>
+              <td
+                id={
+                  "pathways-criteria-comparison-evaluated-#{pathways_criteria_overview_kind(criterion)}"
+                }
+                class="font-mono tabular-nums"
+              >
+                {format_pathways_overview_count(Map.get(criterion, :evaluated_count, 0))}
+              </td>
+              <td
+                id={"pathways-criteria-comparison-pass-#{pathways_criteria_overview_kind(criterion)}"}
+                class="font-mono tabular-nums text-success"
+              >
+                {format_pathways_overview_count(Map.get(criterion, :pass_count, 0))}
+              </td>
+              <td
+                id={"pathways-criteria-comparison-fail-#{pathways_criteria_overview_kind(criterion)}"}
+                class="font-mono tabular-nums text-error"
+              >
+                {format_pathways_overview_count(Map.get(criterion, :fail_count, 0))}
+              </td>
+              <td
+                id={
+                  "pathways-criteria-comparison-not-evaluated-#{pathways_criteria_overview_kind(criterion)}"
+                }
+                class="font-mono tabular-nums"
+              >
+                {format_pathways_overview_count(Map.get(criterion, :not_evaluated_count, 0))}
+              </td>
+              <td
+                id={"pathways-criteria-comparison-pass-rate-#{pathways_criteria_overview_kind(criterion)}"}
+                class="font-mono tabular-nums"
+              >
+                {format_pathways_overview_percentage(Map.get(criterion, :pass_rate, 0.0))}%
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    """
+  end
+
+  attr :trip_overview, :map, default: %{}
+
+  def pathways_trip_visualization_overview_section(assigns) do
+    ~H"""
+    <section
+      id="pathways-trip-visualization-overview"
+      class="mt-8 rounded-xl border border-base-content/20 bg-base-100"
+    >
+      <div class="px-4 py-3 border-b border-base-content/15">
+        <h3 class="text-sm font-semibold">Trip Reachability Summary</h3>
+      </div>
+
+      <div class="p-4">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3" id="pathways-trip-visualization-metrics">
+          <div
+            id="pathways-trip-overview-total-tests"
+            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
+          >
+            <div class="text-xs uppercase tracking-wide text-base-content/60">Total Tests</div>
+            <div
+              id="pathways-trip-overview-total-tests-value"
+              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-base-content"
+            >
+              {format_pathways_overview_count(Map.get(@trip_overview, :total_tests, 0))}
+            </div>
+          </div>
+
+          <div
+            id="pathways-trip-overview-pass-count"
+            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
+          >
+            <div class="text-xs uppercase tracking-wide text-base-content/60">Passed</div>
+            <div
+              id="pathways-trip-overview-pass-count-value"
+              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-success"
+            >
+              {format_pathways_overview_count(Map.get(@trip_overview, :pass_count, 0))}
+            </div>
+          </div>
+
+          <div
+            id="pathways-trip-overview-warning-count"
+            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
+          >
+            <div class="text-xs uppercase tracking-wide text-base-content/60">Warnings</div>
+            <div
+              id="pathways-trip-overview-warning-count-value"
+              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-warning"
+            >
+              {format_pathways_overview_count(Map.get(@trip_overview, :warning_count, 0))}
+            </div>
+          </div>
+
+          <div
+            id="pathways-trip-overview-fail-count"
+            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
+          >
+            <div class="text-xs uppercase tracking-wide text-base-content/60">Failed</div>
+            <div
+              id="pathways-trip-overview-fail-count-value"
+              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-error"
+            >
+              {format_pathways_overview_count(Map.get(@trip_overview, :fail_count, 0))}
+            </div>
+          </div>
+        </div>
+
+        <% duration_stats = Map.get(@trip_overview, :duration_seconds, %{}) %>
+        <% distance_stats = Map.get(@trip_overview, :distance_meters, %{}) %>
+
+        <div
+          class="overflow-x-auto border border-base-content/15 bg-base-100 mt-4"
+          id="pathways-trip-visualization-comparison"
+        >
+          <table class="table table-sm">
+            <thead class="text-xs uppercase tracking-wide text-base-content/60">
+              <tr>
+                <th>Metric</th>
+                <th>Available</th>
+                <th>Unavailable</th>
+                <th>Availability</th>
+                <th>Min</th>
+                <th>Max</th>
+                <th>Avg</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr id="pathways-trip-visualization-row-duration-seconds">
+                <th scope="row">Duration (s)</th>
+                <td id="pathways-trip-overview-duration-available" class="font-mono tabular-nums">
+                  {format_pathways_overview_count(Map.get(duration_stats, :available_count, 0))}
+                </td>
+                <td id="pathways-trip-overview-duration-unavailable" class="font-mono tabular-nums">
+                  {format_pathways_overview_count(Map.get(duration_stats, :unavailable_count, 0))}
+                </td>
+                <td
+                  id="pathways-trip-overview-duration-availability-rate"
+                  class="font-mono tabular-nums"
+                >
+                  {format_pathways_overview_percentage(Map.get(duration_stats, :availability_rate, 0.0))}%
+                </td>
+                <td id="pathways-trip-overview-duration-min" class="font-mono tabular-nums">
+                  {format_pathways_criteria_value(Map.get(duration_stats, :min))}
+                </td>
+                <td id="pathways-trip-overview-duration-max" class="font-mono tabular-nums">
+                  {format_pathways_criteria_value(Map.get(duration_stats, :max))}
+                </td>
+                <td id="pathways-trip-overview-duration-average" class="font-mono tabular-nums">
+                  {format_pathways_criteria_value(Map.get(duration_stats, :average))}
+                </td>
+              </tr>
+
+              <tr id="pathways-trip-visualization-row-distance-meters">
+                <th scope="row">Distance (m)</th>
+                <td id="pathways-trip-overview-distance-available" class="font-mono tabular-nums">
+                  {format_pathways_overview_count(Map.get(distance_stats, :available_count, 0))}
+                </td>
+                <td
+                  id="pathways-trip-overview-distance-unavailable"
+                  class="font-mono tabular-nums"
+                >
+                  {format_pathways_overview_count(Map.get(distance_stats, :unavailable_count, 0))}
+                </td>
+                <td
+                  id="pathways-trip-overview-distance-availability-rate"
+                  class="font-mono tabular-nums"
+                >
+                  {format_pathways_overview_percentage(Map.get(distance_stats, :availability_rate, 0.0))}%
+                </td>
+                <td id="pathways-trip-overview-distance-min" class="font-mono tabular-nums">
+                  {format_pathways_criteria_value(Map.get(distance_stats, :min))}
+                </td>
+                <td id="pathways-trip-overview-distance-max" class="font-mono tabular-nums">
+                  {format_pathways_criteria_value(Map.get(distance_stats, :max))}
+                </td>
+                <td id="pathways-trip-overview-distance-average" class="font-mono tabular-nums">
+                  {format_pathways_criteria_value(Map.get(distance_stats, :average))}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3" id="pathways-trip-visualization-strips">
+          <div
+            class="rounded-lg border border-base-content/15 bg-base-100 p-3"
+            id="pathways-trip-availability-strip-duration"
+          >
+            <div class="text-xs font-semibold mb-2">Duration data coverage</div>
+            <progress
+              id="pathways-trip-overview-duration-coverage-progress"
+              class="progress progress-info w-full"
+              value={Map.get(duration_stats, :availability_rate, 0.0)}
+              max="100"
+            >
+            </progress>
+            <div
+              id="pathways-trip-overview-duration-coverage-value"
+              class="text-xs mt-1 font-mono tabular-nums text-base-content/80"
+            >
+              {format_pathways_overview_percentage(Map.get(duration_stats, :availability_rate, 0.0))}%
+            </div>
+          </div>
+
+          <div
+            class="rounded-lg border border-base-content/15 bg-base-100 p-3"
+            id="pathways-trip-availability-strip-distance"
+          >
+            <div class="text-xs font-semibold mb-2">Distance data coverage</div>
+            <progress
+              id="pathways-trip-overview-distance-coverage-progress"
+              class="progress progress-success w-full"
+              value={Map.get(distance_stats, :availability_rate, 0.0)}
+              max="100"
+            >
+            </progress>
+            <div
+              id="pathways-trip-overview-distance-coverage-value"
+              class="text-xs mt-1 font-mono tabular-nums text-base-content/80"
+            >
+              {format_pathways_overview_percentage(Map.get(distance_stats, :availability_rate, 0.0))}%
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+    """
+  end
+
+  defp pathways_criteria_overview_kind(criterion) when is_map(criterion) do
+    criterion
+    |> Map.get(:kind, Map.get(criterion, "kind", "criterion"))
+    |> to_string()
+  end
+
+  defp pathways_criteria_overview_kind(_criterion), do: "criterion"
+
   defp severity_badge_class("error"), do: "badge-error"
   defp severity_badge_class("warning"), do: "badge-warning"
   defp severity_badge_class("info"), do: "badge-info"
@@ -760,7 +1041,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     status = pathways_map_value(details_json, :status)
 
     case {reason, status} do
-      {reason, status} when reason in ["non_2xx_response", :non_2xx_response] and is_integer(status) ->
+      {reason, status}
+      when reason in ["non_2xx_response", :non_2xx_response] and is_integer(status) ->
         "Query failed: OTP returned HTTP #{status}"
 
       {reason, _status} when reason in ["timeout", :timeout] ->
@@ -845,21 +1127,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   end
 
   defp pathways_walkability_test_stop_id(_row), do: nil
-
-  defp pathways_summary(run) do
-    summary = Map.get(run.result_json || %{}, "summary", %{})
-
-    %{
-      total: Map.get(summary, "total", 0),
-      passed: Map.get(summary, "passed", 0),
-      failed: Map.get(summary, "failed", 0),
-      pass_rate: Map.get(summary, "pass_rate", 0.0)
-    }
-  end
-
-  defp pathways_top_failure_categories(run) do
-    Map.get(run.result_json || %{}, "top_failure_categories", [])
-  end
 
   defp format_pathways_time(nil), do: "-"
 
@@ -966,6 +1233,159 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     |> Enum.reject(&is_nil/1)
   end
 
+  defp pathways_case_criteria_checks(pathways_case_results) when is_list(pathways_case_results) do
+    Enum.reduce(pathways_case_results, %{}, fn row, acc ->
+      Map.put(acc, row.order_index, pathways_criteria_checks(row))
+    end)
+  end
+
+  defp pathways_case_criteria_checks(_pathways_case_results), do: %{}
+
+  defp pathways_criteria_overview(pathways_case_results) when is_list(pathways_case_results) do
+    normalized_case_criteria = pathways_normalized_case_criteria(pathways_case_results)
+
+    Enum.map(@pathways_criteria_overview_definitions, fn %{kind: kind, label: label} ->
+      criteria_entries =
+        Enum.map(normalized_case_criteria, fn per_case_criteria ->
+          Map.get(per_case_criteria, kind, %{configured: false, status: :not_configured})
+        end)
+
+      configured_count = Enum.count(criteria_entries, & &1.configured)
+      evaluated_count = Enum.count(criteria_entries, &pathways_evaluated_criterion?/1)
+      pass_count = Enum.count(criteria_entries, &pathways_criterion_with_status?(&1, :pass))
+      fail_count = Enum.count(criteria_entries, &pathways_criterion_with_status?(&1, :fail))
+
+      not_evaluated_count =
+        Enum.count(criteria_entries, &pathways_criterion_with_status?(&1, :not_evaluated))
+
+      %{
+        kind: kind,
+        label: label,
+        configured_count: configured_count,
+        evaluated_count: evaluated_count,
+        pass_count: pass_count,
+        fail_count: fail_count,
+        not_evaluated_count: not_evaluated_count,
+        pass_rate: percentage(pass_count, evaluated_count)
+      }
+    end)
+  end
+
+  defp pathways_criteria_overview(_pathways_case_results), do: []
+
+  defp pathways_normalized_case_criteria(pathways_case_results) do
+    Enum.map(pathways_case_results, fn row ->
+      row
+      |> pathways_criteria_checks()
+      |> Enum.reduce(%{}, fn check, acc ->
+        Map.put(acc, check.kind, %{
+          configured: true,
+          status: check.status,
+          expected: check.expected,
+          actual: check.actual
+        })
+      end)
+    end)
+  end
+
+  defp pathways_evaluated_criterion?(%{configured: true, status: status})
+       when status in [:pass, :fail],
+       do: true
+
+  defp pathways_evaluated_criterion?(_criterion), do: false
+
+  defp pathways_criterion_with_status?(%{configured: true, status: status}, status_to_match),
+    do: status == status_to_match
+
+  defp pathways_criterion_with_status?(_criterion, _status_to_match), do: false
+
+  defp pathways_trip_overview(pathways_case_results) when is_list(pathways_case_results) do
+    status_totals =
+      Enum.reduce(pathways_case_results, %{pass: 0, warning: 0, failed: 0}, fn row, acc ->
+        increment_pathways_trip_status(acc, pathways_case_display_status(row))
+      end)
+
+    total_tests = length(pathways_case_results)
+
+    %{
+      total_tests: total_tests,
+      pass_count: status_totals.pass,
+      warning_count: status_totals.warning,
+      fail_count: status_totals.failed,
+      duration_seconds: pathways_numeric_availability_stats(pathways_case_results, :duration_seconds),
+      distance_meters: pathways_numeric_availability_stats(pathways_case_results, :distance_meters)
+    }
+  end
+
+  defp pathways_trip_overview(_pathways_case_results) do
+    %{
+      total_tests: 0,
+      pass_count: 0,
+      warning_count: 0,
+      fail_count: 0,
+      duration_seconds: pathways_empty_numeric_availability_stats(),
+      distance_meters: pathways_empty_numeric_availability_stats()
+    }
+  end
+
+  defp increment_pathways_trip_status(acc, "pass"), do: Map.update!(acc, :pass, &(&1 + 1))
+  defp increment_pathways_trip_status(acc, "warning"), do: Map.update!(acc, :warning, &(&1 + 1))
+  defp increment_pathways_trip_status(acc, "failed"), do: Map.update!(acc, :failed, &(&1 + 1))
+  defp increment_pathways_trip_status(acc, _status), do: acc
+
+  defp pathways_numeric_availability_stats(pathways_case_results, field) do
+    values =
+      pathways_case_results
+      |> Enum.map(&Map.get(&1, field))
+      |> Enum.filter(&is_number/1)
+      |> Enum.map(&normalize_pathways_numeric_value/1)
+
+    total_count = length(pathways_case_results)
+    available_count = length(values)
+    unavailable_count = total_count - available_count
+
+    summary =
+      case values do
+        [] ->
+          pathways_empty_numeric_availability_stats()
+
+        _ ->
+          %{
+            available_count: available_count,
+            unavailable_count: unavailable_count,
+            availability_rate: percentage(available_count, total_count),
+            min: values |> Enum.min() |> Float.round(1),
+            max: values |> Enum.max() |> Float.round(1),
+            average: values |> Enum.sum() |> Kernel./(available_count) |> Float.round(1)
+          }
+      end
+
+    summary
+  end
+
+  defp pathways_empty_numeric_availability_stats do
+    %{
+      available_count: 0,
+      unavailable_count: 0,
+      availability_rate: 0.0,
+      min: nil,
+      max: nil,
+      average: nil
+    }
+  end
+
+  defp normalize_pathways_numeric_value(value) when is_float(value), do: value
+  defp normalize_pathways_numeric_value(value) when is_integer(value), do: value * 1.0
+
+  defp percentage(_value, 0), do: 0.0
+
+  defp percentage(value, total) do
+    value
+    |> Kernel.*(100)
+    |> Kernel./(total)
+    |> Float.round(1)
+  end
+
   defp criteria_check(_row, _mismatch_map, _kind, _label, nil, _actual), do: nil
 
   defp criteria_check(row, mismatch_map, kind, label, expected, default_actual) do
@@ -973,7 +1393,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
     case {row.failure_category, mismatch} do
       {"query_failure", _} ->
-        %{kind: Atom.to_string(kind), label: label, expected: expected, actual: default_actual, status: :not_evaluated}
+        %{
+          kind: Atom.to_string(kind),
+          label: label,
+          expected: expected,
+          actual: default_actual,
+          status: :not_evaluated
+        }
 
       {_, nil} ->
         %{kind: Atom.to_string(kind), label: label, expected: expected, actual: default_actual, status: :pass}
@@ -989,7 +1415,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     end
   end
 
-  defp pathways_expected_value(%{walkability_test: walkability_test}, field) when is_struct(walkability_test) do
+  defp pathways_expected_value(%{walkability_test: walkability_test}, field)
+       when is_struct(walkability_test) do
     Map.get(walkability_test, field)
   end
 
