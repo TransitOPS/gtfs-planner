@@ -50,6 +50,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_result, nil)
      |> assign(:validation_error, nil)
      |> assign(:pathways_prep_error, nil)
+     |> assign(:recent_validation_display_counts_by_run_id, %{})
      |> assign(:recent_validation_runs, [])}
   end
 
@@ -67,9 +68,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     recent_validation_runs =
       Validations.list_recent_validation_runs(organization_id, gtfs_version_id, 5)
 
+    recent_validation_display_counts_by_run_id =
+      build_recent_validation_display_counts_map(recent_validation_runs)
+
     {:noreply,
      socket
      |> assign(:file_inventory, file_inventory)
+     |> assign(:recent_validation_display_counts_by_run_id, recent_validation_display_counts_by_run_id)
      |> assign(:recent_validation_runs, recent_validation_runs)}
   end
 
@@ -875,6 +880,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   </thead>
                   <tbody>
                     <tr :for={run <- @recent_validation_runs}>
+                      <% display_counts =
+                        Map.get(
+                          @recent_validation_display_counts_by_run_id,
+                          run.id,
+                          recent_validation_display_counts(run)
+                        ) %>
                       <td>
                         <.link
                           navigate={~p"/gtfs/#{@current_gtfs_version.id}/validation/#{run.id}"}
@@ -886,17 +897,32 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                       <td class="text-sm text-base-content/70">
                         {format_date(run.started_at)}
                       </td>
-                      <td class={["text-right", run.errors_count > 0 && "text-error font-medium"]}>
-                        {run.errors_count}
+                      <td
+                        id={"recent-validation-errors-#{run.id}"}
+                        class={[
+                          "text-right",
+                          display_counts.errors > 0 && "text-error font-medium"
+                        ]}
+                      >
+                        {display_counts.errors}
                       </td>
-                      <td class={[
+                      <td
+                        id={"recent-validation-warnings-#{run.id}"}
+                        class={[
                         "text-right",
-                        run.warnings_count > 0 && "text-warning font-medium"
-                      ]}>
-                        {run.warnings_count}
+                        display_counts.warnings > 0 && "text-warning font-medium"
+                        ]}
+                      >
+                        {display_counts.warnings}
                       </td>
-                      <td class={["text-right", run.infos_count > 0 && "text-info font-medium"]}>
-                        {run.infos_count}
+                      <td
+                        id={"recent-validation-infos-#{run.id}"}
+                        class={[
+                        "text-right",
+                        display_counts.infos > 0 && "text-info font-medium"
+                        ]}
+                      >
+                        {display_counts.infos}
                       </td>
                     </tr>
                   </tbody>
@@ -983,6 +1009,115 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp format_run_type("mobility_data"), do: "MobilityData"
   defp format_run_type("pathways_tests"), do: "Pathways Tests"
   defp format_run_type(type), do: type
+
+  defp recent_validation_display_counts(%{run_type: "pathways_tests", result_json: result_json})
+       when is_map(result_json) do
+    summary = Map.get(result_json, "summary", %{})
+
+    %{
+      errors: Map.get(summary, "scoring_failure", 0),
+      warnings: Map.get(summary, "query_failure", 0),
+      infos: Map.get(summary, "passed", 0)
+    }
+  end
+
+  defp recent_validation_display_counts(run) do
+    %{
+      errors: run.errors_count,
+      warnings: run.warnings_count,
+      infos: run.infos_count
+    }
+  end
+
+  defp build_recent_validation_display_counts_map(runs) do
+    runs
+    |> Enum.map(fn run ->
+      {run.id, recent_validation_display_counts_from_source(run)}
+    end)
+    |> Map.new()
+  end
+
+  defp recent_validation_display_counts_from_source(%{run_type: "pathways_tests"} = run) do
+    case Validations.get_pathways_trip_test_results(run.id) do
+      {:ok, %{walkability_test_run_results: walkability_test_run_results}} ->
+        pathways_recent_validation_display_counts(walkability_test_run_results)
+
+      {:error, _reason} ->
+        recent_validation_display_counts(run)
+    end
+  end
+
+  defp recent_validation_display_counts_from_source(run), do: recent_validation_display_counts(run)
+
+  defp pathways_recent_validation_display_counts(walkability_test_run_results)
+       when is_list(walkability_test_run_results) do
+    {errors, warnings} =
+      Enum.reduce(walkability_test_run_results, {0, 0}, fn row, {errors, warnings} ->
+        case pathways_case_display_status_for_recent_row(row) do
+          "failed" -> {errors + 1, warnings}
+          "warning" -> {errors, warnings + 1}
+          _status -> {errors, warnings}
+        end
+      end)
+
+    %{
+      errors: errors,
+      warnings: warnings,
+      infos: 0
+    }
+  end
+
+  defp pathways_recent_validation_display_counts(_walkability_test_run_results) do
+    %{errors: 0, warnings: 0, infos: 0}
+  end
+
+  defp pathways_case_display_status_for_recent_row(row) do
+    mismatch_map = pathways_recent_mismatch_map(Map.get(row, :details_json))
+
+    traversable_failed? = Map.has_key?(mismatch_map, "expected_traversable")
+
+    other_criteria_failed? =
+      mismatch_map
+      |> Map.drop(["expected_traversable"])
+      |> map_has_entries?()
+
+    cond do
+      row.failure_category == "query_failure" -> "failed"
+      traversable_failed? -> "failed"
+      other_criteria_failed? -> "warning"
+      true -> "pass"
+    end
+  end
+
+  defp pathways_recent_mismatch_map(details_json) when is_map(details_json) do
+    details_json
+    |> payload_value(:mismatches)
+    |> pathways_recent_ensure_list()
+    |> Enum.reduce(%{}, fn mismatch, acc ->
+      case pathways_recent_mismatch_kind(mismatch) do
+        nil -> acc
+        kind -> Map.put(acc, kind, mismatch)
+      end
+    end)
+  end
+
+  defp pathways_recent_mismatch_map(_details_json), do: %{}
+
+  defp pathways_recent_ensure_list(value) when is_list(value), do: value
+  defp pathways_recent_ensure_list(_value), do: []
+
+  defp pathways_recent_mismatch_kind(mismatch) when is_map(mismatch) do
+    case payload_value(mismatch, :kind) do
+      kind when is_atom(kind) -> Atom.to_string(kind)
+      kind when is_binary(kind) -> kind
+      _ -> nil
+    end
+  end
+
+  defp pathways_recent_mismatch_kind(_mismatch), do: nil
+
+  defp map_has_entries?(map) when is_map(map), do: map_size(map) > 0
+  defp map_has_entries?(_map), do: false
 
   defp pathways_summary_from_result_json(result_json) do
     summary = Map.get(result_json, "summary", %{})

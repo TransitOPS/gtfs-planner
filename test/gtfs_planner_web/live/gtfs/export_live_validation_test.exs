@@ -1264,6 +1264,103 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert has_element?(view, "button", "Run Validation")
       refute render(view) =~ "View Full Results"
     end
+
+    test "recent validations table maps pathways counts to error warning info columns", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      {:ok, walkability_test_failed} =
+        Validations.create_walkability_test(organization.id, version.id, %{
+          stop_id: "stop-failed",
+          address: "101 Failed St",
+          address_lat: Decimal.new("42.3601"),
+          address_lon: Decimal.new("-71.0589"),
+          expected_traversable: true
+        })
+
+      {:ok, walkability_test_warning} =
+        Validations.create_walkability_test(organization.id, version.id, %{
+          stop_id: "stop-warning",
+          address: "102 Warning St",
+          address_lat: Decimal.new("42.3602"),
+          address_lon: Decimal.new("-71.0588"),
+          expected_max_distance_meters: 300
+        })
+
+      {:ok, walkability_test_pass} =
+        Validations.create_walkability_test(organization.id, version.id, %{
+          stop_id: "stop-pass",
+          address: "103 Pass St",
+          address_lat: Decimal.new("42.3603"),
+          address_lon: Decimal.new("-71.0587"),
+          expected_traversable: true
+        })
+
+      {:ok, pathways_run} = Validations.create_pathways_validation_run(organization.id, version.id)
+
+      pathways_result = %{
+        suite_meta: %{total_candidates: 0, selected_count: 0, malformed_count: 0},
+        selected_test_case_ids: [
+          walkability_test_failed.id,
+          walkability_test_warning.id,
+          walkability_test_pass.id
+        ],
+        summary: %{total: 9, passed: 4, failed: 5, query_failure: 2, scoring_failure: 3},
+        cases: [
+          %{
+            test_case_id: walkability_test_failed.id,
+            status: :failed,
+            failure_category: :scoring_failure,
+            details: %{
+              mismatches: [
+                %{kind: :expected_traversable, expected: true, actual: false}
+              ]
+            }
+          },
+          %{
+            test_case_id: walkability_test_warning.id,
+            status: :failed,
+            failure_category: :scoring_failure,
+            details: %{
+              mismatches: [
+                %{kind: :expected_max_distance_meters, expected: 300, actual: 450.0}
+              ]
+            }
+          },
+          %{
+            test_case_id: walkability_test_pass.id,
+            status: :passed,
+            details: %{}
+          }
+        ]
+      }
+
+      {:ok, pathways_run} = Validations.mark_pathways_completed(pathways_run, pathways_result, 100)
+
+      {:ok, mobility_run} =
+        Validations.create_validation_run(organization.id, version.id, "mobility_data")
+
+      mobility_result = %{
+        summary: %{errors: 7, warnings: 8, infos: 9},
+        notices: [],
+        duration_ms: 150
+      }
+
+      {:ok, mobility_run} = Validations.mark_completed(mobility_run, mobility_result)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      assert has_element?(view, "#recent-validation-errors-#{pathways_run.id}", "1")
+      assert has_element?(view, "#recent-validation-warnings-#{pathways_run.id}", "1")
+      assert has_element?(view, "#recent-validation-infos-#{pathways_run.id}", "0")
+
+      assert has_element?(view, "#recent-validation-errors-#{mobility_run.id}", "7")
+      assert has_element?(view, "#recent-validation-warnings-#{mobility_run.id}", "8")
+      assert has_element?(view, "#recent-validation-infos-#{mobility_run.id}", "9")
+    end
   end
 
   defp completed_pathways_run_fixture(organization_id, gtfs_version_id) do
