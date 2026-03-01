@@ -273,24 +273,20 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                           <td>{format_pathways_time(row.itinerary_end_time)}</td>
                         </tr>
 
-                        <tr id={"pathways-case-itinerary-row-#{row.order_index}"} class="bg-base-100">
+                        <tr id={"pathways-case-criteria-row-#{row.order_index}"} class="bg-base-100">
                           <td colspan="10" class="p-0">
                             <details
-                              id={"pathways-case-itinerary-details-#{row.order_index}"}
+                              id={"pathways-case-criteria-details-#{row.order_index}"}
                               class="border-t border-base-300"
                             >
                               <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-base-content/80">
-                                Step-by-step itinerary
+                                Criteria checks
                               </summary>
 
                               <div class="px-3 pb-3">
                                 <% criteria_checks = pathways_criteria_checks(row) %>
 
                                 <div class="mb-3" id={"pathways-case-criteria-#{row.order_index}"}>
-                                  <h4 class="text-xs font-semibold text-base-content/80 mb-2">
-                                    Criteria checks
-                                  </h4>
-
                                   <%= if criteria_checks == [] do %>
                                     <p
                                       id={"pathways-case-criteria-empty-#{row.order_index}"}
@@ -344,7 +340,22 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                                     </div>
                                   <% end %>
                                 </div>
+                              </div>
+                            </details>
+                          </td>
+                        </tr>
 
+                        <tr id={"pathways-case-itinerary-row-#{row.order_index}"} class="bg-base-100">
+                          <td colspan="10" class="p-0">
+                            <details
+                              id={"pathways-case-itinerary-details-#{row.order_index}"}
+                              class="border-t border-base-300"
+                            >
+                              <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-base-content/80">
+                                Step-by-step itinerary
+                              </summary>
+
+                              <div class="px-3 pb-3">
                                 <%= if pathways_empty_itinerary?(itinerary_step_rows) do %>
                                   <p
                                     id={"pathways-case-itinerary-empty-#{row.order_index}"}
