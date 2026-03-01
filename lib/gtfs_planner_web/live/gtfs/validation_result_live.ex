@@ -523,7 +523,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                               </summary>
 
                               <div class="px-3 pb-3">
-                                <% criteria_checks = pathways_criteria_checks(row) %>
+                                <% criteria_checks =
+                                  Map.get(pathways_case_criteria_checks, row.order_index, []) %>
 
                                 <div class="mb-3" id={"pathways-case-criteria-#{row.order_index}"}>
                                   <%= if criteria_checks == [] do %>
@@ -585,7 +586,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                         </tr>
 
                         <tr id={"pathways-case-itinerary-row-#{row.order_index}"} class="bg-base-100">
-                          <td colspan="10" class="p-0">
+                          <td colspan="9" class="p-0 border-t border-base-content/10">
                             <details
                               id={"pathways-case-itinerary-details-#{row.order_index}"}
                               class="border-t border-base-300"

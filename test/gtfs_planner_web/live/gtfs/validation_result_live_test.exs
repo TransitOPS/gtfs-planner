@@ -1054,6 +1054,157 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert render(view |> element("#pathways-case-row-0")) =~ "Traversability check failed"
     end
 
+    test "renders criteria aggregation overview values for non-empty case results", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      walkability_test_1 =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          expected_traversable: true,
+          expected_min_duration_seconds: 100,
+          expected_max_duration_seconds: 300,
+          expected_min_distance_meters: 50,
+          expected_max_distance_meters: 500,
+          expected_wheelchair_accessible: true
+        })
+
+      walkability_test_2 =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          stop_id: "stop-agg-2",
+          address: "456 Aggregate St",
+          expected_traversable: true,
+          expected_min_duration_seconds: 100,
+          expected_max_duration_seconds: 300,
+          expected_min_distance_meters: 50,
+          expected_max_distance_meters: 500,
+          expected_wheelchair_accessible: true
+        })
+
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+      run_result = %{
+        suite_meta: %{total_candidates: 2, selected_count: 2, malformed_count: 0},
+        selected_test_case_ids: [walkability_test_1.id, walkability_test_2.id],
+        summary: %{total: 2, passed: 1, failed: 1, query_failure: 1, scoring_failure: 0},
+        cases: [
+          %{
+            test_case_id: walkability_test_1.id,
+            status: :passed,
+            route_output: %{route_exists: true, duration_seconds: 180.0, distance_meters: 320.0},
+            wheelchair_output: %{
+              route_exists: true,
+              duration_seconds: 200.0,
+              distance_meters: 360.0
+            }
+          },
+          %{
+            test_case_id: walkability_test_2.id,
+            status: :failed,
+            failure_category: :query_failure,
+            details: %{reason: :timeout}
+          }
+        ]
+      }
+
+      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 35)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#pathways-criteria-comparison-overview")
+
+      assert has_element?(view, "#pathways-criteria-comparison-label-expected_traversable", "Traversable")
+      assert has_element?(view, "#pathways-criteria-comparison-configured-expected_traversable", "2")
+      assert has_element?(view, "#pathways-criteria-comparison-evaluated-expected_traversable", "1")
+      assert has_element?(view, "#pathways-criteria-comparison-pass-expected_traversable", "1")
+      assert has_element?(view, "#pathways-criteria-comparison-fail-expected_traversable", "0")
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-not-evaluated-expected_traversable",
+               "1"
+             )
+
+      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-expected_traversable", "100.0%")
+
+      assert has_element?(view, "#pathways-criteria-comparison-configured-duration_seconds_range", "2")
+      assert has_element?(view, "#pathways-criteria-comparison-not-evaluated-duration_seconds_range", "1")
+      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-duration_seconds_range", "100.0%")
+
+      assert has_element?(view, "#pathways-criteria-comparison-configured-distance_meters_range", "2")
+      assert has_element?(view, "#pathways-criteria-comparison-not-evaluated-distance_meters_range", "1")
+      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-distance_meters_range", "100.0%")
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-configured-expected_wheelchair_accessible",
+               "2"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-not-evaluated-expected_wheelchair_accessible",
+               "1"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-pass-rate-expected_wheelchair_accessible",
+               "100.0%"
+             )
+    end
+
+    test "renders pathways overview sections for completed run with empty case results", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+      run_result = %{
+        suite_meta: %{total_candidates: 0, selected_count: 0, malformed_count: 0},
+        selected_test_case_ids: [],
+        summary: %{total: 0, passed: 0, failed: 0, query_failure: 0, scoring_failure: 0},
+        cases: []
+      }
+
+      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 5)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#pathways-criteria-comparison-overview")
+      assert has_element?(view, "#pathways-trip-visualization-overview")
+      assert has_element?(view, "#pathways-trip-overview-total-tests-value", "0")
+
+      assert has_element?(view, "#pathways-criteria-comparison-configured-expected_traversable", "0")
+      assert has_element?(view, "#pathways-criteria-comparison-evaluated-expected_traversable", "0")
+      assert has_element?(view, "#pathways-criteria-comparison-pass-expected_traversable", "0")
+      assert has_element?(view, "#pathways-criteria-comparison-fail-expected_traversable", "0")
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-not-evaluated-expected_traversable",
+               "0"
+             )
+
+      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-expected_traversable", "0.0%")
+      assert has_element?(view, "#pathways-trip-overview-duration-available", "0")
+      assert has_element?(view, "#pathways-trip-overview-distance-available", "0")
+      assert has_element?(view, "#pathways-trip-overview-duration-min", "-")
+      assert has_element?(view, "#pathways-trip-overview-distance-min", "-")
+      refute has_element?(view, "#pathways-case-row-0")
+    end
+
     test "renders per-test status as FAILED when traversable fails", %{
       conn: conn,
       user: user,
