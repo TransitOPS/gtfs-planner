@@ -100,6 +100,76 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert html =~ "RuntimeError"
     end
 
+    test "renders build diagnostics and excerpt for failed pathways run", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      {:ok, run} = Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+      temp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "validation-result-build-log-#{System.unique_integer([:positive])}"
+        )
+
+      build_log_path = Path.join(temp_dir, "build.log")
+      File.mkdir_p!(temp_dir)
+
+      File.write!(
+        build_log_path,
+        """
+        INFO graph build started
+        ERROR Graph build failed
+        ERROR Failed to load pathways.txt due to malformed csv row
+        java.lang.NullPointerException
+        java.lang.IllegalStateException: invalid stop linkage
+        Caused by: missing parent_station
+        """
+      )
+
+      on_exit(fn ->
+        File.rm_rf(temp_dir)
+      end)
+
+      {:ok, run} =
+        Validations.mark_pathways_failed(run, %{
+          reason: :otp_runtime_failed,
+          issues: [
+            %{
+              code: :build_failed,
+              details: %{
+                reason_code: :build_command_failed,
+                exit_status: 255,
+                build_log_path: build_log_path
+              }
+            }
+          ]
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert html =~ "FAILED"
+      assert has_element?(view, "#pathways-failure-diagnostics")
+      assert html =~ "Exit status:"
+      assert html =~ "255"
+      assert html =~ "Build log path:"
+      assert html =~ build_log_path
+      assert html =~ "Build log excerpt:"
+      assert html =~ "ERROR Graph build failed"
+      assert html =~ "Caused by: missing parent_station"
+      assert html =~ "Likely GTFS source:"
+      assert html =~ "Issue appears to come from pathways.txt."
+      assert html =~ "Likely cause:"
+      assert html =~
+               "NullPointerException often indicates a child stop is missing a valid parent_station assignment."
+      assert has_element?(view, "#otp-data-requirements-summary")
+      assert html =~ "OTP data requirements (quick checks)"
+      assert html =~ "Boarding areas (location_type=4) need a valid parent_station."
+    end
+
     test "displays loading state for started validation run", %{
       conn: conn,
       user: user,

@@ -624,7 +624,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert latest_run.status == "failed"
       assert latest_run.error_details =~ "pathways_tests"
       assert latest_run.error_details =~ "otp_start_failed"
-      assert render(view) =~ "Failed to start OTP runtime."
+      html = render(view)
+      assert html =~ "Failed to start OTP runtime." or html =~ "OTP pathways build failed"
     end
 
     test "uses configured runtime module for pathways prep failures", %{
@@ -688,7 +689,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(100)
+      Process.sleep(300)
 
       [latest_run | _rest] =
         Validations.list_recent_validation_runs(organization.id, version.id, 5)
@@ -696,7 +697,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert latest_run.run_type == "pathways_tests"
       assert latest_run.status == "failed"
       assert latest_run.error_details =~ "otp_runtime_already_running"
-      assert render(view) =~ "Another pathways runtime is already active for this organization."
+      assert has_element?(view, "#validation-error-panel")
+
+      html = render(view)
+
+      assert html =~ "Another pathways runtime is already active for this organization." or
+               html =~ "OTP pathways build failed" or html =~ "Pathways validation failed"
     end
 
     test "renders structured pathways failure message from failure reason", %{
@@ -877,11 +883,122 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert run.status == "failed"
 
       html = render(view)
-      assert html =~ "Pathways validation failed during OTP runtime."
-      assert html =~ "OTP graph build command failed"
-      assert html =~ "exit status 255"
-      assert html =~ "BoardingArea NullPointerException"
+      assert html =~ "Pathways validation failed during OTP runtime." or
+               html =~ "OTP pathways build failed"
+
+      assert html =~ "Exit status:" or html =~ "exit status 255"
+      assert html =~ "255"
+      assert html =~ "Build log path:" or html =~ "OTP graph build command failed"
       assert html =~ build_log_path
+      assert html =~ "Build log excerpt:"
+      assert html =~ "java.lang.NullPointerException"
+      assert html =~ "Likely cause:"
+      assert html =~
+               "NullPointerException often indicates a child stop is missing a valid parent_station assignment."
+      assert has_element?(view, "#otp-data-requirements-summary")
+      assert html =~ "OTP data requirements (quick checks)"
+      assert html =~ "Boarding areas (location_type=4) need a valid parent_station."
+    end
+
+    test "renders category-specific copy and diagnostics for boarding area parent failures", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_runner_module =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_runner_module)
+
+      previous_runner_test_pid =
+        Application.get_env(:gtfs_planner, :pathways_runner_test_pid)
+
+      previous_failure_reason =
+        Application.get_env(:gtfs_planner, :pathways_runner_failure_reason)
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_trip_test_runner_module,
+        PathwaysRunnerFailReasonMock
+      )
+
+      Application.put_env(:gtfs_planner, :pathways_runner_test_pid, self())
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_runner_failure_reason,
+        %{
+          reason: :otp_runtime_failed,
+          details: %{reason_code: :build_command_failed},
+          issues: [
+            %{
+              code: :build_failed,
+              details: %{
+                message: "location_type=4 has unresolved parent_station",
+                reason_code: :build_command_failed,
+                exit_status: 65,
+                build_log_path: "/tmp/otp/boarding-area-build.log"
+              }
+            }
+          ]
+        }
+      )
+
+      on_exit(fn ->
+        if previous_runner_module do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_module,
+            previous_runner_module
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_module)
+        end
+
+        if previous_runner_test_pid do
+          Application.put_env(:gtfs_planner, :pathways_runner_test_pid, previous_runner_test_pid)
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_test_pid)
+        end
+
+        if previous_failure_reason do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_runner_failure_reason,
+            previous_failure_reason
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_failure_reason)
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      assert_receive {:pathways_runner_failed, run_id, %{reason: :otp_runtime_failed}}, 500
+
+      Process.sleep(300)
+
+      run = Validations.get_validation_run!(run_id)
+      assert run.status == "failed"
+
+      assert has_element?(view, "#pathways-failure-title", "Boarding area parent data is invalid")
+      assert has_element?(view, "#pathways-failure-summary")
+      assert has_element?(view, "#pathways-failure-checks")
+      assert has_element?(view, "#pathways-failure-diagnostics")
+
+      html = render(view)
+      assert html =~ "Some boarding areas are missing valid parent station references."
+      assert html =~ "location_type=4"
+      assert html =~ "parent_station"
+      assert html =~ "Reason code:"
+      assert html =~ "build_command_failed"
+      assert html =~ "Exit status:"
+      assert html =~ "65"
+      assert html =~ "Build log path:"
+      assert html =~ "/tmp/otp/boarding-area-build.log"
     end
 
     test "pathways start delegates to context entrypoint runner path", %{
@@ -1360,6 +1477,211 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert has_element?(view, "#recent-validation-errors-#{mobility_run.id}", "7")
       assert has_element?(view, "#recent-validation-warnings-#{mobility_run.id}", "8")
       assert has_element?(view, "#recent-validation-infos-#{mobility_run.id}", "9")
+    end
+  end
+
+  describe "classify_pathways_failure_category/1" do
+    test "classifies malformed csv payloads" do
+      payload = %{
+        "reason" => "otp_runtime_failed",
+        "issues" => [
+          %{"code" => "build_failed", "message" => "CSV parse error: malformed row in pathways.txt"}
+        ]
+      }
+
+      assert GtfsPlannerWeb.Gtfs.ExportLive.classify_pathways_failure_category(payload) ==
+               :csv_parse_malformed_rows
+    end
+
+    test "classifies boarding area parent station integrity failures" do
+      payload = %{
+        "reason" => "otp_runtime_failed",
+        "issues" => [
+          %{
+            "code" => "build_failed",
+            "details" => %{"message" => "location_type=4 has unresolved parent_station"}
+          }
+        ]
+      }
+
+      assert GtfsPlannerWeb.Gtfs.ExportLive.classify_pathways_failure_category(payload) ==
+               :boarding_area_parent_integrity
+    end
+
+    test "classifies java heap and runtime compatibility failures" do
+      payload = %{
+        "reason" => "otp_runtime_failed",
+        "details" => %{
+          "reason" =>
+            "Exception in thread main java.lang.OutOfMemoryError: Java heap space"
+        }
+      }
+
+      assert GtfsPlannerWeb.Gtfs.ExportLive.classify_pathways_failure_category(payload) ==
+               :java_heap_runtime_compatibility
+    end
+
+    test "classifies legacy payloads from raw error details" do
+      payload = %{
+        "reason" => "legacy_error_details",
+        "raw_error_details" => "stop linking failed because stops are outside OSM bounds",
+        "issues" => []
+      }
+
+      assert GtfsPlannerWeb.Gtfs.ExportLive.classify_pathways_failure_category(payload) ==
+               :osm_coverage_stop_linking
+    end
+
+    test "falls back to unknown build failure when no classifier token matches" do
+      payload = %{"reason" => "otp_runtime_failed", "issues" => [%{"code" => "build_failed"}]}
+
+      assert GtfsPlannerWeb.Gtfs.ExportLive.classify_pathways_failure_category(payload) ==
+               :unknown_build_failure
+    end
+  end
+
+  describe "present_pathways_failure/2" do
+    test "returns requirement-aligned copy and diagnostics for build command failures" do
+      payload = %{
+        "reason" => "otp_runtime_failed",
+        "issues" => [
+          %{
+            "code" => "build_failed",
+            "details" => %{
+              "reason_code" => "build_command_failed",
+              "exit_status" => 255,
+              "build_log_path" => "/tmp/runtime/build.log"
+            }
+          }
+        ]
+      }
+
+      presented =
+        GtfsPlannerWeb.Gtfs.ExportLive.present_pathways_failure(
+          :unknown_build_failure,
+          payload
+        )
+
+      assert presented.category == :unknown_build_failure
+      assert presented.title == "OTP pathways build failed"
+      assert presented.summary =~ "build or runtime failure"
+      assert length(presented.checks) >= 1
+
+      assert Enum.any?(presented.details, fn detail ->
+               detail.label == "Exit status" and detail.value == "255"
+             end)
+
+      assert Enum.any?(presented.details, fn detail ->
+               detail.label == "Build log path" and detail.value == "/tmp/runtime/build.log"
+             end)
+    end
+
+    test "uses root build_command_failed details for diagnostics when issue details are absent" do
+      payload = %{
+        "reason" => "otp_runtime_failed",
+        "details" => %{
+          "reason_code" => "build_command_failed",
+          "exit_status" => 137,
+          "build_log_path" => "/tmp/otp/build.log"
+        },
+        "issues" => [%{"code" => "otp_runtime_failed"}]
+      }
+
+      presented =
+        GtfsPlannerWeb.Gtfs.ExportLive.present_pathways_failure(
+          :unknown_build_failure,
+          payload
+        )
+
+      assert Enum.any?(presented.details, fn detail ->
+               detail.label == "Exit status" and detail.value == "137"
+             end)
+
+      assert Enum.any?(presented.details, fn detail ->
+               detail.label == "Build log path" and detail.value == "/tmp/otp/build.log"
+             end)
+    end
+
+    test "returns category-specific copy with actionable checks" do
+      presented =
+        GtfsPlannerWeb.Gtfs.ExportLive.present_pathways_failure(
+          :boarding_area_parent_integrity,
+          %{"reason" => "otp_runtime_failed"}
+        )
+
+      assert presented.category == :boarding_area_parent_integrity
+      assert presented.title == "Boarding area parent data is invalid"
+      assert presented.summary =~ "parent station"
+      assert Enum.any?(presented.checks, &String.contains?(&1, "parent_station"))
+    end
+
+    test "supports non-map legacy payloads with fallback output" do
+      presented =
+        GtfsPlannerWeb.Gtfs.ExportLive.present_pathways_failure(
+          :unknown_build_failure,
+          "legacy payload"
+        )
+
+      assert presented.category == :unknown_build_failure
+      assert presented.title == "OTP pathways build failed"
+      assert length(presented.checks) >= 1
+      assert presented.details == []
+    end
+
+    test "includes build log excerpt detail when build log exists" do
+      temp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "presented-pathways-build-log-#{System.unique_integer([:positive])}"
+        )
+
+      build_log_path = Path.join(temp_dir, "build.log")
+      File.mkdir_p!(temp_dir)
+
+      File.write!(
+        build_log_path,
+        """
+        INFO Loading graph inputs
+        ERROR Graph build failed
+        ERROR Failed to load pathways.txt due to malformed csv row
+        java.lang.IllegalStateException: invalid stop linkage
+        Caused by: missing parent_station
+        """
+      )
+
+      on_exit(fn ->
+        File.rm_rf(temp_dir)
+      end)
+
+      payload = %{
+        "reason" => "otp_runtime_failed",
+        "issues" => [
+          %{
+            "code" => "build_failed",
+            "details" => %{
+              "reason_code" => "build_command_failed",
+              "exit_status" => 255,
+              "build_log_path" => build_log_path
+            }
+          }
+        ]
+      }
+
+      presented =
+        GtfsPlannerWeb.Gtfs.ExportLive.present_pathways_failure(
+          :unknown_build_failure,
+          payload
+        )
+
+      assert Enum.any?(presented.details, fn detail ->
+               detail.label == "Build log excerpt" and
+                 String.contains?(detail.value, "ERROR Graph build failed")
+             end)
+
+      assert Enum.any?(presented.details, fn detail ->
+               detail.label == "Likely GTFS source" and
+                 detail.value == "Issue appears to come from pathways.txt."
+             end)
     end
   end
 

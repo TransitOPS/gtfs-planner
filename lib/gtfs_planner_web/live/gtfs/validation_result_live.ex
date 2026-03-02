@@ -14,6 +14,15 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     %{kind: "expected_wheelchair_accessible", label: "Wheelchair accessible"}
   ]
 
+  @otp_data_requirements_summary [
+    "Station-related stops need valid numeric lat/lon in range.",
+    "Longitude sign must match your region.",
+    "Boarding areas (location_type=4) need a valid parent_station.",
+    "Service must be active for the test date and time.",
+    "GTFS references must resolve across stops, trips, routes, and service IDs.",
+    "Fix critical stop-to-street linking warnings before rerun."
+  ]
+
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -23,6 +32,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
      |> assign(:page_title, "Validation Results")
      |> assign(:user_roles, user_roles)
      |> assign(:expanded_codes, MapSet.new())
+     |> assign(:pathways_failure_diagnostics, [])
      |> assign(:pathways_case_results, [])}
   end
 
@@ -43,11 +53,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
         Validations.list_validation_runs(organization_id, gtfs_version_id)
 
       {run, pathways_case_results} = load_pathways_render_data(run)
+      pathways_failure_diagnostics = pathways_failure_diagnostics(run)
 
       {:noreply,
        socket
        |> assign(:validation_id, validation_id)
        |> assign(:run, run)
+       |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics)
        |> assign(:pathways_case_results, pathways_case_results)
        |> stream(:validation_runs, validation_runs_history)
        |> maybe_schedule_pathways_status_poll(run)}
@@ -174,8 +186,45 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                 <div>
                   <h3 class="font-bold">Validation Failed</h3>
                   <div class="text-sm mt-2">{@run.error_details}</div>
+                  <%= if @pathways_failure_diagnostics != [] do %>
+                    <div class="mt-4" id="pathways-failure-diagnostics">
+                      <h4 class="font-semibold text-sm">Technical diagnostics</h4>
+                      <dl class="space-y-1 text-xs mt-2">
+                        <div
+                          :for={detail <- @pathways_failure_diagnostics}
+                          class="grid grid-cols-[auto,1fr] gap-x-2"
+                        >
+                          <dt class="font-medium">{detail.label}:</dt>
+                          <%= if detail.label == "Build log excerpt" do %>
+                            <dd class="whitespace-pre-wrap break-words font-mono">
+                              {detail.value}
+                            </dd>
+                          <% else %>
+                            <dd class="break-all">{detail.value}</dd>
+                          <% end %>
+                        </div>
+                      </dl>
+                    </div>
+                  <% end %>
                 </div>
               </div>
+
+              <%= if @pathways_failure_diagnostics != [] do %>
+                <section
+                  id="otp-data-requirements-summary"
+                  class="mt-4 rounded-lg border border-base-300 bg-base-100 p-4"
+                >
+                  <h3 class="text-sm font-semibold text-base-content">
+                    OTP data requirements (quick checks)
+                  </h3>
+                  <p class="mt-1 text-xs text-base-content/70">
+                    Fix these common blockers before rerunning pathways validation.
+                  </p>
+                  <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-base-content/85">
+                    <li :for={item <- otp_data_requirements_summary()}>{item}</li>
+                  </ul>
+                </section>
+              <% end %>
             <% @run.status in ["started", "running"] -> %>
               <%!-- Loading State --%>
               <div class="flex items-center justify-center min-h-[400px] mt-6">
@@ -1615,8 +1664,219 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
     socket
     |> assign(:run, run)
+    |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics(run))
     |> assign(:pathways_case_results, pathways_case_results)
   end
+
+  defp pathways_failure_diagnostics(%{
+         run_type: "pathways_tests",
+         status: "failed",
+         error_details: error_details
+       })
+       when is_binary(error_details) do
+    case Jason.decode(error_details) do
+      {:ok, payload} when is_map(payload) ->
+        build_log_excerpt = pathways_failure_build_log_excerpt(payload)
+
+        [
+          presenter_detail("Exit status", pathways_failure_exit_status(payload)),
+          presenter_detail("Build log path", pathways_failure_build_log_path(payload)),
+          presenter_detail("Build log excerpt", build_log_excerpt),
+          presenter_detail("Likely GTFS source", pathways_failure_build_log_gtfs_source(build_log_excerpt)),
+          presenter_detail("Likely cause", pathways_failure_npe_parent_station_hint(build_log_excerpt))
+        ]
+        |> Enum.reject(&is_nil/1)
+
+      _other ->
+        []
+    end
+  end
+
+  defp pathways_failure_diagnostics(_run), do: []
+
+  defp pathways_failure_exit_status(payload) do
+    case pathways_build_failure_reason_code(payload) do
+      :build_command_failed ->
+        payload
+        |> pathways_build_failure_details()
+        |> payload_value(:exit_status)
+        |> case do
+          nil ->
+            payload
+            |> payload_value(:details)
+            |> payload_value(:exit_status)
+
+          exit_status ->
+            exit_status
+        end
+
+      _other ->
+        nil
+    end
+  end
+
+  defp pathways_failure_build_log_path(payload) do
+    case pathways_build_failure_reason_code(payload) do
+      :build_command_failed ->
+        payload
+        |> pathways_build_failure_details()
+        |> payload_value(:build_log_path)
+        |> case do
+          nil ->
+            payload
+            |> payload_value(:details)
+            |> payload_value(:build_log_path)
+
+          build_log_path ->
+            build_log_path
+        end
+
+      _other ->
+        nil
+    end
+  end
+
+  defp pathways_failure_build_log_excerpt(payload) do
+    case pathways_failure_build_log_path(payload) do
+      nil ->
+        nil
+
+      build_log_path ->
+        extract_build_log_excerpt(build_log_path)
+    end
+  end
+
+  defp pathways_failure_build_log_gtfs_source(nil), do: nil
+
+  defp pathways_failure_build_log_gtfs_source(build_log_excerpt) when is_binary(build_log_excerpt) do
+    case extract_gtfs_txt_filename(build_log_excerpt) do
+      nil -> nil
+      filename -> "Issue appears to come from #{filename}."
+    end
+  end
+
+  defp pathways_failure_build_log_gtfs_source(_build_log_excerpt), do: nil
+
+  defp pathways_failure_npe_parent_station_hint(nil), do: nil
+
+  defp pathways_failure_npe_parent_station_hint(build_log_excerpt)
+       when is_binary(build_log_excerpt) do
+    if String.contains?(build_log_excerpt, "NullPointerException") do
+      "NullPointerException often indicates a child stop is missing a valid parent_station assignment."
+    else
+      nil
+    end
+  end
+
+  defp pathways_failure_npe_parent_station_hint(_build_log_excerpt), do: nil
+
+  defp extract_gtfs_txt_filename(text) when is_binary(text) do
+    case Regex.run(~r/\b([A-Za-z0-9_.-]+\.txt)\b/i, text, capture: :all_but_first) do
+      [filename] -> filename
+      _ -> nil
+    end
+  end
+
+  defp extract_gtfs_txt_filename(_text), do: nil
+
+  defp pathways_build_failure_reason_code(payload) do
+    issue_reason_code =
+      payload
+      |> pathways_build_failure_details()
+      |> payload_value(:reason_code)
+
+    root_reason_code =
+      payload
+      |> payload_value(:details)
+      |> payload_value(:reason_code)
+
+    case issue_reason_code || root_reason_code do
+      :build_command_failed -> :build_command_failed
+      "build_command_failed" -> :build_command_failed
+      _other -> nil
+    end
+  end
+
+  defp pathways_build_failure_details(payload) do
+    payload
+    |> payload_value(:issues)
+    |> case do
+      issues when is_list(issues) ->
+        Enum.find_value(issues, fn issue ->
+          details = payload_value(issue, :details)
+
+          case payload_value(details, :reason_code) do
+            :build_command_failed -> details
+            "build_command_failed" -> details
+            _other -> nil
+          end
+        end)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp extract_build_log_excerpt(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, body} ->
+        body
+        |> build_log_excerpt_from_body()
+
+      {:error, _reason} ->
+        nil
+    end
+  end
+
+  defp extract_build_log_excerpt(_path), do: nil
+
+  defp build_log_excerpt_from_body(body) when is_binary(body) do
+    lines =
+      body
+      |> String.split("\n")
+      |> Enum.map(&String.trim_trailing/1)
+
+    highlighted =
+      Enum.filter(lines, fn line ->
+        String.contains?(line, "ERROR") or
+          String.contains?(line, "Exception") or
+          String.contains?(line, "Caused by")
+      end)
+
+    excerpt_lines =
+      case highlighted do
+        [] ->
+          lines
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.take(-8)
+
+        _ ->
+          highlighted
+          |> Enum.take(8)
+      end
+
+    case excerpt_lines do
+      [] -> nil
+      _lines -> Enum.join(excerpt_lines, "\n")
+    end
+  end
+
+  defp presenter_detail(_label, nil), do: nil
+  defp presenter_detail(_label, ""), do: nil
+
+  defp presenter_detail(label, value) do
+    %{label: label, value: presenter_detail_value(value)}
+  end
+
+  defp presenter_detail_value(value) when is_binary(value), do: value
+  defp presenter_detail_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp presenter_detail_value(value) when is_integer(value), do: Integer.to_string(value)
+  defp presenter_detail_value(value), do: inspect(value)
+
+  defp payload_value(payload, key) when is_map(payload),
+    do: Map.get(payload, key) || Map.get(payload, Atom.to_string(key))
+
+  defp payload_value(_payload, _key), do: nil
 
   defp load_pathways_render_data(%{run_type: "pathways_tests", status: "completed"} = run) do
     case Validations.get_pathways_trip_test_results(run.id) do
@@ -1648,4 +1908,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp validation_subtitle(_run) do
     "Results of MobilityData GTFS validation."
   end
+
+  defp otp_data_requirements_summary, do: @otp_data_requirements_summary
 end

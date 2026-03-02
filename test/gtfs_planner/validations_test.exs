@@ -153,7 +153,14 @@ defmodule GtfsPlanner.ValidationsTest do
     } do
       {:ok, run} = Validations.create_validation_run(org.id, version.id, "pathways_tests")
 
-      reason = %{reason: :otp_runtime_failed, details: %{stage: :runtime_boot, message: "boom"}}
+      reason = %{
+        reason: :otp_runtime_failed,
+        details: %{stage: :runtime_boot, message: "boom"},
+        issues: [
+          %{code: :invalid_latitude, row: 12},
+          "missing_parent_station"
+        ]
+      }
 
       assert {:ok, failed_run} = Validations.mark_pathways_failed(run, reason)
       assert failed_run.status == "failed"
@@ -161,8 +168,13 @@ defmodule GtfsPlanner.ValidationsTest do
 
       decoded_error = Jason.decode!(failed_run.error_details)
       assert decoded_error["scope"] == "pathways_tests"
-      assert decoded_error["reason"] =~ "otp_runtime_failed"
-      assert decoded_error["reason"] =~ "runtime_boot"
+      assert decoded_error["reason"] == "otp_runtime_failed"
+      assert decoded_error["details"]["stage"] == "runtime_boot"
+      assert decoded_error["details"]["message"] == "boom"
+      assert decoded_error["issues"] == [
+               %{"code" => "invalid_latitude", "row" => 12},
+               "missing_parent_station"
+             ]
     end
 
     test "get_validation_run!/1 returns the run with given id", %{
@@ -470,8 +482,102 @@ defmodule GtfsPlanner.ValidationsTest do
       assert status.status == "failed"
       assert status.completed_at != nil
       assert status.error_payload["scope"] == "pathways_tests"
-      assert status.error_payload["reason"] =~ "otp_runtime_failed"
-      assert status.error_payload["reason"] =~ "runtime_boot"
+      assert status.error_payload["reason"] == "otp_runtime_failed"
+      assert status.error_payload["details"]["stage"] == "runtime_boot"
+      assert status.error_payload["details"]["message"] == "runtime startup failed"
+      assert status.error_payload["issues"] == []
+      assert is_binary(status.error_payload["raw_error_details"])
+    end
+
+    test "get_pathways_trip_test_status/1 normalizes decoded payload keys and reason_code",
+         %{
+           organization: org,
+           gtfs_version: version
+         } do
+      {:ok, run} = Validations.create_pathways_validation_run(org.id, version.id)
+
+      payload = %{
+        "scope" => "pathways_tests",
+        "reason_code" => "build_command_failed",
+        "details" => %{"exit_status" => 1, "build_log_path" => "/tmp/build.log"},
+        "issues" => [
+          %{"code" => "csv_parse_error", "file" => "pathways.txt"}
+        ]
+      }
+
+      {:ok, failed_run} =
+        run
+        |> GtfsPlanner.Validations.ValidationRun.changeset(%{
+          status: "failed",
+          error_details: Jason.encode!(payload),
+          completed_at: DateTime.utc_now()
+        })
+        |> GtfsPlanner.Repo.update()
+
+      assert {:ok, status} = Validations.get_pathways_trip_test_status(failed_run.id)
+
+      assert status.error_payload["scope"] == "pathways_tests"
+      assert status.error_payload["reason"] == "build_command_failed"
+      assert status.error_payload["reason_code"] == "build_command_failed"
+      assert status.error_payload["details"] == %{
+               "exit_status" => 1,
+               "build_log_path" => "/tmp/build.log"
+             }
+
+      assert status.error_payload["issues"] == [
+               %{"code" => "csv_parse_error", "file" => "pathways.txt"}
+             ]
+
+      assert is_binary(status.error_payload["raw_error_details"])
+    end
+
+    test "get_pathways_trip_test_status/1 normalizes decoded payload shape when fields are missing",
+         %{
+           organization: org,
+           gtfs_version: version
+         } do
+      {:ok, run} = Validations.create_pathways_validation_run(org.id, version.id)
+
+      {:ok, failed_run} =
+        run
+        |> GtfsPlanner.Validations.ValidationRun.changeset(%{
+          status: "failed",
+          error_details: Jason.encode!(%{"reason_code" => "build_command_failed"}),
+          completed_at: DateTime.utc_now()
+        })
+        |> GtfsPlanner.Repo.update()
+
+      assert {:ok, status} = Validations.get_pathways_trip_test_status(failed_run.id)
+
+      assert status.error_payload["scope"] == "pathways_tests"
+      assert status.error_payload["reason"] == "build_command_failed"
+      assert status.error_payload["details"] == nil
+      assert status.error_payload["issues"] == []
+      assert is_binary(status.error_payload["raw_error_details"])
+    end
+
+    test "get_pathways_trip_test_status/1 normalizes legacy string error payload", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      {:ok, run} = Validations.create_pathways_validation_run(org.id, version.id)
+
+      {:ok, failed_run} =
+        run
+        |> GtfsPlanner.Validations.ValidationRun.changeset(%{
+          status: "failed",
+          error_details: "legacy inspected error payload",
+          completed_at: DateTime.utc_now()
+        })
+        |> GtfsPlanner.Repo.update()
+
+      assert {:ok, status} = Validations.get_pathways_trip_test_status(failed_run.id)
+
+      assert status.error_payload["scope"] == "pathways_tests"
+      assert status.error_payload["reason"] == "legacy_error_details"
+      assert status.error_payload["details"] == nil
+      assert status.error_payload["issues"] == []
+      assert status.error_payload["raw_error_details"] == "legacy inspected error payload"
     end
 
     test "get_pathways_trip_test_status/1 returns invalid_run_type for non-pathways runs", %{

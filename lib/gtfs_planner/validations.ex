@@ -828,10 +828,79 @@ defmodule GtfsPlanner.Validations do
   defp serialize_pathways_error(reason) do
     %{
       "scope" => "pathways_tests",
-      "reason" => inspect(reason)
+      "reason" => pathways_error_reason_code(reason),
+      "details" => pathways_error_details(reason),
+      "issues" => pathways_error_issues(reason)
     }
     |> Jason.encode!()
   end
+
+  @spec pathways_error_reason_code(term()) :: String.t()
+  defp pathways_error_reason_code(%{} = reason) do
+    reason
+    |> payload_value(:reason)
+    |> normalize_pathways_error_value()
+  end
+
+  defp pathways_error_reason_code(reason), do: normalize_pathways_error_value(reason)
+
+  @spec pathways_error_details(term()) :: map() | String.t() | nil
+  defp pathways_error_details(%{} = reason) do
+    reason
+    |> payload_value(:details)
+    |> normalize_pathways_error_details()
+  end
+
+  defp pathways_error_details(_reason), do: nil
+
+  @spec pathways_error_issues(term()) :: [term()] | nil
+  defp pathways_error_issues(%{} = reason) do
+    case payload_value(reason, :issues) do
+      issues when is_list(issues) -> Enum.map(issues, &normalize_pathways_json_term/1)
+      _issues -> nil
+    end
+  end
+
+  defp pathways_error_issues(_reason), do: nil
+
+  @spec normalize_pathways_error_details(term()) :: map() | String.t() | nil
+  defp normalize_pathways_error_details(nil), do: nil
+
+  defp normalize_pathways_error_details(details) when is_map(details),
+    do: normalize_pathways_json_term(details)
+
+  defp normalize_pathways_error_details(details), do: normalize_pathways_error_value(details)
+
+  @spec normalize_pathways_error_value(term()) :: String.t()
+  defp normalize_pathways_error_value(value) when is_binary(value), do: value
+  defp normalize_pathways_error_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_pathways_error_value(value), do: inspect(value)
+
+  @spec normalize_pathways_json_term(term()) :: term()
+  defp normalize_pathways_json_term(value)
+       when is_binary(value) or is_boolean(value) or is_number(value) or is_nil(value),
+       do: value
+
+  defp normalize_pathways_json_term(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp normalize_pathways_json_term(value) when is_list(value),
+    do: Enum.map(value, &normalize_pathways_json_term/1)
+
+  defp normalize_pathways_json_term(%_struct{} = value), do: inspect(value)
+
+  defp normalize_pathways_json_term(value) when is_map(value) do
+    Map.new(value, fn {key, map_value} ->
+      {normalize_pathways_error_value(key), normalize_pathways_json_term(map_value)}
+    end)
+  end
+
+  defp normalize_pathways_json_term(value), do: inspect(value)
+
+  @spec payload_value(map() | nil, atom()) :: term()
+  defp payload_value(payload, key) when is_map(payload),
+    do: Map.get(payload, key) || Map.get(payload, Atom.to_string(key))
+
+  defp payload_value(_payload, _key), do: nil
 
   @spec decode_pathways_error_payload(String.t(), String.t() | nil) :: map() | nil
   defp decode_pathways_error_payload("failed", nil), do: nil
@@ -839,17 +908,61 @@ defmodule GtfsPlanner.Validations do
   defp decode_pathways_error_payload("failed", error_details) when is_binary(error_details) do
     case Jason.decode(error_details) do
       {:ok, payload} when is_map(payload) ->
-        payload
+        normalize_decoded_pathways_error_payload(payload, error_details)
 
       {:ok, _payload} ->
-        %{"reason" => "invalid_error_payload", "raw_error_details" => error_details}
+        legacy_pathways_error_payload("invalid_error_payload", error_details)
 
       {:error, _reason} ->
-        %{"reason" => "unparsed_error_details", "raw_error_details" => error_details}
+        legacy_pathways_error_payload("legacy_error_details", error_details)
     end
   end
 
   defp decode_pathways_error_payload(_status, _error_details), do: nil
+
+  @spec normalize_decoded_pathways_error_payload(map(), String.t()) :: map()
+  defp normalize_decoded_pathways_error_payload(payload, error_details) do
+    normalized_payload = normalize_pathways_json_term(payload)
+
+    required_fields = %{
+      "scope" => payload_value(normalized_payload, :scope) || "pathways_tests",
+      "reason" =>
+        payload_value(normalized_payload, :reason) ||
+          payload_value(normalized_payload, :reason_code) || "unknown_pathways_failure",
+      "details" => normalize_pathways_error_details(payload_value(normalized_payload, :details)),
+      "issues" => normalize_decoded_pathways_issues(payload_value(normalized_payload, :issues))
+    }
+
+    normalized_payload
+    |> Map.merge(required_fields)
+    |> maybe_put_raw_error_details(error_details)
+  end
+
+  @spec normalize_decoded_pathways_issues(term()) :: [term()]
+  defp normalize_decoded_pathways_issues(issues) when is_list(issues),
+    do: Enum.map(issues, &normalize_pathways_json_term/1)
+
+  defp normalize_decoded_pathways_issues(_issues), do: []
+
+  @spec maybe_put_raw_error_details(map(), String.t()) :: map()
+  defp maybe_put_raw_error_details(payload, error_details) do
+    if payload_value(payload, :raw_error_details) do
+      payload
+    else
+      Map.put(payload, "raw_error_details", error_details)
+    end
+  end
+
+  @spec legacy_pathways_error_payload(String.t(), String.t()) :: map()
+  defp legacy_pathways_error_payload(reason, error_details) do
+    %{
+      "scope" => "pathways_tests",
+      "reason" => reason,
+      "details" => nil,
+      "issues" => [],
+      "raw_error_details" => error_details
+    }
+  end
 
   @spec spawn_pathways_trip_test_runner(
           ValidationRun.t(),

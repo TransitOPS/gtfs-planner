@@ -26,6 +26,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     scoring_failure: "Pathways validation failed due to scoring errors."
   }
 
+  @otp_data_requirements_summary [
+    "Station-related stops need valid numeric lat/lon in range.",
+    "Longitude sign must match your region (for example, Chicago is negative).",
+    "Boarding areas (location_type=4) need a valid parent_station.",
+    "Service must be active for the test date and time.",
+    "GTFS references must resolve across stops, trips, routes, and service IDs.",
+    "Fix critical stop-to-street linking warnings before rerun."
+  ]
+
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -49,6 +58,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_progress, nil)
      |> assign(:validation_result, nil)
      |> assign(:validation_error, nil)
+     |> assign(:pathways_failure, nil)
      |> assign(:pathways_prep_error, nil)
      |> assign(:recent_validation_display_counts_by_run_id, %{})
      |> assign(:recent_validation_runs, [])}
@@ -74,7 +84,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     {:noreply,
      socket
      |> assign(:file_inventory, file_inventory)
-     |> assign(:recent_validation_display_counts_by_run_id, recent_validation_display_counts_by_run_id)
+     |> assign(
+       :recent_validation_display_counts_by_run_id,
+       recent_validation_display_counts_by_run_id
+     )
      |> assign(:recent_validation_runs, recent_validation_runs)}
   end
 
@@ -201,6 +214,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_progress, nil)
      |> assign(:validation_result, nil)
      |> assign(:validation_error, nil)
+     |> assign(:pathways_failure, nil)
      |> assign(:pathways_prep_error, nil)}
   end
 
@@ -261,13 +275,20 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         {:ok, %{status: "completed"}} ->
           handle_pathways_trip_test_completed(socket, validation_run_id)
 
-        {:ok, %{status: "failed", error_payload: error_payload}} ->
+        {:ok, %{status: "failed"} = status_payload} ->
+          error_payload =
+            payload_value(status_payload, :error_payload) ||
+              status_payload
+
+          pathways_failure = present_pathways_failure_for_payload(error_payload)
+
           {:noreply,
            socket
            |> assign(:pending_mobility_validation, false)
            |> assign(:validating, false)
            |> assign(:pathways_prep_detailed_progress, false)
            |> assign(:validation_progress, nil)
+           |> assign(:pathways_failure, pathways_failure)
            |> assign(:validation_error, pathways_failure_message(error_payload))}
 
         {:ok, _status_payload} ->
@@ -688,7 +709,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           </p>
 
           <%= if @validation_error do %>
-            <div role="alert" class="alert alert-error mb-6">
+            <div role="alert" class="alert alert-error mb-6" id="validation-error-panel">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 class="stroke-current shrink-0 h-6 w-6"
@@ -702,8 +723,63 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
                 />
               </svg>
-              <span>{@validation_error}</span>
+              <div class="space-y-2 text-sm" id="validation-error-content">
+                <%= if @pathways_failure do %>
+                  <h3 class="font-semibold text-base-content" id="pathways-failure-title">
+                    {@pathways_failure.title}
+                  </h3>
+                  <p class="text-base-content/80" id="pathways-failure-summary">
+                    {@pathways_failure.summary}
+                  </p>
+                  <p class="text-base-content/80" id="pathways-failure-status-message">
+                    {@validation_error}
+                  </p>
+                  <div id="pathways-failure-checks">
+                    <h4 class="font-medium text-base-content">Recommended checks</h4>
+                    <ul class="list-disc pl-5 space-y-1 text-base-content/80">
+                      <li :for={check <- @pathways_failure.checks}>{check}</li>
+                    </ul>
+                  </div>
+                  <%= if @pathways_failure.details != [] do %>
+                    <div id="pathways-failure-diagnostics">
+                      <h4 class="font-medium text-base-content">Technical diagnostics</h4>
+                      <dl class="space-y-1 text-base-content/80">
+                        <div
+                          :for={detail <- @pathways_failure.details}
+                          class="grid grid-cols-[auto,1fr] gap-x-2"
+                        >
+                          <dt class="font-medium">{detail.label}:</dt>
+                          <%= if detail.label == "Build log excerpt" do %>
+                            <dd class="whitespace-pre-wrap break-words font-mono text-xs">
+                              {detail.value}
+                            </dd>
+                          <% else %>
+                            <dd class="break-all">{detail.value}</dd>
+                          <% end %>
+                        </div>
+                      </dl>
+                    </div>
+                  <% end %>
+                <% else %>
+                  <span>{@validation_error}</span>
+                <% end %>
+              </div>
             </div>
+
+            <%= if @pathways_failure do %>
+              <section
+                id="otp-data-requirements-summary"
+                class="mb-6 rounded-lg border border-base-300 bg-base-100 p-4"
+              >
+                <h3 class="text-sm font-semibold text-base-content">OTP data requirements (quick checks)</h3>
+                <p class="mt-1 text-xs text-base-content/70">
+                  Fix these common blockers before rerunning pathways validation.
+                </p>
+                <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-base-content/85">
+                  <li :for={item <- otp_data_requirements_summary()}>{item}</li>
+                </ul>
+              </section>
+            <% end %>
           <% end %>
 
           <%= if @pathways_prep_error do %>
@@ -909,8 +985,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                       <td
                         id={"recent-validation-warnings-#{run.id}"}
                         class={[
-                        "text-right",
-                        display_counts.warnings > 0 && "text-warning font-medium"
+                          "text-right",
+                          display_counts.warnings > 0 && "text-warning font-medium"
                         ]}
                       >
                         {display_counts.warnings}
@@ -918,8 +994,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                       <td
                         id={"recent-validation-infos-#{run.id}"}
                         class={[
-                        "text-right",
-                        display_counts.infos > 0 && "text-info font-medium"
+                          "text-right",
+                          display_counts.infos > 0 && "text-info font-medium"
                         ]}
                       >
                         {display_counts.infos}
@@ -1047,7 +1123,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
-  defp recent_validation_display_counts_from_source(run), do: recent_validation_display_counts(run)
+  defp recent_validation_display_counts_from_source(run),
+    do: recent_validation_display_counts(run)
 
   defp pathways_recent_validation_display_counts(walkability_test_run_results)
        when is_list(walkability_test_run_results) do
@@ -1164,7 +1241,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          |> assign(:validating, true)
          |> assign(:validation_progress, %{phase: :starting, percent: 0})
          |> assign(:validation_result, nil)
-         |> assign(:validation_error, nil)}
+         |> assign(:validation_error, nil)
+         |> assign(:pathways_failure, nil)}
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Failed to create validation run")}
@@ -1199,6 +1277,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          |> assign(:pending_mobility_validation, pending_mobility_validation)
          |> assign(:validation_result, nil)
          |> assign(:validation_error, nil)
+         |> assign(:pathways_failure, nil)
          |> assign(:pathways_prep_error, nil)
          |> assign(:validating, true)
          |> assign(:validation_progress, pathways_status_progress(run.status))}
@@ -1461,6 +1540,451 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp pathways_failure_message(_error_payload), do: "Pathways validation failed"
 
+  @doc false
+  @spec classify_pathways_failure_category(map()) ::
+          :csv_parse_malformed_rows
+          | :invalid_coordinates
+          | :boarding_area_parent_integrity
+          | :osm_coverage_stop_linking
+          | :service_window_inactive
+          | :referential_integrity
+          | :missing_corrupt_files_or_permissions
+          | :java_heap_runtime_compatibility
+          | :unknown_build_failure
+  def classify_pathways_failure_category(error_payload) when is_map(error_payload) do
+    tokens = pathways_failure_classifier_tokens(error_payload)
+
+    cond do
+      tokens_match_any?(tokens, ["csv", "parse", "malformed", "invalid row"]) ->
+        :csv_parse_malformed_rows
+
+      tokens_match_any?(tokens, [
+        "invalid coordinate",
+        "latitude",
+        "longitude",
+        "outside bounds",
+        "out-of-range",
+        "sign-flipped"
+      ]) ->
+        :invalid_coordinates
+
+      tokens_match_any?(tokens, [
+        "boarding area",
+        "boarding_area",
+        "location_type=4",
+        "parent_station"
+      ]) ->
+        :boarding_area_parent_integrity
+
+      tokens_match_any?(tokens, ["osm", "stop linking", "linking failed", "outside osm"]) ->
+        :osm_coverage_stop_linking
+
+      tokens_match_any?(tokens, [
+        "service window",
+        "no active service",
+        "calendar",
+        "inactive service"
+      ]) ->
+        :service_window_inactive
+
+      tokens_match_any?(tokens, [
+        "referential",
+        "orphan",
+        "missing stop_id",
+        "missing route_id",
+        "missing service_id",
+        "foreign key"
+      ]) ->
+        :referential_integrity
+
+      tokens_match_any?(tokens, [
+        "missing file",
+        "corrupt",
+        "permission denied",
+        "basepath",
+        "enoent",
+        "eacces",
+        "unreadable"
+      ]) ->
+        :missing_corrupt_files_or_permissions
+
+      tokens_match_any?(tokens, [
+        "outofmemoryerror",
+        "java heap space",
+        "unsupported class file major version",
+        "java runtime",
+        "jvm"
+      ]) ->
+        :java_heap_runtime_compatibility
+
+      true ->
+        :unknown_build_failure
+    end
+  end
+
+  def classify_pathways_failure_category(_error_payload), do: :unknown_build_failure
+
+  @doc false
+  @spec present_pathways_failure(category :: atom(), error_payload :: map() | term()) :: %{
+          category: atom(),
+          title: String.t(),
+          summary: String.t(),
+          checks: [String.t()],
+          details: [%{label: String.t(), value: String.t()}]
+        }
+  def present_pathways_failure(category, error_payload)
+      when is_atom(category) and is_map(error_payload) do
+    {title, summary, checks} = pathways_failure_copy(category)
+
+    %{
+      category: category,
+      title: title,
+      summary: summary,
+      checks: checks,
+      details: pathways_failure_presenter_details(error_payload)
+    }
+  end
+
+  def present_pathways_failure(category, _error_payload) when is_atom(category) do
+    {title, summary, checks} = pathways_failure_copy(category)
+
+    %{
+      category: category,
+      title: title,
+      summary: summary,
+      checks: checks,
+      details: []
+    }
+  end
+
+  defp present_pathways_failure_for_payload(error_payload) when is_map(error_payload) do
+    error_payload
+    |> classify_pathways_failure_category()
+    |> present_pathways_failure(error_payload)
+  end
+
+  defp present_pathways_failure_for_payload(_error_payload) do
+    present_pathways_failure(:unknown_build_failure, %{})
+  end
+
+  defp pathways_failure_copy(:csv_parse_malformed_rows) do
+    {
+      "CSV rows are malformed",
+      "OTP could not parse one or more GTFS rows while building pathways data.",
+      [
+        "Open pathways.txt and related files and fix malformed rows.",
+        "Confirm required columns are present and values use valid formats."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(:invalid_coordinates) do
+    {
+      "Invalid stop or pathway coordinates",
+      "OTP rejected coordinates that are out of bounds or incorrectly signed.",
+      [
+        "Verify latitude and longitude values for stops and pathways.",
+        "Confirm longitude signs are correct for your service area."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(:boarding_area_parent_integrity) do
+    {
+      "Boarding area parent data is invalid",
+      "Some boarding areas are missing valid parent station references.",
+      [
+        "Ensure each location_type=4 stop has a valid parent_station.",
+        "Confirm parent stations exist and are in the same feed version."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(:osm_coverage_stop_linking) do
+    {
+      "Stops could not link to OSM pathways",
+      "OTP could not link one or more stops to the street graph.",
+      [
+        "Verify stops are within the area covered by your OSM extract.",
+        "Check stop coordinates for placement errors near streets."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(:service_window_inactive) do
+    {
+      "No active service window",
+      "Pathways testing could not find active service for the selected period.",
+      [
+        "Review calendar.txt and calendar_dates.txt for active service.",
+        "Confirm test dates overlap valid service windows."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(:referential_integrity) do
+    {
+      "GTFS references are inconsistent",
+      "OTP found missing or orphaned references across GTFS files.",
+      [
+        "Check that referenced stop_id, route_id, and service_id values exist.",
+        "Fix orphan rows and rerun pathways validation."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(:missing_corrupt_files_or_permissions) do
+    {
+      "Build inputs are missing or unreadable",
+      "OTP could not read required files due to missing, corrupt, or permission issues.",
+      [
+        "Confirm required files exist and are not corrupt.",
+        "Verify file and directory permissions for the OTP build path."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(:java_heap_runtime_compatibility) do
+    {
+      "Java runtime or memory issue",
+      "OTP failed due to Java compatibility or heap memory limits.",
+      [
+        "Verify the configured Java runtime version is supported.",
+        "Increase JVM heap size and retry the graph build."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(_unknown_category) do
+    {
+      "OTP pathways build failed",
+      "OTP reported a build or runtime failure while preparing pathways validation.",
+      [
+        "Review OTP diagnostics below and fix the first blocking issue.",
+        "Rerun pathways validation after data and runtime updates."
+      ]
+    }
+  end
+
+  defp pathways_failure_presenter_details(error_payload) do
+    root_details = payload_value(error_payload, :details)
+    issue_codes = pathways_failure_issue_codes(error_payload)
+    build_log_path = pathways_failure_build_log_path(error_payload)
+    build_log_excerpt = pathways_failure_build_log_excerpt(error_payload)
+    build_log_gtfs_source = pathways_failure_build_log_gtfs_source(build_log_excerpt)
+    build_log_npe_hint = pathways_failure_npe_parent_station_hint(build_log_excerpt)
+
+    [
+      presenter_detail("Reason", payload_value(error_payload, :reason)),
+      presenter_detail("Reason code", payload_value(root_details, :reason_code)),
+      presenter_detail("Issue codes", issue_codes),
+      presenter_detail("Exit status", pathways_failure_exit_status(error_payload)),
+      presenter_detail("Build log path", build_log_path),
+      presenter_detail("Build log excerpt", build_log_excerpt),
+      presenter_detail("Likely GTFS source", build_log_gtfs_source),
+      presenter_detail("Likely cause", build_log_npe_hint)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp pathways_failure_issue_codes(error_payload) do
+    error_payload
+    |> payload_value(:issues)
+    |> case do
+      issues when is_list(issues) ->
+        issues
+        |> Enum.map(&payload_value(&1, :code))
+        |> Enum.reject(&is_nil/1)
+        |> Enum.map(&to_string/1)
+        |> Enum.join(", ")
+
+      _other ->
+        nil
+    end
+  end
+
+  defp pathways_failure_exit_status(error_payload) do
+    case pathways_build_failure_reason_code(error_payload) do
+      :build_command_failed ->
+        error_payload
+        |> pathways_build_failure_details()
+        |> payload_value(:exit_status)
+        |> case do
+          nil ->
+            error_payload
+            |> payload_value(:details)
+            |> payload_value(:exit_status)
+
+          exit_status ->
+            exit_status
+        end
+
+      _other ->
+        nil
+    end
+  end
+
+  defp pathways_failure_build_log_path(error_payload) do
+    case pathways_build_failure_reason_code(error_payload) do
+      :build_command_failed ->
+        error_payload
+        |> pathways_build_failure_details()
+        |> payload_value(:build_log_path)
+        |> case do
+          nil ->
+            error_payload
+            |> payload_value(:details)
+            |> payload_value(:build_log_path)
+
+          build_log_path ->
+            build_log_path
+        end
+
+      _other ->
+        nil
+    end
+  end
+
+  defp pathways_failure_build_log_excerpt(error_payload) do
+    case pathways_failure_build_log_path(error_payload) do
+      nil ->
+        nil
+
+      build_log_path ->
+        extract_build_log_excerpt(build_log_path)
+    end
+  end
+
+  defp pathways_failure_build_log_gtfs_source(nil), do: nil
+
+  defp pathways_failure_build_log_gtfs_source(build_log_excerpt) when is_binary(build_log_excerpt) do
+    case extract_gtfs_txt_filename(build_log_excerpt) do
+      nil ->
+        nil
+
+      filename ->
+        "Issue appears to come from #{filename}."
+    end
+  end
+
+  defp pathways_failure_build_log_gtfs_source(_build_log_excerpt), do: nil
+
+  defp pathways_failure_npe_parent_station_hint(nil), do: nil
+
+  defp pathways_failure_npe_parent_station_hint(build_log_excerpt)
+       when is_binary(build_log_excerpt) do
+    if String.contains?(build_log_excerpt, "NullPointerException") do
+      "NullPointerException often indicates a child stop is missing a valid parent_station assignment."
+    else
+      nil
+    end
+  end
+
+  defp pathways_failure_npe_parent_station_hint(_build_log_excerpt), do: nil
+
+  defp extract_gtfs_txt_filename(text) when is_binary(text) do
+    case Regex.run(~r/\b([A-Za-z0-9_.-]+\.txt)\b/i, text, capture: :all_but_first) do
+      [filename] -> filename
+      _ -> nil
+    end
+  end
+
+  defp extract_gtfs_txt_filename(_text), do: nil
+
+  defp extract_build_log_excerpt(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, body} ->
+        body
+        |> build_log_excerpt_from_body()
+
+      {:error, _reason} ->
+        nil
+    end
+  end
+
+  defp extract_build_log_excerpt(_path), do: nil
+
+  defp build_log_excerpt_from_body(body) when is_binary(body) do
+    lines =
+      body
+      |> String.split("\n")
+      |> Enum.map(&String.trim_trailing/1)
+
+    highlighted =
+      Enum.filter(lines, fn line ->
+        String.contains?(line, "ERROR") or
+          String.contains?(line, "Exception") or
+          String.contains?(line, "Caused by")
+      end)
+
+    excerpt_lines =
+      case highlighted do
+        [] ->
+          lines
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.take(-8)
+
+        _ ->
+          highlighted
+          |> Enum.take(8)
+      end
+
+    case excerpt_lines do
+      [] -> nil
+      _lines -> Enum.join(excerpt_lines, "\n")
+    end
+  end
+
+  defp pathways_build_failure_reason_code(error_payload) do
+    issue_reason_code =
+      error_payload
+      |> pathways_build_failure_details()
+      |> payload_value(:reason_code)
+
+    root_reason_code =
+      error_payload
+      |> payload_value(:details)
+      |> payload_value(:reason_code)
+
+    case issue_reason_code || root_reason_code do
+      :build_command_failed -> :build_command_failed
+      "build_command_failed" -> :build_command_failed
+      _other -> nil
+    end
+  end
+
+  defp pathways_build_failure_details(error_payload) do
+    error_payload
+    |> payload_value(:issues)
+    |> case do
+      issues when is_list(issues) ->
+        Enum.find_value(issues, fn issue ->
+          details = payload_value(issue, :details)
+
+          case payload_value(details, :reason_code) do
+            :build_command_failed -> details
+            "build_command_failed" -> details
+            _other -> nil
+          end
+        end)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp presenter_detail(_label, nil), do: nil
+  defp presenter_detail(_label, ""), do: nil
+
+  defp presenter_detail(label, value) do
+    %{label: label, value: presenter_detail_value(value)}
+  end
+
+  defp presenter_detail_value(value) when is_binary(value), do: value
+  defp presenter_detail_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp presenter_detail_value(value) when is_integer(value), do: Integer.to_string(value)
+  defp presenter_detail_value(value), do: inspect(value)
+
   defp pathways_failure_tokens(error_payload) do
     reason = payload_value(error_payload, :reason)
 
@@ -1475,6 +1999,59 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> issue_code_tokens()
 
     [reason, details_reason | issue_codes]
+  end
+
+  defp pathways_failure_classifier_tokens(error_payload) do
+    root_details = payload_value(error_payload, :details)
+
+    issue_tokens =
+      error_payload
+      |> payload_value(:issues)
+      |> pathways_failure_issue_classifier_tokens()
+
+    [
+      payload_value(error_payload, :reason),
+      payload_value(error_payload, :raw_error_details),
+      payload_value(root_details, :reason),
+      payload_value(root_details, :reason_code),
+      payload_value(root_details, :message)
+      | issue_tokens
+    ]
+    |> Enum.map(&normalize_failure_classifier_token/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp pathways_failure_issue_classifier_tokens(issues) when is_list(issues) do
+    Enum.flat_map(issues, fn issue ->
+      details = payload_value(issue, :details)
+
+      [
+        payload_value(issue, :code),
+        payload_value(issue, :reason),
+        payload_value(issue, :reason_code),
+        payload_value(issue, :message),
+        payload_value(details, :reason),
+        payload_value(details, :reason_code),
+        payload_value(details, :message)
+      ]
+    end)
+  end
+
+  defp pathways_failure_issue_classifier_tokens(_issues), do: []
+
+  defp normalize_failure_classifier_token(nil), do: nil
+  defp normalize_failure_classifier_token(value) when is_binary(value), do: String.downcase(value)
+
+  defp normalize_failure_classifier_token(value) when is_atom(value),
+    do: value |> Atom.to_string() |> String.downcase()
+
+  defp normalize_failure_classifier_token(value),
+    do: value |> inspect() |> String.downcase()
+
+  defp tokens_match_any?(tokens, fragments) do
+    Enum.any?(tokens, fn token ->
+      Enum.any?(fragments, &String.contains?(token, &1))
+    end)
   end
 
   defp issue_code_tokens(issues) when is_list(issues),
@@ -1593,10 +2170,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         cond do
           String.contains?(body, "BoardingArea") and
               String.contains?(body, "NullPointerException") ->
-            "OTP reported a BoardingArea NullPointerException while mapping GTFS stops."
+            "OTP reported a BoardingArea NullPointerException while mapping GTFS stops. This often means a child stop is missing a valid parent_station assignment."
 
           String.contains?(body, "NullPointerException") ->
-            "OTP reported a NullPointerException during graph build."
+            "OTP reported a NullPointerException during graph build. This often means a child stop is missing a valid parent_station assignment."
 
           true ->
             nil
@@ -1621,4 +2198,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         end
     end
   end
+
+  defp otp_data_requirements_summary, do: @otp_data_requirements_summary
 end
