@@ -45,6 +45,15 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     %{kind: "expected_wheelchair_accessible", label: "Wheelchair accessible"}
   ]
 
+  @otp_data_requirements_summary [
+    "Station-related stops need valid numeric lat/lon in range.",
+    "Longitude sign must match your region.",
+    "Boarding areas (location_type=4) need a valid parent_station.",
+    "Service must be active for the test date and time.",
+    "GTFS references must resolve across stops, trips, routes, and service IDs.",
+    "Fix critical stop-to-street linking warnings before rerun."
+  ]
+
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -2390,4 +2399,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp validation_subtitle(_run) do
     "Results of MobilityData GTFS validation."
   end
+
+  defp otp_data_requirements_summary, do: @otp_data_requirements_summary
 end

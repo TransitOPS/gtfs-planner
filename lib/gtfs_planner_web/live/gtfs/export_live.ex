@@ -921,6 +921,21 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 <% end %>
               </div>
             </div>
+
+            <%= if @pathways_failure do %>
+              <section
+                id="otp-data-requirements-summary"
+                class="mb-6 rounded-lg border border-base-300 bg-base-100 p-4"
+              >
+                <h3 class="text-sm font-semibold text-base-content">OTP data requirements (quick checks)</h3>
+                <p class="mt-1 text-xs text-base-content/70">
+                  Fix these common blockers before rerunning pathways validation.
+                </p>
+                <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-base-content/85">
+                  <li :for={item <- otp_data_requirements_summary()}>{item}</li>
+                </ul>
+              </section>
+            <% end %>
           <% end %>
 
           <%= if @pathways_prep_error do %>
