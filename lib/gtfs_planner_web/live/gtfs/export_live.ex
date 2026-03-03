@@ -6,6 +6,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   use GtfsPlannerWeb, :live_view
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Validator
+  alias GtfsPlanner.Otp.Materializer
   alias GtfsPlanner.Otp.Runtime
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
@@ -229,7 +230,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
       task =
         Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-          GtfsPlanner.Gtfs.Export.export_to_zip(organization_id, gtfs_version_id, export_type)
+          export_gtfs_zip(organization_id, gtfs_version_id, export_type)
         end)
 
       {:noreply,
@@ -413,6 +414,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
              socket
              |> assign(:pending_mobility_validation, false)
              |> assign(:validating, false)
+             |> assign(:pathways_prep_detailed_progress, false)
              |> assign(:validation_progress, nil)
              |> assign(:pathways_prep_error, build_pathways_prep_error(issues))}
         end
@@ -432,6 +434,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 filename: filename
               })
               |> put_flash(:info, "Export completed successfully")
+
+            {:error, {:pathways_export_prep_failed, issues}} ->
+              error_message = pathways_export_error_message(issues)
+
+              socket
+              |> put_flash(:error, error_message)
+              |> assign(:export_error, error_message)
 
             {:error, reason} ->
               error_message =
@@ -544,9 +553,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          socket
          |> assign(:pathways_prep_error, %{
            summary: "Pathways export preparation crashed unexpectedly.",
+           blocking_errors: [
+             %{
+               code: :task_crashed,
+               severity: :blocking,
+               message: inspect(reason),
+               details: %{}
+             }
+           ],
+           warnings: [],
            issues: [
              %{
                code: :task_crashed,
+               severity: :blocking,
                message: inspect(reason),
                details: %{}
              }
@@ -556,6 +575,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          })
          |> assign(:validating, false)
          |> assign(:pathways_prep_task, nil)
+         |> assign(:pathways_prep_detailed_progress, false)
          |> assign(:pending_mobility_validation, false)
          |> assign(:validation_progress, nil)}
 
@@ -709,69 +729,112 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           </p>
 
           <%= if @validation_error do %>
-            <div role="alert" class="alert alert-error mb-6" id="validation-error-panel">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                class="stroke-current shrink-0 h-6 w-6"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
-              </svg>
-              <div class="space-y-2 text-sm" id="validation-error-content">
-                <%= if @pathways_failure do %>
-                  <h3 class="font-semibold text-base-content" id="pathways-failure-title">
-                    {@pathways_failure.title}
-                  </h3>
-                  <p class="text-base-content/80" id="pathways-failure-summary">
-                    {@pathways_failure.summary}
-                  </p>
-                  <p class="text-base-content/80" id="pathways-failure-status-message">
-                    {@validation_error}
-                  </p>
-                  <div id="pathways-failure-checks">
-                    <h4 class="font-medium text-base-content">Recommended checks</h4>
-                    <ul class="list-disc pl-5 space-y-1 text-base-content/80">
+            <section
+              id="validation-error-panel"
+              role="alert"
+              class="mb-6 rounded-xl border border-error/40 bg-base-100"
+            >
+              <div class="flex items-start gap-3 border-b border-error/20 px-4 py-3">
+                <.icon name="hero-exclamation-triangle" class="mt-0.5 h-5 w-5 shrink-0 text-error" />
+                <div class="min-w-0 flex-1" id="validation-error-content">
+                  <%= if @pathways_failure do %>
+                    <h3
+                      class="text-base font-semibold leading-6 text-base-content"
+                      id="pathways-failure-title"
+                    >
+                      {@pathways_failure.title}
+                    </h3>
+                    <p
+                      class="mt-1 text-sm leading-5 text-base-content/80"
+                      id="pathways-failure-summary"
+                    >
+                      {@pathways_failure.summary}
+                    </p>
+                    <p
+                      class="mt-2 text-sm leading-5 text-base-content/80"
+                      id="pathways-failure-status-message"
+                    >
+                      {@validation_error}
+                    </p>
+                  <% else %>
+                    <p class="text-sm leading-5 text-base-content">{@validation_error}</p>
+                  <% end %>
+                </div>
+              </div>
+
+              <%= if @pathways_failure do %>
+                <div class="space-y-4 px-4 py-4 text-sm">
+                  <%= if @pathways_failure.blocking_issues != [] do %>
+                    <section id="pathways-failure-blocking-issues" class="space-y-2">
+                      <h4 class="text-xs font-semibold uppercase tracking-wide text-error">
+                        Blocking issues
+                      </h4>
+                      <ul class="space-y-2">
+                        <li
+                          :for={issue <- @pathways_failure.blocking_issues}
+                          class="border-l-2 border-error/60 pl-3"
+                        >
+                          <p class="leading-5 text-base-content">{issue.message}</p>
+                          <p
+                            :if={issue.context_summary}
+                            class="mt-1 font-mono text-xs leading-5 text-base-content/70"
+                          >
+                            {issue.context_summary}
+                          </p>
+                        </li>
+                      </ul>
+                    </section>
+                  <% end %>
+
+                  <section
+                    id="pathways-failure-checks"
+                    class="space-y-2 border-t border-base-300 pt-3"
+                  >
+                    <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
+                      Recommended checks
+                    </h4>
+                    <ul class="list-disc space-y-1 pl-5 text-base-content/85">
                       <li :for={check <- @pathways_failure.checks}>{check}</li>
                     </ul>
-                  </div>
+                  </section>
+
                   <%= if @pathways_failure.details != [] do %>
-                    <div id="pathways-failure-diagnostics">
-                      <h4 class="font-medium text-base-content">Technical diagnostics</h4>
-                      <dl class="space-y-1 text-base-content/80">
+                    <section
+                      id="pathways-failure-diagnostics"
+                      class="space-y-2 border-t border-base-300 pt-3"
+                    >
+                      <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
+                        Technical diagnostics
+                      </h4>
+                      <dl class="divide-y divide-base-300 text-sm text-base-content/85">
                         <div
                           :for={detail <- @pathways_failure.details}
-                          class="grid grid-cols-[auto,1fr] gap-x-2"
+                          class="grid grid-cols-1 gap-1 py-2 sm:grid-cols-[12rem,1fr] sm:gap-3"
                         >
-                          <dt class="font-medium">{detail.label}:</dt>
+                          <dt class="font-medium text-base-content/80">{detail.label}:</dt>
                           <%= if detail.label == "Build log excerpt" do %>
-                            <dd class="whitespace-pre-wrap break-words font-mono text-xs">
+                            <dd class="rounded border border-base-300 bg-base-200 p-2 font-mono text-xs whitespace-pre-wrap break-words">
                               {detail.value}
                             </dd>
                           <% else %>
-                            <dd class="break-all">{detail.value}</dd>
+                            <dd class="break-all font-mono text-xs sm:text-sm">{detail.value}</dd>
                           <% end %>
                         </div>
                       </dl>
-                    </div>
+                    </section>
                   <% end %>
-                <% else %>
-                  <span>{@validation_error}</span>
-                <% end %>
-              </div>
-            </div>
+                </div>
+              <% end %>
+            </section>
 
             <%= if @pathways_failure do %>
               <section
                 id="otp-data-requirements-summary"
                 class="mb-6 rounded-lg border border-base-300 bg-base-100 p-4"
               >
-                <h3 class="text-sm font-semibold text-base-content">OTP data requirements (quick checks)</h3>
+                <h3 class="text-sm font-semibold text-base-content">
+                  OTP data requirements (quick checks)
+                </h3>
                 <p class="mt-1 text-xs text-base-content/70">
                   Fix these common blockers before rerunning pathways validation.
                 </p>
@@ -802,9 +865,34 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 <p class="text-sm text-base-content/80">
                   Fix the issues below, then run validation again.
                 </p>
-                <ul class="list-disc pl-5 text-sm text-base-content/80" id="pathways-prep-error-list">
-                  <li :for={issue <- @pathways_prep_error.issues}>{issue.message}</li>
-                </ul>
+
+                <%= if @pathways_prep_error.blocking_errors != [] do %>
+                  <div class="mt-2" id="pathways-prep-blocking-errors">
+                    <h4 class="font-medium text-base-content">Blocking errors</h4>
+                    <ul class="list-disc pl-5 text-sm text-base-content/80">
+                      <li :for={issue <- @pathways_prep_error.blocking_errors}>{issue.message}</li>
+                    </ul>
+                  </div>
+                <% end %>
+
+                <%= if @pathways_prep_error.warnings != [] do %>
+                  <div class="mt-2" id="pathways-prep-warnings">
+                    <h4 class="font-medium text-base-content">Warnings</h4>
+                    <ul class="list-disc pl-5 text-sm text-base-content/80">
+                      <li :for={issue <- @pathways_prep_error.warnings}>{issue.message}</li>
+                    </ul>
+                  </div>
+                <% end %>
+
+                <%= if @pathways_prep_error.blocking_errors == [] and @pathways_prep_error.warnings == [] and
+                      @pathways_prep_error.issues != [] do %>
+                  <ul
+                    class="list-disc pl-5 text-sm text-base-content/80"
+                    id="pathways-prep-error-list"
+                  >
+                    <li :for={issue <- @pathways_prep_error.issues}>{issue.message}</li>
+                  </ul>
+                <% end %>
               </div>
             </div>
           <% end %>
@@ -1309,17 +1397,46 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp build_pathways_prep_error(issues) do
+    {blocking_errors, warnings} = normalize_pathways_prep_issues(issues)
+
     %{
       summary: "Pathways export preparation failed.",
-      issues: Enum.map(issues, &format_issue_for_ui/1),
+      blocking_errors: blocking_errors,
+      warnings: warnings,
+      issues: blocking_errors ++ warnings,
       phase: :pathways_prep,
       log_ref: nil
     }
   end
 
+  defp normalize_pathways_prep_issues(%{} = payload) do
+    blocking_errors =
+      payload
+      |> payload_value(:blocking_errors)
+      |> normalize_pathways_prep_issue_list()
+
+    warnings =
+      payload
+      |> payload_value(:warnings)
+      |> normalize_pathways_prep_issue_list()
+
+    {blocking_errors, warnings}
+  end
+
+  defp normalize_pathways_prep_issues(issues) do
+    {normalize_pathways_prep_issue_list(issues), []}
+  end
+
+  defp normalize_pathways_prep_issue_list(issues) when is_list(issues) do
+    Enum.map(issues, &format_issue_for_ui/1)
+  end
+
+  defp normalize_pathways_prep_issue_list(_issues), do: []
+
   defp format_issue_for_ui(%{code: :missing_required_file_data, details: %{file: file}} = issue) do
     %{
       code: issue.code,
+      severity: normalize_issue_severity(issue),
       message: "Required GTFS file missing: #{file}",
       details: issue.details
     }
@@ -1329,6 +1446,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
        when is_list(missing) do
     %{
       code: issue.code,
+      severity: normalize_issue_severity(issue),
       message:
         "Required GTFS content missing: " <>
           Enum.join(Enum.map(missing, &to_string/1), ", "),
@@ -1339,6 +1457,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp format_issue_for_ui(%{code: code, message: message, details: details}) do
     %{
       code: code,
+      severity: normalize_issue_severity(%{code: code, message: message, details: details}),
       message: message || "Validation preparation issue: #{code}",
       details: details || %{}
     }
@@ -1347,6 +1466,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp format_issue_for_ui(%{code: :otp_runtime_already_running} = issue) do
     %{
       code: :otp_runtime_already_running,
+      severity: normalize_issue_severity(issue),
       message: "Another pathways runtime is already active for this organization.",
       details: Map.get(issue, :details, %{})
     }
@@ -1355,6 +1475,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp format_issue_for_ui(%{code: :otp_start_failed} = issue) do
     %{
       code: :otp_start_failed,
+      severity: normalize_issue_severity(issue),
       message: "Failed to start OTP runtime.",
       details: Map.get(issue, :details, %{})
     }
@@ -1363,6 +1484,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp format_issue_for_ui(%{code: :otp_ready_timeout} = issue) do
     %{
       code: :otp_ready_timeout,
+      severity: normalize_issue_severity(issue),
       message: "OTP runtime readiness timed out.",
       details: Map.get(issue, :details, %{})
     }
@@ -1371,6 +1493,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp format_issue_for_ui(%{code: :otp_stop_failed} = issue) do
     %{
       code: :otp_stop_failed,
+      severity: normalize_issue_severity(issue),
       message: "OTP runtime failed while stopping.",
       details: Map.get(issue, :details, %{})
     }
@@ -1379,10 +1502,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp format_issue_for_ui(%{code: code} = issue) do
     %{
       code: code,
+      severity: normalize_issue_severity(issue),
       message: "Validation preparation issue: #{code}",
       details: Map.get(issue, :details, %{})
     }
   end
+
+  defp normalize_issue_severity(%{severity: :warning}), do: :warning
+  defp normalize_issue_severity(%{"severity" => "warning"}), do: :warning
+  defp normalize_issue_severity(_issue), do: :blocking
 
   defp phase_percent(:cache_check), do: 10
   defp phase_percent(:preflight), do: 25
@@ -1641,7 +1769,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       title: title,
       summary: summary,
       checks: checks,
-      details: pathways_failure_presenter_details(error_payload)
+      details: pathways_failure_presenter_details(error_payload),
+      blocking_issues: pathways_failure_blocking_issues(error_payload)
     }
   end
 
@@ -1653,9 +1782,105 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       title: title,
       summary: summary,
       checks: checks,
-      details: []
+      details: [],
+      blocking_issues: []
     }
   end
+
+  defp pathways_failure_blocking_issues(error_payload) do
+    error_payload
+    |> payload_value(:issues)
+    |> normalize_pathways_failure_issues()
+    |> Enum.filter(&(&1.severity in [:blocking, :error]))
+  end
+
+  defp normalize_pathways_failure_issues(issues) when is_list(issues) do
+    Enum.map(issues, &normalize_pathways_failure_issue/1)
+  end
+
+  defp normalize_pathways_failure_issues(_issues), do: []
+
+  defp normalize_pathways_failure_issue(issue) when is_map(issue) do
+    code = payload_value(issue, :code) || :pathways_preflight_blocking_issue
+
+    context =
+      issue
+      |> payload_value(:context)
+      |> case do
+        context when is_map(context) ->
+          context
+
+        _other ->
+          case payload_value(issue, :details) do
+            details when is_map(details) -> details
+            _details -> %{}
+          end
+      end
+
+    message =
+      case payload_value(issue, :message) do
+        message when is_binary(message) and message != "" -> message
+        _other -> pathways_failure_issue_fallback_message(code, context)
+      end
+
+    %{
+      code: code,
+      severity: normalize_pathways_failure_issue_severity(payload_value(issue, :severity)),
+      message: message,
+      context_summary: pathways_failure_issue_context_summary(context)
+    }
+  end
+
+  defp normalize_pathways_failure_issue(issue) do
+    %{
+      code: :pathways_preflight_invalid_issue,
+      severity: :blocking,
+      message: "Pathways preflight returned malformed issue payload.",
+      context_summary: inspect(issue)
+    }
+  end
+
+  defp normalize_pathways_failure_issue_severity(:warning), do: :warning
+  defp normalize_pathways_failure_issue_severity(:info), do: :info
+  defp normalize_pathways_failure_issue_severity(:error), do: :error
+  defp normalize_pathways_failure_issue_severity("warning"), do: :warning
+  defp normalize_pathways_failure_issue_severity("info"), do: :info
+  defp normalize_pathways_failure_issue_severity("error"), do: :error
+  defp normalize_pathways_failure_issue_severity(_severity), do: :blocking
+
+  defp pathways_failure_issue_fallback_message(code, context) do
+    file = payload_value(context, :file)
+    field = payload_value(context, :field)
+
+    cond do
+      is_binary(file) and is_binary(field) ->
+        "Check #{field} in #{file} and rerun pathways validation."
+
+      is_binary(file) ->
+        "Check #{file} for #{code} and rerun pathways validation."
+
+      true ->
+        "Resolve #{code} and rerun pathways validation."
+    end
+  end
+
+  defp pathways_failure_issue_context_summary(context) when is_map(context) do
+    [:file, :field, :stop_id, :trip_id, :route_id, :service_id, :pathway_id, :value]
+    |> Enum.map(fn key ->
+      case payload_value(context, key) do
+        nil -> nil
+        "" -> nil
+        value -> "#{key}: #{value}"
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      items -> Enum.join(items, " • ")
+    end
+  end
+
+  defp pathways_failure_issue_context_summary(_context), do: nil
 
   defp present_pathways_failure_for_payload(error_payload) when is_map(error_payload) do
     error_payload
@@ -1857,7 +2082,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp pathways_failure_build_log_gtfs_source(nil), do: nil
 
-  defp pathways_failure_build_log_gtfs_source(build_log_excerpt) when is_binary(build_log_excerpt) do
+  defp pathways_failure_build_log_gtfs_source(build_log_excerpt)
+       when is_binary(build_log_excerpt) do
     case extract_gtfs_txt_filename(build_log_excerpt) do
       nil ->
         nil
@@ -2200,4 +2426,51 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp otp_data_requirements_summary, do: @otp_data_requirements_summary
+
+  defp export_gtfs_zip(organization_id, gtfs_version_id, :pathways) do
+    with {:ok, zip_path, _meta} <-
+           materializer_module().get_or_build_gtfs_zip(
+             organization_id,
+             gtfs_version_id,
+             preflight_mode: :strict,
+             force_rebuild: true
+           ),
+         {:ok, zip_binary} <- File.read(zip_path) do
+      {:ok, zip_binary}
+    else
+      {:error, issues} when is_list(issues) ->
+        {:error, {:pathways_export_prep_failed, issues}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp export_gtfs_zip(organization_id, gtfs_version_id, export_type) do
+    export_module().export_to_zip(organization_id, gtfs_version_id, export_type)
+  end
+
+  defp pathways_export_error_message(issues) when is_list(issues) do
+    case List.first(issues) do
+      %{message: message} when is_binary(message) and message != "" ->
+        message
+
+      %{code: code} ->
+        "Pathways export blocked by preflight issue: #{code}"
+
+      _other ->
+        "Pathways export blocked by preflight issues"
+    end
+  end
+
+  defp pathways_export_error_message(_issues),
+    do: "Pathways export blocked by preflight issues"
+
+  defp export_module do
+    Application.get_env(:gtfs_planner, :gtfs_export_module, GtfsPlanner.Gtfs.Export)
+  end
+
+  defp materializer_module do
+    Application.get_env(:gtfs_planner, :otp_gtfs_materializer_module, Materializer)
+  end
 end

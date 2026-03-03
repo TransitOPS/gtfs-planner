@@ -97,7 +97,9 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
          status: 200,
          body: %{
            "data" => %{
-             "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 300.5})]}
+             "plan" => %{
+               "itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 300.5})]
+             }
            }
          }
        }}
@@ -174,7 +176,9 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
          status: 200,
          body: %{
            "data" => %{
-             "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 150, "walkDistance" => 250.0})]}
+             "plan" => %{
+               "itineraries" => [walk_itinerary(%{"duration" => 150, "walkDistance" => 250.0})]
+             }
            }
          }
        }}
@@ -242,7 +246,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
              status: 200,
              body: %{
                "data" => %{
-                 "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 200.0})]}
+                 "plan" => %{
+                   "itineraries" => [
+                     walk_itinerary(%{"duration" => 120, "walkDistance" => 200.0})
+                   ]
+                 }
                }
              }
            }}
@@ -338,7 +346,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
              status: 200,
              body: %{
                "data" => %{
-                 "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 200.0})]}
+                 "plan" => %{
+                   "itineraries" => [
+                     walk_itinerary(%{"duration" => 120, "walkDistance" => 200.0})
+                   ]
+                 }
                }
              }
            }}
@@ -349,7 +361,11 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
              status: 200,
              body: %{
                "data" => %{
-                 "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 300.0})]}
+                 "plan" => %{
+                   "itineraries" => [
+                     walk_itinerary(%{"duration" => 120, "walkDistance" => 300.0})
+                   ]
+                 }
                }
              }
            }}
@@ -415,7 +431,9 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
          status: 200,
          body: %{
            "data" => %{
-             "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 100, "walkDistance" => 100.0})]}
+             "plan" => %{
+               "itineraries" => [walk_itinerary(%{"duration" => 100, "walkDistance" => 100.0})]
+             }
            }
          }
        }}
@@ -462,7 +480,9 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
          status: 200,
          body: %{
            "data" => %{
-             "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 100, "walkDistance" => 100.0})]}
+             "plan" => %{
+               "itineraries" => [walk_itinerary(%{"duration" => 100, "walkDistance" => 100.0})]
+             }
            }
          }
        }}
@@ -606,7 +626,9 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
          status: 200,
          body: %{
            "data" => %{
-             "plan" => %{"itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 300.0})]}
+             "plan" => %{
+               "itineraries" => [walk_itinerary(%{"duration" => 120, "walkDistance" => 300.0})]
+             }
            }
          }
        }}
@@ -926,7 +948,7 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
              "plan" => %{
                "itineraries" => [
                  walk_itinerary(%{
-                  "legs" => [
+                   "legs" => [
                      %{
                        "mode" => "WALK",
                        "from" => %{"name" => "Start"},

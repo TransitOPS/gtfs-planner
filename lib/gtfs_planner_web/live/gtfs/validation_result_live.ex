@@ -14,15 +14,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     %{kind: "expected_wheelchair_accessible", label: "Wheelchair accessible"}
   ]
 
-  @otp_data_requirements_summary [
-    "Station-related stops need valid numeric lat/lon in range.",
-    "Longitude sign must match your region.",
-    "Boarding areas (location_type=4) need a valid parent_station.",
-    "Service must be active for the test date and time.",
-    "GTFS references must resolve across stops, trips, routes, and service IDs.",
-    "Fix critical stop-to-street linking warnings before rerun."
-  ]
-
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -32,6 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
      |> assign(:page_title, "Validation Results")
      |> assign(:user_roles, user_roles)
      |> assign(:expanded_codes, MapSet.new())
+     |> assign(:pathways_preflight_issues, nil)
      |> assign(:pathways_failure_diagnostics, [])
      |> assign(:pathways_case_results, [])}
   end
@@ -54,11 +46,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
       {run, pathways_case_results} = load_pathways_render_data(run)
       pathways_failure_diagnostics = pathways_failure_diagnostics(run)
+      pathways_preflight_issues = pathways_preflight_issues(run)
 
       {:noreply,
        socket
        |> assign(:validation_id, validation_id)
        |> assign(:run, run)
+       |> assign(:pathways_preflight_issues, pathways_preflight_issues)
        |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics)
        |> assign(:pathways_case_results, pathways_case_results)
        |> stream(:validation_runs, validation_runs_history)
@@ -168,63 +162,96 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           <%= cond do %>
             <% @run.status == "failed" -> %>
               <%!-- Failed State --%>
-              <div class="alert alert-error mt-6">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="stroke-current shrink-0 h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
-                  >
-                  </path>
-                </svg>
-                <div>
-                  <h3 class="font-bold">Validation Failed</h3>
-                  <div class="text-sm mt-2">{@run.error_details}</div>
+              <section class="mt-6 rounded-xl border border-error/40 bg-base-100" role="alert">
+                <div class="flex items-start gap-3 border-b border-error/20 px-4 py-3">
+                  <.icon name="hero-exclamation-triangle" class="mt-0.5 h-5 w-5 shrink-0 text-error" />
+                  <div class="min-w-0 flex-1">
+                    <h3 class="text-base font-semibold leading-6">Validation Failed</h3>
+                    <p class="mt-1 text-sm leading-5 text-base-content/85">
+                      {failure_summary(@run, @pathways_preflight_issues)}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="space-y-4 px-4 py-4">
+                  <%= if @pathways_preflight_issues do %>
+                    <section id="pathways-preflight-issues" class="space-y-4">
+                      <%= if @pathways_preflight_issues.blocking_errors != [] do %>
+                        <section id="pathways-preflight-blocking-errors" class="space-y-2">
+                          <h4 class="text-xs font-semibold uppercase tracking-wide text-error">
+                            Blocking errors
+                          </h4>
+                          <ul class="space-y-2 text-sm">
+                            <li
+                              :for={issue <- @pathways_preflight_issues.blocking_errors}
+                              class="border-l-2 border-error/60 pl-3"
+                            >
+                              <p class="leading-5 text-base-content">{issue.message}</p>
+                              <p
+                                :if={issue_context_text = preflight_issue_context(issue)}
+                                class="mt-1 font-mono text-xs leading-5 text-base-content/70"
+                              >
+                                {issue_context_text}
+                              </p>
+                            </li>
+                          </ul>
+                        </section>
+                      <% end %>
+
+                      <%= if @pathways_preflight_issues.warnings != [] do %>
+                        <section
+                          id="pathways-preflight-warnings"
+                          class="space-y-2 border-t border-base-300 pt-3"
+                        >
+                          <h4 class="text-xs font-semibold uppercase tracking-wide text-warning">
+                            Warnings
+                          </h4>
+                          <ul class="space-y-2 text-sm">
+                            <li
+                              :for={issue <- @pathways_preflight_issues.warnings}
+                              class="border-l-2 border-warning/60 pl-3"
+                            >
+                              <p class="leading-5 text-base-content">{issue.message}</p>
+                              <p
+                                :if={issue_context_text = preflight_issue_context(issue)}
+                                class="mt-1 font-mono text-xs leading-5 text-base-content/70"
+                              >
+                                {issue_context_text}
+                              </p>
+                            </li>
+                          </ul>
+                        </section>
+                      <% end %>
+                    </section>
+                  <% end %>
+
                   <%= if @pathways_failure_diagnostics != [] do %>
-                    <div class="mt-4" id="pathways-failure-diagnostics">
-                      <h4 class="font-semibold text-sm">Technical diagnostics</h4>
-                      <dl class="space-y-1 text-xs mt-2">
+                    <section
+                      id="pathways-failure-diagnostics"
+                      class="space-y-2 border-t border-base-300 pt-3"
+                    >
+                      <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
+                        Technical diagnostics
+                      </h4>
+                      <dl class="divide-y divide-base-300 text-sm text-base-content/85">
                         <div
                           :for={detail <- @pathways_failure_diagnostics}
-                          class="grid grid-cols-[auto,1fr] gap-x-2"
+                          class="grid grid-cols-1 gap-1 py-2 sm:grid-cols-[12rem,1fr] sm:gap-3"
                         >
-                          <dt class="font-medium">{detail.label}:</dt>
+                          <dt class="font-medium text-base-content/80">{detail.label}:</dt>
                           <%= if detail.label == "Build log excerpt" do %>
-                            <dd class="whitespace-pre-wrap break-words font-mono">
+                            <dd class="rounded border border-base-300 bg-base-200 p-2 font-mono text-xs whitespace-pre-wrap break-words">
                               {detail.value}
                             </dd>
                           <% else %>
-                            <dd class="break-all">{detail.value}</dd>
+                            <dd class="break-all font-mono text-xs sm:text-sm">{detail.value}</dd>
                           <% end %>
                         </div>
                       </dl>
-                    </div>
+                    </section>
                   <% end %>
                 </div>
-              </div>
-
-              <%= if @pathways_failure_diagnostics != [] do %>
-                <section
-                  id="otp-data-requirements-summary"
-                  class="mt-4 rounded-lg border border-base-300 bg-base-100 p-4"
-                >
-                  <h3 class="text-sm font-semibold text-base-content">
-                    OTP data requirements (quick checks)
-                  </h3>
-                  <p class="mt-1 text-xs text-base-content/70">
-                    Fix these common blockers before rerunning pathways validation.
-                  </p>
-                  <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-base-content/85">
-                    <li :for={item <- otp_data_requirements_summary()}>{item}</li>
-                  </ul>
-                </section>
-              <% end %>
+              </section>
             <% @run.status in ["started", "running"] -> %>
               <%!-- Loading State --%>
               <div class="flex items-center justify-center min-h-[400px] mt-6">
@@ -245,13 +272,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                 pathways_case_criteria_checks(@pathways_case_results) %>
               <% pathways_criteria_overview_rows = pathways_criteria_overview(@pathways_case_results) %>
 
-              <.pathways_trip_visualization_overview_section
-                trip_overview={pathways_trip_overview}
-              />
+              <.pathways_trip_visualization_overview_section trip_overview={pathways_trip_overview} />
 
-              <.pathways_criteria_comparison_section
-                criteria_overview_rows={pathways_criteria_overview_rows}
-              />
+              <.pathways_criteria_comparison_section criteria_overview_rows={
+                pathways_criteria_overview_rows
+              } />
 
               <section
                 id="pathways-case-results"
@@ -939,7 +964,9 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                   id="pathways-trip-overview-duration-availability-rate"
                   class="font-mono tabular-nums"
                 >
-                  {format_pathways_overview_percentage(Map.get(duration_stats, :availability_rate, 0.0))}%
+                  {format_pathways_overview_percentage(
+                    Map.get(duration_stats, :availability_rate, 0.0)
+                  )}%
                 </td>
                 <td id="pathways-trip-overview-duration-min" class="font-mono tabular-nums">
                   {format_pathways_criteria_value(Map.get(duration_stats, :min))}
@@ -967,7 +994,9 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                   id="pathways-trip-overview-distance-availability-rate"
                   class="font-mono tabular-nums"
                 >
-                  {format_pathways_overview_percentage(Map.get(distance_stats, :availability_rate, 0.0))}%
+                  {format_pathways_overview_percentage(
+                    Map.get(distance_stats, :availability_rate, 0.0)
+                  )}%
                 </td>
                 <td id="pathways-trip-overview-distance-min" class="font-mono tabular-nums">
                   {format_pathways_criteria_value(Map.get(distance_stats, :min))}
@@ -983,7 +1012,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           </table>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3" id="pathways-trip-visualization-strips">
+        <div
+          class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3"
+          id="pathways-trip-visualization-strips"
+        >
           <div
             class="rounded-lg border border-base-content/15 bg-base-100 p-3"
             id="pathways-trip-availability-strip-duration"
@@ -1361,8 +1393,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
       pass_count: status_totals.pass,
       warning_count: status_totals.warning,
       fail_count: status_totals.failed,
-      duration_seconds: pathways_numeric_availability_stats(pathways_case_results, :duration_seconds),
-      distance_meters: pathways_numeric_availability_stats(pathways_case_results, :distance_meters)
+      duration_seconds:
+        pathways_numeric_availability_stats(pathways_case_results, :duration_seconds),
+      distance_meters:
+        pathways_numeric_availability_stats(pathways_case_results, :distance_meters)
     }
   end
 
@@ -1451,7 +1485,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
         }
 
       {_, nil} ->
-        %{kind: Atom.to_string(kind), label: label, expected: expected, actual: default_actual, status: :pass}
+        %{
+          kind: Atom.to_string(kind),
+          label: label,
+          expected: expected,
+          actual: default_actual,
+          status: :pass
+        }
 
       {_, mismatch} ->
         %{
@@ -1664,8 +1704,136 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
     socket
     |> assign(:run, run)
+    |> assign(:pathways_preflight_issues, pathways_preflight_issues(run))
     |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics(run))
     |> assign(:pathways_case_results, pathways_case_results)
+  end
+
+  defp failure_summary(%{run_type: "pathways_tests"}, pathways_preflight_issues)
+       when not is_nil(pathways_preflight_issues) do
+    "Pathways export readiness failed before build packaging."
+  end
+
+  defp failure_summary(run, _pathways_preflight_issues), do: run.error_details
+
+  defp pathways_preflight_issues(%{
+         run_type: "pathways_tests",
+         status: "failed",
+         error_details: error_details
+       })
+       when is_binary(error_details) do
+    case Jason.decode(error_details) do
+      {:ok, payload} when is_map(payload) ->
+        normalize_preflight_issues(payload)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp pathways_preflight_issues(_run), do: nil
+
+  defp normalize_preflight_issues(payload) do
+    details = payload_value(payload, :details)
+
+    {blocking_errors, warnings} =
+      case details do
+        details when is_map(details) ->
+          details_blocking_errors =
+            details
+            |> payload_value(:blocking_errors)
+            |> normalize_preflight_issue_list()
+
+          details_warnings =
+            details
+            |> payload_value(:warnings)
+            |> normalize_preflight_issue_list()
+
+          if details_blocking_errors == [] and details_warnings == [] do
+            split_preflight_issues_by_severity(payload_value(payload, :issues))
+          else
+            {details_blocking_errors, details_warnings}
+          end
+
+        _other ->
+          split_preflight_issues_by_severity(payload_value(payload, :issues))
+      end
+
+    if blocking_errors == [] and warnings == [] do
+      nil
+    else
+      %{
+        blocking_errors: blocking_errors,
+        warnings: warnings
+      }
+    end
+  end
+
+  defp split_preflight_issues_by_severity(issues) do
+    issues
+    |> normalize_preflight_issue_list()
+    |> Enum.split_with(&(&1.severity == :blocking))
+  end
+
+  defp normalize_preflight_issue_list(issues) when is_list(issues) do
+    Enum.map(issues, &normalize_preflight_issue/1)
+  end
+
+  defp normalize_preflight_issue_list(_issues), do: []
+
+  defp normalize_preflight_issue(issue) when is_map(issue) do
+    code = payload_value(issue, :code)
+    message = payload_value(issue, :message) || "Validation preparation issue"
+    severity = normalize_preflight_issue_severity(payload_value(issue, :severity))
+
+    context =
+      payload_value(issue, :context) || payload_value(issue, :details) || %{}
+
+    %{
+      code: code,
+      severity: severity,
+      message: to_string(message),
+      context: context
+    }
+  end
+
+  defp normalize_preflight_issue(issue) do
+    %{
+      code: nil,
+      severity: :blocking,
+      message: inspect(issue),
+      context: %{}
+    }
+  end
+
+  defp normalize_preflight_issue_severity(value) when value in [:warning, "warning"], do: :warning
+  defp normalize_preflight_issue_severity(_value), do: :blocking
+
+  defp preflight_issue_context(issue) do
+    context = Map.get(issue, :context, %{})
+
+    [
+      context_value(context, :file),
+      context_value(context, :field),
+      context_value(context, :stop_id),
+      context_value(context, :pathway_id),
+      context_value(context, :trip_id),
+      context_value(context, :route_id),
+      context_value(context, :service_id),
+      context_value(context, :value)
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> case do
+      [] -> nil
+      values -> Enum.join(values, " · ")
+    end
+  end
+
+  defp context_value(context, key) when is_map(context) do
+    case payload_value(context, key) do
+      nil -> nil
+      value -> to_string(value)
+    end
   end
 
   defp pathways_failure_diagnostics(%{
@@ -1682,8 +1850,14 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           presenter_detail("Exit status", pathways_failure_exit_status(payload)),
           presenter_detail("Build log path", pathways_failure_build_log_path(payload)),
           presenter_detail("Build log excerpt", build_log_excerpt),
-          presenter_detail("Likely GTFS source", pathways_failure_build_log_gtfs_source(build_log_excerpt)),
-          presenter_detail("Likely cause", pathways_failure_npe_parent_station_hint(build_log_excerpt))
+          presenter_detail(
+            "Likely GTFS source",
+            pathways_failure_build_log_gtfs_source(build_log_excerpt)
+          ),
+          presenter_detail(
+            "Likely cause",
+            pathways_failure_npe_parent_station_hint(build_log_excerpt)
+          )
         ]
         |> Enum.reject(&is_nil/1)
 
@@ -1748,7 +1922,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp pathways_failure_build_log_gtfs_source(nil), do: nil
 
-  defp pathways_failure_build_log_gtfs_source(build_log_excerpt) when is_binary(build_log_excerpt) do
+  defp pathways_failure_build_log_gtfs_source(build_log_excerpt)
+       when is_binary(build_log_excerpt) do
     case extract_gtfs_txt_filename(build_log_excerpt) do
       nil -> nil
       filename -> "Issue appears to come from #{filename}."
@@ -1908,6 +2083,4 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp validation_subtitle(_run) do
     "Results of MobilityData GTFS validation."
   end
-
-  defp otp_data_requirements_summary, do: @otp_data_requirements_summary
 end

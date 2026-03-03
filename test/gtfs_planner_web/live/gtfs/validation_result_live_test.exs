@@ -106,7 +106,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       organization: organization,
       gtfs_version: version
     } do
-      {:ok, run} = Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
 
       temp_dir =
         Path.join(
@@ -163,11 +164,101 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert html =~ "Likely GTFS source:"
       assert html =~ "Issue appears to come from pathways.txt."
       assert html =~ "Likely cause:"
+
       assert html =~
                "NullPointerException often indicates a child stop is missing a valid parent_station assignment."
-      assert has_element?(view, "#otp-data-requirements-summary")
-      assert html =~ "OTP data requirements (quick checks)"
-      assert html =~ "Boarding areas (location_type=4) need a valid parent_station."
+
+      refute has_element?(view, "#otp-data-requirements-summary")
+    end
+
+    test "renders structured preflight blocking and warning issues for failed pathways run", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+      {:ok, run} =
+        Validations.mark_pathways_failed(run, %{
+          reason: :pathways_export_prep_failed,
+          details: %{
+            blocking_errors: [
+              %{
+                code: :boarding_area_parent_station_missing,
+                severity: :blocking,
+                message: "Boarding area ba-1 is missing parent_station in stops.txt.",
+                context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-1"}
+              }
+            ],
+            warnings: [
+              %{
+                code: :pathway_endpoint_stop_not_found,
+                severity: :warning,
+                message: "Pathway p-1 references unknown to_stop_id S-404 in pathways.txt.",
+                context: %{file: "pathways.txt", field: "to_stop_id", pathway_id: "p-1"}
+              }
+            ]
+          }
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert html =~ "Pathways export readiness failed before build packaging."
+      assert has_element?(view, "#pathways-preflight-issues")
+      assert has_element?(view, "#pathways-preflight-blocking-errors")
+      assert has_element?(view, "#pathways-preflight-warnings")
+      assert html =~ "Boarding area ba-1 is missing parent_station in stops.txt."
+      assert html =~ "Pathway p-1 references unknown to_stop_id S-404 in pathways.txt."
+      assert html =~ "stops.txt · parent_station · ba-1"
+      assert html =~ "pathways.txt · to_stop_id · p-1"
+    end
+
+    test "renders preflight blocking and warning sections when issues are only in root payload",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version
+         } do
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+      {:ok, run} =
+        Validations.mark_pathways_failed(run, %{
+          reason: :pathways_export_prep_failed,
+          issues: [
+            %{
+              code: :station_stop_lon_sign_mismatch,
+              severity: :blocking,
+              message:
+                "Station st-1 has stop_lon with wrong sign for configured region in stops.txt.",
+              context: %{file: "stops.txt", field: "stop_lon", stop_id: "st-1"}
+            },
+            %{
+              code: :pathway_endpoint_stop_not_found,
+              severity: :warning,
+              message: "Pathway p-2 references unknown to_stop_id S-999 in pathways.txt.",
+              context: %{file: "pathways.txt", field: "to_stop_id", pathway_id: "p-2"}
+            }
+          ]
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert html =~ "Pathways export readiness failed before build packaging."
+      assert has_element?(view, "#pathways-preflight-blocking-errors")
+      assert has_element?(view, "#pathways-preflight-warnings")
+
+      assert html =~
+               "Station st-1 has stop_lon with wrong sign for configured region in stops.txt."
+
+      assert html =~ "Pathway p-2 references unknown to_stop_id S-999 in pathways.txt."
+      assert html =~ "stops.txt · stop_lon · st-1"
+      assert html =~ "pathways.txt · to_stop_id · p-2"
     end
 
     test "displays loading state for started validation run", %{
@@ -404,9 +495,16 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert render(view |> element("#pathways-case-row-0")) =~ walkability_test_1.stop_id
       assert render(view |> element("#pathways-case-row-1")) =~ "456 Oak St"
       assert render(view |> element("#pathways-case-row-1")) =~ "stop-2"
-      assert render(view |> element("#pathways-case-row-1")) =~ "Query failed: OTP returned HTTP 500"
 
-      assert has_element?(view, "#pathways-case-itinerary-details-0 summary", "Step-by-step itinerary")
+      assert render(view |> element("#pathways-case-row-1")) =~
+               "Query failed: OTP returned HTTP 500"
+
+      assert has_element?(
+               view,
+               "#pathways-case-itinerary-details-0 summary",
+               "Step-by-step itinerary"
+             )
+
       assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Step")
       assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Leg Mode")
       assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Street")
@@ -418,11 +516,20 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert render(view |> element("#pathways-case-itinerary-step-0-1-0")) =~ "Oak Ave"
 
       rendered_html = render(view)
-      {first_step_position, _} = :binary.match(rendered_html, "pathways-case-itinerary-step-0-0-0")
-      {second_step_position, _} = :binary.match(rendered_html, "pathways-case-itinerary-step-0-1-0")
+
+      {first_step_position, _} =
+        :binary.match(rendered_html, "pathways-case-itinerary-step-0-0-0")
+
+      {second_step_position, _} =
+        :binary.match(rendered_html, "pathways-case-itinerary-step-0-1-0")
+
       assert first_step_position < second_step_position
 
-      assert has_element?(view, "#pathways-case-itinerary-empty-1", "No itinerary steps available.")
+      assert has_element?(
+               view,
+               "#pathways-case-itinerary-empty-1",
+               "No itinerary steps available."
+             )
     end
 
     test "renders criteria checks with pass and fail statuses for scoring failures", %{
@@ -491,11 +598,19 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
 
       assert has_element?(view, "#pathways-case-criteria-check-0-duration_seconds_range", "FAIL")
 
-      assert has_element?(view, "#pathways-case-criteria-check-0-duration_seconds_range", "100 - 300")
+      assert has_element?(
+               view,
+               "#pathways-case-criteria-check-0-duration_seconds_range",
+               "100 - 300"
+             )
 
       assert has_element?(view, "#pathways-case-criteria-check-0-distance_meters_range", "PASS")
 
-      assert has_element?(view, "#pathways-case-criteria-check-0-distance_meters_range", "50 - 500")
+      assert has_element?(
+               view,
+               "#pathways-case-criteria-check-0-distance_meters_range",
+               "50 - 500"
+             )
 
       assert has_element?(
                view,
@@ -573,9 +688,24 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
 
       assert has_element?(view, "#pathways-criteria-comparison-overview")
 
-      assert has_element?(view, "#pathways-criteria-comparison-label-expected_traversable", "Traversable")
-      assert has_element?(view, "#pathways-criteria-comparison-configured-expected_traversable", "2")
-      assert has_element?(view, "#pathways-criteria-comparison-evaluated-expected_traversable", "1")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-label-expected_traversable",
+               "Traversable"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-configured-expected_traversable",
+               "2"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-evaluated-expected_traversable",
+               "1"
+             )
+
       assert has_element?(view, "#pathways-criteria-comparison-pass-expected_traversable", "1")
       assert has_element?(view, "#pathways-criteria-comparison-fail-expected_traversable", "0")
 
@@ -585,15 +715,47 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
                "1"
              )
 
-      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-expected_traversable", "100.0%")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-pass-rate-expected_traversable",
+               "100.0%"
+             )
 
-      assert has_element?(view, "#pathways-criteria-comparison-configured-duration_seconds_range", "2")
-      assert has_element?(view, "#pathways-criteria-comparison-not-evaluated-duration_seconds_range", "1")
-      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-duration_seconds_range", "100.0%")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-configured-duration_seconds_range",
+               "2"
+             )
 
-      assert has_element?(view, "#pathways-criteria-comparison-configured-distance_meters_range", "2")
-      assert has_element?(view, "#pathways-criteria-comparison-not-evaluated-distance_meters_range", "1")
-      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-distance_meters_range", "100.0%")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-not-evaluated-duration_seconds_range",
+               "1"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-pass-rate-duration_seconds_range",
+               "100.0%"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-configured-distance_meters_range",
+               "2"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-not-evaluated-distance_meters_range",
+               "1"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-pass-rate-distance_meters_range",
+               "100.0%"
+             )
 
       assert has_element?(
                view,
@@ -639,8 +801,18 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert has_element?(view, "#pathways-trip-visualization-overview")
       assert has_element?(view, "#pathways-trip-overview-total-tests-value", "0")
 
-      assert has_element?(view, "#pathways-criteria-comparison-configured-expected_traversable", "0")
-      assert has_element?(view, "#pathways-criteria-comparison-evaluated-expected_traversable", "0")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-configured-expected_traversable",
+               "0"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-evaluated-expected_traversable",
+               "0"
+             )
+
       assert has_element?(view, "#pathways-criteria-comparison-pass-expected_traversable", "0")
       assert has_element?(view, "#pathways-criteria-comparison-fail-expected_traversable", "0")
 
@@ -650,7 +822,12 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
                "0"
              )
 
-      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-expected_traversable", "0.0%")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-pass-rate-expected_traversable",
+               "0.0%"
+             )
+
       assert has_element?(view, "#pathways-trip-overview-duration-available", "0")
       assert has_element?(view, "#pathways-trip-overview-distance-available", "0")
       assert has_element?(view, "#pathways-trip-overview-duration-min", "-")

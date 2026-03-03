@@ -102,7 +102,7 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunnerTest do
 
     assert_receive {:runtime_called, ^organization_id, ^gtfs_version_id, runtime_opts}
     assert runtime_opts[:status_callback] == status_callback
-    assert runtime_opts[:preflight_mode] == :lenient
+    assert runtime_opts[:preflight_mode] == :strict
     assert runtime_opts[:force_rebuild] == true
     assert runtime_opts[:custom_runtime_opt] == :enabled
 
@@ -160,7 +160,7 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunnerTest do
              )
 
     assert_receive {:env_runtime_called, ^organization_id, ^gtfs_version_id, runtime_opts}
-    assert runtime_opts[:preflight_mode] == :lenient
+    assert runtime_opts[:preflight_mode] == :strict
     assert runtime_opts[:force_rebuild] == true
 
     assert_receive {:env_pathways_called, %{session: :env_runtime_session}, ^organization_id,

@@ -171,6 +171,7 @@ defmodule GtfsPlanner.ValidationsTest do
       assert decoded_error["reason"] == "otp_runtime_failed"
       assert decoded_error["details"]["stage"] == "runtime_boot"
       assert decoded_error["details"]["message"] == "boom"
+
       assert decoded_error["issues"] == [
                %{"code" => "invalid_latitude", "row" => 12},
                "missing_parent_station"
@@ -519,6 +520,7 @@ defmodule GtfsPlanner.ValidationsTest do
       assert status.error_payload["scope"] == "pathways_tests"
       assert status.error_payload["reason"] == "build_command_failed"
       assert status.error_payload["reason_code"] == "build_command_failed"
+
       assert status.error_payload["details"] == %{
                "exit_status" => 1,
                "build_log_path" => "/tmp/build.log"

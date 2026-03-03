@@ -138,7 +138,7 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunner do
     |> Keyword.get(:runtime_opts, [])
     |> Keyword.merge(
       status_callback: status_callback,
-      preflight_mode: :lenient,
+      preflight_mode: :strict,
       force_rebuild: true
     )
   end

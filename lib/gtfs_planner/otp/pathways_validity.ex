@@ -331,12 +331,14 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
   end
 
   @spec extract_first_itinerary(map()) :: {:ok, case_query_output()} | {:error, map()}
-  defp extract_first_itinerary(%{
-         "duration" => duration,
-         "walkDistance" => walk_distance,
-         "startTime" => start_time,
-         "endTime" => end_time
-       } = itinerary) do
+  defp extract_first_itinerary(
+         %{
+           "duration" => duration,
+           "walkDistance" => walk_distance,
+           "startTime" => start_time,
+           "endTime" => end_time
+         } = itinerary
+       ) do
     with {:ok, itinerary_start_time} <- normalize_itinerary_datetime(start_time, itinerary),
          {:ok, itinerary_end_time} <- normalize_itinerary_datetime(end_time, itinerary),
          {:ok, itinerary_steps} <- normalize_itinerary_steps(itinerary) do

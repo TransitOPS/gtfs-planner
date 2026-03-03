@@ -301,6 +301,54 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
     end
   end
 
+  defmodule ExportModuleMock do
+    def export_to_zip(organization_id, gtfs_version_id, export_type, _opts \\ []) do
+      case Application.get_env(:gtfs_planner, :export_test_pid) do
+        pid when is_pid(pid) ->
+          send(pid, {:export_to_zip_called, organization_id, gtfs_version_id, export_type})
+
+        _other ->
+          :ok
+      end
+
+      {:ok, "zip-binary"}
+    end
+  end
+
+  defmodule ExportModuleShouldNotBeCalledMock do
+    def export_to_zip(_organization_id, _gtfs_version_id, _export_type, _opts \\ []) do
+      raise "export_to_zip should not be called for pathways export"
+    end
+  end
+
+  defmodule MaterializerBlockingMock do
+    def get_or_build_gtfs_zip(organization_id, gtfs_version_id, opts) do
+      case Application.get_env(:gtfs_planner, :export_test_pid) do
+        pid when is_pid(pid) ->
+          send(pid, {:materializer_called, organization_id, gtfs_version_id, opts})
+
+        _other ->
+          :ok
+      end
+
+      {:error,
+       [
+         %{
+           code: :boarding_area_parent_station_missing,
+           severity: :blocking,
+           message: "Boarding area ba-22 is missing parent_station in stops.txt.",
+           context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-22"}
+         }
+       ]}
+    end
+  end
+
+  defmodule MaterializerShouldNotBeCalledMock do
+    def get_or_build_gtfs_zip(_organization_id, _gtfs_version_id, _opts) do
+      raise "materializer should not be called for full export"
+    end
+  end
+
   # Make sure mocks are verified after each test
   setup :verify_on_exit!
 
@@ -652,6 +700,28 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert latest_run.error_details =~ "otp_start_failed"
     end
 
+    test "pathways prep failure clears validating progress state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      Application.put_env(:gtfs_planner, :otp_runtime_module, RuntimeFailMock)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      Process.sleep(300)
+
+      assert has_element?(view, "#validation-error-panel")
+      refute has_element?(view, "progress.progress")
+      refute has_element?(view, "button", "Run Again")
+      assert has_element?(view, "button", "Run Validation")
+    end
+
     test "pathways run succeeds when runtime emits OTP phase statuses", %{
       conn: conn,
       user: user,
@@ -883,6 +953,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert run.status == "failed"
 
       html = render(view)
+
       assert html =~ "Pathways validation failed during OTP runtime." or
                html =~ "OTP pathways build failed"
 
@@ -893,8 +964,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert html =~ "Build log excerpt:"
       assert html =~ "java.lang.NullPointerException"
       assert html =~ "Likely cause:"
+
       assert html =~
                "NullPointerException often indicates a child stop is missing a valid parent_station assignment."
+
       assert has_element?(view, "#otp-data-requirements-summary")
       assert html =~ "OTP data requirements (quick checks)"
       assert html =~ "Boarding areas (location_type=4) need a valid parent_station."
@@ -999,6 +1072,183 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert html =~ "65"
       assert html =~ "Build log path:"
       assert html =~ "/tmp/otp/boarding-area-build.log"
+    end
+
+    test "renders blocking issues from structured failure payload", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_runner_module =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_runner_module)
+
+      previous_runner_test_pid =
+        Application.get_env(:gtfs_planner, :pathways_runner_test_pid)
+
+      previous_failure_reason =
+        Application.get_env(:gtfs_planner, :pathways_runner_failure_reason)
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_trip_test_runner_module,
+        PathwaysRunnerFailReasonMock
+      )
+
+      Application.put_env(:gtfs_planner, :pathways_runner_test_pid, self())
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_runner_failure_reason,
+        %{
+          reason: :otp_runtime_failed,
+          issues: [
+            %{
+              code: :boarding_area_parent_station_missing,
+              severity: :blocking,
+              message: "Boarding area ba-1 is missing parent_station in stops.txt.",
+              context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-1"}
+            }
+          ]
+        }
+      )
+
+      on_exit(fn ->
+        if previous_runner_module do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_module,
+            previous_runner_module
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_module)
+        end
+
+        if previous_runner_test_pid do
+          Application.put_env(:gtfs_planner, :pathways_runner_test_pid, previous_runner_test_pid)
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_test_pid)
+        end
+
+        if previous_failure_reason do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_runner_failure_reason,
+            previous_failure_reason
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_failure_reason)
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      assert_receive {:pathways_runner_failed, _run_id, %{reason: :otp_runtime_failed}}, 500
+
+      Process.sleep(300)
+
+      assert has_element?(view, "#pathways-failure-blocking-issues")
+
+      html = render(view)
+      assert html =~ "Blocking issues"
+      assert html =~ "Boarding area ba-1 is missing parent_station in stops.txt."
+      assert html =~ "file: stops.txt"
+      assert html =~ "field: parent_station"
+      assert html =~ "stop_id: ba-1"
+    end
+
+    test "pathways readiness block clears spinner and renders blocking issues", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_runner_module =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_runner_module)
+
+      previous_runner_test_pid =
+        Application.get_env(:gtfs_planner, :pathways_runner_test_pid)
+
+      previous_failure_reason =
+        Application.get_env(:gtfs_planner, :pathways_runner_failure_reason)
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_trip_test_runner_module,
+        PathwaysRunnerFailReasonMock
+      )
+
+      Application.put_env(:gtfs_planner, :pathways_runner_test_pid, self())
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_runner_failure_reason,
+        %{
+          reason: :pathways_export_prep_failed,
+          issues: [
+            %{
+              code: :boarding_area_parent_station_missing,
+              severity: :blocking,
+              message: "Boarding area ba-17 is missing parent_station in stops.txt.",
+              context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-17"}
+            }
+          ]
+        }
+      )
+
+      on_exit(fn ->
+        if previous_runner_module do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_module,
+            previous_runner_module
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_module)
+        end
+
+        if previous_runner_test_pid do
+          Application.put_env(:gtfs_planner, :pathways_runner_test_pid, previous_runner_test_pid)
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_test_pid)
+        end
+
+        if previous_failure_reason do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_runner_failure_reason,
+            previous_failure_reason
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_runner_failure_reason)
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      assert_receive {:pathways_runner_failed, _run_id, %{reason: :pathways_export_prep_failed}},
+                     500
+
+      Process.sleep(300)
+
+      assert has_element?(view, "#validation-error-panel")
+      assert has_element?(view, "#pathways-failure-blocking-issues")
+      refute has_element?(view, "progress.progress")
+
+      html = render(view)
+      assert html =~ "Boarding area ba-17 is missing parent_station in stops.txt."
+      assert html =~ "file: stops.txt"
+      assert html =~ "field: parent_station"
+      assert html =~ "stop_id: ba-17"
+      assert has_element?(view, "button", "Run Validation")
     end
 
     test "pathways start delegates to context entrypoint runner path", %{
@@ -1415,7 +1665,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
           expected_traversable: true
         })
 
-      {:ok, pathways_run} = Validations.create_pathways_validation_run(organization.id, version.id)
+      {:ok, pathways_run} =
+        Validations.create_pathways_validation_run(organization.id, version.id)
 
       pathways_result = %{
         suite_meta: %{total_candidates: 0, selected_count: 0, malformed_count: 0},
@@ -1454,7 +1705,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
         ]
       }
 
-      {:ok, pathways_run} = Validations.mark_pathways_completed(pathways_run, pathways_result, 100)
+      {:ok, pathways_run} =
+        Validations.mark_pathways_completed(pathways_run, pathways_result, 100)
 
       {:ok, mobility_run} =
         Validations.create_validation_run(organization.id, version.id, "mobility_data")
@@ -1478,6 +1730,132 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert has_element?(view, "#recent-validation-warnings-#{mobility_run.id}", "8")
       assert has_element?(view, "#recent-validation-infos-#{mobility_run.id}", "9")
     end
+
+    test "pathways export blocks on materializer preflight issues", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_export_module = Application.get_env(:gtfs_planner, :gtfs_export_module)
+
+      previous_materializer_module =
+        Application.get_env(:gtfs_planner, :otp_gtfs_materializer_module)
+
+      previous_export_test_pid = Application.get_env(:gtfs_planner, :export_test_pid)
+
+      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleShouldNotBeCalledMock)
+      Application.put_env(:gtfs_planner, :otp_gtfs_materializer_module, MaterializerBlockingMock)
+      Application.put_env(:gtfs_planner, :export_test_pid, self())
+
+      on_exit(fn ->
+        if previous_export_module do
+          Application.put_env(:gtfs_planner, :gtfs_export_module, previous_export_module)
+        else
+          Application.delete_env(:gtfs_planner, :gtfs_export_module)
+        end
+
+        if previous_materializer_module do
+          Application.put_env(
+            :gtfs_planner,
+            :otp_gtfs_materializer_module,
+            previous_materializer_module
+          )
+        else
+          Application.delete_env(:gtfs_planner, :otp_gtfs_materializer_module)
+        end
+
+        if previous_export_test_pid do
+          Application.put_env(:gtfs_planner, :export_test_pid, previous_export_test_pid)
+        else
+          Application.delete_env(:gtfs_planner, :export_test_pid)
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[name='export_type'][phx-value-type='pathways']") |> render_click()
+      view |> element("button", "Export GTFS") |> render_click()
+
+      organization_id = organization.id
+      version_id = version.id
+
+      assert_receive {:materializer_called, ^organization_id, ^version_id, materializer_opts}, 500
+      assert materializer_opts[:preflight_mode] == :strict
+      assert materializer_opts[:force_rebuild] == true
+
+      Process.sleep(100)
+
+      html = render(view)
+      assert html =~ "Boarding area ba-22 is missing parent_station in stops.txt."
+      refute html =~ "Exporting..."
+      assert has_element?(view, "button", "Export GTFS")
+      refute html =~ "Export completed successfully"
+    end
+
+    test "full export uses direct export module path", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_export_module = Application.get_env(:gtfs_planner, :gtfs_export_module)
+
+      previous_materializer_module =
+        Application.get_env(:gtfs_planner, :otp_gtfs_materializer_module)
+
+      previous_export_test_pid = Application.get_env(:gtfs_planner, :export_test_pid)
+
+      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleMock)
+
+      Application.put_env(
+        :gtfs_planner,
+        :otp_gtfs_materializer_module,
+        MaterializerShouldNotBeCalledMock
+      )
+
+      Application.put_env(:gtfs_planner, :export_test_pid, self())
+
+      on_exit(fn ->
+        if previous_export_module do
+          Application.put_env(:gtfs_planner, :gtfs_export_module, previous_export_module)
+        else
+          Application.delete_env(:gtfs_planner, :gtfs_export_module)
+        end
+
+        if previous_materializer_module do
+          Application.put_env(
+            :gtfs_planner,
+            :otp_gtfs_materializer_module,
+            previous_materializer_module
+          )
+        else
+          Application.delete_env(:gtfs_planner, :otp_gtfs_materializer_module)
+        end
+
+        if previous_export_test_pid do
+          Application.put_env(:gtfs_planner, :export_test_pid, previous_export_test_pid)
+        else
+          Application.delete_env(:gtfs_planner, :export_test_pid)
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[name='export_type'][phx-value-type='full']") |> render_click()
+      view |> element("button", "Export GTFS") |> render_click()
+
+      organization_id = organization.id
+      version_id = version.id
+
+      assert_receive {:export_to_zip_called, ^organization_id, ^version_id, :full}, 500
+
+      Process.sleep(100)
+
+      assert render(view) =~ "Export completed successfully"
+    end
   end
 
   describe "classify_pathways_failure_category/1" do
@@ -1485,7 +1863,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       payload = %{
         "reason" => "otp_runtime_failed",
         "issues" => [
-          %{"code" => "build_failed", "message" => "CSV parse error: malformed row in pathways.txt"}
+          %{
+            "code" => "build_failed",
+            "message" => "CSV parse error: malformed row in pathways.txt"
+          }
         ]
       }
 
@@ -1512,8 +1893,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       payload = %{
         "reason" => "otp_runtime_failed",
         "details" => %{
-          "reason" =>
-            "Exception in thread main java.lang.OutOfMemoryError: Java heap space"
+          "reason" => "Exception in thread main java.lang.OutOfMemoryError: Java heap space"
         }
       }
 
@@ -1566,6 +1946,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert presented.title == "OTP pathways build failed"
       assert presented.summary =~ "build or runtime failure"
       assert length(presented.checks) >= 1
+      assert presented.blocking_issues != []
 
       assert Enum.any?(presented.details, fn detail ->
                detail.label == "Exit status" and detail.value == "255"
@@ -1613,6 +1994,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert presented.title == "Boarding area parent data is invalid"
       assert presented.summary =~ "parent station"
       assert Enum.any?(presented.checks, &String.contains?(&1, "parent_station"))
+      assert presented.blocking_issues == []
     end
 
     test "supports non-map legacy payloads with fallback output" do
@@ -1626,6 +2008,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert presented.title == "OTP pathways build failed"
       assert length(presented.checks) >= 1
       assert presented.details == []
+      assert presented.blocking_issues == []
     end
 
     test "includes build log excerpt detail when build log exists" do
