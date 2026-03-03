@@ -1038,11 +1038,19 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
 
       assert has_element?(view, "#pathways-case-criteria-check-0-duration_seconds_range", "FAIL")
 
-      assert has_element?(view, "#pathways-case-criteria-check-0-duration_seconds_range", "100 - 300")
+      assert has_element?(
+               view,
+               "#pathways-case-criteria-check-0-duration_seconds_range",
+               "100 - 300"
+             )
 
       assert has_element?(view, "#pathways-case-criteria-check-0-distance_meters_range", "PASS")
 
-      assert has_element?(view, "#pathways-case-criteria-check-0-distance_meters_range", "50 - 500")
+      assert has_element?(
+               view,
+               "#pathways-case-criteria-check-0-distance_meters_range",
+               "50 - 500"
+             )
 
       assert has_element?(
                view,
@@ -1120,9 +1128,24 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
 
       assert has_element?(view, "#pathways-criteria-comparison-overview")
 
-      assert has_element?(view, "#pathways-criteria-comparison-label-expected_traversable", "Traversable")
-      assert has_element?(view, "#pathways-criteria-comparison-configured-expected_traversable", "2")
-      assert has_element?(view, "#pathways-criteria-comparison-evaluated-expected_traversable", "1")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-label-expected_traversable",
+               "Traversable"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-configured-expected_traversable",
+               "2"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-evaluated-expected_traversable",
+               "1"
+             )
+
       assert has_element?(view, "#pathways-criteria-comparison-pass-expected_traversable", "1")
       assert has_element?(view, "#pathways-criteria-comparison-fail-expected_traversable", "0")
 
@@ -1132,15 +1155,47 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
                "1"
              )
 
-      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-expected_traversable", "100.0%")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-pass-rate-expected_traversable",
+               "100.0%"
+             )
 
-      assert has_element?(view, "#pathways-criteria-comparison-configured-duration_seconds_range", "2")
-      assert has_element?(view, "#pathways-criteria-comparison-not-evaluated-duration_seconds_range", "1")
-      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-duration_seconds_range", "100.0%")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-configured-duration_seconds_range",
+               "2"
+             )
 
-      assert has_element?(view, "#pathways-criteria-comparison-configured-distance_meters_range", "2")
-      assert has_element?(view, "#pathways-criteria-comparison-not-evaluated-distance_meters_range", "1")
-      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-distance_meters_range", "100.0%")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-not-evaluated-duration_seconds_range",
+               "1"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-pass-rate-duration_seconds_range",
+               "100.0%"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-configured-distance_meters_range",
+               "2"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-not-evaluated-distance_meters_range",
+               "1"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-pass-rate-distance_meters_range",
+               "100.0%"
+             )
 
       assert has_element?(
                view,
@@ -1186,8 +1241,18 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert has_element?(view, "#pathways-trip-visualization-overview")
       assert has_element?(view, "#pathways-trip-overview-total-tests-value", "0")
 
-      assert has_element?(view, "#pathways-criteria-comparison-configured-expected_traversable", "0")
-      assert has_element?(view, "#pathways-criteria-comparison-evaluated-expected_traversable", "0")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-configured-expected_traversable",
+               "0"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-evaluated-expected_traversable",
+               "0"
+             )
+
       assert has_element?(view, "#pathways-criteria-comparison-pass-expected_traversable", "0")
       assert has_element?(view, "#pathways-criteria-comparison-fail-expected_traversable", "0")
 
@@ -1197,7 +1262,12 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
                "0"
              )
 
-      assert has_element?(view, "#pathways-criteria-comparison-pass-rate-expected_traversable", "0.0%")
+      assert has_element?(
+               view,
+               "#pathways-criteria-comparison-pass-rate-expected_traversable",
+               "0.0%"
+             )
+
       assert has_element?(view, "#pathways-trip-overview-duration-available", "0")
       assert has_element?(view, "#pathways-trip-overview-distance-available", "0")
       assert has_element?(view, "#pathways-trip-overview-duration-min", "-")

@@ -927,7 +927,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 id="otp-data-requirements-summary"
                 class="mb-6 rounded-lg border border-base-300 bg-base-100 p-4"
               >
-                <h3 class="text-sm font-semibold text-base-content">OTP data requirements (quick checks)</h3>
+                <h3 class="text-sm font-semibold text-base-content">
+                  OTP data requirements (quick checks)
+                </h3>
                 <p class="mt-1 text-xs text-base-content/70">
                   Fix these common blockers before rerunning pathways validation.
                 </p>
@@ -958,9 +960,34 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 <p class="text-sm text-base-content/80">
                   Fix the issues below, then run validation again.
                 </p>
-                <ul class="list-disc pl-5 text-sm text-base-content/80" id="pathways-prep-error-list">
-                  <li :for={issue <- @pathways_prep_error.issues}>{issue.message}</li>
-                </ul>
+
+                <%= if @pathways_prep_error.blocking_errors != [] do %>
+                  <div class="mt-2" id="pathways-prep-blocking-errors">
+                    <h4 class="font-medium text-base-content">Blocking errors</h4>
+                    <ul class="list-disc pl-5 text-sm text-base-content/80">
+                      <li :for={issue <- @pathways_prep_error.blocking_errors}>{issue.message}</li>
+                    </ul>
+                  </div>
+                <% end %>
+
+                <%= if @pathways_prep_error.warnings != [] do %>
+                  <div class="mt-2" id="pathways-prep-warnings">
+                    <h4 class="font-medium text-base-content">Warnings</h4>
+                    <ul class="list-disc pl-5 text-sm text-base-content/80">
+                      <li :for={issue <- @pathways_prep_error.warnings}>{issue.message}</li>
+                    </ul>
+                  </div>
+                <% end %>
+
+                <%= if @pathways_prep_error.blocking_errors == [] and @pathways_prep_error.warnings == [] and
+                      @pathways_prep_error.issues != [] do %>
+                  <ul
+                    class="list-disc pl-5 text-sm text-base-content/80"
+                    id="pathways-prep-error-list"
+                  >
+                    <li :for={issue <- @pathways_prep_error.issues}>{issue.message}</li>
+                  </ul>
+                <% end %>
               </div>
             </div>
           <% end %>
