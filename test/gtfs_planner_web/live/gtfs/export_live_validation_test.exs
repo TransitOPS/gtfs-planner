@@ -1999,6 +1999,50 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert render(view) =~ "No pathways tests are configured for this GTFS version."
     end
 
+    test "pathways runner spawn failures render the rich failure panel", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_task_supervisor =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_task_supervisor)
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_trip_test_task_supervisor,
+        :missing_task_supervisor
+      )
+
+      on_exit(fn ->
+        if previous_task_supervisor do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_task_supervisor,
+            previous_task_supervisor
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_task_supervisor)
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
+      view |> element("button", "Run Validation") |> render_click()
+
+      Process.sleep(150)
+
+      assert has_element?(view, "#validation-error-panel")
+      assert has_element?(view, "#pathways-failure-title", "Pathways test run could not start")
+      assert has_element?(view, "#pathways-failure-checks")
+      assert has_element?(view, "#pathways-failure-diagnostics")
+
+      html = render(view)
+      assert html =~ "Pathways validation could not start."
+    end
+
     test "renders graph build diagnostics for OTP runtime failure", %{
       conn: conn,
       user: user,
