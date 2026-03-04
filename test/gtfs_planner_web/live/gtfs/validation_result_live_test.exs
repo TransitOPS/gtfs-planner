@@ -153,6 +153,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       {:ok, view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
       assert html =~ "FAILED"
+      assert has_element?(view, "#pathways-failure-title")
+      assert has_element?(view, "#pathways-failure-summary")
+      assert has_element?(view, "#pathways-failure-status-message")
+      assert has_element?(view, "#pathways-failure-checks")
       assert has_element?(view, "#pathways-failure-diagnostics")
       assert html =~ "Exit status:"
       assert html =~ "255"
@@ -168,7 +172,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert html =~
                "NullPointerException often indicates a child stop is missing a valid parent_station assignment."
 
-      refute has_element?(view, "#otp-data-requirements-summary")
+      assert has_element?(view, "#otp-data-requirements-summary")
     end
 
     test "renders structured preflight blocking and warning issues for failed pathways run", %{
@@ -206,7 +210,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      assert html =~ "Pathways export readiness failed before build packaging."
+      assert has_element?(view, "#pathways-failure-title")
+      assert has_element?(view, "#pathways-failure-checks")
+      refute has_element?(view, "#pathways-failure-blocking-issues")
+      assert has_element?(view, "#pathways-failure-summary")
       assert has_element?(view, "#pathways-preflight-issues")
       assert has_element?(view, "#pathways-preflight-blocking-errors")
       assert has_element?(view, "#pathways-preflight-warnings")
@@ -249,7 +256,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      assert html =~ "Pathways export readiness failed before build packaging."
+      assert has_element?(view, "#pathways-failure-title")
+      assert has_element?(view, "#pathways-failure-checks")
+      assert has_element?(view, "#pathways-failure-blocking-issues")
+      assert html =~ "Pathways validation internal failure"
       assert has_element?(view, "#pathways-preflight-blocking-errors")
       assert has_element?(view, "#pathways-preflight-warnings")
 

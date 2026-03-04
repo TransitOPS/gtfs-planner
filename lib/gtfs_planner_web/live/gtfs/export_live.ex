@@ -24,7 +24,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     otp_ready_timeout: "OTP runtime readiness timed out.",
     otp_stop_failed: "OTP runtime failed while stopping.",
     query_failure: "Pathways validation failed due to route query errors.",
-    scoring_failure: "Pathways validation failed due to scoring errors."
+    scoring_failure: "Pathways validation failed due to scoring errors.",
+    pathways_runner_spawn_failed: "Pathways validation could not start.",
+    pathways_trip_test_failed: "Pathways validation failed before OTP checks completed.",
+    pathways_persistence_failed: "Pathways validation could not save run results.",
+    pathways_export_prep_failed: "Pathways export preparation failed before runtime checks.",
+    pathways_task_crashed: "Pathways validation task crashed unexpectedly.",
+    pathways_status_unavailable: "Pathways validation status was unavailable.",
+    pathways_run_not_found: "Pathways validation run was not found.",
+    pathways_invalid_run_type: "Pathways validation run type was invalid.",
+    pathways_results_unavailable: "Pathways validation results were unavailable."
   }
 
   @otp_data_requirements_summary [
@@ -281,16 +290,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             payload_value(status_payload, :error_payload) ||
               status_payload
 
-          pathways_failure = present_pathways_failure_for_payload(error_payload)
-
           {:noreply,
            socket
            |> assign(:pending_mobility_validation, false)
            |> assign(:validating, false)
            |> assign(:pathways_prep_detailed_progress, false)
            |> assign(:validation_progress, nil)
-           |> assign(:pathways_failure, pathways_failure)
-           |> assign(:validation_error, pathways_failure_message(error_payload))}
+           |> assign_pathways_error_panel(error_payload)}
 
         {:ok, _status_payload} ->
           {:noreply,
@@ -299,7 +305,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            |> assign(:validating, false)
            |> assign(:pathways_prep_detailed_progress, false)
            |> assign(:validation_progress, nil)
-           |> assign(:validation_error, "Pathways validation status was unavailable")}
+           |> assign_pathways_error_panel(%{reason: :pathways_status_unavailable})}
 
         {:error, :not_found} ->
           {:noreply,
@@ -308,7 +314,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            |> assign(:validating, false)
            |> assign(:pathways_prep_detailed_progress, false)
            |> assign(:validation_progress, nil)
-           |> assign(:validation_error, "Pathways validation run was not found")}
+           |> assign_pathways_error_panel(%{reason: :pathways_run_not_found})}
 
         {:error, :invalid_run_type} ->
           {:noreply,
@@ -317,7 +323,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            |> assign(:validating, false)
            |> assign(:pathways_prep_detailed_progress, false)
            |> assign(:validation_progress, nil)
-           |> assign(:validation_error, "Invalid pathways validation run type")}
+           |> assign_pathways_error_panel(%{reason: :pathways_invalid_run_type})}
       end
     else
       {:noreply, socket}
@@ -388,10 +394,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                  |> assign(:pending_mobility_validation, false)
                  |> assign(:validating, false)
                  |> assign(:validation_progress, nil)
-                 |> assign(
-                   :validation_error,
-                   "Pathways validation persistence failed: #{inspect(reason)}"
-                 )}
+                 |> assign_pathways_error_panel(%{
+                   reason: :pathways_persistence_failed,
+                   details: %{error: inspect(reason)}
+                 })}
             end
 
           {:error, {:pathways_export_prep_failed, issues}} ->
@@ -416,7 +422,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
              |> assign(:validating, false)
              |> assign(:pathways_prep_detailed_progress, false)
              |> assign(:validation_progress, nil)
-             |> assign(:pathways_prep_error, build_pathways_prep_error(issues))}
+             |> assign_pathways_error_panel(%{
+               reason: :pathways_export_prep_failed,
+               issues: issues
+             })}
         end
 
       socket.assigns.export_task && socket.assigns.export_task.ref == ref ->
@@ -551,33 +560,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
         {:noreply,
          socket
-         |> assign(:pathways_prep_error, %{
-           summary: "Pathways export preparation crashed unexpectedly.",
-           blocking_errors: [
-             %{
-               code: :task_crashed,
-               severity: :blocking,
-               message: inspect(reason),
-               details: %{}
-             }
-           ],
-           warnings: [],
-           issues: [
-             %{
-               code: :task_crashed,
-               severity: :blocking,
-               message: inspect(reason),
-               details: %{}
-             }
-           ],
-           phase: :pathways_prep,
-           log_ref: nil
-         })
          |> assign(:validating, false)
          |> assign(:pathways_prep_task, nil)
          |> assign(:pathways_prep_detailed_progress, false)
          |> assign(:pending_mobility_validation, false)
-         |> assign(:validation_progress, nil)}
+         |> assign(:validation_progress, nil)
+         |> assign_pathways_error_panel(%{
+           reason: :pathways_task_crashed,
+           details: %{reason: inspect(reason)}
+         })}
 
       socket.assigns.export_task && socket.assigns.export_task.ref == ref ->
         require Logger
@@ -1377,7 +1368,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          |> assign(:validating, false)
          |> assign(:pathways_prep_detailed_progress, false)
          |> assign(:validation_progress, nil)
-         |> assign(:validation_error, "Pathways validation could not start: #{inspect(reason)}")}
+         |> assign_pathways_error_panel(%{
+           reason: :pathways_runner_spawn_failed,
+           details: %{error: inspect(reason)}
+         })}
 
       {:error, reason} ->
         {:noreply,
@@ -1386,7 +1380,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          |> assign(:validating, false)
          |> assign(:pathways_prep_detailed_progress, false)
          |> assign(:validation_progress, nil)
-         |> assign(:validation_error, "Pathways validation could not start: #{inspect(reason)}")}
+         |> assign_pathways_error_panel(%{
+           reason: :pathways_trip_test_failed,
+           details: %{error: inspect(reason)}
+         })}
     end
   end
 
@@ -1395,122 +1392,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       send(live_view_pid, {:pathways_prep_progress, payload})
     end
   end
-
-  defp build_pathways_prep_error(issues) do
-    {blocking_errors, warnings} = normalize_pathways_prep_issues(issues)
-
-    %{
-      summary: "Pathways export preparation failed.",
-      blocking_errors: blocking_errors,
-      warnings: warnings,
-      issues: blocking_errors ++ warnings,
-      phase: :pathways_prep,
-      log_ref: nil
-    }
-  end
-
-  defp normalize_pathways_prep_issues(%{} = payload) do
-    blocking_errors =
-      payload
-      |> payload_value(:blocking_errors)
-      |> normalize_pathways_prep_issue_list()
-
-    warnings =
-      payload
-      |> payload_value(:warnings)
-      |> normalize_pathways_prep_issue_list()
-
-    {blocking_errors, warnings}
-  end
-
-  defp normalize_pathways_prep_issues(issues) do
-    {normalize_pathways_prep_issue_list(issues), []}
-  end
-
-  defp normalize_pathways_prep_issue_list(issues) when is_list(issues) do
-    Enum.map(issues, &format_issue_for_ui/1)
-  end
-
-  defp normalize_pathways_prep_issue_list(_issues), do: []
-
-  defp format_issue_for_ui(%{code: :missing_required_file_data, details: %{file: file}} = issue) do
-    %{
-      code: issue.code,
-      severity: normalize_issue_severity(issue),
-      message: "Required GTFS file missing: #{file}",
-      details: issue.details
-    }
-  end
-
-  defp format_issue_for_ui(%{code: :missing_gtfs_data, details: %{missing: missing}} = issue)
-       when is_list(missing) do
-    %{
-      code: issue.code,
-      severity: normalize_issue_severity(issue),
-      message:
-        "Required GTFS content missing: " <>
-          Enum.join(Enum.map(missing, &to_string/1), ", "),
-      details: issue.details
-    }
-  end
-
-  defp format_issue_for_ui(%{code: code, message: message, details: details}) do
-    %{
-      code: code,
-      severity: normalize_issue_severity(%{code: code, message: message, details: details}),
-      message: message || "Validation preparation issue: #{code}",
-      details: details || %{}
-    }
-  end
-
-  defp format_issue_for_ui(%{code: :otp_runtime_already_running} = issue) do
-    %{
-      code: :otp_runtime_already_running,
-      severity: normalize_issue_severity(issue),
-      message: "Another pathways runtime is already active for this organization.",
-      details: Map.get(issue, :details, %{})
-    }
-  end
-
-  defp format_issue_for_ui(%{code: :otp_start_failed} = issue) do
-    %{
-      code: :otp_start_failed,
-      severity: normalize_issue_severity(issue),
-      message: "Failed to start OTP runtime.",
-      details: Map.get(issue, :details, %{})
-    }
-  end
-
-  defp format_issue_for_ui(%{code: :otp_ready_timeout} = issue) do
-    %{
-      code: :otp_ready_timeout,
-      severity: normalize_issue_severity(issue),
-      message: "OTP runtime readiness timed out.",
-      details: Map.get(issue, :details, %{})
-    }
-  end
-
-  defp format_issue_for_ui(%{code: :otp_stop_failed} = issue) do
-    %{
-      code: :otp_stop_failed,
-      severity: normalize_issue_severity(issue),
-      message: "OTP runtime failed while stopping.",
-      details: Map.get(issue, :details, %{})
-    }
-  end
-
-  defp format_issue_for_ui(%{code: code} = issue) do
-    %{
-      code: code,
-      severity: normalize_issue_severity(issue),
-      message: "Validation preparation issue: #{code}",
-      details: Map.get(issue, :details, %{})
-    }
-  end
-
-  defp normalize_issue_severity(%{severity: :warning}), do: :warning
-  defp normalize_issue_severity(%{"severity" => "warning"}), do: :warning
-  defp normalize_issue_severity(_issue), do: :blocking
 
   defp phase_percent(:cache_check), do: 10
   defp phase_percent(:preflight), do: 25
@@ -1640,10 +1521,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          |> assign(:validating, false)
          |> assign(:pathways_prep_detailed_progress, false)
          |> assign(:validation_progress, nil)
-         |> assign(
-           :validation_error,
-           "Pathways validation results unavailable: #{inspect(reason)}"
-         )}
+         |> assign_pathways_error_panel(%{
+           reason: :pathways_results_unavailable,
+           details: %{error: inspect(reason)}
+         })}
     end
   end
 
@@ -1670,7 +1551,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @doc false
   @spec classify_pathways_failure_category(map()) ::
-          :csv_parse_malformed_rows
+          :no_walkability_tests
+          | :pathways_startup_failure
+          | :pathways_run_unavailable
+          | :pathways_internal_failure
+          | :csv_parse_malformed_rows
           | :invalid_coordinates
           | :boarding_area_parent_integrity
           | :osm_coverage_stop_linking
@@ -1682,7 +1567,36 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   def classify_pathways_failure_category(error_payload) when is_map(error_payload) do
     tokens = pathways_failure_classifier_tokens(error_payload)
 
+    failure_code =
+      error_payload
+      |> pathways_failure_tokens()
+      |> Enum.find_value(&normalize_pathways_failure_code/1)
+
     cond do
+      failure_code == :no_walkability_tests ->
+        :no_walkability_tests
+
+      failure_code in [
+        :pathways_runner_spawn_failed,
+        :pathways_trip_test_failed
+      ] ->
+        :pathways_startup_failure
+
+      failure_code in [
+        :pathways_status_unavailable,
+        :pathways_run_not_found,
+        :pathways_invalid_run_type,
+        :pathways_results_unavailable
+      ] ->
+        :pathways_run_unavailable
+
+      failure_code in [
+        :pathways_persistence_failed,
+        :pathways_export_prep_failed,
+        :pathways_task_crashed
+      ] ->
+        :pathways_internal_failure
+
       tokens_match_any?(tokens, ["csv", "parse", "malformed", "invalid row"]) ->
         :csv_parse_malformed_rows
 
@@ -1899,6 +1813,50 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       [
         "Open pathways.txt and related files and fix malformed rows.",
         "Confirm required columns are present and values use valid formats."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(:no_walkability_tests) do
+    {
+      "No pathways tests configured",
+      "This GTFS version has no walkability test rows to execute.",
+      [
+        "Add at least one pathways test for this GTFS version.",
+        "Verify test rows include a valid stop_id and address coordinates."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(:pathways_startup_failure) do
+    {
+      "Pathways test run could not start",
+      "The pathways run failed before OTP checks could execute.",
+      [
+        "Retry validation to create a fresh run.",
+        "If this repeats, review runner and task-supervisor logs."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(:pathways_run_unavailable) do
+    {
+      "Pathways run status unavailable",
+      "The run state could not be retrieved for this pathways validation.",
+      [
+        "Refresh and retry the pathways validation.",
+        "If the issue repeats, check validation run persistence and polling logs."
+      ]
+    }
+  end
+
+  defp pathways_failure_copy(:pathways_internal_failure) do
+    {
+      "Pathways validation internal failure",
+      "The run failed due to an internal preparation or persistence issue.",
+      [
+        "Review technical diagnostics and resolve the first blocking issue.",
+        "Retry validation after fixing preparation or persistence errors."
       ]
     }
   end
@@ -2304,6 +2262,28 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp normalize_pathways_failure_code(:query_failure), do: :query_failure
   defp normalize_pathways_failure_code(:scoring_failure), do: :scoring_failure
 
+  defp normalize_pathways_failure_code(:pathways_runner_spawn_failed),
+    do: :pathways_runner_spawn_failed
+
+  defp normalize_pathways_failure_code(:pathways_trip_test_failed), do: :pathways_trip_test_failed
+
+  defp normalize_pathways_failure_code(:pathways_persistence_failed),
+    do: :pathways_persistence_failed
+
+  defp normalize_pathways_failure_code(:pathways_export_prep_failed),
+    do: :pathways_export_prep_failed
+
+  defp normalize_pathways_failure_code(:pathways_task_crashed), do: :pathways_task_crashed
+
+  defp normalize_pathways_failure_code(:pathways_status_unavailable),
+    do: :pathways_status_unavailable
+
+  defp normalize_pathways_failure_code(:pathways_run_not_found), do: :pathways_run_not_found
+  defp normalize_pathways_failure_code(:pathways_invalid_run_type), do: :pathways_invalid_run_type
+
+  defp normalize_pathways_failure_code(:pathways_results_unavailable),
+    do: :pathways_results_unavailable
+
   defp normalize_pathways_failure_code(value) when is_binary(value) do
     case value do
       "no_walkability_tests" ->
@@ -2330,6 +2310,33 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       "scoring_failure" ->
         :scoring_failure
 
+      "pathways_runner_spawn_failed" ->
+        :pathways_runner_spawn_failed
+
+      "pathways_trip_test_failed" ->
+        :pathways_trip_test_failed
+
+      "pathways_persistence_failed" ->
+        :pathways_persistence_failed
+
+      "pathways_export_prep_failed" ->
+        :pathways_export_prep_failed
+
+      "pathways_task_crashed" ->
+        :pathways_task_crashed
+
+      "pathways_status_unavailable" ->
+        :pathways_status_unavailable
+
+      "pathways_run_not_found" ->
+        :pathways_run_not_found
+
+      "pathways_invalid_run_type" ->
+        :pathways_invalid_run_type
+
+      "pathways_results_unavailable" ->
+        :pathways_results_unavailable
+
       _other ->
         normalize_pathways_failure_code_from_text(value)
     end
@@ -2347,8 +2354,33 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       String.contains?(value, "otp_stop_failed") -> :otp_stop_failed
       String.contains?(value, "query_failure") -> :query_failure
       String.contains?(value, "scoring_failure") -> :scoring_failure
+      String.contains?(value, "pathways_runner_spawn_failed") -> :pathways_runner_spawn_failed
+      String.contains?(value, "pathways_trip_test_failed") -> :pathways_trip_test_failed
+      String.contains?(value, "pathways_persistence_failed") -> :pathways_persistence_failed
+      String.contains?(value, "pathways_export_prep_failed") -> :pathways_export_prep_failed
+      String.contains?(value, "pathways_task_crashed") -> :pathways_task_crashed
+      String.contains?(value, "pathways_status_unavailable") -> :pathways_status_unavailable
+      String.contains?(value, "pathways_run_not_found") -> :pathways_run_not_found
+      String.contains?(value, "pathways_invalid_run_type") -> :pathways_invalid_run_type
+      String.contains?(value, "pathways_results_unavailable") -> :pathways_results_unavailable
       true -> nil
     end
+  end
+
+  defp assign_pathways_error_panel(socket, error_payload) when is_map(error_payload) do
+    pathways_failure = present_pathways_failure_for_payload(error_payload)
+
+    socket
+    |> assign(:pathways_prep_error, nil)
+    |> assign(:pathways_failure, pathways_failure)
+    |> assign(:validation_error, pathways_failure_message(error_payload))
+  end
+
+  defp assign_pathways_error_panel(socket, error_payload) do
+    assign_pathways_error_panel(socket, %{
+      reason: :pathways_trip_test_failed,
+      details: %{error: inspect(error_payload)}
+    })
   end
 
   defp pathways_failure_diagnostic(error_payload) do
