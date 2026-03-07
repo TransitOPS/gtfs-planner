@@ -5350,55 +5350,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
     end
 
-    test "set_diagram_error timeout reason assigns fixed timeout message", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
-
-      render_hook(view, "set_diagram_error", %{"reason" => "timeout"})
-
-      assert has_element?(view, "span.text-error", "Upload timed out. Please try again.")
-    end
-
-    test "set_diagram_error ignores unknown payload and keeps existing message", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
-
-      render_hook(view, "set_diagram_error", %{"reason" => "timeout"})
-      render_hook(view, "set_diagram_error", %{"reason" => "unknown"})
-
-      assert has_element?(view, "span.text-error", "Upload timed out. Please try again.")
-    end
-
-    test "submitting without file shows explicit select-file message", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
-
-      view
-      |> form("#diagram-upload-form-sub-nav")
-      |> render_submit()
-
-      assert has_element?(view, "span.text-error", "Please select a file.")
-    end
-
-    test "invalid file type selection does not set generic upload failure", %{
+    test "invalid file type selection shows explicit validation error", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -5415,10 +5367,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_upload(upload, "bad.gif")
 
-      refute has_element?(view, "span.text-error", "Upload failed. Please try again.")
+      assert has_element?(
+               view,
+               "span.text-error",
+               "File type not accepted (PNG, JPG, JPEG, SVG only)"
+             )
     end
 
-    test "oversized file selection does not set generic upload failure", %{
+    test "oversized file selection shows explicit validation error", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -5435,13 +5391,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_upload(upload, "big.png")
 
-      refute has_element?(view, "span.text-error", "Upload failed. Please try again.")
+      assert has_element?(view, "span.text-error", "File is too large (max 10 MB)")
     end
   end
 
-  defp upload_diagram(view, filename, content) do
+  defp upload_diagram(view, filename, content, form_selector \\ "#diagram-upload-form-sub-nav") do
     upload =
-      file_input(view, "#diagram-upload-form-sub-nav", :diagram, [
+      file_input(view, form_selector, :diagram, [
         %{
           name: filename,
           content: content,
@@ -5450,9 +5406,5 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ])
 
     render_upload(upload, filename)
-
-    view
-    |> form("#diagram-upload-form-sub-nav")
-    |> render_submit()
   end
 end

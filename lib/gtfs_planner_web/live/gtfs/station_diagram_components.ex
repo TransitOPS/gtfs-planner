@@ -64,8 +64,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <form
           id="diagram-upload-form-toolbar"
           phx-change="upload_diagram"
-          phx-submit="save_diagram"
-          phx-hook="AutoSubmitUpload"
         >
           <label class="btn btn-sm btn-ghost cursor-pointer">
             Upload Diagram
@@ -75,6 +73,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <span :for={error <- upload_errors(@uploads.diagram)} class="text-error text-sm">
           {diagram_upload_error_to_string(error)}
         </span>
+        <%= for entry <- @uploads.diagram.entries do %>
+          <span :for={error <- upload_errors(@uploads.diagram, entry)} class="text-error text-sm">
+            {diagram_upload_error_to_string(error)}
+          </span>
+        <% end %>
         <span :if={@diagram_error} class="text-error text-sm">{@diagram_error}</span>
       </div>
 
