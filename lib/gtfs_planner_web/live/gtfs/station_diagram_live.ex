@@ -75,7 +75,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:editing_walkability_test, nil)
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg .svg),
-       max_file_size: 10_000_000
+       max_file_size: 10_000_000,
+       max_entries: 1,
+       auto_upload: true,
+       progress: &handle_diagram_upload_progress/3
      )}
   end
 
@@ -1415,89 +1418,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("upload_diagram", _params, socket) do
-    # This event is triggered on file selection - we just need to wait for save_diagram
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_event("set_diagram_error", %{"reason" => "timeout"}, socket) do
-    {:noreply, assign(socket, :diagram_error, "Upload timed out. Please try again.")}
-  end
-
-  @impl true
-  def handle_event("set_diagram_error", _params, socket) do
+    # Upload is handled by allow_upload progress callback when entries complete.
     {:noreply, socket}
   end
 
   @impl true
   def handle_event("save_diagram", _params, socket) do
-    station = socket.assigns.station
-    active_level = socket.assigns.active_level
-
-    if is_nil(active_level) do
-      {:noreply, assign(socket, :diagram_error, "No active level selected")}
-    else
-      stop_level_result =
-        case socket.assigns.active_stop_level do
-          nil ->
-            Gtfs.create_stop_level(%{
-              stop_id: station.id,
-              level_id: active_level.id,
-              organization_id: socket.assigns.current_organization.id,
-              gtfs_version_id: socket.assigns.current_gtfs_version.id
-            })
-
-          existing ->
-            {:ok, existing}
-        end
-
-      case stop_level_result do
-        {:error, _changeset} ->
-          {:noreply, assign(socket, :diagram_error, "Failed to associate level with station")}
-
-        {:ok, stop_level} ->
-          uploaded_files =
-            consume_uploaded_entries(socket, :diagram, fn %{path: path}, entry ->
-              uploads_base = Application.get_env(:gtfs_planner, :uploads_path)
-
-              storage_filename =
-                build_diagram_storage_filename(stop_level.level_id, entry.client_name)
-
-              dest_dir =
-                Path.join([
-                  uploads_base,
-                  "diagrams",
-                  to_string(socket.assigns.current_organization.id),
-                  station.stop_id
-                ])
-
-              File.mkdir_p!(dest_dir)
-
-              dest_path = Path.join(dest_dir, storage_filename)
-              File.cp!(path, dest_path)
-
-              {:ok, storage_filename}
-            end)
-
-          case uploaded_files do
-            [filename | _] ->
-              case Gtfs.update_stop_level_diagram(stop_level, filename) do
-                {:ok, updated_stop_level} ->
-                  {:noreply,
-                   socket
-                   |> assign(:active_stop_level, updated_stop_level)
-                   |> disable_measurement()
-                   |> assign(:diagram_error, nil)}
-
-                {:error, _changeset} ->
-                  {:noreply, assign(socket, :diagram_error, "Failed to save diagram")}
-              end
-
-            [] ->
-              {:noreply, assign_empty_diagram_upload_error(socket)}
-          end
-      end
-    end
+    # Compatibility no-op: diagram uploads complete via allow_upload progress callback.
+    {:noreply, socket}
   end
 
   @impl true
@@ -2011,6 +1939,85 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     "lvl_#{safe_level_id}_#{token}#{safe_extension}"
   end
 
+  defp handle_diagram_upload_progress(:diagram, entry, socket) do
+    socket =
+      if entry.done? do
+        persist_uploaded_diagram(socket, entry)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  defp persist_uploaded_diagram(socket, entry) do
+    station = socket.assigns.station
+    active_level = socket.assigns.active_level
+
+    cond do
+      is_nil(active_level) ->
+        assign(socket, :diagram_error, "No active level selected")
+
+      true ->
+        stop_level_result =
+          case socket.assigns.active_stop_level do
+            nil ->
+              Gtfs.create_stop_level(%{
+                stop_id: station.id,
+                level_id: active_level.id,
+                organization_id: socket.assigns.current_organization.id,
+                gtfs_version_id: socket.assigns.current_gtfs_version.id
+              })
+
+            existing ->
+              {:ok, existing}
+          end
+
+        case stop_level_result do
+          {:error, _changeset} ->
+            assign(socket, :diagram_error, "Failed to associate level with station")
+
+          {:ok, stop_level} ->
+            case consume_uploaded_entry(socket, entry, fn %{path: path} ->
+                   uploads_base = Application.get_env(:gtfs_planner, :uploads_path)
+
+                   storage_filename =
+                     build_diagram_storage_filename(stop_level.level_id, entry.client_name)
+
+                   dest_dir =
+                     Path.join([
+                       uploads_base,
+                       "diagrams",
+                       to_string(socket.assigns.current_organization.id),
+                       station.stop_id
+                     ])
+
+                   File.mkdir_p!(dest_dir)
+
+                   dest_path = Path.join(dest_dir, storage_filename)
+                   File.cp!(path, dest_path)
+
+                   {:ok, storage_filename}
+                 end) do
+              filename when is_binary(filename) ->
+                case Gtfs.update_stop_level_diagram(stop_level, filename) do
+                  {:ok, updated_stop_level} ->
+                    socket
+                    |> assign(:active_stop_level, updated_stop_level)
+                    |> disable_measurement()
+                    |> assign(:diagram_error, nil)
+
+                  {:error, _changeset} ->
+                    assign(socket, :diagram_error, "Failed to save diagram")
+                end
+
+              {:postpone, _socket} ->
+                socket
+            end
+        end
+    end
+  end
+
   defp create_pathway_between_stops(socket, from_stop_id, to_stop_id) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
@@ -2365,22 +2372,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       _ ->
         false
     end)
-  end
-
-  defp assign_empty_diagram_upload_error(socket) do
-    upload = socket.assigns.uploads.diagram
-    validation_errors = upload_errors(upload)
-
-    cond do
-      upload.entries == [] and validation_errors == [] ->
-        assign(socket, :diagram_error, "Please select a file.")
-
-      validation_errors != [] ->
-        socket
-
-      true ->
-        assign(socket, :diagram_error, "Upload failed. Please try again.")
-    end
   end
 
   defp purge_otp_artifact(organization_id, gtfs_version_id) do
