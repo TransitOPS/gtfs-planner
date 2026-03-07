@@ -286,16 +286,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(view, "#report-trip-profile-#{pair_dom}")
       assert has_element?(view, "#report-trip-analysis-#{pair_dom}")
       assert has_element?(view, "#report-trip-direction-button-#{pair_dom}", "Forward view")
-      assert has_element?(view, "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)", "To platform")
-      assert has_element?(view, "#report-trip-steps-#{pair_dom} tbody tr:nth-child(2) td:nth-child(4)", "Boarding 1")
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "To platform"
+             )
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(2) td:nth-child(4)",
+               "Boarding 1"
+             )
 
       view
       |> element("#report-trip-direction-button-#{pair_dom}")
       |> render_click()
 
       assert has_element?(view, "#report-trip-direction-button-#{pair_dom}", "Reverse view")
-      assert has_element?(view, "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)", "From boarding")
-      assert has_element?(view, "#report-trip-steps-#{pair_dom} tbody tr:nth-child(2) td:nth-child(4)", "To entrance")
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "From boarding"
+             )
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(2) td:nth-child(4)",
+               "To entrance"
+             )
     end
 
     test "redirects with flash when station is missing", %{

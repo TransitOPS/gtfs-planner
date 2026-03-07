@@ -905,8 +905,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
             <form
               id="diagram-upload-form-sub-nav"
               phx-change="upload_diagram"
-              phx-submit="save_diagram"
-              phx-hook="AutoSubmitUpload"
             >
               <label class="btn btn-sm btn-outline cursor-pointer border-gray-500 bg-gray-50 text-gray-800 hover:bg-gray-100">
                 {if @has_diagram, do: "Replace diagram", else: "Upload diagram"}
@@ -920,6 +918,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
             <span :for={error <- upload_errors(@uploads.diagram)} class="text-error text-sm">
               {diagram_upload_error_to_string(error)}
             </span>
+            <%= for entry <- @uploads.diagram.entries do %>
+              <span :for={error <- upload_errors(@uploads.diagram, entry)} class="text-error text-sm">
+                {diagram_upload_error_to_string(error)}
+              </span>
+            <% end %>
             <span :if={@diagram_error} class="text-error text-sm">{@diagram_error}</span>
           </div>
         </div>
