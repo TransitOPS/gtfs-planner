@@ -361,6 +361,80 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Recalculates pathway lengths for same-level pathways on a station level.
+
+  Returns `{:ok, count}` where count is the number of pathways whose lengths were updated.
+  """
+  def recalculate_pathway_lengths_for_level(
+        %StopLevel{} = stop_level,
+        organization_id,
+        gtfs_version_id,
+        level_id,
+        parent_station_id
+      ) do
+    organization_id
+    |> list_pathways_for_level(gtfs_version_id, level_id, parent_station_id)
+    |> Enum.reject(& &1.is_cross_level)
+    |> Enum.sort_by(& &1.pathway_id, :asc)
+    |> Enum.reduce_while({:ok, 0}, fn pathway, {:ok, count} ->
+      case calculate_pathway_length(stop_level, pathway.from_stop, pathway.to_stop) do
+        %Decimal{} = length ->
+          case pathway
+               |> Pathway.changeset(%{length: length})
+               |> Repo.update() do
+            {:ok, _updated_pathway} -> {:cont, {:ok, count + 1}}
+            {:error, changeset} -> {:halt, {:error, changeset}}
+          end
+
+        _ ->
+          {:cont, {:ok, count}}
+      end
+    end)
+  end
+
+  @doc """
+  Saves stop-level calibration and recalculates same-level pathway lengths atomically.
+  """
+  def save_scale_and_recalculate(
+        %StopLevel{} = stop_level,
+        scale_attrs,
+        organization_id,
+        gtfs_version_id,
+        level_id,
+        parent_station_id
+      ) do
+    transaction_result =
+      Repo.transaction(fn ->
+        with {:ok, updated_stop_level} <-
+               stop_level
+               |> StopLevel.scale_changeset(scale_attrs)
+               |> Repo.update(),
+             {:ok, recalculated_count} <-
+               recalculate_pathway_lengths_for_level(
+                 updated_stop_level,
+                 organization_id,
+                 gtfs_version_id,
+                 level_id,
+                 parent_station_id
+               ) do
+          %{stop_level: updated_stop_level, recalculated_count: recalculated_count}
+        else
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+      end)
+
+    case transaction_result do
+      {:ok, result} ->
+        broadcast({:ok, result.stop_level}, [:stop_levels, :updated])
+        {:ok, result}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
   Clears a stop_level's diagram calibration.
   """
   def clear_stop_level_scale(%StopLevel{} = stop_level) do

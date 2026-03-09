@@ -161,6 +161,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :ruler_point_a, :any, default: nil
   attr :ruler_point_b, :any, default: nil
   attr :has_scale, :boolean, default: false
+  attr :scale_status, :any, default: nil
   attr :levels, :list, default: []
   attr :active_level, :any, default: nil
 
@@ -169,74 +170,99 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <%= if @levels != [] do %>
       <div
         id="diagram-action-strip"
-        class="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-blue-50 border-b border-blue-200"
+        class="sticky top-0 z-10 bg-blue-50 border-b border-blue-200"
       >
-        <div class="flex min-w-0 flex-1 items-center gap-2">
-          <form phx-change="switch_level" class="flex items-center gap-2">
-            <label class="text-sm font-medium text-blue-900">Level:</label>
-            <select class="select select-sm select-bordered bg-white" name="level_id">
-              <%= for level <- @levels do %>
-                <option value={level.id} selected={@active_level && level.id == @active_level.id}>
-                  {level.level_name || level.level_id}
-                </option>
+        <div class="flex items-center justify-between px-4 py-3">
+          <div class="flex min-w-0 flex-1 items-center gap-2">
+            <form phx-change="switch_level" class="flex items-center gap-2">
+              <label class="text-sm font-medium text-blue-900">Level:</label>
+              <select class="select select-sm select-bordered bg-white" name="level_id">
+                <%= for level <- @levels do %>
+                  <option value={level.id} selected={@active_level && level.id == @active_level.id}>
+                    {level.level_name || level.level_id}
+                  </option>
+                <% end %>
+              </select>
+            </form>
+            <%= if @has_diagram do %>
+              <%= cond do %>
+                <% @mode == :view -> %>
+                  <span class="text-sm text-blue-700 font-medium">
+                    {view_mode_instruction(@measurement_enabled, @ruler_point_a, @ruler_point_b)}
+                  </span>
+                <% @mode == :add -> %>
+                  <span class="text-sm text-blue-700 font-medium">
+                    Click diagram to add a child stop
+                  </span>
+                <% @mode == :connect && @selected_from_stop == nil -> %>
+                  <span class="text-sm text-blue-700 font-medium">
+                    Choose a child stop to begin pathway
+                  </span>
+                <% @mode == :connect && @selected_from_stop != nil -> %>
+                  <span class="text-sm text-blue-700 font-medium">
+                    From: {@selected_from_stop.stop_name || @selected_from_stop.stop_id} — select destination stop
+                  </span>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm text-blue-700 hover:text-blue-900 hover:bg-blue-100"
+                    phx-click="clear_from_selection"
+                  >
+                    <.icon name="hero-x-mark" class="w-4 h-4" />
+                  </button>
+                <% true -> %>
+                  <span class="text-sm text-blue-700"></span>
               <% end %>
-            </select>
-          </form>
-          <%= if @has_diagram do %>
-            <%= cond do %>
-              <% @mode == :view -> %>
-                <span class="text-sm text-blue-700 font-medium">
-                  {view_mode_instruction(@measurement_enabled, @ruler_point_a, @ruler_point_b)}
-                </span>
-              <% @mode == :add -> %>
-                <span class="text-sm text-blue-700 font-medium">
-                  Click diagram to add a child stop
-                </span>
-              <% @mode == :connect && @selected_from_stop == nil -> %>
-                <span class="text-sm text-blue-700 font-medium">
-                  Choose a child stop to begin pathway
-                </span>
-              <% @mode == :connect && @selected_from_stop != nil -> %>
-                <span class="text-sm text-blue-700 font-medium">
-                  From: {@selected_from_stop.stop_name || @selected_from_stop.stop_id} — select destination stop
-                </span>
-                <button
-                  type="button"
-                  class="btn btn-ghost btn-sm text-blue-700 hover:text-blue-900 hover:bg-blue-100"
-                  phx-click="clear_from_selection"
-                >
-                  <.icon name="hero-x-mark" class="w-4 h-4" />
-                </button>
-              <% true -> %>
-                <span class="text-sm text-blue-700"></span>
             <% end %>
-          <% end %>
-        </div>
-        <div class="ml-auto flex items-center gap-2">
-          <%= if @mode == :view and @has_diagram do %>
-            <%= if @measurement_enabled do %>
-              <button
-                type="button"
-                class="btn btn-sm bg-orange-500 text-white hover:bg-orange-600"
-                phx-click="toggle_measurement"
-              >
-                Cancel Establish Scale
-              </button>
-            <% else %>
-              <%= if @has_scale do %>
-                <span class="text-sm font-semibold text-blue-900 px-2">Scale Set</span>
-              <% else %>
+          </div>
+          <div class="ml-auto flex items-center gap-2">
+            <%= if @mode == :view and @has_diagram do %>
+              <%= if @measurement_enabled do %>
                 <button
                   type="button"
-                  class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
+                  class="btn btn-sm bg-orange-500 text-white hover:bg-orange-600"
                   phx-click="toggle_measurement"
                 >
-                  Establish Scale
+                  Cancel Establish Scale
                 </button>
+              <% else %>
+                <%= if @has_scale do %>
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
+                    phx-click="toggle_measurement"
+                  >
+                    Edit Scale
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-outline btn-error"
+                    phx-click="clear_calibration"
+                  >
+                    Clear Scale
+                  </button>
+                <% else %>
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
+                    phx-click="toggle_measurement"
+                  >
+                    Establish Scale
+                  </button>
+                <% end %>
               <% end %>
             <% end %>
+            <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
+          </div>
+        </div>
+        <div
+          id="scale-status"
+          role="status"
+          aria-live="polite"
+          class="min-h-6 px-4 pb-2 text-sm text-blue-800"
+        >
+          <%= if @scale_status do %>
+            {@scale_status}
           <% end %>
-          <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
         </div>
       </div>
     <% end %>
@@ -2647,7 +2673,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             class="btn btn-outline btn-error"
             phx-click="clear_calibration"
           >
-            Clear Calibration
+            Clear Scale
           </button>
           <button type="submit" class="btn btn-primary btn-active">
             Save Scale
