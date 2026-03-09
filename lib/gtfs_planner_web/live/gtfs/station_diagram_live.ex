@@ -19,6 +19,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias LiveSelect.Component, as: LiveSelectComponent
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
+  @safe_path_component ~r/^[A-Za-z0-9._-]+$/
+
   @impl true
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -1980,24 +1982,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:ok, stop_level} ->
             case consume_uploaded_entry(socket, entry, fn %{path: path} ->
                    uploads_base = Application.get_env(:gtfs_planner, :uploads_path)
+                   station_stop_id = station.stop_id
 
                    storage_filename =
                      build_diagram_storage_filename(stop_level.level_id, entry.client_name)
 
-                   dest_dir =
-                     Path.join([
-                       uploads_base,
-                       "diagrams",
-                       to_string(socket.assigns.current_organization.id),
-                       station.stop_id
-                     ])
-
-                   File.mkdir_p!(dest_dir)
-
-                   dest_path = Path.join(dest_dir, storage_filename)
-                   File.cp!(path, dest_path)
-
-                   {:ok, storage_filename}
+                   with true <- safe_path_component?(station_stop_id),
+                        true <- safe_path_component?(storage_filename),
+                        diagrams_root <-
+                          Path.join([
+                            uploads_base,
+                            "diagrams",
+                            to_string(socket.assigns.current_organization.id)
+                          ]),
+                        dest_dir <- Path.join(diagrams_root, station_stop_id),
+                        dest_path <- Path.join(dest_dir, storage_filename),
+                        :ok <- ensure_within_root(diagrams_root, dest_dir),
+                        :ok <- ensure_within_root(diagrams_root, dest_path),
+                        :ok <- File.mkdir_p(dest_dir),
+                        :ok <- File.cp(path, dest_path) do
+                     {:ok, storage_filename}
+                   else
+                     false -> {:error, :unsafe_path_component}
+                     {:error, reason} -> {:error, reason}
+                   end
                  end) do
               filename when is_binary(filename) ->
                 case Gtfs.update_stop_level_diagram(stop_level, filename) do
@@ -2011,10 +2019,46 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                     assign(socket, :diagram_error, "Failed to save diagram")
                 end
 
-              {:postpone, _socket} ->
-                socket
+              {:ok, filename} when is_binary(filename) ->
+                case Gtfs.update_stop_level_diagram(stop_level, filename) do
+                  {:ok, updated_stop_level} ->
+                    socket
+                    |> assign(:active_stop_level, updated_stop_level)
+                    |> disable_measurement()
+                    |> assign(:diagram_error, nil)
+
+                  {:error, _changeset} ->
+                    assign(socket, :diagram_error, "Failed to save diagram")
+                end
+
+              {:postpone, postponed_socket} ->
+                postponed_socket
+
+              {:error, _reason} ->
+                assign(socket, :diagram_error, "Invalid diagram upload path")
             end
         end
+    end
+  end
+
+  defp safe_path_component?(value) when is_binary(value) do
+    value != "" and
+      value != "." and
+      value != ".." and
+      not String.contains?(value, ["/", "\\", <<0>>]) and
+      String.match?(value, @safe_path_component)
+  end
+
+  defp safe_path_component?(_), do: false
+
+  defp ensure_within_root(root, path) do
+    expanded_root = Path.expand(root)
+    expanded_path = Path.expand(path)
+
+    if expanded_path == expanded_root or String.starts_with?(expanded_path, expanded_root <> "/") do
+      :ok
+    else
+      {:error, :path_traversal}
     end
   end
 
