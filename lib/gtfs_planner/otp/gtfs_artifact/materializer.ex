@@ -10,6 +10,7 @@ defmodule GtfsPlanner.Otp.Materializer do
   alias GtfsPlanner.Otp.Manifest
   alias GtfsPlanner.Otp.Packager
   alias GtfsPlanner.Otp.Preflight
+  alias GtfsPlanner.Validations.PathwaysPreflight
 
   @type issues :: [map()]
   @type preflight_mode :: :strict | :lenient
@@ -20,7 +21,8 @@ defmodule GtfsPlanner.Otp.Materializer do
           reused: boolean(),
           content_hash: String.t(),
           file_size_bytes: non_neg_integer(),
-          manifest_json: map()
+          manifest_json: map(),
+          preflight_warnings: issues()
         }
 
   @spec get_or_build_gtfs_zip(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
@@ -30,16 +32,28 @@ defmodule GtfsPlanner.Otp.Materializer do
     preflight_mode = Keyword.get(opts, :preflight_mode, :strict)
     force_rebuild? = Keyword.get(opts, :force_rebuild, false)
 
-    emit_status(status_callback, %{phase: :cache_check})
+    if force_rebuild? do
+      emit_status(status_callback, %{phase: :preflight})
+      build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode, opts)
+    else
+      emit_status(status_callback, %{phase: :cache_check})
 
-    case if(force_rebuild?, do: :miss, else: cache_hit(organization_id, gtfs_version_id)) do
-      {:ok, zip_path, meta} ->
-        emit_status(status_callback, %{phase: :done, reused: true})
-        {:ok, zip_path, meta}
+      case cache_hit(organization_id, gtfs_version_id) do
+        {:ok, zip_path, meta} ->
+          emit_status(status_callback, %{phase: :done, reused: true})
+          {:ok, zip_path, meta}
 
-      :miss ->
-        emit_status(status_callback, %{phase: :preflight})
-        build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode)
+        :miss ->
+          emit_status(status_callback, %{phase: :preflight})
+
+          build_and_persist(
+            organization_id,
+            gtfs_version_id,
+            status_callback,
+            preflight_mode,
+            opts
+          )
+      end
     end
   end
 
@@ -78,10 +92,10 @@ defmodule GtfsPlanner.Otp.Materializer do
     end
   end
 
-  defp build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode) do
+  defp build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode, opts) do
     case Preflight.run(organization_id, gtfs_version_id) do
       :ok ->
-        do_build_and_persist(organization_id, gtfs_version_id, status_callback)
+        do_build_and_persist(organization_id, gtfs_version_id, status_callback, opts)
 
       {:error, issues} ->
         handle_preflight_issues(
@@ -89,7 +103,8 @@ defmodule GtfsPlanner.Otp.Materializer do
           gtfs_version_id,
           status_callback,
           preflight_mode,
-          issues
+          issues,
+          opts
         )
     end
   end
@@ -99,10 +114,11 @@ defmodule GtfsPlanner.Otp.Materializer do
          gtfs_version_id,
          status_callback,
          :lenient,
-         issues
+         issues,
+         opts
        ) do
     emit_status(status_callback, %{phase: :preflight, preflight_issues_count: length(issues)})
-    do_build_and_persist(organization_id, gtfs_version_id, status_callback)
+    do_build_and_persist(organization_id, gtfs_version_id, status_callback, opts)
   end
 
   defp handle_preflight_issues(
@@ -110,53 +126,187 @@ defmodule GtfsPlanner.Otp.Materializer do
          _gtfs_version_id,
          status_callback,
          :strict,
-         issues
+         issues,
+         _opts
        ) do
     emit_status(status_callback, %{phase: :failed, reason: :preflight_failed})
     {:error, issues}
   end
 
-  defp do_build_and_persist(organization_id, gtfs_version_id, status_callback) do
-    staging_dir = build_staging_dir(organization_id, gtfs_version_id)
-    specs = build_specs()
+  defp do_build_and_persist(organization_id, gtfs_version_id, status_callback, opts) do
+    pathways_preflight_outcome = run_pathways_preflight(organization_id, gtfs_version_id, opts)
+    preflight_warnings = preflight_warnings(pathways_preflight_outcome)
 
-    try do
-      emit_status(status_callback, %{phase: :exporting})
-
-      with {:ok, file_paths} <-
-             Export.export_specs_to_directory(
-               organization_id,
-               gtfs_version_id,
-               specs,
-               staging_dir
-             ),
-           manifest_files <- manifest_files(specs, file_paths),
-           zip_path <- ArtifactPath.artifact_zip_path(organization_id, gtfs_version_id),
-           _ = emit_status(status_callback, %{phase: :packaging}),
-           {:ok, ^zip_path, file_size_bytes} <-
-             Packager.package_staging_dir(staging_dir, zip_path),
-           {:ok, content_hash} <- Hasher.sha256_for_filenames(manifest_files, staging_dir),
-           manifest_json = %{"files" => manifest_files},
-           _ = emit_status(status_callback, %{phase: :persisting}),
-           {:ok, artifact} <-
-             Otp.upsert_artifact(%{
-               organization_id: organization_id,
-               gtfs_version_id: gtfs_version_id,
-               zip_path: zip_path,
-               content_hash: content_hash,
-               file_size_bytes: file_size_bytes,
-               manifest_json: manifest_json
-             }) do
-        emit_status(status_callback, %{phase: :done, reused: false})
-        {:ok, zip_path, artifact_meta(artifact, false)}
-      else
-        {:error, reason} ->
-          emit_status(status_callback, %{phase: :failed, reason: :materialization_failed})
-          {:error, [build_issue(:materialization_failed, reason)]}
-      end
-    after
-      File.rm_rf(staging_dir)
+    if preflight_warnings != [] do
+      emit_status(status_callback, %{
+        phase: :preflight,
+        preflight_warnings_count: length(preflight_warnings)
+      })
     end
+
+    with :ok <- gate_pathways_preflight(pathways_preflight_outcome, status_callback) do
+      staging_dir = build_staging_dir(organization_id, gtfs_version_id)
+      specs = build_specs()
+
+      try do
+        emit_status(status_callback, %{phase: :exporting})
+
+        with {:ok, file_paths} <-
+               Export.export_specs_to_directory(
+                 organization_id,
+                 gtfs_version_id,
+                 specs,
+                 staging_dir
+               ),
+             manifest_files <- manifest_files(specs, file_paths),
+             zip_path <- ArtifactPath.artifact_zip_path(organization_id, gtfs_version_id),
+             _ = emit_status(status_callback, %{phase: :packaging}),
+             {:ok, ^zip_path, file_size_bytes} <-
+               Packager.package_staging_dir(staging_dir, zip_path),
+             {:ok, content_hash} <- Hasher.sha256_for_filenames(manifest_files, staging_dir),
+             manifest_json = %{"files" => manifest_files},
+             _ = emit_status(status_callback, %{phase: :persisting}),
+             {:ok, artifact} <-
+               Otp.upsert_artifact(%{
+                 organization_id: organization_id,
+                 gtfs_version_id: gtfs_version_id,
+                 zip_path: zip_path,
+                 content_hash: content_hash,
+                 file_size_bytes: file_size_bytes,
+                 manifest_json: manifest_json
+               }) do
+          emit_status(status_callback, %{phase: :done, reused: false})
+          {:ok, zip_path, artifact_meta(artifact, false, preflight_warnings)}
+        else
+          {:error, reason} ->
+            emit_status(status_callback, %{phase: :failed, reason: :materialization_failed})
+            {:error, [build_issue(:materialization_failed, reason)]}
+        end
+      after
+        File.rm_rf(staging_dir)
+      end
+    else
+      {:error, blocking_errors} ->
+        {:error, blocking_errors}
+    end
+  end
+
+  defp gate_pathways_preflight(pathways_preflight_outcome, status_callback) do
+    blocking_errors = normalize_blocking_errors(pathways_preflight_outcome)
+
+    if blocking_errors == [] do
+      :ok
+    else
+      emit_status(status_callback, %{
+        phase: :failed,
+        reason: :pathways_preflight_failed,
+        blocking_errors_count: length(blocking_errors)
+      })
+
+      {:error, blocking_errors}
+    end
+  end
+
+  defp normalize_blocking_errors({status, payload})
+       when status in [:ok, :error] and is_map(payload) do
+    blocking_errors = Map.get(payload, :blocking_errors, Map.get(payload, "blocking_errors"))
+
+    case normalize_issue_list(blocking_errors) do
+      [] when status == :error ->
+        [
+          build_blocking_issue(
+            :pathways_preflight_invalid_payload,
+            "Pathways preflight failed with invalid blocking_errors payload",
+            %{payload: inspect(payload)}
+          )
+        ]
+
+      issues ->
+        issues
+    end
+  end
+
+  defp normalize_blocking_errors({status, payload}) when status in [:ok, :error] do
+    [
+      build_blocking_issue(
+        :pathways_preflight_invalid_payload,
+        "Pathways preflight returned malformed payload",
+        %{payload: inspect(payload)}
+      )
+    ]
+  end
+
+  defp normalize_blocking_errors(outcome) do
+    [
+      build_blocking_issue(
+        :pathways_preflight_invalid_outcome,
+        "Pathways preflight returned unsupported outcome",
+        %{outcome: inspect(outcome)}
+      )
+    ]
+  end
+
+  defp normalize_issue_list(blocking_errors) when is_list(blocking_errors) do
+    Enum.map(blocking_errors, &normalize_issue/1)
+  end
+
+  defp normalize_issue_list(nil), do: []
+
+  defp normalize_issue_list(blocking_errors) do
+    [
+      build_blocking_issue(
+        :pathways_preflight_invalid_blocking_errors,
+        "Pathways preflight returned invalid blocking_errors value",
+        %{blocking_errors: inspect(blocking_errors)}
+      )
+    ]
+  end
+
+  defp normalize_issue(issue) when is_map(issue) do
+    code = Map.get(issue, :code, Map.get(issue, "code", :pathways_preflight_blocking_issue))
+
+    message =
+      Map.get(
+        issue,
+        :message,
+        Map.get(issue, "message", "Pathways preflight reported a blocking issue")
+      )
+
+    context = Map.get(issue, :context, Map.get(issue, "context", %{}))
+
+    severity =
+      case Map.get(issue, :severity, Map.get(issue, "severity", :blocking)) do
+        value when value in [:blocking, :error, :warning, :info] -> value
+        "blocking" -> :blocking
+        "error" -> :error
+        "warning" -> :warning
+        "info" -> :info
+        _value -> :blocking
+      end
+
+    %{
+      code: code,
+      severity: severity,
+      message: message,
+      context: context
+    }
+  end
+
+  defp normalize_issue(issue) do
+    build_blocking_issue(
+      :pathways_preflight_invalid_issue,
+      "Pathways preflight returned malformed blocking issue",
+      %{issue: inspect(issue)}
+    )
+  end
+
+  defp build_blocking_issue(code, message, context) do
+    %{
+      code: code,
+      severity: :blocking,
+      message: message,
+      context: context
+    }
   end
 
   defp emit_status(nil, _payload), do: :ok
@@ -192,13 +342,21 @@ defmodule GtfsPlanner.Otp.Materializer do
   end
 
   defp artifact_meta(artifact, reused?) do
+    artifact_meta(artifact, reused?, [])
+  end
+
+  defp artifact_meta(artifact, reused?, preflight_warnings) do
     %{
       reused: reused?,
       content_hash: artifact.content_hash,
       file_size_bytes: artifact.file_size_bytes,
-      manifest_json: artifact.manifest_json
+      manifest_json: artifact.manifest_json,
+      preflight_warnings: preflight_warnings
     }
   end
+
+  defp preflight_warnings({_status, %{warnings: warnings}}) when is_list(warnings), do: warnings
+  defp preflight_warnings(_outcome), do: []
 
   defp build_issue(code, details) do
     %{
@@ -207,5 +365,10 @@ defmodule GtfsPlanner.Otp.Materializer do
       message: "OTP GTFS materialization failed",
       details: %{reason: inspect(details)}
     }
+  end
+
+  defp run_pathways_preflight(organization_id, gtfs_version_id, opts) do
+    pathways_preflight_fun = Keyword.get(opts, :pathways_preflight_fun, &PathwaysPreflight.run/3)
+    pathways_preflight_fun.(organization_id, gtfs_version_id, [])
   end
 end

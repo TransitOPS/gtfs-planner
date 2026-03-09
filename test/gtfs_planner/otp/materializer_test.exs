@@ -28,7 +28,7 @@ defmodule GtfsPlanner.Otp.MaterializerTest do
     } do
       seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
 
-      status_callback = fn %{phase: phase} -> send(self(), {:phase, phase}) end
+      status_callback = fn payload -> send(self(), {:status, payload}) end
 
       assert {:ok, zip_path, first_meta} =
                Materializer.get_or_build_gtfs_zip(
@@ -41,12 +41,12 @@ defmodule GtfsPlanner.Otp.MaterializerTest do
       assert File.regular?(zip_path)
       assert {:ok, _artifact} = Otp.fetch_artifact(organization.id, gtfs_version.id)
 
-      assert_receive {:phase, :cache_check}
-      assert_receive {:phase, :preflight}
-      assert_receive {:phase, :exporting}
-      assert_receive {:phase, :packaging}
-      assert_receive {:phase, :persisting}
-      assert_receive {:phase, :done}
+      assert_receive {:status, %{phase: :cache_check}}
+      assert_receive {:status, %{phase: :preflight}}
+      assert_receive {:status, %{phase: :exporting}}
+      assert_receive {:status, %{phase: :packaging}}
+      assert_receive {:status, %{phase: :persisting}}
+      assert_receive {:status, %{phase: :done, reused: false}}
 
       assert {:ok, same_zip_path, second_meta} =
                Materializer.get_or_build_gtfs_zip(organization.id, gtfs_version.id)
@@ -107,7 +107,7 @@ defmodule GtfsPlanner.Otp.MaterializerTest do
 
       assert first_meta.reused == false
 
-      status_callback = fn %{phase: phase} -> send(self(), {:phase, phase}) end
+      status_callback = fn payload -> send(self(), {:status, payload}) end
 
       assert {:ok, _zip_path, second_meta} =
                Materializer.get_or_build_gtfs_zip(
@@ -118,12 +118,273 @@ defmodule GtfsPlanner.Otp.MaterializerTest do
                )
 
       assert second_meta.reused == false
-      assert_receive {:phase, :cache_check}
-      assert_receive {:phase, :preflight}
-      assert_receive {:phase, :exporting}
-      assert_receive {:phase, :packaging}
-      assert_receive {:phase, :persisting}
-      assert_receive {:phase, :done}
+      refute_receive {:status, %{phase: :cache_check}}
+      assert_receive {:status, %{phase: :preflight}}
+      assert_receive {:status, %{phase: :exporting}}
+      assert_receive {:status, %{phase: :packaging}}
+      assert_receive {:status, %{phase: :persisting}}
+      assert_receive {:status, %{phase: :done, reused: false}}
+    end
+
+    test "invokes pathways preflight before export packaging", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      organization_id = organization.id
+      gtfs_version_id = gtfs_version.id
+
+      seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      status_callback = fn payload -> send(self(), {:status, payload}) end
+
+      pathways_preflight_fun = fn org_id, version_id, _opts ->
+        send(self(), {:pathways_preflight_called, org_id, version_id})
+        {:ok, %{blocking_errors: [], warnings: [], metadata: %{}}}
+      end
+
+      assert {:ok, _zip_path, _meta} =
+               Materializer.get_or_build_gtfs_zip(
+                 organization_id,
+                 gtfs_version_id,
+                 force_rebuild: true,
+                 status_callback: status_callback,
+                 pathways_preflight_fun: pathways_preflight_fun
+               )
+
+      assert_receive {:pathways_preflight_called, ^organization_id, ^gtfs_version_id}
+      assert_receive {:status, %{phase: :exporting}}
+      assert_receive {:status, %{phase: :packaging}}
+    end
+
+    test "aborts before export packaging when pathways preflight has blocking errors", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      organization_id = organization.id
+      gtfs_version_id = gtfs_version.id
+
+      seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      status_callback = fn payload -> send(self(), {:status, payload}) end
+
+      blocking_issue = %{
+        code: :station_stop_lon_out_of_range,
+        severity: :blocking,
+        message: "Station seed_stop_a has stop_lon outside -180.0..180.0 in stops.txt.",
+        context: %{file: "stops.txt", field: "stop_lon", stop_id: "seed_stop_a"}
+      }
+
+      pathways_preflight_fun = fn org_id, version_id, _opts ->
+        send(self(), {:pathways_preflight_called, org_id, version_id})
+
+        {:error,
+         %{blocking_errors: [blocking_issue], warnings: [], metadata: %{organization_id: org_id}}}
+      end
+
+      assert {:error, [returned_issue]} =
+               Materializer.get_or_build_gtfs_zip(
+                 organization_id,
+                 gtfs_version_id,
+                 force_rebuild: true,
+                 status_callback: status_callback,
+                 pathways_preflight_fun: pathways_preflight_fun
+               )
+
+      assert returned_issue.code == :station_stop_lon_out_of_range
+      assert_receive {:pathways_preflight_called, ^organization_id, ^gtfs_version_id}
+
+      assert_receive {:status,
+                      %{
+                        phase: :failed,
+                        reason: :pathways_preflight_failed,
+                        blocking_errors_count: 1
+                      }}
+
+      refute_receive {:status, %{phase: :exporting}}
+      refute_receive {:status, %{phase: :packaging}}
+      refute_receive {:status, %{phase: :persisting}}
+      refute_receive {:status, %{phase: :done}}
+      assert {:error, :not_found} = Otp.fetch_artifact(organization_id, gtfs_version_id)
+    end
+
+    test "aborts when pathways preflight returns blocking_errors even with ok status", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      organization_id = organization.id
+      gtfs_version_id = gtfs_version.id
+
+      seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      status_callback = fn payload -> send(self(), {:status, payload}) end
+
+      blocking_issue = %{
+        code: :pathway_endpoint_stop_not_found,
+        severity: :blocking,
+        message: "Pathway pw_block references unknown to_stop_id missing_stop.",
+        context: %{file: "pathways.txt", field: "to_stop_id", pathway_id: "pw_block"}
+      }
+
+      pathways_preflight_fun = fn org_id, version_id, _opts ->
+        send(self(), {:pathways_preflight_called, org_id, version_id})
+
+        {:ok,
+         %{blocking_errors: [blocking_issue], warnings: [], metadata: %{organization_id: org_id}}}
+      end
+
+      assert {:error, [returned_issue]} =
+               Materializer.get_or_build_gtfs_zip(
+                 organization_id,
+                 gtfs_version_id,
+                 force_rebuild: true,
+                 status_callback: status_callback,
+                 pathways_preflight_fun: pathways_preflight_fun
+               )
+
+      assert returned_issue.code == :pathway_endpoint_stop_not_found
+      assert_receive {:pathways_preflight_called, ^organization_id, ^gtfs_version_id}
+
+      assert_receive {:status,
+                      %{
+                        phase: :failed,
+                        reason: :pathways_preflight_failed,
+                        blocking_errors_count: 1
+                      }}
+
+      refute_receive {:status, %{phase: :exporting}}
+      refute_receive {:status, %{phase: :packaging}}
+      refute_receive {:status, %{phase: :persisting}}
+      refute_receive {:status, %{phase: :done}}
+      assert {:error, :not_found} = Otp.fetch_artifact(organization_id, gtfs_version_id)
+    end
+
+    test "treats malformed blocking_errors payload as terminal blocking failure", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      organization_id = organization.id
+      gtfs_version_id = gtfs_version.id
+
+      seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      status_callback = fn payload -> send(self(), {:status, payload}) end
+
+      pathways_preflight_fun = fn org_id, version_id, _opts ->
+        send(self(), {:pathways_preflight_called, org_id, version_id})
+
+        {:ok,
+         %{blocking_errors: :invalid_payload, warnings: [], metadata: %{organization_id: org_id}}}
+      end
+
+      assert {:error, [returned_issue]} =
+               Materializer.get_or_build_gtfs_zip(
+                 organization_id,
+                 gtfs_version_id,
+                 force_rebuild: true,
+                 status_callback: status_callback,
+                 pathways_preflight_fun: pathways_preflight_fun
+               )
+
+      assert returned_issue.code == :pathways_preflight_invalid_blocking_errors
+      assert returned_issue.severity == :blocking
+      assert_receive {:pathways_preflight_called, ^organization_id, ^gtfs_version_id}
+
+      assert_receive {:status,
+                      %{
+                        phase: :failed,
+                        reason: :pathways_preflight_failed,
+                        blocking_errors_count: 1
+                      }}
+
+      refute_receive {:status, %{phase: :exporting}}
+      refute_receive {:status, %{phase: :packaging}}
+      refute_receive {:status, %{phase: :persisting}}
+      refute_receive {:status, %{phase: :done}}
+      assert {:error, :not_found} = Otp.fetch_artifact(organization_id, gtfs_version_id)
+    end
+
+    test "treats malformed preflight outcome as terminal blocking failure", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      organization_id = organization.id
+      gtfs_version_id = gtfs_version.id
+
+      seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      status_callback = fn payload -> send(self(), {:status, payload}) end
+
+      pathways_preflight_fun = fn org_id, version_id, _opts ->
+        send(self(), {:pathways_preflight_called, org_id, version_id})
+        :unexpected
+      end
+
+      assert {:error, [returned_issue]} =
+               Materializer.get_or_build_gtfs_zip(
+                 organization_id,
+                 gtfs_version_id,
+                 force_rebuild: true,
+                 status_callback: status_callback,
+                 pathways_preflight_fun: pathways_preflight_fun
+               )
+
+      assert returned_issue.code == :pathways_preflight_invalid_outcome
+      assert returned_issue.severity == :blocking
+      assert_receive {:pathways_preflight_called, ^organization_id, ^gtfs_version_id}
+
+      assert_receive {:status,
+                      %{
+                        phase: :failed,
+                        reason: :pathways_preflight_failed,
+                        blocking_errors_count: 1
+                      }}
+
+      refute_receive {:status, %{phase: :exporting}}
+      refute_receive {:status, %{phase: :packaging}}
+      refute_receive {:status, %{phase: :persisting}}
+      refute_receive {:status, %{phase: :done}}
+      assert {:error, :not_found} = Otp.fetch_artifact(organization_id, gtfs_version_id)
+    end
+
+    test "continues export and returns preflight warnings in meta", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      organization_id = organization.id
+      gtfs_version_id = gtfs_version.id
+
+      seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      status_callback = fn payload -> send(self(), {:status, payload}) end
+
+      warning_issue = %{
+        code: :pathway_endpoint_stop_not_found,
+        severity: :warning,
+        message: "Pathway pw_warn references unknown from_stop_id missing_stop in pathways.txt.",
+        context: %{file: "pathways.txt", field: "from_stop_id", pathway_id: "pw_warn"}
+      }
+
+      pathways_preflight_fun = fn org_id, version_id, _opts ->
+        send(self(), {:pathways_preflight_called, org_id, version_id})
+
+        {:ok,
+         %{blocking_errors: [], warnings: [warning_issue], metadata: %{organization_id: org_id}}}
+      end
+
+      assert {:ok, _zip_path, meta} =
+               Materializer.get_or_build_gtfs_zip(
+                 organization_id,
+                 gtfs_version_id,
+                 force_rebuild: true,
+                 status_callback: status_callback,
+                 pathways_preflight_fun: pathways_preflight_fun
+               )
+
+      assert meta.preflight_warnings == [warning_issue]
+      assert_receive {:pathways_preflight_called, ^organization_id, ^gtfs_version_id}
+      assert_receive {:status, %{phase: :exporting}}
+      assert_receive {:status, %{phase: :packaging}}
+      assert {:ok, _artifact} = Otp.fetch_artifact(organization_id, gtfs_version_id)
     end
   end
 
