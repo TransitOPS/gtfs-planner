@@ -66,7 +66,7 @@ defmodule GtfsPlanner.Validations.WalkabilityTest do
     |> validate_min_max_range(:expected_min_duration_seconds, :expected_max_duration_seconds)
     |> validate_min_max_range(:expected_min_distance_meters, :expected_max_distance_meters)
     |> unique_constraint(:address,
-      name: :walkability_tests_organization_id_gtfs_version_id_stop_id_addre
+      name: :walkability_tests_organization_id_gtfs_version_id_stop_id_address_index
     )
     |> foreign_key_constraint(:organization_id)
     |> foreign_key_constraint(:gtfs_version_id)
