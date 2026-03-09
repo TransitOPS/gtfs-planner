@@ -47,9 +47,6 @@ defmodule GtfsPlanner.Validations.ValidationRun do
     has_many :walkability_test_run_results, GtfsPlanner.Validations.WalkabilityTestRunResult,
       foreign_key: :validation_run_id
 
-    has_many :walkability_test_run_results, GtfsPlanner.Validations.WalkabilityTestRunResult,
-      foreign_key: :validation_run_id
-
     timestamps(type: :utc_datetime_usec)
   end
 
