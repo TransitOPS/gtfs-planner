@@ -10,6 +10,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
 
@@ -5392,6 +5393,84 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_upload(upload, "big.png")
 
       assert has_element?(view, "span.text-error", "File is too large (max 10 MB)")
+    end
+  end
+
+  describe "StationDiagramLive - diagram upload path safety" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION:UPLOAD:SAFE",
+          stop_name: "Upload Safe Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_UPLOAD_SAFE",
+          level_name: "Upload Safe Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "upload succeeds for stop_ids outside strict filename regex", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      upload_diagram(view, "floorplan.png", "safe storage payload")
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+
+      assert stop_level.diagram_filename != nil
+
+      station_dir = PathSafety.stop_storage_dir(station.stop_id)
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+
+      stored_path =
+        Path.join([
+          uploads_path,
+          "diagrams",
+          to_string(organization.id),
+          station_dir,
+          stop_level.diagram_filename
+        ])
+
+      assert File.exists?(stored_path)
+      refute has_element?(view, "span.text-error", "Invalid diagram upload path")
     end
   end
 
