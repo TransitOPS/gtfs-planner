@@ -11,9 +11,9 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.{Stop, StopLevel, Level, Route}
   alias GtfsPlanner.Gtfs.Extensions.Manifest
+  alias GtfsPlanner.Gtfs.Extensions.PathSafety
 
   require Logger
-  @safe_path_component ~r/^[A-Za-z0-9._-]+$/
 
   @doc """
   Builds zip entries for extensions data.
@@ -124,10 +124,12 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
     stop_levels
     |> Enum.filter(&(&1.diagram_filename != nil))
     |> Enum.map(fn sl ->
+      station_dir = PathSafety.stop_storage_dir(sl.stop_id)
+
       %{
         station_stop_id: sl.stop_id,
         filename: sl.diagram_filename,
-        zip_path: "_pathways_extensions/diagrams/#{sl.stop_id}/#{sl.diagram_filename}"
+        zip_path: "_pathways_extensions/diagrams/#{station_dir}/#{sl.diagram_filename}"
       }
     end)
   end
@@ -137,10 +139,18 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
     uploads_root = Path.expand(Path.join([uploads_path, "diagrams", organization_id]))
 
     Enum.flat_map(image_manifest_entries, fn entry ->
-      if safe_path_component?(entry.station_stop_id) and safe_path_component?(entry.filename) do
-        disk_path = Path.join([uploads_root, entry.station_stop_id, entry.filename])
+      station_dir = PathSafety.stop_storage_dir(entry.station_stop_id)
 
-        with :ok <- ensure_within_root(uploads_root, disk_path),
+      if is_nil(station_dir) or not PathSafety.safe_path_component?(entry.filename) do
+        Logger.warning(
+          "Extensions export: rejected unsafe image path components for #{entry.zip_path}"
+        )
+
+        []
+      else
+        disk_path = Path.join([uploads_root, station_dir, entry.filename])
+
+        with :ok <- PathSafety.ensure_within_root(uploads_root, disk_path),
              {:ok, binary} <- File.read(disk_path) do
           [{String.to_charlist(entry.zip_path), binary}]
         else
@@ -151,34 +161,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
 
             []
         end
-      else
-        Logger.warning(
-          "Extensions export: rejected unsafe image path components for #{entry.zip_path}"
-        )
-
-        []
       end
     end)
-  end
-
-  defp safe_path_component?(value) when is_binary(value) do
-    value != "" and
-      value != "." and
-      value != ".." and
-      not String.contains?(value, ["/", "\\", <<0>>]) and
-      String.match?(value, @safe_path_component)
-  end
-
-  defp safe_path_component?(_), do: false
-
-  defp ensure_within_root(root, path) do
-    expanded_root = Path.expand(root)
-    expanded_path = Path.expand(path)
-
-    if expanded_path == expanded_root or String.starts_with?(expanded_path, expanded_root <> "/") do
-      :ok
-    else
-      {:error, :path_traversal}
-    end
   end
 end

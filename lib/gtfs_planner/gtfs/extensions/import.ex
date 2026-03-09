@@ -11,9 +11,9 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.{Stop, StopLevel, Level, Route}
   alias GtfsPlanner.Gtfs.Extensions.Manifest
+  alias GtfsPlanner.Gtfs.Extensions.PathSafety
 
   require Logger
-  @safe_path_component ~r/^[A-Za-z0-9._-]+$/
 
   @doc """
   Imports extensions data from manifest JSON and image binaries.
@@ -253,12 +253,20 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
   # -- helpers ----------------------------------------------------------------
 
   defp write_image_file(uploads_root, entry, binary) do
-    if safe_path_component?(entry.station_stop_id) and safe_path_component?(entry.filename) do
-      dest_dir = Path.join(uploads_root, entry.station_stop_id)
+    station_dir = PathSafety.stop_storage_dir(entry.station_stop_id)
+
+    if is_nil(station_dir) or not PathSafety.safe_path_component?(entry.filename) do
+      Logger.warning(
+        "Extensions import: rejected unsafe image path components for #{entry.zip_path}"
+      )
+
+      false
+    else
+      dest_dir = Path.join(uploads_root, station_dir)
       dest_path = Path.join(dest_dir, entry.filename)
 
-      with :ok <- ensure_within_root(uploads_root, dest_dir),
-           :ok <- ensure_within_root(uploads_root, dest_path),
+      with :ok <- PathSafety.ensure_within_root(uploads_root, dest_dir),
+           :ok <- PathSafety.ensure_within_root(uploads_root, dest_path),
            :ok <- File.mkdir_p(dest_dir),
            :ok <- File.write(dest_path, binary) do
         true
@@ -270,33 +278,6 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
           false
       end
-    else
-      Logger.warning(
-        "Extensions import: rejected unsafe image path components for #{entry.zip_path}"
-      )
-
-      false
-    end
-  end
-
-  defp safe_path_component?(value) when is_binary(value) do
-    value != "" and
-      value != "." and
-      value != ".." and
-      not String.contains?(value, ["/", "\\", <<0>>]) and
-      String.match?(value, @safe_path_component)
-  end
-
-  defp safe_path_component?(_), do: false
-
-  defp ensure_within_root(root, path) do
-    expanded_root = Path.expand(root)
-    expanded_path = Path.expand(path)
-
-    if expanded_path == expanded_root or String.starts_with?(expanded_path, expanded_root <> "/") do
-      :ok
-    else
-      {:error, :path_traversal}
     end
   end
 

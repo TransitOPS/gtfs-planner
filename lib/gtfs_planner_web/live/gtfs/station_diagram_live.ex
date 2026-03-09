@@ -10,6 +10,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Coordinates
+  alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Otp.Lifecycle
@@ -1980,41 +1981,54 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:ok, stop_level} ->
             case consume_uploaded_entry(socket, entry, fn %{path: path} ->
                    uploads_base = Application.get_env(:gtfs_planner, :uploads_path)
+                   station_dir = PathSafety.stop_storage_dir(station.stop_id)
 
                    storage_filename =
                      build_diagram_storage_filename(stop_level.level_id, entry.client_name)
 
-                   dest_dir =
-                     Path.join([
-                       uploads_base,
-                       "diagrams",
-                       to_string(socket.assigns.current_organization.id),
-                       station.stop_id
-                     ])
-
-                   File.mkdir_p!(dest_dir)
-
-                   dest_path = Path.join(dest_dir, storage_filename)
-                   File.cp!(path, dest_path)
-
-                   {:ok, storage_filename}
+                   with true <- is_binary(station_dir),
+                        true <- PathSafety.safe_path_component?(storage_filename),
+                        diagrams_root <-
+                          Path.join([
+                            uploads_base,
+                            "diagrams",
+                            to_string(socket.assigns.current_organization.id)
+                          ]),
+                        dest_dir <- Path.join(diagrams_root, station_dir),
+                        dest_path <- Path.join(dest_dir, storage_filename),
+                        :ok <- PathSafety.ensure_within_root(diagrams_root, dest_dir),
+                        :ok <- PathSafety.ensure_within_root(diagrams_root, dest_path),
+                        :ok <- File.mkdir_p(dest_dir),
+                        :ok <- File.cp(path, dest_path) do
+                     {:ok, {:saved, storage_filename}}
+                   else
+                     false -> {:ok, {:error, :unsafe_path_component}}
+                     {:error, reason} -> {:ok, {:error, reason}}
+                   end
                  end) do
-              filename when is_binary(filename) ->
-                case Gtfs.update_stop_level_diagram(stop_level, filename) do
-                  {:ok, updated_stop_level} ->
-                    socket
-                    |> assign(:active_stop_level, updated_stop_level)
-                    |> disable_measurement()
-                    |> assign(:diagram_error, nil)
+              {:saved, filename} when is_binary(filename) ->
+                persist_stop_level_diagram(socket, stop_level, filename)
 
-                  {:error, _changeset} ->
-                    assign(socket, :diagram_error, "Failed to save diagram")
-                end
+              {:error, _reason} ->
+                assign(socket, :diagram_error, "Invalid diagram upload path")
 
-              {:postpone, _socket} ->
-                socket
+              {:postpone, postponed_socket} ->
+                postponed_socket
             end
         end
+    end
+  end
+
+  defp persist_stop_level_diagram(socket, stop_level, filename) do
+    case Gtfs.update_stop_level_diagram(stop_level, filename) do
+      {:ok, updated_stop_level} ->
+        socket
+        |> assign(:active_stop_level, updated_stop_level)
+        |> disable_measurement()
+        |> assign(:diagram_error, nil)
+
+      {:error, _changeset} ->
+        assign(socket, :diagram_error, "Failed to save diagram")
     end
   end
 
