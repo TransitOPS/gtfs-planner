@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Validations.WalkabilityTest do
   @type t :: %__MODULE__{
           id: Ecto.UUID.t(),
           organization_id: Ecto.UUID.t(),
+          gtfs_version_id: Ecto.UUID.t(),
           stop_id: String.t(),
           address: String.t(),
           address_lat: Decimal.t(),
@@ -37,6 +38,7 @@ defmodule GtfsPlanner.Validations.WalkabilityTest do
     field :expected_max_distance_meters, :integer
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization
+    belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -56,15 +58,18 @@ defmodule GtfsPlanner.Validations.WalkabilityTest do
       :expected_min_distance_meters,
       :expected_max_distance_meters
     ])
-    |> validate_required([:stop_id, :address, :address_lat, :address_lon])
+    |> validate_required([:stop_id, :address, :address_lat, :address_lon, :gtfs_version_id])
     |> validate_number(:expected_min_duration_seconds, greater_than_or_equal_to: 0)
     |> validate_number(:expected_max_duration_seconds, greater_than_or_equal_to: 0)
     |> validate_number(:expected_min_distance_meters, greater_than_or_equal_to: 0)
     |> validate_number(:expected_max_distance_meters, greater_than_or_equal_to: 0)
     |> validate_min_max_range(:expected_min_duration_seconds, :expected_max_duration_seconds)
     |> validate_min_max_range(:expected_min_distance_meters, :expected_max_distance_meters)
-    |> unique_constraint([:organization_id, :stop_id, :address])
+    |> unique_constraint(:address,
+      name: :walkability_tests_organization_id_gtfs_version_id_stop_id_address_index
+    )
     |> foreign_key_constraint(:organization_id)
+    |> foreign_key_constraint(:gtfs_version_id)
   end
 
   defp validate_min_max_range(changeset, min_field, max_field) do

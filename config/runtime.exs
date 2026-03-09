@@ -79,6 +79,34 @@ config :gtfs_planner,
        System.get_env("OTP_GRAPH_BUILD_TIMEOUT_MS", "600000")
        |> String.to_integer()
 
+config :gtfs_planner, :otp_server_host, System.get_env("OTP_SERVER_HOST") || "127.0.0.1"
+
+config :gtfs_planner,
+       :otp_server_port,
+       System.get_env("OTP_SERVER_PORT", "8080")
+       |> String.to_integer()
+
+config :gtfs_planner, :otp_server_heap, System.get_env("OTP_SERVER_HEAP") || "4G"
+
+config :gtfs_planner,
+       :otp_server_ready_timeout_ms,
+       System.get_env("OTP_SERVER_READY_TIMEOUT_MS", "30000")
+       |> String.to_integer()
+
+config :gtfs_planner,
+       :otp_server_ready_poll_interval_ms,
+       System.get_env("OTP_SERVER_READY_POLL_INTERVAL_MS", "250")
+       |> String.to_integer()
+
+config :gtfs_planner,
+       :otp_server_shutdown_timeout_ms,
+       System.get_env("OTP_SERVER_SHUTDOWN_TIMEOUT_MS", "5000")
+       |> String.to_integer()
+
+config :gtfs_planner,
+       :otp_graphql_path,
+       System.get_env("OTP_GRAPHQL_PATH") || "/otp/routers/default/index/graphql"
+
 config :gtfs_planner, :otp_jar_sha256, System.get_env("OTP_JAR_SHA256")
 
 config :gtfs_planner, :mail_domain, System.get_env("MAIL_DOMAIN") || "gtfsplanner.com"

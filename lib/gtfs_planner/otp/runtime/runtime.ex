@@ -3,6 +3,9 @@ defmodule GtfsPlanner.Otp.Runtime do
   OTP runtime orchestration boundary for Phase 1 and Phase 2 materialization.
   """
 
+  alias GtfsPlanner.Otp.Runtime.Readiness
+  alias GtfsPlanner.Otp.Runtime.Server
+  alias GtfsPlanner.Otp.Runtime.Session
   alias GtfsPlanner.Otp.GraphLifecycle
   alias GtfsPlanner.Otp.GraphMaterializer
   alias GtfsPlanner.Otp.Lifecycle
@@ -27,6 +30,16 @@ defmodule GtfsPlanner.Otp.Runtime do
           graph: :purged | :not_found,
           gtfs: :purged | :not_found
         }
+
+  @type run_callback_result :: {:ok, term()} | {:error, term()}
+  @type run_callback :: (Session.t() -> run_callback_result())
+  @type runtime_issue_code ::
+          :otp_start_failed
+          | :otp_ready_timeout
+          | :otp_readiness_probe_failed
+          | :otp_process_crashed
+          | :otp_stop_failed
+          | :otp_runtime_already_running
 
   @spec prepare_runtime(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
           {:ok, prepare_result()} | {:error, issues()}
@@ -81,6 +94,75 @@ defmodule GtfsPlanner.Otp.Runtime do
     end
   end
 
+  @spec run_with_otp(Ecto.UUID.t(), Ecto.UUID.t(), run_callback(), keyword()) ::
+          {:ok, term()} | {:error, term()}
+  def run_with_otp(organization_id, gtfs_version_id, callback, opts \\ [])
+      when is_function(callback, 1) and is_list(opts) do
+    status_callback = Keyword.get(opts, :status_callback)
+    otp_status_callback = scoped_status_callback(status_callback, :otp)
+    acquire_lock_fun = Keyword.get(opts, :acquire_lock_fun, &acquire_org_lock/1)
+    release_lock_fun = Keyword.get(opts, :release_lock_fun, &release_org_lock/1)
+
+    prepare_runtime_fun = Keyword.get(opts, :prepare_runtime_fun, &prepare_runtime/3)
+    start_server_fun = Keyword.get(opts, :start_server_fun, &Server.start/2)
+    wait_ready_fun = Keyword.get(opts, :wait_ready_fun, &Readiness.wait_until_ready/2)
+    stop_server_fun = Keyword.get(opts, :stop_server_fun, &Server.stop/2)
+
+    result =
+      with :ok <- acquire_lock_fun.(organization_id) do
+        try do
+          with {:ok, prepared_runtime} <-
+                 prepare_runtime_fun.(organization_id, gtfs_version_id, opts),
+               :ok <- emit_runtime_status(otp_status_callback, :starting),
+               {:ok, session} <- start_server_fun.(prepared_runtime.graph_path, opts) do
+            try do
+              with :ok <- emit_runtime_status(otp_status_callback, :waiting_ready),
+                   :ok <- wait_ready_fun.(session, opts),
+                   :ok <- emit_runtime_status(otp_status_callback, :ready),
+                   {:ok, result} <- callback.(session) do
+                {:ok, result}
+              end
+            after
+              _ = emit_runtime_status(otp_status_callback, :stopping)
+
+              case stop_server_fun.(session, opts) do
+                {:ok, _session} ->
+                  _ = emit_runtime_status(otp_status_callback, :stopped)
+                  :ok
+
+                {:error, stop_reason} ->
+                  _ = emit_runtime_status(otp_status_callback, :failed)
+                  throw({:otp_stop_failed, stop_reason, session})
+              end
+            end
+          end
+        catch
+          :throw, {:otp_stop_failed, stop_reason, session} ->
+            {:error, [runtime_issue(:otp_stop_failed, stop_reason, session)]}
+        after
+          _ = release_lock_fun.(organization_id)
+        end
+      end
+
+    normalize_runtime_result(result, otp_status_callback)
+  end
+
+  defp acquire_org_lock(organization_id) do
+    lock_key = {:gtfs_planner_otp_runtime_lock, organization_id}
+
+    if :global.set_lock(lock_key, [node()], 0) do
+      :ok
+    else
+      {:error, %{reason: :runtime_already_running, organization_id: organization_id}}
+    end
+  end
+
+  defp release_org_lock(organization_id) do
+    lock_key = {:gtfs_planner_otp_runtime_lock, organization_id}
+    _ = :global.del_lock(lock_key)
+    :ok
+  end
+
   defp scoped_status_callback(nil, _scope), do: nil
 
   defp scoped_status_callback(status_callback, scope) when is_function(status_callback, 1) do
@@ -88,4 +170,62 @@ defmodule GtfsPlanner.Otp.Runtime do
       status_callback.(Map.put(payload, :scope, scope))
     end
   end
+
+  defp emit_runtime_status(nil, _phase), do: :ok
+
+  defp emit_runtime_status(status_callback, phase) when is_function(status_callback, 1) do
+    status_callback.(%{phase: phase})
+    :ok
+  end
+
+  defp normalize_runtime_result({:ok, _result} = ok, _status_callback), do: ok
+
+  defp normalize_runtime_result({:error, issues} = error, _status_callback) when is_list(issues),
+    do: error
+
+  defp normalize_runtime_result({:error, reason}, status_callback) do
+    case maybe_runtime_issue(reason) do
+      {:ok, issue} ->
+        _ = emit_runtime_status(status_callback, :failed)
+        {:error, [issue]}
+
+      :error ->
+        _ = emit_runtime_status(status_callback, :failed)
+        {:error, reason}
+    end
+  end
+
+  defp maybe_runtime_issue(%{reason: :start_failed} = details),
+    do: {:ok, runtime_issue(:otp_start_failed, details, nil)}
+
+  defp maybe_runtime_issue(%{reason: :ready_timeout} = details),
+    do: {:ok, runtime_issue(:otp_ready_timeout, details, nil)}
+
+  defp maybe_runtime_issue(%{reason: :readiness_probe_failed} = details),
+    do: {:ok, runtime_issue(:otp_readiness_probe_failed, details, nil)}
+
+  defp maybe_runtime_issue(%{reason: :process_crashed} = details),
+    do: {:ok, runtime_issue(:otp_process_crashed, details, nil)}
+
+  defp maybe_runtime_issue(%{reason: :stop_failed} = details),
+    do: {:ok, runtime_issue(:otp_stop_failed, details, nil)}
+
+  defp maybe_runtime_issue(%{reason: :runtime_already_running} = details),
+    do: {:ok, runtime_issue(:otp_runtime_already_running, details, nil)}
+
+  defp maybe_runtime_issue(_), do: :error
+
+  defp runtime_issue(code, details, nil) when is_atom(code) do
+    %{code: code, details: details}
+  end
+
+  defp runtime_issue(code, details, %Session{} = session) when is_atom(code) do
+    %{
+      code: code,
+      details: Map.merge(%{session: session}, normalize_issue_details(details))
+    }
+  end
+
+  defp normalize_issue_details(details) when is_map(details), do: details
+  defp normalize_issue_details(details), do: %{reason: details}
 end
