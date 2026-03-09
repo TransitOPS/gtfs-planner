@@ -1809,5 +1809,116 @@ defmodule GtfsPlanner.GtfsTest do
 
       assert Gtfs.calculate_pathway_length(calibrated, from_stop, to_stop) == Decimal.new("10.00")
     end
+
+    test "recalculate_pathway_lengths_for_level/5 updates only same-level pathways", %{
+      stop_level: stop_level,
+      from_stop: from_stop,
+      to_stop: to_stop
+    } do
+      {:ok, calibrated} =
+        Gtfs.update_stop_level_scale(stop_level, %{
+          scale_point_a: %{"x" => 0.0, "y" => 0.0},
+          scale_point_b: %{"x" => 10.0, "y" => 0.0},
+          scale_distance_meters: Decimal.new("20"),
+          scale_meters_per_unit: Decimal.new("2")
+        })
+
+      parent_station =
+        Gtfs.get_stop_by_stop_id(
+          calibrated.organization_id,
+          calibrated.gtfs_version_id,
+          "STATION_SCALE"
+        )
+
+      other_level =
+        level_fixture(calibrated.organization_id, calibrated.gtfs_version_id, %{
+          level_id: "L_SCALE_OTHER",
+          level_index: 1.0
+        })
+
+      cross_stop =
+        stop_fixture(calibrated.organization_id, calibrated.gtfs_version_id, %{
+          stop_id: "SCALE_CROSS",
+          parent_station: parent_station.stop_id,
+          level_id: other_level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+        })
+
+      same_level_pathway =
+        pathway_fixture(
+          calibrated.organization_id,
+          calibrated.gtfs_version_id,
+          from_stop.stop_id,
+          to_stop.stop_id,
+          %{length: Decimal.new("99.00")}
+        )
+
+      cross_level_pathway =
+        pathway_fixture(
+          calibrated.organization_id,
+          calibrated.gtfs_version_id,
+          from_stop.stop_id,
+          cross_stop.stop_id,
+          %{length: Decimal.new("88.00")}
+        )
+
+      assert {:ok, 1} =
+               Gtfs.recalculate_pathway_lengths_for_level(
+                 calibrated,
+                 calibrated.organization_id,
+                 calibrated.gtfs_version_id,
+                 calibrated.level_id,
+                 parent_station.id
+               )
+
+      assert Decimal.equal?(Gtfs.get_pathway!(same_level_pathway.id).length, Decimal.new("10.00"))
+
+      assert Decimal.equal?(
+               Gtfs.get_pathway!(cross_level_pathway.id).length,
+               Decimal.new("88.00")
+             )
+    end
+
+    test "save_scale_and_recalculate/6 persists calibration and recalculated lengths", %{
+      stop_level: stop_level,
+      from_stop: from_stop,
+      to_stop: to_stop
+    } do
+      parent_station =
+        Gtfs.get_stop_by_stop_id(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          "STATION_SCALE"
+        )
+
+      pathway =
+        pathway_fixture(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          from_stop.stop_id,
+          to_stop.stop_id,
+          %{length: Decimal.new("55.00")}
+        )
+
+      attrs = %{
+        scale_point_a: %{"x" => 0.0, "y" => 0.0},
+        scale_point_b: %{"x" => 10.0, "y" => 0.0},
+        scale_distance_meters: Decimal.new("20"),
+        scale_meters_per_unit: Decimal.new("2")
+      }
+
+      assert {:ok, %{stop_level: updated_stop_level, recalculated_count: 1}} =
+               Gtfs.save_scale_and_recalculate(
+                 stop_level,
+                 attrs,
+                 stop_level.organization_id,
+                 stop_level.gtfs_version_id,
+                 stop_level.level_id,
+                 parent_station.id
+               )
+
+      assert updated_stop_level.scale_point_a == attrs.scale_point_a
+      assert Decimal.equal?(Gtfs.get_pathway!(pathway.id).length, Decimal.new("10.00"))
+    end
   end
 end

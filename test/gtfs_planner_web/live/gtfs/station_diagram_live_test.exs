@@ -4880,7 +4880,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
-      assert has_element?(view, "button[phx-click='toggle_measurement']", "Establish Scale")
+      assert has_element?(view, "button[phx-click='toggle_measurement']", "Set Scale")
 
       assert has_element?(
                view,
@@ -4939,7 +4939,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#ruler-form")
     end
 
-    test "saving ruler persists calibration and shows Scale Set as non-clickable text", %{
+    test "saving ruler persists calibration and shows edit and clear scale controls", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -4961,9 +4961,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
       refute is_nil(stop_level.scale_point_a)
       refute is_nil(stop_level.scale_point_b)
-      assert has_element?(view, "#diagram-action-strip span", "Scale Set")
-      refute has_element?(view, "button[phx-click='toggle_measurement']", "Scale Set")
-      refute has_element?(view, ".badge", "Scale set")
+      assert has_element?(view, "button[phx-click='clear_calibration']", "Clear Scale")
     end
 
     test "saved scale label uses top-node anchor attributes with right offset", %{
@@ -4996,7 +4994,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#diagram-overlay text[data-ruler-label]", "SCALE")
     end
 
-    test "clear calibration removes saved scale fields", %{
+    test "clear scale removes saved scale fields and returns establish action", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -5017,15 +5015,194 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
-      render_hook(view, "toggle_measurement", %{})
-      render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
-      render_hook(view, "canvas_click", %{"x" => "20", "y" => "10"})
-      view |> element("button[phx-click='clear_calibration']") |> render_click()
+      view
+      |> element("#diagram-action-strip button[phx-click='clear_calibration']")
+      |> render_click()
 
       cleared = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
       assert is_nil(cleared.scale_point_a)
       assert is_nil(cleared.scale_point_b)
-      assert has_element?(view, ".badge", "No scale")
+      assert has_element?(view, "button[phx-click='toggle_measurement']", "Set Scale")
+    end
+
+    test "editing scale recalculates same-level pathway lengths", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      stop_c =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MEASURE_STOP_C_SAME",
+          stop_name: "Measure Stop C Same",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      existing_1 =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          stop_a.stop_id,
+          stop_b.stop_id,
+          %{length: Decimal.new("999.00")}
+        )
+
+      existing_2 =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          stop_a.stop_id,
+          stop_c.stop_id,
+          %{length: Decimal.new("123.45")}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("button[phx-click='toggle_measurement']", "Set Scale")
+      |> render_click()
+
+      render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "10"})
+
+      view
+      |> form("#ruler-form", %{"ruler" => %{"distance_meters" => "10"}})
+      |> render_submit()
+
+      updated_stop_level =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+
+      expected_1 = Gtfs.calculate_pathway_length(updated_stop_level, stop_a, stop_b)
+      expected_2 = Gtfs.calculate_pathway_length(updated_stop_level, stop_a, stop_c)
+
+      reloaded_1 = Gtfs.get_pathway!(existing_1.id)
+      reloaded_2 = Gtfs.get_pathway!(existing_2.id)
+
+      assert Decimal.equal?(reloaded_1.length, expected_1)
+      assert Decimal.equal?(reloaded_2.length, expected_2)
+
+      assert has_element?(
+               view,
+               "#scale-status",
+               "Scale updated - 2 pathway length(s) recalculated"
+             )
+    end
+
+    test "editing scale does not recalculate cross-level pathway lengths", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level_2: level_2,
+      stop_a: stop_a
+    } do
+      stop_cross =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MEASURE_STOP_CROSS_LEVEL",
+          stop_name: "Measure Stop Cross",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 20.0}
+        })
+
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          stop_a.stop_id,
+          stop_cross.stop_id,
+          %{length: Decimal.new("77.77")}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("button[phx-click='toggle_measurement']", "Set Scale")
+      |> render_click()
+
+      render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "10"})
+
+      view
+      |> form("#ruler-form", %{"ruler" => %{"distance_meters" => "10"}})
+      |> render_submit()
+
+      reloaded_pathway = Gtfs.get_pathway!(pathway.id)
+      assert Decimal.equal?(reloaded_pathway.length, Decimal.new("77.77"))
+    end
+
+    test "status region is accessible and updates on save and clear", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      refute has_element?(view, "#scale-status")
+
+      view
+      |> element("button[phx-click='toggle_measurement']", "Set Scale")
+      |> render_click()
+
+      render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "10"})
+
+      view
+      |> form("#ruler-form", %{"ruler" => %{"distance_meters" => "10"}})
+      |> render_submit()
+
+      assert has_element?(view, "#scale-status[role='status'][aria-live='polite']")
+      assert has_element?(view, "#scale-status", "Scale updated -")
+
+      view
+      |> element("#diagram-action-strip button[phx-click='clear_calibration']", "Clear Scale")
+      |> render_click()
+
+      assert has_element?(view, "#scale-status", "Scale removed - pathway measurements unchanged")
+    end
+
+    test "dismiss button clears scale status message", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("button[phx-click='toggle_measurement']", "Set Scale")
+      |> render_click()
+
+      render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "10"})
+
+      view
+      |> form("#ruler-form", %{"ruler" => %{"distance_meters" => "10"}})
+      |> render_submit()
+
+      assert has_element?(view, "#scale-status", "Scale updated -")
+
+      view
+      |> element("button[phx-click='dismiss_scale_status']")
+      |> render_click()
+
+      refute has_element?(view, "#scale-status")
     end
 
     test "switching level clears in-progress measurement state", %{
@@ -5043,7 +5220,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "canvas_click", %{"x" => "15", "y" => "15"})
       render_hook(view, "switch_level", %{"level_id" => level_2.id})
 
-      assert has_element?(view, "button[phx-click='toggle_measurement']", "Establish Scale")
+      assert has_element?(view, "button[phx-click='toggle_measurement']", "Set Scale")
       assert has_element?(view, "#diagram-action-strip", "Click a stop to view or edit")
     end
 

@@ -212,6 +212,13 @@ const DiagramCanvasHook = {
     }
   },
 
+  handleOverlayClick(e) {
+    const savedRulerGroup = e.target.closest('[data-ruler-type="saved"]');
+    if (savedRulerGroup) {
+      this.pushEvent("scale_line_click", {});
+    }
+  },
+
   handleMouseMove(e) {
     if (this.isPanning) {
       const rect = this.el.getBoundingClientRect();
@@ -244,6 +251,7 @@ const DiagramCanvasHook = {
     this.removeOverlayPanZoom();
     this.overlay.addEventListener("wheel", this._handleWheel, { passive: false });
     this.overlay.addEventListener("mousedown", this._handleMouseDown);
+    this.overlay.addEventListener("click", this._handleOverlayClick);
     this.overlay.addEventListener("gesturestart", this._handleGesture);
     this.overlay.addEventListener("gesturechange", this._handleGesture);
     this._overlayPanZoomBound = this.overlay;
@@ -256,6 +264,7 @@ const DiagramCanvasHook = {
 
     this._overlayPanZoomBound.removeEventListener("wheel", this._handleWheel);
     this._overlayPanZoomBound.removeEventListener("mousedown", this._handleMouseDown);
+    this._overlayPanZoomBound.removeEventListener("click", this._handleOverlayClick);
     this._overlayPanZoomBound.removeEventListener("gesturestart", this._handleGesture);
     this._overlayPanZoomBound.removeEventListener("gesturechange", this._handleGesture);
     this._overlayPanZoomBound = null;
@@ -290,6 +299,7 @@ const DiagramCanvasHook = {
     this._handleMouseMove = this.handleMouseMove.bind(this);
     this._handleMouseUp = this.handleMouseUp.bind(this);
     this._handleGesture = this.handleGesture.bind(this);
+    this._handleOverlayClick = this.handleOverlayClick.bind(this);
 
     this.refreshTooltipElements();
     this.setupTooltipListeners();
@@ -312,6 +322,7 @@ const DiagramCanvasHook = {
 
     svg.addEventListener("click", (e) => {
       if (e.shiftKey) return;
+
       const pt = svg.createSVGPoint();
       pt.x = e.clientX;
       pt.y = e.clientY;

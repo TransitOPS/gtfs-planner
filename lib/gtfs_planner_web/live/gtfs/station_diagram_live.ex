@@ -30,6 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:user_roles, user_roles)
      |> assign(:mode, :view)
      |> assign(:measurement_enabled, false)
+     |> assign(:scale_status, nil)
      |> assign(:ruler_point_a, nil)
      |> assign(:ruler_point_b, nil)
      |> assign(:show_ruler_drawer, false)
@@ -289,6 +290,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             ruler_point_a={@ruler_point_a}
             ruler_point_b={@ruler_point_b}
             has_scale={scale_configured?(@active_stop_level)}
+            scale_status={@scale_status}
             levels={@levels}
             active_level={@active_level}
           />
@@ -341,7 +343,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         <.ruler_drawer
           open={@show_ruler_drawer}
           ruler_form={@ruler_form}
-          has_scale={scale_configured?(@active_stop_level)}
         />
 
         <.level_sidebar
@@ -966,19 +967,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         scale_meters_per_unit: meters_per_unit
       }
 
-      case Gtfs.update_stop_level_scale(stop_level, attrs) do
-        {:ok, updated_stop_level} ->
+      case Gtfs.save_scale_and_recalculate(
+             stop_level,
+             attrs,
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             socket.assigns.active_level.id,
+             socket.assigns.station.id
+           ) do
+        {:ok, %{stop_level: updated_stop_level, recalculated_count: recalculated_count}} ->
           {:noreply,
            socket
            |> assign(:active_stop_level, updated_stop_level)
            |> assign(:measurement_enabled, false)
-           |> reset_ruler_state()}
+           |> reset_ruler_state()
+           |> assign(
+             :scale_status,
+             "Scale updated - #{recalculated_count} pathway length(s) recalculated"
+           )}
 
-        {:error, _changeset} ->
+        {:error, _reason} ->
           {:noreply,
            socket
            |> assign(:ruler_form, to_form(%{"distance_meters" => distance_input}, as: :ruler))
-           |> put_flash(:error, "Failed to save diagram scale")}
+           |> assign(:scale_status, "Failed to save scale")}
       end
     else
       nil ->
@@ -1007,6 +1019,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("dismiss_scale_status", _params, socket) do
+    {:noreply, assign(socket, :scale_status, nil)}
+  end
+
+  @impl true
   def handle_event("clear_calibration", _params, socket) do
     case socket.assigns.active_stop_level do
       %StopLevel{} = stop_level ->
@@ -1015,11 +1032,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              socket
              |> assign(:active_stop_level, cleared_stop_level)
-             |> reset_ruler_state()}
+             |> reset_ruler_state()
+             |> assign(:scale_status, "Scale removed - pathway measurements unchanged")}
 
           {:error, _changeset} ->
             {:noreply, put_flash(socket, :error, "Failed to clear diagram scale")}
         end
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("scale_line_click", _params, socket) do
+    stop_level = socket.assigns.active_stop_level
+
+    case stop_level do
+      %StopLevel{} when not is_nil(stop_level.scale_distance_meters) ->
+        distance_str = Decimal.to_string(stop_level.scale_distance_meters)
+
+        {:noreply,
+         socket
+         |> assign(:measurement_enabled, true)
+         |> assign(:ruler_point_a, scale_point(stop_level, :scale_point_a))
+         |> assign(:ruler_point_b, scale_point(stop_level, :scale_point_b))
+         |> assign(:show_ruler_drawer, true)
+         |> assign(:ruler_form, to_form(%{"distance_meters" => distance_str}, as: :ruler))}
 
       _ ->
         {:noreply, socket}
@@ -1803,6 +1842,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:ruler_point_b, nil)
     |> assign(:show_ruler_drawer, false)
     |> assign(:ruler_form, to_form(%{"distance_meters" => ""}, as: :ruler))
+    |> assign(:scale_status, nil)
   end
 
   defp handle_view_measure_click(socket, x, y) do
