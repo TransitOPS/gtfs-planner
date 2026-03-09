@@ -23,6 +23,22 @@ defmodule GtfsPlanner.ValidationsTest do
     end
   end
 
+  defmodule StartStationReachabilityRuntimeOptsRunnerMock do
+    def run(validation_run, organization_id, gtfs_version_id, opts) do
+      listener = Application.get_env(:gtfs_planner, :pathways_trip_test_runner_test_listener)
+
+      if is_pid(listener) do
+        send(
+          listener,
+          {:pathways_runner_started_with_opts, validation_run.id, organization_id, gtfs_version_id,
+           opts}
+        )
+      end
+
+      {:ok, validation_run}
+    end
+  end
+
   describe "validation_runs" do
     setup do
       organization = organization_fixture()
@@ -86,6 +102,44 @@ defmodule GtfsPlanner.ValidationsTest do
       assert run.gtfs_version_id == version.id
       assert run.run_type == "pathways_tests"
       assert run.status == "started"
+    end
+
+    test "create_validation_run/3 allows station_reachability run type", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      assert {:ok, run} =
+               Validations.create_validation_run(org.id, version.id, "station_reachability")
+
+      assert run.run_type == "station_reachability"
+      assert run.status == "started"
+    end
+
+    test "create_station_reachability_run/3 creates pending run with station metadata", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station_stop_id = "station-123"
+
+      assert {:ok, run} =
+               Validations.create_station_reachability_run(org.id, version.id, station_stop_id)
+
+      assert run.organization_id == org.id
+      assert run.gtfs_version_id == version.id
+      assert run.run_type == "station_reachability"
+      assert run.status == "pending"
+      assert run.result_json == %{"metadata" => %{"station_stop_id" => station_stop_id}}
+      assert run.started_at != nil
+    end
+
+    test "create_validation_run/3 rejects unsupported run_type", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      assert {:error, changeset} =
+               Validations.create_validation_run(org.id, version.id, "unsupported_type")
+
+      assert "is invalid" in errors_on(changeset).run_type
     end
 
     test "mark_pathways_running/1 updates pathways run to running", %{
@@ -310,6 +364,138 @@ defmodule GtfsPlanner.ValidationsTest do
       version_id = version.id
 
       assert_receive {:pathways_runner_started, ^run_id, ^org_id, ^version_id}
+    end
+
+    test "start_station_reachability_test/4 creates running station run and spawns runner", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      previous_runner_module =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_runner_module)
+
+      previous_listener =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_runner_test_listener)
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_trip_test_runner_module,
+        StartPathwaysTripTestRunnerMock
+      )
+
+      Application.put_env(:gtfs_planner, :pathways_trip_test_runner_test_listener, self())
+
+      on_exit(fn ->
+        if previous_runner_module do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_module,
+            previous_runner_module
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_module)
+        end
+
+        if previous_listener do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_test_listener,
+            previous_listener
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_test_listener)
+        end
+      end)
+
+      station_stop_id = "station-abc"
+
+      assert {:ok, run} =
+               Validations.start_station_reachability_test(
+                 org.id,
+                 version.id,
+                 station_stop_id,
+                 []
+               )
+
+      assert run.run_type == "station_reachability"
+      assert run.status == "running"
+      assert run.result_json == %{"metadata" => %{"station_stop_id" => station_stop_id}}
+
+      run_id = run.id
+      org_id = org.id
+      version_id = version.id
+
+      assert_receive {:pathways_runner_started, ^run_id, ^org_id, ^version_id}
+    end
+
+    test "start_station_reachability_test/4 injects station materializer runtime opts", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      previous_runner_module =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_runner_module)
+
+      previous_listener =
+        Application.get_env(:gtfs_planner, :pathways_trip_test_runner_test_listener)
+
+      Application.put_env(
+        :gtfs_planner,
+        :pathways_trip_test_runner_module,
+        StartStationReachabilityRuntimeOptsRunnerMock
+      )
+
+      Application.put_env(:gtfs_planner, :pathways_trip_test_runner_test_listener, self())
+
+      on_exit(fn ->
+        if previous_runner_module do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_module,
+            previous_runner_module
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_module)
+        end
+
+        if previous_listener do
+          Application.put_env(
+            :gtfs_planner,
+            :pathways_trip_test_runner_test_listener,
+            previous_listener
+          )
+        else
+          Application.delete_env(:gtfs_planner, :pathways_trip_test_runner_test_listener)
+        end
+      end)
+
+      station_stop_id = "station-runtime-opts"
+
+      assert {:ok, run} =
+               Validations.start_station_reachability_test(
+                 org.id,
+                 version.id,
+                 station_stop_id,
+                 []
+               )
+
+      run_id = run.id
+      org_id = org.id
+      version_id = version.id
+
+      assert_receive {:pathways_runner_started_with_opts, ^run_id, ^org_id, ^version_id,
+                      runner_opts}
+
+      runtime_opts = Keyword.get(runner_opts, :runtime_opts)
+      materializer_fun = Keyword.get(runtime_opts, :gtfs_materializer_fun)
+
+      assert is_function(materializer_fun, 3)
+
+      assert {:arity, 3} = :erlang.fun_info(materializer_fun, :arity)
+
+      assert {:name, :"-station_gtfs_materializer_fun/0-fun-0-"} =
+               :erlang.fun_info(materializer_fun, :name)
+
+      assert [station_stop_id: station_stop_id] == Keyword.get(runtime_opts, :gtfs_opts)
+      assert Keyword.get(runtime_opts, :return_runtime_meta) == true
     end
 
     test "start_pathways_trip_test/2 always creates a new run even when one is active", %{
@@ -1354,6 +1540,73 @@ defmodule GtfsPlanner.ValidationsTest do
       assert row.wheelchair_duration_seconds == 130.0
       assert row.wheelchair_distance_meters == 500.0
     end
+
+    test "persists station terminal fields for station reachability completed runs" do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station_stop_id = "station-terminal-completed"
+
+      {:ok, run} =
+        Validations.create_station_reachability_run(organization.id, gtfs_version.id, station_stop_id)
+
+      run_result = %{
+        suite_meta: %{
+          total_candidates: 0,
+          selected_count: 0,
+          malformed_count: 0,
+          station_feed_summary: %{
+            files: %{"stops.txt" => %{"kept_count" => 5, "dropped_count" => 10}}
+          }
+        },
+        selected_test_case_ids: [],
+        summary: %{total: 0, passed: 0, failed: 0, query_failure: 0, scoring_failure: 0},
+        cases: []
+      }
+
+      assert {:ok, completed_run} = Validations.mark_pathways_completed(run, run_result, 25)
+
+      assert completed_run.run_type == "station_reachability"
+      assert completed_run.status == "completed"
+      assert completed_run.result_json["station_stop_id"] == station_stop_id
+
+      assert completed_run.result_json["metadata"] == %{
+               "station_stop_id" => station_stop_id
+             }
+
+      assert completed_run.result_json["station_feed_summary"] == %{
+               "files" => %{"stops.txt" => %{"kept_count" => 5, "dropped_count" => 10}}
+             }
+    end
+
+    test "persists station terminal fields for station reachability failed runs" do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station_stop_id = "station-terminal-failed"
+
+      {:ok, run} =
+        Validations.create_station_reachability_run(organization.id, gtfs_version.id, station_stop_id)
+
+      reason = %{
+        reason: :otp_runtime_failed,
+        details: %{stage: :materialization, station_feed_summary: %{"blocking_issue_count" => 2}}
+      }
+
+      assert {:ok, failed_run} = Validations.mark_pathways_failed(run, reason)
+
+      assert failed_run.run_type == "station_reachability"
+      assert failed_run.status == "failed"
+      assert failed_run.result_json["station_stop_id"] == station_stop_id
+
+      assert failed_run.result_json["metadata"] == %{
+               "station_stop_id" => station_stop_id
+             }
+
+      assert failed_run.result_json["station_feed_summary"] == %{
+               "blocking_issue_count" => 2
+             }
+    end
   end
 
   describe "pathways reporting queries" do
@@ -1389,6 +1642,111 @@ defmodule GtfsPlanner.ValidationsTest do
 
     test "list_walkability_test_run_results/1 returns empty list for runs without rows" do
       assert Validations.list_walkability_test_run_results(Ecto.UUID.generate()) == []
+    end
+
+    test "list_recent_station_reachability_runs/4 filters by org, version, run type, and station metadata" do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station_stop_id = "station-recent-1"
+      other_station_stop_id = "station-recent-2"
+
+      {:ok, matching_run} =
+        Validations.create_station_reachability_run(organization.id, gtfs_version.id, station_stop_id)
+
+      {:ok, matching_run} =
+        matching_run
+        |> GtfsPlanner.Validations.ValidationRun.changeset(%{
+          status: "completed",
+          completed_at: DateTime.utc_now()
+        })
+        |> GtfsPlanner.Repo.update()
+
+      {:ok, _other_station_run} =
+        Validations.create_station_reachability_run(
+          organization.id,
+          gtfs_version.id,
+          other_station_stop_id
+        )
+        |> then(fn {:ok, run} ->
+          run
+          |> GtfsPlanner.Validations.ValidationRun.changeset(%{
+            status: "completed",
+            completed_at: DateTime.utc_now()
+          })
+          |> GtfsPlanner.Repo.update()
+        end)
+
+      {:ok, _non_terminal_matching_run} =
+        Validations.create_station_reachability_run(organization.id, gtfs_version.id, station_stop_id)
+
+      {:ok, _wrong_run_type} =
+        Validations.create_validation_run(organization.id, gtfs_version.id, "pathways_tests")
+        |> then(fn {:ok, run} ->
+          run
+          |> GtfsPlanner.Validations.ValidationRun.changeset(%{
+            status: "completed",
+            completed_at: DateTime.utc_now(),
+            result_json: %{"metadata" => %{"station_stop_id" => station_stop_id}}
+          })
+          |> GtfsPlanner.Repo.update()
+        end)
+
+      other_organization = organization_fixture()
+      other_gtfs_version = gtfs_version_fixture(other_organization.id)
+
+      {:ok, _other_scope_run} =
+        Validations.create_station_reachability_run(
+          other_organization.id,
+          other_gtfs_version.id,
+          station_stop_id
+        )
+        |> then(fn {:ok, run} ->
+          run
+          |> GtfsPlanner.Validations.ValidationRun.changeset(%{
+            status: "completed",
+            completed_at: DateTime.utc_now()
+          })
+          |> GtfsPlanner.Repo.update()
+        end)
+
+      results =
+        Validations.list_recent_station_reachability_runs(
+          organization.id,
+          gtfs_version.id,
+          station_stop_id,
+          5
+        )
+
+      assert Enum.map(results, & &1.id) == [matching_run.id]
+    end
+
+    test "list_recent_station_reachability_runs/4 supports fallback station_stop_id in result_json root" do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      station_stop_id = "station-fallback-root"
+
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, gtfs_version.id, "station_reachability")
+
+      {:ok, run} =
+        run
+        |> GtfsPlanner.Validations.ValidationRun.changeset(%{
+          status: "failed",
+          completed_at: DateTime.utc_now(),
+          result_json: %{"station_stop_id" => station_stop_id}
+        })
+        |> GtfsPlanner.Repo.update()
+
+      results =
+        Validations.list_recent_station_reachability_runs(
+          organization.id,
+          gtfs_version.id,
+          station_stop_id,
+          5
+        )
+
+      assert Enum.map(results, & &1.id) == [run.id]
     end
   end
 end

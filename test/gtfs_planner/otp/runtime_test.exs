@@ -215,6 +215,45 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
     refute_received :started
   end
 
+  test "run_with_otp/4 short-circuits before OTP start on station preflight blockers" do
+    parent = self()
+
+    blocking_issue = %{
+      code: :station_stop_lat_missing,
+      severity: :blocking,
+      context: %{file: "stops.txt", field: "stop_lat", station_stop_id: "station-1"}
+    }
+
+    gtfs_fun = fn "org-1", "ver-1", _opts ->
+      {:error, [blocking_issue]}
+    end
+
+    graph_fun = fn _org, _ver, _opts ->
+      send(parent, :graph_called)
+      {:ok, "/tmp/otp/Graph.obj", %{}}
+    end
+
+    start_server_fun = fn _graph_path, _opts ->
+      send(parent, :started)
+      {:ok, :unexpected}
+    end
+
+    assert {:error, [returned_issue]} =
+             Runtime.run_with_otp("org-1", "ver-1", fn _session ->
+               send(parent, :callback_called)
+               {:ok, :unexpected}
+             end,
+               gtfs_materializer_fun: gtfs_fun,
+               graph_materializer_fun: graph_fun,
+               start_server_fun: start_server_fun
+             )
+
+    assert returned_issue == blocking_issue
+    refute_received :graph_called
+    refute_received :started
+    refute_received :callback_called
+  end
+
   test "run_with_otp/4 stops OTP when readiness fails" do
     parent = self()
     status_callback = fn payload -> send(parent, {:status, payload}) end

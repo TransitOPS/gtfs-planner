@@ -61,6 +61,35 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunnerTest do
     end
   end
 
+  defmodule RuntimeWithMetaMock do
+    def run_with_otp(organization_id, gtfs_version_id, callback, opts) do
+      send(self(), {:runtime_called, organization_id, gtfs_version_id, opts})
+
+      {:ok, run_result} = callback.(%{session: :runtime_session})
+
+      {:ok,
+       %{
+         result: run_result,
+         runtime_meta: %{
+           gtfs: %{station_feed_summary: %{"stops.txt" => %{"kept_count" => 2}}},
+           graph: %{}
+         }
+       }}
+    end
+  end
+
+  defmodule PathwaysValidityResultWithoutStationSummaryMock do
+    def run_in_session(_session, _organization_id, _gtfs_version_id, _opts) do
+      {:ok,
+       %{
+         suite_meta: %{total_candidates: 0, selected_count: 0, malformed_count: 0},
+         selected_test_case_ids: [],
+         summary: %{total: 0, passed: 0, failed: 0, query_failure: 0, scoring_failure: 0},
+         cases: []
+       }}
+    end
+  end
+
   defmodule ValidationsMock do
     def mark_pathways_completed(validation_run, run_result, duration_ms) do
       send(self(), {:mark_pathways_completed_called, validation_run, run_result, duration_ms})
@@ -243,5 +272,24 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunnerTest do
                         selected_test_case_ids: []
                       }
                     }}
+  end
+
+  test "run/4 injects station_feed_summary from runtime meta into suite_meta" do
+    validation_run = %ValidationRun{}
+    organization_id = Ecto.UUID.generate()
+    gtfs_version_id = Ecto.UUID.generate()
+
+    assert {:ok, %{id: :persisted_run}} =
+             PathwaysTripTestRunner.run(validation_run, organization_id, gtfs_version_id,
+               otp_runtime_module: RuntimeWithMetaMock,
+               otp_pathways_validity_module: PathwaysValidityResultWithoutStationSummaryMock,
+               validations_module: ValidationsMock
+             )
+
+    assert_receive {:mark_pathways_completed_called, ^validation_run, run_result, _duration_ms}
+
+    assert run_result.suite_meta.station_feed_summary == %{
+             "stops.txt" => %{"kept_count" => 2}
+           }
   end
 end

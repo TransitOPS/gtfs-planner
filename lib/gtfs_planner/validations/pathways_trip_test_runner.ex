@@ -59,7 +59,8 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunner do
            callback,
            runtime_opts(opts, status_callback)
          ) do
-      {:ok, run_result} ->
+      {:ok, runtime_result} ->
+        run_result = hydrate_run_result_with_runtime_meta(runtime_result)
         duration_ms = System.monotonic_time(:millisecond) - started_at_ms
 
         case validations_module.mark_pathways_completed(validation_run, run_result, duration_ms) do
@@ -165,4 +166,23 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunner do
   defp validations_module(opts) do
     Keyword.get(opts, :validations_module, Validations)
   end
+
+  @spec hydrate_run_result_with_runtime_meta(term()) :: term()
+  defp hydrate_run_result_with_runtime_meta(%{result: run_result, runtime_meta: runtime_meta})
+       when is_map(run_result) and is_map(runtime_meta) do
+    station_feed_summary =
+      runtime_meta
+      |> Map.get(:gtfs, %{})
+      |> Map.get(:station_feed_summary)
+
+    if is_map(station_feed_summary) do
+      Map.update(run_result, :suite_meta, %{station_feed_summary: station_feed_summary}, fn suite_meta ->
+        Map.put(suite_meta, :station_feed_summary, station_feed_summary)
+      end)
+    else
+      run_result
+    end
+  end
+
+  defp hydrate_run_result_with_runtime_meta(runtime_result), do: runtime_result
 end
