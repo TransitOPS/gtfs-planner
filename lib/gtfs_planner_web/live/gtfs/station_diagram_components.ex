@@ -222,20 +222,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   class="btn btn-sm bg-orange-500 text-white hover:bg-orange-600"
                   phx-click="toggle_measurement"
                 >
-                  Cancel Establish Scale
+                  Cancel Set Scale
                 </button>
               <% else %>
                 <%= if @has_scale do %>
                   <button
                     type="button"
                     class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
-                    phx-click="toggle_measurement"
-                  >
-                    Edit Scale
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn-sm btn-outline btn-error"
                     phx-click="clear_calibration"
                   >
                     Clear Scale
@@ -246,7 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                     class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
                     phx-click="toggle_measurement"
                   >
-                    Establish Scale
+                    Set Scale
                   </button>
                 <% end %>
               <% end %>
@@ -254,16 +247,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
           </div>
         </div>
-        <div
-          id="scale-status"
-          role="status"
-          aria-live="polite"
-          class="min-h-6 px-4 pb-2 text-sm text-blue-800"
-        >
-          <%= if @scale_status do %>
-            {@scale_status}
-          <% end %>
-        </div>
+        <%= if @scale_status do %>
+          <div
+            id="scale-status"
+            role="status"
+            aria-live="polite"
+            class="flex items-center gap-2 px-4 pb-2 text-sm text-blue-800"
+          >
+            <span>{@scale_status}</span>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm text-blue-700 hover:text-blue-900 hover:bg-blue-100"
+              phx-click="dismiss_scale_status"
+              aria-label="Dismiss status"
+            >
+              <.icon name="hero-x-mark" class="w-4 h-4" />
+            </button>
+          </div>
+        <% end %>
       </div>
     <% end %>
     """
@@ -434,17 +435,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         point_b={@ruler_point_b}
         style={:draft}
       />
-      <.ruler_line
-        :if={(@mode == :view and @scale_point_a) && @scale_point_b}
-        point_a={@scale_point_a}
-        point_b={@scale_point_b}
-        style={:saved}
-      />
       <.stops_layer
         streams={@streams}
         active_point_id={@active_point_id}
         mode={@mode}
         cross_level_badges_by_stop={@cross_level_badges_by_stop}
+      />
+      <.ruler_line
+        :if={(@mode == :view and @scale_point_a) && @scale_point_b}
+        point_a={@scale_point_a}
+        point_b={@scale_point_b}
+        style={:saved}
       />
       <.pending_marker
         :if={@pending_xy && @mode == :add && @selected_stop_id == nil}
@@ -1685,7 +1686,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           |> assign(:label_offset_y, label_offset_y)
 
         ~H"""
-        <g class="pointer-events-none">
+        <g
+          class={if @style == :saved, do: "cursor-pointer pointer-events-auto", else: "pointer-events-none"}
+          data-ruler-type={if @style == :saved, do: "saved"}
+        >
+          <line
+            :if={@style == :saved}
+            x1={@ax}
+            y1={@ay}
+            x2={@bx}
+            y2={@by}
+            stroke="transparent"
+            stroke-width="1.5"
+            data-ruler-hit-area="true"
+          />
           <line
             x1={@ax}
             y1={@ay}
@@ -1693,10 +1707,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             y2={@by}
             stroke={@line_color}
             stroke-width="0.25"
-            stroke-dasharray={if @style == :saved, do: "none", else: "0.8 0.5"}
             data-ruler-line="true"
             data-base-stroke="0.25"
-            data-base-dash={if @style == :saved, do: nil, else: "0.8,0.5"}
           />
           <circle
             cx={@ax}
@@ -2640,7 +2652,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :open, :boolean, required: true
   attr :ruler_form, :any, required: true
-  attr :has_scale, :boolean, default: false
 
   def ruler_drawer(assigns) do
     ~H"""
@@ -2664,17 +2675,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
         <:actions>
           <div class="flex-1"></div>
-          <button type="button" class="btn btn-ghost" phx-click="clear_ruler">
-            Clear Ruler
-          </button>
-          <button
-            :if={@has_scale}
-            type="button"
-            class="btn btn-outline btn-error"
-            phx-click="clear_calibration"
-          >
-            Clear Scale
-          </button>
           <button type="submit" class="btn btn-primary btn-active">
             Save Scale
           </button>

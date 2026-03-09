@@ -343,7 +343,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         <.ruler_drawer
           open={@show_ruler_drawer}
           ruler_form={@ruler_form}
-          has_scale={scale_configured?(@active_stop_level)}
         />
 
         <.level_sidebar
@@ -1020,6 +1019,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("dismiss_scale_status", _params, socket) do
+    {:noreply, assign(socket, :scale_status, nil)}
+  end
+
+  @impl true
   def handle_event("clear_calibration", _params, socket) do
     case socket.assigns.active_stop_level do
       %StopLevel{} = stop_level ->
@@ -1034,6 +1038,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:error, _changeset} ->
             {:noreply, put_flash(socket, :error, "Failed to clear diagram scale")}
         end
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("scale_line_click", _params, socket) do
+    stop_level = socket.assigns.active_stop_level
+
+    case stop_level do
+      %StopLevel{} when not is_nil(stop_level.scale_distance_meters) ->
+        distance_str = Decimal.to_string(stop_level.scale_distance_meters)
+
+        {:noreply,
+         socket
+         |> assign(:measurement_enabled, true)
+         |> assign(:ruler_point_a, scale_point(stop_level, :scale_point_a))
+         |> assign(:ruler_point_b, scale_point(stop_level, :scale_point_b))
+         |> assign(:show_ruler_drawer, true)
+         |> assign(:ruler_form, to_form(%{"distance_meters" => distance_str}, as: :ruler))}
 
       _ ->
         {:noreply, socket}

@@ -4880,7 +4880,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
-      assert has_element?(view, "button[phx-click='toggle_measurement']", "Establish Scale")
+      assert has_element?(view, "button[phx-click='toggle_measurement']", "Set Scale")
 
       assert has_element?(
                view,
@@ -4961,7 +4961,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
       refute is_nil(stop_level.scale_point_a)
       refute is_nil(stop_level.scale_point_b)
-      assert has_element?(view, "button[phx-click='toggle_measurement']", "Edit Scale")
       assert has_element?(view, "button[phx-click='clear_calibration']", "Clear Scale")
     end
 
@@ -5023,7 +5022,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       cleared = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
       assert is_nil(cleared.scale_point_a)
       assert is_nil(cleared.scale_point_b)
-      assert has_element?(view, "button[phx-click='toggle_measurement']", "Establish Scale")
+      assert has_element?(view, "button[phx-click='toggle_measurement']", "Set Scale")
     end
 
     test "editing scale recalculates same-level pathway lengths", %{
@@ -5068,7 +5067,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
       view
-      |> element("button[phx-click='toggle_measurement']", "Establish Scale")
+      |> element("button[phx-click='toggle_measurement']", "Set Scale")
       |> render_click()
 
       render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
@@ -5129,7 +5128,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
       view
-      |> element("button[phx-click='toggle_measurement']", "Establish Scale")
+      |> element("button[phx-click='toggle_measurement']", "Set Scale")
       |> render_click()
 
       render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
@@ -5153,10 +5152,41 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
-      assert has_element?(view, "#scale-status[role='status'][aria-live='polite']")
+      refute has_element?(view, "#scale-status")
 
       view
-      |> element("button[phx-click='toggle_measurement']", "Establish Scale")
+      |> element("button[phx-click='toggle_measurement']", "Set Scale")
+      |> render_click()
+
+      render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "10"})
+
+      view
+      |> form("#ruler-form", %{"ruler" => %{"distance_meters" => "10"}})
+      |> render_submit()
+
+      assert has_element?(view, "#scale-status[role='status'][aria-live='polite']")
+      assert has_element?(view, "#scale-status", "Scale updated -")
+
+      view
+      |> element("#diagram-action-strip button[phx-click='clear_calibration']", "Clear Scale")
+      |> render_click()
+
+      assert has_element?(view, "#scale-status", "Scale removed - pathway measurements unchanged")
+    end
+
+    test "dismiss button clears scale status message", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("button[phx-click='toggle_measurement']", "Set Scale")
       |> render_click()
 
       render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
@@ -5169,10 +5199,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#scale-status", "Scale updated -")
 
       view
-      |> element("#diagram-action-strip button[phx-click='clear_calibration']", "Clear Scale")
+      |> element("button[phx-click='dismiss_scale_status']")
       |> render_click()
 
-      assert has_element?(view, "#scale-status", "Scale removed - pathway measurements unchanged")
+      refute has_element?(view, "#scale-status")
     end
 
     test "switching level clears in-progress measurement state", %{
@@ -5190,7 +5220,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "canvas_click", %{"x" => "15", "y" => "15"})
       render_hook(view, "switch_level", %{"level_id" => level_2.id})
 
-      assert has_element?(view, "button[phx-click='toggle_measurement']", "Establish Scale")
+      assert has_element?(view, "button[phx-click='toggle_measurement']", "Set Scale")
       assert has_element?(view, "#diagram-action-strip", "Click a stop to view or edit")
     end
 
