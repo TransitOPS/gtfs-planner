@@ -58,7 +58,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:stop_id_mode, :auto)
      |> assign(:show_pathway_drawer, false)
      |> assign(:editing_pathway, nil)
+     |> assign(:editing_pathway_pair, [])
+     |> assign(:active_pathway_tab, :first)
+     |> assign(:pathway_form_dirty, false)
      |> assign(:pathway_form, to_form(%{}))
+     |> assign(:pathway_pair_counts, %{})
      |> assign(:available_levels, [])
      |> assign(:level_mode, :existing)
      |> assign(:show_walkability_drawer, false)
@@ -152,6 +156,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:walkability_tests_list, [])
     |> assign(:platform_options, [])
     |> assign(:platform_stop_ids, MapSet.new())
+    |> assign(:pathway_pair_counts, nil)
   end
 
   defp load_level_data(socket, level) do
@@ -182,6 +187,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     cross_level_badges_by_stop = cross_level_badges_by_stop(level_pathways, active_level_stop_ids)
     visible_canvas_stops = Enum.filter(all_child_stops, & &1.on_active_level)
     same_level_pathways = Enum.reject(level_pathways, & &1.is_cross_level)
+    pathway_pair_counts = build_pair_counts(same_level_pathways)
+
+    same_level_pathways =
+      Enum.map(same_level_pathways, fn pathway ->
+        pair_key = normalize_pair_key(pathway.from_stop_id, pathway.to_stop_id)
+        is_paired = Map.get(pathway_pair_counts, pair_key, 0) == 2
+
+        pathway
+        |> Map.from_struct()
+        |> Map.put(:is_paired, is_paired)
+      end)
 
     socket
     |> stream(:child_stops, visible_canvas_stops, reset: true)
@@ -196,6 +212,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:walkability_tests_list, walkability_tests_list)
     |> assign(:platform_options, platforms_for_station)
     |> assign(:platform_stop_ids, platform_stop_ids)
+    |> assign(:pathway_pair_counts, pathway_pair_counts)
   end
 
   defp station_platform_options(all_child_stops, station_stop_id) do
@@ -336,6 +353,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           open={@show_pathway_drawer}
           pathway_form={@pathway_form}
           editing_pathway={@editing_pathway}
+          editing_pathway_pair={@editing_pathway_pair}
+          active_pathway_tab={@active_pathway_tab}
+          pathway_form_dirty={@pathway_form_dirty}
           has_scale={scale_configured?(@active_stop_level)}
           pathway_error={@pathway_error}
         />
@@ -890,13 +910,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     case Gtfs.delete_pathway(pathway) do
       {:ok, _deleted_pathway} ->
-        {:noreply,
-         socket
-         |> refresh_lists()
-         |> assign(:pathway_error, nil)
-         |> assign(:show_pathway_drawer, false)
-         |> assign(:editing_pathway, nil)
-         |> assign(:pathway_form, to_form(%{}))}
+        refreshed_socket = refresh_lists(socket)
+
+        remaining_siblings =
+          pair_siblings_for(
+            %{from_stop_id: pathway.from_stop_id, to_stop_id: pathway.to_stop_id},
+            refreshed_socket.assigns.pathways_list
+          )
+
+        next_socket =
+          case remaining_siblings do
+            [remaining_pathway] ->
+              refreshed_pathway = Gtfs.get_pathway_with_stops!(remaining_pathway.id)
+
+              refreshed_socket
+              |> assign(:show_pathway_drawer, true)
+              |> assign(:editing_pathway_pair, [refreshed_pathway])
+              |> assign(:active_pathway_tab, :first)
+              |> assign(:pathway_form_dirty, false)
+              |> assign(:editing_pathway, refreshed_pathway)
+              |> assign(:pathway_form, to_form(pathway_form_params(refreshed_pathway)))
+
+            _ ->
+              refreshed_socket
+              |> assign(:show_pathway_drawer, false)
+              |> assign(:editing_pathway_pair, [])
+              |> assign(:active_pathway_tab, :first)
+              |> assign(:pathway_form_dirty, false)
+              |> assign(:editing_pathway, nil)
+              |> assign(:pathway_form, to_form(%{}))
+          end
+
+        {:noreply, assign(next_socket, :pathway_error, nil)}
 
       {:error, _changeset} ->
         {:noreply, assign(socket, :pathway_error, "Failed to delete pathway")}
@@ -909,13 +954,109 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:noreply, socket}
     else
       pathway = Gtfs.get_pathway_with_stops!(id)
+      pathway_pair = pair_siblings_for(pathway, socket.assigns.pathways_list)
       form = to_form(pathway_form_params(pathway))
+
+      active_pathway_tab =
+        case pathway_pair do
+          [_first_pathway, second_pathway] ->
+            if pathway.id == second_pathway.id or pathway.pathway_id == second_pathway.pathway_id do
+              :second
+            else
+              :first
+            end
+
+          _ ->
+            :first
+        end
 
       {:noreply,
        socket
+       |> assign(:editing_pathway_pair, pathway_pair)
+       |> assign(:active_pathway_tab, active_pathway_tab)
+       |> assign(:pathway_form_dirty, false)
        |> assign(:editing_pathway, pathway)
        |> assign(:pathway_form, form)
        |> assign(:show_pathway_drawer, true)}
+    end
+  end
+
+  @impl true
+  def handle_event("switch_pathway_tab", %{"tab" => tab}, socket)
+      when tab in ["first", "second"] do
+    with pair when is_list(pair) <- socket.assigns.editing_pathway_pair,
+         pathway when not is_nil(pathway) <- pathway_for_tab(pair, tab) do
+      active_tab = if tab == "second", do: :second, else: :first
+
+      {:noreply,
+       socket
+       |> assign(:active_pathway_tab, active_tab)
+       |> assign(:pathway_form_dirty, false)
+       |> assign(:editing_pathway, pathway)
+       |> assign(:pathway_form, to_form(pathway_form_params(pathway)))
+       |> assign(:pathway_error, nil)}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("switch_pathway_tab", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("add_second_pathway", _params, socket) do
+    editing_pathway = socket.assigns.editing_pathway
+
+    cond do
+      is_nil(editing_pathway) or Map.get(editing_pathway, :is_cross_level, false) ->
+        {:noreply, socket}
+
+      true ->
+        from_stop = editing_pathway.from_stop
+        to_stop = editing_pathway.to_stop
+        pair_key = normalize_pair_key(from_stop.stop_id, to_stop.stop_id)
+        pair_count = Map.get(socket.assigns.pathway_pair_counts || %{}, pair_key, 0)
+
+        if pair_count >= 2 do
+          {:noreply, assign(socket, :pathway_error, "This stop pair already has two pathways")}
+        else
+          organization_id = socket.assigns.current_organization.id
+          gtfs_version_id = socket.assigns.current_gtfs_version.id
+          pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
+
+          attrs =
+            %{
+              pathway_id: pathway_id,
+              from_stop_id: from_stop.stop_id,
+              to_stop_id: to_stop.stop_id,
+              pathway_mode: 1,
+              is_bidirectional: true,
+              organization_id: organization_id,
+              gtfs_version_id: gtfs_version_id
+            }
+            |> maybe_put_auto_pathway_length(socket, from_stop, to_stop)
+
+          case Gtfs.create_pathway(attrs) do
+            {:ok, pathway} ->
+              loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
+              refreshed_socket = refresh_lists(socket)
+
+              pathway_pair =
+                pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
+
+              {:noreply,
+               refreshed_socket
+               |> assign(:show_pathway_drawer, true)
+               |> assign(:editing_pathway_pair, pathway_pair)
+               |> assign(:active_pathway_tab, :second)
+               |> assign(:pathway_form_dirty, false)
+               |> assign(:editing_pathway, loaded_pathway)
+               |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
+               |> assign(:pathway_error, nil)}
+
+            {:error, _changeset} ->
+              {:noreply, assign(socket, :pathway_error, "Failed to create pathway")}
+          end
+        end
     end
   end
 
@@ -940,8 +1081,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:show_pathway_drawer, false)
+     |> assign(:editing_pathway_pair, [])
+     |> assign(:active_pathway_tab, :first)
+     |> assign(:pathway_form_dirty, false)
      |> assign(:editing_pathway, nil)
      |> assign(:pathway_form, to_form(%{}))}
+  end
+
+  @impl true
+  def handle_event("pathway_form_changed", params, socket) do
+    form_params =
+      case Map.get(params, "pathway") do
+        nil -> Map.drop(params, ["_target"])
+        nested -> nested
+      end
+
+    {:noreply,
+     socket
+     |> assign(:pathway_form, to_form(form_params))
+     |> assign(:pathway_error, nil)
+     |> assign(:pathway_form_dirty, true)}
   end
 
   @impl true
@@ -1386,6 +1545,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("save_pathway", params, socket) do
+    params = Map.get(params, "pathway", params)
     editing_pathway = socket.assigns.editing_pathway
 
     attrs = %{
@@ -1441,13 +1601,51 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
       true ->
         case Gtfs.update_pathway(pathway, attrs) do
-          {:ok, _updated_pathway} ->
+          {:ok, updated_pathway} ->
+            refreshed_socket = refresh_lists(socket)
+
+            pathway_pair =
+              pair_siblings_for(
+                %{from_stop_id: pathway.from_stop_id, to_stop_id: pathway.to_stop_id},
+                refreshed_socket.assigns.pathways_list
+              )
+
+            next_socket =
+              if length(pathway_pair) == 2 do
+                active_pathway =
+                  Enum.find(pathway_pair, fn sibling ->
+                    sibling.id == updated_pathway.id
+                  end) || hd(pathway_pair)
+
+                active_pathway = Gtfs.get_pathway_with_stops!(active_pathway.id)
+
+                active_pathway_tab =
+                  case pathway_pair do
+                    [_first_pathway, second_pathway] ->
+                      if active_pathway.id == second_pathway.id, do: :second, else: :first
+
+                    _ ->
+                      :first
+                  end
+
+                refreshed_socket
+                |> assign(:show_pathway_drawer, true)
+                |> assign(:editing_pathway_pair, pathway_pair)
+                |> assign(:active_pathway_tab, active_pathway_tab)
+                |> assign(:editing_pathway, active_pathway)
+                |> assign(:pathway_form, to_form(pathway_form_params(active_pathway)))
+              else
+                refreshed_socket
+                |> assign(:show_pathway_drawer, false)
+                |> assign(:editing_pathway, nil)
+                |> assign(:editing_pathway_pair, [])
+                |> assign(:active_pathway_tab, :first)
+                |> assign(:pathway_form, to_form(%{}))
+              end
+
             {:noreply,
-             socket
-             |> refresh_lists()
-             |> assign(:show_pathway_drawer, false)
-             |> assign(:editing_pathway, nil)
-             |> assign(:pathway_form, to_form(%{}))
+             next_socket
+             |> assign(:pathway_form_dirty, false)
              |> assign(:pathway_error, nil)}
 
           {:error, changeset} ->
@@ -1753,6 +1951,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         create_pathway_between_stops(socket, first_stop_id, id)
     end
   end
+
+  defp normalize_pair_key(stop_id_a, stop_id_b) do
+    if stop_id_a <= stop_id_b do
+      {stop_id_a, stop_id_b}
+    else
+      {stop_id_b, stop_id_a}
+    end
+  end
+
+  defp build_pair_counts(pathways) do
+    Enum.reduce(pathways, %{}, fn pathway, counts ->
+      pair_key = normalize_pair_key(pathway.from_stop_id, pathway.to_stop_id)
+      Map.update(counts, pair_key, 1, &(&1 + 1))
+    end)
+  end
+
+  defp pair_siblings_for(pathway, pathways_list) do
+    pair_key = normalize_pair_key(pathway.from_stop_id, pathway.to_stop_id)
+
+    pathways_list
+    |> Enum.filter(fn sibling ->
+      not sibling.is_cross_level and
+        normalize_pair_key(sibling.from_stop_id, sibling.to_stop_id) == pair_key
+    end)
+    |> Enum.sort_by(& &1.pathway_id, :asc)
+  end
+
+  defp pathway_for_tab([first_pathway], "first"), do: first_pathway
+  defp pathway_for_tab([first_pathway, _second_pathway], "first"), do: first_pathway
+  defp pathway_for_tab([_first_pathway, second_pathway], "second"), do: second_pathway
+  defp pathway_for_tab(_pathways, _tab), do: nil
 
   defp parse_int(str) when is_binary(str) do
     case Integer.parse(str) do
@@ -2078,44 +2307,57 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     from_stop = Gtfs.get_stop!(from_stop_id)
     to_stop = Gtfs.get_stop!(to_stop_id)
+    pair_key = normalize_pair_key(from_stop.stop_id, to_stop.stop_id)
+    pair_count = Map.get(socket.assigns.pathway_pair_counts || %{}, pair_key, 0)
 
-    pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
+    if pair_count >= 2 do
+      {:noreply, assign(socket, :pathway_error, "This stop pair already has two pathways")}
+    else
+      pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
 
-    attrs =
-      %{
-        pathway_id: pathway_id,
-        from_stop_id: from_stop.stop_id,
-        to_stop_id: to_stop.stop_id,
-        pathway_mode: 1,
-        is_bidirectional: true,
-        organization_id: organization_id,
-        gtfs_version_id: gtfs_version_id
-      }
-      |> maybe_put_auto_pathway_length(socket, from_stop, to_stop)
+      attrs =
+        %{
+          pathway_id: pathway_id,
+          from_stop_id: from_stop.stop_id,
+          to_stop_id: to_stop.stop_id,
+          pathway_mode: 1,
+          is_bidirectional: true,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        }
+        |> maybe_put_auto_pathway_length(socket, from_stop, to_stop)
 
-    case Gtfs.create_pathway(attrs) do
-      {:ok, pathway} ->
-        loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
+      case Gtfs.create_pathway(attrs) do
+        {:ok, pathway} ->
+          loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
+          refreshed_socket = refresh_lists(socket)
+          pathway_pair = pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
 
-        {:noreply,
-         socket
-         |> refresh_lists()
-         # Re-stream to remove highlight
-         |> stream_insert(:child_stops, from_stop)
-         |> assign(:editing_pathway, loaded_pathway)
-         |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
-         |> assign(:show_pathway_drawer, true)
-         |> assign(:active_point_id, nil)
-         |> assign(:selected_from_stop, nil)
-         |> assign(:pathway_error, nil)}
+          {:noreply,
+           refreshed_socket
+           # Re-stream to remove highlight
+           |> stream_insert(:child_stops, from_stop)
+           |> assign(:editing_pathway_pair, pathway_pair)
+           |> assign(:active_pathway_tab, :first)
+           |> assign(:pathway_form_dirty, false)
+           |> assign(:editing_pathway, loaded_pathway)
+           |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
+           |> assign(:show_pathway_drawer, true)
+           |> assign(:active_point_id, nil)
+           |> assign(:selected_from_stop, nil)
+           |> assign(:pathway_error, nil)}
 
-      {:error, _changeset} ->
-        {:noreply,
-         socket
-         |> assign(:show_pathway_drawer, false)
-         |> assign(:editing_pathway, nil)
-         |> assign(:active_point_id, nil)
-         |> assign(:pathway_error, "Failed to create pathway")}
+        {:error, _changeset} ->
+          {:noreply,
+           socket
+           |> assign(:show_pathway_drawer, false)
+           |> assign(:editing_pathway_pair, [])
+           |> assign(:active_pathway_tab, :first)
+           |> assign(:pathway_form_dirty, false)
+           |> assign(:editing_pathway, nil)
+           |> assign(:active_point_id, nil)
+           |> assign(:pathway_error, "Failed to create pathway")}
+      end
     end
   end
 

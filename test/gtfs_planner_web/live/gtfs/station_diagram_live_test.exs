@@ -4792,6 +4792,425 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - pathway pair behavior" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PAIR_STATION",
+          stop_name: "Pair Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PAIR_LEVEL_1",
+          level_name: "Pair Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "pair-level.png"
+        })
+
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PAIR_STOP_A",
+          stop_name: "Pair Stop A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 12.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PAIR_STOP_B",
+          stop_name: "Pair Stop B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 12.0}
+        })
+
+      stop_c =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PAIR_STOP_C",
+          stop_name: "Pair Stop C",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 12.0}
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_a: stop_a,
+        stop_b: stop_b,
+        stop_c: stop_c
+      }
+    end
+
+    test "paired pathways render with thicker base stroke values", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b,
+      stop_c: stop_c
+    } do
+      paired_1 =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      paired_2 =
+        pathway_fixture(organization.id, gtfs_version.id, stop_b.stop_id, stop_a.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: false
+        })
+
+      single =
+        pathway_fixture(organization.id, gtfs_version.id, stop_b.stop_id, stop_c.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      assert has_element?(
+               view,
+               "#pathways-#{paired_1.id} [data-pathway-line][data-base-stroke='0.54']"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{paired_2.id} [data-pathway-line][data-base-stroke='0.54']"
+             )
+
+      refute has_element?(
+               view,
+               "#pathways-#{single.id} [data-pathway-line][data-base-stroke='0.54']"
+             )
+    end
+
+    test "paired pathway editing shows tabs and switching tabs changes form values", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      first =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      second =
+        pathway_fixture(organization.id, gtfs_version.id, stop_b.stop_id, stop_a.stop_id, %{
+          pathway_mode: 2,
+          is_bidirectional: false
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{first.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      assert has_element?(view, "#pathway-drawer header #pathway-pair-tabs")
+      assert has_element?(view, "#pathway-drawer header #pathway-tab-first")
+      assert has_element?(view, "#pathway-drawer header #pathway-tab-second")
+
+      assert has_element?(
+               view,
+               "#pathway-form select[name='pathway_mode'] option[value='1'][selected]"
+             )
+
+      refute has_element?(view, "#add-second-pathway-btn")
+
+      view
+      |> element("#pathway-tab-second")
+      |> render_click()
+
+      assert has_element?(view, "#pathway-tab-second[aria-selected='true']")
+
+      assert has_element?(
+               view,
+               "#pathway-form select[name='pathway_mode'] option[value='2'][selected]"
+             )
+
+      assert has_element?(
+               view,
+               "#pathway-form input[name='pathway_id'][value='#{second.pathway_id}']"
+             )
+    end
+
+    test "add second pathway creates sibling and activates second tab", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      first =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 4,
+          is_bidirectional: true
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{first.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      assert has_element?(view, "#pathway-drawer header #add-second-pathway-btn")
+
+      view
+      |> element("#add-second-pathway-btn")
+      |> render_click()
+
+      pair_count =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn pathway ->
+          MapSet.new([pathway.from_stop_id, pathway.to_stop_id]) ==
+            MapSet.new([stop_a.stop_id, stop_b.stop_id])
+        end)
+        |> length()
+
+      assert pair_count == 2
+      assert has_element?(view, "#pathway-drawer header #pathway-pair-tabs")
+      assert has_element?(view, "#pathway-tab-second[aria-selected='true']")
+      refute has_element?(view, "#add-second-pathway-btn")
+    end
+
+    test "dirty pathway form shows unsaved indicator and confirmation when switching forms", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      first =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      _second =
+        pathway_fixture(organization.id, gtfs_version.id, stop_b.stop_id, stop_a.stop_id, %{
+          pathway_mode: 2,
+          is_bidirectional: false
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{first.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      refute has_element?(view, "#pathway-dirty-indicator")
+      refute has_element?(view, "#pathway-tab-second[data-confirm]")
+
+      view
+      |> form("#pathway-form", %{
+        "traversal_time" => "123"
+      })
+      |> render_change()
+
+      assert has_element?(view, "#pathway-dirty-indicator", "Unsaved changes")
+
+      assert has_element?(
+               view,
+               "#pathway-tab-first[data-confirm='Discard unsaved pathway changes?']"
+             )
+
+      assert has_element?(
+               view,
+               "#pathway-tab-second[data-confirm='Discard unsaved pathway changes?']"
+             )
+    end
+
+    test "saving a pathway in a two-pathway pair keeps the drawer open", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      first =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      second =
+        pathway_fixture(organization.id, gtfs_version.id, stop_b.stop_id, stop_a.stop_id, %{
+          pathway_mode: 2,
+          is_bidirectional: false
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{second.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> form("#pathway-form", %{
+        "pathway_mode" => "2",
+        "is_bidirectional" => "false",
+        "traversal_time" => "87",
+        "length" => "",
+        "stair_count" => "",
+        "min_width" => "",
+        "signposted_as" => "Saved While Paired"
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#pathway-form")
+      assert has_element?(view, "#pathway-pair-tabs")
+      assert has_element?(view, "#pathway-tab-second[aria-selected='true']")
+
+      reloaded_first = Gtfs.get_pathway!(first.id)
+      reloaded_second = Gtfs.get_pathway!(second.id)
+
+      assert reloaded_first.id == first.id
+      assert reloaded_second.traversal_time == 87
+      assert reloaded_second.signposted_as == "Saved While Paired"
+    end
+
+    test "connect mode creation is blocked when pair already has two pathways", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+        pathway_mode: 1,
+        is_bidirectional: true
+      })
+
+      pathway_fixture(organization.id, gtfs_version.id, stop_b.stop_id, stop_a.stop_id, %{
+        pathway_mode: 3,
+        is_bidirectional: true
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+      render_hook(view, "stop_clicked", %{"id" => stop_a.id})
+      render_hook(view, "stop_clicked", %{"id" => stop_b.id})
+
+      pair_count =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn pathway ->
+          MapSet.new([pathway.from_stop_id, pathway.to_stop_id]) ==
+            MapSet.new([stop_a.stop_id, stop_b.stop_id])
+        end)
+        |> length()
+
+      assert pair_count == 2
+
+      assert has_element?(
+               view,
+               "#lists-section .text-error",
+               "This stop pair already has two pathways"
+             )
+    end
+
+    test "deleting one paired pathway keeps drawer open on remaining sibling without tabs", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      first =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      _second =
+        pathway_fixture(organization.id, gtfs_version.id, stop_b.stop_id, stop_a.stop_id, %{
+          pathway_mode: 6,
+          is_bidirectional: false
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{first.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      assert has_element?(view, "#pathway-pair-tabs")
+
+      view
+      |> element("button[phx-click='delete_pathway']")
+      |> render_click()
+
+      [remaining] =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn pathway ->
+          MapSet.new([pathway.from_stop_id, pathway.to_stop_id]) ==
+            MapSet.new([stop_a.stop_id, stop_b.stop_id])
+        end)
+
+      assert has_element?(view, "#pathway-form")
+      refute has_element?(view, "#pathway-pair-tabs")
+      assert has_element?(view, "#add-second-pathway-btn")
+
+      assert has_element?(
+               view,
+               "#pathway-form input[name='pathway_id'][value='#{remaining.pathway_id}']"
+             )
+    end
+  end
+
   describe "StationDiagramLive - diagram measurement" do
     setup do
       organization = organization_fixture()
