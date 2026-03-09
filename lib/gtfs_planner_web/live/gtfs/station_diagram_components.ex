@@ -486,11 +486,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     one_way? = assigns.pathway.is_bidirectional != true
 
-    has_forward_label? = present_text?(assigns.pathway.signposted_as)
+    forward_label_text =
+      Map.get(assigns.pathway, :display_signposted_as, assigns.pathway.signposted_as)
+
+    reverse_label_text =
+      Map.get(
+        assigns.pathway,
+        :display_reversed_signposted_as,
+        assigns.pathway.reversed_signposted_as
+      )
+
+    has_forward_label? = present_text?(forward_label_text)
 
     has_reverse_label? =
-      assigns.pathway.is_bidirectional == true and
-        present_text?(assigns.pathway.reversed_signposted_as)
+      assigns.pathway.is_bidirectional == true and present_text?(reverse_label_text)
 
     assigns =
       assigns
@@ -499,7 +508,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:x2, line_x2)
       |> assign(:y2, line_y2)
       |> assign(:one_way?, one_way?)
+      |> assign(:stroke_mult, if(Map.get(assigns.pathway, :is_paired), do: 1.8, else: 1.0))
       |> assign(:opacity, "1")
+      |> assign(:forward_label_text, forward_label_text)
+      |> assign(:reverse_label_text, reverse_label_text)
       |> assign(:has_forward_label?, has_forward_label?)
       |> assign(:has_reverse_label?, has_reverse_label?)
       |> assign(:editable?, assigns.mode == :view)
@@ -542,9 +554,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
       <%= case @pathway.pathway_mode do %>
         <% 1 -> %>
-          <.pathway_walkway x1={@x1} y1={@y1} x2={@x2} y2={@y2} mode={@mode} one_way?={@one_way?} />
+          <.pathway_walkway
+            x1={@x1}
+            y1={@y1}
+            x2={@x2}
+            y2={@y2}
+            mode={@mode}
+            one_way?={@one_way?}
+            stroke_mult={@stroke_mult}
+          />
         <% 2 -> %>
-          <.pathway_stairs x1={@x1} y1={@y1} x2={@x2} y2={@y2} mode={@mode} one_way?={@one_way?} />
+          <.pathway_stairs
+            x1={@x1}
+            y1={@y1}
+            x2={@x2}
+            y2={@y2}
+            mode={@mode}
+            one_way?={@one_way?}
+            stroke_mult={@stroke_mult}
+          />
         <% 3 -> %>
           <.pathway_moving_sidewalk
             x1={@x1}
@@ -553,13 +581,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             y2={@y2}
             mode={@mode}
             one_way?={@one_way?}
+            stroke_mult={@stroke_mult}
           />
         <% 4 -> %>
-          <.pathway_escalator x1={@x1} y1={@y1} x2={@x2} y2={@y2} mode={@mode} one_way?={@one_way?} />
+          <.pathway_escalator
+            x1={@x1}
+            y1={@y1}
+            x2={@x2}
+            y2={@y2}
+            mode={@mode}
+            one_way?={@one_way?}
+            stroke_mult={@stroke_mult}
+          />
         <% 5 -> %>
-          <.pathway_elevator x1={@x1} y1={@y1} x2={@x2} y2={@y2} one_way?={@one_way?} />
+          <.pathway_elevator
+            x1={@x1}
+            y1={@y1}
+            x2={@x2}
+            y2={@y2}
+            one_way?={@one_way?}
+            stroke_mult={@stroke_mult}
+          />
         <% 6 -> %>
-          <.pathway_fare_gate x1={@x1} y1={@y1} x2={@x2} y2={@y2} mode={@mode} one_way?={@one_way?} />
+          <.pathway_fare_gate
+            x1={@x1}
+            y1={@y1}
+            x2={@x2}
+            y2={@y2}
+            mode={@mode}
+            one_way?={@one_way?}
+            stroke_mult={@stroke_mult}
+          />
         <% 7 -> %>
           <.pathway_exit_gate
             x1={@x1}
@@ -568,9 +620,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             y2={@y2}
             mode={@mode}
             one_way?={@one_way?}
+            stroke_mult={@stroke_mult}
           />
         <% _ -> %>
-          <.pathway_walkway x1={@x1} y1={@y1} x2={@x2} y2={@y2} mode={@mode} one_way?={@one_way?} />
+          <.pathway_walkway
+            x1={@x1}
+            y1={@y1}
+            x2={@x2}
+            y2={@y2}
+            mode={@mode}
+            one_way?={@one_way?}
+            stroke_mult={@stroke_mult}
+          />
       <% end %>
 
       <.pathway_label
@@ -579,7 +640,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         y1={@y1}
         x2={@x2}
         y2={@y2}
-        text={@pathway.signposted_as}
+        text={@forward_label_text}
         side={:forward}
       />
       <.pathway_label
@@ -588,7 +649,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         y1={@y1}
         x2={@x2}
         y2={@y2}
-        text={@pathway.reversed_signposted_as}
+        text={@reverse_label_text}
         side={:reverse}
       />
     </g>
@@ -601,6 +662,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :y2, :float, required: true
   attr :mode, :atom, required: true
   attr :one_way?, :boolean, required: true
+  attr :stroke_mult, :float, default: 1.0
 
   defp pathway_walkway(assigns) do
     ~H"""
@@ -616,7 +678,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       marker-end="url(#pathway-arrow)"
       data-pathway-line="true"
       data-pathway-end-trim="1.1"
-      data-base-stroke="0.30"
+      data-base-stroke={0.30 * @stroke_mult}
       class={
         if(@mode == :add,
           do: "",
@@ -633,6 +695,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :y2, :float, required: true
   attr :mode, :atom, required: true
   attr :one_way?, :boolean, required: true
+  attr :stroke_mult, :float, default: 1.0
 
   defp pathway_stairs(assigns) do
     assigns =
@@ -655,7 +718,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       marker-end="url(#pathway-arrow)"
       data-pathway-line="true"
       data-pathway-end-trim="1.1"
-      data-base-stroke="0.30"
+      data-base-stroke={0.30 * @stroke_mult}
       class={
         if(@mode == :add,
           do: "",
@@ -673,7 +736,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke-width="0.26"
       stroke-linecap="round"
       data-pathway-center-tick="true"
-      data-base-stroke="0.26"
+      data-base-stroke={0.26 * @stroke_mult}
       class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     """
@@ -685,6 +748,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :y2, :float, required: true
   attr :mode, :atom, required: true
   attr :one_way?, :boolean, required: true
+  attr :stroke_mult, :float, default: 1.0
 
   defp pathway_moving_sidewalk(assigns) do
     assigns =
@@ -707,7 +771,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       marker-end="url(#pathway-arrow)"
       data-pathway-line="true"
       data-pathway-end-trim="1.1"
-      data-base-stroke="0.30"
+      data-base-stroke={0.30 * @stroke_mult}
       class={
         if(@mode == :add,
           do: "",
@@ -725,7 +789,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke-width="0.26"
       stroke-linecap="round"
       data-pathway-center-cross="true"
-      data-base-stroke="0.26"
+      data-base-stroke={0.26 * @stroke_mult}
       class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     """
@@ -737,6 +801,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :y2, :float, required: true
   attr :mode, :atom, required: true
   attr :one_way?, :boolean, required: true
+  attr :stroke_mult, :float, default: 1.0
 
   defp pathway_escalator(assigns) do
     assigns =
@@ -759,7 +824,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       marker-end="url(#pathway-arrow)"
       data-pathway-line="true"
       data-pathway-end-trim="1.1"
-      data-base-stroke="0.30"
+      data-base-stroke={0.30 * @stroke_mult}
       class={
         if(@mode == :add,
           do: "",
@@ -777,7 +842,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke-width="0.26"
       stroke-linecap="round"
       data-pathway-center-bar="true"
-      data-base-stroke="0.26"
+      data-base-stroke={0.26 * @stroke_mult}
       class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     """
@@ -788,6 +853,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :x2, :float, required: true
   attr :y2, :float, required: true
   attr :one_way?, :boolean, required: true
+  attr :stroke_mult, :float, default: 1.0
 
   defp pathway_elevator(assigns) do
     {mid_x, mid_y} = pathway_midpoint(assigns.x1, assigns.y1, assigns.x2, assigns.y2)
@@ -828,7 +894,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
       data-pathway-connector="true"
       data-pathway-end-trim-start="1.1"
-      data-base-stroke="0.26"
+      data-base-stroke={0.26 * @stroke_mult}
       class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     <line
@@ -842,7 +908,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       marker-end="url(#pathway-arrow)"
       data-pathway-connector="true"
       data-pathway-end-trim-end="1.1"
-      data-base-stroke="0.26"
+      data-base-stroke={0.26 * @stroke_mult}
       class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     <rect
@@ -858,7 +924,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-center-y={@mid_y}
       data-base-width="1"
       data-base-height="1"
-      data-base-stroke="0.4"
+      data-base-stroke={0.4 * @stroke_mult}
       class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     <text
@@ -885,6 +951,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :y2, :float, required: true
   attr :mode, :atom, required: true
   attr :one_way?, :boolean, required: true
+  attr :stroke_mult, :float, default: 1.0
 
   defp pathway_fare_gate(assigns) do
     {rail_a_x1, rail_a_y1, rail_a_x2, rail_a_y2} =
@@ -915,8 +982,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke-linecap="round"
       data-pathway-rail="true"
       data-rail-base-offset="0.24"
-      data-rail-base-stroke="0.30"
-      data-base-stroke="0.30"
+      data-rail-base-stroke={0.30 * @stroke_mult}
+      data-base-stroke={0.30 * @stroke_mult}
       class={
         if(@mode == :add,
           do: "",
@@ -934,8 +1001,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke-linecap="round"
       data-pathway-rail="true"
       data-rail-base-offset="-0.24"
-      data-rail-base-stroke="0.30"
-      data-base-stroke="0.30"
+      data-rail-base-stroke={0.30 * @stroke_mult}
+      data-base-stroke={0.30 * @stroke_mult}
       class={
         if(@mode == :add,
           do: "",
@@ -955,7 +1022,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       marker-end="url(#pathway-arrow)"
       data-pathway-arrow-guide="true"
       data-pathway-end-trim="1.1"
-      data-base-stroke="0.30"
+      data-base-stroke={0.30 * @stroke_mult}
       class="pointer-events-none"
     />
     """
@@ -967,6 +1034,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :y2, :float, required: true
   attr :mode, :atom, required: true
   attr :one_way?, :boolean, required: true
+  attr :stroke_mult, :float, default: 1.0
 
   defp pathway_exit_gate(assigns) do
     {rail_a_x1, rail_a_y1, rail_a_x2, rail_a_y2} =
@@ -997,8 +1065,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke-linecap="round"
       data-pathway-rail="true"
       data-rail-base-offset="0.16"
-      data-rail-base-stroke="0.30"
-      data-base-stroke="0.30"
+      data-rail-base-stroke={0.30 * @stroke_mult}
+      data-base-stroke={0.30 * @stroke_mult}
       class={
         if(@mode == :add,
           do: "",
@@ -1016,8 +1084,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke-linecap="round"
       data-pathway-rail="true"
       data-rail-base-offset="-0.16"
-      data-rail-base-stroke="0.30"
-      data-base-stroke="0.30"
+      data-rail-base-stroke={0.30 * @stroke_mult}
+      data-base-stroke={0.30 * @stroke_mult}
       class={
         if(@mode == :add,
           do: "",
@@ -1037,7 +1105,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       marker-end={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
       data-pathway-arrow-guide="true"
       data-pathway-end-trim="1.1"
-      data-base-stroke="0.30"
+      data-base-stroke={0.30 * @stroke_mult}
       class="pointer-events-none"
     />
     """
@@ -1687,7 +1755,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
         ~H"""
         <g
-          class={if @style == :saved, do: "cursor-pointer pointer-events-auto", else: "pointer-events-none"}
+          class={
+            if @style == :saved, do: "cursor-pointer pointer-events-auto", else: "pointer-events-none"
+          }
           data-ruler-type={if @style == :saved, do: "saved"}
         >
           <line
@@ -2691,6 +2761,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :open, :boolean, required: true
   attr :pathway_form, :any, required: true
   attr :editing_pathway, :any
+  attr :editing_pathway_pair, :list, default: []
+  attr :active_pathway_tab, :atom, default: :first
+  attr :pathway_form_dirty, :boolean, default: false
   attr :has_scale, :boolean, default: false
   attr :pathway_error, :string, default: nil
 
@@ -2703,6 +2776,65 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       title="Edit Pathway"
       class="max-w-4xl"
     >
+      <:header_actions>
+        <div class="flex items-center gap-2">
+          <span
+            :if={@pathway_form_dirty}
+            id="pathway-dirty-indicator"
+            class="badge badge-warning badge-sm"
+          >
+            Unsaved changes
+          </span>
+          <div
+            :if={@open and length(@editing_pathway_pair) == 2}
+            id="pathway-pair-tabs"
+            class="flex gap-1"
+          >
+            <button
+              id="pathway-tab-first"
+              type="button"
+              phx-click="switch_pathway_tab"
+              phx-value-tab="first"
+              data-confirm={if @pathway_form_dirty, do: "Discard unsaved pathway changes?"}
+              aria-selected={if @active_pathway_tab == :first, do: "true", else: "false"}
+              class={[
+                "btn btn-xs",
+                if(@active_pathway_tab == :first, do: "btn-primary btn-active", else: "btn-ghost")
+              ]}
+            >
+              First Pathway
+            </button>
+            <button
+              id="pathway-tab-second"
+              type="button"
+              phx-click="switch_pathway_tab"
+              phx-value-tab="second"
+              data-confirm={if @pathway_form_dirty, do: "Discard unsaved pathway changes?"}
+              aria-selected={if @active_pathway_tab == :second, do: "true", else: "false"}
+              class={[
+                "btn btn-xs",
+                if(@active_pathway_tab == :second, do: "btn-primary btn-active", else: "btn-ghost")
+              ]}
+            >
+              Second Pathway
+            </button>
+          </div>
+          <button
+            :if={
+              (length(@editing_pathway_pair) == 1 and @editing_pathway) &&
+                not Map.get(@editing_pathway, :is_cross_level, false)
+            }
+            id="add-second-pathway-btn"
+            type="button"
+            class="btn btn-xs btn-outline"
+            phx-click="add_second_pathway"
+            data-confirm={if @pathway_form_dirty, do: "Discard unsaved pathway changes?"}
+          >
+            Add Second Pathway
+          </button>
+        </div>
+      </:header_actions>
+
       <.pathway_form
         :if={@open}
         pathway_form={@pathway_form}
@@ -2731,7 +2863,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     assigns = assign(assigns, :pathway_mode_options, pathway_mode_options)
 
     ~H"""
-    <.simple_form for={@pathway_form} id="pathway-form" phx-submit="save_pathway">
+    <.simple_form
+      for={@pathway_form}
+      id="pathway-form"
+      phx-submit="save_pathway"
+      phx-change="pathway_form_changed"
+    >
       <%!-- ID is hidden as it's auto-managed or readonly --%>
       <.input field={@pathway_form[:pathway_id]} type="hidden" />
       <p :if={@pathway_error} id="pathway-form-error" class="mb-4 text-error text-sm">
@@ -2835,7 +2972,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         />
 
         <.input
-          :if={@pathway_form[:is_bidirectional].value == true}
+          :if={truthy_input_value?(@pathway_form[:is_bidirectional].value)}
           field={@pathway_form[:reversed_signposted_as]}
           type="text"
           label="Reversed Signposted As"
@@ -2909,6 +3046,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   defp blank_pathway_length_value?(_value), do: false
+
+  defp truthy_input_value?(value) when value in [true, "true", 1, "1"], do: true
+  defp truthy_input_value?(_value), do: false
 
   # ============================================================================
   # Level Sidebar
