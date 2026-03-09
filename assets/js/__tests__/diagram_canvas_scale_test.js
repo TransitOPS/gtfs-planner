@@ -111,6 +111,11 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
             <line id="path-hit" data-pathway-hit="true" data-base-stroke="2"></line>
             <line id="path-line" data-pathway-line="true" data-base-stroke="0.5"></line>
             <line
+              id="path-line-paired"
+              data-pathway-line="true"
+              data-base-stroke="0.54"
+            ></line>
+            <line
               id="path-dashed"
               data-pathway-line="true"
               data-base-stroke="0.5"
@@ -296,6 +301,9 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(
       document.querySelector("#path-line").getAttribute("stroke-width"),
     ).toBe("0.1388888888888889");
+    expect(
+      document.querySelector("#path-line-paired").getAttribute("stroke-width"),
+    ).toBe("0.15");
     expect(
       document.querySelector("#path-dashed").getAttribute("stroke-width"),
     ).toBe("0.1388888888888889");
