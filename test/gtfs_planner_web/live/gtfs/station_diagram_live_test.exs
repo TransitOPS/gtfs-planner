@@ -5116,6 +5116,87 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert reloaded_second.signposted_as == "Saved While Paired"
     end
 
+    test "paired pathways render one combined signage label separated by //", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      first =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "Northbound",
+          reversed_signposted_as: "Uptown"
+        })
+
+      second =
+        pathway_fixture(organization.id, gtfs_version.id, stop_b.stop_id, stop_a.stop_id, %{
+          pathway_mode: 3,
+          is_bidirectional: true,
+          signposted_as: "Express",
+          reversed_signposted_as: "Downtown"
+        })
+
+      [primary, secondary] = Enum.sort_by([first, second], & &1.pathway_id, :asc)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      assert has_element?(
+               view,
+               "#pathways-#{primary.id} [data-pathway-label]",
+               "Northbound // Express"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{primary.id} [data-pathway-label]",
+               "Uptown // Downtown"
+             )
+
+      refute has_element?(view, "#pathways-#{secondary.id} [data-pathway-label]")
+    end
+
+    test "paired pathways with one blank signage render unnumbered single signage text", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      first =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "Local",
+          reversed_signposted_as: nil
+        })
+
+      second =
+        pathway_fixture(organization.id, gtfs_version.id, stop_b.stop_id, stop_a.stop_id, %{
+          pathway_mode: 2,
+          is_bidirectional: true,
+          signposted_as: nil,
+          reversed_signposted_as: nil
+        })
+
+      [primary, _secondary] = Enum.sort_by([first, second], & &1.pathway_id, :asc)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      assert has_element?(view, "#pathways-#{primary.id} [data-pathway-label]", "Local")
+      refute has_element?(view, "#pathways-#{primary.id} [data-pathway-label]", "//")
+      refute has_element?(view, "#pathways-#{primary.id} [data-pathway-label]", "1.")
+      refute has_element?(view, "#pathways-#{primary.id} [data-pathway-label]", "2.")
+    end
+
     test "connect mode creation is blocked when pair already has two pathways", %{
       conn: conn,
       user: user,

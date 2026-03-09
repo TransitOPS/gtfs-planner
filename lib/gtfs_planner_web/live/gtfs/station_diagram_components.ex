@@ -486,11 +486,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     one_way? = assigns.pathway.is_bidirectional != true
 
-    has_forward_label? = present_text?(assigns.pathway.signposted_as)
+    forward_label_text =
+      Map.get(assigns.pathway, :display_signposted_as, assigns.pathway.signposted_as)
 
-    has_reverse_label? =
-      assigns.pathway.is_bidirectional == true and
-        present_text?(assigns.pathway.reversed_signposted_as)
+    reverse_label_text =
+      Map.get(
+        assigns.pathway,
+        :display_reversed_signposted_as,
+        assigns.pathway.reversed_signposted_as
+      )
+
+    has_forward_label? = present_text?(forward_label_text)
+    has_reverse_label? = present_text?(reverse_label_text)
 
     assigns =
       assigns
@@ -501,6 +508,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:one_way?, one_way?)
       |> assign(:stroke_mult, if(Map.get(assigns.pathway, :is_paired), do: 1.8, else: 1.0))
       |> assign(:opacity, "1")
+      |> assign(:forward_label_text, forward_label_text)
+      |> assign(:reverse_label_text, reverse_label_text)
       |> assign(:has_forward_label?, has_forward_label?)
       |> assign(:has_reverse_label?, has_reverse_label?)
       |> assign(:editable?, assigns.mode == :view)
@@ -629,7 +638,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         y1={@y1}
         x2={@x2}
         y2={@y2}
-        text={@pathway.signposted_as}
+        text={@forward_label_text}
         side={:forward}
       />
       <.pathway_label
@@ -638,7 +647,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         y1={@y1}
         x2={@x2}
         y2={@y2}
-        text={@pathway.reversed_signposted_as}
+        text={@reverse_label_text}
         side={:reverse}
       />
     </g>

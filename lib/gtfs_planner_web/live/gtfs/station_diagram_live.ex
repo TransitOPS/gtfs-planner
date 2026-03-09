@@ -189,14 +189,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     same_level_pathways = Enum.reject(level_pathways, & &1.is_cross_level)
     pathway_pair_counts = build_pair_counts(same_level_pathways)
 
+    pair_siblings_by_key =
+      Enum.group_by(same_level_pathways, &normalize_pair_key(&1.from_stop_id, &1.to_stop_id))
+
     same_level_pathways =
       Enum.map(same_level_pathways, fn pathway ->
         pair_key = normalize_pair_key(pathway.from_stop_id, pathway.to_stop_id)
         is_paired = Map.get(pathway_pair_counts, pair_key, 0) == 2
 
+        pair_siblings =
+          Map.get(pair_siblings_by_key, pair_key, []) |> Enum.sort_by(& &1.pathway_id, :asc)
+
+        {display_signposted_as, display_reversed_signposted_as} =
+          pair_display_signage(pathway, pair_siblings)
+
         pathway
         |> Map.from_struct()
         |> Map.put(:is_paired, is_paired)
+        |> Map.put(:display_signposted_as, display_signposted_as)
+        |> Map.put(:display_reversed_signposted_as, display_reversed_signposted_as)
       end)
 
     socket
@@ -1977,6 +1988,43 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end)
     |> Enum.sort_by(& &1.pathway_id, :asc)
   end
+
+  defp pair_display_signage(pathway, [first, second]) do
+    if pathway.pathway_id == first.pathway_id do
+      {
+        combine_pair_signage(first.signposted_as, second.signposted_as),
+        combine_pair_signage(first.reversed_signposted_as, second.reversed_signposted_as)
+      }
+    else
+      {nil, nil}
+    end
+  end
+
+  defp pair_display_signage(pathway, _pair_siblings) do
+    {pathway.signposted_as, pathway.reversed_signposted_as}
+  end
+
+  defp combine_pair_signage(signage_a, signage_b) do
+    has_a? = non_blank_text?(signage_a)
+    has_b? = non_blank_text?(signage_b)
+
+    cond do
+      has_a? and has_b? ->
+        "#{String.trim(signage_a)} // #{String.trim(signage_b)}"
+
+      has_a? ->
+        String.trim(signage_a)
+
+      has_b? ->
+        String.trim(signage_b)
+
+      true ->
+        nil
+    end
+  end
+
+  defp non_blank_text?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_blank_text?(_value), do: false
 
   defp pathway_for_tab([first_pathway], "first"), do: first_pathway
   defp pathway_for_tab([first_pathway, _second_pathway], "first"), do: first_pathway
