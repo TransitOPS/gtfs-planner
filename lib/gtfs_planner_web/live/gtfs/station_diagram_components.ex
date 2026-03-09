@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   import GtfsPlannerWeb.CoreComponents
 
   alias GtfsPlanner.Gtfs.Coordinates
+  alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Pathway
   alias LiveSelect.Component
@@ -343,9 +344,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp diagram_image_href(organization_id, station, active_stop_level) do
     case active_stop_level do
       %{diagram_filename: filename} when is_binary(filename) ->
+        station_dir = PathSafety.stop_storage_dir(station.stop_id)
         token = URI.encode_www_form(filename)
         encoded_filename = URI.encode(filename)
-        "/uploads/diagrams/#{organization_id}/#{station.stop_id}/#{encoded_filename}?v=#{token}"
+
+        if is_binary(station_dir) do
+          "/uploads/diagrams/#{organization_id}/#{station_dir}/#{encoded_filename}?v=#{token}"
+        else
+          nil
+        end
 
       _ ->
         nil
