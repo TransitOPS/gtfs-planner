@@ -156,7 +156,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:walkability_tests_list, [])
     |> assign(:platform_options, [])
     |> assign(:platform_stop_ids, MapSet.new())
-    |> assign(:pathway_pair_counts, nil)
+    |> assign(:pathway_pair_counts, %{})
   end
 
   defp load_level_data(socket, level) do
@@ -186,29 +186,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     active_level_stop_ids = active_level_stop_ids(all_child_stops, level)
     cross_level_badges_by_stop = cross_level_badges_by_stop(level_pathways, active_level_stop_ids)
     visible_canvas_stops = Enum.filter(all_child_stops, & &1.on_active_level)
-    same_level_pathways = Enum.reject(level_pathways, & &1.is_cross_level)
-    pathway_pair_counts = build_pair_counts(same_level_pathways)
-
-    pair_siblings_by_key =
-      Enum.group_by(same_level_pathways, &normalize_pair_key(&1.from_stop_id, &1.to_stop_id))
-
-    same_level_pathways =
-      Enum.map(same_level_pathways, fn pathway ->
-        pair_key = normalize_pair_key(pathway.from_stop_id, pathway.to_stop_id)
-        is_paired = Map.get(pathway_pair_counts, pair_key, 0) == 2
-
-        pair_siblings =
-          Map.get(pair_siblings_by_key, pair_key, []) |> Enum.sort_by(& &1.pathway_id, :asc)
-
-        {display_signposted_as, display_reversed_signposted_as} =
-          pair_display_signage(pathway, pair_siblings)
-
-        pathway
-        |> Map.from_struct()
-        |> Map.put(:is_paired, is_paired)
-        |> Map.put(:display_signposted_as, display_signposted_as)
-        |> Map.put(:display_reversed_signposted_as, display_reversed_signposted_as)
-      end)
+    {same_level_pathways, pathway_pair_counts} = decorate_same_level_pathways(level_pathways)
 
     socket
     |> stream(:child_stops, visible_canvas_stops, reset: true)
@@ -917,45 +895,76 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("delete_pathway", %{"id" => pathway_id}, socket) do
-    pathway = Gtfs.get_pathway!(pathway_id)
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
 
-    case Gtfs.delete_pathway(pathway) do
-      {:ok, _deleted_pathway} ->
-        refreshed_socket = refresh_lists(socket)
+    pathway =
+      Enum.find(socket.assigns.pathways_list, fn existing_pathway ->
+        existing_pathway.id == pathway_id
+      end)
 
-        remaining_siblings =
-          pair_siblings_for(
-            %{from_stop_id: pathway.from_stop_id, to_stop_id: pathway.to_stop_id},
-            refreshed_socket.assigns.pathways_list
-          )
+    cond do
+      is_nil(pathway) ->
+        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
 
-        next_socket =
-          case remaining_siblings do
-            [remaining_pathway] ->
-              refreshed_pathway = Gtfs.get_pathway_with_stops!(remaining_pathway.id)
+      pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
+        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
 
-              refreshed_socket
-              |> assign(:show_pathway_drawer, true)
-              |> assign(:editing_pathway_pair, [refreshed_pathway])
-              |> assign(:active_pathway_tab, :first)
-              |> assign(:pathway_form_dirty, false)
-              |> assign(:editing_pathway, refreshed_pathway)
-              |> assign(:pathway_form, to_form(pathway_form_params(refreshed_pathway)))
+      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
+        {:noreply, assign(socket, :pathway_error, "Pathway is not fully associated with stops.")}
 
-            _ ->
-              refreshed_socket
-              |> assign(:show_pathway_drawer, false)
-              |> assign(:editing_pathway_pair, [])
-              |> assign(:active_pathway_tab, :first)
-              |> assign(:pathway_form_dirty, false)
-              |> assign(:editing_pathway, nil)
-              |> assign(:pathway_form, to_form(%{}))
-          end
+      not stop_belongs_to_station?(
+        pathway.from_stop,
+        station.stop_id,
+        socket.assigns.platform_stop_ids
+      ) or
+          not stop_belongs_to_station?(
+            pathway.to_stop,
+            station.stop_id,
+            socket.assigns.platform_stop_ids
+          ) ->
+        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
 
-        {:noreply, assign(next_socket, :pathway_error, nil)}
+      true ->
+        case Gtfs.delete_pathway(pathway) do
+          {:ok, _deleted_pathway} ->
+            refreshed_socket = refresh_lists(socket)
 
-      {:error, _changeset} ->
-        {:noreply, assign(socket, :pathway_error, "Failed to delete pathway")}
+            remaining_siblings =
+              pair_siblings_for(
+                %{from_stop_id: pathway.from_stop_id, to_stop_id: pathway.to_stop_id},
+                refreshed_socket.assigns.pathways_list
+              )
+
+            next_socket =
+              case remaining_siblings do
+                [remaining_pathway] ->
+                  refreshed_pathway = Gtfs.get_pathway_with_stops!(remaining_pathway.id)
+
+                  refreshed_socket
+                  |> assign(:show_pathway_drawer, true)
+                  |> assign(:editing_pathway_pair, [refreshed_pathway])
+                  |> assign(:active_pathway_tab, :first)
+                  |> assign(:pathway_form_dirty, false)
+                  |> assign(:editing_pathway, refreshed_pathway)
+                  |> assign(:pathway_form, to_form(pathway_form_params(refreshed_pathway)))
+
+                _ ->
+                  refreshed_socket
+                  |> assign(:show_pathway_drawer, false)
+                  |> assign(:editing_pathway_pair, [])
+                  |> assign(:active_pathway_tab, :first)
+                  |> assign(:pathway_form_dirty, false)
+                  |> assign(:editing_pathway, nil)
+                  |> assign(:pathway_form, to_form(%{}))
+              end
+
+            {:noreply, assign(next_socket, :pathway_error, nil)}
+
+          {:error, _changeset} ->
+            {:noreply, assign(socket, :pathway_error, "Failed to delete pathway")}
+        end
     end
   end
 
@@ -1058,7 +1067,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                refreshed_socket
                |> assign(:show_pathway_drawer, true)
                |> assign(:editing_pathway_pair, pathway_pair)
-               |> assign(:active_pathway_tab, :second)
+               |> assign(:active_pathway_tab, tab_for_pathway(pathway_pair, loaded_pathway))
                |> assign(:pathway_form_dirty, false)
                |> assign(:editing_pathway, loaded_pathway)
                |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
@@ -1978,6 +1987,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end)
   end
 
+  defp decorate_same_level_pathways(level_pathways) do
+    same_level_pathways = Enum.reject(level_pathways, & &1.is_cross_level)
+    pathway_pair_counts = build_pair_counts(same_level_pathways)
+
+    pair_siblings_by_key =
+      Enum.group_by(same_level_pathways, &normalize_pair_key(&1.from_stop_id, &1.to_stop_id))
+
+    decorated_pathways =
+      Enum.map(same_level_pathways, fn pathway ->
+        pair_key = normalize_pair_key(pathway.from_stop_id, pathway.to_stop_id)
+        is_paired = Map.get(pathway_pair_counts, pair_key, 0) >= 2
+
+        pair_siblings =
+          Map.get(pair_siblings_by_key, pair_key, [])
+          |> Enum.sort_by(&pathway_pair_sort_key/1, :asc)
+
+        {display_signposted_as, display_reversed_signposted_as} =
+          pair_display_signage(pathway, pair_siblings)
+
+        pathway
+        |> Map.from_struct()
+        |> Map.put(:is_paired, is_paired)
+        |> Map.put(:display_signposted_as, display_signposted_as)
+        |> Map.put(:display_reversed_signposted_as, display_reversed_signposted_as)
+      end)
+
+    {decorated_pathways, pathway_pair_counts}
+  end
+
   defp pair_siblings_for(pathway, pathways_list) do
     pair_key = normalize_pair_key(pathway.from_stop_id, pathway.to_stop_id)
 
@@ -1986,7 +2024,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       not sibling.is_cross_level and
         normalize_pair_key(sibling.from_stop_id, sibling.to_stop_id) == pair_key
     end)
-    |> Enum.sort_by(& &1.pathway_id, :asc)
+    |> Enum.sort_by(&pathway_pair_sort_key/1, :asc)
   end
 
   defp pair_display_signage(pathway, [first, second]) do
@@ -2025,6 +2063,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp non_blank_text?(value) when is_binary(value), do: String.trim(value) != ""
   defp non_blank_text?(_value), do: false
+
+  defp pathway_pair_sort_key(pathway) do
+    {pathway.from_stop_id, pathway.to_stop_id, pathway.pathway_id}
+  end
+
+  defp tab_for_pathway([_first_pathway, second_pathway], pathway) do
+    if pathway.id == second_pathway.id, do: :second, else: :first
+  end
+
+  defp tab_for_pathway(_pathway_pair, _pathway), do: :first
 
   defp pathway_for_tab([first_pathway], "first"), do: first_pathway
   defp pathway_for_tab([first_pathway, _second_pathway], "first"), do: first_pathway
@@ -2386,7 +2434,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            # Re-stream to remove highlight
            |> stream_insert(:child_stops, from_stop)
            |> assign(:editing_pathway_pair, pathway_pair)
-           |> assign(:active_pathway_tab, :first)
+           |> assign(:active_pathway_tab, tab_for_pathway(pathway_pair, loaded_pathway))
            |> assign(:pathway_form_dirty, false)
            |> assign(:editing_pathway, loaded_pathway)
            |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
@@ -2450,11 +2498,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp restream_mode_dependent_streams(socket) do
-    same_level_pathways = Enum.reject(socket.assigns.pathways_list, & &1.is_cross_level)
+    {same_level_pathways, pathway_pair_counts} =
+      decorate_same_level_pathways(socket.assigns.pathways_list)
 
     socket
     |> stream(:child_stops, socket.assigns.child_stops_list, reset: true)
     |> stream(:pathways, same_level_pathways, reset: true)
+    |> assign(:pathway_pair_counts, pathway_pair_counts)
   end
 
   defp save_walkability_test_create(socket, organization_id, attrs) do

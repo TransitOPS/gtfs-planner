@@ -497,7 +497,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       )
 
     has_forward_label? = present_text?(forward_label_text)
-    has_reverse_label? = present_text?(reverse_label_text)
+
+    has_reverse_label? =
+      assigns.pathway.is_bidirectional == true and present_text?(reverse_label_text)
 
     assigns =
       assigns
