@@ -52,6 +52,8 @@ const OVERLAY_BASE = {
 
 const TOOLTIP_POINTER_OFFSET = 12;
 const TOOLTIP_VIEWPORT_PADDING = 8;
+const DRAG_HOLD_MS = 200;
+const DRAG_THRESHOLD_UNITS = 2;
 
 function parallelOffsetFromSegment(x1, y1, x2, y2, offset) {
   const dx = x2 - x1;
@@ -154,6 +156,245 @@ const DiagramCanvasHook = {
     return safeScale + (1 - safeScale) * 0.7;
   },
 
+  isViewMode() {
+    return this.overlay?.getAttribute("data-mode") === "view";
+  },
+
+  isMeasurementEnabled() {
+    return this.overlay?.getAttribute("data-measurement-enabled") === "true";
+  },
+
+  clientPointToSvg(clientX, clientY) {
+    const ctm = this.el.getScreenCTM();
+
+    if (!ctm) {
+      return null;
+    }
+
+    const pt = this.el.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    return pt.matrixTransform(ctm.inverse());
+  },
+
+  clampSvg(value) {
+    return Math.max(0, Math.min(100, value));
+  },
+
+  debugDrag(message, extra = {}) {
+    if (!this.dragDebug) {
+      return;
+    }
+
+    // eslint-disable-next-line no-console
+    console.debug("[DiagramCanvas.drag]", message, extra);
+  },
+
+  cancelDragHold() {
+    if (this.dragCandidate?.holdTimer) {
+      clearTimeout(this.dragCandidate.holdTimer);
+    }
+
+    this.dragCandidate = null;
+  },
+
+  restoreDraggedPathways(dragging) {
+    if (!dragging?.pathwayElements) {
+      return;
+    }
+
+    dragging.pathwayElements.forEach((snapshot) => {
+      if (!snapshot.element?.isConnected) {
+        return;
+      }
+
+      snapshot.element.setAttribute("x1", `${snapshot.baseX1}`);
+      snapshot.element.setAttribute("y1", `${snapshot.baseY1}`);
+      snapshot.element.setAttribute("x2", `${snapshot.baseX2}`);
+      snapshot.element.setAttribute("y2", `${snapshot.baseY2}`);
+    });
+  },
+
+  reconcilePendingDropAfterPatch() {
+    if (!this.pendingDrop) {
+      return;
+    }
+
+    const pending = this.pendingDrop;
+    let persisted = false;
+
+    const currentGroup = this.overlay?.querySelector(`g[data-stop-id="${pending.stopId}"]`);
+
+    if (currentGroup) {
+      const cx = parseFloat(currentGroup.getAttribute("data-stop-center-x"));
+      const cy = parseFloat(currentGroup.getAttribute("data-stop-center-y"));
+
+      if (Number.isFinite(cx) && Number.isFinite(cy)) {
+        persisted = Math.abs(cx - pending.finalX) < 0.01 && Math.abs(cy - pending.finalY) < 0.01;
+      }
+
+      currentGroup.removeAttribute("transform");
+      currentGroup.classList.remove("dragging");
+    }
+
+    if (!persisted) {
+      this.restoreDraggedPathways(pending);
+    }
+
+    this.pendingDrop = null;
+    this.scaleOverlayElements();
+  },
+
+  handleOverlayPointerDown(e) {
+    if (this.dragCandidate || this.dragging || this.pendingDrop) {
+      this.debugDrag("pointer down ignored: drag already active", {
+        hasCandidate: Boolean(this.dragCandidate),
+        hasDragging: Boolean(this.dragging),
+        hasPendingDrop: Boolean(this.pendingDrop)
+      });
+      return;
+    }
+
+    if (!this.overlay || !this.isViewMode() || this.isMeasurementEnabled()) {
+      this.debugDrag("pointer down ignored: mode/overlay/measurement mismatch", {
+        hasOverlay: Boolean(this.overlay),
+        mode: this.overlay?.getAttribute("data-mode"),
+        measurementEnabled: this.isMeasurementEnabled()
+      });
+      return;
+    }
+
+    if ((e.type === "mousedown" || e.type === "pointerdown") && e.button !== 0) {
+      this.debugDrag("pointer down ignored: non-primary button", { button: e.button, type: e.type });
+      return;
+    }
+
+    const hitTarget = e.target.closest("[data-stop-hit-target], [data-stop-tooltip-hit]");
+    if (!hitTarget || !this.overlay.contains(hitTarget)) {
+      this.debugDrag("pointer down ignored: not on stop hit target", { type: e.type });
+      return;
+    }
+
+    const groupEl = hitTarget.closest("g[data-stop-id]");
+    if (!groupEl) {
+      this.debugDrag("pointer down ignored: stop group not found");
+      return;
+    }
+
+    const stopId = groupEl.getAttribute("data-stop-id");
+    const centerX = parseFloat(groupEl.getAttribute("data-stop-center-x"));
+    const centerY = parseFloat(groupEl.getAttribute("data-stop-center-y"));
+    const startPoint = this.clientPointToSvg(e.clientX, e.clientY);
+
+    if (!stopId || !Number.isFinite(centerX) || !Number.isFinite(centerY) || !startPoint) {
+      this.debugDrag("pointer down ignored: missing drag candidate data", {
+        stopId,
+        centerX,
+        centerY,
+        startPoint
+      });
+      return;
+    }
+
+    this.cancelDragHold();
+
+    const candidate = {
+      stopId,
+      groupEl,
+      centerX,
+      centerY,
+      startSvgX: startPoint.x,
+      startSvgY: startPoint.y,
+      movedTooFar: false,
+      holdTimer: null
+    };
+
+    this.debugDrag("drag hold started", {
+      stopId,
+      type: e.type,
+      startSvgX: candidate.startSvgX,
+      startSvgY: candidate.startSvgY
+    });
+
+    candidate.holdTimer = setTimeout(() => {
+      if (!this.dragCandidate || this.dragCandidate.stopId !== candidate.stopId) {
+        this.debugDrag("drag hold timer ignored: candidate changed", { stopId: candidate.stopId });
+        return;
+      }
+
+      if (this.dragCandidate.movedTooFar) {
+        this.debugDrag("drag hold canceled: moved before threshold", { stopId: candidate.stopId });
+        this.cancelDragHold();
+        return;
+      }
+
+      const pathwayElements = [];
+
+      this.overlay
+        .querySelectorAll("#pathways-svg g[data-from-stop-id][data-to-stop-id]")
+        .forEach((pathwayGroup) => {
+          const fromStopId = pathwayGroup.getAttribute("data-from-stop-id");
+          const toStopId = pathwayGroup.getAttribute("data-to-stop-id");
+          const movesStart = fromStopId === candidate.stopId;
+          const movesEnd = toStopId === candidate.stopId;
+
+          if (!movesStart && !movesEnd) {
+            return;
+          }
+
+          pathwayGroup.querySelectorAll("[x1][y1][x2][y2]").forEach((element) => {
+            const baseX1 = parseFloat(element.getAttribute("x1"));
+            const baseY1 = parseFloat(element.getAttribute("y1"));
+            const baseX2 = parseFloat(element.getAttribute("x2"));
+            const baseY2 = parseFloat(element.getAttribute("y2"));
+
+            if (
+              !Number.isFinite(baseX1) ||
+              !Number.isFinite(baseY1) ||
+              !Number.isFinite(baseX2) ||
+              !Number.isFinite(baseY2)
+            ) {
+              return;
+            }
+
+            pathwayElements.push({
+              element,
+              movesStart,
+              movesEnd,
+              baseX1,
+              baseY1,
+              baseX2,
+              baseY2
+            });
+          });
+        });
+
+      this.dragging = {
+        stopId: candidate.stopId,
+        groupEl: candidate.groupEl,
+        centerX: candidate.centerX,
+        centerY: candidate.centerY,
+        startSvgX: candidate.startSvgX,
+        startSvgY: candidate.startSvgY,
+        currentX: candidate.centerX,
+        currentY: candidate.centerY,
+        pathwayElements
+      };
+
+      this.hideTooltip();
+      this.dragging.groupEl.classList.add("dragging");
+      this._suppressNextClick = true;
+      this.debugDrag("drag started", {
+        stopId: candidate.stopId,
+        connectedPathSegments: pathwayElements.length
+      });
+      this.pushEvent("drag_start", { id: candidate.stopId });
+      this.cancelDragHold();
+    }, DRAG_HOLD_MS);
+
+    this.dragCandidate = candidate;
+  },
+
   handleWheel(e) {
     const svg = this.el;
 
@@ -204,6 +445,10 @@ const DiagramCanvasHook = {
   },
 
   handleMouseDown(e) {
+    if (this.dragging) {
+      return;
+    }
+
     if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
       this.isPanning = true;
       this.panStart = { x: e.clientX, y: e.clientY };
@@ -220,6 +465,62 @@ const DiagramCanvasHook = {
   },
 
   handleMouseMove(e) {
+    if (this.dragCandidate && !this.dragging) {
+      const point = this.clientPointToSvg(e.clientX, e.clientY);
+
+      if (point) {
+        const dx = point.x - this.dragCandidate.startSvgX;
+        const dy = point.y - this.dragCandidate.startSvgY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance > DRAG_THRESHOLD_UNITS) {
+          this.debugDrag("drag hold canceled: moved too far", {
+            stopId: this.dragCandidate.stopId,
+            distance,
+            threshold: DRAG_THRESHOLD_UNITS
+          });
+          this.dragCandidate.movedTooFar = true;
+          this.cancelDragHold();
+        }
+      }
+    }
+
+    if (this.dragging) {
+      const point = this.clientPointToSvg(e.clientX, e.clientY);
+
+      if (!point) {
+        return;
+      }
+
+      const dx = point.x - this.dragging.startSvgX;
+      const dy = point.y - this.dragging.startSvgY;
+      const offsetX = this.clampSvg(this.dragging.centerX + dx) - this.dragging.centerX;
+      const offsetY = this.clampSvg(this.dragging.centerY + dy) - this.dragging.centerY;
+
+      this.dragging.currentX = this.dragging.centerX + offsetX;
+      this.dragging.currentY = this.dragging.centerY + offsetY;
+
+      this.dragging.groupEl.setAttribute("transform", `translate(${offsetX}, ${offsetY})`);
+
+      this.dragging.pathwayElements.forEach((snapshot) => {
+        if (!snapshot.element?.isConnected) {
+          return;
+        }
+
+        const x1 = snapshot.baseX1 + (snapshot.movesStart ? offsetX : 0);
+        const y1 = snapshot.baseY1 + (snapshot.movesStart ? offsetY : 0);
+        const x2 = snapshot.baseX2 + (snapshot.movesEnd ? offsetX : 0);
+        const y2 = snapshot.baseY2 + (snapshot.movesEnd ? offsetY : 0);
+
+        snapshot.element.setAttribute("x1", `${x1}`);
+        snapshot.element.setAttribute("y1", `${y1}`);
+        snapshot.element.setAttribute("x2", `${x2}`);
+        snapshot.element.setAttribute("y2", `${y2}`);
+      });
+
+      return;
+    }
+
     if (this.isPanning) {
       const rect = this.el.getBoundingClientRect();
       const dx = (e.clientX - this.panStart.x) / rect.width * this.viewBox.w;
@@ -232,10 +533,97 @@ const DiagramCanvasHook = {
     }
   },
 
-  handleMouseUp() {
+  handleMouseUp(e) {
+    if (this.dragCandidate && !this.dragging) {
+      this.cancelDragHold();
+    }
+
+    if (this.dragging) {
+      const dragging = this.dragging;
+      const finalX = Math.round(dragging.currentX * 100) / 100;
+      const finalY = Math.round(dragging.currentY * 100) / 100;
+
+      dragging.groupEl.classList.remove("dragging");
+      this.pendingDrop = {
+        ...dragging,
+        finalX,
+        finalY
+      };
+
+      this.pushEvent("drag_end", {
+        id: dragging.stopId,
+        x: finalX,
+        y: finalY
+      });
+      this.debugDrag("drag ended", {
+        stopId: dragging.stopId,
+        x: finalX,
+        y: finalY
+      });
+
+      this.dragging = null;
+      this._suppressNextClick = true;
+      return;
+    }
+
     if (this.isPanning) {
       this.isPanning = false;
       this.el.style.cursor = "";
+    }
+  },
+
+  handleDocumentKeyDown(e) {
+    if (e.key !== "Escape" || !this.dragging) {
+      return;
+    }
+
+    const dragging = this.dragging;
+    dragging.groupEl.classList.remove("dragging");
+    dragging.groupEl.removeAttribute("transform");
+    this.restoreDraggedPathways(dragging);
+    this.dragging = null;
+    this.cancelDragHold();
+    this._suppressNextClick = true;
+    this.debugDrag("drag canceled by escape", { stopId: dragging.stopId });
+    this.pushEvent("drag_cancel", {});
+  },
+
+  handleCanvasClick(e) {
+    if (e.shiftKey) {
+      return;
+    }
+
+    if (this._suppressNextClick) {
+      this._suppressNextClick = false;
+      return;
+    }
+
+    if (this.dragging || this.dragCandidate) {
+      return;
+    }
+
+    const svgPt = this.clientPointToSvg(e.clientX, e.clientY);
+
+    if (!svgPt) {
+      return;
+    }
+
+    const x = Math.round(svgPt.x * 100) / 100;
+    const y = Math.round(svgPt.y * 100) / 100;
+    this.pushEvent("canvas_click", { x, y });
+  },
+
+  handleCapturedClick(e) {
+    if (!this._suppressNextClick) {
+      return;
+    }
+
+    this._suppressNextClick = false;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (typeof e.stopImmediatePropagation === "function") {
+      e.stopImmediatePropagation();
     }
   },
 
@@ -251,6 +639,8 @@ const DiagramCanvasHook = {
     this.removeOverlayPanZoom();
     this.overlay.addEventListener("wheel", this._handleWheel, { passive: false });
     this.overlay.addEventListener("mousedown", this._handleMouseDown);
+    this.overlay.addEventListener("mousedown", this._handleOverlayPointerDown);
+    this.overlay.addEventListener("click", this._handleCapturedClick, true);
     this.overlay.addEventListener("click", this._handleOverlayClick);
     this.overlay.addEventListener("gesturestart", this._handleGesture);
     this.overlay.addEventListener("gesturechange", this._handleGesture);
@@ -264,6 +654,8 @@ const DiagramCanvasHook = {
 
     this._overlayPanZoomBound.removeEventListener("wheel", this._handleWheel);
     this._overlayPanZoomBound.removeEventListener("mousedown", this._handleMouseDown);
+    this._overlayPanZoomBound.removeEventListener("mousedown", this._handleOverlayPointerDown);
+    this._overlayPanZoomBound.removeEventListener("click", this._handleCapturedClick, true);
     this._overlayPanZoomBound.removeEventListener("click", this._handleOverlayClick);
     this._overlayPanZoomBound.removeEventListener("gesturestart", this._handleGesture);
     this._overlayPanZoomBound.removeEventListener("gesturechange", this._handleGesture);
@@ -292,6 +684,13 @@ const DiagramCanvasHook = {
     this.tooltipListenersBound = false;
     this.tooltipListenerOverlay = null;
     this._overlayPanZoomBound = null;
+    this.dragCandidate = null;
+    this.dragging = null;
+    this.pendingDrop = null;
+    this._suppressNextClick = false;
+    this.dragDebug =
+      window.localStorage.getItem("diagramDragDebug") === "1" ||
+      new URLSearchParams(window.location.search).get("drag_debug") === "1";
 
     // Create bound references for proper add/remove
     this._handleWheel = this.handleWheel.bind(this);
@@ -300,10 +699,18 @@ const DiagramCanvasHook = {
     this._handleMouseUp = this.handleMouseUp.bind(this);
     this._handleGesture = this.handleGesture.bind(this);
     this._handleOverlayClick = this.handleOverlayClick.bind(this);
+    this._handleOverlayPointerDown = this.handleOverlayPointerDown.bind(this);
+    this._handleCanvasClick = this.handleCanvasClick.bind(this);
+    this._handleCapturedClick = this.handleCapturedClick.bind(this);
+    this._handleDocumentKeyDown = this.handleDocumentKeyDown.bind(this);
 
     this.refreshTooltipElements();
     this.setupTooltipListeners();
     this.setupOverlayPanZoom();
+    this.debugDrag("hook mounted", {
+      mode: this.overlay?.getAttribute("data-mode"),
+      measurementEnabled: this.overlay?.getAttribute("data-measurement-enabled")
+    });
 
     // Set up MutationObserver to detect when overlay viewBox gets reset
     this.setupOverlayObserver();
@@ -319,18 +726,10 @@ const DiagramCanvasHook = {
     // across SVG layers and even outside the diagram
     document.addEventListener("mousemove", this._handleMouseMove);
     document.addEventListener("mouseup", this._handleMouseUp);
+    document.addEventListener("keydown", this._handleDocumentKeyDown);
 
-    svg.addEventListener("click", (e) => {
-      if (e.shiftKey) return;
-
-      const pt = svg.createSVGPoint();
-      pt.x = e.clientX;
-      pt.y = e.clientY;
-      const svgPt = pt.matrixTransform(svg.getScreenCTM().inverse());
-      const x = Math.round(svgPt.x * 100) / 100;
-      const y = Math.round(svgPt.y * 100) / 100;
-      this.pushEvent("canvas_click", { x, y });
-    });
+    svg.addEventListener("click", this._handleCapturedClick, true);
+    svg.addEventListener("click", this._handleCanvasClick);
 
     svg.addEventListener("gesturestart", this._handleGesture);
     svg.addEventListener("gesturechange", this._handleGesture);
@@ -360,6 +759,10 @@ const DiagramCanvasHook = {
     this.removeTooltipListeners();
 
     this.handleTooltipMouseOver = (event) => {
+      if (this.dragCandidate || this.dragging) {
+        return;
+      }
+
       const target = this.resolvePointerTooltipTarget(event.target);
 
       if (!target) {
@@ -374,6 +777,10 @@ const DiagramCanvasHook = {
     };
 
     this.handleTooltipMouseMove = (event) => {
+      if (this.dragCandidate || this.dragging) {
+        return;
+      }
+
       if (!this.tooltipState.visible || this.tooltipState.activeTarget == null) {
         return;
       }
@@ -404,6 +811,10 @@ const DiagramCanvasHook = {
     };
 
     this.handleTooltipFocusIn = (event) => {
+      if (this.dragCandidate || this.dragging) {
+        return;
+      }
+
       const target = this.resolveTooltipTarget(event.target);
 
       if (!target) {
@@ -483,6 +894,10 @@ const DiagramCanvasHook = {
   },
 
   showTooltip(target, anchor) {
+    if (this.dragCandidate || this.dragging) {
+      return;
+    }
+
     if (!this.tooltipEl) {
       return;
     }
@@ -675,16 +1090,60 @@ const DiagramCanvasHook = {
     overlay.querySelectorAll("[data-stop-hit-target]").forEach((hitTarget) => {
       const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
       const cy = parseFloat(hitTarget.getAttribute("data-center-y"));
+      const locationType = hitTarget.getAttribute("data-location-type");
 
       if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
         return;
       }
 
-      const size = OVERLAY_BASE.hitTargetSize / scale;
-      hitTarget.setAttribute("x", `${cx - size / 2}`);
-      hitTarget.setAttribute("y", `${cy - size / 2}`);
-      hitTarget.setAttribute("width", `${size}`);
-      hitTarget.setAttribute("height", `${size}`);
+      // Compute the marker's visual center so the hit target is aligned with the dot.
+      let markerCenterY = cy;
+
+      if (locationType === "0" || locationType === "2") {
+        const markerH = OVERLAY_BASE.rectUprightH / iconScale;
+        markerCenterY = cy - markerH * OVERLAY_BASE.rectBottomAnchorRatio + markerH / 2;
+      } else if (locationType === "4") {
+        const markerSize = OVERLAY_BASE.rectSquareSize / iconScale;
+        markerCenterY = cy - markerSize * OVERLAY_BASE.rectBottomAnchorRatio + markerSize / 2;
+      }
+
+      // Compute the marker's bounding box so we can clamp the hit target inside it.
+      let markerTop, markerBottom, markerLeft, markerRight;
+
+      if (locationType === "0" || locationType === "2") {
+        const mw = OVERLAY_BASE.rectUprightW / iconScale;
+        const mh = OVERLAY_BASE.rectUprightH / iconScale;
+        markerLeft = cx - mw / 2;
+        markerRight = cx + mw / 2;
+        markerTop = cy - mh * OVERLAY_BASE.rectBottomAnchorRatio;
+        markerBottom = markerTop + mh;
+      } else if (locationType === "4") {
+        const ms = OVERLAY_BASE.rectSquareSize / iconScale;
+        markerLeft = cx - ms / 2;
+        markerRight = cx + ms / 2;
+        markerTop = cy - ms * OVERLAY_BASE.rectBottomAnchorRatio;
+        markerBottom = markerTop + ms;
+      } else {
+        const mr = OVERLAY_BASE.circleR / iconScale;
+        markerLeft = cx - mr;
+        markerRight = cx + mr;
+        markerTop = cy - mr;
+        markerBottom = cy + mr;
+      }
+
+      // Start from hitTargetSize centered on the marker, then clamp to marker bounds.
+      const rawSize = OVERLAY_BASE.hitTargetSize / scale;
+      const halfRaw = rawSize / 2;
+
+      const clampedLeft = Math.max(markerLeft, cx - halfRaw);
+      const clampedRight = Math.min(markerRight, cx + halfRaw);
+      const clampedTop = Math.max(markerTop, markerCenterY - halfRaw);
+      const clampedBottom = Math.min(markerBottom, markerCenterY + halfRaw);
+
+      hitTarget.setAttribute("x", `${clampedLeft}`);
+      hitTarget.setAttribute("y", `${clampedTop}`);
+      hitTarget.setAttribute("width", `${clampedRight - clampedLeft}`);
+      hitTarget.setAttribute("height", `${clampedBottom - clampedTop}`);
     });
 
     overlay.querySelectorAll("[data-stop-tooltip-hit]").forEach((hitTarget) => {
@@ -1288,6 +1747,7 @@ const DiagramCanvasHook = {
     }
 
     this.repositionTooltipIfVisible();
+    this.reconcilePendingDropAfterPatch();
   },
 
   syncImageDimensions(forceReset) {
@@ -1337,11 +1797,17 @@ const DiagramCanvasHook = {
     // Clean up pan/zoom listeners
     this.el.removeEventListener("wheel", this._handleWheel);
     this.el.removeEventListener("mousedown", this._handleMouseDown);
+    this.el.removeEventListener("click", this._handleCapturedClick, true);
+    this.el.removeEventListener("click", this._handleCanvasClick);
     this.el.removeEventListener("gesturestart", this._handleGesture);
     this.el.removeEventListener("gesturechange", this._handleGesture);
     document.removeEventListener("mousemove", this._handleMouseMove);
     document.removeEventListener("mouseup", this._handleMouseUp);
+    document.removeEventListener("keydown", this._handleDocumentKeyDown);
     this.removeOverlayPanZoom();
+    this.cancelDragHold();
+    this.dragging = null;
+    this.pendingDrop = null;
 
     this.removeTooltipListeners();
     this.hideTooltip();
