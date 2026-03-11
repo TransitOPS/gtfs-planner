@@ -30,6 +30,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.Shape
+  alias GtfsPlanner.Gtfs.StationNaming
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopArea
   alias GtfsPlanner.Gtfs.StopLevel
@@ -38,6 +39,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Validations.WalkabilityTest
 
   require Logger
 
@@ -2279,6 +2281,453 @@ defmodule GtfsPlanner.Gtfs do
       )
 
     Ecto.Multi.delete_all(multi, :pathways, pathway_query)
+  end
+
+  # ============================================================================
+  # Station Naming
+  # ============================================================================
+
+  @doc """
+  Builds a preview of the station naming convention without writing.
+
+  Returns
+  `{:ok, %{rows: [...], renamed_stops_count: n, updated_pathways_count: n, updated_references_count: n}}`
+  or `{:error, reason}`.
+  """
+  def preview_station_naming(organization_id, gtfs_version_id, station_stop_id) do
+    child_stops =
+      from(s in Stop,
+        where:
+          s.organization_id == ^organization_id and
+            s.gtfs_version_id == ^gtfs_version_id and
+            s.parent_station == ^station_stop_id and
+            s.location_type in [0, 2, 3, 4],
+        order_by: [asc: s.stop_id]
+      )
+      |> Repo.all()
+
+    case child_stops do
+      [] ->
+        {:error, :no_stops}
+
+      _ ->
+        child_stop_ids = Enum.map(child_stops, & &1.stop_id)
+
+        pathways =
+          from(p in Pathway,
+            where:
+              p.organization_id == ^organization_id and
+                p.gtfs_version_id == ^gtfs_version_id and
+                (p.from_stop_id in ^child_stop_ids or p.to_stop_id in ^child_stop_ids)
+          )
+          |> Repo.all()
+
+        naming_map = StationNaming.build_naming_map(child_stops, pathways, station_stop_id)
+
+        # Check for collisions with existing stop_ids outside the rename set
+        existing_ids =
+          from(s in Stop,
+            where:
+              s.organization_id == ^organization_id and
+                s.gtfs_version_id == ^gtfs_version_id,
+            select: s.stop_id
+          )
+          |> Repo.all()
+          |> MapSet.new()
+
+        case StationNaming.detect_collisions(naming_map, existing_ids) do
+          [] ->
+            old_id_set = MapSet.new(naming_map, & &1.old_id)
+            reference_counts = count_stop_id_references(organization_id, gtfs_version_id, old_id_set)
+
+            {:ok,
+             %{
+               rows: naming_map,
+               renamed_stops_count: length(naming_map),
+               updated_pathways_count: reference_counts.pathways,
+               updated_references_count: reference_counts.total
+             }}
+
+          collisions ->
+            {:error, {:naming_collision, collisions}}
+        end
+    end
+  end
+
+  @doc """
+  Applies the station naming convention transactionally.
+
+  Performs a two-phase rename to avoid transient ID collisions:
+  1) child stop IDs old -> temporary IDs
+  2) references old -> temporary
+  3) child stop IDs temporary -> final IDs
+  4) references temporary -> final IDs
+
+  Returns `{:ok, %{renamed_stops: n, updated_pathways: n, updated_references: n}}`
+  or `{:error, reason}`.
+  """
+  def apply_station_naming(organization_id, gtfs_version_id, station_stop_id) do
+    with {:ok, preview} <- preview_station_naming(organization_id, gtfs_version_id, station_stop_id) do
+      old_to_new = Map.new(preview.rows, fn %{old_id: old, new_id: new} -> {old, new} end)
+      old_to_temp = build_temp_stop_id_map(preview.rows)
+      temp_to_new = Map.new(old_to_temp, fn {old_id, temp_id} -> {temp_id, Map.fetch!(old_to_new, old_id)} end)
+      now = DateTime.utc_now()
+
+      multi =
+        Ecto.Multi.new()
+        |> Ecto.Multi.run(:rename_stops_to_temp, fn repo, _changes ->
+          {:ok,
+           update_stop_field_values(
+             repo,
+             :stop_id,
+             old_to_temp,
+             organization_id,
+             gtfs_version_id,
+             now
+           )}
+        end)
+        |> Ecto.Multi.run(:update_refs_to_temp, fn repo, _changes ->
+          {:ok, update_stop_id_references(repo, old_to_temp, organization_id, gtfs_version_id, now)}
+        end)
+        |> Ecto.Multi.run(:rename_stops_to_final, fn repo, _changes ->
+          {:ok,
+           update_stop_field_values(
+             repo,
+             :stop_id,
+             temp_to_new,
+             organization_id,
+             gtfs_version_id,
+             now
+           )}
+        end)
+        |> Ecto.Multi.run(:update_refs_to_final, fn repo, _changes ->
+          {:ok, update_stop_id_references(repo, temp_to_new, organization_id, gtfs_version_id, now)}
+        end)
+
+      case Repo.transaction(multi) do
+        {:ok, %{rename_stops_to_final: renamed, update_refs_to_final: refs}} ->
+          {:ok,
+           %{
+             renamed_stops: renamed,
+             updated_pathways: refs.pathways,
+             updated_references: refs.total
+           }}
+
+        {:error, _step, reason, _changes} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp build_temp_stop_id_map(rows) do
+    Map.new(rows, fn %{old_id: old_id} ->
+      {old_id, "__tmp_station_naming_#{Ecto.UUID.generate()}_#{Stop.slugify(old_id)}"}
+    end)
+  end
+
+  defp count_stop_id_references(organization_id, gtfs_version_id, stop_ids) do
+    stop_id_list = MapSet.to_list(stop_ids)
+
+    if stop_id_list == [] do
+      empty_stop_id_reference_counts()
+    else
+      pathways_from =
+        from(p in Pathway,
+          where:
+            p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id and
+              p.from_stop_id in ^stop_id_list
+        )
+        |> Repo.aggregate(:count)
+
+      pathways_to =
+        from(p in Pathway,
+          where:
+            p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id and
+              p.to_stop_id in ^stop_id_list
+        )
+        |> Repo.aggregate(:count)
+
+      stop_times =
+        from(st in StopTime,
+          where:
+            st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id and
+              st.stop_id in ^stop_id_list
+        )
+        |> Repo.aggregate(:count)
+
+      transfers_from =
+        from(t in Transfer,
+          where:
+            t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+              t.from_stop_id in ^stop_id_list
+        )
+        |> Repo.aggregate(:count)
+
+      transfers_to =
+        from(t in Transfer,
+          where:
+            t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+              t.to_stop_id in ^stop_id_list
+        )
+        |> Repo.aggregate(:count)
+
+      stop_areas =
+        from(sa in StopArea,
+          where:
+            sa.organization_id == ^organization_id and
+              sa.gtfs_version_id == ^gtfs_version_id and
+              sa.stop_id in ^stop_id_list
+        )
+        |> Repo.aggregate(:count)
+
+      fare_leg_join_rules_from =
+        from(fl in FareLegJoinRule,
+          where:
+            fl.organization_id == ^organization_id and
+              fl.gtfs_version_id == ^gtfs_version_id and
+              fl.from_stop_id in ^stop_id_list
+        )
+        |> Repo.aggregate(:count)
+
+      fare_leg_join_rules_to =
+        from(fl in FareLegJoinRule,
+          where:
+            fl.organization_id == ^organization_id and
+              fl.gtfs_version_id == ^gtfs_version_id and
+              fl.to_stop_id in ^stop_id_list
+        )
+        |> Repo.aggregate(:count)
+
+      parent_stations =
+        from(s in Stop,
+          where:
+            s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+              s.parent_station in ^stop_id_list
+        )
+        |> Repo.aggregate(:count)
+
+      translations =
+        from(t in Translation,
+          where:
+            t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+              t.table_name == "stops" and t.record_id in ^stop_id_list
+        )
+        |> Repo.aggregate(:count)
+
+      walkability_tests =
+        from(wt in WalkabilityTest,
+          where:
+            wt.organization_id == ^organization_id and
+              wt.gtfs_version_id == ^gtfs_version_id and
+              wt.stop_id in ^stop_id_list
+        )
+        |> Repo.aggregate(:count)
+
+      %{
+        pathways: pathways_from + pathways_to,
+        stop_times: stop_times,
+        transfers: transfers_from + transfers_to,
+        stop_areas: stop_areas,
+        fare_leg_join_rules: fare_leg_join_rules_from + fare_leg_join_rules_to,
+        parent_stations: parent_stations,
+        translations: translations,
+        walkability_tests: walkability_tests
+      }
+      |> with_total_stop_id_reference_counts()
+    end
+  end
+
+  defp update_stop_id_references(repo, mapping, organization_id, gtfs_version_id, now) do
+    pathways_from =
+      update_schema_field_values(
+        repo,
+        Pathway,
+        :from_stop_id,
+        mapping,
+        organization_id,
+        gtfs_version_id,
+        now
+      )
+
+    pathways_to =
+      update_schema_field_values(
+        repo,
+        Pathway,
+        :to_stop_id,
+        mapping,
+        organization_id,
+        gtfs_version_id,
+        now
+      )
+
+    stop_times =
+      update_schema_field_values(
+        repo,
+        StopTime,
+        :stop_id,
+        mapping,
+        organization_id,
+        gtfs_version_id,
+        now
+      )
+
+    transfers_from =
+      update_schema_field_values(
+        repo,
+        Transfer,
+        :from_stop_id,
+        mapping,
+        organization_id,
+        gtfs_version_id,
+        now
+      )
+
+    transfers_to =
+      update_schema_field_values(
+        repo,
+        Transfer,
+        :to_stop_id,
+        mapping,
+        organization_id,
+        gtfs_version_id,
+        now
+      )
+
+    stop_areas =
+      update_schema_field_values(
+        repo,
+        StopArea,
+        :stop_id,
+        mapping,
+        organization_id,
+        gtfs_version_id,
+        now
+      )
+
+    fare_leg_join_rules_from =
+      update_schema_field_values(
+        repo,
+        FareLegJoinRule,
+        :from_stop_id,
+        mapping,
+        organization_id,
+        gtfs_version_id,
+        now
+      )
+
+    fare_leg_join_rules_to =
+      update_schema_field_values(
+        repo,
+        FareLegJoinRule,
+        :to_stop_id,
+        mapping,
+        organization_id,
+        gtfs_version_id,
+        now
+      )
+
+    parent_stations =
+      update_stop_field_values(
+        repo,
+        :parent_station,
+        mapping,
+        organization_id,
+        gtfs_version_id,
+        now
+      )
+
+    translations =
+      mapping
+      |> Enum.reduce(0, fn {old_id, new_id}, count ->
+        {updated_count, _} =
+          from(t in Translation,
+            where:
+              t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+                t.table_name == "stops" and t.record_id == ^old_id
+          )
+          |> repo.update_all(set: [record_id: new_id, updated_at: now])
+
+        count + updated_count
+      end)
+
+    walkability_tests =
+      update_schema_field_values(
+        repo,
+        WalkabilityTest,
+        :stop_id,
+        mapping,
+        organization_id,
+        gtfs_version_id,
+        now
+      )
+
+    %{
+      pathways: pathways_from + pathways_to,
+      stop_times: stop_times,
+      transfers: transfers_from + transfers_to,
+      stop_areas: stop_areas,
+      fare_leg_join_rules: fare_leg_join_rules_from + fare_leg_join_rules_to,
+      parent_stations: parent_stations,
+      translations: translations,
+      walkability_tests: walkability_tests
+    }
+    |> with_total_stop_id_reference_counts()
+  end
+
+  defp update_stop_field_values(repo, field, mapping, organization_id, gtfs_version_id, now) do
+    mapping
+    |> Enum.reduce(0, fn {old_id, new_id}, count ->
+      {updated_count, _} =
+        from(s in Stop,
+          where:
+            s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+              field(s, ^field) == ^old_id
+        )
+        |> repo.update_all(set: [{field, new_id}, {:updated_at, now}])
+
+      count + updated_count
+    end)
+  end
+
+  defp update_schema_field_values(
+         repo,
+         schema,
+         field,
+         mapping,
+         organization_id,
+         gtfs_version_id,
+         now
+       ) do
+    mapping
+    |> Enum.reduce(0, fn {old_id, new_id}, count ->
+      {updated_count, _} =
+        from(row in schema,
+          where:
+            row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+              field(row, ^field) == ^old_id
+        )
+        |> repo.update_all(set: [{field, new_id}, {:updated_at, now}])
+
+      count + updated_count
+    end)
+  end
+
+  defp with_total_stop_id_reference_counts(counts) do
+    Map.put(counts, :total, Enum.sum(Map.values(counts)))
+  end
+
+  defp empty_stop_id_reference_counts do
+    %{
+      pathways: 0,
+      stop_times: 0,
+      transfers: 0,
+      stop_areas: 0,
+      fare_leg_join_rules: 0,
+      parent_stations: 0,
+      translations: 0,
+      walkability_tests: 0,
+      total: 0
+    }
   end
 
   defp broadcast({:ok, result}, event_topic) do

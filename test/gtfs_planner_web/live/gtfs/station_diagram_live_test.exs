@@ -6171,4 +6171,176 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
     render_upload(upload, filename)
   end
+
+  # ============================================================================
+  # Naming drawer tests
+  # ============================================================================
+
+  describe "StationDiagramLive - naming drawer" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NAMING_STATION",
+          stop_name: "Naming Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "ground",
+          level_name: "Ground",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "Apply naming button is present in toolbar", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, _view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      assert html =~ "Apply naming"
+    end
+
+    test "clicking Apply naming opens drawer with preview rows", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_N1",
+          stop_name: "Child N1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      html = render_click(view, "open_naming_drawer")
+
+      assert html =~ "naming-drawer"
+      assert html =~ "CHILD_N1"
+      assert html =~ "naming_station_platform_general_ground_01"
+      assert html =~ "Apply naming convention"
+    end
+
+    test "Apply naming convention renames stops and shows status", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "RENAME_ME",
+          stop_name: "Rename Me",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 20.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("[phx-click='open_naming_drawer']") |> render_click()
+      html = view |> element("button", "Apply naming convention") |> render_click()
+
+      assert html =~ "Renamed 1 child stop"
+      assert html =~ "updated 0 pathway references"
+    end
+
+    test "drawer shows no-stops message when station has no children", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      html = render_click(view, "open_naming_drawer")
+
+      assert html =~ "No child stops to rename"
+    end
+
+    test "dismiss clears status message", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DISMISS_ME",
+          stop_name: "Dismiss Me",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("[phx-click='open_naming_drawer']") |> render_click()
+      view |> element("button", "Apply naming convention") |> render_click()
+
+      html = view |> element("button", "Dismiss") |> render_click()
+      refute html =~ "Renamed"
+    end
+  end
 end

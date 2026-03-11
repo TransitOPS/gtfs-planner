@@ -79,6 +79,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:walkability_tests_list, [])
      |> assign(:walkability_mode, :create)
      |> assign(:editing_walkability_test, nil)
+     |> assign(:show_naming_drawer, false)
+     |> assign(:naming_preview, [])
+     |> assign(:naming_renamed_stops_count, 0)
+     |> assign(:naming_updated_pathways_count, 0)
+     |> assign(:naming_applying?, false)
+     |> assign(:naming_error, nil)
+     |> assign(:naming_status, nil)
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg .svg),
        max_file_size: 10_000_000,
@@ -375,6 +382,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           walkability_mode={@walkability_mode}
           editing_walkability_test={@editing_walkability_test}
         />
+
+        <.naming_drawer
+          open={@show_naming_drawer}
+          preview_rows={@naming_preview}
+          renamed_stops_count={@naming_renamed_stops_count}
+          updated_pathways_count={@naming_updated_pathways_count}
+          applying?={@naming_applying?}
+          error={@naming_error}
+        />
+
+        <div :if={@naming_status} role="status" aria-live="polite" class="mx-4 sm:mx-6 lg:mx-8 mt-2">
+          <div class="alert alert-success text-sm">
+            <span>{@naming_status}</span>
+            <button type="button" class="btn btn-ghost btn-xs" phx-click="dismiss_naming_status">
+              Dismiss
+            </button>
+          </div>
+        </div>
 
         <.lists_section
           active_level={@active_level}
@@ -1328,6 +1353,96 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:walkability_field_errors, %{})
      |> assign(:walkability_mode, :create)
      |> assign(:editing_walkability_test, nil)}
+  end
+
+  # --------------------------------------------------------------------------
+  # Naming drawer events
+  # --------------------------------------------------------------------------
+
+  @impl true
+  def handle_event("open_naming_drawer", _params, socket) do
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    station_stop_id = socket.assigns.station.stop_id
+
+    case Gtfs.preview_station_naming(org_id, version_id, station_stop_id) do
+      {:ok, preview} ->
+        {:noreply,
+         socket
+         |> assign(:show_naming_drawer, true)
+         |> assign(:naming_preview, preview.rows)
+         |> assign(:naming_renamed_stops_count, preview.renamed_stops_count)
+         |> assign(:naming_updated_pathways_count, preview.updated_pathways_count)
+         |> assign(:naming_error, nil)}
+
+      {:error, :no_stops} ->
+        {:noreply,
+         socket
+         |> assign(:show_naming_drawer, true)
+         |> assign(:naming_preview, [])
+         |> assign(:naming_renamed_stops_count, 0)
+         |> assign(:naming_updated_pathways_count, 0)
+         |> assign(:naming_error, nil)}
+
+      {:error, {:naming_collision, collisions}} ->
+        {:noreply,
+         socket
+         |> assign(:show_naming_drawer, true)
+         |> assign(:naming_preview, [])
+         |> assign(:naming_error, "Naming collision detected: #{Enum.join(collisions, ", ")}")}
+    end
+  end
+
+  @impl true
+  def handle_event("close_naming_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_naming_drawer, false)
+     |> assign(:naming_preview, [])
+     |> assign(:naming_renamed_stops_count, 0)
+     |> assign(:naming_updated_pathways_count, 0)
+     |> assign(:naming_applying?, false)
+     |> assign(:naming_error, nil)}
+  end
+
+  @impl true
+  def handle_event("apply_naming_convention", _params, %{assigns: %{naming_applying?: true}} = socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event("apply_naming_convention", _params, socket) do
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    station_stop_id = socket.assigns.station.stop_id
+
+    socket = assign(socket, :naming_applying?, true)
+
+    case Gtfs.apply_station_naming(org_id, version_id, station_stop_id) do
+      {:ok, %{renamed_stops: stops, updated_pathways: pathways}} ->
+        status =
+          "Renamed #{stops} #{ngettext("child stop", "child stops", stops)}, " <>
+            "updated #{pathways} #{ngettext("pathway reference", "pathway references", pathways)}."
+
+        {:noreply,
+         socket
+         |> assign(:show_naming_drawer, false)
+         |> assign(:naming_preview, [])
+         |> assign(:naming_applying?, false)
+         |> assign(:naming_error, nil)
+         |> assign(:naming_status, status)
+         |> refresh_lists()}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:naming_applying?, false)
+         |> assign(:naming_error, "Failed to apply naming: #{inspect(reason)}")}
+    end
+  end
+
+  @impl true
+  def handle_event("dismiss_naming_status", _params, socket) do
+    {:noreply, assign(socket, :naming_status, nil)}
   end
 
   @impl true
