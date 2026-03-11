@@ -800,14 +800,18 @@ defmodule GtfsPlanner.Validations do
   end
 
   @doc """
-  Lists walkability tests for a given organization and stop ids.
+  Lists walkability tests for a given organization, GTFS version, and stop ids.
   Results are ordered by inserted_at descending.
   """
-  def list_walkability_tests_for_stop_ids(_organization_id, []), do: []
+  def list_walkability_tests_for_stop_ids(_organization_id, _gtfs_version_id, []), do: []
 
-  def list_walkability_tests_for_stop_ids(organization_id, stop_ids) do
+  def list_walkability_tests_for_stop_ids(organization_id, gtfs_version_id, stop_ids) do
     WalkabilityTest
-    |> where([wt], wt.organization_id == ^organization_id and wt.stop_id in ^stop_ids)
+    |> where(
+      [wt],
+      wt.organization_id == ^organization_id and wt.gtfs_version_id == ^gtfs_version_id and
+        wt.stop_id in ^stop_ids
+    )
     |> order_by([wt], desc: wt.inserted_at)
     |> Repo.all()
   end

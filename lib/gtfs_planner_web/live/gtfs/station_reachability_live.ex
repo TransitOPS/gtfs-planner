@@ -1171,7 +1171,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
           |> MapSet.new()
 
         station_walkability_tests =
-          Validations.list_walkability_tests_for_stop_ids(organization_id, station_stop_ids)
+          Validations.list_walkability_tests_for_stop_ids(
+            organization_id,
+            gtfs_version_id,
+            station_stop_ids
+          )
 
         station_stop_labels =
           station_child_stops
