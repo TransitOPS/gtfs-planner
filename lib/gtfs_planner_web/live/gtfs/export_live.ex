@@ -70,6 +70,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_error, nil)
      |> assign(:pathways_failure, nil)
      |> assign(:pathways_prep_error, nil)
+     |> assign(:export_warnings, [])
      |> assign(:recent_validation_display_counts_by_run_id, %{})
      |> assign(:recent_validation_runs, [])}
   end
@@ -246,7 +247,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
        socket
        |> assign(:export_task, task)
        |> assign(:exporting, true)
-       |> assign(:export_error, nil)}
+       |> assign(:export_error, nil)
+       |> assign(:export_warnings, [])}
     end
   end
 
@@ -433,15 +435,25 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
         socket =
           case result do
-            {:ok, zip_binary} ->
-              version_name = socket.assigns.current_gtfs_version.name
-              filename = "gtfs_#{version_name}_#{Date.utc_today()}.zip"
+            {:ok, zip_binary, []} ->
+              socket
+              |> push_gtfs_download(zip_binary)
+              |> put_flash(:info, "Export completed successfully")
+
+            {:ok, zip_binary, warnings} when warnings != [] ->
+              count = length(warnings)
 
               socket
-              |> push_event("download-file", %{
-                data: Base.encode64(zip_binary),
-                filename: filename
-              })
+              |> push_gtfs_download(zip_binary)
+              |> assign(:export_warnings, warnings)
+              |> put_flash(
+                :info,
+                "Export completed — #{count} data quality warning#{if count == 1, do: "", else: "s"} found"
+              )
+
+            {:ok, zip_binary} ->
+              socket
+              |> push_gtfs_download(zip_binary)
               |> put_flash(:info, "Export completed successfully")
 
             {:error, {:pathways_export_prep_failed, issues}} ->
@@ -597,6 +609,47 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
+  attr :export_warnings, :list, required: true
+
+  defp export_warning_panel(assigns) do
+    ~H"""
+    <div id="export-warning-panel" role="alert" class="alert alert-warning mt-6">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        class="stroke-current shrink-0 h-6 w-6"
+        fill="none"
+        viewBox="0 0 24 24"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+        />
+      </svg>
+      <div>
+        <h3 class="font-bold">
+          {length(@export_warnings)} data quality warning{if length(@export_warnings) == 1,
+            do: "",
+            else: "s"}
+        </h3>
+        <ul class="mt-2 space-y-1 text-sm">
+          <li :for={issue <- @export_warnings} class="border-l-2 border-warning/60 pl-3">
+            <p>{issue.message}</p>
+            <% details_line = format_export_warning_details(issue) %>
+            <p
+              :if={details_line}
+              class="mt-0.5 font-mono text-xs opacity-80"
+            >
+              {details_line}
+            </p>
+          </li>
+        </ul>
+      </div>
+    </div>
+    """
+  end
+
   @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
@@ -710,6 +763,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               Export GTFS
             </button>
           <% end %>
+
+          <.export_warning_panel :if={@export_warnings != []} export_warnings={@export_warnings} />
         </div>
 
         <%!-- Validate Column --%>
@@ -2479,7 +2534,48 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp export_gtfs_zip(organization_id, gtfs_version_id, export_type) do
-    export_module().export_to_zip(organization_id, gtfs_version_id, export_type)
+    case export_module().export_to_zip(organization_id, gtfs_version_id, export_type) do
+      {:ok, zip_binary} ->
+        warnings =
+          case preflight_module().run(organization_id, gtfs_version_id) do
+            :ok -> []
+            {:error, issues} -> issues
+          end
+
+        {:ok, zip_binary, warnings}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp push_gtfs_download(socket, zip_binary) do
+    version_name = socket.assigns.current_gtfs_version.name
+    filename = "gtfs_#{version_name}_#{Date.utc_today()}.zip"
+
+    push_event(socket, "download-file", %{
+      data: Base.encode64(zip_binary),
+      filename: filename
+    })
+  end
+
+  defp format_export_warning_details(issue) do
+    details = issue[:details]
+
+    if is_map(details) and details[:source_file] do
+      source_field =
+        if details[:source_field], do: ".#{details[:source_field]}", else: ""
+
+      target_file =
+        if details[:target_file], do: " -> #{details[:target_file]}", else: ""
+
+      invalid_count =
+        if details[:invalid_count], do: " (#{details[:invalid_count]} invalid)", else: ""
+
+      "#{details[:source_file]}#{source_field}#{target_file}#{invalid_count}"
+    else
+      nil
+    end
   end
 
   defp pathways_export_error_message(issues) when is_list(issues) do
@@ -2500,6 +2596,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp export_module do
     Application.get_env(:gtfs_planner, :gtfs_export_module, GtfsPlanner.Gtfs.Export)
+  end
+
+  defp preflight_module do
+    Application.get_env(:gtfs_planner, :otp_preflight_module, GtfsPlanner.Otp.Preflight)
   end
 
   defp materializer_module do
