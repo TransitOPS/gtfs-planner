@@ -2105,9 +2105,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp parse_optional_decimal(""), do: nil
 
   defp parse_optional_decimal(str) when is_binary(str) do
-    case Float.parse(str) do
-      {val, _} -> Decimal.from_float(val)
-      :error -> nil
+    case Decimal.parse(String.trim(str)) do
+      {decimal, ""} -> decimal
+      _ -> nil
     end
   end
 
