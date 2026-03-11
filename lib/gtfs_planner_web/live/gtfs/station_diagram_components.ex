@@ -403,6 +403,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <svg
       id="diagram-overlay"
       data-mode={@mode}
+      data-measurement-enabled={if @measurement_enabled, do: "true", else: "false"}
       class="absolute inset-0 w-full h-full pointer-events-none"
       viewBox="0 0 100 100"
       preserveAspectRatio="xMidYMid meet"
@@ -439,6 +440,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         streams={@streams}
         active_point_id={@active_point_id}
         mode={@mode}
+        measurement_enabled={@measurement_enabled}
         cross_level_badges_by_stop={@cross_level_badges_by_stop}
       />
       <.ruler_line
@@ -521,6 +523,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       id={@id}
       opacity={@opacity}
       class="group cursor-pointer pointer-events-auto"
+      data-from-stop-id={@pathway.from_stop.id}
+      data-to-stop-id={@pathway.to_stop.id}
       data-editable={if @editable?, do: "pathway"}
       data-tooltip={if @editable?, do: "Click to edit pathway"}
       data-tooltip-color={if @editable?, do: "#FF00FF"}
@@ -1170,6 +1174,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :streams, :any, required: true
   attr :active_point_id, :any
   attr :mode, :atom, required: true
+  attr :measurement_enabled, :boolean, default: false
   attr :cross_level_badges_by_stop, :map, default: %{}
 
   defp stops_layer(assigns) do
@@ -1199,8 +1204,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <g
             id={dom_id}
             class="group pointer-events-auto"
+            data-stop-id={stop.id}
+            data-stop-center-x={cx}
+            data-stop-center-y={cy}
             data-editable="stop"
-            data-tooltip={stop_tooltip_text(@mode)}
+            data-tooltip={stop_tooltip_text(@mode, @measurement_enabled)}
             data-tooltip-color={active_fill}
             tabindex="0"
             aria-label={stop_aria_label}
@@ -1214,6 +1222,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               stroke="transparent"
               stroke-width="0"
               data-stop-hit-target="true"
+              data-location-type={stop.location_type}
               data-center-x={cx}
               data-center-y={cy}
               class="cursor-pointer"
@@ -1502,9 +1511,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp stop_label_y_offset(4), do: 0.72
   defp stop_label_y_offset(_location_type), do: 0.9
 
-  defp stop_tooltip_text(:view), do: "Click to edit stop"
-  defp stop_tooltip_text(:connect), do: "Select stop to create pathway"
-  defp stop_tooltip_text(_mode), do: "Click to edit stop"
+  defp stop_tooltip_text(:view, false), do: "Click to edit, hold to move"
+  defp stop_tooltip_text(:view, true), do: "Editing disabled while measuring"
+  defp stop_tooltip_text(:connect, _measurement_enabled), do: "Select stop to create pathway"
+  defp stop_tooltip_text(_mode, _measurement_enabled), do: "Click to edit stop"
 
   defp pathway_aria_label(pathway) do
     mode_label = Pathway.mode_label(pathway.pathway_mode)
