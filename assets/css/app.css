@@ -179,6 +179,11 @@ body:has(#diagram-page[data-immersive="true"]) {
   outline: none;
 }
 
+#diagram-overlay g.dragging {
+  opacity: 0.7;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.3));
+}
+
 #diagram-edit-tooltip {
   position: absolute;
   left: 0;

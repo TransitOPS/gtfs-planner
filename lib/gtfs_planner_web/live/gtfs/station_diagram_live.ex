@@ -5,6 +5,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   create pathways by connecting stops, and switch between levels.
   """
   use GtfsPlannerWeb, :live_view
+  require Logger
 
   import GtfsPlannerWeb.Gtfs.StationDiagramComponents
   alias GtfsPlanner.Geocoding
@@ -37,6 +38,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:ruler_form, to_form(%{"distance_meters" => ""}, as: :ruler))
      |> assign(:pending_xy, nil)
      |> assign(:selected_stop_id, nil)
+     |> assign(:dragging_stop_id, nil)
      |> assign(:active_point_id, nil)
      |> assign(:selected_from_stop, nil)
      |> assign(:cross_level_badges_by_stop, %{})
@@ -485,6 +487,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         socket =
           socket
           |> assign(:mode, mode_atom)
+          |> assign(:dragging_stop_id, nil)
           |> reset_reposition_state()
           |> assign(:pending_xy, nil)
           |> assign(:active_point_id, nil)
@@ -667,6 +670,132 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       _ ->
         {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("drag_start", %{"id" => id}, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+    stop = Gtfs.get_stop(id)
+
+    cond do
+      socket.assigns.mode != :view ->
+        Logger.debug("drag_start ignored: mode is not view",
+          mode: socket.assigns.mode,
+          stop_id: id
+        )
+
+        {:noreply, socket}
+
+      is_nil(stop) ->
+        Logger.debug("drag_start ignored: stop not found", stop_id: id)
+        {:noreply, socket}
+
+      stop.organization_id != organization_id or stop.gtfs_version_id != gtfs_version_id ->
+        Logger.debug("drag_start ignored: organization/version mismatch",
+          stop_id: id,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        )
+
+        {:noreply, socket}
+
+      not stop_belongs_to_station?(
+        stop,
+        station.stop_id,
+        socket.assigns.platform_stop_ids
+      ) ->
+        Logger.debug("drag_start ignored: stop does not belong to station",
+          stop_id: id,
+          station_stop_id: station.stop_id
+        )
+
+        {:noreply, socket}
+
+      is_nil(stop.diagram_coordinate) ->
+        Logger.debug("drag_start ignored: stop has no diagram coordinates", stop_id: id)
+        {:noreply, socket}
+
+      true ->
+        Logger.debug("drag_start accepted", stop_id: id)
+        {:noreply, assign(socket, :dragging_stop_id, stop.id)}
+    end
+  end
+
+  @impl true
+  def handle_event("drag_start", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("drag_end", %{"id" => id, "x" => x, "y" => y}, socket) do
+    Logger.debug("drag_end received",
+      stop_id: id,
+      x: x,
+      y: y,
+      dragging_stop_id: socket.assigns.dragging_stop_id
+    )
+
+    with dragging_stop_id when not is_nil(dragging_stop_id) <- socket.assigns.dragging_stop_id,
+         true <- dragging_stop_id == id,
+         {:ok, parsed_x} <- parse_svg_coordinate(x),
+         {:ok, parsed_y} <- parse_svg_coordinate(y),
+         %Stop{} = stop <- Gtfs.get_stop(id),
+         true <- stop.organization_id == socket.assigns.current_organization.id,
+         true <- stop.gtfs_version_id == socket.assigns.current_gtfs_version.id,
+         true <-
+           stop_belongs_to_station?(
+             stop,
+             socket.assigns.station.stop_id,
+             socket.assigns.platform_stop_ids
+           ) do
+      attrs = %{diagram_coordinate: %{"x" => parsed_x, "y" => parsed_y}}
+
+      case Gtfs.update_stop(stop, attrs) do
+        {:ok, updated_stop} ->
+          Logger.debug("drag_end persisted", stop_id: id, x: parsed_x, y: parsed_y)
+
+          {:noreply,
+           socket
+           |> stream_insert(:child_stops, updated_stop)
+           |> assign(:dragging_stop_id, nil)
+           |> load_pathways_for_level(socket.assigns.active_level)}
+
+        {:error, _changeset} ->
+          Logger.debug("drag_end failed to persist", stop_id: id)
+
+          {:noreply,
+           socket
+           |> assign(:dragging_stop_id, nil)
+           |> put_flash(:error, "Failed to re-position stop")}
+      end
+    else
+      _ ->
+        Logger.debug("drag_end rejected",
+          stop_id: id,
+          x: x,
+          y: y,
+          dragging_stop_id: socket.assigns.dragging_stop_id
+        )
+
+        {:noreply,
+         socket
+         |> assign(:dragging_stop_id, nil)
+         |> put_flash(:error, "Invalid drag position")}
+    end
+  end
+
+  @impl true
+  def handle_event("drag_end", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:dragging_stop_id, nil)
+     |> put_flash(:error, "Invalid drag position")}
+  end
+
+  @impl true
+  def handle_event("drag_cancel", _params, socket) do
+    Logger.debug("drag_cancel received", dragging_stop_id: socket.assigns.dragging_stop_id)
+    {:noreply, assign(socket, :dragging_stop_id, nil)}
   end
 
   @impl true
@@ -2271,6 +2400,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp parse_mode("connect"), do: {:ok, :connect}
   defp parse_mode(_), do: :error
 
+  defp parse_svg_coordinate(value) do
+    parsed = to_float(value)
+
+    if parsed >= 0.0 and parsed <= 100.0 do
+      {:ok, Float.round(parsed, 2)}
+    else
+      :error
+    end
+  end
+
   defp maybe_disable_measurement_for_mode(socket, :view), do: socket
   defp maybe_disable_measurement_for_mode(socket, _mode), do: disable_measurement(socket)
 
@@ -2611,6 +2750,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp refresh_lists(socket), do: load_level_data(socket, socket.assigns.active_level)
+
+  defp load_pathways_for_level(socket, nil) do
+    socket
+    |> stream(:pathways, [], reset: true)
+    |> assign(:pathways_list, [])
+    |> assign(:cross_level_badges_by_stop, %{})
+    |> assign(:pathway_pair_counts, %{})
+  end
+
+  defp load_pathways_for_level(socket, level) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    all_child_stops = Gtfs.list_child_stops_for_level(station.id, level.id)
+
+    level_pathways =
+      Gtfs.list_pathways_for_level(organization_id, gtfs_version_id, level.id, station.id)
+
+    active_level_stop_ids = active_level_stop_ids(all_child_stops, level)
+    cross_level_badges = cross_level_badges_by_stop(level_pathways, active_level_stop_ids)
+    {same_level_pathways, pathway_pair_counts} = decorate_same_level_pathways(level_pathways)
+
+    socket
+    |> stream(:pathways, same_level_pathways, reset: true)
+    |> assign(:pathways_list, level_pathways)
+    |> assign(:cross_level_badges_by_stop, cross_level_badges)
+    |> assign(:pathway_pair_counts, pathway_pair_counts)
+  end
 
   defp platform_stop_ids_for_station(organization_id, gtfs_version_id, station) do
     Gtfs.list_child_stops_for_parent(organization_id, gtfs_version_id, station.id)

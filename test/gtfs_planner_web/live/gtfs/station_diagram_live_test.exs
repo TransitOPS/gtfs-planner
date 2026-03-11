@@ -3118,7 +3118,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#child_stops-#{from_stop.id}[data-editable='stop'][data-tooltip='Click to edit stop'][tabindex='0'][aria-label]"
+               "#child_stops-#{from_stop.id}[data-editable='stop'][data-tooltip='Click to edit, hold to move'][tabindex='0'][aria-label]"
              )
 
       assert has_element?(
@@ -6376,6 +6376,204 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       html = view |> element("button", "Dismiss") |> render_click()
       refute html =~ "Renamed"
+    end
+  end
+
+  describe "StationDiagramLive - drag events" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_STATION",
+          stop_name: "Drag Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "DRAG_L1",
+          level_name: "Drag Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _updated_stop_level} = Gtfs.update_stop_level_diagram(stop_level, "drag-level.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "drag_end persists new coordinates", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_CHILD_1",
+          stop_name: "Drag Child 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 25.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => child_stop.id})
+      render_hook(view, "drag_end", %{"id" => child_stop.id, "x" => "44.2", "y" => "55.8"})
+
+      updated_stop = Gtfs.get_stop!(child_stop.id)
+      assert updated_stop.diagram_coordinate == %{"x" => 44.2, "y" => 55.8}
+    end
+
+    test "drag_end reloads pathways", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      from_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_FROM",
+          stop_name: "Drag From",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 20.0}
+        })
+
+      to_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_TO",
+          stop_name: "Drag To",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 80.0, "y" => 20.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, from_stop.stop_id, to_stop.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#pathways-#{pathway.id} [data-pathway-hit][x1='20.0']")
+
+      render_hook(view, "drag_start", %{"id" => from_stop.id})
+      render_hook(view, "drag_end", %{"id" => from_stop.id, "x" => "30.0", "y" => "20.0"})
+
+      refute has_element?(view, "#pathways-#{pathway.id} [data-pathway-hit][x1='20.0']")
+      assert has_element?(view, "#pathways-#{pathway.id} [data-pathway-hit][x1='30.0']")
+
+      assert has_element?(
+               view,
+               "#pathways-#{pathway.id}[data-from-stop-id='#{from_stop.id}'][data-to-stop-id='#{to_stop.id}']"
+             ) or
+               has_element?(
+                 view,
+                 "#pathways-#{pathway.id}[data-from-stop-id='#{to_stop.id}'][data-to-stop-id='#{from_stop.id}']"
+               )
+    end
+
+    test "drag_end rejects out-of-range coordinates", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_CHILD_OOR",
+          stop_name: "Drag Child OOR",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => child_stop.id})
+      render_hook(view, "drag_end", %{"id" => child_stop.id, "x" => "150", "y" => "55"})
+
+      unchanged = Gtfs.get_stop!(child_stop.id)
+      assert unchanged.diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
+      assert has_element?(view, "#flash-error", "Invalid drag position")
+    end
+
+    test "drag_cancel resets state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_CHILD_CANCEL",
+          stop_name: "Drag Child Cancel",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 60.0, "y" => 60.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => child_stop.id})
+      render_hook(view, "drag_cancel", %{})
+      render_hook(view, "drag_end", %{"id" => child_stop.id, "x" => "65", "y" => "65"})
+
+      unchanged = Gtfs.get_stop!(child_stop.id)
+      assert unchanged.diagram_coordinate == %{"x" => 60.0, "y" => 60.0}
+      assert has_element?(view, "#flash-error", "Invalid drag position")
     end
   end
 end
