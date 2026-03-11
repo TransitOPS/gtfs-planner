@@ -436,26 +436,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         socket =
           case result do
             {:ok, zip_binary, []} ->
-              version_name = socket.assigns.current_gtfs_version.name
-              filename = "gtfs_#{version_name}_#{Date.utc_today()}.zip"
-
               socket
-              |> push_event("download-file", %{
-                data: Base.encode64(zip_binary),
-                filename: filename
-              })
+              |> push_gtfs_download(zip_binary)
               |> put_flash(:info, "Export completed successfully")
 
             {:ok, zip_binary, warnings} when warnings != [] ->
-              version_name = socket.assigns.current_gtfs_version.name
-              filename = "gtfs_#{version_name}_#{Date.utc_today()}.zip"
               count = length(warnings)
 
               socket
-              |> push_event("download-file", %{
-                data: Base.encode64(zip_binary),
-                filename: filename
-              })
+              |> push_gtfs_download(zip_binary)
               |> assign(:export_warnings, warnings)
               |> put_flash(
                 :info,
@@ -463,14 +452,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               )
 
             {:ok, zip_binary} ->
-              version_name = socket.assigns.current_gtfs_version.name
-              filename = "gtfs_#{version_name}_#{Date.utc_today()}.zip"
-
               socket
-              |> push_event("download-file", %{
-                data: Base.encode64(zip_binary),
-                filename: filename
-              })
+              |> push_gtfs_download(zip_binary)
               |> put_flash(:info, "Export completed successfully")
 
             {:error, {:pathways_export_prep_failed, issues}} ->
@@ -645,15 +628,20 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         />
       </svg>
       <div>
-        <h3 class="font-bold">{length(@export_warnings)} data quality warning{if length(@export_warnings) == 1, do: "", else: "s"}</h3>
+        <h3 class="font-bold">
+          {length(@export_warnings)} data quality warning{if length(@export_warnings) == 1,
+            do: "",
+            else: "s"}
+        </h3>
         <ul class="mt-2 space-y-1 text-sm">
           <li :for={issue <- @export_warnings} class="border-l-2 border-warning/60 pl-3">
             <p>{issue.message}</p>
+            <% details_line = format_export_warning_details(issue) %>
             <p
-              :if={issue[:details] && issue.details[:source_file]}
+              :if={details_line}
               class="mt-0.5 font-mono text-xs opacity-80"
             >
-              {issue.details.source_file}{if issue.details[:source_field], do: ".#{issue.details.source_field}", else: ""}{if issue.details[:target_file], do: " → #{issue.details.target_file}", else: ""}{if issue.details[:invalid_count], do: " (#{issue.details.invalid_count} invalid)", else: ""}
+              {details_line}
             </p>
           </li>
         </ul>
@@ -2546,15 +2534,47 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp export_gtfs_zip(organization_id, gtfs_version_id, export_type) do
-    warnings =
-      case preflight_module().run(organization_id, gtfs_version_id) do
-        :ok -> []
-        {:error, issues} -> issues
-      end
-
     case export_module().export_to_zip(organization_id, gtfs_version_id, export_type) do
-      {:ok, zip_binary} -> {:ok, zip_binary, warnings}
-      {:error, reason} -> {:error, reason}
+      {:ok, zip_binary} ->
+        warnings =
+          case preflight_module().run(organization_id, gtfs_version_id) do
+            :ok -> []
+            {:error, issues} -> issues
+          end
+
+        {:ok, zip_binary, warnings}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp push_gtfs_download(socket, zip_binary) do
+    version_name = socket.assigns.current_gtfs_version.name
+    filename = "gtfs_#{version_name}_#{Date.utc_today()}.zip"
+
+    push_event(socket, "download-file", %{
+      data: Base.encode64(zip_binary),
+      filename: filename
+    })
+  end
+
+  defp format_export_warning_details(issue) do
+    details = issue[:details]
+
+    if is_map(details) and details[:source_file] do
+      source_field =
+        if details[:source_field], do: ".#{details[:source_field]}", else: ""
+
+      target_file =
+        if details[:target_file], do: " -> #{details[:target_file]}", else: ""
+
+      invalid_count =
+        if details[:invalid_count], do: " (#{details[:invalid_count]} invalid)", else: ""
+
+      "#{details[:source_file]}#{source_field}#{target_file}#{invalid_count}"
+    else
+      nil
     end
   end
 

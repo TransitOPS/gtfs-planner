@@ -2212,10 +2212,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      organization_id = organization.id
+      version_id = version.id
 
       view |> element("button", "Export GTFS") |> render_click()
 
-      assert_receive {:export_to_zip_called, _, _, :full}, 500
+      assert_receive {:export_to_zip_called, ^organization_id, ^version_id, :full}, 500
 
       Process.sleep(100)
 
@@ -2255,10 +2257,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      organization_id = organization.id
+      version_id = version.id
 
       view |> element("button", "Export GTFS") |> render_click()
 
-      assert_receive {:export_to_zip_called, _, _, :full}, 500
+      assert_receive {:export_to_zip_called, ^organization_id, ^version_id, :full}, 500
 
       Process.sleep(100)
 
