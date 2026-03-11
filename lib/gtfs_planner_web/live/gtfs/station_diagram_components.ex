@@ -918,13 +918,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       height="1"
       fill="#FFFFFF"
       stroke="#FF00FF"
-      stroke-width="0.4"
+      stroke-width="0.30"
       data-pathway-elevator-box="true"
       data-center-x={@mid_x}
       data-center-y={@mid_y}
       data-base-width="1"
       data-base-height="1"
-      data-base-stroke={0.4 * @stroke_mult}
+      data-base-stroke={0.30 * @stroke_mult}
       class="pointer-events-none transition-colors group-hover:stroke-[#FF4500]"
     />
     <text
@@ -955,10 +955,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp pathway_fare_gate(assigns) do
     {rail_a_x1, rail_a_y1, rail_a_x2, rail_a_y2} =
-      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 0.24)
+      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, 0.28)
 
     {rail_b_x1, rail_b_y1, rail_b_x2, rail_b_y2} =
-      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, -0.24)
+      parallel_offset(assigns.x1, assigns.y1, assigns.x2, assigns.y2, -0.28)
 
     assigns =
       assigns
@@ -981,7 +981,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke-width="0.30"
       stroke-linecap="round"
       data-pathway-rail="true"
-      data-rail-base-offset="0.24"
+      data-rail-base-offset="0.28"
       data-rail-base-stroke={0.30 * @stroke_mult}
       data-base-stroke={0.30 * @stroke_mult}
       class={
@@ -1000,7 +1000,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke-width="0.30"
       stroke-linecap="round"
       data-pathway-rail="true"
-      data-rail-base-offset="-0.24"
+      data-rail-base-offset="-0.28"
       data-rail-base-stroke={0.30 * @stroke_mult}
       data-base-stroke={0.30 * @stroke_mult}
       class={
@@ -3476,6 +3476,118 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </.form>
       </div>
     </div>
+    """
+  end
+
+  # ============================================================================
+  # Lists Section
+  # ============================================================================
+
+  # ============================================================================
+  # Naming Drawer
+  # ============================================================================
+
+  attr :open, :boolean, default: false
+  attr :preview_rows, :list, default: []
+  attr :renamed_stops_count, :integer, default: 0
+  attr :updated_pathways_count, :integer, default: 0
+  attr :applying?, :boolean, default: false
+  attr :error, :string, default: nil
+
+  def naming_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="naming-drawer"
+      open={@open}
+      on_close="close_naming_drawer"
+      title="Apply naming convention"
+    >
+      <div class="space-y-6">
+        <div class="prose prose-sm max-w-none">
+          <p>
+            Renames child stops using a deterministic convention based on each stop's
+            type, highest-priority connected pathway, and level:
+          </p>
+          <code class="block bg-base-200 px-3 py-2 rounded text-sm">
+            {"{station}_{type}_{feature}_{level}_{seq}"}
+          </code>
+          <dl class="mt-3 text-sm space-y-1 not-prose">
+            <div class="flex gap-2">
+              <dt class="font-medium min-w-[5rem]">station</dt>
+              <dd class="text-base-content/70">Parent station stop_id, slugified</dd>
+            </div>
+            <div class="flex gap-2">
+              <dt class="font-medium min-w-[5rem]">type</dt>
+              <dd class="text-base-content/70">platform, entrance, node, or boarding</dd>
+            </div>
+            <div class="flex gap-2">
+              <dt class="font-medium min-w-[5rem]">feature</dt>
+              <dd class="text-base-content/70">
+                Highest-priority pathway mode (elevator, escalator, stairs, etc.) or general
+              </dd>
+            </div>
+            <div class="flex gap-2">
+              <dt class="font-medium min-w-[5rem]">level</dt>
+              <dd class="text-base-content/70">Level ID, slugified (or nolvl)</dd>
+            </div>
+            <div class="flex gap-2">
+              <dt class="font-medium min-w-[5rem]">seq</dt>
+              <dd class="text-base-content/70">Two-digit sequence within each group</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div :if={@error} class="alert alert-error text-sm">
+          {@error}
+        </div>
+
+        <div :if={@preview_rows == [] and is_nil(@error)} class="text-sm text-base-content/60">
+          No child stops to rename for this station.
+        </div>
+
+        <div :if={@preview_rows != []}>
+          <h3 class="text-sm font-medium mb-2">Preview</h3>
+          <div class="overflow-x-auto max-h-64 border border-base-200 rounded">
+            <table class="table table-xs table-pin-rows">
+              <thead>
+                <tr>
+                  <th>Current stop_id</th>
+                  <th>New stop_id</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={row <- @preview_rows}>
+                  <td class="font-mono text-xs">{row.old_id}</td>
+                  <td class="font-mono text-xs">{row.new_id}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="text-sm text-base-content/70 mt-3">
+            <span class="font-medium">{@renamed_stops_count}</span>
+            {if(@renamed_stops_count == 1, do: "child stop", else: "child stops")} will be renamed.
+            <span class="font-medium">{@updated_pathways_count}</span>
+            {if(@updated_pathways_count == 1, do: "pathway reference", else: "pathway references")} will be updated.
+          </p>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-2 border-t border-base-200">
+          <button type="button" class="btn btn-ghost btn-sm" phx-click="close_naming_drawer">
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary btn-sm"
+            phx-click="apply_naming_convention"
+            phx-disable-with="Applying…"
+            disabled={@preview_rows == [] || @applying?}
+          >
+            Apply naming convention
+          </button>
+        </div>
+      </div>
+    </.drawer>
     """
   end
 
