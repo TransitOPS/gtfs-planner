@@ -160,12 +160,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
             id="run-station-reachability"
             type="button"
             phx-click="run_reachability"
+            variant="secondary"
+            size="md"
             disabled={@validating || is_nil(@stop_id)}
           >
             <%= if @validating do %>
               Running…
             <% else %>
-              Run reachability
+              Run Reachability Tests
             <% end %>
           </.button>
         </header>
@@ -469,12 +471,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
               <table class="table table-sm">
                 <thead>
                   <tr>
-                    <th>Run</th>
+                    <th>Run Results</th>
                     <th>Date</th>
                     <th>Status</th>
                     <th class="text-right">Errors</th>
                     <th class="text-right">Warnings</th>
-                    <th class="text-right">Infos</th>
+                    <th class="text-right">Info</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -504,7 +506,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
         <% end %>
 
         <section id="station-reachability-test-cases" class="space-y-3 border-t border-base-200 pt-4">
-          <h3 class="text-sm font-semibold text-base-content">Reachability test cases</h3>
+          <div class="flex items-center justify-between gap-3">
+            <h3 class="text-sm font-semibold text-base-content">Reachability test cases</h3>
+            <.button
+              id="back-to-diagram-from-reachability-cases"
+              navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{@station.stop_id}/diagram"}
+              variant="secondary"
+              size="md"
+            >
+              Add Test Cases
+            </.button>
+          </div>
 
           <%= if @station_walkability_tests == [] do %>
             <p class="px-4 py-3 text-sm text-base-content/60">
@@ -534,7 +546,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
                         phx-click="edit_walkability_test"
                         phx-value-id={test_case.id}
                       >
-                        {Map.get(@station_stop_labels, test_case.stop_id, test_case.stop_id)}
+                        {test_case.stop_id}
                       </button>
                     </td>
                     <td class="max-w-80 truncate" title={test_case.address}>{test_case.address}</td>

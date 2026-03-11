@@ -108,7 +108,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert has_element?(
                view,
                "#run-station-reachability[phx-click='run_reachability']:not([disabled])",
-               "Run reachability"
+             "Run Reachability Tests"
              )
 
       html = render(view)
