@@ -301,6 +301,36 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
     end
   end
 
+  defmodule PreflightOkMock do
+    def run(_organization_id, _gtfs_version_id), do: :ok
+  end
+
+  defmodule PreflightIssuesMock do
+    def run(_organization_id, _gtfs_version_id) do
+      {:error,
+       [
+         %{
+           code: :stop_times_trip_id_missing_trip,
+           severity: :error,
+           message: "Referential integrity check failed",
+           details: %{
+             source_file: "stop_times.txt",
+             source_field: "trip_id",
+             target_file: "trips.txt",
+             target_field: "trip_id",
+             invalid_count: 5
+           }
+         },
+         %{
+           code: :missing_required_file_data,
+           severity: :error,
+           message: "Required GTFS file data is missing",
+           details: %{file: "calendar.txt"}
+         }
+       ]}
+    end
+  end
+
   defmodule ExportModuleMock do
     def export_to_zip(organization_id, gtfs_version_id, export_type, _opts \\ []) do
       case Application.get_env(:gtfs_planner, :export_test_pid) do
@@ -1854,6 +1884,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
         Application.get_env(:gtfs_planner, :otp_gtfs_materializer_module)
 
       previous_export_test_pid = Application.get_env(:gtfs_planner, :export_test_pid)
+      previous_preflight_module = Application.get_env(:gtfs_planner, :otp_preflight_module)
 
       Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleMock)
 
@@ -1863,6 +1894,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
         MaterializerShouldNotBeCalledMock
       )
 
+      Application.put_env(:gtfs_planner, :otp_preflight_module, PreflightOkMock)
       Application.put_env(:gtfs_planner, :export_test_pid, self())
 
       on_exit(fn ->
@@ -1886,6 +1918,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
           Application.put_env(:gtfs_planner, :export_test_pid, previous_export_test_pid)
         else
           Application.delete_env(:gtfs_planner, :export_test_pid)
+        end
+
+        if previous_preflight_module do
+          Application.put_env(:gtfs_planner, :otp_preflight_module, previous_preflight_module)
+        else
+          Application.delete_env(:gtfs_planner, :otp_preflight_module)
         end
       end)
 
@@ -2128,5 +2166,157 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
     {:ok, completed_run} = Validations.mark_pathways_completed(run, run_result, 123)
     completed_run
+  end
+
+  describe "export preflight policy" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+      _agency = agency_fixture(organization.id, gtfs_version.id)
+
+      %{user: user, organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "full export with preflight issues shows warning panel", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_export = Application.get_env(:gtfs_planner, :gtfs_export_module)
+      previous_preflight = Application.get_env(:gtfs_planner, :otp_preflight_module)
+
+      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleMock)
+      Application.put_env(:gtfs_planner, :otp_preflight_module, PreflightIssuesMock)
+      Application.put_env(:gtfs_planner, :export_test_pid, self())
+
+      on_exit(fn ->
+        if previous_export,
+          do: Application.put_env(:gtfs_planner, :gtfs_export_module, previous_export),
+          else: Application.delete_env(:gtfs_planner, :gtfs_export_module)
+
+        if previous_preflight,
+          do: Application.put_env(:gtfs_planner, :otp_preflight_module, previous_preflight),
+          else: Application.delete_env(:gtfs_planner, :otp_preflight_module)
+
+        Application.delete_env(:gtfs_planner, :export_test_pid)
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("button", "Export GTFS") |> render_click()
+
+      assert_receive {:export_to_zip_called, _, _, :full}, 500
+
+      Process.sleep(100)
+
+      html = render(view)
+      assert html =~ "2 data quality warnings"
+      assert has_element?(view, "#export-warning-panel")
+      assert html =~ "Referential integrity check failed"
+      assert html =~ "stop_times.txt"
+      assert html =~ "5 invalid"
+      assert html =~ "Export completed"
+    end
+
+    test "full export without preflight issues shows no warning panel", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_export = Application.get_env(:gtfs_planner, :gtfs_export_module)
+      previous_preflight = Application.get_env(:gtfs_planner, :otp_preflight_module)
+
+      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleMock)
+      Application.put_env(:gtfs_planner, :otp_preflight_module, PreflightOkMock)
+      Application.put_env(:gtfs_planner, :export_test_pid, self())
+
+      on_exit(fn ->
+        if previous_export,
+          do: Application.put_env(:gtfs_planner, :gtfs_export_module, previous_export),
+          else: Application.delete_env(:gtfs_planner, :gtfs_export_module)
+
+        if previous_preflight,
+          do: Application.put_env(:gtfs_planner, :otp_preflight_module, previous_preflight),
+          else: Application.delete_env(:gtfs_planner, :otp_preflight_module)
+
+        Application.delete_env(:gtfs_planner, :export_test_pid)
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("button", "Export GTFS") |> render_click()
+
+      assert_receive {:export_to_zip_called, _, _, :full}, 500
+
+      Process.sleep(100)
+
+      html = render(view)
+      refute has_element?(view, "#export-warning-panel")
+      assert html =~ "Export completed successfully"
+    end
+
+    test "pathways export still blocks on preflight issues", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_export = Application.get_env(:gtfs_planner, :gtfs_export_module)
+
+      previous_materializer =
+        Application.get_env(:gtfs_planner, :otp_gtfs_materializer_module)
+
+      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleShouldNotBeCalledMock)
+
+      Application.put_env(
+        :gtfs_planner,
+        :otp_gtfs_materializer_module,
+        MaterializerBlockingMock
+      )
+
+      Application.put_env(:gtfs_planner, :export_test_pid, self())
+
+      on_exit(fn ->
+        if previous_export,
+          do: Application.put_env(:gtfs_planner, :gtfs_export_module, previous_export),
+          else: Application.delete_env(:gtfs_planner, :gtfs_export_module)
+
+        if previous_materializer,
+          do:
+            Application.put_env(
+              :gtfs_planner,
+              :otp_gtfs_materializer_module,
+              previous_materializer
+            ),
+          else: Application.delete_env(:gtfs_planner, :otp_gtfs_materializer_module)
+
+        Application.delete_env(:gtfs_planner, :export_test_pid)
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[name='export_type'][phx-value-type='pathways']") |> render_click()
+      view |> element("button", "Export GTFS") |> render_click()
+
+      Process.sleep(100)
+
+      html = render(view)
+      assert html =~ "Boarding area ba-22 is missing parent_station in stops.txt."
+      refute has_element?(view, "#export-warning-panel")
+      refute html =~ "Export completed successfully"
+    end
   end
 end
