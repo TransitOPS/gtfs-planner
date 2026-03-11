@@ -37,7 +37,13 @@ defmodule GtfsPlanner.Gtfs.StationNaming do
       level = level_slug(stop.level_id)
       partition_key = "#{station_slug}_#{type}_#{feature}_#{level}"
 
-      %{stop_id: stop.stop_id, type: type, feature: feature, level: level, partition_key: partition_key}
+      %{
+        stop_id: stop.stop_id,
+        type: type,
+        feature: feature,
+        level: level,
+        partition_key: partition_key
+      }
     end)
     |> Enum.group_by(& &1.partition_key)
     |> Enum.flat_map(fn {partition_key, stops} ->
@@ -75,8 +81,17 @@ defmodule GtfsPlanner.Gtfs.StationNaming do
     pathways
     |> Enum.flat_map(fn pw ->
       entries = []
-      entries = if MapSet.member?(stop_ids, pw.from_stop_id), do: [{pw.from_stop_id, pw.pathway_mode} | entries], else: entries
-      entries = if MapSet.member?(stop_ids, pw.to_stop_id), do: [{pw.to_stop_id, pw.pathway_mode} | entries], else: entries
+
+      entries =
+        if MapSet.member?(stop_ids, pw.from_stop_id),
+          do: [{pw.from_stop_id, pw.pathway_mode} | entries],
+          else: entries
+
+      entries =
+        if MapSet.member?(stop_ids, pw.to_stop_id),
+          do: [{pw.to_stop_id, pw.pathway_mode} | entries],
+          else: entries
+
       entries
     end)
     |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))

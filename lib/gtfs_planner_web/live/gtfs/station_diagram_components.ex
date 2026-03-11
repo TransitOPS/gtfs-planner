@@ -3496,7 +3496,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   def naming_drawer(assigns) do
     ~H"""
-    <.drawer id="naming-drawer" open={@open} on_close="close_naming_drawer" title="Apply naming convention">
+    <.drawer
+      id="naming-drawer"
+      open={@open}
+      on_close="close_naming_drawer"
+      title="Apply naming convention"
+    >
       <div class="space-y-6">
         <div class="prose prose-sm max-w-none">
           <p>
@@ -3517,7 +3522,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </div>
             <div class="flex gap-2">
               <dt class="font-medium min-w-[5rem]">feature</dt>
-              <dd class="text-base-content/70">Highest-priority pathway mode (elevator, escalator, stairs, etc.) or general</dd>
+              <dd class="text-base-content/70">
+                Highest-priority pathway mode (elevator, escalator, stairs, etc.) or general
+              </dd>
             </div>
             <div class="flex gap-2">
               <dt class="font-medium min-w-[5rem]">level</dt>

@@ -2338,7 +2338,9 @@ defmodule GtfsPlanner.Gtfs do
         case StationNaming.detect_collisions(naming_map, existing_ids) do
           [] ->
             old_id_set = MapSet.new(naming_map, & &1.old_id)
-            reference_counts = count_stop_id_references(organization_id, gtfs_version_id, old_id_set)
+
+            reference_counts =
+              count_stop_id_references(organization_id, gtfs_version_id, old_id_set)
 
             {:ok,
              %{
@@ -2367,10 +2369,14 @@ defmodule GtfsPlanner.Gtfs do
   or `{:error, reason}`.
   """
   def apply_station_naming(organization_id, gtfs_version_id, station_stop_id) do
-    with {:ok, preview} <- preview_station_naming(organization_id, gtfs_version_id, station_stop_id) do
+    with {:ok, preview} <-
+           preview_station_naming(organization_id, gtfs_version_id, station_stop_id) do
       old_to_new = Map.new(preview.rows, fn %{old_id: old, new_id: new} -> {old, new} end)
       old_to_temp = build_temp_stop_id_map(preview.rows)
-      temp_to_new = Map.new(old_to_temp, fn {old_id, temp_id} -> {temp_id, Map.fetch!(old_to_new, old_id)} end)
+
+      temp_to_new =
+        Map.new(old_to_temp, fn {old_id, temp_id} -> {temp_id, Map.fetch!(old_to_new, old_id)} end)
+
       now = DateTime.utc_now()
 
       multi =
@@ -2387,7 +2393,8 @@ defmodule GtfsPlanner.Gtfs do
            )}
         end)
         |> Ecto.Multi.run(:update_refs_to_temp, fn repo, _changes ->
-          {:ok, update_stop_id_references(repo, old_to_temp, organization_id, gtfs_version_id, now)}
+          {:ok,
+           update_stop_id_references(repo, old_to_temp, organization_id, gtfs_version_id, now)}
         end)
         |> Ecto.Multi.run(:rename_stops_to_final, fn repo, _changes ->
           {:ok,
@@ -2401,7 +2408,8 @@ defmodule GtfsPlanner.Gtfs do
            )}
         end)
         |> Ecto.Multi.run(:update_refs_to_final, fn repo, _changes ->
-          {:ok, update_stop_id_references(repo, temp_to_new, organization_id, gtfs_version_id, now)}
+          {:ok,
+           update_stop_id_references(repo, temp_to_new, organization_id, gtfs_version_id, now)}
         end)
 
       case Repo.transaction(multi) do

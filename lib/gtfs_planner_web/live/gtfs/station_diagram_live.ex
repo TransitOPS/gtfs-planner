@@ -1406,7 +1406,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
-  def handle_event("apply_naming_convention", _params, %{assigns: %{naming_applying?: true}} = socket) do
+  def handle_event(
+        "apply_naming_convention",
+        _params,
+        %{assigns: %{naming_applying?: true}} = socket
+      ) do
     {:noreply, socket}
   end
 

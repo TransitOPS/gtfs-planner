@@ -2,6 +2,11 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.FareLegJoinRule
+  alias GtfsPlanner.Gtfs.StopArea
+  alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlanner.Gtfs.Translation
+  alias GtfsPlanner.Validations.WalkabilityTest
 
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -49,7 +54,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
                Gtfs.preview_station_naming(org.id, version.id, station.stop_id)
 
       assert preview.renamed_stops_count == 2
-      assert preview.updated_pathways_count == 1
+      assert preview.updated_pathways_count == 2
       assert length(preview.rows) == 2
 
       mapping = Map.new(preview.rows, fn %{old_id: old, new_id: new} -> {old, new} end)
@@ -142,7 +147,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
           pathway_mode: 2
         })
 
-      assert {:ok, %{renamed_stops: 2, updated_pathways: 1}} =
+      assert {:ok, %{renamed_stops: 2, updated_pathways: 2}} =
                Gtfs.apply_station_naming(org.id, version.id, station.stop_id)
 
       # Verify stop IDs were updated
@@ -172,6 +177,125 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
 
       assert {:error, :no_stops} =
                Gtfs.apply_station_naming(org.id, version.id, station.stop_id)
+    end
+
+    test "updates all known stop_id reference tables for renamed children", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "HUB",
+          stop_name: "Hub",
+          location_type: 1
+        })
+
+      platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLAT_01",
+          stop_name: "Platform 01",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _boarding =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARD_01",
+          stop_name: "Boarding 01",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: "L1"
+        })
+
+      _pathway =
+        pathway_fixture(org.id, version.id, platform.stop_id, station.stop_id, %{pathway_mode: 5})
+
+      route = route_fixture(org.id, version.id)
+      trip = trip_fixture(org.id, version.id, route.route_id)
+      _stop_time = stop_time_fixture(org.id, version.id, trip.trip_id, platform.stop_id)
+
+      transfer =
+        Repo.insert!(%Transfer{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          from_stop_id: station.stop_id,
+          to_stop_id: platform.stop_id,
+          transfer_type: 0
+        })
+
+      stop_area =
+        Repo.insert!(%StopArea{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          area_id: "A1",
+          stop_id: platform.stop_id
+        })
+
+      fare_leg_join_rule =
+        Repo.insert!(%FareLegJoinRule{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          from_stop_id: platform.stop_id,
+          to_stop_id: station.stop_id
+        })
+
+      translation =
+        Repo.insert!(%Translation{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          table_name: "stops",
+          field_name: "stop_name",
+          language: "en",
+          translation: "Platform 01",
+          record_id: platform.stop_id
+        })
+
+      walkability_test =
+        Repo.insert!(%WalkabilityTest{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          stop_id: platform.stop_id,
+          address: "100 Main St",
+          address_lat: Decimal.new("42.3601"),
+          address_lon: Decimal.new("-71.0589")
+        })
+
+      assert {:ok, %{renamed_stops: 1, updated_references: updated_references}} =
+               Gtfs.apply_station_naming(org.id, version.id, station.stop_id)
+
+      assert updated_references > 0
+
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "hub_platform_elevator_l1_01")
+      refute Gtfs.get_stop_by_stop_id(org.id, version.id, platform.stop_id)
+
+      stop_times =
+        from(st in GtfsPlanner.Gtfs.StopTime,
+          where: st.organization_id == ^org.id and st.gtfs_version_id == ^version.id,
+          select: st.stop_id
+        )
+        |> Repo.all()
+
+      assert "hub_platform_elevator_l1_01" in stop_times
+
+      updated_transfer = Gtfs.get_transfer!(transfer.id)
+      assert updated_transfer.to_stop_id == "hub_platform_elevator_l1_01"
+
+      updated_stop_area = Gtfs.get_stop_area!(stop_area.id)
+      assert updated_stop_area.stop_id == "hub_platform_elevator_l1_01"
+
+      updated_fare_leg_join_rule = Repo.get!(FareLegJoinRule, fare_leg_join_rule.id)
+      assert updated_fare_leg_join_rule.from_stop_id == "hub_platform_elevator_l1_01"
+
+      updated_translation = Gtfs.get_translation!(translation.id)
+      assert updated_translation.record_id == "hub_platform_elevator_l1_01"
+
+      updated_walkability_test = Repo.get!(WalkabilityTest, walkability_test.id)
+      assert updated_walkability_test.stop_id == "hub_platform_elevator_l1_01"
+
+      updated_boarding = Gtfs.get_stop_by_stop_id(org.id, version.id, "BOARD_01")
+
+      assert updated_boarding.parent_station == "hub_platform_elevator_l1_01"
     end
   end
 end
