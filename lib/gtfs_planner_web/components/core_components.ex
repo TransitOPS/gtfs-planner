@@ -898,6 +898,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
             >
               Edit level
             </.button>
+
+            <.button
+              type="button"
+              size="sm"
+              variant="secondary"
+              class="border-gray-500 bg-gray-50 text-gray-800 hover:bg-gray-100"
+              phx-click="open_naming_drawer"
+            >
+              Apply naming
+            </.button>
           </div>
 
           <%!-- Canvas actions --%>
