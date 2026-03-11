@@ -736,7 +736,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     )
 
     with dragging_stop_id when not is_nil(dragging_stop_id) <- socket.assigns.dragging_stop_id,
-         true <- dragging_stop_id == id,
+         true <- to_string(dragging_stop_id) == to_string(id),
          {:ok, parsed_x} <- parse_svg_coordinate(x),
          {:ok, parsed_y} <- parse_svg_coordinate(y),
          %Stop{} = stop <- Gtfs.get_stop(id),
@@ -2401,14 +2401,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp parse_mode(_), do: :error
 
   defp parse_svg_coordinate(value) do
-    parsed = to_float(value)
-
-    if parsed >= 0.0 and parsed <= 100.0 do
+    with {:ok, parsed} <- parse_float(value),
+         true <- parsed >= 0.0 and parsed <= 100.0 do
       {:ok, Float.round(parsed, 2)}
     else
-      :error
+      _ -> :error
     end
   end
+
+  defp parse_float(value) when is_float(value), do: {:ok, value}
+  defp parse_float(value) when is_integer(value), do: {:ok, value / 1}
+
+  defp parse_float(value) when is_binary(value) do
+    case Float.parse(String.trim(value)) do
+      {parsed, ""} -> {:ok, parsed}
+      _ -> :error
+    end
+  end
+
+  defp parse_float(_), do: :error
 
   defp maybe_disable_measurement_for_mode(socket, :view), do: socket
   defp maybe_disable_measurement_for_mode(socket, _mode), do: disable_measurement(socket)

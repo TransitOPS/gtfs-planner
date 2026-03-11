@@ -6449,8 +6449,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      render_hook(view, "drag_start", %{"id" => child_stop.id})
-      render_hook(view, "drag_end", %{"id" => child_stop.id, "x" => "44.2", "y" => "55.8"})
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{
+        "id" => to_string(child_stop.id),
+        "x" => "44.2",
+        "y" => "55.8"
+      })
 
       updated_stop = Gtfs.get_stop!(child_stop.id)
       assert updated_stop.diagram_coordinate == %{"x" => 44.2, "y" => 55.8}
@@ -6497,8 +6502,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#pathways-#{pathway.id} [data-pathway-hit][x1='20.0']")
 
-      render_hook(view, "drag_start", %{"id" => from_stop.id})
-      render_hook(view, "drag_end", %{"id" => from_stop.id, "x" => "30.0", "y" => "20.0"})
+      render_hook(view, "drag_start", %{"id" => to_string(from_stop.id)})
+
+      render_hook(view, "drag_end", %{
+        "id" => to_string(from_stop.id),
+        "x" => "30.0",
+        "y" => "20.0"
+      })
 
       refute has_element?(view, "#pathways-#{pathway.id} [data-pathway-hit][x1='20.0']")
       assert has_element?(view, "#pathways-#{pathway.id} [data-pathway-hit][x1='30.0']")
@@ -6536,8 +6546,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      render_hook(view, "drag_start", %{"id" => child_stop.id})
-      render_hook(view, "drag_end", %{"id" => child_stop.id, "x" => "150", "y" => "55"})
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{"id" => to_string(child_stop.id), "x" => "150", "y" => "55"})
 
       unchanged = Gtfs.get_stop!(child_stop.id)
       assert unchanged.diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
@@ -6567,9 +6578,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      render_hook(view, "drag_start", %{"id" => child_stop.id})
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
       render_hook(view, "drag_cancel", %{})
-      render_hook(view, "drag_end", %{"id" => child_stop.id, "x" => "65", "y" => "65"})
+      render_hook(view, "drag_end", %{"id" => to_string(child_stop.id), "x" => "65", "y" => "65"})
 
       unchanged = Gtfs.get_stop!(child_stop.id)
       assert unchanged.diagram_coordinate == %{"x" => 60.0, "y" => 60.0}

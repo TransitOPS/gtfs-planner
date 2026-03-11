@@ -1512,7 +1512,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp stop_label_y_offset(_location_type), do: 0.9
 
   defp stop_tooltip_text(:view, false), do: "Click to edit, hold to move"
-  defp stop_tooltip_text(:view, true), do: "Click to edit stop"
+  defp stop_tooltip_text(:view, true), do: "Editing disabled while measuring"
   defp stop_tooltip_text(:connect, _measurement_enabled), do: "Select stop to create pathway"
   defp stop_tooltip_text(_mode, _measurement_enabled), do: "Click to edit stop"
 

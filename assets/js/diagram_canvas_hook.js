@@ -640,7 +640,6 @@ const DiagramCanvasHook = {
     this.overlay.addEventListener("wheel", this._handleWheel, { passive: false });
     this.overlay.addEventListener("mousedown", this._handleMouseDown);
     this.overlay.addEventListener("mousedown", this._handleOverlayPointerDown);
-    this.overlay.addEventListener("pointerdown", this._handleOverlayPointerDown);
     this.overlay.addEventListener("click", this._handleCapturedClick, true);
     this.overlay.addEventListener("click", this._handleOverlayClick);
     this.overlay.addEventListener("gesturestart", this._handleGesture);
@@ -656,7 +655,6 @@ const DiagramCanvasHook = {
     this._overlayPanZoomBound.removeEventListener("wheel", this._handleWheel);
     this._overlayPanZoomBound.removeEventListener("mousedown", this._handleMouseDown);
     this._overlayPanZoomBound.removeEventListener("mousedown", this._handleOverlayPointerDown);
-    this._overlayPanZoomBound.removeEventListener("pointerdown", this._handleOverlayPointerDown);
     this._overlayPanZoomBound.removeEventListener("click", this._handleCapturedClick, true);
     this._overlayPanZoomBound.removeEventListener("click", this._handleOverlayClick);
     this._overlayPanZoomBound.removeEventListener("gesturestart", this._handleGesture);
