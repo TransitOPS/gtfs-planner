@@ -314,4 +314,76 @@ defmodule GtfsPlanner.Validations.WalkabilitySuiteTest do
              invalid_missing_stop.id => :invalid_stop_id_for_version
            }
   end
+
+  test "select_suite/3 scopes candidates by allowed_stop_ids before classification" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    _in_scope_stop =
+      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-in-scope"})
+
+    _out_of_scope_stop =
+      stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-out-of-scope"})
+
+    in_scope_valid =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: "stop-in-scope",
+        address: "Addr in scope"
+      })
+
+    out_of_scope_invalid =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: "stop-out-of-scope",
+        address: "Addr out of scope",
+        address_lat: Decimal.new("95.0"),
+        address_lon: Decimal.new("-71.0589")
+      })
+
+    assert {:ok, result} =
+             WalkabilitySuite.select_suite(organization.id, gtfs_version.id,
+               allowed_stop_ids: ["stop-in-scope"],
+               scope_label: "station:stop-in-scope"
+             )
+
+    assert Enum.map(result.suite, & &1.walkability_test_id) == [in_scope_valid.id]
+    assert result.invalid_cases == []
+
+    assert result.selection.total_candidates == 2
+    assert result.selection.in_scope_candidates == 1
+    assert result.selection.selected_count == 1
+    assert result.selection.invalid_count == 0
+    assert result.selection.scope_label == "station:stop-in-scope"
+    assert result.selection.selected_test_case_ids == [in_scope_valid.id]
+    assert result.selection.invalid_test_case_ids == []
+
+    refute Enum.any?(result.selection.invalid_cases, fn invalid_case ->
+             invalid_case.walkability_test_id == out_of_scope_invalid.id
+           end)
+  end
+
+  test "select_suite/3 normalizes blank scope_label to nil" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    _stop = stop_fixture(organization.id, gtfs_version.id, %{stop_id: "stop-1"})
+
+    _walkability_test =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: "stop-1"
+      })
+
+    assert {:ok, result} =
+             WalkabilitySuite.select_suite(organization.id, gtfs_version.id,
+               allowed_stop_ids: ["stop-1"],
+               scope_label: "   "
+             )
+
+    assert result.selection.scope_label == nil
+  end
 end

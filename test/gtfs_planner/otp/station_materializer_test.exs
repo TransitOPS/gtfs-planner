@@ -71,7 +71,11 @@ defmodule GtfsPlanner.Otp.StationMaterializerTest do
       create_calendar!(organization.id, gtfs_version.id, "other_service")
 
       create_calendar_date!(organization.id, gtfs_version.id, service_id, %{date: ~D[2026-01-02]})
-      create_calendar_date!(organization.id, gtfs_version.id, "other_service", %{date: ~D[2026-01-03]})
+
+      create_calendar_date!(organization.id, gtfs_version.id, "other_service", %{
+        date: ~D[2026-01-03]
+      })
+
       create_frequency!(organization.id, gtfs_version.id, trip_id, %{start_time: "08:00:00"})
       create_frequency!(organization.id, gtfs_version.id, "other_trip", %{start_time: "09:00:00"})
       create_attribution!(organization.id, gtfs_version.id, %{attribution_id: "global_attr"})
@@ -301,11 +305,11 @@ defmodule GtfsPlanner.Otp.StationMaterializerTest do
       assert meta.extension_warning_issues == []
 
       assert meta.station_feed_summary["fare_rules.txt"] == %{
-                 kept_count: 0,
-                 dropped_count: 0,
-                 missing_file: true,
-                 blocking_issue_count: 0
-               }
+               kept_count: 0,
+               dropped_count: 0,
+               missing_file: true,
+               blocking_issue_count: 0
+             }
 
       assert meta.station_feed_summary["levels.txt"] == %{
                kept_count: 1,
@@ -499,7 +503,9 @@ defmodule GtfsPlanner.Otp.StationMaterializerTest do
 
       assert first_zip_path == second_zip_path
 
-      assert {:ok, source_entries} = :zip.unzip(String.to_charlist(first_meta.source_zip_path), [:memory])
+      assert {:ok, source_entries} =
+               :zip.unzip(String.to_charlist(first_meta.source_zip_path), [:memory])
+
       assert {:ok, first_entries} = :zip.unzip(String.to_charlist(first_zip_path), [:memory])
       assert {:ok, second_entries} = :zip.unzip(String.to_charlist(second_zip_path), [:memory])
 
@@ -535,12 +541,16 @@ defmodule GtfsPlanner.Otp.StationMaterializerTest do
       |> Enum.into(%{})
 
     station =
-      stop_fixture(organization_id, gtfs_version_id, %{
-        stop_id: "seed_station",
-        location_type: 1,
-        parent_station: nil
-      }
-      |> Map.merge(station_attrs))
+      stop_fixture(
+        organization_id,
+        gtfs_version_id,
+        %{
+          stop_id: "seed_station",
+          location_type: 1,
+          parent_station: nil
+        }
+        |> Map.merge(station_attrs)
+      )
 
     stop_a =
       stop_fixture(organization_id, gtfs_version_id, %{

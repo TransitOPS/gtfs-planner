@@ -53,7 +53,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
         end
 
         if previous_listener do
-          Application.put_env(:gtfs_planner, :station_reachability_test_listener, previous_listener)
+          Application.put_env(
+            :gtfs_planner,
+            :station_reachability_test_listener,
+            previous_listener
+          )
         else
           Application.delete_env(:gtfs_planner, :station_reachability_test_listener)
         end
@@ -164,7 +168,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
         })
 
       {:ok, older_run} =
-        Validations.create_station_reachability_run(organization.id, gtfs_version.id, station.stop_id)
+        Validations.create_station_reachability_run(
+          organization.id,
+          gtfs_version.id,
+          station.stop_id
+        )
 
       {:ok, other_station_run} =
         Validations.create_station_reachability_run(
@@ -174,7 +182,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
         )
 
       {:ok, newer_run} =
-        Validations.create_station_reachability_run(organization.id, gtfs_version.id, station.stop_id)
+        Validations.create_station_reachability_run(
+          organization.id,
+          gtfs_version.id,
+          station.stop_id
+        )
 
       assert {:ok, _} =
                Validations.mark_pathways_failed(older_run, %{reason: :pathways_trip_test_failed})
@@ -275,11 +287,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
 
       assert has_element?(view, "#station-reachability-error-panel")
       assert has_element?(view, "#station-reachability-error-panel", "Blocking issues")
+
       assert has_element?(
                view,
                "#station-reachability-error-panel",
                "Station stop_id was not found in stops.txt"
              )
+
       assert has_element?(view, "#station-pathways-failure-checks")
       assert has_element?(view, "#station-pathways-failure-diagnostics")
       assert has_element?(view, "#station-otp-data-requirements-summary")
@@ -341,6 +355,220 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert has_element?(view, "#station-trip-overview")
       assert has_element?(view, "#station-pathways-case-results")
       assert has_element?(view, "#station-pathways-case-row-0")
+    end
+
+    test "polling renders scope coverage and reconciles selected count with case rows", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      valid_test_case =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.stop_id,
+          address: "1 Valid Station Plaza"
+        })
+
+      invalid_test_case =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.stop_id,
+          address: "2 Invalid Station Plaza"
+        })
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      assert view
+             |> element("#run-station-reachability")
+             |> render_click()
+
+      assert_receive {:station_reachability_runner_started, run_id}
+
+      run = Repo.get!(ValidationRun, run_id)
+
+      run_result = %{
+        suite_meta: %{total_candidates: 2, selected_count: 1, malformed_count: 1},
+        selected_test_case_ids: [valid_test_case.id],
+        selection: %{
+          total_candidates: 2,
+          in_scope_candidates: 2,
+          selected_count: 1,
+          invalid_count: 1,
+          selected_test_case_ids: [valid_test_case.id],
+          invalid_test_case_ids: [invalid_test_case.id],
+          invalid_cases: [
+            %{
+              walkability_test_id: invalid_test_case.id,
+              reason_code: :invalid_coordinate_range,
+              stop_id: station.stop_id,
+              address: invalid_test_case.address
+            }
+          ]
+        },
+        summary: %{total: 1, passed: 1, failed: 0, query_failure: 0, scoring_failure: 0},
+        cases: [
+          %{
+            test_case_id: valid_test_case.id,
+            status: :passed,
+            route_output: %{route_exists: true}
+          }
+        ]
+      }
+
+      assert {:ok, _completed_run} = Validations.mark_pathways_completed(run, run_result, 10)
+
+      send(view.pid, {:poll_pathways_trip_test_status, run.id})
+      _ = render(view)
+
+      assert has_element?(view, "#station-reachability-coverage")
+      assert has_element?(view, "#station-reachability-coverage-in-scope", "2")
+      assert has_element?(view, "#station-reachability-coverage-selected", "1")
+      assert has_element?(view, "#station-reachability-coverage-invalid", "1")
+      assert has_element?(view, "#station-reachability-invalid-cases")
+
+      assert has_element?(
+               view,
+               "#station-reachability-invalid-row-#{invalid_test_case.id}",
+               "invalid_coordinate_range"
+             )
+
+      assert has_element?(view, "#station-pathways-case-row-0")
+      refute has_element?(view, "#station-pathways-case-row-1")
+    end
+
+    test "renders parent-station reachability test cases table scoped to station", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      level = level_fixture(organization.id, gtfs_version.id)
+
+      station_child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_CHILD_STOP",
+          stop_name: "Station Child Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      other_station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_STATION",
+          stop_name: "Other Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      other_station_child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_STATION_CHILD_STOP",
+          stop_name: "Other Station Child Stop",
+          location_type: 0,
+          parent_station: other_station.stop_id,
+          level_id: level.level_id
+        })
+
+      station_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_child_stop.stop_id,
+          address: "1 Station Plaza"
+        })
+
+      other_station_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: other_station_child_stop.stop_id,
+          address: "9 Other Station Plaza"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      assert has_element?(view, "#station-reachability-test-cases")
+      assert has_element?(view, "#station-walkability-tests-table")
+      assert has_element?(view, "#station-walkability-test-row-#{station_test.id}")
+
+      refute has_element?(view, "#station-walkability-test-row-#{other_station_test.id}")
+    end
+
+    test "edits and deletes test cases from reachability table", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      level = level_fixture(organization.id, gtfs_version.id)
+
+      station_child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_EDITABLE_CHILD_STOP",
+          stop_name: "Station Editable Child Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      test_case =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_child_stop.stop_id,
+          address: "2 Station Plaza",
+          description: "Original description",
+          expected_traversable: true,
+          expected_wheelchair_accessible: false
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      assert view
+             |> element("#station-walkability-test-stop-#{test_case.id}")
+             |> render_click()
+
+      assert has_element?(view, "#walkability-test-form")
+
+      render_change(view, "walkability_form_change", %{
+        "walkability" => %{
+          "description" => "Updated description"
+        }
+      })
+
+      assert view
+             |> form("#walkability-test-form")
+             |> render_submit()
+
+      updated_test_case = Validations.get_walkability_test!(test_case.id)
+      assert updated_test_case.description == "Updated description"
+
+      assert view
+             |> element("#station-walkability-test-stop-#{test_case.id}")
+             |> render_click()
+
+      assert view
+             |> element("#walkability-test-delete-in-form")
+             |> render_click()
+
+      assert Validations.get_walkability_test(test_case.id) == nil
+      refute has_element?(view, "#station-walkability-test-row-#{test_case.id}")
     end
   end
 end

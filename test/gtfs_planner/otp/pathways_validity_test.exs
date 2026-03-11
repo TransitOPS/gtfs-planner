@@ -69,6 +69,150 @@ defmodule GtfsPlanner.Otp.PathwaysValidityTest do
     assert reason.reason == :no_walkability_tests
     assert reason.organization_id == organization.id
     assert reason.gtfs_version_id == gtfs_version.id
+    assert reason.selection.total_candidates == 1
+    assert reason.selection.in_scope_candidates == 1
+    assert reason.selection.selected_count == 0
+    assert reason.selection.invalid_count == 1
+
+    assert reason.selection.invalid_test_case_ids == [
+             reason.selection.invalid_cases |> hd() |> Map.get(:walkability_test_id)
+           ]
+
+    assert Enum.map(reason.selection.invalid_cases, & &1.reason_code) == [
+             :invalid_stop_id_for_version
+           ]
+  end
+
+  test "run_in_session/4 returns selection payload for station-scoped execution" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    station =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "station-scope",
+        location_type: 1,
+        parent_station: nil
+      })
+
+    _level =
+      level_fixture(organization.id, gtfs_version.id, %{level_id: "L-SCOPE", level_index: 0.0})
+
+    in_scope_platform =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "in-scope-platform",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: "L-SCOPE"
+      })
+
+    _out_of_scope_stop =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "out-of-scope-stop",
+        location_type: 0,
+        parent_station: "other-station",
+        level_id: "L-SCOPE"
+      })
+
+    in_scope_valid =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: in_scope_platform.stop_id,
+        address: "In scope"
+      })
+
+    _out_of_scope_invalid =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: "out-of-scope-stop",
+        address: "Out scope invalid",
+        address_lat: Decimal.new("95.0"),
+        address_lon: Decimal.new("-71.0589")
+      })
+
+    request_fun = fn _graphql_url, _request_opts ->
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{
+           "data" => %{
+             "plan" => %{
+               "itineraries" => [walk_itinerary(%{"duration" => 100, "walkDistance" => 100.0})]
+             }
+           }
+         }
+       }}
+    end
+
+    assert {:ok, result} =
+             PathwaysValidity.run_in_session(
+               session_fixture(),
+               organization.id,
+               gtfs_version.id,
+               station_stop_id: station.stop_id,
+               request_fun: request_fun
+             )
+
+    assert result.selected_test_case_ids == [in_scope_valid.id]
+    assert result.selection.total_candidates == 2
+    assert result.selection.in_scope_candidates == 1
+    assert result.selection.selected_count == 1
+    assert result.selection.invalid_count == 0
+    assert result.selection.invalid_test_case_ids == []
+    assert result.selection.invalid_cases == []
+  end
+
+  test "run_in_session/4 returns no_walkability_tests with scoped selection when all in-scope are invalid" do
+    organization = organization_fixture()
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    station =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "station-invalid-scope",
+        location_type: 1,
+        parent_station: nil
+      })
+
+    _level =
+      level_fixture(organization.id, gtfs_version.id, %{level_id: "L-SCOPE-2", level_index: 0.0})
+
+    in_scope_platform =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "in-scope-invalid-platform",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: "L-SCOPE-2"
+      })
+
+    _invalid_in_scope =
+      walkability_test_fixture(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: in_scope_platform.stop_id,
+        address: "Invalid in-scope",
+        address_lat: Decimal.new("95.0"),
+        address_lon: Decimal.new("-71.0589")
+      })
+
+    assert {:error, reason} =
+             PathwaysValidity.run_in_session(
+               session_fixture(),
+               organization.id,
+               gtfs_version.id,
+               station_stop_id: station.stop_id
+             )
+
+    assert reason.reason == :no_walkability_tests
+    assert reason.selection.total_candidates == 1
+    assert reason.selection.in_scope_candidates == 1
+    assert reason.selection.selected_count == 0
+    assert reason.selection.invalid_count == 1
+    assert length(reason.selection.invalid_cases) == 1
+
+    assert Enum.map(reason.selection.invalid_cases, & &1.reason_code) == [
+             :invalid_coordinate_range
+           ]
   end
 
   test "run_in_session/4 sends GraphQL walk plan contract and maps response fields" do

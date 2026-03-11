@@ -20,6 +20,7 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunner do
           | {:otp_runtime_module, module()}
           | {:otp_pathways_validity_module, module()}
           | {:validations_module, module()}
+          | {:pathways_validity_opts, keyword()}
           | {:runtime_opts, keyword()}
 
   @type run_opts :: [run_option()]
@@ -39,6 +40,7 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunner do
         opts
       ) do
     status_callback = Keyword.get(opts, :status_callback)
+    pathways_validity_opts = Keyword.get(opts, :pathways_validity_opts, [])
     runtime_module = otp_runtime_module(opts)
     pathways_validity_module = otp_pathways_validity_module(opts)
     validations_module = validations_module(opts)
@@ -49,7 +51,8 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunner do
         session,
         organization_id,
         gtfs_version_id,
-        status_callback: status_callback
+        pathways_validity_opts
+        |> Keyword.put(:status_callback, status_callback)
       )
     end
 
@@ -176,9 +179,14 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunner do
       |> Map.get(:station_feed_summary)
 
     if is_map(station_feed_summary) do
-      Map.update(run_result, :suite_meta, %{station_feed_summary: station_feed_summary}, fn suite_meta ->
-        Map.put(suite_meta, :station_feed_summary, station_feed_summary)
-      end)
+      Map.update(
+        run_result,
+        :suite_meta,
+        %{station_feed_summary: station_feed_summary},
+        fn suite_meta ->
+          Map.put(suite_meta, :station_feed_summary, station_feed_summary)
+        end
+      )
     else
       run_result
     end

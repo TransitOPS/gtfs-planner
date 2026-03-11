@@ -126,6 +126,7 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunnerTest do
                otp_pathways_validity_module: PathwaysValidityMock,
                validations_module: ValidationsMock,
                status_callback: status_callback,
+               pathways_validity_opts: [station_stop_id: "station-123"],
                runtime_opts: [custom_runtime_opt: :enabled]
              )
 
@@ -139,6 +140,7 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunnerTest do
                     ^gtfs_version_id, pathways_opts}
 
     assert pathways_opts[:status_callback] == status_callback
+    assert pathways_opts[:station_stop_id] == "station-123"
 
     assert_receive {:status_callback_payload, %{scope: :otp, phase: :starting}}
 

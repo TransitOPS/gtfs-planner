@@ -252,11 +252,11 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
       station_feed_summary =
         Map.merge(
           %{
-           "stops.txt" => %{
-             kept_count: length(filtered_stops_rows),
-             dropped_count: length(stop_rows) - length(filtered_stops_rows),
-             missing_file: false,
-             blocking_issue_count: 0
+            "stops.txt" => %{
+              kept_count: length(filtered_stops_rows),
+              dropped_count: length(stop_rows) - length(filtered_stops_rows),
+              missing_file: false,
+              blocking_issue_count: 0
             },
             "levels.txt" => levels_summary,
             "pathways.txt" => pathways_summary,
@@ -297,6 +297,7 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
     stop_ids = id_set(rows_by_file.stops_rows, "stop_id")
     trip_ids = id_set(rows_by_file.trips_rows, "trip_id")
     route_ids = id_set(rows_by_file.routes_rows, "route_id")
+
     service_ids =
       MapSet.union(
         id_set(rows_by_file.calendar_rows, "service_id"),
@@ -790,7 +791,8 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
   end
 
   defp filter_trips_rows(nil, _kept_trip_ids) do
-    {[], [], [], [], %{kept_count: 0, dropped_count: 0, missing_file: true, blocking_issue_count: 0}}
+    {[], [], [], [],
+     %{kept_count: 0, dropped_count: 0, missing_file: true, blocking_issue_count: 0}}
   end
 
   defp filter_trips_rows(%{rows: trips_rows}, kept_trip_ids) do
@@ -1111,13 +1113,15 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
     known_optional_files = MapSet.new(Map.keys(@known_optional_extension_file_mappings))
 
     {summaries, warnings} =
-      Enum.reduce(tables, {%{}, []}, fn {file_name, %{rows: rows}}, {summaries_acc, warnings_acc} ->
+      Enum.reduce(tables, {%{}, []}, fn {file_name, %{rows: rows}},
+                                        {summaries_acc, warnings_acc} ->
         cond do
           MapSet.member?(station_filtered_files, file_name) ->
             {summaries_acc, warnings_acc}
 
           MapSet.member?(known_optional_files, file_name) ->
-            {Map.put(summaries_acc, file_name, passthrough_file_summary(rows, false)), warnings_acc}
+            {Map.put(summaries_acc, file_name, passthrough_file_summary(rows, false)),
+             warnings_acc}
 
           true ->
             {
@@ -1178,7 +1182,8 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
   defp replace_tables(source_zip_path, rendered_tables) do
     with {:ok, entries} <- unzip_entries(source_zip_path),
          files <- replace_entries(entries, rendered_tables),
-         {:ok, {_zip_name, station_zip_binary}} <- :zip.create(~c"station_gtfs.zip", files, [:memory]) do
+         {:ok, {_zip_name, station_zip_binary}} <-
+           :zip.create(~c"station_gtfs.zip", files, [:memory]) do
       {:ok, station_zip_binary}
     else
       {:error, reason} ->
@@ -1268,7 +1273,9 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
     |> to_string_if_nil_safe()
     |> String.trim()
     |> case do
-      "" -> 0
+      "" ->
+        0
+
       digits ->
         case Integer.parse(digits) do
           {parsed, ""} -> parsed

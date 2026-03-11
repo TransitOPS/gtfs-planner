@@ -1163,6 +1163,92 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "list_station_scope_stop_ids/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "returns deterministic station closure stop ids", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_SCOPE",
+          level_index: 0.0
+        })
+
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "STATION_SCOPE",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      platform_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      platform_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      boarding_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARDING_B",
+          location_type: 4,
+          parent_station: platform_b.stop_id,
+          level_id: level.level_id
+        })
+
+      boarding_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARDING_A",
+          location_type: 4,
+          parent_station: platform_a.stop_id,
+          level_id: level.level_id
+        })
+
+      _out_of_scope_sibling =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "OTHER_STATION_PLATFORM",
+          location_type: 0,
+          parent_station: "OTHER_STATION",
+          level_id: level.level_id
+        })
+
+      assert {:ok, station_scope_stop_ids} =
+               Gtfs.list_station_scope_stop_ids(org.id, version.id, station.stop_id)
+
+      assert station_scope_stop_ids ==
+               Enum.sort([
+                 station.stop_id,
+                 platform_a.stop_id,
+                 platform_b.stop_id,
+                 boarding_a.stop_id,
+                 boarding_b.stop_id
+               ])
+    end
+
+    test "returns error when station stop id is missing", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      assert {:error, :station_not_found} =
+               Gtfs.list_station_scope_stop_ids(org.id, version.id, "UNKNOWN_STATION")
+    end
+  end
+
   describe "list_levels_for_station/3" do
     setup do
       organization = organization_fixture()

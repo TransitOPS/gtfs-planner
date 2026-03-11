@@ -78,27 +78,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       if run.run_type != "station_reachability" do
         {:noreply, push_navigate(socket, to: ~p"/gtfs/#{gtfs_version_id}/validation/#{run.id}")}
       else
-      validation_runs_history =
-        Validations.list_validation_runs(organization_id, gtfs_version_id)
+        validation_runs_history =
+          Validations.list_validation_runs(organization_id, gtfs_version_id)
 
-      {run, pathways_case_results} = load_pathways_render_data(run)
-      pathways_failure = pathways_failure(run)
-      pathways_failure_message = pathways_failure_message(run)
-      pathways_failure_diagnostics = pathways_failure_diagnostics(run)
-      pathways_preflight_issues = pathways_preflight_issues(run)
+        {run, pathways_case_results} = load_pathways_render_data(run)
+        pathways_failure = pathways_failure(run)
+        pathways_failure_message = pathways_failure_message(run)
+        pathways_failure_diagnostics = pathways_failure_diagnostics(run)
+        pathways_preflight_issues = pathways_preflight_issues(run)
 
-      {:noreply,
-       socket
-       |> assign(:stop_id, Map.get(params, "stop_id"))
-       |> assign(:validation_id, validation_id)
-       |> assign(:run, run)
-       |> assign(:pathways_preflight_issues, pathways_preflight_issues)
-       |> assign(:pathways_failure, pathways_failure)
-       |> assign(:pathways_failure_message, pathways_failure_message)
-       |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics)
-       |> assign(:pathways_case_results, pathways_case_results)
-       |> stream(:validation_runs, validation_runs_history)
-       |> maybe_schedule_pathways_status_poll(run)}
+        {:noreply,
+         socket
+         |> assign(:stop_id, Map.get(params, "stop_id"))
+         |> assign(:validation_id, validation_id)
+         |> assign(:run, run)
+         |> assign(:pathways_preflight_issues, pathways_preflight_issues)
+         |> assign(:pathways_failure, pathways_failure)
+         |> assign(:pathways_failure_message, pathways_failure_message)
+         |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics)
+         |> assign(:pathways_case_results, pathways_case_results)
+         |> stream(:validation_runs, validation_runs_history)
+         |> maybe_schedule_pathways_status_poll(run)}
       end
     end
   end
@@ -223,10 +223,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                       <h3 class="text-base font-semibold leading-6" id="pathways-failure-title">
                         {@pathways_failure.title}
                       </h3>
-                      <p class="mt-1 text-sm leading-5 text-base-content/85" id="pathways-failure-summary">
+                      <p
+                        class="mt-1 text-sm leading-5 text-base-content/85"
+                        id="pathways-failure-summary"
+                      >
                         {@pathways_failure.summary}
                       </p>
-                      <p class="mt-2 text-sm leading-5 text-base-content/80" id="pathways-failure-status-message">
+                      <p
+                        class="mt-2 text-sm leading-5 text-base-content/80"
+                        id="pathways-failure-status-message"
+                      >
                         {@pathways_failure_message}
                       </p>
                     <% else %>
@@ -262,7 +268,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                   <% end %>
 
                   <%= if @pathways_failure do %>
-                    <section id="pathways-failure-checks" class="space-y-2 border-t border-base-300 pt-3">
+                    <section
+                      id="pathways-failure-checks"
+                      class="space-y-2 border-t border-base-300 pt-3"
+                    >
                       <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
                         Recommended checks
                       </h4>
@@ -1987,7 +1996,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
   defp pathways_failure_diagnostics(_run), do: []
 
-  defp pathways_failure(%{run_type: "station_reachability", status: "failed", error_details: error_details})
+  defp pathways_failure(%{
+         run_type: "station_reachability",
+         status: "failed",
+         error_details: error_details
+       })
        when is_binary(error_details) do
     case Jason.decode(error_details) do
       {:ok, payload} when is_map(payload) ->
@@ -2015,9 +2028,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
         |> Enum.find_value(&normalize_pathways_failure_code/1)
         |> case do
           nil ->
-            failure_summary(%{error_details: error_details, run_type: "station_reachability"}, nil)
+            failure_summary(
+              %{error_details: error_details, run_type: "station_reachability"},
+              nil
+            )
 
-          code -> Map.get(@pathways_failure_messages, code, "Pathways validation failed")
+          code ->
+            Map.get(@pathways_failure_messages, code, "Pathways validation failed")
         end
 
       _other ->
@@ -2047,22 +2064,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   end
 
   defp normalize_pathways_failure_code(:no_walkability_tests), do: :no_walkability_tests
-  defp normalize_pathways_failure_code(:otp_runtime_already_running), do: :otp_runtime_already_running
+
+  defp normalize_pathways_failure_code(:otp_runtime_already_running),
+    do: :otp_runtime_already_running
+
   defp normalize_pathways_failure_code(:otp_start_failed), do: :otp_start_failed
   defp normalize_pathways_failure_code(:otp_runtime_failed), do: :otp_runtime_failed
   defp normalize_pathways_failure_code(:otp_ready_timeout), do: :otp_ready_timeout
   defp normalize_pathways_failure_code(:otp_stop_failed), do: :otp_stop_failed
   defp normalize_pathways_failure_code(:query_failure), do: :query_failure
   defp normalize_pathways_failure_code(:scoring_failure), do: :scoring_failure
-  defp normalize_pathways_failure_code(:pathways_runner_spawn_failed), do: :pathways_runner_spawn_failed
+
+  defp normalize_pathways_failure_code(:pathways_runner_spawn_failed),
+    do: :pathways_runner_spawn_failed
+
   defp normalize_pathways_failure_code(:pathways_trip_test_failed), do: :pathways_trip_test_failed
-  defp normalize_pathways_failure_code(:pathways_persistence_failed), do: :pathways_persistence_failed
-  defp normalize_pathways_failure_code(:pathways_export_prep_failed), do: :pathways_export_prep_failed
+
+  defp normalize_pathways_failure_code(:pathways_persistence_failed),
+    do: :pathways_persistence_failed
+
+  defp normalize_pathways_failure_code(:pathways_export_prep_failed),
+    do: :pathways_export_prep_failed
+
   defp normalize_pathways_failure_code(:pathways_task_crashed), do: :pathways_task_crashed
-  defp normalize_pathways_failure_code(:pathways_status_unavailable), do: :pathways_status_unavailable
+
+  defp normalize_pathways_failure_code(:pathways_status_unavailable),
+    do: :pathways_status_unavailable
+
   defp normalize_pathways_failure_code(:pathways_run_not_found), do: :pathways_run_not_found
   defp normalize_pathways_failure_code(:pathways_invalid_run_type), do: :pathways_invalid_run_type
-  defp normalize_pathways_failure_code(:pathways_results_unavailable), do: :pathways_results_unavailable
+
+  defp normalize_pathways_failure_code(:pathways_results_unavailable),
+    do: :pathways_results_unavailable
 
   defp normalize_pathways_failure_code(value) when is_binary(value) do
     case value do

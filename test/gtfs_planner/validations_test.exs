@@ -30,8 +30,8 @@ defmodule GtfsPlanner.ValidationsTest do
       if is_pid(listener) do
         send(
           listener,
-          {:pathways_runner_started_with_opts, validation_run.id, organization_id, gtfs_version_id,
-           opts}
+          {:pathways_runner_started_with_opts, validation_run.id, organization_id,
+           gtfs_version_id, opts}
         )
       end
 
@@ -1383,6 +1383,60 @@ defmodule GtfsPlanner.ValidationsTest do
       assert transformed.result_json["top_failure_categories"] == []
       assert transformed.case_row_attrs == []
     end
+
+    test "persists normalized selection diagnostics with stable shape" do
+      case_id = Ecto.UUID.generate()
+
+      transformed =
+        Validations.transform_pathways_run_result(%{
+          suite_meta: %{total_candidates: 2, selected_count: 1, malformed_count: 1},
+          selected_test_case_ids: [case_id],
+          selection: %{
+            total_candidates: 2,
+            in_scope_candidates: 2,
+            selected_count: 1,
+            invalid_count: 1,
+            scope_label: "station:STATION_REACHABILITY",
+            selected_test_case_ids: [case_id],
+            invalid_test_case_ids: ["invalid-case-id"],
+            invalid_cases: [
+              %{
+                walkability_test_id: "invalid-case-id",
+                reason_code: :invalid_coordinate_range,
+                stop_id: "stop-1",
+                address: "123 Invalid St"
+              }
+            ]
+          },
+          summary: %{total: 1, passed: 1, failed: 0, query_failure: 0, scoring_failure: 0},
+          cases: [
+            %{
+              test_case_id: case_id,
+              status: :passed,
+              route_output: %{route_exists: true}
+            }
+          ]
+        })
+
+      assert transformed.result_json["selection"] == %{
+               "total_candidates" => 2,
+               "in_scope_candidates" => 2,
+               "selected_count" => 1,
+               "invalid_count" => 1,
+               "scope_label" => "station:STATION_REACHABILITY",
+               "selected_test_case_ids" => [case_id],
+               "invalid_test_case_ids" => ["invalid-case-id"],
+               "invalid_cases" => [
+                 %{
+                   "test_case_id" => "invalid-case-id",
+                   "walkability_test_id" => "invalid-case-id",
+                   "reason_code" => "invalid_coordinate_range",
+                   "stop_id" => "stop-1",
+                   "address" => "123 Invalid St"
+                 }
+               ]
+             }
+    end
   end
 
   describe "mark_pathways_completed/3" do
@@ -1548,7 +1602,11 @@ defmodule GtfsPlanner.ValidationsTest do
       station_stop_id = "station-terminal-completed"
 
       {:ok, run} =
-        Validations.create_station_reachability_run(organization.id, gtfs_version.id, station_stop_id)
+        Validations.create_station_reachability_run(
+          organization.id,
+          gtfs_version.id,
+          station_stop_id
+        )
 
       run_result = %{
         suite_meta: %{
@@ -1586,7 +1644,11 @@ defmodule GtfsPlanner.ValidationsTest do
       station_stop_id = "station-terminal-failed"
 
       {:ok, run} =
-        Validations.create_station_reachability_run(organization.id, gtfs_version.id, station_stop_id)
+        Validations.create_station_reachability_run(
+          organization.id,
+          gtfs_version.id,
+          station_stop_id
+        )
 
       reason = %{
         reason: :otp_runtime_failed,
@@ -1652,7 +1714,11 @@ defmodule GtfsPlanner.ValidationsTest do
       other_station_stop_id = "station-recent-2"
 
       {:ok, matching_run} =
-        Validations.create_station_reachability_run(organization.id, gtfs_version.id, station_stop_id)
+        Validations.create_station_reachability_run(
+          organization.id,
+          gtfs_version.id,
+          station_stop_id
+        )
 
       {:ok, matching_run} =
         matching_run
@@ -1678,7 +1744,11 @@ defmodule GtfsPlanner.ValidationsTest do
         end)
 
       {:ok, _non_terminal_matching_run} =
-        Validations.create_station_reachability_run(organization.id, gtfs_version.id, station_stop_id)
+        Validations.create_station_reachability_run(
+          organization.id,
+          gtfs_version.id,
+          station_stop_id
+        )
 
       {:ok, _wrong_run_type} =
         Validations.create_validation_run(organization.id, gtfs_version.id, "pathways_tests")
@@ -1727,7 +1797,11 @@ defmodule GtfsPlanner.ValidationsTest do
       station_stop_id = "station-fallback-root"
 
       {:ok, run} =
-        Validations.create_validation_run(organization.id, gtfs_version.id, "station_reachability")
+        Validations.create_validation_run(
+          organization.id,
+          gtfs_version.id,
+          "station_reachability"
+        )
 
       {:ok, run} =
         run

@@ -41,7 +41,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
       organization: organization,
       gtfs_version: version
     } do
-      {:ok, run} = Validations.create_validation_run(organization.id, version.id, "station_reachability")
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "station_reachability")
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/station-reachability/#{run.id}")
@@ -56,7 +57,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
       organization: organization,
       gtfs_version: version
     } do
-      {:ok, run} = Validations.create_validation_run(organization.id, version.id, "station_reachability")
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "station_reachability")
 
       {:ok, run} =
         Validations.mark_pathways_failed(run, %{
@@ -98,7 +100,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
           address: "123 Station Plaza"
         })
 
-      {:ok, run} = Validations.create_validation_run(organization.id, version.id, "station_reachability")
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "station_reachability")
 
       run_result = %{
         suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},

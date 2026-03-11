@@ -152,12 +152,22 @@ defmodule GtfsPlanner.Validations do
     opts =
       Keyword.update(
         opts,
+        :pathways_validity_opts,
+        [station_stop_id: station_stop_id],
+        fn pathways_validity_opts ->
+          Keyword.put(pathways_validity_opts, :station_stop_id, station_stop_id)
+        end
+      )
+
+    opts =
+      Keyword.update(
+        opts,
         :runtime_opts,
         station_reachability_runtime_opts(station_stop_id),
         fn runtime_opts ->
           runtime_opts
           |> Keyword.put(:gtfs_materializer_fun, station_gtfs_materializer_fun())
-          |> Keyword.put(:gtfs_opts, [station_stop_id: station_stop_id])
+          |> Keyword.put(:gtfs_opts, station_stop_id: station_stop_id)
         end
       )
 
@@ -614,7 +624,10 @@ defmodule GtfsPlanner.Validations do
        do: base_result_json
 
   @spec station_terminal_result_json(ValidationRun.t(), term()) :: map() | nil
-  defp station_terminal_result_json(%ValidationRun{run_type: "station_reachability"} = run, reason) do
+  defp station_terminal_result_json(
+         %ValidationRun{run_type: "station_reachability"} = run,
+         reason
+       ) do
     station_terminal_result_json(run, reason, run.result_json || %{})
   end
 
@@ -649,6 +662,7 @@ defmodule GtfsPlanner.Validations do
   @spec transform_pathways_run_result(%{
           required(:suite_meta) => map(),
           required(:selected_test_case_ids) => [Ecto.UUID.t()],
+          optional(:selection) => map(),
           required(:summary) => %{
             required(:total) => non_neg_integer(),
             required(:passed) => non_neg_integer(),
@@ -658,23 +672,112 @@ defmodule GtfsPlanner.Validations do
           },
           required(:cases) => [map()]
         }) :: %{result_json: map(), case_row_attrs: [map()]}
-  def transform_pathways_run_result(%{
-        suite_meta: suite_meta,
-        selected_test_case_ids: selected_test_case_ids,
-        summary: summary,
-        cases: cases
-      }) do
+  def transform_pathways_run_result(
+        %{
+          suite_meta: suite_meta,
+          selected_test_case_ids: selected_test_case_ids,
+          summary: summary,
+          cases: cases
+        } = run_result
+      ) do
+    selection = normalize_pathways_selection(Map.get(run_result, :selection))
+
     %{
       result_json: %{
         "report_version" => @pathways_report_version,
         "suite_meta" => suite_meta,
         "selected_test_case_ids" => selected_test_case_ids,
+        "selection" => selection,
         "summary" => normalize_pathways_summary(summary),
         "top_failure_categories" => top_failure_categories(summary)
       },
       case_row_attrs: normalize_pathways_case_rows(cases)
     }
   end
+
+  @spec normalize_pathways_selection(term()) :: map()
+  defp normalize_pathways_selection(selection) when is_map(selection) do
+    normalized_selection = normalize_pathways_json_term(selection)
+
+    %{
+      "total_candidates" =>
+        normalize_non_negative_integer(payload_value(normalized_selection, :total_candidates)),
+      "in_scope_candidates" =>
+        normalize_non_negative_integer(payload_value(normalized_selection, :in_scope_candidates)),
+      "selected_count" =>
+        normalize_non_negative_integer(payload_value(normalized_selection, :selected_count)),
+      "invalid_count" =>
+        normalize_non_negative_integer(payload_value(normalized_selection, :invalid_count)),
+      "scope_label" => normalize_scope_label(payload_value(normalized_selection, :scope_label)),
+      "selected_test_case_ids" =>
+        normalize_selection_id_list(payload_value(normalized_selection, :selected_test_case_ids)),
+      "invalid_test_case_ids" =>
+        normalize_selection_id_list(payload_value(normalized_selection, :invalid_test_case_ids)),
+      "invalid_cases" =>
+        normalize_selection_invalid_cases(payload_value(normalized_selection, :invalid_cases))
+    }
+  end
+
+  defp normalize_pathways_selection(_selection) do
+    %{
+      "total_candidates" => 0,
+      "in_scope_candidates" => 0,
+      "selected_count" => 0,
+      "invalid_count" => 0,
+      "scope_label" => nil,
+      "selected_test_case_ids" => [],
+      "invalid_test_case_ids" => [],
+      "invalid_cases" => []
+    }
+  end
+
+  @spec normalize_scope_label(term()) :: String.t() | nil
+  defp normalize_scope_label(scope_label) when is_binary(scope_label) do
+    scope_label = String.trim(scope_label)
+
+    if scope_label == "" do
+      nil
+    else
+      scope_label
+    end
+  end
+
+  defp normalize_scope_label(_scope_label), do: nil
+
+  @spec normalize_non_negative_integer(term()) :: non_neg_integer()
+  defp normalize_non_negative_integer(value) when is_integer(value) and value >= 0, do: value
+  defp normalize_non_negative_integer(_value), do: 0
+
+  @spec normalize_selection_id_list(term()) :: [String.t()]
+  defp normalize_selection_id_list(selection_ids) when is_list(selection_ids) do
+    Enum.map(selection_ids, &normalize_pathways_error_value/1)
+  end
+
+  defp normalize_selection_id_list(_selection_ids), do: []
+
+  @spec normalize_selection_invalid_cases(term()) :: [map()]
+  defp normalize_selection_invalid_cases(invalid_cases) when is_list(invalid_cases) do
+    Enum.map(invalid_cases, fn invalid_case ->
+      normalized_invalid_case = normalize_pathways_json_term(invalid_case)
+
+      %{
+        "test_case_id" =>
+          payload_value(normalized_invalid_case, :test_case_id) ||
+            payload_value(normalized_invalid_case, :walkability_test_id),
+        "walkability_test_id" => payload_value(normalized_invalid_case, :walkability_test_id),
+        "reason_code" =>
+          payload_value(normalized_invalid_case, :reason_code)
+          |> case do
+            nil -> nil
+            value -> normalize_pathways_error_value(value)
+          end,
+        "stop_id" => payload_value(normalized_invalid_case, :stop_id),
+        "address" => payload_value(normalized_invalid_case, :address)
+      }
+    end)
+  end
+
+  defp normalize_selection_invalid_cases(_invalid_cases), do: []
 
   # --- Walkability Tests ---
 

@@ -10,9 +10,17 @@ defmodule GtfsPlanner.Otp.StationMaterializer.StationClosureTest do
         %{"stop_id" => "platform_1", "location_type" => "0", "parent_station" => "station_a"},
         %{"stop_id" => "entrance_1", "location_type" => "2", "parent_station" => "station_a"},
         %{"stop_id" => "boarding_1", "location_type" => "4", "parent_station" => "platform_1"},
-        %{"stop_id" => "boarding_ignored", "location_type" => "4", "parent_station" => "entrance_1"},
+        %{
+          "stop_id" => "boarding_ignored",
+          "location_type" => "4",
+          "parent_station" => "entrance_1"
+        },
         %{"stop_id" => "other_station", "location_type" => "1"},
-        %{"stop_id" => "other_platform", "location_type" => "0", "parent_station" => "other_station"}
+        %{
+          "stop_id" => "other_platform",
+          "location_type" => "0",
+          "parent_station" => "other_station"
+        }
       ]
 
       assert StationClosure.derive_kept_stop_ids(stops, "station_a") == [

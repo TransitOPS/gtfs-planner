@@ -239,10 +239,13 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
     end
 
     assert {:error, [returned_issue]} =
-             Runtime.run_with_otp("org-1", "ver-1", fn _session ->
-               send(parent, :callback_called)
-               {:ok, :unexpected}
-             end,
+             Runtime.run_with_otp(
+               "org-1",
+               "ver-1",
+               fn _session ->
+                 send(parent, :callback_called)
+                 {:ok, :unexpected}
+               end,
                gtfs_materializer_fun: gtfs_fun,
                graph_materializer_fun: graph_fun,
                start_server_fun: start_server_fun

@@ -95,7 +95,9 @@ defmodule GtfsPlanner.Otp.Runtime do
   end
 
   @spec run_with_otp(Ecto.UUID.t(), Ecto.UUID.t(), run_callback(), keyword()) ::
-          {:ok, term()} | {:ok, %{result: term(), runtime_meta: prepare_meta()}} | {:error, term()}
+          {:ok, term()}
+          | {:ok, %{result: term(), runtime_meta: prepare_meta()}}
+          | {:error, term()}
   def run_with_otp(organization_id, gtfs_version_id, callback, opts \\ [])
       when is_function(callback, 1) and is_list(opts) do
     status_callback = Keyword.get(opts, :status_callback)
@@ -122,7 +124,8 @@ defmodule GtfsPlanner.Otp.Runtime do
                    :ok <- wait_ready_fun.(session, opts),
                    :ok <- emit_runtime_status(otp_status_callback, :ready),
                    {:ok, result} <- callback.(session) do
-                {:ok, maybe_attach_runtime_meta(result, prepared_runtime.meta, return_runtime_meta?)}
+                {:ok,
+                 maybe_attach_runtime_meta(result, prepared_runtime.meta, return_runtime_meta?)}
               end
             after
               _ = emit_runtime_status(otp_status_callback, :stopping)

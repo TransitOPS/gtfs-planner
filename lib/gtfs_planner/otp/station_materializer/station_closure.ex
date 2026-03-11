@@ -34,7 +34,8 @@ defmodule GtfsPlanner.Otp.StationMaterializer.StationClosure do
     boarding_area_ids =
       stops
       |> Enum.filter(fn stop ->
-        stop_location_type(stop) == 4 and MapSet.member?(kept_platform_ids, stop_parent_station(stop))
+        stop_location_type(stop) == 4 and
+          MapSet.member?(kept_platform_ids, stop_parent_station(stop))
       end)
       |> Enum.map(&stop_id/1)
       |> Enum.reject(&is_nil/1)
@@ -88,11 +89,16 @@ defmodule GtfsPlanner.Otp.StationMaterializer.StationClosure do
   defp stop_location_type(%{values: values}) when is_map(values),
     do: map_get(values, "location_type") |> parse_int()
 
-  defp stop_location_type(stop) when is_map(stop), do: map_get(stop, "location_type") |> parse_int()
+  defp stop_location_type(stop) when is_map(stop),
+    do: map_get(stop, "location_type") |> parse_int()
 
   defp map_get(map, "stop_id"), do: Map.get(map, "stop_id") || Map.get(map, :stop_id)
-  defp map_get(map, "parent_station"), do: Map.get(map, "parent_station") || Map.get(map, :parent_station)
-  defp map_get(map, "location_type"), do: Map.get(map, "location_type") || Map.get(map, :location_type)
+
+  defp map_get(map, "parent_station"),
+    do: Map.get(map, "parent_station") || Map.get(map, :parent_station)
+
+  defp map_get(map, "location_type"),
+    do: Map.get(map, "location_type") || Map.get(map, :location_type)
 
   defp parse_int(nil), do: nil
   defp parse_int(value) when is_integer(value), do: value

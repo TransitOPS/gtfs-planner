@@ -62,7 +62,9 @@ defmodule GtfsPlanner.Otp.StationMaterializer.GtfsZipReaderTest do
 
     {:ok, {_name, zip_binary}} = :zip.create(~c"gtfs.zip", files, [:memory])
 
-    dir = Path.join(System.tmp_dir!(), "gtfs-zip-reader-test-#{System.unique_integer([:positive])}")
+    dir =
+      Path.join(System.tmp_dir!(), "gtfs-zip-reader-test-#{System.unique_integer([:positive])}")
+
     :ok = File.mkdir_p(dir)
 
     zip_path = Path.join(dir, "gtfs.zip")
