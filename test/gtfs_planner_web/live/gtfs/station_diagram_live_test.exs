@@ -6313,6 +6313,41 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "No child stops to rename"
     end
 
+    test "drawer shows collision error without no-stops empty state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "COLLIDE_ME",
+          stop_name: "Collide Me",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      _blocker =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "naming_station_platform_general_ground_01",
+          stop_name: "Collision Blocker",
+          location_type: 0
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      html = render_click(view, "open_naming_drawer")
+
+      assert html =~ "Naming collision detected"
+      refute html =~ "No child stops to rename"
+    end
+
     test "dismiss clears status message", %{
       conn: conn,
       user: user,

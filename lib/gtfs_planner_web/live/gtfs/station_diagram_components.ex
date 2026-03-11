@@ -3541,7 +3541,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           {@error}
         </div>
 
-        <div :if={@preview_rows == []} class="text-sm text-base-content/60">
+        <div :if={@preview_rows == [] and is_nil(@error)} class="text-sm text-base-content/60">
           No child stops to rename for this station.
         </div>
 

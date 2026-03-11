@@ -2324,21 +2324,35 @@ defmodule GtfsPlanner.Gtfs do
 
         naming_map = StationNaming.build_naming_map(child_stops, pathways, station_stop_id)
 
-        # Check for collisions with existing stop_ids outside the rename set
-        existing_ids =
-          from(s in Stop,
-            where:
-              s.organization_id == ^organization_id and
-                s.gtfs_version_id == ^gtfs_version_id,
-            select: s.stop_id
-          )
-          |> Repo.all()
+        old_id_set = MapSet.new(naming_map, & &1.old_id)
+
+        # Query only candidate new IDs (excluding IDs that are being renamed in this operation).
+        candidate_new_ids =
+          naming_map
+          |> Enum.map(& &1.new_id)
           |> MapSet.new()
+          |> MapSet.difference(old_id_set)
+          |> MapSet.to_list()
+
+        existing_ids =
+          case candidate_new_ids do
+            [] ->
+              MapSet.new()
+
+            _ ->
+              from(s in Stop,
+                where:
+                  s.organization_id == ^organization_id and
+                    s.gtfs_version_id == ^gtfs_version_id and
+                    s.stop_id in ^candidate_new_ids,
+                select: s.stop_id
+              )
+              |> Repo.all()
+              |> MapSet.new()
+          end
 
         case StationNaming.detect_collisions(naming_map, existing_ids) do
           [] ->
-            old_id_set = MapSet.new(naming_map, & &1.old_id)
-
             reference_counts =
               count_stop_id_references(organization_id, gtfs_version_id, old_id_set)
 

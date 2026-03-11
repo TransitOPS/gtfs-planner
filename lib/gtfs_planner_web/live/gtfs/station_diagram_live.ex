@@ -1389,6 +1389,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          socket
          |> assign(:show_naming_drawer, true)
          |> assign(:naming_preview, [])
+         |> assign(:naming_renamed_stops_count, 0)
+         |> assign(:naming_updated_pathways_count, 0)
+         |> assign(:naming_applying?, false)
          |> assign(:naming_error, "Naming collision detected: #{Enum.join(collisions, ", ")}")}
     end
   end
