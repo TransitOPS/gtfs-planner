@@ -19,11 +19,16 @@ defmodule GtfsPlanner.Otp.GraphPreflight do
 
   @spec run(Ecto.UUID.t(), Ecto.UUID.t()) :: :ok | {:error, [issue()]}
   def run(organization_id, gtfs_version_id) do
+    run(organization_id, gtfs_version_id, [])
+  end
+
+  @spec run(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: :ok | {:error, [issue()]}
+  def run(organization_id, gtfs_version_id, opts) when is_list(opts) do
     issues =
       java_issues() ++
         jar_issues() ++
         osm_issues() ++
-        gtfs_issues(organization_id, gtfs_version_id) ++
+        gtfs_issues(organization_id, gtfs_version_id, opts) ++
         workspace_issues(organization_id, gtfs_version_id)
 
     case issues do
@@ -115,54 +120,62 @@ defmodule GtfsPlanner.Otp.GraphPreflight do
     end
   end
 
-  defp gtfs_issues(organization_id, gtfs_version_id) do
-    case Otp.fetch_artifact(organization_id, gtfs_version_id) do
-      {:ok, artifact} ->
-        gtfs_path = artifact.zip_path
+  defp gtfs_issues(organization_id, gtfs_version_id, opts) do
+    case Keyword.get(opts, :gtfs_zip_path) do
+      gtfs_zip_path when is_binary(gtfs_zip_path) and gtfs_zip_path != "" ->
+        validate_gtfs_zip_path(gtfs_zip_path)
 
-        cond do
-          gtfs_path == nil or String.trim(gtfs_path) == "" ->
-            [issue(:missing_gtfs_zip_path, "GTFS artifact zip path is missing", %{})]
+      _ ->
+        case Otp.fetch_artifact(organization_id, gtfs_version_id) do
+          {:ok, artifact} ->
+            validate_gtfs_zip_path(artifact.zip_path)
 
-          Path.type(gtfs_path) != :absolute ->
+          {:error, :not_found} ->
             [
-              issue(:invalid_gtfs_zip_path, "GTFS artifact zip path must be absolute", %{
-                path: gtfs_path
+              issue(:missing_gtfs_artifact, "OTP GTFS artifact record was not found", %{
+                organization_id: organization_id,
+                gtfs_version_id: gtfs_version_id
               })
             ]
-
-          not File.exists?(gtfs_path) ->
-            [
-              issue(:gtfs_zip_not_found, "GTFS artifact zip file was not found", %{
-                path: gtfs_path
-              })
-            ]
-
-          not File.regular?(gtfs_path) ->
-            [
-              issue(:gtfs_zip_not_regular_file, "GTFS artifact zip path is not a regular file", %{
-                path: gtfs_path
-              })
-            ]
-
-          not readable_file?(gtfs_path) ->
-            [
-              issue(:gtfs_zip_not_readable, "GTFS artifact zip file is not readable", %{
-                path: gtfs_path
-              })
-            ]
-
-          true ->
-            []
         end
+    end
+  end
 
-      {:error, :not_found} ->
+  defp validate_gtfs_zip_path(gtfs_path) do
+    cond do
+      gtfs_path == nil or String.trim(gtfs_path) == "" ->
+        [issue(:missing_gtfs_zip_path, "GTFS artifact zip path is missing", %{})]
+
+      Path.type(gtfs_path) != :absolute ->
         [
-          issue(:missing_gtfs_artifact, "OTP GTFS artifact record was not found", %{
-            organization_id: organization_id,
-            gtfs_version_id: gtfs_version_id
+          issue(:invalid_gtfs_zip_path, "GTFS artifact zip path must be absolute", %{
+            path: gtfs_path
           })
         ]
+
+      not File.exists?(gtfs_path) ->
+        [
+          issue(:gtfs_zip_not_found, "GTFS artifact zip file was not found", %{
+            path: gtfs_path
+          })
+        ]
+
+      not File.regular?(gtfs_path) ->
+        [
+          issue(:gtfs_zip_not_regular_file, "GTFS artifact zip path is not a regular file", %{
+            path: gtfs_path
+          })
+        ]
+
+      not readable_file?(gtfs_path) ->
+        [
+          issue(:gtfs_zip_not_readable, "GTFS artifact zip file is not readable", %{
+            path: gtfs_path
+          })
+        ]
+
+      true ->
+        []
     end
   end
 

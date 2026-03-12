@@ -299,7 +299,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert has_element?(view, "#station-otp-data-requirements-summary")
     end
 
-    test "polling renders success summary cards and top failure categories", %{
+    test "polling renders simplified validation summary and case results table", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -347,17 +347,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       _ = render(view)
 
       assert has_element?(view, "#station-reachability-summary")
-      assert has_element?(view, "#reachability-summary-total", "1")
-      assert has_element?(view, "#reachability-summary-passed", "0")
-      assert has_element?(view, "#reachability-summary-failed", "1")
-      assert has_element?(view, "#reachability-summary-pass-rate", "0.0%")
-      assert has_element?(view, "#station-reachability-top-failures", "query_failure")
       assert has_element?(view, "#station-trip-overview")
+      assert has_element?(view, "#station-trip-overview", "Test cases")
+      assert has_element?(view, "#station-trip-overview", "1")
+      assert has_element?(view, "#station-trip-overview", "Passed")
+      assert has_element?(view, "#station-trip-overview", "0")
+      assert has_element?(view, "#station-trip-overview", "Warnings")
+      assert has_element?(view, "#station-trip-overview", "Failed")
       assert has_element?(view, "#station-pathways-case-results")
       assert has_element?(view, "#station-pathways-case-row-0")
+
+      refute has_element?(view, "#reachability-summary-total")
+      refute has_element?(view, "#reachability-summary-pass-rate")
+      refute has_element?(view, "#station-reachability-top-failures")
     end
 
-    test "polling renders scope coverage and reconciles selected count with case rows", %{
+    test "polling renders case rows for selected test cases only", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -427,20 +432,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       send(view.pid, {:poll_pathways_trip_test_status, run.id})
       _ = render(view)
 
-      assert has_element?(view, "#station-reachability-coverage")
-      assert has_element?(view, "#station-reachability-coverage-in-scope", "2")
-      assert has_element?(view, "#station-reachability-coverage-selected", "1")
-      assert has_element?(view, "#station-reachability-coverage-invalid", "1")
-      assert has_element?(view, "#station-reachability-invalid-cases")
-
-      assert has_element?(
-               view,
-               "#station-reachability-invalid-row-#{invalid_test_case.id}",
-               "invalid_coordinate_range"
-             )
-
       assert has_element?(view, "#station-pathways-case-row-0")
       refute has_element?(view, "#station-pathways-case-row-1")
+
+      refute has_element?(view, "#station-reachability-coverage")
+      refute has_element?(view, "#station-reachability-invalid-cases")
     end
 
     test "renders parent-station reachability test cases table scoped to station", %{

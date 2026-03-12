@@ -609,6 +609,79 @@ defmodule GtfsPlanner.Otp.StationMaterializerTest do
       assert normalize_zip_entries(first_entries) == normalize_zip_entries(second_entries)
       assert second_meta.station_zip_path == first_zip_path
     end
+
+    test "excludes out-of-scope stop_times rows from station scoped artifact", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      %{station_stop_id: station_stop_id, trip_id: trip_id} =
+        seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      stop_time_fixture(
+        organization.id,
+        gtfs_version.id,
+        trip_id,
+        "seed_stop_b",
+        %{stop_sequence: 777}
+      )
+
+      assert {:ok, zip_path, meta} =
+               StationMaterializer.get_or_build_gtfs_zip(
+                 organization.id,
+                 gtfs_version.id,
+                 station_stop_id: station_stop_id
+               )
+
+      assert {:ok, tables} = GtfsZipReader.read_tables(zip_path)
+      stop_times_rows = Map.get(tables, "stop_times.txt", %{rows: []}).rows
+
+      kept_stop_ids =
+        stop_times_rows
+        |> Enum.map(fn row -> row.values["stop_id"] end)
+        |> Enum.sort()
+
+      assert kept_stop_ids == ["seed_stop_a"]
+
+      assert meta.station_feed_summary["stop_times.txt"].kept_count == 1
+      assert meta.station_feed_summary["stop_times.txt"].dropped_count == 1
+    end
+
+    test "builds station artifact when source has unresolved out-of-scope stop reference", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      %{station_stop_id: station_stop_id, trip_id: trip_id} =
+        seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      stop_time_fixture(
+        organization.id,
+        gtfs_version.id,
+        trip_id,
+        "missing_stop_outside_scope",
+        %{stop_sequence: 999}
+      )
+
+      assert {:ok, zip_path, meta} =
+               StationMaterializer.get_or_build_gtfs_zip(
+                 organization.id,
+                 gtfs_version.id,
+                 station_stop_id: station_stop_id
+               )
+
+      assert {:ok, tables} = GtfsZipReader.read_tables(zip_path)
+      stop_times_rows = Map.get(tables, "stop_times.txt", %{rows: []}).rows
+
+      kept_stop_ids =
+        stop_times_rows
+        |> Enum.map(fn row -> row.values["stop_id"] end)
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      assert kept_stop_ids == ["seed_stop_a"]
+      assert meta.station_feed_summary["stop_times.txt"].kept_count == 1
+      assert meta.station_feed_summary["stop_times.txt"].dropped_count == 1
+      assert meta.integrity_summary.blocking_issue_count == 0
+    end
   end
 
   defp seed_minimum_required_gtfs!(organization_id, gtfs_version_id, opts \\ []) do

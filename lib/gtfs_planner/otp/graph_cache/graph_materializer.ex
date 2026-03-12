@@ -24,17 +24,23 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
   def get_or_build_graph(organization_id, gtfs_version_id, opts \\ []) when is_list(opts) do
     status_callback = Keyword.get(opts, :status_callback)
     cache_lookup_fun = Keyword.get(opts, :cache_lookup_fun, &cache_hit/2)
-    preflight_fun = Keyword.get(opts, :preflight_fun, &GraphPreflight.run/2)
+    preflight_fun = Keyword.get(opts, :preflight_fun, &GraphPreflight.run/3)
     build_fun = Keyword.get(opts, :build_fun, &GraphBuilder.build/2)
     persist_fun = Keyword.get(opts, :persist_fun, &persist_manifest/4)
-    stage_fun = Keyword.get(opts, :stage_fun, &stage_inputs/3)
-    build_opts = Keyword.get(opts, :build_opts, [])
+    stage_fun = Keyword.get(opts, :stage_fun, &stage_inputs/4)
+
+    build_opts =
+      opts
+      |> Keyword.get(:build_opts, [])
+      |> Keyword.put_new(:gtfs_zip_path, Keyword.get(opts, :gtfs_zip_path))
+      |> Keyword.put_new(:gtfs_meta, Keyword.get(opts, :gtfs_meta, %{}))
+
     force_rebuild? = Keyword.get(opts, :force_rebuild, false)
 
     if force_rebuild? do
       emit_status(status_callback, %{phase: :preflight})
 
-      case preflight_fun.(organization_id, gtfs_version_id) do
+      case preflight_fun.(organization_id, gtfs_version_id, opts) do
         :ok ->
           do_build_and_persist(
             organization_id,
@@ -63,7 +69,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
         :miss ->
           emit_status(status_callback, %{phase: :preflight})
 
-          case preflight_fun.(organization_id, gtfs_version_id) do
+          case preflight_fun.(organization_id, gtfs_version_id, opts) do
             :ok ->
               do_build_and_persist(
                 organization_id,
@@ -96,7 +102,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
 
     data_dir = GraphPath.data_dir(organization_id, gtfs_version_id)
 
-    case stage_fun.(organization_id, gtfs_version_id, data_dir) do
+    case stage_inputs(stage_fun, organization_id, gtfs_version_id, data_dir, build_opts) do
       :ok ->
         case build_fun.(data_dir, build_opts) do
           {:ok, build_result} ->
@@ -168,15 +174,38 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
     end
   end
 
-  defp stage_inputs(organization_id, gtfs_version_id, data_dir) do
+  defp stage_inputs(stage_fun, organization_id, gtfs_version_id, data_dir, build_opts)
+       when is_function(stage_fun, 4) do
+    stage_fun.(organization_id, gtfs_version_id, data_dir, build_opts)
+  end
+
+  defp stage_inputs(stage_fun, organization_id, gtfs_version_id, data_dir, _build_opts)
+       when is_function(stage_fun, 3) do
+    stage_fun.(organization_id, gtfs_version_id, data_dir)
+  end
+
+  defp stage_inputs(organization_id, gtfs_version_id, data_dir, build_opts) do
     with :ok <- File.mkdir_p(data_dir),
-         {:ok, artifact} <- Otp.fetch_artifact(organization_id, gtfs_version_id),
+         {:ok, gtfs_path} <-
+           resolve_gtfs_source_zip_path(organization_id, gtfs_version_id, build_opts),
          {:ok, osm_path} <- OsmPath.resolve(),
          gtfs_staged_path <- GraphPath.staged_gtfs_zip_path(organization_id, gtfs_version_id),
          osm_staged_path <- GraphPath.staged_osm_path(organization_id, gtfs_version_id, osm_path),
-         :ok <- copy_file(:gtfs, artifact.zip_path, gtfs_staged_path),
+         :ok <- copy_file(:gtfs, gtfs_path, gtfs_staged_path),
          :ok <- copy_file(:osm, osm_path, osm_staged_path) do
       :ok
+    end
+  end
+
+  defp resolve_gtfs_source_zip_path(organization_id, gtfs_version_id, build_opts) do
+    case Keyword.get(build_opts, :gtfs_zip_path) do
+      gtfs_zip_path when is_binary(gtfs_zip_path) and gtfs_zip_path != "" ->
+        {:ok, gtfs_zip_path}
+
+      _ ->
+        with {:ok, artifact} <- Otp.fetch_artifact(organization_id, gtfs_version_id) do
+          {:ok, artifact.zip_path}
+        end
     end
   end
 
@@ -235,14 +264,15 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
   defp map_persist_error(reason),
     do: %{reason_code: :unknown_persist_error, reason: inspect(reason)}
 
-  defp persist_manifest(organization_id, gtfs_version_id, build_result, _build_opts) do
-    with {:ok, artifact} <- Otp.fetch_artifact(organization_id, gtfs_version_id),
+  defp persist_manifest(organization_id, gtfs_version_id, build_result, build_opts) do
+    with {:ok, gtfs_content_hash} <-
+           resolve_gtfs_content_hash(organization_id, gtfs_version_id, build_opts),
          {:ok, osm_path} <- OsmPath.resolve(),
          {:ok, osm_fingerprint} <- file_sha256(osm_path),
          manifest_path <- GraphPath.manifest_path(organization_id, gtfs_version_id),
          manifest_json <-
            GraphManifest.build(
-             artifact.content_hash,
+             gtfs_content_hash,
              osm_fingerprint,
              Application.get_env(:gtfs_planner, :otp_jar_sha256),
              %{
@@ -259,6 +289,18 @@ defmodule GtfsPlanner.Otp.GraphMaterializer do
       {:ok, manifest_path, manifest_json}
     else
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp resolve_gtfs_content_hash(organization_id, gtfs_version_id, build_opts) do
+    case Keyword.get(build_opts, :gtfs_meta, %{}) do
+      %{content_hash: content_hash} when is_binary(content_hash) and content_hash != "" ->
+        {:ok, content_hash}
+
+      _ ->
+        with {:ok, artifact} <- Otp.fetch_artifact(organization_id, gtfs_version_id) do
+          {:ok, artifact.content_hash}
+        end
     end
   end
 

@@ -1868,6 +1868,28 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     normalized_codes = issue_codes |> Enum.map(&normalize_issue_code/1) |> Enum.reject(&is_nil/1)
 
     cond do
+      Enum.any?(normalized_codes,
+        &(&1 in [
+            :station_runtime_input_missing_station_zip_path,
+            :station_runtime_input_missing_station_stop_id,
+            :station_runtime_input_lineage_mismatch
+          ])
+      ) ->
+        :pathways_internal_failure
+
+      Enum.any?(normalized_codes,
+        &(&1 in [
+            :station_runtime_input_station_zip_path_unreadable,
+            :station_runtime_precheck_artifact_read_failed
+          ])
+      ) ->
+        :missing_corrupt_files_or_permissions
+
+      Enum.any?(normalized_codes,
+        &(&1 in [:station_runtime_precheck_stop_times_stop_id_missing_stop])
+      ) ->
+        :referential_integrity
+
       Enum.any?(normalized_codes, &(&1 in [:station_stop_lat_missing, :station_stop_lon_missing])) ->
         :invalid_coordinates
 
@@ -1927,6 +1949,23 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       "station_stop_lon_out_of_range" -> :station_stop_lon_out_of_range
       "boarding_area_parent_station_missing" -> :boarding_area_parent_station_missing
       "boarding_area_parent_station_not_found" -> :boarding_area_parent_station_not_found
+      "station_runtime_input_missing_station_zip_path" ->
+        :station_runtime_input_missing_station_zip_path
+
+      "station_runtime_input_missing_station_stop_id" ->
+        :station_runtime_input_missing_station_stop_id
+
+      "station_runtime_input_station_zip_path_unreadable" ->
+        :station_runtime_input_station_zip_path_unreadable
+
+      "station_runtime_input_lineage_mismatch" -> :station_runtime_input_lineage_mismatch
+
+      "station_runtime_precheck_stop_times_stop_id_missing_stop" ->
+        :station_runtime_precheck_stop_times_stop_id_missing_stop
+
+      "station_runtime_precheck_artifact_read_failed" ->
+        :station_runtime_precheck_artifact_read_failed
+
       _other -> nil
     end
   end

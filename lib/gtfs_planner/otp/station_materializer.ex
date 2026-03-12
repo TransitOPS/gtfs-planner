@@ -77,7 +77,13 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
   end
 
   defp delegate_materializer(organization_id, gtfs_version_id, station_stop_id, opts) do
-    case Materializer.get_or_build_gtfs_zip(organization_id, gtfs_version_id, opts) do
+    source_materializer_opts = source_materializer_opts(opts)
+
+    case Materializer.get_or_build_gtfs_zip(
+           organization_id,
+           gtfs_version_id,
+           source_materializer_opts
+         ) do
       {:ok, source_zip_path, source_meta} ->
         build_station_zip(
           organization_id,
@@ -90,6 +96,16 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
       {:error, issues} ->
         {:error, issues}
     end
+  end
+
+  defp source_materializer_opts(opts) do
+    opts
+    |> Keyword.put(:preflight_mode, :lenient)
+    |> Keyword.put_new(:pathways_preflight_fun, &skip_source_pathways_preflight/3)
+  end
+
+  defp skip_source_pathways_preflight(_organization_id, _gtfs_version_id, _opts) do
+    {:ok, %{blocking_errors: [], warnings: [], metadata: %{scope: :station_source}}}
   end
 
   defp build_station_zip(

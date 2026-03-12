@@ -495,6 +495,7 @@ defmodule GtfsPlanner.ValidationsTest do
                :erlang.fun_info(materializer_fun, :name)
 
       assert [station_stop_id: station_stop_id] == Keyword.get(runtime_opts, :gtfs_opts)
+      assert Keyword.get(runtime_opts, :runtime_scope) == :station_reachability
       assert Keyword.get(runtime_opts, :return_runtime_meta) == true
     end
 

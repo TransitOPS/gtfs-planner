@@ -294,60 +294,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
         <% end %>
 
         <%= if @validation_result do %>
-          <section id="station-reachability-summary" class="space-y-3 border-t border-base-200 pt-4">
+          <section id="station-reachability-summary" class="space-y-4 border-t border-base-200 pt-4">
             <h3 class="text-sm font-semibold text-base-content">Validation summary</h3>
-
-            <dl class="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-              <div class="rounded border border-base-200 px-3 py-2" id="reachability-summary-total">
-                <dt class="text-xs uppercase tracking-wide text-base-content/70">Total</dt>
-                <dd class="text-base font-semibold text-base-content">
-                  {@validation_result.summary_cards.total}
-                </dd>
-              </div>
-              <div class="rounded border border-base-200 px-3 py-2" id="reachability-summary-passed">
-                <dt class="text-xs uppercase tracking-wide text-base-content/70">Passed</dt>
-                <dd class="text-base font-semibold text-base-content">
-                  {@validation_result.summary_cards.passed}
-                </dd>
-              </div>
-              <div class="rounded border border-base-200 px-3 py-2" id="reachability-summary-failed">
-                <dt class="text-xs uppercase tracking-wide text-base-content/70">Failed</dt>
-                <dd class="text-base font-semibold text-base-content">
-                  {@validation_result.summary_cards.failed}
-                </dd>
-              </div>
-              <div
-                class="rounded border border-base-200 px-3 py-2"
-                id="reachability-summary-pass-rate"
-              >
-                <dt class="text-xs uppercase tracking-wide text-base-content/70">Pass rate</dt>
-                <dd class="text-base font-semibold text-base-content">
-                  {@validation_result.summary_cards.pass_rate}%
-                </dd>
-              </div>
-            </dl>
-
-            <div
-              :if={@validation_result.top_failure_rows != []}
-              id="station-reachability-top-failures"
-            >
-              <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-                Top failure categories
-              </h4>
-              <ul class="mt-2 space-y-1 text-sm">
-                <li
-                  :for={row <- @validation_result.top_failure_rows}
-                  class="flex items-center justify-between rounded border border-base-200 px-3 py-2"
-                >
-                  <span>{row.category}</span>
-                  <span class="font-medium">{row.count}</span>
-                </li>
-              </ul>
-            </div>
 
             <section id="station-trip-overview" class="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <div class="rounded border border-base-200 px-3 py-2">
-                <div class="text-xs uppercase tracking-wide text-base-content/70">Total tests</div>
+                <div class="text-xs uppercase tracking-wide text-base-content/70">Test cases</div>
                 <div class="text-base font-semibold text-base-content">
                   {@validation_result.trip_overview.total_tests}
                 </div>
@@ -369,71 +321,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
                 <div class="text-base font-semibold text-error">
                   {@validation_result.trip_overview.fail_count}
                 </div>
-              </div>
-            </section>
-
-            <section
-              id="station-reachability-coverage"
-              class="space-y-3 rounded border border-base-200 p-3"
-            >
-              <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-                Scope coverage
-              </h4>
-
-              <dl class="grid grid-cols-3 gap-2 text-sm">
-                <div
-                  id="station-reachability-coverage-in-scope"
-                  class="rounded border border-base-200 px-3 py-2"
-                >
-                  <dt class="text-xs uppercase tracking-wide text-base-content/70">In scope</dt>
-                  <dd class="text-base font-semibold text-base-content">
-                    {@pathways_selection.in_scope_candidates}
-                  </dd>
-                </div>
-                <div
-                  id="station-reachability-coverage-selected"
-                  class="rounded border border-base-200 px-3 py-2"
-                >
-                  <dt class="text-xs uppercase tracking-wide text-base-content/70">Selected</dt>
-                  <dd class="text-base font-semibold text-base-content">
-                    {@pathways_selection.selected_count}
-                  </dd>
-                </div>
-                <div
-                  id="station-reachability-coverage-invalid"
-                  class="rounded border border-base-200 px-3 py-2"
-                >
-                  <dt class="text-xs uppercase tracking-wide text-base-content/70">Invalid</dt>
-                  <dd class="text-base font-semibold text-base-content">
-                    {@pathways_selection.invalid_count}
-                  </dd>
-                </div>
-              </dl>
-
-              <div
-                :if={@pathways_selection.invalid_cases != []}
-                id="station-reachability-invalid-cases"
-                class="overflow-x-auto"
-              >
-                <table class="table table-xs">
-                  <thead>
-                    <tr>
-                      <th>Test case</th>
-                      <th>Reason</th>
-                      <th>Stop</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr
-                      :for={invalid_case <- @pathways_selection.invalid_cases}
-                      id={"station-reachability-invalid-row-#{invalid_case.test_case_id}"}
-                    >
-                      <td class="font-mono text-xs">{invalid_case.test_case_id}</td>
-                      <td>{invalid_case.reason_code}</td>
-                      <td>{invalid_case.stop_id || "-"}</td>
-                    </tr>
-                  </tbody>
-                </table>
               </div>
             </section>
 

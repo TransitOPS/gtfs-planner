@@ -166,6 +166,7 @@ defmodule GtfsPlanner.Validations do
         station_reachability_runtime_opts(station_stop_id),
         fn runtime_opts ->
           runtime_opts
+          |> Keyword.put(:runtime_scope, :station_reachability)
           |> Keyword.put(:gtfs_materializer_fun, station_gtfs_materializer_fun())
           |> Keyword.put(:gtfs_opts, station_stop_id: station_stop_id)
         end
@@ -195,6 +196,7 @@ defmodule GtfsPlanner.Validations do
   @spec station_reachability_runtime_opts(String.t()) :: keyword()
   defp station_reachability_runtime_opts(station_stop_id) do
     [
+      runtime_scope: :station_reachability,
       gtfs_materializer_fun: station_gtfs_materializer_fun(),
       gtfs_opts: [station_stop_id: station_stop_id],
       return_runtime_meta: true

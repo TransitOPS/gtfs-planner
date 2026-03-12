@@ -90,7 +90,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
              GraphMaterializer.get_or_build_graph("org-1", "ver-1",
                status_callback: status_callback,
                cache_lookup_fun: fn _org, _ver -> :miss end,
-               preflight_fun: fn _org, _ver -> :ok end,
+               preflight_fun: fn _org, _ver, _opts -> :ok end,
                stage_fun: fn _org, _ver, _data_dir -> :ok end,
                build_fun: fn _data_dir, _opts -> {:ok, build_result} end,
                persist_fun: fn _org, _ver, ^build_result, _opts ->
@@ -123,7 +123,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
                status_callback: status_callback,
                cache_lookup_fun: fn _org, _ver -> :miss end,
                stage_fun: fn _org, _ver, _data_dir -> :ok end,
-               preflight_fun: fn _org, _ver -> {:error, issues} end
+               preflight_fun: fn _org, _ver, _opts -> {:error, issues} end
              )
 
     assert_receive {:phase, %{phase: :cache_check}}
@@ -155,7 +155,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
                  {:ok, "/tmp/graph/Graph.obj", "/tmp/graph/manifest.json",
                   %{"schema_version" => 1}}
                end,
-               preflight_fun: fn _org, _ver -> :ok end,
+               preflight_fun: fn _org, _ver, _opts -> :ok end,
                stage_fun: fn _org, _ver, _data_dir -> :ok end,
                build_fun: fn _data_dir, _opts -> {:ok, build_result} end,
                persist_fun: fn _org, _ver, ^build_result, _opts ->
@@ -283,7 +283,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
              GraphMaterializer.get_or_build_graph(organization.id, gtfs_version.id,
                status_callback: status_callback,
                stage_fun: fn _org, _ver, _data_dir -> :ok end,
-               preflight_fun: fn _org, _ver -> :ok end,
+               preflight_fun: fn _org, _ver, _opts -> :ok end,
                build_fun: fn _data_dir, _opts -> {:ok, build_result} end,
                persist_fun: fn _org, _ver, ^build_result, _opts ->
                  {:ok, manifest_path, new_manifest}
@@ -344,7 +344,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
              GraphMaterializer.get_or_build_graph(organization.id, gtfs_version.id,
                status_callback: status_callback,
                cache_lookup_fun: fn _org, _ver -> :miss end,
-               preflight_fun: fn _org, _ver -> :ok end,
+               preflight_fun: fn _org, _ver, _opts -> :ok end,
                build_fun: fn data_dir, _opts ->
                  send(self(), {:build_data_dir, data_dir})
                  {:ok, build_result}
@@ -383,7 +383,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
              GraphMaterializer.get_or_build_graph(organization.id, gtfs_version.id,
                status_callback: status_callback,
                cache_lookup_fun: fn _org, _ver -> :miss end,
-               preflight_fun: fn _org, _ver -> :ok end,
+               preflight_fun: fn _org, _ver, _opts -> :ok end,
                stage_fun: fn _org, _ver, _data_dir -> :ok end,
                build_fun: fn _data_dir, _opts -> {:error, build_reason} end
              )
@@ -419,7 +419,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
              GraphMaterializer.get_or_build_graph(organization.id, gtfs_version.id,
                status_callback: status_callback,
                cache_lookup_fun: fn _org, _ver -> :miss end,
-               preflight_fun: fn _org, _ver -> :ok end,
+               preflight_fun: fn _org, _ver, _opts -> :ok end,
                stage_fun: fn _org, _ver, _data_dir -> :ok end,
                build_fun: fn _data_dir, _opts -> {:ok, build_result} end,
                persist_fun: fn _org, _ver, ^build_result, _opts ->
@@ -448,7 +448,7 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
              GraphMaterializer.get_or_build_graph(organization.id, gtfs_version.id,
                status_callback: status_callback,
                cache_lookup_fun: fn _org, _ver -> :miss end,
-               preflight_fun: fn _org, _ver -> :ok end,
+               preflight_fun: fn _org, _ver, _opts -> :ok end,
                stage_fun: fn _org, _ver, _data_dir -> {:error, :missing_gtfs_artifact} end
              )
 
