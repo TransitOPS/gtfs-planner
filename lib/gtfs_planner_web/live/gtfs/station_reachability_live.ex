@@ -219,6 +219,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
                       class="border-l-2 border-error/60 pl-3"
                     >
                       <p class="leading-5 text-base-content">{issue.message}</p>
+                      <p class="mt-1 font-mono text-xs text-base-content/80">
+                        code: {pathways_issue_code_text(issue)}
+                      </p>
+                      <p
+                        :if={issue_context = pathways_issue_context_text(issue)}
+                        class="mt-1 font-mono text-xs text-base-content/70"
+                      >
+                        {issue_context}
+                      </p>
                       <p
                         :if={issue.context_summary}
                         class="mt-1 font-mono text-xs text-base-content/70"
@@ -1115,6 +1124,43 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   defp presenter_detail_value(value) when is_atom(value), do: Atom.to_string(value)
   defp presenter_detail_value(value) when is_integer(value), do: Integer.to_string(value)
   defp presenter_detail_value(value), do: inspect(value)
+
+  defp pathways_issue_code_text(issue) when is_map(issue) do
+    case Map.get(issue, :code) do
+      code when is_atom(code) -> Atom.to_string(code)
+      code when is_binary(code) -> code
+      _other -> "unknown_issue"
+    end
+  end
+
+  defp pathways_issue_code_text(_issue), do: "unknown_issue"
+
+  defp pathways_issue_context_text(issue) when is_map(issue) do
+    issue
+    |> Map.get(:context, %{})
+    |> case do
+      context when is_map(context) ->
+        [:source_file, :source_field, :target_file, :target_field, :file, :field, :stop_id, :trip_id,
+         :route_id, :service_id, :value, :invalid_count]
+        |> Enum.map(fn key ->
+          case Map.get(context, key) do
+            nil -> nil
+            "" -> nil
+            value -> "#{key}: #{value}"
+          end
+        end)
+        |> Enum.reject(&is_nil/1)
+        |> case do
+          [] -> nil
+          items -> Enum.join(items, " • ")
+        end
+
+      _other ->
+        nil
+    end
+  end
+
+  defp pathways_issue_context_text(_issue), do: nil
 
   defp otp_data_requirements_summary, do: @otp_data_requirements_summary
 

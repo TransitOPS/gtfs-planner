@@ -48,6 +48,19 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
     "translations.txt" => :passthrough
   }
 
+  @integrity_issue_severity_by_code %{
+    stop_times_trip_id_missing_trip: :blocking,
+    stop_times_stop_id_missing_stop: :blocking,
+    trips_route_id_missing_route: :blocking,
+    trips_service_id_missing_calendar: :blocking,
+    pathways_from_stop_id_missing_stop: :blocking,
+    pathways_to_stop_id_missing_stop: :blocking,
+    transfers_from_stop_id_missing_stop: :blocking,
+    transfers_to_stop_id_missing_stop: :blocking,
+    trips_shape_id_missing_shape: :warning,
+    fare_rules_fare_id_missing_fare_attributes: :warning
+  }
+
   @type issues :: [map()]
   @type meta :: map()
 
@@ -157,7 +170,7 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
              kept_fare_ids,
              fare_rules_summary.missing_file
            ),
-         :ok <-
+         integrity_result =
            validate_referential_integrity(%{
              stop_times_rows: filtered_stop_times_rows,
              stops_rows: filtered_stops_rows,
@@ -172,6 +185,7 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
              fare_rules_rows: filtered_fare_rules_rows,
              fare_attributes_rows: filtered_fare_attributes_rows
            }),
+         :ok <- ensure_no_blocking_integrity_issues(integrity_result),
          {:ok, station_preflight_warning_issues} <-
            run_station_scope_preflight(filtered_stops_rows),
          {extension_file_summaries, extension_warning_issues} <-
@@ -250,35 +264,38 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
                )
            }) do
       station_feed_summary =
-        Map.merge(
-          %{
-            "stops.txt" => %{
-              kept_count: length(filtered_stops_rows),
-              dropped_count: length(stop_rows) - length(filtered_stops_rows),
-              missing_file: false,
-              blocking_issue_count: 0
-            },
-            "levels.txt" => levels_summary,
-            "pathways.txt" => pathways_summary,
-            "transfers.txt" => transfers_summary,
-            "stop_times.txt" => stop_times_summary,
-            "trips.txt" => trips_summary,
-            "attributions.txt" => attributions_summary,
-            "routes.txt" => routes_summary,
-            "agency.txt" => agency_summary,
-            "calendar.txt" => calendar_summary,
-            "calendar_dates.txt" => calendar_dates_summary,
-            "frequencies.txt" => frequencies_summary,
-            "shapes.txt" => shapes_summary,
-            "fare_rules.txt" => fare_rules_summary,
-            "fare_attributes.txt" => fare_attributes_summary
+        %{
+          "stops.txt" => %{
+            kept_count: length(filtered_stops_rows),
+            dropped_count: length(stop_rows) - length(filtered_stops_rows),
+            missing_file: false,
+            blocking_issue_count: 0,
+            warning_issue_count: 0
           },
-          extension_file_summaries
-        )
+          "levels.txt" => levels_summary,
+          "pathways.txt" => pathways_summary,
+          "transfers.txt" => transfers_summary,
+          "stop_times.txt" => stop_times_summary,
+          "trips.txt" => trips_summary,
+          "attributions.txt" => attributions_summary,
+          "routes.txt" => routes_summary,
+          "agency.txt" => agency_summary,
+          "calendar.txt" => calendar_summary,
+          "calendar_dates.txt" => calendar_dates_summary,
+          "frequencies.txt" => frequencies_summary,
+          "shapes.txt" => shapes_summary,
+          "fare_rules.txt" => fare_rules_summary,
+          "fare_attributes.txt" => fare_attributes_summary
+        }
+        |> Map.merge(extension_file_summaries)
+        |> normalize_station_feed_summary_issue_counts()
+        |> merge_integrity_issue_counts(integrity_result.summary.per_rule_counts)
 
       {:ok, station_zip_binary,
        %{
          station_feed_summary: station_feed_summary,
+         integrity_summary: integrity_result.summary,
+         integrity_warning_issues: integrity_result.warning_issues,
          station_preflight_warning_issues: station_preflight_warning_issues,
          extension_warning_issues: extension_warning_issues,
          kept_level_ids: kept_level_ids,
@@ -307,7 +324,7 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
     shape_ids = id_set(rows_by_file.shapes_rows, "shape_id")
     fare_ids = id_set(rows_by_file.fare_attributes_rows, "fare_id")
 
-    issues =
+    per_rule_results =
       [
         integrity_issue(
           rows_by_file.stop_times_rows,
@@ -402,12 +419,40 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
           "fare_id"
         )
       ]
-      |> Enum.reject(&is_nil/1)
 
-    case issues do
-      [] -> :ok
-      _ -> {:error, issues}
-    end
+    blocking_issues =
+      per_rule_results
+      |> Enum.filter(&(&1.severity == :blocking and not is_nil(&1.issue)))
+      |> Enum.map(& &1.issue)
+
+    warning_issues =
+      per_rule_results
+      |> Enum.filter(&(&1.severity == :warning and not is_nil(&1.issue)))
+      |> Enum.map(& &1.issue)
+
+    %{
+      blocking_issues: blocking_issues,
+      warning_issues: warning_issues,
+      summary: %{
+        blocking_issue_count: length(blocking_issues),
+        warning_issue_count: length(warning_issues),
+        per_rule_counts:
+          Enum.map(per_rule_results, fn result ->
+            %{
+              code: result.code,
+              severity: result.severity,
+              source_file: result.source_file,
+              invalid_count: result.invalid_count
+            }
+          end)
+      }
+    }
+  end
+
+  defp ensure_no_blocking_integrity_issues(%{blocking_issues: []}), do: :ok
+
+  defp ensure_no_blocking_integrity_issues(%{blocking_issues: blocking_issues}) do
+    {:error, blocking_issues}
   end
 
   defp run_station_scope_preflight(filtered_stops_rows) do
@@ -573,27 +618,84 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
          target_field,
          opts \\ []
        ) do
+    severity = integrity_issue_severity(code)
+
     if Keyword.get(opts, :skip_check, false) do
-      nil
+      %{code: code, severity: severity, source_file: source_file, invalid_count: 0, issue: nil}
     else
       invalid_count = invalid_reference_count(rows, source_field, target_ids, opts)
 
-      if invalid_count > 0 do
-        %{
-          code: code,
-          severity: :blocking,
-          message: "referential integrity check failed",
-          context: %{
-            source_file: source_file,
-            source_field: source_field,
-            target_file: target_file,
-            target_field: target_field,
-            invalid_count: invalid_count
+      issue =
+        if invalid_count > 0 do
+          %{
+            code: code,
+            severity: severity,
+            message: "referential integrity check failed",
+            context: %{
+              source_file: source_file,
+              source_field: source_field,
+              target_file: target_file,
+              target_field: target_field,
+              invalid_count: invalid_count
+            }
           }
-        }
-      end
+        end
+
+      %{
+        code: code,
+        severity: severity,
+        source_file: source_file,
+        invalid_count: invalid_count,
+        issue: issue
+      }
     end
   end
+
+  defp integrity_issue_severity(code) do
+    Map.get(@integrity_issue_severity_by_code, code, :blocking)
+  end
+
+  defp normalize_station_feed_summary_issue_counts(station_feed_summary)
+       when is_map(station_feed_summary) do
+    Enum.into(station_feed_summary, %{}, fn {file_name, summary} ->
+      normalized_summary =
+        summary
+        |> Map.put_new(:blocking_issue_count, 0)
+        |> Map.put_new(:warning_issue_count, 0)
+
+      {file_name, normalized_summary}
+    end)
+  end
+
+  defp merge_integrity_issue_counts(station_feed_summary, per_rule_counts)
+       when is_map(station_feed_summary) and is_list(per_rule_counts) do
+    Enum.reduce(per_rule_counts, station_feed_summary, fn
+      %{source_file: source_file, severity: severity, invalid_count: invalid_count}, acc
+      when is_binary(source_file) and invalid_count > 0 ->
+        Map.update(acc, source_file, default_station_feed_issue_summary(severity, invalid_count), fn summary ->
+          summary
+          |> Map.put_new(:blocking_issue_count, 0)
+          |> Map.put_new(:warning_issue_count, 0)
+          |> Map.update!(integrity_severity_count_key(severity), &(&1 + invalid_count))
+        end)
+
+      _per_rule_count, acc ->
+        acc
+    end)
+  end
+
+  defp default_station_feed_issue_summary(severity, invalid_count) do
+    %{
+      kept_count: 0,
+      dropped_count: 0,
+      missing_file: true,
+      blocking_issue_count: if(severity == :blocking, do: invalid_count, else: 0),
+      warning_issue_count: if(severity == :warning, do: invalid_count, else: 0)
+    }
+  end
+
+  defp integrity_severity_count_key(:warning), do: :warning_issue_count
+  defp integrity_severity_count_key(_severity), do: :blocking_issue_count
 
   defp invalid_reference_count(rows, source_field, target_ids, opts) do
     allow_blank? = Keyword.get(opts, :allow_blank, false)
@@ -1307,6 +1409,8 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
     |> Map.put(:source_zip_path, source_zip_path)
     |> Map.put(:station_zip_path, station_zip_path)
     |> Map.put(:station_feed_summary, Map.get(filter_meta, :station_feed_summary, %{}))
+    |> Map.put(:integrity_summary, Map.get(filter_meta, :integrity_summary, %{}))
+    |> Map.put(:integrity_warning_issues, Map.get(filter_meta, :integrity_warning_issues, []))
     |> Map.put(
       :station_preflight_warning_issues,
       Map.get(filter_meta, :station_preflight_warning_issues, [])
@@ -1328,6 +1432,8 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
       source_zip_path: source_zip_path,
       station_zip_path: station_zip_path,
       station_feed_summary: Map.get(filter_meta, :station_feed_summary, %{}),
+      integrity_summary: Map.get(filter_meta, :integrity_summary, %{}),
+      integrity_warning_issues: Map.get(filter_meta, :integrity_warning_issues, []),
       station_preflight_warning_issues:
         Map.get(filter_meta, :station_preflight_warning_issues, []),
       extension_warning_issues: Map.get(filter_meta, :extension_warning_issues, []),

@@ -1,7 +1,13 @@
 defmodule GtfsPlanner.Otp.StationMaterializerTest do
   use GtfsPlanner.DataCase
 
-  alias GtfsPlanner.Gtfs.{Attribution, Calendar, CalendarDate, Frequency}
+  alias GtfsPlanner.Gtfs.{
+    Attribution,
+    Calendar,
+    CalendarDate,
+    FareRule,
+    Frequency
+  }
   alias GtfsPlanner.Otp.ArtifactPath
   alias GtfsPlanner.Otp.StationMaterializer
   alias GtfsPlanner.Otp.StationMaterializer.GtfsZipReader
@@ -212,7 +218,13 @@ defmodule GtfsPlanner.Otp.StationMaterializerTest do
         }
       }
 
-      assert Map.take(meta.station_feed_summary, Map.keys(expected_summary)) == expected_summary
+      normalized_expected_summary =
+        Enum.into(expected_summary, %{}, fn {file_name, summary} ->
+          {file_name, Map.put_new(summary, :warning_issue_count, 0)}
+        end)
+
+      assert Map.take(meta.station_feed_summary, Map.keys(normalized_expected_summary)) ==
+               normalized_expected_summary
 
       assert meta.source_zip_path != zip_path
       assert meta.station_zip_path == zip_path
@@ -308,7 +320,8 @@ defmodule GtfsPlanner.Otp.StationMaterializerTest do
                kept_count: 0,
                dropped_count: 0,
                missing_file: true,
-               blocking_issue_count: 0
+               blocking_issue_count: 0,
+               warning_issue_count: 0
              }
 
       assert meta.station_feed_summary["levels.txt"] == %{
@@ -335,6 +348,72 @@ defmodule GtfsPlanner.Otp.StationMaterializerTest do
 
       fare_rules_rows = Map.get(tables, "fare_rules.txt", %{rows: []}).rows
       assert fare_rules_rows == []
+    end
+
+    test "succeeds with warning metadata when fare rule references missing fare attribute", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      %{station_stop_id: station_stop_id, route_id: route_id} =
+        seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      _trip_for_fare_rule_scope =
+        trip_fixture(organization.id, gtfs_version.id, route_id, %{
+          trip_id: "trip_missing_fare_attr",
+          service_id: "seed_service"
+        })
+
+      create_fare_rule!(organization.id, gtfs_version.id, %{
+        fare_id: "fare_without_attribute",
+        route_id: route_id
+      })
+
+      assert {:ok, _zip_path, meta} =
+               StationMaterializer.get_or_build_gtfs_zip(
+                 organization.id,
+                 gtfs_version.id,
+                 station_stop_id: station_stop_id
+               )
+
+      assert meta.integrity_summary.blocking_issue_count == 0
+
+      assert Map.has_key?(meta.integrity_summary, :warning_issue_count)
+      assert Map.has_key?(meta.station_feed_summary["fare_rules.txt"], :warning_issue_count)
+    end
+
+    test "returns blocking stop_times trip integrity issue with blocking severity", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      %{station_stop_id: station_stop_id} =
+        seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      stop_time_fixture(
+        organization.id,
+        gtfs_version.id,
+        "missing_trip_for_stop_time",
+        "seed_stop_a",
+        %{stop_sequence: 888}
+      )
+
+      assert {:error, issues} =
+               StationMaterializer.get_or_build_gtfs_zip(
+                 organization.id,
+                 gtfs_version.id,
+                 station_stop_id: station_stop_id
+               )
+
+      issue = Enum.find(issues, &(&1.code == :stop_times_trip_id_missing_trip))
+
+      assert issue.severity in [:blocking, :error]
+
+      context = Map.get(issue, :context) || Map.get(issue, :details) || %{}
+
+      assert context.source_file == "stop_times.txt"
+      assert context.source_field == "trip_id"
+      assert context.target_file == "trips.txt"
+      assert context.target_field == "trip_id"
+      assert context.invalid_count > 0
     end
 
     test "returns blocking issues when referential integrity validation fails", %{
@@ -656,6 +735,22 @@ defmodule GtfsPlanner.Otp.StationMaterializerTest do
 
     %Attribution{}
     |> Attribution.changeset(attrs)
+    |> Repo.insert!()
+  end
+
+  defp create_fare_rule!(organization_id, gtfs_version_id, attrs) do
+    attrs =
+      Map.merge(
+        %{
+          fare_id: "fare_#{System.unique_integer([:positive])}",
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        },
+        attrs
+      )
+
+    %FareRule{}
+    |> FareRule.changeset(attrs)
     |> Repo.insert!()
   end
 

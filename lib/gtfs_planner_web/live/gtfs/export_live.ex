@@ -1670,6 +1670,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           | :unknown_build_failure
   def classify_pathways_failure_category(error_payload) when is_map(error_payload) do
     tokens = pathways_failure_classifier_tokens(error_payload)
+    issue_codes = pathways_failure_issue_codes_list(error_payload)
 
     failure_code =
       error_payload
@@ -1700,6 +1701,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         :pathways_task_crashed
       ] ->
         :pathways_internal_failure
+
+      category = classify_pathways_issue_code_category(issue_codes) ->
+        category
 
       tokens_match_any?(tokens, ["csv", "parse", "malformed", "invalid row"]) ->
         :csv_parse_malformed_rows
@@ -1845,6 +1849,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       code: code,
       severity: normalize_pathways_failure_issue_severity(payload_value(issue, :severity)),
       message: message,
+      context: context,
       context_summary: pathways_failure_issue_context_summary(context)
     }
   end
@@ -1854,9 +1859,79 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       code: :pathways_preflight_invalid_issue,
       severity: :blocking,
       message: "Pathways preflight returned malformed issue payload.",
+      context: %{},
       context_summary: inspect(issue)
     }
   end
+
+  defp classify_pathways_issue_code_category(issue_codes) when is_list(issue_codes) do
+    normalized_codes = issue_codes |> Enum.map(&normalize_issue_code/1) |> Enum.reject(&is_nil/1)
+
+    cond do
+      Enum.any?(normalized_codes, &(&1 in [:station_stop_lat_missing, :station_stop_lon_missing])) ->
+        :invalid_coordinates
+
+      Enum.any?(normalized_codes, &(&1 in [:station_stop_lat_not_numeric, :station_stop_lon_not_numeric])) ->
+        :invalid_coordinates
+
+      Enum.any?(normalized_codes, &(&1 in [:station_stop_lat_out_of_range, :station_stop_lon_out_of_range])) ->
+        :invalid_coordinates
+
+      Enum.any?(normalized_codes,
+        &(&1 in [:boarding_area_parent_station_missing, :boarding_area_parent_station_not_found])
+      ) ->
+        :boarding_area_parent_integrity
+
+      Enum.any?(normalized_codes,
+        &(&1 in [
+            :stop_times_trip_id_missing_trip,
+            :stop_times_stop_id_missing_stop,
+            :trips_route_id_missing_route,
+            :trips_service_id_missing_calendar,
+            :pathways_from_stop_id_missing_stop,
+            :pathways_to_stop_id_missing_stop,
+            :transfers_from_stop_id_missing_stop,
+            :transfers_to_stop_id_missing_stop,
+            :trips_shape_id_missing_shape,
+            :fare_rules_fare_id_missing_fare_attributes
+          ])
+      ) ->
+        :referential_integrity
+
+      true ->
+        nil
+    end
+  end
+
+  defp classify_pathways_issue_code_category(_issue_codes), do: nil
+
+  defp normalize_issue_code(code) when is_atom(code), do: code
+
+  defp normalize_issue_code(code) when is_binary(code) do
+    case code do
+      "stop_times_trip_id_missing_trip" -> :stop_times_trip_id_missing_trip
+      "stop_times_stop_id_missing_stop" -> :stop_times_stop_id_missing_stop
+      "trips_route_id_missing_route" -> :trips_route_id_missing_route
+      "trips_service_id_missing_calendar" -> :trips_service_id_missing_calendar
+      "trips_shape_id_missing_shape" -> :trips_shape_id_missing_shape
+      "pathways_from_stop_id_missing_stop" -> :pathways_from_stop_id_missing_stop
+      "pathways_to_stop_id_missing_stop" -> :pathways_to_stop_id_missing_stop
+      "transfers_from_stop_id_missing_stop" -> :transfers_from_stop_id_missing_stop
+      "transfers_to_stop_id_missing_stop" -> :transfers_to_stop_id_missing_stop
+      "fare_rules_fare_id_missing_fare_attributes" -> :fare_rules_fare_id_missing_fare_attributes
+      "station_stop_lat_missing" -> :station_stop_lat_missing
+      "station_stop_lon_missing" -> :station_stop_lon_missing
+      "station_stop_lat_not_numeric" -> :station_stop_lat_not_numeric
+      "station_stop_lon_not_numeric" -> :station_stop_lon_not_numeric
+      "station_stop_lat_out_of_range" -> :station_stop_lat_out_of_range
+      "station_stop_lon_out_of_range" -> :station_stop_lon_out_of_range
+      "boarding_area_parent_station_missing" -> :boarding_area_parent_station_missing
+      "boarding_area_parent_station_not_found" -> :boarding_area_parent_station_not_found
+      _other -> nil
+    end
+  end
+
+  defp normalize_issue_code(_code), do: nil
 
   defp normalize_pathways_failure_issue_severity(:warning), do: :warning
   defp normalize_pathways_failure_issue_severity(:info), do: :info
@@ -2087,6 +2162,20 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
       _other ->
         nil
+    end
+  end
+
+  defp pathways_failure_issue_codes_list(error_payload) do
+    error_payload
+    |> payload_value(:issues)
+    |> case do
+      issues when is_list(issues) ->
+        issues
+        |> Enum.map(&payload_value(&1, :code))
+        |> Enum.reject(&is_nil/1)
+
+      _other ->
+        []
     end
   end
 
