@@ -71,6 +71,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:pathways_prep_error, nil)
      |> assign(:export_warnings, [])
      |> assign(:recent_validation_display_counts_by_run_id, %{})
+     |> assign(:recent_validation_station_names_by_run_id, %{})
      |> assign(:recent_validation_runs, [])}
   end
 
@@ -85,20 +86,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> Gtfs.get_file_inventory(gtfs_version_id, export_type)
       |> Enum.sort_by(fn {filename, _count} -> filename end)
 
-    recent_validation_runs =
-      Validations.list_recent_validation_runs(organization_id, gtfs_version_id, 5)
-
-    recent_validation_display_counts_by_run_id =
-      build_recent_validation_display_counts_map(recent_validation_runs)
-
     {:noreply,
      socket
      |> assign(:file_inventory, file_inventory)
-     |> assign(
-       :recent_validation_display_counts_by_run_id,
-       recent_validation_display_counts_by_run_id
-     )
-     |> assign(:recent_validation_runs, recent_validation_runs)}
+     |> assign_recent_validation_data()}
   end
 
   @impl Phoenix.LiveView
@@ -360,14 +351,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                     pathways_summary: persisted_summary,
                     top_failure_categories: top_failure_categories
                   })
-                  |> assign(
-                    :recent_validation_runs,
-                    Validations.list_recent_validation_runs(
-                      socket.assigns.current_organization.id,
-                      socket.assigns.current_gtfs_version.id,
-                      5
-                    )
-                  )
+                  |> assign_recent_validation_data()
 
                 if socket.assigns.pending_mobility_validation do
                   run_mobility_data_validation(
@@ -498,14 +482,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 socket
                 |> assign(:validation_error, "Unauthorized access to validation run")
               else
-                # Refresh recent validation runs list
-                recent_validation_runs =
-                  Validations.list_recent_validation_runs(
-                    socket.assigns.current_organization.id,
-                    socket.assigns.current_gtfs_version.id,
-                    5
-                  )
-
                 socket
                 |> assign(:validation_result, %{
                   summary: %{
@@ -514,7 +490,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                     infos: run.infos_count
                   }
                 })
-                |> assign(:recent_validation_runs, recent_validation_runs)
+                |> assign_recent_validation_data()
               end
 
             {:error, reason} ->
@@ -1147,10 +1123,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                         ) %>
                       <td>
                         <.link
-                          navigate={~p"/gtfs/#{@current_gtfs_version.id}/validation/#{run.id}"}
+                          navigate={validation_run_results_path(@current_gtfs_version.id, run)}
                           class="link link-primary"
                         >
-                          {format_run_type(run.run_type)}
+                          {format_run_type(run, @recent_validation_station_names_by_run_id)}
                         </.link>
                       </td>
                       <td class="text-sm text-base-content/70">
@@ -1265,9 +1241,27 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp phase_label(_), do: "Preparing..."
 
-  defp format_run_type("mobility_data"), do: "MobilityData"
-  defp format_run_type("pathways_tests"), do: "Pathways Tests"
-  defp format_run_type(type), do: type
+  defp format_run_type(%{run_type: "mobility_data"}, _station_names_by_run_id),
+    do: "MobilityData"
+
+  defp format_run_type(%{run_type: "pathways_tests"}, _station_names_by_run_id),
+    do: "Pathways Tests"
+
+  defp format_run_type(
+         %{run_type: "station_reachability", id: run_id},
+         station_names_by_run_id
+       )
+       when is_map(station_names_by_run_id) do
+    case Map.get(station_names_by_run_id, run_id) do
+      station_name when is_binary(station_name) and station_name != "" ->
+        "Station Reachability - #{station_name}"
+
+      _other ->
+        "Station Reachability"
+    end
+  end
+
+  defp format_run_type(%{run_type: type}, _station_names_by_run_id), do: type
 
   defp recent_validation_display_counts(%{run_type: "pathways_tests", result_json: result_json})
        when is_map(result_json) do
@@ -1294,6 +1288,84 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       {run.id, recent_validation_display_counts_from_source(run)}
     end)
     |> Map.new()
+  end
+
+  defp build_recent_validation_station_names_map(runs, organization_id, gtfs_version_id) do
+    runs
+    |> Enum.reduce(%{}, fn run, station_names_by_run_id ->
+      case station_reachability_station_stop_id(run) do
+        nil ->
+          station_names_by_run_id
+
+        station_stop_id ->
+          case station_name_for_stop_id(organization_id, gtfs_version_id, station_stop_id) do
+            nil -> station_names_by_run_id
+            station_name -> Map.put(station_names_by_run_id, run.id, station_name)
+          end
+      end
+    end)
+  end
+
+  defp station_reachability_station_stop_id(%{run_type: "station_reachability", result_json: result_json})
+       when is_map(result_json) do
+    metadata = payload_value(result_json, :metadata)
+
+    payload_value(metadata, :station_stop_id) || payload_value(result_json, :station_stop_id)
+  end
+
+  defp station_reachability_station_stop_id(_run), do: nil
+
+  defp station_name_for_stop_id(organization_id, gtfs_version_id, station_stop_id)
+       when is_binary(station_stop_id) do
+    case Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, station_stop_id) do
+      %{stop_name: stop_name, stop_id: stop_id} ->
+        if is_binary(stop_name) and stop_name != "", do: stop_name, else: stop_id
+
+      _other ->
+        nil
+    end
+  end
+
+  defp station_name_for_stop_id(_organization_id, _gtfs_version_id, _station_stop_id), do: nil
+
+  defp validation_run_results_path(gtfs_version_id, run) do
+    case station_reachability_station_stop_id(run) do
+      station_stop_id when is_binary(station_stop_id) and station_stop_id != "" ->
+        ~p"/gtfs/#{gtfs_version_id}/station-reachability/#{run.id}?stop_id=#{station_stop_id}"
+
+      _other ->
+        if run.run_type == "station_reachability" do
+          ~p"/gtfs/#{gtfs_version_id}/station-reachability/#{run.id}"
+        else
+          ~p"/gtfs/#{gtfs_version_id}/validation/#{run.id}"
+        end
+    end
+  end
+
+  defp assign_recent_validation_data(socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    recent_validation_runs =
+      Validations.list_recent_validation_runs(organization_id, gtfs_version_id, 5)
+
+    recent_validation_display_counts_by_run_id =
+      build_recent_validation_display_counts_map(recent_validation_runs)
+
+    recent_validation_station_names_by_run_id =
+      build_recent_validation_station_names_map(
+        recent_validation_runs,
+        organization_id,
+        gtfs_version_id
+      )
+
+    socket
+    |> assign(
+      :recent_validation_display_counts_by_run_id,
+      recent_validation_display_counts_by_run_id
+    )
+    |> assign(:recent_validation_station_names_by_run_id, recent_validation_station_names_by_run_id)
+    |> assign(:recent_validation_runs, recent_validation_runs)
   end
 
   defp recent_validation_display_counts_from_source(%{run_type: "pathways_tests"} = run) do
@@ -1590,14 +1662,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             pathways_summary: persisted_summary,
             top_failure_categories: top_failure_categories
           })
-          |> assign(
-            :recent_validation_runs,
-            Validations.list_recent_validation_runs(
-              socket.assigns.current_organization.id,
-              socket.assigns.current_gtfs_version.id,
-              5
-            )
-          )
+          |> assign_recent_validation_data()
 
         if socket.assigns.pending_mobility_validation do
           run_mobility_data_validation(
