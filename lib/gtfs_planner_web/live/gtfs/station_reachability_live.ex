@@ -294,116 +294,124 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
         <% end %>
 
         <%= if @validation_result do %>
-          <section id="station-reachability-summary" class="space-y-4 border-t border-base-200 pt-4">
-            <h3 class="text-sm font-semibold text-base-content">Validation summary</h3>
+          <section id="station-reachability-summary" class="card bg-base-100 shadow-sm">
+            <header class="border-b border-base-content/20 px-4 py-3">
+              <h2 class="text-base font-semibold">Validation Summary</h2>
+            </header>
 
-            <section id="station-trip-overview" class="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <div class="rounded border border-base-200 px-3 py-2">
-                <div class="text-xs uppercase tracking-wide text-base-content/70">Test cases</div>
-                <div class="text-base font-semibold text-base-content">
-                  {@validation_result.trip_overview.total_tests}
+            <div class="card-body space-y-4 p-4">
+              <section id="station-trip-overview" class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div class="rounded border border-base-200 px-3 py-2">
+                  <div class="text-xs uppercase tracking-wide text-base-content/70">Test cases</div>
+                  <div class="text-base font-semibold text-base-content">
+                    {@validation_result.trip_overview.total_tests}
+                  </div>
                 </div>
-              </div>
-              <div class="rounded border border-base-200 px-3 py-2">
-                <div class="text-xs uppercase tracking-wide text-base-content/70">Passed</div>
-                <div class="text-base font-semibold text-success">
-                  {@validation_result.trip_overview.pass_count}
+                <div class="rounded border border-base-200 px-3 py-2">
+                  <div class="text-xs uppercase tracking-wide text-base-content/70">Passed</div>
+                  <div class="text-base font-semibold text-success">
+                    {@validation_result.trip_overview.pass_count}
+                  </div>
                 </div>
-              </div>
-              <div class="rounded border border-base-200 px-3 py-2">
-                <div class="text-xs uppercase tracking-wide text-base-content/70">Warnings</div>
-                <div class="text-base font-semibold text-warning">
-                  {@validation_result.trip_overview.warning_count}
+                <div class="rounded border border-base-200 px-3 py-2">
+                  <div class="text-xs uppercase tracking-wide text-base-content/70">Warnings</div>
+                  <div class="text-base font-semibold text-warning">
+                    {@validation_result.trip_overview.warning_count}
+                  </div>
                 </div>
-              </div>
-              <div class="rounded border border-base-200 px-3 py-2">
-                <div class="text-xs uppercase tracking-wide text-base-content/70">Failed</div>
-                <div class="text-base font-semibold text-error">
-                  {@validation_result.trip_overview.fail_count}
+                <div class="rounded border border-base-200 px-3 py-2">
+                  <div class="text-xs uppercase tracking-wide text-base-content/70">Failed</div>
+                  <div class="text-base font-semibold text-error">
+                    {@validation_result.trip_overview.fail_count}
+                  </div>
                 </div>
-              </div>
-            </section>
+              </section>
 
-            <div class="overflow-x-auto" id="station-pathways-case-results">
-              <table class="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Test Case</th>
-                    <th>Status</th>
-                    <th>Issue</th>
-                    <th>Duration (s)</th>
-                    <th>Distance (m)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    :for={row <- @pathways_case_results}
-                    id={"station-pathways-case-row-#{row.order_index}"}
-                  >
-                    <td class="font-mono text-xs">{row.walkability_test_id}</td>
-                    <td>
-                      <span class={[
-                        "badge badge-sm",
-                        case_status_badge_class(pathways_case_display_status(row))
-                      ]}>
-                        {String.upcase(to_string(pathways_case_display_status(row)))}
-                      </span>
-                    </td>
-                    <td>{List.first(pathways_case_issues(row))}</td>
-                    <td>{row.duration_seconds || "-"}</td>
-                    <td>{format_pathways_distance(row.distance_meters)}</td>
-                  </tr>
-                </tbody>
-              </table>
+              <div class="overflow-x-auto" id="station-pathways-case-results">
+                <table class="table table-sm">
+                  <thead>
+                    <tr>
+                      <th>Test Case</th>
+                      <th>Status</th>
+                      <th>Issue</th>
+                      <th>Duration (s)</th>
+                      <th>Distance (m)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      :for={row <- @pathways_case_results}
+                      id={"station-pathways-case-row-#{row.order_index}"}
+                    >
+                      <td class="font-mono text-xs">{row.walkability_test_id}</td>
+                      <td>
+                        <span class={[
+                          "badge badge-sm",
+                          case_status_badge_class(pathways_case_display_status(row))
+                        ]}>
+                          {String.upcase(to_string(pathways_case_display_status(row)))}
+                        </span>
+                      </td>
+                      <td>{List.first(pathways_case_issues(row))}</td>
+                      <td>{row.duration_seconds || "-"}</td>
+                      <td>{format_pathways_distance(row.distance_meters)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
         <% end %>
 
         <%= if @recent_validation_runs != [] do %>
-          <section id="recent-station-runs" class="space-y-3 border-t border-base-200 pt-4">
-            <h3 class="text-sm font-semibold text-base-content">Recent reachability runs</h3>
+          <section id="recent-station-runs" class="card bg-base-100 shadow-sm">
+            <header class="border-b border-base-content/20 px-4 py-3">
+              <h2 class="text-base font-semibold">Recent Reachability Runs</h2>
+            </header>
 
-            <div class="overflow-x-auto">
-              <table class="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Run Results</th>
-                    <th>Date</th>
-                    <th>Status</th>
-                    <th class="text-right">Errors</th>
-                    <th class="text-right">Warnings</th>
-                    <th class="text-right">Info</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={run <- @recent_validation_runs} id={"recent-station-run-#{run.id}"}>
-                    <td>
-                      <.link
-                        navigate={
-                          ~p"/gtfs/#{@current_gtfs_version.id}/station-reachability/#{run.id}?stop_id=#{@station.stop_id}"
-                        }
-                        class="link link-primary"
-                      >
-                        {run.id}
-                      </.link>
-                    </td>
-                    <td class="text-sm text-base-content/70">{format_date(run.started_at)}</td>
-                    <td>
-                      <span class="badge badge-outline badge-sm">{run.status}</span>
-                    </td>
-                    <td class="text-right">{run.errors_count || 0}</td>
-                    <td class="text-right">{run.warnings_count || 0}</td>
-                    <td class="text-right">{run.infos_count || 0}</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="card-body space-y-3 p-4">
+              <div class="overflow-x-auto">
+                <table class="table table-sm">
+                  <thead>
+                    <tr>
+                      <th>Run Results</th>
+                      <th>Date</th>
+                      <th>Status</th>
+                      <th class="text-right">Errors</th>
+                      <th class="text-right">Warnings</th>
+                      <th class="text-right">Info</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr :for={run <- @recent_validation_runs} id={"recent-station-run-#{run.id}"}>
+                      <td>
+                        <.link
+                          navigate={
+                            ~p"/gtfs/#{@current_gtfs_version.id}/station-reachability/#{run.id}?stop_id=#{@station.stop_id}"
+                          }
+                          class="link link-primary"
+                        >
+                          {run.id}
+                        </.link>
+                      </td>
+                      <td class="text-sm text-base-content/70">{format_date(run.started_at)}</td>
+                      <td>
+                        <span class="badge badge-outline badge-sm">{run.status}</span>
+                      </td>
+                      <td class="text-right">{run.errors_count || 0}</td>
+                      <td class="text-right">{run.warnings_count || 0}</td>
+                      <td class="text-right">{run.infos_count || 0}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
         <% end %>
 
-        <section id="station-reachability-test-cases" class="space-y-3 border-t border-base-200 pt-4">
-          <div class="flex items-center justify-between gap-3">
-            <h3 class="text-sm font-semibold text-base-content">Reachability test cases</h3>
+        <section id="station-reachability-test-cases" class="card bg-base-100 shadow-sm">
+          <header class="border-b border-base-content/20 px-4 py-3 flex items-center justify-between gap-3">
+            <h2 class="text-base font-semibold">Reachability Test Cases</h2>
             <.button
               id="back-to-diagram-from-reachability-cases"
               navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{@station.stop_id}/diagram"}
@@ -412,63 +420,65 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
             >
               Add Test Cases
             </.button>
-          </div>
+          </header>
 
-          <%= if @station_walkability_tests == [] do %>
-            <p class="px-4 py-3 text-sm text-base-content/60">
-              No reachability test cases for this station.
-            </p>
-          <% else %>
-            <div class="overflow-x-auto">
-              <table id="station-walkability-tests-table" class="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Stop</th>
-                    <th>Start address</th>
-                    <th>Expected</th>
-                    <th>Updated</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    :for={test_case <- @station_walkability_tests}
-                    id={"station-walkability-test-row-#{test_case.id}"}
-                  >
-                    <td>
-                      <button
-                        type="button"
-                        id={"station-walkability-test-stop-#{test_case.id}"}
-                        class="link link-primary"
-                        phx-click="edit_walkability_test"
-                        phx-value-id={test_case.id}
-                      >
-                        {test_case.stop_id}
-                      </button>
-                    </td>
-                    <td class="max-w-80 truncate" title={test_case.address}>{test_case.address}</td>
-                    <td>
-                      <div class="space-y-0.5">
-                        <p class="text-sm">
-                          {if test_case.expected_traversable,
-                            do: "Traversable",
-                            else: "Not traversable"} / {if test_case.expected_wheelchair_accessible,
-                            do: "Wheelchair",
-                            else: "No wheelchair"}
-                        </p>
-                        <p
-                          :if={present_text?(test_case.description)}
-                          class="text-xs text-base-content/60 truncate"
+          <div class="card-body space-y-3 p-4">
+            <%= if @station_walkability_tests == [] do %>
+              <p class="px-4 py-3 text-sm text-base-content/60">
+                No reachability test cases for this station.
+              </p>
+            <% else %>
+              <div class="overflow-x-auto">
+                <table id="station-walkability-tests-table" class="table table-sm">
+                  <thead>
+                    <tr>
+                      <th>Stop</th>
+                      <th>Start address</th>
+                      <th>Expected</th>
+                      <th>Updated</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      :for={test_case <- @station_walkability_tests}
+                      id={"station-walkability-test-row-#{test_case.id}"}
+                    >
+                      <td>
+                        <button
+                          type="button"
+                          id={"station-walkability-test-stop-#{test_case.id}"}
+                          class="link link-primary"
+                          phx-click="edit_walkability_test"
+                          phx-value-id={test_case.id}
                         >
-                          {test_case.description}
-                        </p>
-                      </div>
-                    </td>
-                    <td class="tabular-nums text-sm">{format_timestamp(test_case.updated_at)}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          <% end %>
+                          {test_case.stop_id}
+                        </button>
+                      </td>
+                      <td class="max-w-80 truncate" title={test_case.address}>{test_case.address}</td>
+                      <td>
+                        <div class="space-y-0.5">
+                          <p class="text-sm">
+                            {if test_case.expected_traversable,
+                              do: "Traversable",
+                              else: "Not traversable"} / {if test_case.expected_wheelchair_accessible,
+                              do: "Wheelchair",
+                              else: "No wheelchair"}
+                          </p>
+                          <p
+                            :if={present_text?(test_case.description)}
+                            class="text-xs text-base-content/60 truncate"
+                          >
+                            {test_case.description}
+                          </p>
+                        </div>
+                      </td>
+                      <td class="tabular-nums text-sm">{format_timestamp(test_case.updated_at)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            <% end %>
+          </div>
         </section>
 
         <.walkability_test_drawer
