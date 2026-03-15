@@ -6,7 +6,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   use GtfsPlannerWeb, :live_view
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Validator
-  alias GtfsPlanner.Otp.Materializer
   alias GtfsPlanner.Otp.Runtime
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
@@ -2651,9 +2650,5 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp preflight_module do
     Application.get_env(:gtfs_planner, :otp_preflight_module, GtfsPlanner.Otp.Preflight)
-  end
-
-  defp materializer_module do
-    Application.get_env(:gtfs_planner, :otp_gtfs_materializer_module, Materializer)
   end
 end
