@@ -2914,7 +2914,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert GtfsPlannerWeb.Gtfs.ExportLive.classify_pathways_failure_category(payload) ==
                :unknown_build_failure
     end
-
   end
 
   describe "present_pathways_failure/2" do

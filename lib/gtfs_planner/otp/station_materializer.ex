@@ -688,12 +688,17 @@ defmodule GtfsPlanner.Otp.StationMaterializer do
     Enum.reduce(per_rule_counts, station_feed_summary, fn
       %{source_file: source_file, severity: severity, invalid_count: invalid_count}, acc
       when is_binary(source_file) and invalid_count > 0 ->
-        Map.update(acc, source_file, default_station_feed_issue_summary(severity, invalid_count), fn summary ->
-          summary
-          |> Map.put_new(:blocking_issue_count, 0)
-          |> Map.put_new(:warning_issue_count, 0)
-          |> Map.update!(integrity_severity_count_key(severity), &(&1 + invalid_count))
-        end)
+        Map.update(
+          acc,
+          source_file,
+          default_station_feed_issue_summary(severity, invalid_count),
+          fn summary ->
+            summary
+            |> Map.put_new(:blocking_issue_count, 0)
+            |> Map.put_new(:warning_issue_count, 0)
+            |> Map.update!(integrity_severity_count_key(severity), &(&1 + invalid_count))
+          end
+        )
 
       _per_rule_count, acc ->
         acc

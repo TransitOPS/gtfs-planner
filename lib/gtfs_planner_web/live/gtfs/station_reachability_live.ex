@@ -10,6 +10,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Otp.Lifecycle
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.ExportLive
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -496,6 +497,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
       </section>
     </Layouts.app>
     """
+  end
+
+  @impl true
+  def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
+    current_organization = socket.assigns.current_organization
+    current_version_id = to_string(socket.assigns.current_gtfs_version.id)
+    stop_id = socket.assigns[:stop_id]
+
+    if version_id && version_id != current_version_id &&
+         valid_version_for_org?(version_id, current_organization.id) do
+      path =
+        if stop_id,
+          do: "/gtfs/#{version_id}/stops/#{stop_id}/reachability",
+          else: "/gtfs/#{version_id}/stops"
+
+      {:noreply, push_navigate(socket, to: path)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -1037,8 +1057,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
     |> Map.get(:context, %{})
     |> case do
       context when is_map(context) ->
-        [:source_file, :source_field, :target_file, :target_field, :file, :field, :stop_id, :trip_id,
-         :route_id, :service_id, :value, :invalid_count]
+        [
+          :source_file,
+          :source_field,
+          :target_file,
+          :target_field,
+          :file,
+          :field,
+          :stop_id,
+          :trip_id,
+          :route_id,
+          :service_id,
+          :value,
+          :invalid_count
+        ]
         |> Enum.map(fn key ->
           case Map.get(context, key) do
             nil -> nil
@@ -1622,4 +1654,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
 
   defp list_or_empty(value) when is_list(value), do: value
   defp list_or_empty(_value), do: []
+
+  defp valid_version_for_org?(version_id, organization_id) do
+    try do
+      case Versions.get_gtfs_version(version_id) do
+        nil -> false
+        version -> version.organization_id == organization_id
+      end
+    rescue
+      _ -> false
+    end
+  end
 end

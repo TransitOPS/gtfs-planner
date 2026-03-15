@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Otp.StationMaterializerTest do
     FareRule,
     Frequency
   }
+
   alias GtfsPlanner.Otp.ArtifactPath
   alias GtfsPlanner.Otp.StationMaterializer
   alias GtfsPlanner.Otp.StationMaterializer.GtfsZipReader

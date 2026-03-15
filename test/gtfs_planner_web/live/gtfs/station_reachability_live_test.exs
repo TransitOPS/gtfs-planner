@@ -108,7 +108,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert has_element?(
                view,
                "#run-station-reachability[phx-click='run_reachability']:not([disabled])",
-             "Run Reachability Tests"
+               "Run Reachability Tests"
              )
 
       html = render(view)
@@ -136,6 +136,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert details_pos < diagram_pos
       assert diagram_pos < report_pos
       assert report_pos < reachability_pos
+    end
+
+    test "handles gtfs_version_loaded event by navigating to selected version", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, version2} = GtfsPlanner.Versions.create_gtfs_version(organization.id, %{name: "V2"})
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      render_hook(view, "gtfs_version_loaded", %{"version_id" => to_string(version2.id)})
+
+      assert_redirect(view, "/gtfs/#{version2.id}/stops/#{station.stop_id}/reachability")
     end
 
     test "redirects with flash when station is missing", %{

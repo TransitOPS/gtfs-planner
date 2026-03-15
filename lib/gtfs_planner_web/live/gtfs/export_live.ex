@@ -1306,7 +1306,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end)
   end
 
-  defp station_reachability_station_stop_id(%{run_type: "station_reachability", result_json: result_json})
+  defp station_reachability_station_stop_id(%{
+         run_type: "station_reachability",
+         result_json: result_json
+       })
        when is_map(result_json) do
     metadata = payload_value(result_json, :metadata)
 
@@ -1364,7 +1367,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       :recent_validation_display_counts_by_run_id,
       recent_validation_display_counts_by_run_id
     )
-    |> assign(:recent_validation_station_names_by_run_id, recent_validation_station_names_by_run_id)
+    |> assign(
+      :recent_validation_station_names_by_run_id,
+      recent_validation_station_names_by_run_id
+    )
     |> assign(:recent_validation_runs, recent_validation_runs)
   end
 
@@ -1933,7 +1939,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     normalized_codes = issue_codes |> Enum.map(&normalize_issue_code/1) |> Enum.reject(&is_nil/1)
 
     cond do
-      Enum.any?(normalized_codes,
+      Enum.any?(
+        normalized_codes,
         &(&1 in [
             :station_runtime_input_missing_station_zip_path,
             :station_runtime_input_missing_station_stop_id,
@@ -1942,7 +1949,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       ) ->
         :pathways_internal_failure
 
-      Enum.any?(normalized_codes,
+      Enum.any?(
+        normalized_codes,
         &(&1 in [
             :station_runtime_input_station_zip_path_unreadable,
             :station_runtime_precheck_artifact_read_failed
@@ -1950,7 +1958,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       ) ->
         :missing_corrupt_files_or_permissions
 
-      Enum.any?(normalized_codes,
+      Enum.any?(
+        normalized_codes,
         &(&1 in [:station_runtime_precheck_stop_times_stop_id_missing_stop])
       ) ->
         :referential_integrity
@@ -1958,18 +1967,26 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       Enum.any?(normalized_codes, &(&1 in [:station_stop_lat_missing, :station_stop_lon_missing])) ->
         :invalid_coordinates
 
-      Enum.any?(normalized_codes, &(&1 in [:station_stop_lat_not_numeric, :station_stop_lon_not_numeric])) ->
+      Enum.any?(
+        normalized_codes,
+        &(&1 in [:station_stop_lat_not_numeric, :station_stop_lon_not_numeric])
+      ) ->
         :invalid_coordinates
 
-      Enum.any?(normalized_codes, &(&1 in [:station_stop_lat_out_of_range, :station_stop_lon_out_of_range])) ->
+      Enum.any?(
+        normalized_codes,
+        &(&1 in [:station_stop_lat_out_of_range, :station_stop_lon_out_of_range])
+      ) ->
         :invalid_coordinates
 
-      Enum.any?(normalized_codes,
+      Enum.any?(
+        normalized_codes,
         &(&1 in [:boarding_area_parent_station_missing, :boarding_area_parent_station_not_found])
       ) ->
         :boarding_area_parent_integrity
 
-      Enum.any?(normalized_codes,
+      Enum.any?(
+        normalized_codes,
         &(&1 in [
             :stop_times_trip_id_missing_trip,
             :stop_times_stop_id_missing_stop,
@@ -1996,24 +2013,60 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp normalize_issue_code(code) when is_binary(code) do
     case code do
-      "stop_times_trip_id_missing_trip" -> :stop_times_trip_id_missing_trip
-      "stop_times_stop_id_missing_stop" -> :stop_times_stop_id_missing_stop
-      "trips_route_id_missing_route" -> :trips_route_id_missing_route
-      "trips_service_id_missing_calendar" -> :trips_service_id_missing_calendar
-      "trips_shape_id_missing_shape" -> :trips_shape_id_missing_shape
-      "pathways_from_stop_id_missing_stop" -> :pathways_from_stop_id_missing_stop
-      "pathways_to_stop_id_missing_stop" -> :pathways_to_stop_id_missing_stop
-      "transfers_from_stop_id_missing_stop" -> :transfers_from_stop_id_missing_stop
-      "transfers_to_stop_id_missing_stop" -> :transfers_to_stop_id_missing_stop
-      "fare_rules_fare_id_missing_fare_attributes" -> :fare_rules_fare_id_missing_fare_attributes
-      "station_stop_lat_missing" -> :station_stop_lat_missing
-      "station_stop_lon_missing" -> :station_stop_lon_missing
-      "station_stop_lat_not_numeric" -> :station_stop_lat_not_numeric
-      "station_stop_lon_not_numeric" -> :station_stop_lon_not_numeric
-      "station_stop_lat_out_of_range" -> :station_stop_lat_out_of_range
-      "station_stop_lon_out_of_range" -> :station_stop_lon_out_of_range
-      "boarding_area_parent_station_missing" -> :boarding_area_parent_station_missing
-      "boarding_area_parent_station_not_found" -> :boarding_area_parent_station_not_found
+      "stop_times_trip_id_missing_trip" ->
+        :stop_times_trip_id_missing_trip
+
+      "stop_times_stop_id_missing_stop" ->
+        :stop_times_stop_id_missing_stop
+
+      "trips_route_id_missing_route" ->
+        :trips_route_id_missing_route
+
+      "trips_service_id_missing_calendar" ->
+        :trips_service_id_missing_calendar
+
+      "trips_shape_id_missing_shape" ->
+        :trips_shape_id_missing_shape
+
+      "pathways_from_stop_id_missing_stop" ->
+        :pathways_from_stop_id_missing_stop
+
+      "pathways_to_stop_id_missing_stop" ->
+        :pathways_to_stop_id_missing_stop
+
+      "transfers_from_stop_id_missing_stop" ->
+        :transfers_from_stop_id_missing_stop
+
+      "transfers_to_stop_id_missing_stop" ->
+        :transfers_to_stop_id_missing_stop
+
+      "fare_rules_fare_id_missing_fare_attributes" ->
+        :fare_rules_fare_id_missing_fare_attributes
+
+      "station_stop_lat_missing" ->
+        :station_stop_lat_missing
+
+      "station_stop_lon_missing" ->
+        :station_stop_lon_missing
+
+      "station_stop_lat_not_numeric" ->
+        :station_stop_lat_not_numeric
+
+      "station_stop_lon_not_numeric" ->
+        :station_stop_lon_not_numeric
+
+      "station_stop_lat_out_of_range" ->
+        :station_stop_lat_out_of_range
+
+      "station_stop_lon_out_of_range" ->
+        :station_stop_lon_out_of_range
+
+      "boarding_area_parent_station_missing" ->
+        :boarding_area_parent_station_missing
+
+      "boarding_area_parent_station_not_found" ->
+        :boarding_area_parent_station_not_found
+
       "station_runtime_input_missing_station_zip_path" ->
         :station_runtime_input_missing_station_zip_path
 
@@ -2023,7 +2076,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       "station_runtime_input_station_zip_path_unreadable" ->
         :station_runtime_input_station_zip_path_unreadable
 
-      "station_runtime_input_lineage_mismatch" -> :station_runtime_input_lineage_mismatch
+      "station_runtime_input_lineage_mismatch" ->
+        :station_runtime_input_lineage_mismatch
 
       "station_runtime_precheck_stop_times_stop_id_missing_stop" ->
         :station_runtime_precheck_stop_times_stop_id_missing_stop
@@ -2031,7 +2085,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       "station_runtime_precheck_artifact_read_failed" ->
         :station_runtime_precheck_artifact_read_failed
 
-      _other -> nil
+      _other ->
+        nil
     end
   end
 
