@@ -72,7 +72,15 @@ defmodule GtfsPlanner.Gtfs.StationNaming do
     child_stops
     |> Enum.map(fn stop ->
       kebab_name = Stop.kebabify(stop.stop_name)
-      kebab = if kebab_name == "", do: Stop.kebabify(stop.stop_id), else: kebab_name
+      kebab_stop_id = Stop.kebabify(stop.stop_id)
+
+      kebab =
+        cond do
+          kebab_name != "" -> kebab_name
+          kebab_stop_id != "" -> kebab_stop_id
+          true -> "stop"
+        end
+
       %{stop_id: stop.stop_id, partition_key: kebab}
     end)
     |> Enum.group_by(& &1.partition_key)

@@ -190,6 +190,16 @@ defmodule GtfsPlanner.Gtfs.StationNamingTest do
       assert [%{old_id: "MY_STOP", new_id: "my-stop-01"}] = result
     end
 
+    test "falls back to default token when both stop_name and stop_id are unsluggable" do
+      child_stops = [
+        %{stop_id: "???", stop_name: "!!!", location_type: 3, level_id: nil}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "???", new_id: "stop-01"}] = result
+    end
+
     test "returns empty list for empty input" do
       assert [] == StationNaming.build_kebab_naming_map([])
     end
