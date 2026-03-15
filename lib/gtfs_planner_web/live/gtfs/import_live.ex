@@ -765,11 +765,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             phx-change="validate_diff"
             phx-submit="compute_diff"
           >
-            <label class="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-base-300 rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
-              <div class="flex flex-col items-center justify-center px-6">
-                <.icon name="hero-arrow-up-tray" class="w-8 h-8 mb-2 text-base-content/60" />
-                <p class="text-sm font-medium">Upload station files or a zip archive</p>
-                <p class="text-xs text-base-content/60 mt-1">Max 3 files, 50MB each</p>
+            <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-base-300 rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
+              <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
+                <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/60" />
+                <p class="mb-2 text-sm font-medium">
+                  <span class="text-primary">Click to upload</span> or drag and drop
+                </p>
+                <p class="text-xs text-base-content/60">
+                  levels.txt, stops.txt, pathways.txt or a .zip archive (max 3 files, 50MB each)
+                </p>
               </div>
               <.live_file_input upload={@uploads.diff_files} class="sr-only" />
             </label>
