@@ -1105,8 +1105,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke="transparent"
       stroke-width="0.30"
       stroke-linecap="butt"
-      marker-start="url(#pathway-arrow)"
-      marker-end={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
+      marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
+      marker-end="url(#pathway-arrow)"
       data-pathway-arrow-guide="true"
       data-pathway-end-trim="1.1"
       data-base-stroke={0.30 * @stroke_mult}
@@ -2019,12 +2019,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </svg>
             <span>Fare Gate</span>
           </div>
-          <%!-- Mode 7: Exit Gate — two parallel rails, reverse arrow --%>
+          <%!-- Mode 7: Exit Gate — two parallel rails, forward arrow --%>
           <div class="flex items-center gap-2 text-sm">
             <svg width="40" height="12" class="shrink-0">
-              <polygon points="5,2 0,6 5,10" fill="#FF00FF" />
-              <line x1="7" y1="4" x2="40" y2="4" stroke="#FF00FF" stroke-width="1.5" />
-              <line x1="7" y1="8" x2="40" y2="8" stroke="#FF00FF" stroke-width="1.5" />
+              <line x1="0" y1="4" x2="33" y2="4" stroke="#FF00FF" stroke-width="1.5" />
+              <line x1="0" y1="8" x2="33" y2="8" stroke="#FF00FF" stroke-width="1.5" />
+              <polygon points="35,2 40,6 35,10" fill="#FF00FF" />
             </svg>
             <span>Exit Gate</span>
           </div>
