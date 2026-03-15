@@ -125,7 +125,15 @@ defmodule GtfsPlanner.Otp.Materializer do
          opts
        ) do
     emit_status(status_callback, %{phase: :preflight, preflight_issues_count: length(issues)})
-    do_build_and_persist(organization_id, gtfs_version_id, status_callback, :lenient, issues, opts)
+
+    do_build_and_persist(
+      organization_id,
+      gtfs_version_id,
+      status_callback,
+      :lenient,
+      issues,
+      opts
+    )
   end
 
   defp handle_preflight_issues(
@@ -140,7 +148,14 @@ defmodule GtfsPlanner.Otp.Materializer do
     {:error, issues}
   end
 
-  defp do_build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode, otp_preflight_issues, opts) do
+  defp do_build_and_persist(
+         organization_id,
+         gtfs_version_id,
+         status_callback,
+         preflight_mode,
+         otp_preflight_issues,
+         opts
+       ) do
     pathways_preflight_outcome = run_pathways_preflight(organization_id, gtfs_version_id, opts)
     preflight_warnings = preflight_warnings(pathways_preflight_outcome)
     blocking_errors = normalize_blocking_errors(pathways_preflight_outcome)

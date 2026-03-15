@@ -227,7 +227,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         {:ok, %{filename: entry.client_name, content: File.read!(path)}}
       end)
 
-    expanded_files = Import.expand_archives(uploaded_files)
+    {expanded_files, _archive_warnings} = Import.expand_archives(uploaded_files)
 
     case categorize_diff_files(expanded_files) do
       {:error, duplicate_errors} ->
@@ -401,12 +401,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     socket =
       case result do
-        {:ok, {counts, unrecognized, _topic}} ->
+        {:ok, {counts, unrecognized, _topic, archive_warnings}} ->
           # Note: We already subscribed to the topic before starting the task
           # so we don't need to subscribe again here
 
           socket
-          |> assign(:import_result, {:ok, counts, unrecognized})
+          |> assign(:import_result, {:ok, counts, unrecognized, archive_warnings})
           |> assign(:importing, false)
           |> assign(:import_task, nil)
 
@@ -663,43 +663,24 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           <%= if @import_result do %>
             <div class="mt-6 pt-6 border-t border-base-300">
               <%= case @import_result do %>
-                <% {:ok, counts, unrecognized} -> %>
-                  <div class="alert border border-green-300 bg-green-100 text-black">
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      class="stroke-current shrink-0 h-6 w-6"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                      />
-                    </svg>
-                    <div>
-                      <h3 class="font-bold">Import Successful</h3>
-                      <div class="text-xs">
-                        Imported {counts.agencies} agencies, {counts.areas} areas, {counts.attributions} attributions, {counts.booking_rules} booking rules, {counts.calendars} calendars, {counts.calendar_dates} calendar dates, {counts.fare_attributes} fare attributes, {counts.fare_leg_join_rules} fare leg join rules, {counts.fare_leg_rules} fare leg rules, {counts.fare_media} fare media, {counts.fare_products} fare products, {counts.fare_rules} fare rules, {counts.fare_transfer_rules} fare transfer rules, {counts.feed_info} feed info, {counts.frequencies} frequencies, {counts.levels} levels, {counts.locations} locations, {counts.networks} networks, {counts.pathways} pathways, {counts.rider_categories} rider categories, {counts.route_networks} route networks, {counts.route_patterns} route patterns, {counts.routes} routes, {counts.shapes} shapes, {counts.stop_areas} stop areas, {counts.stop_times} stop times, {counts.stops} stops, {counts.timeframes} timeframes, {counts.transfers} transfers, {counts.translations} translations, {counts.trips} trips.
-                      </div>
-                      <%= if Map.get(counts, :extensions_stop_coordinates, 0) + Map.get(counts, :extensions_stop_levels, 0) + Map.get(counts, :extensions_route_flags, 0) + Map.get(counts, :extensions_images, 0) > 0 do %>
-                        <div class="text-xs mt-1">
-                          Extensions: {Map.get(counts, :extensions_stop_coordinates, 0)} diagram coordinates, {Map.get(
-                            counts,
-                            :extensions_stop_levels,
-                            0
-                          )} stop levels, {Map.get(counts, :extensions_route_flags, 0)} route flags, {Map.get(
-                            counts,
-                            :extensions_images,
-                            0
-                          )} images.
+                <% {:ok, counts, unrecognized, archive_warnings} -> %>
+                  <%= if archive_warnings != [] and all_counts_zero?(counts) do %>
+                    <div class="alert alert-error alert-soft">
+                      <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
+                      <div>
+                        <h3 class="font-bold">Import failed</h3>
+                        <div class="text-xs">
+                          No data was imported.
+                          <%= for w <- archive_warnings do %>
+                            <p class="mt-1">
+                              {w.filename}: {w.detail}
+                            </p>
+                          <% end %>
                         </div>
-                      <% end %>
+                      </div>
                     </div>
-                  </div>
-                  <%= if unrecognized != [] do %>
-                    <div class="alert alert-warning mt-2">
+                  <% else %>
+                    <div class="alert border border-green-300 bg-green-100 text-black">
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
                         class="stroke-current shrink-0 h-6 w-6"
@@ -710,11 +691,46 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                           stroke-linecap="round"
                           stroke-linejoin="round"
                           stroke-width="2"
-                          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
                         />
                       </svg>
                       <div>
-                        <h3 class="font-bold">Unrecognized Files Skipped</h3>
+                        <h3 class="font-bold">Import Successful</h3>
+                        <div class="text-xs">
+                          Imported {counts.agencies} agencies, {counts.areas} areas, {counts.attributions} attributions, {counts.booking_rules} booking rules, {counts.calendars} calendars, {counts.calendar_dates} calendar dates, {counts.fare_attributes} fare attributes, {counts.fare_leg_join_rules} fare leg join rules, {counts.fare_leg_rules} fare leg rules, {counts.fare_media} fare media, {counts.fare_products} fare products, {counts.fare_rules} fare rules, {counts.fare_transfer_rules} fare transfer rules, {counts.feed_info} feed info, {counts.frequencies} frequencies, {counts.levels} levels, {counts.locations} locations, {counts.networks} networks, {counts.pathways} pathways, {counts.rider_categories} rider categories, {counts.route_networks} route networks, {counts.route_patterns} route patterns, {counts.routes} routes, {counts.shapes} shapes, {counts.stop_areas} stop areas, {counts.stop_times} stop times, {counts.stops} stops, {counts.timeframes} timeframes, {counts.transfers} transfers, {counts.translations} translations, {counts.trips} trips.
+                        </div>
+                        <%= if Map.get(counts, :extensions_stop_coordinates, 0) + Map.get(counts, :extensions_stop_levels, 0) + Map.get(counts, :extensions_route_flags, 0) + Map.get(counts, :extensions_images, 0) > 0 do %>
+                          <div class="text-xs mt-1">
+                            Extensions: {Map.get(counts, :extensions_stop_coordinates, 0)} diagram coordinates, {Map.get(
+                              counts,
+                              :extensions_stop_levels,
+                              0
+                            )} stop levels, {Map.get(counts, :extensions_route_flags, 0)} route flags, {Map.get(
+                              counts,
+                              :extensions_images,
+                              0
+                            )} images.
+                          </div>
+                        <% end %>
+                      </div>
+                    </div>
+                    <%= for w <- archive_warnings do %>
+                      <div class="alert alert-warning alert-soft mt-2">
+                        <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
+                        <div class="text-base-content">
+                          <h3 class="font-bold">Archive not expanded</h3>
+                          <div class="text-xs">
+                            {w.filename}: {w.detail}
+                          </div>
+                        </div>
+                      </div>
+                    <% end %>
+                  <% end %>
+                  <%= if unrecognized != [] do %>
+                    <div class="alert alert-warning alert-soft mt-2">
+                      <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
+                      <div class="text-base-content">
+                        <h3 class="font-bold">Unrecognized files skipped</h3>
                         <div class="text-xs">
                           {Enum.join(unrecognized, ", ")}
                         </div>
@@ -765,11 +781,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             phx-change="validate_diff"
             phx-submit="compute_diff"
           >
-            <label class="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-base-300 rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
-              <div class="flex flex-col items-center justify-center px-6">
-                <.icon name="hero-arrow-up-tray" class="w-8 h-8 mb-2 text-base-content/60" />
-                <p class="text-sm font-medium">Upload station files or a zip archive</p>
-                <p class="text-xs text-base-content/60 mt-1">Max 3 files, 50MB each</p>
+            <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-base-300 rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
+              <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
+                <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/60" />
+                <p class="mb-2 text-sm font-medium">
+                  <span class="text-primary">Click to upload</span> or drag and drop
+                </p>
+                <p class="text-xs text-base-content/60">
+                  levels.txt, stops.txt, pathways.txt or a .zip archive (max 3 files, 50MB each)
+                </p>
               </div>
               <.live_file_input upload={@uploads.diff_files} class="sr-only" />
             </label>
@@ -781,27 +801,44 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               </div>
             <% end %>
 
-            <div
-              :for={entry <- @uploads.diff_files.entries}
-              class="flex items-center justify-between rounded-lg bg-base-200 p-3"
-            >
-              <div>
-                <p class="text-sm font-medium">{entry.client_name}</p>
-                <p class="text-xs text-base-content/60">{entry.progress}% uploaded</p>
-                <%= for error <- upload_errors(@uploads.diff_files, entry) do %>
-                  <p class="text-xs text-error mt-1">{diff_upload_error_to_string(error)}</p>
-                <% end %>
+            <%= for entry <- @uploads.diff_files.entries do %>
+              <div class={[
+                "flex items-center justify-between mt-2 p-2 rounded",
+                upload_errors(@uploads.diff_files, entry) == [] && "bg-base-200",
+                upload_errors(@uploads.diff_files, entry) != [] && "bg-error/10 border border-error"
+              ]}>
+                <div class="flex-1">
+                  <span class="text-sm font-medium">{entry.client_name}</span>
+                  <%= if upload_errors(@uploads.diff_files, entry) == [] do %>
+                    <div class="w-full bg-base-300 rounded-full h-2 mt-1">
+                      <div
+                        class="bg-primary h-2 rounded-full transition-all duration-300"
+                        style={"width: #{entry.progress}%"}
+                      >
+                      </div>
+                    </div>
+                    <span class="text-xs text-base-content/60">
+                      {entry.progress}% uploaded
+                    </span>
+                  <% else %>
+                    <%= for error <- upload_errors(@uploads.diff_files, entry) do %>
+                      <div class="flex items-center gap-2 mt-1">
+                        <.icon name="hero-exclamation-circle" class="w-4 h-4 text-error" />
+                        <span class="text-sm text-error">{diff_upload_error_to_string(error)}</span>
+                      </div>
+                    <% end %>
+                  <% end %>
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-xs ml-2"
+                  phx-click="cancel-diff-upload"
+                  phx-value-ref={entry.ref}
+                >
+                  Cancel
+                </button>
               </div>
-
-              <button
-                type="button"
-                class="btn btn-ghost btn-xs"
-                phx-click="cancel-diff-upload"
-                phx-value-ref={entry.ref}
-              >
-                Cancel
-              </button>
-            </div>
+            <% end %>
 
             <div class="flex flex-wrap gap-2">
               <button
@@ -1545,4 +1582,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   defp format_error_map(%{} = map),
     do: inspect(map)
+
+  defp all_counts_zero?(counts) do
+    Import.supported_count_keys()
+    |> Enum.all?(fn key -> Map.get(counts, key, 0) == 0 end)
+  end
 end
