@@ -6292,15 +6292,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
       html = render_click(view, "open_naming_drawer")
+      assert html =~ "deterministic convention"
       assert html =~ "naming_station_platform_general_ground_01"
+      refute html =~ "kebab-case"
+      refute html =~ "style-child-01"
 
       html = view |> element("button", "Name-based") |> render_click()
       assert html =~ "kebab-case"
       assert html =~ "style-child-01"
+      refute html =~ "deterministic convention"
+      refute html =~ "naming_station_platform_general_ground_01"
 
       html = view |> element("button", "Structured") |> render_click()
       assert html =~ "deterministic convention"
       assert html =~ "naming_station_platform_general_ground_01"
+      refute html =~ "kebab-case"
+      refute html =~ "style-child-01"
     end
 
     test "Apply naming convention uses selected naming style", %{
