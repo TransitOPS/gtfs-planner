@@ -60,6 +60,34 @@ defmodule GtfsPlanner.Gtfs.StationNaming do
   end
 
   @doc """
+  Builds a list of `%{old_id: string, new_id: string}` mappings
+  using kebab-case stop names with sequence numbers.
+
+  Groups stops by their kebab-cased stop_name; within each group,
+  stops are sorted by stop_id and assigned zero-padded 2-digit sequences.
+
+  Pattern: `{kebab-name}-{seq}` (e.g., `platform-2-01`)
+  """
+  def build_kebab_naming_map(child_stops) do
+    child_stops
+    |> Enum.map(fn stop ->
+      kebab = Stop.kebabify(stop.stop_name || stop.stop_id)
+      %{stop_id: stop.stop_id, partition_key: kebab}
+    end)
+    |> Enum.group_by(& &1.partition_key)
+    |> Enum.flat_map(fn {partition_key, stops} ->
+      stops
+      |> Enum.sort_by(& &1.stop_id)
+      |> Enum.with_index(1)
+      |> Enum.map(fn {stop, seq} ->
+        seq_str = String.pad_leading(Integer.to_string(seq), 2, "0")
+        %{old_id: stop.stop_id, new_id: "#{partition_key}-#{seq_str}"}
+      end)
+    end)
+    |> Enum.sort_by(& &1.old_id)
+  end
+
+  @doc """
   Returns a list of new IDs that collide with existing stop IDs
   outside the rename mapping.
   """

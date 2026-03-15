@@ -125,6 +125,56 @@ defmodule GtfsPlanner.Gtfs.StationNamingTest do
     end
   end
 
+  describe "build_kebab_naming_map/1" do
+    test "basic kebab-casing with sequence" do
+      child_stops = [
+        %{stop_id: "S1", stop_name: "Platform 2", location_type: 0, level_id: "L1"}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "S1", new_id: "platform-2-01"}] = result
+    end
+
+    test "groups stops with same name and assigns sequential IDs" do
+      child_stops = [
+        %{stop_id: "B_STOP", stop_name: "Main Hall", location_type: 3, level_id: "L1"},
+        %{stop_id: "A_STOP", stop_name: "Main Hall", location_type: 3, level_id: "L1"}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+      mapping = Map.new(result, fn %{old_id: old, new_id: new} -> {old, new} end)
+
+      # Sorted by stop_id: A_STOP=01, B_STOP=02
+      assert mapping["A_STOP"] == "main-hall-01"
+      assert mapping["B_STOP"] == "main-hall-02"
+    end
+
+    test "strips special characters" do
+      child_stops = [
+        %{stop_id: "S1", stop_name: "Track #3 (North)", location_type: 0, level_id: "L1"}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "S1", new_id: "track-3-north-01"}] = result
+    end
+
+    test "falls back to stop_id when stop_name is nil" do
+      child_stops = [
+        %{stop_id: "MY_STOP", stop_name: nil, location_type: 3, level_id: nil}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "MY_STOP", new_id: "my-stop-01"}] = result
+    end
+
+    test "returns empty list for empty input" do
+      assert [] == StationNaming.build_kebab_naming_map([])
+    end
+  end
+
   describe "detect_collisions/2" do
     test "returns empty when no collisions" do
       naming_map = [%{old_id: "OLD_1", new_id: "new_1"}]
