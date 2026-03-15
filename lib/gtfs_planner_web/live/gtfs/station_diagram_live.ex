@@ -3066,7 +3066,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         opts[:constraint] == :unique and
           opts[:constraint_name] in [
             "walkability_tests_organization_id_stop_id_address_index",
-            "walkability_tests_organization_id_gtfs_version_id_stop_id_address_index"
+            "walkability_tests_organization_id_gtfs_version_id_stop_id_addre"
           ]
 
       _ ->
