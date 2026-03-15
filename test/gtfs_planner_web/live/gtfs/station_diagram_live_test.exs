@@ -4184,6 +4184,94 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert untouched.signposted_as == "Other To X"
       assert untouched.reversed_signposted_as == "Other To Y"
     end
+
+    test "flip pathway with invalid id shows not found error without crashing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "flip_pathway", %{"id" => "not-a-uuid"})
+
+      assert has_element?(view, "#lists-section", "Pathway not found.")
+    end
+
+    test "flip pathway with missing id shows not found error without crashing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "flip_pathway", %{})
+
+      assert has_element?(view, "#lists-section", "Pathway not found.")
+    end
+
+    test "flip pathway for pathway outside station shows unauthorized error without crashing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      other_station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "FLIP_OTHER_STATION",
+          stop_name: "Flip Other Station",
+          location_type: 1
+        })
+
+      other_stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "FLIP_OTHER_A",
+          stop_name: "Flip Other A",
+          location_type: 0,
+          parent_station: other_station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 42.0, "y" => 42.0}
+        })
+
+      other_stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "FLIP_OTHER_B",
+          stop_name: "Flip Other B",
+          location_type: 0,
+          parent_station: other_station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 46.0, "y" => 46.0}
+        })
+
+      unauthorized_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          other_stop_a.stop_id,
+          other_stop_b.stop_id,
+          %{pathway_mode: 1, is_bidirectional: true}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "flip_pathway", %{"id" => unauthorized_pathway.id})
+
+      assert has_element?(view, "#lists-section", "Unauthorized pathway access.")
+    end
   end
 
   describe "StationDiagramLive - walkability selection" do

@@ -1915,13 +1915,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("flip_pathway", %{"id" => id}, socket) do
-    pathway = Gtfs.get_pathway_with_stops!(id)
+    pathway =
+      try do
+        Gtfs.get_pathway_with_stops!(id)
+      rescue
+        Ecto.NoResultsError -> nil
+        Ecto.Query.CastError -> nil
+      end
 
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
 
     cond do
+      is_nil(pathway) ->
+        {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
+
       pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
         {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
 
@@ -1996,6 +2005,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply, assign(socket, :pathway_error, "Failed to flip pathway direction.")}
         end
     end
+  end
+
+  @impl true
+  def handle_event("flip_pathway", _params, socket) do
+    {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
   end
 
   @impl true
