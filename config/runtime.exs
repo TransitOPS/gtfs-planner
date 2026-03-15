@@ -119,6 +119,20 @@ if config_env() != :test do
 end
 
 config :gtfs_planner,
+       :import_max_zip_uncompressed_bytes,
+       (case Integer.parse(System.get_env("IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES") || "") do
+          {value, ""} when value > 0 -> value
+          _ -> 500 * 1024 * 1024
+        end)
+
+config :gtfs_planner,
+       :import_max_zip_entry_uncompressed_bytes,
+       (case Integer.parse(System.get_env("IMPORT_MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES") || "") do
+          {value, ""} when value > 0 -> value
+          _ -> 100 * 1024 * 1024
+        end)
+
+config :gtfs_planner,
        :geoapify_api_key,
        System.get_env("GEOAPIFY_API_KEY") ||
          if(config_env() == :prod,

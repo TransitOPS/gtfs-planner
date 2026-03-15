@@ -121,21 +121,22 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   ## Returns
 
-    - `{:ok, {counts, unrecognized_files, topic}}` on success
+    - `{:ok, {counts, unrecognized_files, topic, archive_warnings}}` on success
       - `counts` - map with keys for each file type containing import counts
       - `unrecognized_files` - list of unrecognized filenames
       - `topic` - PubSub topic for progress updates
+      - `archive_warnings` - list of `%{filename, reason, detail}` maps for archives that could not be expanded
     - `{:error, reason}` on failure
 
   ## Examples
 
       iex> files = [%{filename: "routes.txt", content: "route_id,route_type\\nR1,3"}]
       iex> import_files(org_id, version_id, files)
-      {:ok, {%{routes: 1, stops: 0, ...}, [], "import:123456"}}
+      {:ok, {%{routes: 1, stops: 0, ...}, [], "import:123456", []}}
   """
   def import_files(organization_id, gtfs_version_id, files, topic \\ nil) do
     # Expand any uploaded .zip archives into individual file entries
-    files = expand_archives(files)
+    {files, archive_warnings} = expand_archives(files)
 
     # Categorize files by filename (case-insensitive)
     {categorized, unrecognized_files, extensions} = categorize_files(files)
@@ -186,7 +187,7 @@ defmodule GtfsPlanner.Gtfs.Import do
           {:ok, counts} ->
             counts = Enum.reduce(@supported_count_keys, counts, &Map.put_new(&2, &1, 0))
             counts = import_extensions_phase(organization_id, gtfs_version_id, extensions, counts)
-            {:ok, {counts, unrecognized_files, topic}}
+            {:ok, {counts, unrecognized_files, topic, archive_warnings}}
 
           {:error, reason} ->
             {:error, reason}
@@ -500,75 +501,256 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   @max_zip_entries 10_000
-  @max_zip_uncompressed_bytes 100 * 1024 * 1024
+  @default_max_zip_uncompressed_bytes 500 * 1024 * 1024
+  @default_max_zip_entry_uncompressed_bytes 500 * 1024 * 1024
+
+  @doc false
+  def zip_limits do
+    max_total_bytes =
+      configured_zip_limit(
+        :import_max_zip_uncompressed_bytes,
+        @default_max_zip_uncompressed_bytes
+      )
+
+    max_entry_bytes =
+      configured_zip_limit(
+        :import_max_zip_entry_uncompressed_bytes,
+        min(max_total_bytes, @default_max_zip_entry_uncompressed_bytes)
+      )
+
+    %{
+      max_entries: @max_zip_entries,
+      max_total_bytes: max_total_bytes,
+      max_entry_bytes: min(max_entry_bytes, max_total_bytes)
+    }
+  end
 
   @doc """
   Expands uploaded `.zip` archives into individual file entries.
 
+  Returns `{expanded_files, archive_warnings}` where `archive_warnings` is a list
+  of `%{filename: String.t(), reason: atom(), detail: String.t()}` maps describing
+  archives that could not be expanded.
+
   Non-zip entries pass through unchanged.
 
-  Safety behavior is intentionally unchanged:
+  Safety behavior:
   - ignores hidden/system zip entries
   - rejects nested archives inside archives
   - enforces entry-count and total-uncompressed-size limits
-  - returns the original archive entry when unzip fails or limits are exceeded
+  - emits a structured warning when expansion fails (instead of passing the raw archive through)
   """
   def expand_archives(files) do
-    Enum.flat_map(files, fn file ->
-      if String.ends_with?(String.downcase(file.filename), ".zip") do
-        case :zip.unzip(file.content, [:memory]) do
-          {:ok, entries} ->
-            # Normalize entries and reject nested archives.
-            normalized_entries =
-              Enum.flat_map(entries, fn {name, content} ->
-                filename = normalize_uploaded_filename(to_string(name))
+    {files_acc, warnings_acc} =
+      Enum.reduce(files, {[], []}, fn file, {files_acc, warnings_acc} ->
+        if String.ends_with?(String.downcase(file.filename), ".zip") do
+          limits = zip_limits()
 
-                cond do
-                  ignore_zip_entry?(filename) ->
-                    []
+          case check_zip_archive_metadata_against_limits(file, limits) do
+            :ok ->
+              case :zip.unzip(file.content, [:memory]) do
+                {:ok, entries} ->
+                  entry_sizes = Enum.map(entries, fn {_name, content} -> byte_size(content) end)
 
-                  String.ends_with?(String.downcase(filename), ".zip") ->
-                    Logger.warning(
-                      "Rejecting nested zip entry #{filename} in archive #{file.filename}"
-                    )
+                  case check_zip_entry_sizes_against_limits(entry_sizes, limits) do
+                    {:ok, _entries_count, _total_bytes} ->
+                      normalized_entries =
+                        Enum.flat_map(entries, fn {name, content} ->
+                          filename = normalize_uploaded_filename(to_string(name))
 
-                    []
+                          cond do
+                            ignore_zip_entry?(filename) ->
+                              []
 
-                  true ->
-                    [%{filename: filename, content: content}]
-                end
-              end)
+                            String.ends_with?(String.downcase(filename), ".zip") ->
+                              Logger.warning(
+                                "Rejecting nested zip entry #{filename} in archive #{file.filename}"
+                              )
 
-            entries_count = length(normalized_entries)
+                              []
 
-            total_bytes =
-              Enum.reduce(normalized_entries, 0, fn %{content: content}, acc ->
-                acc + byte_size(content)
-              end)
+                            true ->
+                              [%{filename: filename, content: content}]
+                          end
+                        end)
 
-            if entries_count > @max_zip_entries or
-                 total_bytes > @max_zip_uncompressed_bytes do
+                      {files_acc ++ normalized_entries, warnings_acc}
+
+                    {:error, reason, entries_count, total_bytes, entry_bytes} ->
+                      Logger.warning(
+                        "Zip archive #{file.filename} exceeds safety limits after expansion " <>
+                          "(reason=#{reason}, entries=#{entries_count}, bytes=#{total_bytes}, " <>
+                          "entry_bytes=#{entry_bytes}, max_entries=#{limits.max_entries}, " <>
+                          "max_total_bytes=#{limits.max_total_bytes}, " <>
+                          "max_entry_bytes=#{limits.max_entry_bytes}), skipping expansion"
+                      )
+
+                      warning = %{
+                        filename: file.filename,
+                        reason: :archive_too_large,
+                        detail:
+                          "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
+                      }
+
+                      {files_acc, warnings_acc ++ [warning]}
+                  end
+
+                {:error, reason} ->
+                  Logger.warning(
+                    "Failed to expand zip archive #{file.filename}: #{inspect(reason)}"
+                  )
+
+                  warning = %{
+                    filename: file.filename,
+                    reason: :unzip_failed,
+                    detail: "archive could not be read (#{inspect(reason)})"
+                  }
+
+                  {files_acc, warnings_acc ++ [warning]}
+              end
+
+            {:error, reason, entries_count, total_bytes, entry_bytes} ->
               Logger.warning(
                 "Zip archive #{file.filename} exceeds safety limits " <>
-                  "(entries=#{entries_count}, bytes=#{total_bytes}), skipping expansion"
+                  "(reason=#{reason}, entries=#{entries_count}, bytes=#{total_bytes}, " <>
+                  "entry_bytes=#{entry_bytes}, max_entries=#{limits.max_entries}, " <>
+                  "max_total_bytes=#{limits.max_total_bytes}, " <>
+                  "max_entry_bytes=#{limits.max_entry_bytes}), skipping expansion"
               )
 
-              [file]
-            else
-              normalized_entries
-            end
+              warning = %{
+                filename: file.filename,
+                reason: :archive_too_large,
+                detail:
+                  "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
+              }
 
-          {:error, reason} ->
-            Logger.warning("Failed to expand zip archive #{file.filename}: #{inspect(reason)}")
+              {files_acc, warnings_acc ++ [warning]}
 
-            # Pass through the original archive so that it is not silently
-            # dropped and can be surfaced by later stages.
-            [file]
+            {:error, reason} ->
+              Logger.warning(
+                "Failed to preflight zip archive #{file.filename}: #{inspect(reason)}"
+              )
+
+              warning = %{
+                filename: file.filename,
+                reason: :unzip_failed,
+                detail: "archive could not be read (#{inspect(reason)})"
+              }
+
+              {files_acc, warnings_acc ++ [warning]}
+          end
+        else
+          {files_acc ++ [file], warnings_acc}
         end
-      else
-        [file]
+      end)
+
+    {files_acc, warnings_acc}
+  end
+
+  @doc false
+  def zip_entry_sizes_within_limits?(entry_sizes, limits)
+      when is_list(entry_sizes) and is_map(limits) do
+    match?({:ok, _, _}, check_zip_entry_sizes_against_limits(entry_sizes, limits))
+  end
+
+  defp check_zip_entry_sizes_against_limits(entry_sizes, limits) do
+    Enum.reduce_while(entry_sizes, {:ok, 0, 0}, fn entry_bytes, {:ok, count, total} ->
+      next_count = count + 1
+      next_total = total + entry_bytes
+
+      cond do
+        next_count > limits.max_entries ->
+          {:halt, {:error, :too_many_entries, next_count, next_total, entry_bytes}}
+
+        entry_bytes > limits.max_entry_bytes ->
+          {:halt, {:error, :entry_too_large, next_count, next_total, entry_bytes}}
+
+        next_total > limits.max_total_bytes ->
+          {:halt, {:error, :total_too_large, next_count, next_total, entry_bytes}}
+
+        true ->
+          {:cont, {:ok, next_count, next_total}}
       end
     end)
+  end
+
+  defp check_zip_archive_metadata_against_limits(file, limits) do
+    with_temp_file(file.content, ".zip", fn path ->
+      case :zip.list_dir(String.to_charlist(path)) do
+        {:ok, entries} ->
+          entry_sizes =
+            Enum.flat_map(entries, fn
+              {:zip_file, name, file_info, _comment, _offset, _comp_size} ->
+                filename = normalize_uploaded_filename(to_string(name))
+
+                if String.ends_with?(String.downcase(filename), ".zip") do
+                  Logger.warning(
+                    "Rejecting nested zip entry #{filename} in archive #{file.filename}"
+                  )
+                end
+
+                [zip_entry_uncompressed_size(file_info)]
+
+              _ ->
+                []
+            end)
+
+          case check_zip_entry_sizes_against_limits(entry_sizes, limits) do
+            {:ok, _, _} = ok -> ok
+            {:error, _, _, _, _} = error -> error
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end)
+    |> case do
+      {:ok, _entries_count, _total_bytes} -> :ok
+      other -> other
+    end
+  end
+
+  defp with_temp_file(binary, extension, fun) when is_binary(binary) and is_binary(extension) do
+    filename =
+      "gtfs-import-#{System.unique_integer([:positive, :monotonic])}#{extension}"
+
+    path = Path.join(System.tmp_dir!(), filename)
+
+    case File.write(path, binary) do
+      :ok ->
+        try do
+          fun.(path)
+        after
+          File.rm(path)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp zip_entry_uncompressed_size({:file_info, size, _, _, _, _, _, _, _, _, _, _, _, _})
+       when is_integer(size) and size >= 0 do
+    size
+  end
+
+  defp zip_entry_uncompressed_size(_), do: 0
+
+  defp configured_zip_limit(key, default) do
+    case Application.get_env(:gtfs_planner, key, default) do
+      value when is_integer(value) and value > 0 ->
+        value
+
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {parsed, ""} when parsed > 0 -> parsed
+          _ -> default
+        end
+
+      _ ->
+        default
+    end
   end
 
   defp normalize_uploaded_filename(filename) when is_binary(filename) do

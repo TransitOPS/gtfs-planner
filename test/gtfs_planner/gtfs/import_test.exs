@@ -191,7 +191,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "stops.txt", content: stops_content}
       ]
 
-      assert {:ok, {counts, _unrecognized, _topic}} =
+      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       assert counts.routes == 0
@@ -239,7 +239,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:ok, {_counts, _unrecognized, _topic}} =
+      assert {:ok, {_counts, _unrecognized, _topic, _archive_warnings}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       # Verify pathways were created
@@ -325,7 +325,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:ok, {counts, _unrecognized, _topic}} =
+      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       assert counts.pathways == 1
@@ -364,7 +364,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:ok, {counts, _unrecognized, _topic}} =
+      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       assert counts.pathways == 1
@@ -390,7 +390,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "agency.txt", content: agency_content}
       ]
 
-      assert {:ok, {counts, _unrecognized, _topic}} =
+      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       assert counts.agencies == 1
@@ -421,7 +421,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "shapes.txt", content: shapes_content}
       ]
 
-      assert {:ok, {counts, _unrecognized, _topic}} =
+      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       assert counts.shapes == 1
@@ -442,7 +442,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       organization: organization,
       gtfs_version: gtfs_version
     } do
-      assert {:ok, {counts, _unrecognized, _topic}} =
+      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
                Import.import_files(organization.id, gtfs_version.id, [])
 
       assert MapSet.new(Map.keys(counts)) == MapSet.new(Import.supported_count_keys())
@@ -518,7 +518,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
-      assert {:ok, {counts, unrecognized, _topic}} =
+      assert {:ok, {counts, unrecognized, _topic, _archive_warnings}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       assert counts.levels == 1
@@ -547,7 +547,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
       # Should not error - extensions with no references are logged and skipped
-      assert {:ok, {counts, unrecognized, _topic}} =
+      assert {:ok, {counts, unrecognized, _topic, _archive_warnings}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       assert counts.levels == 1
@@ -607,7 +607,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
-      assert {:ok, {counts, unrecognized, _topic}} =
+      assert {:ok, {counts, unrecognized, _topic, _archive_warnings}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       assert counts.levels == 1
@@ -673,7 +673,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
-      assert {:ok, {counts, unrecognized, _topic}} =
+      assert {:ok, {counts, unrecognized, _topic, _archive_warnings}} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       assert counts.levels == 1
@@ -689,6 +689,60 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         Path.join([uploads_path, "diagrams", organization.id, "32095", "lvl_busway_no_root.png"])
 
       assert File.read!(restored) == "fake png no root"
+    end
+
+    test "expand_archives returns warning for corrupt zip" do
+      files = [%{filename: "bad.zip", content: "not a real zip"}]
+      {expanded, warnings} = Import.expand_archives(files)
+      assert expanded == []
+      assert [%{filename: "bad.zip", reason: :unzip_failed}] = warnings
+    end
+
+    test "import_files returns archive warnings when zip cannot be expanded", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      files = [%{filename: "bad.zip", content: "not a real zip"}]
+
+      assert {:ok, {_counts, unrecognized, _topic, archive_warnings}} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert unrecognized == []
+      assert [%{filename: "bad.zip", reason: :unzip_failed}] = archive_warnings
+    end
+
+    test "zip size check accepts 500MB exactly" do
+      max_total_bytes = 500 * 1024 * 1024
+
+      limits = %{
+        max_entries: 10_000,
+        max_total_bytes: max_total_bytes,
+        max_entry_bytes: max_total_bytes
+      }
+
+      assert Import.zip_entry_sizes_within_limits?([max_total_bytes], limits)
+    end
+
+    test "zip size check rejects 500MB + 1 byte" do
+      max_total_bytes = 500 * 1024 * 1024
+
+      limits = %{
+        max_entries: 10_000,
+        max_total_bytes: max_total_bytes,
+        max_entry_bytes: max_total_bytes
+      }
+
+      refute Import.zip_entry_sizes_within_limits?([max_total_bytes, 1], limits)
+    end
+
+    test "zip size check rejects entries above per-entry cap" do
+      limits = %{
+        max_entries: 10_000,
+        max_total_bytes: 500 * 1024 * 1024,
+        max_entry_bytes: 100 * 1024 * 1024
+      }
+
+      refute Import.zip_entry_sizes_within_limits?([100 * 1024 * 1024 + 1], limits)
     end
   end
 end
