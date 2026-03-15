@@ -441,10 +441,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               |> put_flash(:info, "Export completed successfully")
 
             {:ok, zip_binary, warnings} when warnings != [] ->
+              deduplicated = deduplicate_export_warnings(warnings)
+
               socket
               |> push_gtfs_download(zip_binary)
               |> put_flash(:info, "Export completed with warnings")
-              |> assign(:export_warnings, warnings)
+              |> assign(:export_warnings, deduplicated)
 
             {:ok, zip_binary} ->
               socket
@@ -452,15 +454,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               |> put_flash(:info, "Export completed successfully")
 
             {:error, reason} ->
-              error_message =
-                case reason do
-                  :no_data -> "No data available to export"
-                  _ -> "Export failed: #{inspect(reason)}"
-                end
-
               socket
-              |> put_flash(:error, error_message)
-              |> assign(:export_error, error_message)
+              |> assign(:export_error, format_export_error(reason))
           end
 
         {:noreply,
@@ -571,13 +566,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          })}
 
       socket.assigns.export_task && socket.assigns.export_task.ref == ref ->
-        require Logger
         Logger.error("Export task crashed: #{inspect(reason)}")
 
         {:noreply,
          socket
-         |> put_flash(:error, "Export failed unexpectedly")
-         |> assign(:export_error, "Export failed unexpectedly")
+         |> assign(:export_error, "Export failed. Try again or contact support.")
          |> assign(:exporting, false)
          |> assign(:export_task, nil)}
 
@@ -2514,7 +2507,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       otp_warnings = Map.get(meta, :otp_preflight_issues, [])
       materializer_warnings = Map.get(meta, :preflight_warnings, [])
 
-      {:ok, zip_binary, otp_warnings ++ materializer_warnings}
+      warnings = normalize_export_warnings(otp_warnings ++ materializer_warnings)
+      {:ok, zip_binary, warnings}
     else
       {:error, reason} ->
         {:error, reason}
@@ -2527,7 +2521,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         warnings =
           case preflight_module().run(organization_id, gtfs_version_id) do
             :ok -> []
-            {:error, issues} -> issues
+            {:error, issues} -> normalize_export_warnings(issues)
           end
 
         {:ok, zip_binary, warnings}
@@ -2535,6 +2529,83 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp format_export_error(:no_data), do: "No data available to export."
+
+  defp format_export_error(issues) when is_list(issues) do
+    issues
+    |> Enum.map(fn
+      %{message: message} when is_binary(message) and message != "" -> message
+      issue when is_map(issue) -> Map.get(issue, "message", inspect(issue))
+      other -> inspect(other)
+    end)
+    |> Enum.join("; ")
+  end
+
+  defp format_export_error(reason) when is_binary(reason), do: reason
+  defp format_export_error(_reason), do: "Export failed. Try again or contact support."
+
+  defp normalize_export_warnings(warnings) when is_list(warnings) do
+    Enum.map(warnings, fn
+      %{message: _} = warning -> warning
+      %{"message" => _} = warning -> normalize_string_keyed_warning(warning)
+      other -> %{message: inspect(other), code: :unknown}
+    end)
+  end
+
+  defp normalize_export_warnings(_), do: []
+
+  defp normalize_string_keyed_warning(warning) do
+    base = %{message: Map.get(warning, "message", "")}
+
+    base
+    |> maybe_put_warning_key(:code, Map.get(warning, "code"))
+    |> maybe_put_warning_key(:details, string_keys_to_atoms(Map.get(warning, "details")))
+    |> maybe_put_warning_key(:context, string_keys_to_atoms(Map.get(warning, "context")))
+    |> maybe_put_warning_key(:stop_id, Map.get(warning, "stop_id"))
+    |> maybe_put_warning_key(:pathway_id, Map.get(warning, "pathway_id"))
+    |> maybe_put_warning_key(:trip_id, Map.get(warning, "trip_id"))
+  end
+
+  defp maybe_put_warning_key(map, _key, nil), do: map
+  defp maybe_put_warning_key(map, key, value), do: Map.put(map, key, value)
+
+  defp string_keys_to_atoms(nil), do: nil
+
+  defp string_keys_to_atoms(map) when is_map(map) do
+    Map.new(map, fn
+      {k, v} when is_binary(k) -> {String.to_atom(k), v}
+      {k, v} -> {k, v}
+    end)
+  end
+
+  defp string_keys_to_atoms(other), do: other
+
+  defp deduplicate_export_warnings(warnings) when is_list(warnings) do
+    Enum.uniq_by(warnings, fn warning ->
+      code = warning[:code] || :unknown
+      identity = export_warning_identity(warning)
+      {code, identity}
+    end)
+  end
+
+  defp deduplicate_export_warnings(_), do: []
+
+  defp export_warning_identity(warning) do
+    cond do
+      id = deep_warning_field(warning, :stop_id) -> id
+      id = deep_warning_field(warning, :pathway_id) -> id
+      id = deep_warning_field(warning, :trip_id) -> id
+      true -> :unknown
+    end
+  end
+
+  defp deep_warning_field(warning, field) do
+    warning[field] ||
+      (is_map(warning[:details]) && warning[:details][field]) ||
+      (is_map(warning[:context]) && warning[:context][field]) ||
+      nil
   end
 
   defp push_gtfs_download(socket, zip_binary) do
@@ -2549,20 +2620,38 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp format_export_warning_details(issue) do
     details = issue[:details]
+    context = issue[:context]
 
-    if is_map(details) and details[:source_file] do
-      source_field =
-        if details[:source_field], do: ".#{details[:source_field]}", else: ""
+    cond do
+      is_map(details) and details[:source_file] ->
+        source_field =
+          if details[:source_field], do: ".#{details[:source_field]}", else: ""
 
-      target_file =
-        if details[:target_file], do: " -> #{details[:target_file]}", else: ""
+        target_file =
+          if details[:target_file], do: " -> #{details[:target_file]}", else: ""
 
-      invalid_count =
-        if details[:invalid_count], do: " (#{details[:invalid_count]} invalid)", else: ""
+        invalid_count =
+          if details[:invalid_count], do: " (#{details[:invalid_count]} invalid)", else: ""
 
-      "#{details[:source_file]}#{source_field}#{target_file}#{invalid_count}"
-    else
-      nil
+        "#{details[:source_file]}#{source_field}#{target_file}#{invalid_count}"
+
+      is_map(context) ->
+        [:file, :field, :identifier, :stop_id, :pathway_id, :trip_id, :value]
+        |> Enum.map(fn key ->
+          case context[key] do
+            nil -> nil
+            "" -> nil
+            v -> "#{key}: #{v}"
+          end
+        end)
+        |> Enum.reject(&is_nil/1)
+        |> case do
+          [] -> nil
+          parts -> Enum.join(parts, " | ")
+        end
+
+      true ->
+        nil
     end
   end
 

@@ -95,7 +95,14 @@ defmodule GtfsPlanner.Otp.Materializer do
   defp build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode, opts) do
     case Preflight.run(organization_id, gtfs_version_id) do
       :ok ->
-        do_build_and_persist(organization_id, gtfs_version_id, status_callback, [], opts)
+        do_build_and_persist(
+          organization_id,
+          gtfs_version_id,
+          status_callback,
+          preflight_mode,
+          [],
+          opts
+        )
 
       {:error, issues} ->
         handle_preflight_issues(
@@ -118,7 +125,7 @@ defmodule GtfsPlanner.Otp.Materializer do
          opts
        ) do
     emit_status(status_callback, %{phase: :preflight, preflight_issues_count: length(issues)})
-    do_build_and_persist(organization_id, gtfs_version_id, status_callback, issues, opts)
+    do_build_and_persist(organization_id, gtfs_version_id, status_callback, :lenient, issues, opts)
   end
 
   defp handle_preflight_issues(
@@ -133,9 +140,10 @@ defmodule GtfsPlanner.Otp.Materializer do
     {:error, issues}
   end
 
-  defp do_build_and_persist(organization_id, gtfs_version_id, status_callback, otp_preflight_issues, opts) do
+  defp do_build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode, otp_preflight_issues, opts) do
     pathways_preflight_outcome = run_pathways_preflight(organization_id, gtfs_version_id, opts)
     preflight_warnings = preflight_warnings(pathways_preflight_outcome)
+    blocking_errors = normalize_blocking_errors(pathways_preflight_outcome)
 
     if preflight_warnings != [] do
       emit_status(status_callback, %{
@@ -144,67 +152,82 @@ defmodule GtfsPlanner.Otp.Materializer do
       })
     end
 
-    with :ok <- gate_pathways_preflight(pathways_preflight_outcome, status_callback) do
-      staging_dir = build_staging_dir(organization_id, gtfs_version_id)
-      specs = build_specs()
+    case gate_pathways_preflight(blocking_errors, preflight_mode, status_callback) do
+      {:ok, demoted_warnings} ->
+        merged_warnings = preflight_warnings ++ demoted_warnings
 
-      try do
-        emit_status(status_callback, %{phase: :exporting})
+        staging_dir = build_staging_dir(organization_id, gtfs_version_id)
+        specs = build_specs()
 
-        with {:ok, file_paths} <-
-               Export.export_specs_to_directory(
-                 organization_id,
-                 gtfs_version_id,
-                 specs,
-                 staging_dir
-               ),
-             manifest_files <- manifest_files(specs, file_paths),
-             zip_path <- ArtifactPath.artifact_zip_path(organization_id, gtfs_version_id),
-             _ = emit_status(status_callback, %{phase: :packaging}),
-             {:ok, ^zip_path, file_size_bytes} <-
-               Packager.package_staging_dir(staging_dir, zip_path),
-             {:ok, content_hash} <- Hasher.sha256_for_filenames(manifest_files, staging_dir),
-             manifest_json = %{"files" => manifest_files},
-             _ = emit_status(status_callback, %{phase: :persisting}),
-             {:ok, artifact} <-
-               Otp.upsert_artifact(%{
-                 organization_id: organization_id,
-                 gtfs_version_id: gtfs_version_id,
-                 zip_path: zip_path,
-                 content_hash: content_hash,
-                 file_size_bytes: file_size_bytes,
-                 manifest_json: manifest_json
-               }) do
-          emit_status(status_callback, %{phase: :done, reused: false})
-          {:ok, zip_path, artifact_meta(artifact, false, preflight_warnings, otp_preflight_issues)}
-        else
-          {:error, reason} ->
-            emit_status(status_callback, %{phase: :failed, reason: :materialization_failed})
-            {:error, [build_issue(:materialization_failed, reason)]}
+        try do
+          emit_status(status_callback, %{phase: :exporting})
+
+          with {:ok, file_paths} <-
+                 Export.export_specs_to_directory(
+                   organization_id,
+                   gtfs_version_id,
+                   specs,
+                   staging_dir
+                 ),
+               manifest_files <- manifest_files(specs, file_paths),
+               zip_path <- ArtifactPath.artifact_zip_path(organization_id, gtfs_version_id),
+               _ = emit_status(status_callback, %{phase: :packaging}),
+               {:ok, ^zip_path, file_size_bytes} <-
+                 Packager.package_staging_dir(staging_dir, zip_path),
+               {:ok, content_hash} <- Hasher.sha256_for_filenames(manifest_files, staging_dir),
+               manifest_json = %{"files" => manifest_files},
+               _ = emit_status(status_callback, %{phase: :persisting}),
+               {:ok, artifact} <-
+                 Otp.upsert_artifact(%{
+                   organization_id: organization_id,
+                   gtfs_version_id: gtfs_version_id,
+                   zip_path: zip_path,
+                   content_hash: content_hash,
+                   file_size_bytes: file_size_bytes,
+                   manifest_json: manifest_json
+                 }) do
+            emit_status(status_callback, %{phase: :done, reused: false})
+            {:ok, zip_path, artifact_meta(artifact, false, merged_warnings, otp_preflight_issues)}
+          else
+            {:error, reason} ->
+              emit_status(status_callback, %{phase: :failed, reason: :materialization_failed})
+              {:error, [build_issue(:materialization_failed, reason)]}
+          end
+        after
+          File.rm_rf(staging_dir)
         end
-      after
-        File.rm_rf(staging_dir)
-      end
-    else
+
       {:error, blocking_errors} ->
         {:error, blocking_errors}
     end
   end
 
-  defp gate_pathways_preflight(pathways_preflight_outcome, status_callback) do
-    blocking_errors = normalize_blocking_errors(pathways_preflight_outcome)
+  defp gate_pathways_preflight([], _preflight_mode, _status_callback) do
+    {:ok, []}
+  end
 
-    if blocking_errors == [] do
-      :ok
-    else
-      emit_status(status_callback, %{
-        phase: :failed,
-        reason: :pathways_preflight_failed,
-        blocking_errors_count: length(blocking_errors)
-      })
+  defp gate_pathways_preflight(blocking_errors, :lenient, status_callback) do
+    demoted =
+      Enum.map(blocking_errors, fn issue ->
+        %{issue | severity: :warning}
+      end)
 
-      {:error, blocking_errors}
-    end
+    emit_status(status_callback, %{
+      phase: :preflight,
+      demoted_blocking_errors_count: length(demoted)
+    })
+
+    {:ok, demoted}
+  end
+
+  defp gate_pathways_preflight(blocking_errors, :strict, status_callback) do
+    emit_status(status_callback, %{
+      phase: :failed,
+      reason: :pathways_preflight_failed,
+      blocking_errors_count: length(blocking_errors)
+    })
+
+    {:error, blocking_errors}
   end
 
   defp normalize_blocking_errors({status, payload})
