@@ -120,13 +120,17 @@ end
 
 config :gtfs_planner,
        :import_max_zip_uncompressed_bytes,
-       System.get_env("IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES", "#{500 * 1024 * 1024}")
-       |> String.to_integer()
+       (case Integer.parse(System.get_env("IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES") || "") do
+          {value, ""} when value > 0 -> value
+          _ -> 500 * 1024 * 1024
+        end)
 
 config :gtfs_planner,
        :import_max_zip_entry_uncompressed_bytes,
-       System.get_env("IMPORT_MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES", "#{100 * 1024 * 1024}")
-       |> String.to_integer()
+       (case Integer.parse(System.get_env("IMPORT_MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES") || "") do
+          {value, ""} when value > 0 -> value
+          _ -> 100 * 1024 * 1024
+        end)
 
 config :gtfs_planner,
        :geoapify_api_key,

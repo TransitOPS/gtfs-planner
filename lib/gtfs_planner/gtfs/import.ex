@@ -540,53 +540,54 @@ defmodule GtfsPlanner.Gtfs.Import do
       if String.ends_with?(String.downcase(file.filename), ".zip") do
         limits = zip_limits()
 
-        case :zip.unzip(file.content, [:memory]) do
-          {:ok, entries} ->
-            # Normalize entries and reject nested archives.
-            normalized_entries =
-              Enum.flat_map(entries, fn {name, content} ->
-                filename = normalize_uploaded_filename(to_string(name))
+        case check_zip_archive_metadata_against_limits(file, limits) do
+          :ok ->
+            case :zip.unzip(file.content, [:memory]) do
+              {:ok, entries} ->
+                # Normalize entries and reject nested archives.
+                normalized_entries =
+                  Enum.flat_map(entries, fn {name, content} ->
+                    filename = normalize_uploaded_filename(to_string(name))
 
-                cond do
-                  ignore_zip_entry?(filename) ->
-                    []
+                    cond do
+                      ignore_zip_entry?(filename) ->
+                        []
 
-                  String.ends_with?(String.downcase(filename), ".zip") ->
-                    Logger.warning(
-                      "Rejecting nested zip entry #{filename} in archive #{file.filename}"
-                    )
+                      String.ends_with?(String.downcase(filename), ".zip") ->
+                        Logger.warning(
+                          "Rejecting nested zip entry #{filename} in archive #{file.filename}"
+                        )
 
-                    []
+                        []
 
-                  true ->
-                    [%{filename: filename, content: content}]
-                end
-              end)
+                      true ->
+                        [%{filename: filename, content: content}]
+                    end
+                  end)
 
-            entry_sizes =
-              Enum.map(normalized_entries, fn %{content: content} -> byte_size(content) end)
-
-            case check_zip_entry_sizes_against_limits(entry_sizes, limits) do
-              {:ok, _entries_count, _total_bytes} ->
                 normalized_entries
 
-              {:error, reason, entries_count, total_bytes, entry_bytes} ->
-                Logger.warning(
-                  "Zip archive #{file.filename} exceeds safety limits " <>
-                    "(reason=#{reason}, entries=#{entries_count}, bytes=#{total_bytes}, " <>
-                    "entry_bytes=#{entry_bytes}, max_entries=#{limits.max_entries}, " <>
-                    "max_total_bytes=#{limits.max_total_bytes}, " <>
-                    "max_entry_bytes=#{limits.max_entry_bytes}), skipping expansion"
-                )
+              {:error, reason} ->
+                Logger.warning("Failed to expand zip archive #{file.filename}: #{inspect(reason)}")
 
+                # Pass through the original archive so that it is not silently
+                # dropped and can be surfaced by later stages.
                 [file]
             end
 
-          {:error, reason} ->
-            Logger.warning("Failed to expand zip archive #{file.filename}: #{inspect(reason)}")
+          {:error, reason, entries_count, total_bytes, entry_bytes} ->
+            Logger.warning(
+              "Zip archive #{file.filename} exceeds safety limits " <>
+                "(reason=#{reason}, entries=#{entries_count}, bytes=#{total_bytes}, " <>
+                "entry_bytes=#{entry_bytes}, max_entries=#{limits.max_entries}, " <>
+                "max_total_bytes=#{limits.max_total_bytes}, " <>
+                "max_entry_bytes=#{limits.max_entry_bytes}), skipping expansion"
+            )
 
-            # Pass through the original archive so that it is not silently
-            # dropped and can be surfaced by later stages.
+            [file]
+
+          {:error, reason} ->
+            Logger.warning("Failed to preflight zip archive #{file.filename}: #{inspect(reason)}")
             [file]
         end
       else
@@ -621,6 +622,75 @@ defmodule GtfsPlanner.Gtfs.Import do
       end
     end)
   end
+
+  defp check_zip_archive_metadata_against_limits(file, limits) do
+    with_temp_file(file.content, ".zip", fn path ->
+      case :zip.list_dir(String.to_charlist(path)) do
+        {:ok, entries} ->
+          entry_sizes =
+            Enum.flat_map(entries, fn
+              {:zip_file, name, file_info, _comment, _offset, _comp_size} ->
+                filename = normalize_uploaded_filename(to_string(name))
+
+                cond do
+                  ignore_zip_entry?(filename) ->
+                    []
+
+                  String.ends_with?(String.downcase(filename), ".zip") ->
+                    Logger.warning(
+                      "Rejecting nested zip entry #{filename} in archive #{file.filename}"
+                    )
+
+                    []
+
+                  true ->
+                    [zip_entry_uncompressed_size(file_info)]
+                end
+
+              _ ->
+                []
+            end)
+
+          case check_zip_entry_sizes_against_limits(entry_sizes, limits) do
+            {:ok, _, _} = ok -> ok
+            {:error, _, _, _, _} = error -> error
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end)
+    |> case do
+      {:ok, _entries_count, _total_bytes} -> :ok
+      other -> other
+    end
+  end
+
+  defp with_temp_file(binary, extension, fun) when is_binary(binary) and is_binary(extension) do
+    filename =
+      "gtfs-import-#{System.unique_integer([:positive, :monotonic])}#{extension}"
+
+    path = Path.join(System.tmp_dir!(), filename)
+
+    case File.write(path, binary) do
+      :ok ->
+        try do
+          fun.(path)
+        after
+          File.rm(path)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp zip_entry_uncompressed_size({:file_info, size, _, _, _, _, _, _, _, _, _, _, _, _})
+       when is_integer(size) and size >= 0 do
+    size
+  end
+
+  defp zip_entry_uncompressed_size(_), do: 0
 
   defp configured_zip_limit(key, default) do
     case Application.get_env(:gtfs_planner, key, default) do
