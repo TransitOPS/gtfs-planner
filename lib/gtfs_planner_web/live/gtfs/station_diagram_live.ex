@@ -1914,6 +1914,117 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("flip_pathway", %{"id" => id}, socket) do
+    pathway =
+      try do
+        Gtfs.get_pathway_with_stops!(id)
+      rescue
+        Ecto.NoResultsError -> nil
+        Ecto.Query.CastError -> nil
+      end
+
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    cond do
+      is_nil(pathway) ->
+        {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
+
+      pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
+        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
+
+      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
+        {:noreply, assign(socket, :pathway_error, "Pathway is not fully associated with stops.")}
+
+      not stop_belongs_to_station?(
+        pathway.from_stop,
+        station.stop_id,
+        socket.assigns.platform_stop_ids
+      ) or
+          not stop_belongs_to_station?(
+            pathway.to_stop,
+            station.stop_id,
+            socket.assigns.platform_stop_ids
+          ) ->
+        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
+
+      true ->
+        # Read current form values so pending edits are preserved through the flip.
+        form = socket.assigns.pathway_form
+        form_signposted = form[:signposted_as] && form[:signposted_as].value
+        form_reversed = form[:reversed_signposted_as] && form[:reversed_signposted_as].value
+
+        flip_attrs = %{
+          from_stop_id: pathway.to_stop_id,
+          to_stop_id: pathway.from_stop_id,
+          # Swap signage from form values (preserves pending edits)
+          signposted_as: form_reversed,
+          reversed_signposted_as: form_signposted,
+          # Preserve other pending form edits
+          pathway_mode: parse_int(form[:pathway_mode] && form[:pathway_mode].value),
+          is_bidirectional:
+            (form[:is_bidirectional] && form[:is_bidirectional].value) in [true, "true"],
+          traversal_time:
+            parse_optional_int(form[:traversal_time] && form[:traversal_time].value),
+          length: parse_optional_decimal(form[:length] && form[:length].value),
+          stair_count: parse_optional_int(form[:stair_count] && form[:stair_count].value),
+          min_width: parse_optional_decimal(form[:min_width] && form[:min_width].value)
+        }
+
+        case Gtfs.update_pathway(pathway, flip_attrs) do
+          {:ok, updated_pathway} ->
+            refreshed_socket = refresh_lists(socket)
+            reloaded = Gtfs.get_pathway_with_stops!(updated_pathway.id)
+
+            pathway_pair =
+              pair_siblings_for(
+                %{from_stop_id: reloaded.from_stop_id, to_stop_id: reloaded.to_stop_id},
+                refreshed_socket.assigns.pathways_list
+              )
+
+            active_pathway_tab =
+              case pathway_pair do
+                [_first, second] ->
+                  if reloaded.id == second.id, do: :second, else: :first
+
+                _ ->
+                  :first
+              end
+
+            {:noreply,
+             refreshed_socket
+             |> assign(:editing_pathway, reloaded)
+             |> assign(:editing_pathway_pair, pathway_pair)
+             |> assign(:active_pathway_tab, active_pathway_tab)
+             |> assign(:pathway_form, to_form(pathway_form_params(reloaded)))
+             |> assign(:pathway_form_dirty, false)
+             |> assign(:pathway_error, nil)}
+
+          {:error, changeset} ->
+            detail =
+              changeset
+              |> Ecto.Changeset.traverse_errors(fn {msg, _opts} -> msg end)
+              |> Enum.map_join("; ", fn {field, msgs} ->
+                "#{field}: #{Enum.join(msgs, ", ")}"
+              end)
+
+            message =
+              if detail == "",
+                do: "Failed to flip pathway direction.",
+                else: "Failed to flip: #{detail}"
+
+            {:noreply, assign(socket, :pathway_error, message)}
+        end
+    end
+  end
+
+  @impl true
+  def handle_event("flip_pathway", _params, socket) do
+    {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
+  end
+
+  @impl true
   def handle_event("upload_diagram", _params, socket) do
     # Upload is handled by allow_upload progress callback when entries complete.
     {:noreply, socket}
