@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs
 
   describe "ImportLive" do
@@ -588,5 +589,97 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert child_stop.parent_station == "PARENT_STATION_DIFF"
       assert child_stop.level_id == nil
     end
+  end
+
+  describe "ImportLive archive warning rendering" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      %{user: user, organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "shows import failed when all counts are zero and archive warnings exist", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      ref = make_ref()
+      set_import_task_ref(view, ref)
+
+      counts = zero_core_counts()
+
+      send(
+        view.pid,
+        {ref,
+         {:ok,
+          {counts, [], "import:test",
+           [%{filename: "bad.zip", detail: "archive could not be read"}]}}}
+      )
+
+      html = render(view)
+      assert html =~ "Import failed"
+      assert html =~ "No data was imported."
+      assert html =~ "bad.zip: archive could not be read"
+      refute html =~ "Import Successful"
+    end
+
+    test "shows import successful when extension counts are non-zero and archive warnings exist",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      ref = make_ref()
+      set_import_task_ref(view, ref)
+
+      counts =
+        zero_core_counts()
+        |> Map.put(:extensions_images, 1)
+
+      send(
+        view.pid,
+        {ref,
+         {:ok,
+          {counts, [], "import:test",
+           [%{filename: "bad.zip", detail: "archive could not be read"}]}}}
+      )
+
+      html = render(view)
+      assert html =~ "Import Successful"
+      assert html =~ "Archive not expanded"
+      refute html =~ "Import failed"
+    end
+  end
+
+  defp set_import_task_ref(view, ref) do
+    :sys.replace_state(view.pid, fn
+      %{socket: socket} = state ->
+        %{state | socket: %{socket | assigns: Map.put(socket.assigns, :import_task, ref)}}
+
+      state ->
+        state
+    end)
+  end
+
+  defp zero_core_counts do
+    Import.supported_count_keys()
+    |> Enum.into(%{}, &{&1, 0})
   end
 end

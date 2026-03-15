@@ -1584,7 +1584,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     do: inspect(map)
 
   defp all_counts_zero?(counts) do
-    Import.supported_count_keys()
-    |> Enum.all?(fn key -> Map.get(counts, key, 0) == 0 end)
+    counts
+    |> Map.values()
+    |> Enum.filter(&is_number/1)
+    |> Enum.all?(&(&1 == 0))
   end
 end
