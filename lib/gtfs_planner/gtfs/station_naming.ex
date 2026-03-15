@@ -71,7 +71,8 @@ defmodule GtfsPlanner.Gtfs.StationNaming do
   def build_kebab_naming_map(child_stops) do
     child_stops
     |> Enum.map(fn stop ->
-      kebab = Stop.kebabify(stop.stop_name || stop.stop_id)
+      kebab_name = Stop.kebabify(stop.stop_name)
+      kebab = if kebab_name == "", do: Stop.kebabify(stop.stop_id), else: kebab_name
       %{stop_id: stop.stop_id, partition_key: kebab}
     end)
     |> Enum.group_by(& &1.partition_key)

@@ -6263,7 +6263,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert html =~ "naming-drawer"
       assert html =~ "CHILD_N1"
-      assert html =~ "naming_station_platform_general_ground_01"
+      assert html =~ "child-n1-01"
       assert html =~ "Apply naming convention"
     end
 
@@ -6333,7 +6333,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       _blocker =
         stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "naming_station_platform_general_ground_01",
+          stop_id: "collide-me-01",
           stop_name: "Collision Blocker",
           location_type: 0
         })

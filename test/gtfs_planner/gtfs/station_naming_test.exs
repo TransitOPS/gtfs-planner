@@ -170,6 +170,26 @@ defmodule GtfsPlanner.Gtfs.StationNamingTest do
       assert [%{old_id: "MY_STOP", new_id: "my-stop-01"}] = result
     end
 
+    test "falls back to stop_id when stop_name is empty string" do
+      child_stops = [
+        %{stop_id: "MY_STOP", stop_name: "", location_type: 3, level_id: nil}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "MY_STOP", new_id: "my-stop-01"}] = result
+    end
+
+    test "falls back to stop_id when stop_name is punctuation-only" do
+      child_stops = [
+        %{stop_id: "MY_STOP", stop_name: "!!!", location_type: 3, level_id: nil}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "MY_STOP", new_id: "my-stop-01"}] = result
+    end
+
     test "returns empty list for empty input" do
       assert [] == StationNaming.build_kebab_naming_map([])
     end
