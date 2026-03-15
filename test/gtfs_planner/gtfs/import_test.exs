@@ -690,5 +690,39 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       assert File.read!(restored) == "fake png no root"
     end
+
+    test "zip size check accepts 500MB exactly" do
+      max_total_bytes = 500 * 1024 * 1024
+
+      limits = %{
+        max_entries: 10_000,
+        max_total_bytes: max_total_bytes,
+        max_entry_bytes: max_total_bytes
+      }
+
+      assert Import.zip_entry_sizes_within_limits?([max_total_bytes], limits)
+    end
+
+    test "zip size check rejects 500MB + 1 byte" do
+      max_total_bytes = 500 * 1024 * 1024
+
+      limits = %{
+        max_entries: 10_000,
+        max_total_bytes: max_total_bytes,
+        max_entry_bytes: max_total_bytes
+      }
+
+      refute Import.zip_entry_sizes_within_limits?([max_total_bytes, 1], limits)
+    end
+
+    test "zip size check rejects entries above per-entry cap" do
+      limits = %{
+        max_entries: 10_000,
+        max_total_bytes: 500 * 1024 * 1024,
+        max_entry_bytes: 100 * 1024 * 1024
+      }
+
+      refute Import.zip_entry_sizes_within_limits?([100 * 1024 * 1024 + 1], limits)
+    end
   end
 end

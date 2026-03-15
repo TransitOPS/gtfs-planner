@@ -500,7 +500,29 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   @max_zip_entries 10_000
-  @max_zip_uncompressed_bytes 500 * 1024 * 1024
+  @default_max_zip_uncompressed_bytes 500 * 1024 * 1024
+  @default_max_zip_entry_uncompressed_bytes 100 * 1024 * 1024
+
+  @doc false
+  def zip_limits do
+    max_total_bytes =
+      configured_zip_limit(
+        :import_max_zip_uncompressed_bytes,
+        @default_max_zip_uncompressed_bytes
+      )
+
+    max_entry_bytes =
+      configured_zip_limit(
+        :import_max_zip_entry_uncompressed_bytes,
+        min(max_total_bytes, @default_max_zip_entry_uncompressed_bytes)
+      )
+
+    %{
+      max_entries: @max_zip_entries,
+      max_total_bytes: max_total_bytes,
+      max_entry_bytes: min(max_entry_bytes, max_total_bytes)
+    }
+  end
 
   @doc """
   Expands uploaded `.zip` archives into individual file entries.
@@ -516,6 +538,8 @@ defmodule GtfsPlanner.Gtfs.Import do
   def expand_archives(files) do
     Enum.flat_map(files, fn file ->
       if String.ends_with?(String.downcase(file.filename), ".zip") do
+        limits = zip_limits()
+
         case :zip.unzip(file.content, [:memory]) do
           {:ok, entries} ->
             # Normalize entries and reject nested archives.
@@ -539,23 +563,23 @@ defmodule GtfsPlanner.Gtfs.Import do
                 end
               end)
 
-            entries_count = length(normalized_entries)
+            entry_sizes =
+              Enum.map(normalized_entries, fn %{content: content} -> byte_size(content) end)
 
-            total_bytes =
-              Enum.reduce(normalized_entries, 0, fn %{content: content}, acc ->
-                acc + byte_size(content)
-              end)
+            case check_zip_entry_sizes_against_limits(entry_sizes, limits) do
+              {:ok, _entries_count, _total_bytes} ->
+                normalized_entries
 
-            if entries_count > @max_zip_entries or
-                 total_bytes > @max_zip_uncompressed_bytes do
-              Logger.warning(
-                "Zip archive #{file.filename} exceeds safety limits " <>
-                  "(entries=#{entries_count}, bytes=#{total_bytes}), skipping expansion"
-              )
+              {:error, reason, entries_count, total_bytes, entry_bytes} ->
+                Logger.warning(
+                  "Zip archive #{file.filename} exceeds safety limits " <>
+                    "(reason=#{reason}, entries=#{entries_count}, bytes=#{total_bytes}, " <>
+                    "entry_bytes=#{entry_bytes}, max_entries=#{limits.max_entries}, " <>
+                    "max_total_bytes=#{limits.max_total_bytes}, " <>
+                    "max_entry_bytes=#{limits.max_entry_bytes}), skipping expansion"
+                )
 
-              [file]
-            else
-              normalized_entries
+                [file]
             end
 
           {:error, reason} ->
@@ -569,6 +593,49 @@ defmodule GtfsPlanner.Gtfs.Import do
         [file]
       end
     end)
+  end
+
+  @doc false
+  def zip_entry_sizes_within_limits?(entry_sizes, limits)
+      when is_list(entry_sizes) and is_map(limits) do
+    match?({:ok, _, _}, check_zip_entry_sizes_against_limits(entry_sizes, limits))
+  end
+
+  defp check_zip_entry_sizes_against_limits(entry_sizes, limits) do
+    Enum.reduce_while(entry_sizes, {:ok, 0, 0}, fn entry_bytes, {:ok, count, total} ->
+      next_count = count + 1
+      next_total = total + entry_bytes
+
+      cond do
+        next_count > limits.max_entries ->
+          {:halt, {:error, :too_many_entries, next_count, next_total, entry_bytes}}
+
+        entry_bytes > limits.max_entry_bytes ->
+          {:halt, {:error, :entry_too_large, next_count, next_total, entry_bytes}}
+
+        next_total > limits.max_total_bytes ->
+          {:halt, {:error, :total_too_large, next_count, next_total, entry_bytes}}
+
+        true ->
+          {:cont, {:ok, next_count, next_total}}
+      end
+    end)
+  end
+
+  defp configured_zip_limit(key, default) do
+    case Application.get_env(:gtfs_planner, key, default) do
+      value when is_integer(value) and value > 0 ->
+        value
+
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {parsed, ""} when parsed > 0 -> parsed
+          _ -> default
+        end
+
+      _ ->
+        default
+    end
   end
 
   defp normalize_uploaded_filename(filename) when is_binary(filename) do
