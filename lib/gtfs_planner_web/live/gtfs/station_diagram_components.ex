@@ -2845,6 +2845,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </div>
       </:header_actions>
 
+      <.pathway_preview
+        :if={@open and @editing_pathway}
+        editing_pathway={@editing_pathway}
+        pathway_form_dirty={@pathway_form_dirty}
+      />
+
       <.pathway_form
         :if={@open}
         pathway_form={@pathway_form}
@@ -2853,6 +2859,172 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         pathway_error={@pathway_error}
       />
     </.drawer>
+    """
+  end
+
+  attr :editing_pathway, :any, required: true
+  attr :pathway_form_dirty, :boolean, default: false
+
+  defp pathway_preview(assigns) do
+    mode = assigns.editing_pathway.pathway_mode
+    bidirectional? = assigns.editing_pathway.is_bidirectional
+
+    from_stop = assigns.editing_pathway.from_stop
+    to_stop = assigns.editing_pathway.to_stop
+
+    from_label =
+      case from_stop do
+        %Stop{} = s -> s.stop_id
+        _ -> "?"
+      end
+
+    to_label =
+      case to_stop do
+        %Stop{} = s -> s.stop_id
+        _ -> "?"
+      end
+
+    from_name =
+      case from_stop do
+        %Stop{} = s -> s.stop_name || s.stop_id
+        _ -> "Unknown"
+      end
+
+    to_name =
+      case to_stop do
+        %Stop{} = s -> s.stop_name || s.stop_id
+        _ -> "Unknown"
+      end
+
+    assigns =
+      assigns
+      |> assign(:mode, mode)
+      |> assign(:bidirectional?, bidirectional?)
+      |> assign(:from_label, from_label)
+      |> assign(:to_label, to_label)
+      |> assign(:from_name, from_name)
+      |> assign(:to_name, to_name)
+
+    ~H"""
+    <div class="mb-4">
+      <svg data-pathway-preview="true" viewBox="0 0 320 56" width="320" height="56" class="w-full max-w-[320px]" aria-label={"Pathway from #{@from_label} to #{@to_label}"}>
+        <defs>
+          <marker id="preview-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <polygon points="0,0 6,3 0,6" fill="#FF00FF" />
+          </marker>
+        </defs>
+
+        <%!-- From node --%>
+        <circle cx="40" cy="28" r="16" fill="white" stroke="#FF00FF" stroke-width="2" />
+        <title>{@from_name}</title>
+        <text x="40" y="29" text-anchor="middle" dominant-baseline="central" font-family="Inter, sans-serif" font-size="8" fill="#FF00FF">
+          {@from_label}
+        </text>
+
+        <%!-- To node --%>
+        <circle cx="280" cy="28" r="16" fill="white" stroke="#FF00FF" stroke-width="2" />
+        <title>{@to_name}</title>
+        <text x="280" y="29" text-anchor="middle" dominant-baseline="central" font-family="Inter, sans-serif" font-size="8" fill="#FF00FF">
+          {@to_label}
+        </text>
+
+        <%!-- Pathway line with mode-specific visuals --%>
+        {pathway_preview_line(assigns)}
+      </svg>
+
+      <button
+        type="button"
+        class="btn btn-xs btn-outline mt-2"
+        phx-click="flip_pathway"
+        phx-value-id={@editing_pathway.id}
+        data-confirm={if @pathway_form_dirty, do: "Discard unsaved pathway changes?"}
+      >
+        Flip direction
+      </button>
+    </div>
+    """
+  end
+
+  defp pathway_preview_line(%{mode: 1} = assigns) do
+    # Walkway: solid line
+    ~H"""
+    <line x1="60" y1="28" x2="260" y2="28" stroke="#FF00FF" stroke-width="2"
+      marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
+      marker-end="url(#preview-arrow)" />
+    """
+  end
+
+  defp pathway_preview_line(%{mode: 2} = assigns) do
+    # Stairs: solid line with center tick
+    ~H"""
+    <line x1="60" y1="28" x2="260" y2="28" stroke="#FF00FF" stroke-width="2"
+      marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
+      marker-end="url(#preview-arrow)" />
+    <line x1="160" y1="18" x2="160" y2="38" stroke="#FF00FF" stroke-width="1.5" />
+    """
+  end
+
+  defp pathway_preview_line(%{mode: 3} = assigns) do
+    # Moving sidewalk: solid line with center X
+    ~H"""
+    <line x1="60" y1="28" x2="260" y2="28" stroke="#FF00FF" stroke-width="2"
+      marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
+      marker-end="url(#preview-arrow)" />
+    <line x1="152" y1="18" x2="168" y2="38" stroke="#FF00FF" stroke-width="1.5" />
+    <line x1="168" y1="18" x2="152" y2="38" stroke="#FF00FF" stroke-width="1.5" />
+    """
+  end
+
+  defp pathway_preview_line(%{mode: 4} = assigns) do
+    # Escalator: solid line with three center bars
+    ~H"""
+    <line x1="60" y1="28" x2="260" y2="28" stroke="#FF00FF" stroke-width="2"
+      marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
+      marker-end="url(#preview-arrow)" />
+    <line x1="152" y1="18" x2="152" y2="38" stroke="#FF00FF" stroke-width="1.5" />
+    <line x1="160" y1="18" x2="160" y2="38" stroke="#FF00FF" stroke-width="1.5" />
+    <line x1="168" y1="18" x2="168" y2="38" stroke="#FF00FF" stroke-width="1.5" />
+    """
+  end
+
+  defp pathway_preview_line(%{mode: 5} = assigns) do
+    # Elevator: line with center box and up-down arrow
+    ~H"""
+    <line x1="60" y1="28" x2="140" y2="28" stroke="#FF00FF" stroke-width="2"
+      marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil} />
+    <rect x="140" y="14" width="40" height="28" rx="3" fill="white" stroke="#FF00FF" stroke-width="1.5" />
+    <text x="160" y="28" text-anchor="middle" dominant-baseline="central" font-family="Inter, sans-serif" font-size="14" fill="#FF00FF">&#x2195;</text>
+    <line x1="180" y1="28" x2="260" y2="28" stroke="#FF00FF" stroke-width="2"
+      marker-end="url(#preview-arrow)" />
+    """
+  end
+
+  defp pathway_preview_line(%{mode: 6} = assigns) do
+    # Fare gate: two parallel rails
+    ~H"""
+    <line x1="60" y1="24" x2="260" y2="24" stroke="#FF00FF" stroke-width="1.5"
+      marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
+      marker-end="url(#preview-arrow)" />
+    <line x1="60" y1="32" x2="260" y2="32" stroke="#FF00FF" stroke-width="1.5" />
+    """
+  end
+
+  defp pathway_preview_line(%{mode: 7} = assigns) do
+    # Exit gate: two parallel rails (same forward arrow direction as fare gate)
+    ~H"""
+    <line x1="60" y1="24" x2="260" y2="24" stroke="#FF00FF" stroke-width="1.5"
+      marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
+      marker-end="url(#preview-arrow)" />
+    <line x1="60" y1="32" x2="260" y2="32" stroke="#FF00FF" stroke-width="1.5" />
+    """
+  end
+
+  defp pathway_preview_line(assigns) do
+    # Fallback: simple line
+    ~H"""
+    <line x1="60" y1="28" x2="260" y2="28" stroke="#FF00FF" stroke-width="2"
+      marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
+      marker-end="url(#preview-arrow)" />
     """
   end
 
@@ -2988,32 +3160,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           label="Reversed Signposted As"
           help="Text on signs for the reverse direction."
         />
-      </div>
-
-      <div :if={@editing_pathway} class="mt-8 p-6 bg-base-200 rounded-lg">
-        <h4 class="font-bold text-sm uppercase tracking-wide text-base-content/50 mb-4">
-          Connection Details
-        </h4>
-        <div class="grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <span class="block text-xs font-semibold text-base-content/40">From Stop</span>
-            <span class="font-medium">
-              {case @editing_pathway.from_stop do
-                %Stop{} = stop -> stop.stop_name || stop.stop_id
-                _ -> "Unknown stop"
-              end}
-            </span>
-          </div>
-          <div>
-            <span class="block text-xs font-semibold text-base-content/40">To Stop</span>
-            <span class="font-medium">
-              {case @editing_pathway.to_stop do
-                %Stop{} = stop -> stop.stop_name || stop.stop_id
-                _ -> "Unknown stop"
-              end}
-            </span>
-          </div>
-        </div>
       </div>
 
       <:actions>
