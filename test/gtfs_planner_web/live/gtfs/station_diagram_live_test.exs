@@ -4630,6 +4630,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       walkability_test =
         walkability_test_fixture(%{
           organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
           stop_id: boarding_a.stop_id,
           address: "700 Nested Scope Ave, Boston, MA, USA"
         })

@@ -72,6 +72,20 @@ defmodule GtfsPlanner.Otp.PreflightTest do
                :pathways_from_stop_id_missing_stop,
                :pathways_to_stop_id_missing_stop
              ]
+
+      # At least one referential-integrity issue uses the specific message format
+      integrity_issues =
+        Enum.filter(issues, fn issue ->
+          issue.code not in [:missing_required_file_data, :missing_calendar_or_calendar_dates]
+        end)
+
+      assert length(integrity_issues) > 0
+
+      Enum.each(integrity_issues, fn issue ->
+        assert issue.message =~
+                 ~r/^.+\..+ -> .+\..+ — \d+ invalid$/,
+               "Expected specific message format, got: #{issue.message}"
+      end)
     end
   end
 end
