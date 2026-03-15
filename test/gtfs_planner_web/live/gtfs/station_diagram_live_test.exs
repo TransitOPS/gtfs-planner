@@ -4087,7 +4087,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       pathway =
         pathway_fixture(organization.id, gtfs_version.id, from_stop.stop_id, to_stop.stop_id, %{
           pathway_mode: 5,
-          is_bidirectional: true
+          is_bidirectional: true,
+          signposted_as: "Forward Sign",
+          reversed_signposted_as: "Reverse Sign"
         })
 
       conn = log_in_user(conn, user, organization: organization)
@@ -4104,6 +4106,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "svg[data-pathway-preview] g title", "Preview To")
       assert has_element?(view, "svg[data-pathway-preview] rect[x='215'][y='8'][width='50'][height='16']")
       assert has_element?(view, "svg[data-pathway-preview] line[marker-start='url(#preview-arrow)']")
+      assert has_element?(view, "svg[data-pathway-preview] text", "Forward Sign →")
+      assert has_element?(view, "svg[data-pathway-preview] text", "← Reverse Sign")
+
+      view
+      |> form("#pathway-form", %{"reversed_signposted_as" => ""})
+      |> render_change()
+
+      assert has_element?(view, "svg[data-pathway-preview] text", "Forward Sign →")
+      refute has_element?(view, "svg[data-pathway-preview] text", "← Reverse Sign")
+
+      view
+      |> form("#pathway-form", %{
+        "is_bidirectional" => "false",
+        "reversed_signposted_as" => "Reverse Hidden"
+      })
+      |> render_change()
+
+      assert has_element?(view, "svg[data-pathway-preview] text", "Forward Sign →")
+      refute has_element?(view, "svg[data-pathway-preview] text", "← Reverse Hidden")
       assert has_element?(view, "button[phx-click='flip_pathway'][phx-value-id='#{pathway.id}']")
     end
 
