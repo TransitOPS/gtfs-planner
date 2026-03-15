@@ -2159,6 +2159,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
           Application.delete_env(:gtfs_planner, :export_test_pid)
         end
 
+        Application.delete_env(:gtfs_planner, :materializer_mock_otp_preflight_issues)
+
         receive do
           {:materializer_temp_dir, temp_dir} -> File.rm_rf(temp_dir)
         after
@@ -2691,6 +2693,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
           else: Application.delete_env(:gtfs_planner, :otp_preflight_module)
 
         Application.delete_env(:gtfs_planner, :export_test_pid)
+        Application.delete_env(:gtfs_planner, :materializer_mock_otp_preflight_issues)
 
         receive do
           {:materializer_temp_dir, temp_dir} -> File.rm_rf(temp_dir)
@@ -2793,14 +2796,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
           do: Application.put_env(:gtfs_planner, :export_test_pid, previous_export_test_pid),
           else: Application.delete_env(:gtfs_planner, :export_test_pid)
 
-        if previous_materializer,
-          do:
-            Application.put_env(
-              :gtfs_planner,
-              :otp_gtfs_materializer_module,
-              previous_materializer
-            ),
-          else: Application.delete_env(:gtfs_planner, :otp_gtfs_materializer_module)
+        Application.delete_env(:gtfs_planner, :materializer_mock_otp_preflight_issues)
 
         receive do
           {:materializer_temp_dir, temp_dir} -> File.rm_rf(temp_dir)
