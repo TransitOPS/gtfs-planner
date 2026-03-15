@@ -502,7 +502,7 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   @max_zip_entries 10_000
   @default_max_zip_uncompressed_bytes 500 * 1024 * 1024
-  @default_max_zip_entry_uncompressed_bytes 100 * 1024 * 1024
+  @default_max_zip_entry_uncompressed_bytes 500 * 1024 * 1024
 
   @doc false
   def zip_limits do
