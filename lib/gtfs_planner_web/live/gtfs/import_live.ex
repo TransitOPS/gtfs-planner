@@ -785,27 +785,44 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               </div>
             <% end %>
 
-            <div
-              :for={entry <- @uploads.diff_files.entries}
-              class="flex items-center justify-between rounded-lg bg-base-200 p-3"
-            >
-              <div>
-                <p class="text-sm font-medium">{entry.client_name}</p>
-                <p class="text-xs text-base-content/60">{entry.progress}% uploaded</p>
-                <%= for error <- upload_errors(@uploads.diff_files, entry) do %>
-                  <p class="text-xs text-error mt-1">{diff_upload_error_to_string(error)}</p>
-                <% end %>
+            <%= for entry <- @uploads.diff_files.entries do %>
+              <div class={[
+                "flex items-center justify-between mt-2 p-2 rounded",
+                upload_errors(@uploads.diff_files, entry) == [] && "bg-base-200",
+                upload_errors(@uploads.diff_files, entry) != [] && "bg-error/10 border border-error"
+              ]}>
+                <div class="flex-1">
+                  <span class="text-sm font-medium">{entry.client_name}</span>
+                  <%= if upload_errors(@uploads.diff_files, entry) == [] do %>
+                    <div class="w-full bg-base-300 rounded-full h-2 mt-1">
+                      <div
+                        class="bg-primary h-2 rounded-full transition-all duration-300"
+                        style={"width: #{entry.progress}%"}
+                      >
+                      </div>
+                    </div>
+                    <span class="text-xs text-base-content/60">
+                      {entry.progress}% uploaded
+                    </span>
+                  <% else %>
+                    <%= for error <- upload_errors(@uploads.diff_files, entry) do %>
+                      <div class="flex items-center gap-2 mt-1">
+                        <.icon name="hero-exclamation-circle" class="w-4 h-4 text-error" />
+                        <span class="text-sm text-error">{diff_upload_error_to_string(error)}</span>
+                      </div>
+                    <% end %>
+                  <% end %>
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-xs ml-2"
+                  phx-click="cancel-diff-upload"
+                  phx-value-ref={entry.ref}
+                >
+                  Cancel
+                </button>
               </div>
-
-              <button
-                type="button"
-                class="btn btn-ghost btn-xs"
-                phx-click="cancel-diff-upload"
-                phx-value-ref={entry.ref}
-              >
-                Cancel
-              </button>
-            </div>
+            <% end %>
 
             <div class="flex flex-wrap gap-2">
               <button
