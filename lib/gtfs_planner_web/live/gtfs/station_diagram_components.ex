@@ -3498,7 +3498,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # ============================================================================
 
   attr :open, :boolean, default: false
-  attr :style, :atom, default: :kebab
+  attr :style, :atom, default: :structured
   attr :preview_rows, :list, default: []
   attr :renamed_stops_count, :integer, default: 0
   attr :updated_pathways_count, :integer, default: 0
