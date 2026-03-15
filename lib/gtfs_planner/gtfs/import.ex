@@ -500,7 +500,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   @max_zip_entries 10_000
-  @max_zip_uncompressed_bytes 100 * 1024 * 1024
+  @max_zip_uncompressed_bytes 500 * 1024 * 1024
 
   @doc """
   Expands uploaded `.zip` archives into individual file entries.
