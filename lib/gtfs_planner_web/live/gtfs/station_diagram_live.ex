@@ -1941,11 +1941,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
 
       true ->
+        # Read current form values so pending edits are preserved through the flip.
+        form = socket.assigns.pathway_form
+        form_signposted = form[:signposted_as] && form[:signposted_as].value
+        form_reversed = form[:reversed_signposted_as] && form[:reversed_signposted_as].value
+
         flip_attrs = %{
           from_stop_id: pathway.to_stop_id,
           to_stop_id: pathway.from_stop_id,
-          signposted_as: pathway.reversed_signposted_as,
-          reversed_signposted_as: pathway.signposted_as
+          # Swap signage from form values (preserves pending edits)
+          signposted_as: form_reversed,
+          reversed_signposted_as: form_signposted,
+          # Preserve other pending form edits
+          pathway_mode: parse_int(form[:pathway_mode] && form[:pathway_mode].value),
+          is_bidirectional:
+            (form[:is_bidirectional] && form[:is_bidirectional].value) in [true, "true"],
+          traversal_time:
+            parse_optional_int(form[:traversal_time] && form[:traversal_time].value),
+          length: parse_optional_decimal(form[:length] && form[:length].value),
+          stair_count: parse_optional_int(form[:stair_count] && form[:stair_count].value),
+          min_width: parse_optional_decimal(form[:min_width] && form[:min_width].value)
         }
 
         case Gtfs.update_pathway(pathway, flip_attrs) do

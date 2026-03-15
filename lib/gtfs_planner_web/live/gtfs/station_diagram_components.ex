@@ -2849,7 +2849,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         :if={@open and @editing_pathway}
         editing_pathway={@editing_pathway}
         pathway_form={@pathway_form}
-        pathway_form_dirty={@pathway_form_dirty}
       />
 
       <.pathway_form
@@ -2865,7 +2864,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :editing_pathway, :any, required: true
   attr :pathway_form, :any, required: true
-  attr :pathway_form_dirty, :boolean, default: false
 
   defp pathway_preview(assigns) do
     from_stop = assigns.editing_pathway.from_stop
@@ -2964,11 +2962,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <title>{@from_name}</title>
           <circle cx="14" cy="16" r="5" fill="#0080FF" />
           <text
-            x="14"
-            y="30"
+            x="0"
+            y="32"
             text-anchor="start"
             font-family="Inter, sans-serif"
-            font-size="6"
+            font-size="7"
             fill="#0080FF"
             font-weight="600"
           >
@@ -2981,11 +2979,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <title>{@to_name}</title>
           <circle cx="466" cy="16" r="5" fill="#0080FF" />
           <text
-            x="466"
-            y="30"
+            x="480"
+            y="32"
             text-anchor="end"
             font-family="Inter, sans-serif"
-            font-size="6"
+            font-size="7"
             fill="#0080FF"
             font-weight="600"
           >
@@ -3000,7 +2998,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           y="8"
           text-anchor="middle"
           font-family="Inter, sans-serif"
-          font-size="6"
+          font-size="7"
           fill="#888"
         >
           {@signposted_as} →
@@ -3016,7 +3014,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           y="26"
           text-anchor="middle"
           font-family="Inter, sans-serif"
-          font-size="6"
+          font-size="7"
           fill="#888"
         >
           ← {@reversed_signposted_as}
@@ -3029,7 +3027,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           class="btn btn-xs btn-outline bg-white"
           phx-click="flip_pathway"
           phx-value-id={@editing_pathway.id}
-          data-confirm={if @pathway_form_dirty, do: "Discard unsaved pathway changes?"}
         >
           Flip direction
         </button>
