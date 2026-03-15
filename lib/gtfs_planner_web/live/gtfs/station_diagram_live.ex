@@ -1922,9 +1922,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     station = socket.assigns.station
 
     cond do
-      is_nil(pathway) ->
-        {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
-
       pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
         {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
 

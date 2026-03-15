@@ -2915,18 +2915,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </defs>
 
         <%!-- From node --%>
-        <circle cx="40" cy="28" r="16" fill="white" stroke="#FF00FF" stroke-width="2" />
-        <title>{@from_name}</title>
-        <text x="40" y="29" text-anchor="middle" dominant-baseline="central" font-family="Inter, sans-serif" font-size="8" fill="#FF00FF">
-          {@from_label}
-        </text>
+        <g>
+          <title>{@from_name}</title>
+          <circle cx="40" cy="28" r="16" fill="white" stroke="#FF00FF" stroke-width="2" />
+          <text x="40" y="29" text-anchor="middle" dominant-baseline="central" font-family="Inter, sans-serif" font-size="8" fill="#FF00FF">
+            {@from_label}
+          </text>
+        </g>
 
         <%!-- To node --%>
-        <circle cx="280" cy="28" r="16" fill="white" stroke="#FF00FF" stroke-width="2" />
-        <title>{@to_name}</title>
-        <text x="280" y="29" text-anchor="middle" dominant-baseline="central" font-family="Inter, sans-serif" font-size="8" fill="#FF00FF">
-          {@to_label}
-        </text>
+        <g>
+          <title>{@to_name}</title>
+          <circle cx="280" cy="28" r="16" fill="white" stroke="#FF00FF" stroke-width="2" />
+          <text x="280" y="29" text-anchor="middle" dominant-baseline="central" font-family="Inter, sans-serif" font-size="8" fill="#FF00FF">
+            {@to_label}
+          </text>
+        </g>
 
         <%!-- Pathway line with mode-specific visuals --%>
         {pathway_preview_line(assigns)}

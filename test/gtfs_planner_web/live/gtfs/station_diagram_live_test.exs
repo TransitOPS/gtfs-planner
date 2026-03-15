@@ -4056,7 +4056,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#pathway-form")
     end
 
-    test "pathway preview SVG renders when the drawer is open", %{
+    test "pathway preview SVG renders mode-specific elements and directional markers", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -4086,8 +4086,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       pathway =
         pathway_fixture(organization.id, gtfs_version.id, from_stop.stop_id, to_stop.stop_id, %{
-          pathway_mode: 1,
-          is_bidirectional: false
+          pathway_mode: 5,
+          is_bidirectional: true
         })
 
       conn = log_in_user(conn, user, organization: organization)
@@ -4100,6 +4100,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       assert has_element?(view, "svg[data-pathway-preview]")
+      assert has_element?(view, "svg[data-pathway-preview] g title", "Preview From")
+      assert has_element?(view, "svg[data-pathway-preview] g title", "Preview To")
+      assert has_element?(view, "svg[data-pathway-preview] rect[x='140'][y='14'][width='40'][height='28']")
+      assert has_element?(view, "svg[data-pathway-preview] line[marker-start='url(#preview-arrow)']")
+      assert has_element?(view, "button[phx-click='flip_pathway'][phx-value-id='#{pathway.id}']")
     end
 
     test "flip pathway swaps from/to stops and signage", %{
@@ -4138,6 +4143,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           reversed_signposted_as: "To X"
         })
 
+      other_pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_y.stop_id, stop_x.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: false,
+          signposted_as: "Other To X",
+          reversed_signposted_as: "Other To Y"
+        })
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -4163,6 +4176,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert updated.to_stop_id == stop_x.stop_id
       assert updated.signposted_as == "To X"
       assert updated.reversed_signposted_as == "To Y"
+
+      # Verify event payload targeted the selected pathway
+      untouched = Gtfs.get_pathway_with_stops!(other_pathway.id)
+      assert untouched.from_stop_id == stop_y.stop_id
+      assert untouched.to_stop_id == stop_x.stop_id
+      assert untouched.signposted_as == "Other To X"
+      assert untouched.reversed_signposted_as == "Other To Y"
     end
   end
 
