@@ -82,6 +82,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:walkability_mode, :create)
      |> assign(:editing_walkability_test, nil)
      |> assign(:show_naming_drawer, false)
+     |> assign(:naming_style, :kebab)
      |> assign(:naming_preview, [])
      |> assign(:naming_renamed_stops_count, 0)
      |> assign(:naming_updated_pathways_count, 0)
@@ -387,6 +388,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         <.naming_drawer
           open={@show_naming_drawer}
+          style={@naming_style}
           preview_rows={@naming_preview}
           renamed_stops_count={@naming_renamed_stops_count}
           updated_pathways_count={@naming_updated_pathways_count}
@@ -1490,39 +1492,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("open_naming_drawer", _params, socket) do
-    org_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-    station_stop_id = socket.assigns.station.stop_id
+    style = socket.assigns.naming_style
 
-    case Gtfs.preview_station_naming(org_id, version_id, station_stop_id) do
-      {:ok, preview} ->
-        {:noreply,
-         socket
-         |> assign(:show_naming_drawer, true)
-         |> assign(:naming_preview, preview.rows)
-         |> assign(:naming_renamed_stops_count, preview.renamed_stops_count)
-         |> assign(:naming_updated_pathways_count, preview.updated_pathways_count)
-         |> assign(:naming_error, nil)}
+    {:noreply,
+     socket
+     |> assign(:show_naming_drawer, true)
+     |> load_naming_preview(style)}
+  end
 
-      {:error, :no_stops} ->
-        {:noreply,
-         socket
-         |> assign(:show_naming_drawer, true)
-         |> assign(:naming_preview, [])
-         |> assign(:naming_renamed_stops_count, 0)
-         |> assign(:naming_updated_pathways_count, 0)
-         |> assign(:naming_error, nil)}
+  @impl true
+  def handle_event("change_naming_style", %{"style" => style_str}, socket) do
+    style = if style_str == "structured", do: :structured, else: :kebab
 
-      {:error, {:naming_collision, collisions}} ->
-        {:noreply,
-         socket
-         |> assign(:show_naming_drawer, true)
-         |> assign(:naming_preview, [])
-         |> assign(:naming_renamed_stops_count, 0)
-         |> assign(:naming_updated_pathways_count, 0)
-         |> assign(:naming_applying?, false)
-         |> assign(:naming_error, "Naming collision detected: #{Enum.join(collisions, ", ")}")}
-    end
+    {:noreply,
+     socket
+     |> assign(:naming_style, style)
+     |> load_naming_preview(style)}
   end
 
   @impl true
@@ -1530,6 +1515,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:show_naming_drawer, false)
+     |> assign(:naming_style, :kebab)
      |> assign(:naming_preview, [])
      |> assign(:naming_renamed_stops_count, 0)
      |> assign(:naming_updated_pathways_count, 0)
@@ -1550,10 +1536,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     org_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
+    style = socket.assigns.naming_style
 
     socket = assign(socket, :naming_applying?, true)
 
-    case Gtfs.apply_station_naming(org_id, version_id, station_stop_id) do
+    case Gtfs.apply_station_naming(org_id, version_id, station_stop_id, style) do
       {:ok, %{renamed_stops: stops, updated_pathways: pathways}} ->
         status =
           "Renamed #{stops} #{ngettext("child stop", "child stops", stops)}, " <>
@@ -3072,6 +3059,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       _ ->
         false
     end)
+  end
+
+  defp load_naming_preview(socket, style) do
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    station_stop_id = socket.assigns.station.stop_id
+
+    case Gtfs.preview_station_naming(org_id, version_id, station_stop_id, style) do
+      {:ok, preview} ->
+        socket
+        |> assign(:naming_preview, preview.rows)
+        |> assign(:naming_renamed_stops_count, preview.renamed_stops_count)
+        |> assign(:naming_updated_pathways_count, preview.updated_pathways_count)
+        |> assign(:naming_error, nil)
+
+      {:error, :no_stops} ->
+        socket
+        |> assign(:naming_preview, [])
+        |> assign(:naming_renamed_stops_count, 0)
+        |> assign(:naming_updated_pathways_count, 0)
+        |> assign(:naming_error, nil)
+
+      {:error, {:naming_collision, collisions}} ->
+        socket
+        |> assign(:naming_preview, [])
+        |> assign(:naming_renamed_stops_count, 0)
+        |> assign(:naming_updated_pathways_count, 0)
+        |> assign(:naming_applying?, false)
+        |> assign(:naming_error, "Naming collision detected: #{Enum.join(collisions, ", ")}")
+    end
   end
 
   defp purge_otp_artifact(organization_id, gtfs_version_id) do
