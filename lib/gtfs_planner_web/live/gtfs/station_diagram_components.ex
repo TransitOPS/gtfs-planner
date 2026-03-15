@@ -2848,6 +2848,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <.pathway_preview
         :if={@open and @editing_pathway}
         editing_pathway={@editing_pathway}
+        pathway_form={@pathway_form}
         pathway_form_dirty={@pathway_form_dirty}
       />
 
@@ -2863,14 +2864,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   attr :editing_pathway, :any, required: true
+  attr :pathway_form, :any, required: true
   attr :pathway_form_dirty, :boolean, default: false
 
   defp pathway_preview(assigns) do
-    mode = assigns.editing_pathway.pathway_mode
-    bidirectional? = assigns.editing_pathway.is_bidirectional
-
     from_stop = assigns.editing_pathway.from_stop
     to_stop = assigns.editing_pathway.to_stop
+
+    # Read mode, bidirectional, and signage from form values so the preview
+    # updates live as the user edits, falling back to the saved pathway.
+    form = assigns.pathway_form
+    pathway = assigns.editing_pathway
+
+    mode = parse_preview_int(form[:pathway_mode] && form[:pathway_mode].value, pathway.pathway_mode)
+
+    bidirectional? =
+      case form[:is_bidirectional] && form[:is_bidirectional].value do
+        val when val in [true, "true", "1", 1] -> true
+        val when val in [false, "false", "0", 0] -> false
+        nil -> pathway.is_bidirectional
+        _ -> pathway.is_bidirectional
+      end
+
+    signposted_as =
+      if form[:signposted_as], do: form[:signposted_as].value, else: pathway.signposted_as
+
+    reversed_signposted_as =
+      if form[:reversed_signposted_as],
+        do: form[:reversed_signposted_as].value,
+        else: pathway.reversed_signposted_as
 
     from_id =
       case from_stop do
@@ -2896,9 +2918,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         _ -> "Unknown"
       end
 
-    signposted_as = assigns.editing_pathway.signposted_as
-    reversed_signposted_as = assigns.editing_pathway.reversed_signposted_as
-
     has_forward_sign? = present_text?(signposted_as)
     has_reverse_sign? = bidirectional? and present_text?(reversed_signposted_as)
 
@@ -2917,12 +2936,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     ~H"""
     <div class="bg-base-200 rounded-lg p-4 -mx-2">
-      <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-3">
-        Direction
+      <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-1">
+        Pathway Diagram
       </h4>
       <svg
         data-pathway-preview="true"
-        viewBox="0 0 320 80"
+        viewBox="0 0 200 52"
         class="w-full"
         aria-label={"Pathway from #{@from_id} to #{@to_id}"}
       >
@@ -2932,8 +2951,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             viewBox="0 0 10 10"
             refX="9"
             refY="5"
-            markerWidth="8"
-            markerHeight="8"
+            markerWidth="6"
+            markerHeight="6"
             orient="auto-start-reverse"
           >
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#FF00FF" />
@@ -2943,13 +2962,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <%!-- From node --%>
         <g>
           <title>{@from_name}</title>
-          <circle cx="30" cy="32" r="10" fill="#0080FF" />
+          <circle cx="12" cy="22" r="7" fill="#0080FF" />
           <text
-            x="30"
-            y="56"
+            x="12"
+            y="40"
             text-anchor="start"
             font-family="Inter, sans-serif"
-            font-size="10"
+            font-size="5.5"
             fill="#0080FF"
             font-weight="600"
           >
@@ -2960,13 +2979,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <%!-- To node --%>
         <g>
           <title>{@to_name}</title>
-          <circle cx="290" cy="32" r="10" fill="#0080FF" />
+          <circle cx="188" cy="22" r="7" fill="#0080FF" />
           <text
-            x="290"
-            y="56"
+            x="188"
+            y="40"
             text-anchor="end"
             font-family="Inter, sans-serif"
-            font-size="10"
+            font-size="5.5"
             fill="#0080FF"
             font-weight="600"
           >
@@ -2977,12 +2996,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <%!-- Signage above the line --%>
         <text
           :if={@has_forward_sign?}
-          x="160"
-          y="20"
+          x="100"
+          y="12"
           text-anchor="middle"
           font-family="Inter, sans-serif"
-          font-size="9"
-          fill="#666"
+          font-size="5"
+          fill="#888"
         >
           {@signposted_as} →
         </text>
@@ -2993,21 +3012,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <%!-- Signage below the line --%>
         <text
           :if={@has_reverse_sign?}
-          x="160"
-          y="48"
+          x="100"
+          y="35"
           text-anchor="middle"
           font-family="Inter, sans-serif"
-          font-size="9"
-          fill="#666"
+          font-size="5"
+          fill="#888"
         >
           ← {@reversed_signposted_as}
         </text>
       </svg>
 
-      <div class="flex justify-center mt-2">
+      <div class="flex justify-center mt-1">
         <button
           type="button"
-          class="btn btn-xs btn-outline"
+          class="btn btn-xs btn-outline bg-white"
           phx-click="flip_pathway"
           phx-value-id={@editing_pathway.id}
           data-confirm={if @pathway_form_dirty, do: "Discard unsaved pathway changes?"}
@@ -3019,9 +3038,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
+  defp parse_preview_int(nil, fallback), do: fallback
+
+  defp parse_preview_int(val, fallback) when is_binary(val) do
+    case Integer.parse(val) do
+      {int, _} -> int
+      :error -> fallback
+    end
+  end
+
+  defp parse_preview_int(val, _fallback) when is_integer(val), do: val
+  defp parse_preview_int(_val, fallback), do: fallback
+
   defp pathway_preview_line(%{mode: 1} = assigns) do
     ~H"""
-    <line x1="44" y1="32" x2="276" y2="32" stroke="#FF00FF" stroke-width="2"
+    <line x1="22" y1="22" x2="178" y2="22" stroke="#FF00FF" stroke-width="1.5"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)" />
     """
@@ -3029,66 +3060,66 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp pathway_preview_line(%{mode: 2} = assigns) do
     ~H"""
-    <line x1="44" y1="32" x2="276" y2="32" stroke="#FF00FF" stroke-width="2"
+    <line x1="22" y1="22" x2="178" y2="22" stroke="#FF00FF" stroke-width="1.5"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)" />
-    <line x1="160" y1="24" x2="160" y2="40" stroke="#FF00FF" stroke-width="1.5" />
+    <line x1="100" y1="16" x2="100" y2="28" stroke="#FF00FF" stroke-width="1.2" />
     """
   end
 
   defp pathway_preview_line(%{mode: 3} = assigns) do
     ~H"""
-    <line x1="44" y1="32" x2="276" y2="32" stroke="#FF00FF" stroke-width="2"
+    <line x1="22" y1="22" x2="178" y2="22" stroke="#FF00FF" stroke-width="1.5"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)" />
-    <line x1="154" y1="24" x2="166" y2="40" stroke="#FF00FF" stroke-width="1.5" />
-    <line x1="166" y1="24" x2="154" y2="40" stroke="#FF00FF" stroke-width="1.5" />
+    <line x1="96" y1="16" x2="104" y2="28" stroke="#FF00FF" stroke-width="1.2" />
+    <line x1="104" y1="16" x2="96" y2="28" stroke="#FF00FF" stroke-width="1.2" />
     """
   end
 
   defp pathway_preview_line(%{mode: 4} = assigns) do
     ~H"""
-    <line x1="44" y1="32" x2="276" y2="32" stroke="#FF00FF" stroke-width="2"
+    <line x1="22" y1="22" x2="178" y2="22" stroke="#FF00FF" stroke-width="1.5"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)" />
-    <line x1="152" y1="24" x2="152" y2="40" stroke="#FF00FF" stroke-width="1.5" />
-    <line x1="160" y1="24" x2="160" y2="40" stroke="#FF00FF" stroke-width="1.5" />
-    <line x1="168" y1="24" x2="168" y2="40" stroke="#FF00FF" stroke-width="1.5" />
+    <line x1="95" y1="16" x2="95" y2="28" stroke="#FF00FF" stroke-width="1.2" />
+    <line x1="100" y1="16" x2="100" y2="28" stroke="#FF00FF" stroke-width="1.2" />
+    <line x1="105" y1="16" x2="105" y2="28" stroke="#FF00FF" stroke-width="1.2" />
     """
   end
 
   defp pathway_preview_line(%{mode: 5} = assigns) do
     ~H"""
-    <line x1="44" y1="32" x2="135" y2="32" stroke="#FF00FF" stroke-width="2"
+    <line x1="22" y1="22" x2="80" y2="22" stroke="#FF00FF" stroke-width="1.5"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil} />
-    <rect x="135" y="20" width="50" height="24" rx="3" fill="white" stroke="#FF00FF" stroke-width="1.5" />
-    <text x="160" y="32" text-anchor="middle" dominant-baseline="central" font-family="Inter, sans-serif" font-size="14" fill="#FF00FF">&#x2195;</text>
-    <line x1="185" y1="32" x2="276" y2="32" stroke="#FF00FF" stroke-width="2"
+    <rect x="80" y="13" width="40" height="18" rx="2" fill="white" stroke="#FF00FF" stroke-width="1.2" />
+    <text x="100" y="22" text-anchor="middle" dominant-baseline="central" font-family="Inter, sans-serif" font-size="10" fill="#FF00FF">&#x2195;</text>
+    <line x1="120" y1="22" x2="178" y2="22" stroke="#FF00FF" stroke-width="1.5"
       marker-end="url(#preview-arrow)" />
     """
   end
 
   defp pathway_preview_line(%{mode: 6} = assigns) do
     ~H"""
-    <line x1="44" y1="28" x2="276" y2="28" stroke="#FF00FF" stroke-width="1.5"
+    <line x1="22" y1="19" x2="178" y2="19" stroke="#FF00FF" stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)" />
-    <line x1="44" y1="36" x2="276" y2="36" stroke="#FF00FF" stroke-width="1.5" />
+    <line x1="22" y1="25" x2="178" y2="25" stroke="#FF00FF" stroke-width="1.2" />
     """
   end
 
   defp pathway_preview_line(%{mode: 7} = assigns) do
     ~H"""
-    <line x1="44" y1="28" x2="276" y2="28" stroke="#FF00FF" stroke-width="1.5"
+    <line x1="22" y1="19" x2="178" y2="19" stroke="#FF00FF" stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)" />
-    <line x1="44" y1="36" x2="276" y2="36" stroke="#FF00FF" stroke-width="1.5" />
+    <line x1="22" y1="25" x2="178" y2="25" stroke="#FF00FF" stroke-width="1.2" />
     """
   end
 
   defp pathway_preview_line(assigns) do
     ~H"""
-    <line x1="44" y1="32" x2="276" y2="32" stroke="#FF00FF" stroke-width="2"
+    <line x1="22" y1="22" x2="178" y2="22" stroke="#FF00FF" stroke-width="1.5"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)" />
     """

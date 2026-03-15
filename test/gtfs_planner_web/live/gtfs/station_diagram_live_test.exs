@@ -4102,7 +4102,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "svg[data-pathway-preview]")
       assert has_element?(view, "svg[data-pathway-preview] g title", "Preview From")
       assert has_element?(view, "svg[data-pathway-preview] g title", "Preview To")
-      assert has_element?(view, "svg[data-pathway-preview] rect[x='135'][y='20'][width='50'][height='24']")
+      assert has_element?(view, "svg[data-pathway-preview] rect[x='80'][y='13'][width='40'][height='18']")
       assert has_element?(view, "svg[data-pathway-preview] line[marker-start='url(#preview-arrow)']")
       assert has_element?(view, "button[phx-click='flip_pathway'][phx-value-id='#{pathway.id}']")
     end
