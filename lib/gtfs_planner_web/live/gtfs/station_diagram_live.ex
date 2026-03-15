@@ -1549,6 +1549,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> assign(:show_naming_drawer, false)
+         |> assign(:naming_style, :kebab)
          |> assign(:naming_preview, [])
          |> assign(:naming_applying?, false)
          |> assign(:naming_error, nil)
