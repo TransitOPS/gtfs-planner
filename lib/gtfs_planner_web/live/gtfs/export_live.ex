@@ -2495,26 +2495,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp otp_data_requirements_summary, do: @otp_data_requirements_summary
 
-  defp export_gtfs_zip(organization_id, gtfs_version_id, :pathways) do
-    with {:ok, zip_path, meta} <-
-           materializer_module().get_or_build_gtfs_zip(
-             organization_id,
-             gtfs_version_id,
-             preflight_mode: :lenient,
-             force_rebuild: true
-           ),
-         {:ok, zip_binary} <- File.read(zip_path) do
-      otp_warnings = Map.get(meta, :otp_preflight_issues, [])
-      materializer_warnings = Map.get(meta, :preflight_warnings, [])
-
-      warnings = normalize_export_warnings(otp_warnings ++ materializer_warnings)
-      {:ok, zip_binary, warnings}
-    else
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
   defp export_gtfs_zip(organization_id, gtfs_version_id, export_type) do
     case export_module().export_to_zip(organization_id, gtfs_version_id, export_type) do
       {:ok, zip_binary} ->
