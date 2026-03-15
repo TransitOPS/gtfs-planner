@@ -312,7 +312,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
          %{
            code: :stop_times_trip_id_missing_trip,
            severity: :error,
-           message: "Referential integrity check failed",
+           message: "stop_times.txt.trip_id -> trips.txt.trip_id — 5 invalid",
            details: %{
              source_file: "stop_times.txt",
              source_field: "trip_id",
@@ -370,6 +370,30 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
            context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-22"}
          }
        ]}
+    end
+  end
+
+  defmodule MaterializerLenientMock do
+    def get_or_build_gtfs_zip(organization_id, gtfs_version_id, opts) do
+      case Application.get_env(:gtfs_planner, :export_test_pid) do
+        pid when is_pid(pid) ->
+          send(pid, {:materializer_called, organization_id, gtfs_version_id, opts})
+
+        _other ->
+          :ok
+      end
+
+      temp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "materializer-lenient-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(temp_dir)
+      zip_path = Path.join(temp_dir, "gtfs.zip")
+      File.write!(zip_path, "zip-binary")
+
+      {:ok, zip_path, %{preflight_warnings: []}}
     end
   end
 
@@ -1860,7 +1884,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       version_id = version.id
 
       assert_receive {:materializer_called, ^organization_id, ^version_id, materializer_opts}, 500
-      assert materializer_opts[:preflight_mode] == :strict
+      assert materializer_opts[:preflight_mode] == :lenient
       assert materializer_opts[:force_rebuild] == true
 
       Process.sleep(100)
@@ -2224,10 +2248,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       html = render(view)
       assert html =~ "2 data quality warnings"
       assert has_element?(view, "#export-warning-panel")
-      assert html =~ "Referential integrity check failed"
-      assert html =~ "stop_times.txt"
+      assert html =~ "stop_times.txt.trip_id"
+      assert html =~ "trips.txt.trip_id"
       assert html =~ "5 invalid"
-      assert html =~ "Export completed"
+      refute html =~ "Export completed successfully"
     end
 
     test "full export without preflight issues shows no warning panel", %{
@@ -2271,7 +2295,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert html =~ "Export completed successfully"
     end
 
-    test "pathways export still blocks on preflight issues", %{
+    test "pathways export succeeds with warnings when preflight issues are present", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -2282,14 +2306,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       previous_materializer =
         Application.get_env(:gtfs_planner, :otp_gtfs_materializer_module)
 
+      previous_preflight = Application.get_env(:gtfs_planner, :otp_preflight_module)
+
       Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleShouldNotBeCalledMock)
 
       Application.put_env(
         :gtfs_planner,
         :otp_gtfs_materializer_module,
-        MaterializerBlockingMock
+        MaterializerLenientMock
       )
 
+      Application.put_env(:gtfs_planner, :otp_preflight_module, PreflightIssuesMock)
       Application.put_env(:gtfs_planner, :export_test_pid, self())
 
       on_exit(fn ->
@@ -2306,6 +2333,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
             ),
           else: Application.delete_env(:gtfs_planner, :otp_gtfs_materializer_module)
 
+        if previous_preflight,
+          do: Application.put_env(:gtfs_planner, :otp_preflight_module, previous_preflight),
+          else: Application.delete_env(:gtfs_planner, :otp_preflight_module)
+
         Application.delete_env(:gtfs_planner, :export_test_pid)
       end)
 
@@ -2315,12 +2346,21 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[name='export_type'][phx-value-type='pathways']") |> render_click()
       view |> element("button", "Export GTFS") |> render_click()
 
+      organization_id = organization.id
+      version_id = version.id
+
+      assert_receive {:materializer_called, ^organization_id, ^version_id, materializer_opts}, 500
+      assert materializer_opts[:preflight_mode] == :lenient
+
       Process.sleep(100)
 
       html = render(view)
-      assert html =~ "Boarding area ba-22 is missing parent_station in stops.txt."
-      refute has_element?(view, "#export-warning-panel")
+      assert has_element?(view, "#export-warning-panel")
+      assert html =~ "stop_times.txt.trip_id"
+      assert html =~ "trips.txt.trip_id"
+      assert html =~ "5 invalid"
       refute html =~ "Export completed successfully"
+      refute html =~ "Exporting..."
     end
   end
 end

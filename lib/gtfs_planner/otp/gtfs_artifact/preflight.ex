@@ -205,7 +205,8 @@ defmodule GtfsPlanner.Otp.Preflight do
         %{
           code: code,
           severity: :error,
-          message: "Referential integrity check failed",
+          message:
+            "#{details.source_file}.#{details.source_field} -> #{details.target_file}.#{details.target_field} — #{invalid_count} invalid",
           details: Map.put(details, :invalid_count, invalid_count)
         }
       ]

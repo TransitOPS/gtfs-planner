@@ -441,27 +441,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               |> put_flash(:info, "Export completed successfully")
 
             {:ok, zip_binary, warnings} when warnings != [] ->
-              count = length(warnings)
-
               socket
               |> push_gtfs_download(zip_binary)
               |> assign(:export_warnings, warnings)
-              |> put_flash(
-                :info,
-                "Export completed — #{count} data quality warning#{if count == 1, do: "", else: "s"} found"
-              )
 
             {:ok, zip_binary} ->
               socket
               |> push_gtfs_download(zip_binary)
               |> put_flash(:info, "Export completed successfully")
-
-            {:error, {:pathways_export_prep_failed, issues}} ->
-              error_message = pathways_export_error_message(issues)
-
-              socket
-              |> put_flash(:error, error_message)
-              |> assign(:export_error, error_message)
 
             {:error, reason} ->
               error_message =
@@ -2515,19 +2502,24 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp otp_data_requirements_summary, do: @otp_data_requirements_summary
 
   defp export_gtfs_zip(organization_id, gtfs_version_id, :pathways) do
-    with {:ok, zip_path, _meta} <-
+    with {:ok, zip_path, meta} <-
            materializer_module().get_or_build_gtfs_zip(
              organization_id,
              gtfs_version_id,
-             preflight_mode: :strict,
+             preflight_mode: :lenient,
              force_rebuild: true
            ),
          {:ok, zip_binary} <- File.read(zip_path) do
-      {:ok, zip_binary}
-    else
-      {:error, issues} when is_list(issues) ->
-        {:error, {:pathways_export_prep_failed, issues}}
+      otp_warnings =
+        case preflight_module().run(organization_id, gtfs_version_id) do
+          :ok -> []
+          {:error, issues} -> issues
+        end
 
+      materializer_warnings = Map.get(meta, :preflight_warnings, [])
+
+      {:ok, zip_binary, otp_warnings ++ materializer_warnings}
+    else
       {:error, reason} ->
         {:error, reason}
     end
@@ -2577,22 +2569,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       nil
     end
   end
-
-  defp pathways_export_error_message(issues) when is_list(issues) do
-    case List.first(issues) do
-      %{message: message} when is_binary(message) and message != "" ->
-        message
-
-      %{code: code} ->
-        "Pathways export blocked by preflight issue: #{code}"
-
-      _other ->
-        "Pathways export blocked by preflight issues"
-    end
-  end
-
-  defp pathways_export_error_message(_issues),
-    do: "Pathways export blocked by preflight issues"
 
   defp export_module do
     Application.get_env(:gtfs_planner, :gtfs_export_module, GtfsPlanner.Gtfs.Export)
