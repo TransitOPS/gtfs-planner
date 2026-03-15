@@ -1,7 +1,39 @@
 defmodule GtfsPlanner.Gtfs.StationNamingTest do
   use ExUnit.Case, async: true
 
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StationNaming
+
+  describe "kebabify/1" do
+    test "converts spaces and uppercase to kebab-case" do
+      assert Stop.kebabify("Platform 2") == "platform-2"
+    end
+
+    test "strips special characters" do
+      assert Stop.kebabify("Track #3 (North)") == "track-3-north"
+    end
+
+    test "collapses consecutive hyphens" do
+      assert Stop.kebabify("stop---name") == "stop-name"
+    end
+
+    test "trims leading and trailing hyphens" do
+      assert Stop.kebabify("  --hello--  ") == "hello"
+    end
+
+    test "truncates to 64 characters" do
+      long = String.duplicate("a", 100)
+      assert String.length(Stop.kebabify(long)) == 64
+    end
+
+    test "returns empty string for nil" do
+      assert Stop.kebabify(nil) == ""
+    end
+
+    test "returns empty string for empty string" do
+      assert Stop.kebabify("") == ""
+    end
+  end
 
   describe "build_naming_map/3" do
     test "generates deterministic names for mixed child stop types" do
@@ -90,6 +122,86 @@ defmodule GtfsPlanner.Gtfs.StationNamingTest do
       result = StationNaming.build_naming_map(child_stops, [], "Grand Central Terminal")
 
       assert [%{new_id: "grand_central_terminal_platform_general_ground_floor_01"}] = result
+    end
+  end
+
+  describe "build_kebab_naming_map/1" do
+    test "basic kebab-casing with sequence" do
+      child_stops = [
+        %{stop_id: "S1", stop_name: "Platform 2", location_type: 0, level_id: "L1"}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "S1", new_id: "platform-2-01"}] = result
+    end
+
+    test "groups stops with same name and assigns sequential IDs" do
+      child_stops = [
+        %{stop_id: "B_STOP", stop_name: "Main Hall", location_type: 3, level_id: "L1"},
+        %{stop_id: "A_STOP", stop_name: "Main Hall", location_type: 3, level_id: "L1"}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+      mapping = Map.new(result, fn %{old_id: old, new_id: new} -> {old, new} end)
+
+      # Sorted by stop_id: A_STOP=01, B_STOP=02
+      assert mapping["A_STOP"] == "main-hall-01"
+      assert mapping["B_STOP"] == "main-hall-02"
+    end
+
+    test "strips special characters" do
+      child_stops = [
+        %{stop_id: "S1", stop_name: "Track #3 (North)", location_type: 0, level_id: "L1"}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "S1", new_id: "track-3-north-01"}] = result
+    end
+
+    test "falls back to stop_id when stop_name is nil" do
+      child_stops = [
+        %{stop_id: "MY_STOP", stop_name: nil, location_type: 3, level_id: nil}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "MY_STOP", new_id: "my-stop-01"}] = result
+    end
+
+    test "falls back to stop_id when stop_name is empty string" do
+      child_stops = [
+        %{stop_id: "MY_STOP", stop_name: "", location_type: 3, level_id: nil}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "MY_STOP", new_id: "my-stop-01"}] = result
+    end
+
+    test "falls back to stop_id when stop_name is punctuation-only" do
+      child_stops = [
+        %{stop_id: "MY_STOP", stop_name: "!!!", location_type: 3, level_id: nil}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "MY_STOP", new_id: "my-stop-01"}] = result
+    end
+
+    test "falls back to default token when both stop_name and stop_id are unsluggable" do
+      child_stops = [
+        %{stop_id: "???", stop_name: "!!!", location_type: 3, level_id: nil}
+      ]
+
+      result = StationNaming.build_kebab_naming_map(child_stops)
+
+      assert [%{old_id: "???", new_id: "stop-01"}] = result
+    end
+
+    test "returns empty list for empty input" do
+      assert [] == StationNaming.build_kebab_naming_map([])
     end
   end
 

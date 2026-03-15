@@ -3498,6 +3498,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # ============================================================================
 
   attr :open, :boolean, default: false
+  attr :style, :atom, default: :kebab
   attr :preview_rows, :list, default: []
   attr :renamed_stops_count, :integer, default: 0
   attr :updated_pathways_count, :integer, default: 0
@@ -3513,7 +3514,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       title="Apply naming convention"
     >
       <div class="space-y-6">
-        <div class="prose prose-sm max-w-none">
+        <div :if={@style == :kebab} class="prose prose-sm max-w-none">
+          <p>
+            Renames child stops using a kebab-case version of each stop's name
+            with a sequence number:
+          </p>
+          <code class="block bg-base-200 px-3 py-2 rounded text-sm">
+            {"{name}-{seq}"}
+          </code>
+          <dl class="mt-3 text-sm space-y-1 not-prose">
+            <div class="flex gap-2">
+              <dt class="font-medium min-w-[5rem]">name</dt>
+              <dd class="text-base-content/70">Stop name, lowercased and hyphenated</dd>
+            </div>
+            <div class="flex gap-2">
+              <dt class="font-medium min-w-[5rem]">seq</dt>
+              <dd class="text-base-content/70">Two-digit sequence for stops with the same name</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div :if={@style == :structured} class="prose prose-sm max-w-none">
           <p>
             Renames child stops using a deterministic convention based on each stop's
             type, highest-priority connected pathway, and level:
@@ -3545,6 +3566,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               <dd class="text-base-content/70">Two-digit sequence within each group</dd>
             </div>
           </dl>
+        </div>
+
+        <div class="flex gap-1">
+          <button
+            type="button"
+            class={[
+              "btn btn-sm flex-1",
+              @style == :kebab && "btn-primary",
+              @style != :kebab && "btn-ghost"
+            ]}
+            phx-click="change_naming_style"
+            phx-value-style="kebab"
+          >
+            Name-based
+          </button>
+          <button
+            type="button"
+            class={[
+              "btn btn-sm flex-1",
+              @style == :structured && "btn-primary",
+              @style != :structured && "btn-ghost"
+            ]}
+            phx-click="change_naming_style"
+            phx-value-style="structured"
+          >
+            Structured
+          </button>
         </div>
 
         <div :if={@error} class="alert alert-error text-sm">

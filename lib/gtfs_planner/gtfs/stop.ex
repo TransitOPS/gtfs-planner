@@ -144,6 +144,19 @@ defmodule GtfsPlanner.Gtfs.Stop do
 
   def slugify(_), do: ""
 
+  @doc "Converts text into a lowercase kebab-case slug."
+  def kebabify(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.replace(~r/-{2,}/, "-")
+    |> String.trim("-")
+    |> String.slice(0, 64)
+  end
+
+  def kebabify(_), do: ""
+
   @doc "Generates a stop_id from location type and stop name."
   def generate_stop_id(location_type, stop_name) when is_binary(stop_name) do
     case slugify(stop_name) do
