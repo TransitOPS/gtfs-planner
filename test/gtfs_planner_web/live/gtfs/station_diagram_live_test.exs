@@ -4252,7 +4252,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      render_hook(view, "flip_pathway", %{"id" => Ecto.UUID.generate()})
+      render_click(view, "flip_pathway", %{"id" => Ecto.UUID.generate()})
 
       assert has_element?(view, "#lists-section", "Pathway not found.")
     end
