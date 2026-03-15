@@ -81,7 +81,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
           %{filename: to_string(name), content: content}
         end)
 
-      assert {:ok, {counts, _unrecognized, _topic}} =
+      assert {:ok, {counts, _unrecognized, _topic, []}} =
                Import.import_files(org_b.id, version_b.id, import_files)
 
       # Standard GTFS data imported
@@ -134,7 +134,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
         %{filename: "stops.txt", content: stops_content}
       ]
 
-      assert {:ok, {counts, [], _topic}} = Import.import_files(org.id, version.id, files)
+      assert {:ok, {counts, [], _topic, []}} = Import.import_files(org.id, version.id, files)
 
       assert counts.levels == 1
       assert counts.stops == 1

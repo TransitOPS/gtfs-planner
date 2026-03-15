@@ -550,27 +550,50 @@ defmodule GtfsPlanner.Gtfs.Import do
             :ok ->
               case :zip.unzip(file.content, [:memory]) do
                 {:ok, entries} ->
-                  normalized_entries =
-                    Enum.flat_map(entries, fn {name, content} ->
-                      filename = normalize_uploaded_filename(to_string(name))
+                  entry_sizes = Enum.map(entries, fn {_name, content} -> byte_size(content) end)
 
-                      cond do
-                        ignore_zip_entry?(filename) ->
-                          []
+                  case check_zip_entry_sizes_against_limits(entry_sizes, limits) do
+                    {:ok, _entries_count, _total_bytes} ->
+                      normalized_entries =
+                        Enum.flat_map(entries, fn {name, content} ->
+                          filename = normalize_uploaded_filename(to_string(name))
 
-                        String.ends_with?(String.downcase(filename), ".zip") ->
-                          Logger.warning(
-                            "Rejecting nested zip entry #{filename} in archive #{file.filename}"
-                          )
+                          cond do
+                            ignore_zip_entry?(filename) ->
+                              []
 
-                          []
+                            String.ends_with?(String.downcase(filename), ".zip") ->
+                              Logger.warning(
+                                "Rejecting nested zip entry #{filename} in archive #{file.filename}"
+                              )
 
-                        true ->
-                          [%{filename: filename, content: content}]
-                      end
-                    end)
+                              []
 
-                  {files_acc ++ normalized_entries, warnings_acc}
+                            true ->
+                              [%{filename: filename, content: content}]
+                          end
+                        end)
+
+                      {files_acc ++ normalized_entries, warnings_acc}
+
+                    {:error, reason, entries_count, total_bytes, entry_bytes} ->
+                      Logger.warning(
+                        "Zip archive #{file.filename} exceeds safety limits after expansion " <>
+                          "(reason=#{reason}, entries=#{entries_count}, bytes=#{total_bytes}, " <>
+                          "entry_bytes=#{entry_bytes}, max_entries=#{limits.max_entries}, " <>
+                          "max_total_bytes=#{limits.max_total_bytes}, " <>
+                          "max_entry_bytes=#{limits.max_entry_bytes}), skipping expansion"
+                      )
+
+                      warning = %{
+                        filename: file.filename,
+                        reason: :archive_too_large,
+                        detail:
+                          "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
+                      }
+
+                      {files_acc, warnings_acc ++ [warning]}
+                  end
 
                 {:error, reason} ->
                   Logger.warning(
@@ -661,20 +684,13 @@ defmodule GtfsPlanner.Gtfs.Import do
               {:zip_file, name, file_info, _comment, _offset, _comp_size} ->
                 filename = normalize_uploaded_filename(to_string(name))
 
-                cond do
-                  ignore_zip_entry?(filename) ->
-                    []
-
-                  String.ends_with?(String.downcase(filename), ".zip") ->
-                    Logger.warning(
-                      "Rejecting nested zip entry #{filename} in archive #{file.filename}"
-                    )
-
-                    []
-
-                  true ->
-                    [zip_entry_uncompressed_size(file_info)]
+                if String.ends_with?(String.downcase(filename), ".zip") do
+                  Logger.warning(
+                    "Rejecting nested zip entry #{filename} in archive #{file.filename}"
+                  )
                 end
+
+                [zip_entry_uncompressed_size(file_info)]
 
               _ ->
                 []
