@@ -2851,6 +2851,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         pathway_form={@pathway_form}
       />
 
+      <div :if={@open and @editing_pathway} class="mt-6"></div>
+
       <.pathway_form
         :if={@open}
         pathway_form={@pathway_form}
