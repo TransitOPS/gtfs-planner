@@ -6236,7 +6236,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "Apply naming"
     end
 
-    test "clicking Apply naming opens drawer with preview rows", %{
+    test "clicking Apply naming opens drawer with structured preview by default", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -6265,9 +6265,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "CHILD_N1"
       assert html =~ "naming_station_platform_general_ground_01"
       assert html =~ "Apply naming convention"
+      assert html =~ "deterministic convention"
     end
 
-    test "Apply naming convention renames stops and shows status", %{
+    test "changing naming style refreshes preview rows", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -6276,6 +6277,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       _child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STYLE_CHILD",
+          stop_name: "Style Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 11.0, "y" => 11.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      html = render_click(view, "open_naming_drawer")
+      assert html =~ "deterministic convention"
+      assert html =~ "naming_station_platform_general_ground_01"
+      refute html =~ "kebab-case"
+      refute html =~ "style-child-01"
+
+      html = view |> element("button", "Name-based") |> render_click()
+      assert html =~ "kebab-case"
+      assert html =~ "style-child-01"
+      refute html =~ "deterministic convention"
+      refute html =~ "naming_station_platform_general_ground_01"
+
+      html = view |> element("button", "Structured") |> render_click()
+      assert html =~ "deterministic convention"
+      assert html =~ "naming_station_platform_general_ground_01"
+      refute html =~ "kebab-case"
+      refute html =~ "style-child-01"
+    end
+
+    test "Apply naming convention uses selected naming style", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child =
         stop_fixture(organization.id, gtfs_version.id, %{
           stop_id: "RENAME_ME",
           stop_name: "Rename Me",
@@ -6291,10 +6334,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
       view |> element("[phx-click='open_naming_drawer']") |> render_click()
+      view |> element("button", "Name-based") |> render_click()
       html = view |> element("button", "Apply naming convention") |> render_click()
 
       assert html =~ "Renamed 1 child stop"
       assert html =~ "updated 0 pathway references"
+
+      assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, child.stop_id) == nil
+
+      assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "rename-me-01")
     end
 
     test "drawer shows no-stops message when station has no children", %{

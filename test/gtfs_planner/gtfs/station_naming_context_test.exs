@@ -112,6 +112,224 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
     end
   end
 
+  describe "preview_station_naming/4 with :kebab style" do
+    test "returns kebab-cased IDs based on stop names", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CENTRAL",
+          stop_name: "Central Station",
+          location_type: 1
+        })
+
+      _platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLAT_1",
+          stop_name: "Platform 2",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "ground"
+        })
+
+      _entrance =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "ENT_1",
+          stop_name: "Main Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "street"
+        })
+
+      assert {:ok, preview} =
+               Gtfs.preview_station_naming(org.id, version.id, station.stop_id, :kebab)
+
+      assert preview.renamed_stops_count == 2
+      assert length(preview.rows) == 2
+
+      mapping = Map.new(preview.rows, fn %{old_id: old, new_id: new} -> {old, new} end)
+      assert mapping["ENT_1"] == "main-entrance-01"
+      assert mapping["PLAT_1"] == "platform-2-01"
+    end
+
+    test "returns :no_stops for station with no children", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "EMPTY",
+          stop_name: "Empty Station",
+          location_type: 1
+        })
+
+      assert {:error, :no_stops} =
+               Gtfs.preview_station_naming(org.id, version.id, station.stop_id, :kebab)
+    end
+
+    test "falls back to stop_id when stop_name is blank or punctuation-only", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "FALLBACK",
+          stop_name: "Fallback Station",
+          location_type: 1
+        })
+
+      _blank =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BLANK_STOP",
+          stop_name: "",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _punctuation =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PUNC_STOP",
+          stop_name: "!!!",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      assert {:ok, preview} =
+               Gtfs.preview_station_naming(org.id, version.id, station.stop_id, :kebab)
+
+      mapping = Map.new(preview.rows, fn %{old_id: old, new_id: new} -> {old, new} end)
+      assert mapping["BLANK_STOP"] == "blank-stop-01"
+      assert mapping["PUNC_STOP"] == "punc-stop-01"
+    end
+
+    test "returns :naming_collision when kebab ID conflicts with existing stop", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "COLLIDE",
+          stop_name: "Collision Station",
+          location_type: 1
+        })
+
+      _child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_COLLIDE",
+          stop_name: "Main Hall",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _blocker =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "main-hall-01",
+          stop_name: "Existing Main Hall",
+          location_type: 0
+        })
+
+      assert {:error, {:naming_collision, collisions}} =
+               Gtfs.preview_station_naming(org.id, version.id, station.stop_id, :kebab)
+
+      assert "main-hall-01" in collisions
+    end
+  end
+
+  describe "apply_station_naming/4 with :kebab style" do
+    test "renames stops using kebab-cased names", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "MAIN",
+          stop_name: "Main",
+          location_type: 1
+        })
+
+      _node =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "NODE_A",
+          stop_name: "Ticket Hall",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: "L0"
+        })
+
+      _platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLAT_X",
+          stop_name: "Platform 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L0"
+        })
+
+      pathway =
+        pathway_fixture(org.id, version.id, "NODE_A", "PLAT_X", %{
+          pathway_mode: 2
+        })
+
+      assert {:ok, %{renamed_stops: 2, updated_pathways: 2}} =
+               Gtfs.apply_station_naming(org.id, version.id, station.stop_id, :kebab)
+
+      # Verify new kebab-cased stop IDs exist
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "platform-1-01")
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "ticket-hall-01")
+
+      # Verify old IDs no longer exist
+      refute Gtfs.get_stop_by_stop_id(org.id, version.id, "NODE_A")
+      refute Gtfs.get_stop_by_stop_id(org.id, version.id, "PLAT_X")
+
+      # Verify pathway references updated
+      updated_pathway = Gtfs.get_pathway!(pathway.id)
+      assert updated_pathway.from_stop_id == "ticket-hall-01"
+      assert updated_pathway.to_stop_id == "platform-1-01"
+    end
+
+    test "falls back to stop_id for blank and punctuation-only stop names", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "FALLBACK_APPLY",
+          stop_name: "Fallback Apply",
+          location_type: 1
+        })
+
+      _blank =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BLANK_APPLY",
+          stop_name: "",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _punctuation =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PUNC_APPLY",
+          stop_name: "!!!",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      assert {:ok, %{renamed_stops: 2}} =
+               Gtfs.apply_station_naming(org.id, version.id, station.stop_id, :kebab)
+
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "blank-apply-01")
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "punc-apply-01")
+      refute Gtfs.get_stop_by_stop_id(org.id, version.id, "BLANK_APPLY")
+      refute Gtfs.get_stop_by_stop_id(org.id, version.id, "PUNC_APPLY")
+    end
+  end
+
   describe "apply_station_naming/3" do
     test "renames stops and updates pathway references atomically", %{
       organization: org,
