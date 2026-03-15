@@ -1,7 +1,39 @@
 defmodule GtfsPlanner.Gtfs.StationNamingTest do
   use ExUnit.Case, async: true
 
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StationNaming
+
+  describe "kebabify/1" do
+    test "converts spaces and uppercase to kebab-case" do
+      assert Stop.kebabify("Platform 2") == "platform-2"
+    end
+
+    test "strips special characters" do
+      assert Stop.kebabify("Track #3 (North)") == "track-3-north"
+    end
+
+    test "collapses consecutive hyphens" do
+      assert Stop.kebabify("stop---name") == "stop-name"
+    end
+
+    test "trims leading and trailing hyphens" do
+      assert Stop.kebabify("  --hello--  ") == "hello"
+    end
+
+    test "truncates to 64 characters" do
+      long = String.duplicate("a", 100)
+      assert String.length(Stop.kebabify(long)) == 64
+    end
+
+    test "returns empty string for nil" do
+      assert Stop.kebabify(nil) == ""
+    end
+
+    test "returns empty string for empty string" do
+      assert Stop.kebabify("") == ""
+    end
+  end
 
   describe "build_naming_map/3" do
     test "generates deterministic names for mixed child stop types" do
