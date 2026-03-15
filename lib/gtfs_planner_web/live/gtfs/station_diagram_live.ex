@@ -2001,8 +2001,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> assign(:pathway_form_dirty, false)
              |> assign(:pathway_error, nil)}
 
-          {:error, _changeset} ->
-            {:noreply, assign(socket, :pathway_error, "Failed to flip pathway direction.")}
+          {:error, changeset} ->
+            detail =
+              changeset
+              |> Ecto.Changeset.traverse_errors(fn {msg, _opts} -> msg end)
+              |> Enum.map_join("; ", fn {field, msgs} ->
+                "#{field}: #{Enum.join(msgs, ", ")}"
+              end)
+
+            message =
+              if detail == "",
+                do: "Failed to flip pathway direction.",
+                else: "Failed to flip: #{detail}"
+
+            {:noreply, assign(socket, :pathway_error, message)}
         end
     end
   end
