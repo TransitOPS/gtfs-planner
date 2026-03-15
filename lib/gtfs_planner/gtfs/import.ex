@@ -574,7 +574,12 @@ defmodule GtfsPlanner.Gtfs.Import do
                           end
                         end)
 
-                      {files_acc ++ normalized_entries, warnings_acc}
+                      files_acc =
+                        Enum.reduce(normalized_entries, files_acc, fn entry, acc ->
+                          [entry | acc]
+                        end)
+
+                      {files_acc, warnings_acc}
 
                     {:error, reason, entries_count, total_bytes, entry_bytes} ->
                       Logger.warning(
@@ -592,7 +597,7 @@ defmodule GtfsPlanner.Gtfs.Import do
                           "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
                       }
 
-                      {files_acc, warnings_acc ++ [warning]}
+                      {files_acc, [warning | warnings_acc]}
                   end
 
                 {:error, reason} ->
@@ -606,7 +611,7 @@ defmodule GtfsPlanner.Gtfs.Import do
                     detail: "archive could not be read (#{inspect(reason)})"
                   }
 
-                  {files_acc, warnings_acc ++ [warning]}
+                  {files_acc, [warning | warnings_acc]}
               end
 
             {:error, reason, entries_count, total_bytes, entry_bytes} ->
@@ -625,7 +630,7 @@ defmodule GtfsPlanner.Gtfs.Import do
                   "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
               }
 
-              {files_acc, warnings_acc ++ [warning]}
+              {files_acc, [warning | warnings_acc]}
 
             {:error, reason} ->
               Logger.warning(
@@ -638,14 +643,14 @@ defmodule GtfsPlanner.Gtfs.Import do
                 detail: "archive could not be read (#{inspect(reason)})"
               }
 
-              {files_acc, warnings_acc ++ [warning]}
+              {files_acc, [warning | warnings_acc]}
           end
         else
-          {files_acc ++ [file], warnings_acc}
+          {[file | files_acc], warnings_acc}
         end
       end)
 
-    {files_acc, warnings_acc}
+    {Enum.reverse(files_acc), Enum.reverse(warnings_acc)}
   end
 
   @doc false

@@ -1,5 +1,5 @@
 defmodule GtfsPlanner.Gtfs.ImportTest do
-  use GtfsPlanner.DataCase, async: true
+  use GtfsPlanner.DataCase, async: false
 
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlannerWeb.Gtfs.ImportLive
@@ -711,6 +711,77 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert [%{filename: "bad.zip", reason: :unzip_failed}] = archive_warnings
     end
 
+    test "ignored and nested zip entries count toward archive limits" do
+      entries =
+        Enum.map(1..10_000, fn idx ->
+          {~c"__MACOSX/ignored_#{idx}.txt", "x"}
+        end) ++ [{~c"nested.zip", "nested"}]
+
+      {:ok, {_name, zip_binary}} = :zip.create(~c"too_many_ignored.zip", entries, [:memory])
+
+      {expanded, warnings} =
+        Import.expand_archives([%{filename: "too_many_ignored.zip", content: zip_binary}])
+
+      assert expanded == []
+
+      assert [
+               %{
+                 filename: "too_many_ignored.zip",
+                 reason: :archive_too_large,
+                 detail: detail
+               }
+             ] = warnings
+
+      assert detail =~ "too_many_entries"
+    end
+
+    test "expand_archives returns archive_too_large when extracted bytes exceed limits" do
+      original_total_limit =
+        Application.get_env(:gtfs_planner, :import_max_zip_uncompressed_bytes)
+
+      original_entry_limit =
+        Application.get_env(:gtfs_planner, :import_max_zip_entry_uncompressed_bytes)
+
+      on_exit(fn ->
+        case original_total_limit do
+          nil -> Application.delete_env(:gtfs_planner, :import_max_zip_uncompressed_bytes)
+          value -> Application.put_env(:gtfs_planner, :import_max_zip_uncompressed_bytes, value)
+        end
+
+        case original_entry_limit do
+          nil ->
+            Application.delete_env(:gtfs_planner, :import_max_zip_entry_uncompressed_bytes)
+
+          value ->
+            Application.put_env(:gtfs_planner, :import_max_zip_entry_uncompressed_bytes, value)
+        end
+      end)
+
+      Application.put_env(:gtfs_planner, :import_max_zip_uncompressed_bytes, 1_000)
+      Application.put_env(:gtfs_planner, :import_max_zip_entry_uncompressed_bytes, 10)
+
+      zip_binary =
+        zip_with_patched_central_directory_uncompressed_size(
+          [{~c"big.txt", String.duplicate("a", 20)}],
+          1
+        )
+
+      {expanded, warnings} =
+        Import.expand_archives([%{filename: "post_unzip.zip", content: zip_binary}])
+
+      assert expanded == []
+
+      assert [
+               %{
+                 filename: "post_unzip.zip",
+                 reason: :archive_too_large,
+                 detail: detail
+               }
+             ] = warnings
+
+      assert detail =~ "entry_too_large"
+    end
+
     test "zip size check accepts 500MB exactly" do
       max_total_bytes = 500 * 1024 * 1024
 
@@ -744,5 +815,16 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       refute Import.zip_entry_sizes_within_limits?([100 * 1024 * 1024 + 1], limits)
     end
+  end
+
+  defp zip_with_patched_central_directory_uncompressed_size(entries, patched_size) do
+    {:ok, {_name, zip_binary}} = :zip.create(~c"patched.zip", entries, [:memory])
+    signature = <<0x50, 0x4B, 0x01, 0x02>>
+    {central_header_offset, _} = :binary.match(zip_binary, signature)
+    size_offset = central_header_offset + 24
+
+    binary_part(zip_binary, 0, size_offset) <>
+      <<patched_size::little-32>> <>
+      binary_part(zip_binary, size_offset + 4, byte_size(zip_binary) - size_offset - 4)
   end
 end
