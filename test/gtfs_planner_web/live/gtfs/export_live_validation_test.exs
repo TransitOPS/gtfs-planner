@@ -2098,74 +2098,44 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert has_element?(view, "#recent-validation-infos-#{mobility_run.id}", "9")
     end
 
-    test "pathways export succeeds with warnings from materializer preflight issues", %{
+    test "pathways export succeeds with warnings from preflight issues", %{
       conn: conn,
       user: user,
       organization: organization,
       gtfs_version: version
     } do
-      previous_export_module = Application.get_env(:gtfs_planner, :gtfs_export_module)
+      previous_export = Application.get_env(:gtfs_planner, :gtfs_export_module)
+      previous_preflight = Application.get_env(:gtfs_planner, :otp_preflight_module)
 
-      previous_materializer_module =
-        Application.get_env(:gtfs_planner, :otp_gtfs_materializer_module)
+      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleMock)
 
-      previous_export_test_pid = Application.get_env(:gtfs_planner, :export_test_pid)
+      defmodule PreflightPathwaysWarningMock do
+        def run(_organization_id, _gtfs_version_id) do
+          {:error,
+           [
+             %{
+               code: :boarding_area_parent_station_missing,
+               severity: :blocking,
+               message: "Boarding area ba-22 is missing parent_station in stops.txt.",
+               context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-22"}
+             }
+           ]}
+        end
+      end
 
-      my_preflight_issues = [
-        %{
-          code: :boarding_area_parent_station_missing,
-          severity: :blocking,
-          message: "Boarding area ba-22 is missing parent_station in stops.txt.",
-          context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-22"}
-        }
-      ]
-
-      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleShouldNotBeCalledMock)
-
-      Application.put_env(
-        :gtfs_planner,
-        :otp_gtfs_materializer_module,
-        MaterializerLenientMock
-      )
-
-      Application.put_env(
-        :gtfs_planner,
-        :materializer_mock_otp_preflight_issues,
-        my_preflight_issues
-      )
-
+      Application.put_env(:gtfs_planner, :otp_preflight_module, PreflightPathwaysWarningMock)
       Application.put_env(:gtfs_planner, :export_test_pid, self())
 
       on_exit(fn ->
-        if previous_export_module do
-          Application.put_env(:gtfs_planner, :gtfs_export_module, previous_export_module)
-        else
-          Application.delete_env(:gtfs_planner, :gtfs_export_module)
-        end
+        if previous_export,
+          do: Application.put_env(:gtfs_planner, :gtfs_export_module, previous_export),
+          else: Application.delete_env(:gtfs_planner, :gtfs_export_module)
 
-        if previous_materializer_module do
-          Application.put_env(
-            :gtfs_planner,
-            :otp_gtfs_materializer_module,
-            previous_materializer_module
-          )
-        else
-          Application.delete_env(:gtfs_planner, :otp_gtfs_materializer_module)
-        end
+        if previous_preflight,
+          do: Application.put_env(:gtfs_planner, :otp_preflight_module, previous_preflight),
+          else: Application.delete_env(:gtfs_planner, :otp_preflight_module)
 
-        if previous_export_test_pid do
-          Application.put_env(:gtfs_planner, :export_test_pid, previous_export_test_pid)
-        else
-          Application.delete_env(:gtfs_planner, :export_test_pid)
-        end
-
-        Application.delete_env(:gtfs_planner, :materializer_mock_otp_preflight_issues)
-
-        receive do
-          {:materializer_temp_dir, temp_dir} -> File.rm_rf(temp_dir)
-        after
-          0 -> :ok
-        end
+        Application.delete_env(:gtfs_planner, :export_test_pid)
       end)
 
       conn = log_in_user(conn, user, organization: organization)
@@ -2177,15 +2147,21 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       organization_id = organization.id
       version_id = version.id
 
-      assert_receive {:materializer_called, ^organization_id, ^version_id, materializer_opts}, 500
-      assert materializer_opts[:preflight_mode] == :lenient
-      assert materializer_opts[:force_rebuild] == true
+      assert_receive {:export_to_zip_called, ^organization_id, ^version_id, :pathways}, 500
 
-      # Wait for export task to complete
-      assert_receive {:materializer_temp_dir, _temp_dir}, 1000
-      Process.sleep(100)
+      # Poll until export task completes and warning panel renders
+      html =
+        Enum.reduce_while(1..20, "", fn _, _acc ->
+          html = render(view)
 
-      html = render(view)
+          if has_element?(view, "#export-warning-panel") do
+            {:halt, html}
+          else
+            Process.sleep(25)
+            {:cont, html}
+          end
+        end)
+
       assert html =~ "Boarding area ba-22 is missing parent_station in stops.txt."
       assert has_element?(view, "#export-warning-panel")
       assert html =~ "Export completed with warnings"
@@ -2631,47 +2607,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       gtfs_version: version
     } do
       previous_export = Application.get_env(:gtfs_planner, :gtfs_export_module)
-
-      previous_materializer =
-        Application.get_env(:gtfs_planner, :otp_gtfs_materializer_module)
-
       previous_preflight = Application.get_env(:gtfs_planner, :otp_preflight_module)
 
-      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleShouldNotBeCalledMock)
-
-      Application.put_env(
-        :gtfs_planner,
-        :otp_gtfs_materializer_module,
-        MaterializerLenientMock
-      )
-
-      otp_preflight_issues = [
-        %{
-          code: :stop_times_trip_id_missing_trip,
-          severity: :error,
-          message: "stop_times.txt.trip_id -> trips.txt.trip_id — 5 invalid",
-          details: %{
-            source_file: "stop_times.txt",
-            source_field: "trip_id",
-            target_file: "trips.txt",
-            target_field: "trip_id",
-            invalid_count: 5
-          }
-        },
-        %{
-          code: :missing_required_file_data,
-          severity: :error,
-          message: "Required GTFS file data is missing",
-          details: %{file: "calendar.txt"}
-        }
-      ]
-
-      Application.put_env(
-        :gtfs_planner,
-        :materializer_mock_otp_preflight_issues,
-        otp_preflight_issues
-      )
-
+      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleMock)
+      Application.put_env(:gtfs_planner, :otp_preflight_module, PreflightIssuesMock)
       Application.put_env(:gtfs_planner, :export_test_pid, self())
 
       on_exit(fn ->
@@ -2679,27 +2618,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
           do: Application.put_env(:gtfs_planner, :gtfs_export_module, previous_export),
           else: Application.delete_env(:gtfs_planner, :gtfs_export_module)
 
-        if previous_materializer,
-          do:
-            Application.put_env(
-              :gtfs_planner,
-              :otp_gtfs_materializer_module,
-              previous_materializer
-            ),
-          else: Application.delete_env(:gtfs_planner, :otp_gtfs_materializer_module)
-
         if previous_preflight,
           do: Application.put_env(:gtfs_planner, :otp_preflight_module, previous_preflight),
           else: Application.delete_env(:gtfs_planner, :otp_preflight_module)
 
         Application.delete_env(:gtfs_planner, :export_test_pid)
-        Application.delete_env(:gtfs_planner, :materializer_mock_otp_preflight_issues)
-
-        receive do
-          {:materializer_temp_dir, temp_dir} -> File.rm_rf(temp_dir)
-        after
-          0 -> :ok
-        end
       end)
 
       conn = log_in_user(conn, user, organization: organization)
@@ -2711,14 +2634,21 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       organization_id = organization.id
       version_id = version.id
 
-      assert_receive {:materializer_called, ^organization_id, ^version_id, materializer_opts}, 500
-      assert materializer_opts[:preflight_mode] == :lenient
+      assert_receive {:export_to_zip_called, ^organization_id, ^version_id, :pathways}, 500
 
-      # Wait for export task to complete
-      assert_receive {:materializer_temp_dir, _temp_dir}, 1000
-      Process.sleep(100)
+      # Poll until export task completes and warning panel renders
+      html =
+        Enum.reduce_while(1..20, "", fn _, _acc ->
+          html = render(view)
 
-      html = render(view)
+          if has_element?(view, "#export-warning-panel") do
+            {:halt, html}
+          else
+            Process.sleep(25)
+            {:cont, html}
+          end
+        end)
+
       assert has_element?(view, "#export-warning-panel")
       assert html =~ "stop_times.txt.trip_id"
       assert html =~ "trips.txt.trip_id"
@@ -2735,45 +2665,40 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       gtfs_version: version
     } do
       previous_export = Application.get_env(:gtfs_planner, :gtfs_export_module)
+      previous_preflight = Application.get_env(:gtfs_planner, :otp_preflight_module)
 
-      previous_materializer =
-        Application.get_env(:gtfs_planner, :otp_gtfs_materializer_module)
+      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleMock)
 
-      previous_export_test_pid = Application.get_env(:gtfs_planner, :export_test_pid)
-
-      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleShouldNotBeCalledMock)
-
-      Application.put_env(
-        :gtfs_planner,
-        :otp_gtfs_materializer_module,
-        MaterializerLenientMock
-      )
-
-      duplicate_issues = [
-        %{
-          code: :boarding_area_parent_station_missing,
-          severity: :blocking,
-          message: "Boarding area ba-1 is missing parent_station.",
-          context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-1"}
-        },
-        %{
-          code: :boarding_area_parent_station_missing,
-          severity: :blocking,
-          message: "Boarding area ba-1 is missing parent_station.",
-          context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-1"}
-        },
-        %{
-          code: :boarding_area_parent_station_missing,
-          severity: :blocking,
-          message: "Boarding area ba-2 is missing parent_station.",
-          context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-2"}
-        }
-      ]
+      defmodule PreflightPathwaysDuplicatesMock do
+        def run(_organization_id, _gtfs_version_id) do
+          {:error,
+           [
+             %{
+               code: :boarding_area_parent_station_missing,
+               severity: :blocking,
+               message: "Boarding area ba-1 is missing parent_station.",
+               context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-1"}
+             },
+             %{
+               code: :boarding_area_parent_station_missing,
+               severity: :blocking,
+               message: "Boarding area ba-1 is missing parent_station.",
+               context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-1"}
+             },
+             %{
+               code: :boarding_area_parent_station_missing,
+               severity: :blocking,
+               message: "Boarding area ba-2 is missing parent_station.",
+               context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-2"}
+             }
+           ]}
+        end
+      end
 
       Application.put_env(
         :gtfs_planner,
-        :materializer_mock_otp_preflight_issues,
-        duplicate_issues
+        :otp_preflight_module,
+        PreflightPathwaysDuplicatesMock
       )
 
       Application.put_env(:gtfs_planner, :export_test_pid, self())
@@ -2783,26 +2708,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
           do: Application.put_env(:gtfs_planner, :gtfs_export_module, previous_export),
           else: Application.delete_env(:gtfs_planner, :gtfs_export_module)
 
-        if previous_materializer,
-          do:
-            Application.put_env(
-              :gtfs_planner,
-              :otp_gtfs_materializer_module,
-              previous_materializer
-            ),
-          else: Application.delete_env(:gtfs_planner, :otp_gtfs_materializer_module)
+        if previous_preflight,
+          do: Application.put_env(:gtfs_planner, :otp_preflight_module, previous_preflight),
+          else: Application.delete_env(:gtfs_planner, :otp_preflight_module)
 
-        if previous_export_test_pid,
-          do: Application.put_env(:gtfs_planner, :export_test_pid, previous_export_test_pid),
-          else: Application.delete_env(:gtfs_planner, :export_test_pid)
-
-        Application.delete_env(:gtfs_planner, :materializer_mock_otp_preflight_issues)
-
-        receive do
-          {:materializer_temp_dir, temp_dir} -> File.rm_rf(temp_dir)
-        after
-          0 -> :ok
-        end
+        Application.delete_env(:gtfs_planner, :export_test_pid)
       end)
 
       conn = log_in_user(conn, user, organization: organization)
@@ -2811,10 +2721,24 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[name='export_type'][phx-value-type='pathways']") |> render_click()
       view |> element("button", "Export GTFS") |> render_click()
 
-      assert_receive {:materializer_temp_dir, _temp_dir}, 1000
-      Process.sleep(100)
+      organization_id = organization.id
+      version_id = version.id
 
-      html = render(view)
+      assert_receive {:export_to_zip_called, ^organization_id, ^version_id, :pathways}, 500
+
+      # Poll until export task completes and warning panel renders
+      html =
+        Enum.reduce_while(1..20, "", fn _, _acc ->
+          html = render(view)
+
+          if has_element?(view, "#export-warning-panel") do
+            {:halt, html}
+          else
+            Process.sleep(25)
+            {:cont, html}
+          end
+        end)
+
       assert has_element?(view, "#export-warning-panel")
       # 3 input warnings deduplicated to 2 (ba-1 duplicate removed)
       assert html =~ "2 data quality warning"
