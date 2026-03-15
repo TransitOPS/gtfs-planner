@@ -346,6 +346,127 @@ defmodule GtfsPlanner.Otp.MaterializerTest do
       assert {:error, :not_found} = Otp.fetch_artifact(organization_id, gtfs_version_id)
     end
 
+    test "lenient mode with pathways blocking errors succeeds and returns demoted issues in warnings",
+         %{
+           organization: organization,
+           gtfs_version: gtfs_version
+         } do
+      organization_id = organization.id
+      gtfs_version_id = gtfs_version.id
+
+      seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      status_callback = fn payload -> send(self(), {:status, payload}) end
+
+      blocking_issue = %{
+        code: :station_stop_lon_out_of_range,
+        severity: :blocking,
+        message: "Station seed_stop_a has stop_lon outside -180.0..180.0 in stops.txt.",
+        context: %{file: "stops.txt", field: "stop_lon", stop_id: "seed_stop_a"}
+      }
+
+      warning_issue = %{
+        code: :pathway_endpoint_stop_not_found,
+        severity: :warning,
+        message: "Pathway pw_warn references unknown from_stop_id missing_stop in pathways.txt.",
+        context: %{file: "pathways.txt", field: "from_stop_id", pathway_id: "pw_warn"}
+      }
+
+      pathways_preflight_fun = fn _org_id, _version_id, _opts ->
+        {:error,
+         %{
+           blocking_errors: [blocking_issue],
+           warnings: [warning_issue],
+           metadata: %{}
+         }}
+      end
+
+      assert {:ok, _zip_path, meta} =
+               Materializer.get_or_build_gtfs_zip(
+                 organization_id,
+                 gtfs_version_id,
+                 force_rebuild: true,
+                 preflight_mode: :lenient,
+                 status_callback: status_callback,
+                 pathways_preflight_fun: pathways_preflight_fun
+               )
+
+      assert length(meta.preflight_warnings) == 2
+
+      demoted =
+        Enum.find(meta.preflight_warnings, &(&1.code == :station_stop_lon_out_of_range))
+
+      assert demoted.severity == :warning
+      assert demoted.message == blocking_issue.message
+
+      original_warning =
+        Enum.find(meta.preflight_warnings, &(&1.code == :pathway_endpoint_stop_not_found))
+
+      assert original_warning.severity == :warning
+
+      assert_receive {:status, %{phase: :preflight, demoted_blocking_errors_count: 1}}
+      assert_receive {:status, %{phase: :exporting}}
+      assert_receive {:status, %{phase: :packaging}}
+      assert_receive {:status, %{phase: :done, reused: false}}
+      refute_receive {:status, %{phase: :failed}}
+      assert {:ok, _artifact} = Otp.fetch_artifact(organization_id, gtfs_version_id)
+    end
+
+    test "strict mode with pathways blocking errors still blocks and does not emit packaging/done",
+         %{
+           organization: organization,
+           gtfs_version: gtfs_version
+         } do
+      organization_id = organization.id
+      gtfs_version_id = gtfs_version.id
+
+      seed_minimum_required_gtfs!(organization.id, gtfs_version.id)
+
+      status_callback = fn payload -> send(self(), {:status, payload}) end
+
+      blocking_issue = %{
+        code: :station_stop_lon_out_of_range,
+        severity: :blocking,
+        message: "Station seed_stop_a has stop_lon outside -180.0..180.0 in stops.txt.",
+        context: %{file: "stops.txt", field: "stop_lon", stop_id: "seed_stop_a"}
+      }
+
+      pathways_preflight_fun = fn _org_id, _version_id, _opts ->
+        {:error,
+         %{
+           blocking_errors: [blocking_issue],
+           warnings: [],
+           metadata: %{}
+         }}
+      end
+
+      assert {:error, [returned_issue]} =
+               Materializer.get_or_build_gtfs_zip(
+                 organization_id,
+                 gtfs_version_id,
+                 force_rebuild: true,
+                 preflight_mode: :strict,
+                 status_callback: status_callback,
+                 pathways_preflight_fun: pathways_preflight_fun
+               )
+
+      assert returned_issue.code == :station_stop_lon_out_of_range
+      assert returned_issue.severity == :blocking
+
+      assert_receive {:status,
+                      %{
+                        phase: :failed,
+                        reason: :pathways_preflight_failed,
+                        blocking_errors_count: 1
+                      }}
+
+      refute_receive {:status, %{phase: :exporting}}
+      refute_receive {:status, %{phase: :packaging}}
+      refute_receive {:status, %{phase: :persisting}}
+      refute_receive {:status, %{phase: :done}}
+      assert {:error, :not_found} = Otp.fetch_artifact(organization_id, gtfs_version_id)
+    end
+
     test "continues export and returns preflight warnings in meta", %{
       organization: organization,
       gtfs_version: gtfs_version

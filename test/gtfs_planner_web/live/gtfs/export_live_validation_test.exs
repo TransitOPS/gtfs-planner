@@ -516,7 +516,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(400)
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "progress.progress") or
+             has_element?(view, "#pathways-summary-metrics") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       assert has_element?(view, "progress.progress") ||
                has_element?(view, "#pathways-summary-metrics")
@@ -569,11 +579,32 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert_receive {:pathways_runner_no_progress_started, run_id, opts}, 500
       assert is_function(opts[:status_callback], 1)
 
-      Process.sleep(250)
+      # Poll until progress label appears
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        html = render(view)
+
+        if html =~ "Running pathways trip test..." do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       assert render(view) =~ "Running pathways trip test..."
 
-      Process.sleep(200)
+      # Poll until run completes
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        run = Validations.get_validation_run!(run_id)
+
+        if run.status == "failed" do
+          {:halt, :done}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
+
       assert Validations.get_validation_run!(run_id).status == "failed"
     end
 
@@ -623,13 +654,34 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       assert_receive {:pathways_runner_detailed_progress_started, run_id, true}, 500
 
-      Process.sleep(250)
+      # Poll until detailed progress label appears
+      html =
+        Enum.reduce_while(1..40, "", fn _, _acc ->
+          html = render(view)
 
-      html = render(view)
+          if html =~ "Packaging GTFS zip..." do
+            {:halt, html}
+          else
+            Process.sleep(25)
+            {:cont, html}
+          end
+        end)
+
       assert html =~ "Packaging GTFS zip..."
       refute html =~ "Running pathways trip test..."
 
-      Process.sleep(200)
+      # Poll until run completes
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        run = Validations.get_validation_run!(run_id)
+
+        if run.status == "failed" do
+          {:halt, :done}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
+
       assert Validations.get_validation_run!(run_id).status == "failed"
     end
 
@@ -647,7 +699,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(250)
+      # Poll until run completes
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+        runs = Validations.list_recent_validation_runs(organization.id, version.id, 5)
+
+        if Enum.any?(runs, &(&1.run_type == "pathways_tests" and &1.status == "completed")) do
+          {:halt, :done}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       [latest_run | _rest] =
         Validations.list_recent_validation_runs(organization.id, version.id, 5)
@@ -668,7 +731,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(250)
+      # Poll until run completes
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+        runs = Validations.list_recent_validation_runs(organization.id, version.id, 5)
+
+        if Enum.any?(runs, &(&1.run_type == "pathways_tests" and &1.status == "completed")) do
+          {:halt, :done}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       [latest_run | _rest] =
         Validations.list_recent_validation_runs(organization.id, version.id, 5)
@@ -693,7 +767,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(600)
+      # Poll until summary metrics render
+      Enum.reduce_while(1..60, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "#pathways-summary-metrics") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       assert has_element?(view, "#pathways-summary-metrics")
       assert has_element?(view, "a", "View Full Results")
@@ -721,7 +805,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(600)
+      # Poll until validation error panel appears
+      Enum.reduce_while(1..60, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "#validation-error-panel") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       [latest_run | _rest] =
         Validations.list_recent_validation_runs(organization.id, version.id, 5)
@@ -748,7 +842,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(600)
+      # Poll until error panel appears
+      Enum.reduce_while(1..60, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "#validation-error-panel") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       [latest_run | _rest] =
         Validations.list_recent_validation_runs(organization.id, version.id, 5)
@@ -772,7 +876,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(300)
+      # Poll until error panel appears
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "#validation-error-panel") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       assert has_element?(view, "#validation-error-panel")
       refute has_element?(view, "progress.progress")
@@ -794,7 +908,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(250)
+      # Poll until run completes
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+        runs = Validations.list_recent_validation_runs(organization.id, version.id, 5)
+
+        if Enum.any?(runs, &(&1.run_type == "pathways_tests" and &1.status == "completed")) do
+          {:halt, :done}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       [latest_run | _rest] =
         Validations.list_recent_validation_runs(organization.id, version.id, 5)
@@ -817,7 +942,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(300)
+      # Poll until error panel appears
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "#validation-error-panel") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       [latest_run | _rest] =
         Validations.list_recent_validation_runs(organization.id, version.id, 5)
@@ -898,7 +1033,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       assert_receive {:pathways_runner_failed, run_id, %{reason: :no_walkability_tests}}, 500
 
-      Process.sleep(300)
+      # Poll until error panel renders
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "#validation-error-panel") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       run = Validations.get_validation_run!(run_id)
       assert run.status == "failed"
@@ -944,7 +1089,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(150)
+      # Poll until error panel appears
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "#validation-error-panel") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       assert has_element?(view, "#validation-error-panel")
       assert has_element?(view, "#pathways-failure-title", "Pathways test run could not start")
@@ -1053,7 +1208,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       assert_receive {:pathways_runner_failed, run_id, %{reason: :otp_runtime_failed}}, 500
 
-      Process.sleep(300)
+      # Poll until error panel renders
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "#validation-error-panel") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       run = Validations.get_validation_run!(run_id)
       assert run.status == "failed"
@@ -1158,7 +1323,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       assert_receive {:pathways_runner_failed, run_id, %{reason: :otp_runtime_failed}}, 500
 
-      Process.sleep(300)
+      # Poll until error panel renders
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "#validation-error-panel") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       run = Validations.get_validation_run!(run_id)
       assert run.status == "failed"
@@ -1255,7 +1430,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       assert_receive {:pathways_runner_failed, _run_id, %{reason: :otp_runtime_failed}}, 500
 
-      Process.sleep(300)
+      # Poll until blocking issues render
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "#pathways-failure-blocking-issues") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       assert has_element?(view, "#pathways-failure-blocking-issues")
 
@@ -1343,7 +1528,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert_receive {:pathways_runner_failed, _run_id, %{reason: :pathways_export_prep_failed}},
                      500
 
-      Process.sleep(300)
+      # Poll until error panel renders
+      Enum.reduce_while(1..40, :waiting, fn _, _acc ->
+        render(view)
+
+        if has_element?(view, "#validation-error-panel") do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       assert has_element?(view, "#validation-error-panel")
       assert has_element?(view, "#pathways-failure-blocking-issues")
@@ -1494,7 +1689,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='mobility_data']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(100)
+      # Poll until validation result appears
+      Enum.reduce_while(1..20, :waiting, fn _, _acc ->
+        html = render(view)
+
+        if html =~ "Validation failed" do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       assert render(view) =~ "Validation failed"
     end
@@ -1519,10 +1724,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       # Run validation
       view |> element("button", "Run Validation") |> render_click()
 
-      # Wait for async task to complete
-      Process.sleep(100)
+      # Poll until validation result appears
+      html =
+        Enum.reduce_while(1..20, "", fn _, _acc ->
+          html = render(view)
 
-      html = render(view)
+          if html =~ "Validation failed" do
+            {:halt, html}
+          else
+            Process.sleep(25)
+            {:cont, html}
+          end
+        end)
+
       assert html =~ "Validation failed"
     end
 
@@ -1555,10 +1769,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='mobility_data']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      # Wait for progress update to be broadcast and processed
-      Process.sleep(100)
+      # Poll until progress label appears
+      html =
+        Enum.reduce_while(1..20, "", fn _, _acc ->
+          html = render(view)
 
-      html = render(view)
+          if html =~ "Running validator..." do
+            {:halt, html}
+          else
+            Process.sleep(25)
+            {:cont, html}
+          end
+        end)
+
       assert html =~ "Running validator..."
     end
 
@@ -1587,10 +1810,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='mobility_data']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      # Wait for async task to complete
-      Process.sleep(100)
+      # Poll until validation results render
+      html =
+        Enum.reduce_while(1..20, "", fn _, _acc ->
+          html = render(view)
 
-      html = render(view)
+          if html =~ "View Full Results" do
+            {:halt, html}
+          else
+            Process.sleep(25)
+            {:cont, html}
+          end
+        end)
+
       assert html =~ "Errors"
       assert html =~ "1"
       assert html =~ "Warnings"
@@ -1616,8 +1848,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='mobility_data']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      # Wait for async task to complete
-      Process.sleep(100)
+      # Poll until validation error renders
+      Enum.reduce_while(1..20, :waiting, fn _, _acc ->
+        html = render(view)
+
+        if html =~ "Validation failed" do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       assert render(view) =~ "Validation failed: :cli_failed"
       # Should be back to initial state (Run Validation button visible)
@@ -1693,7 +1934,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='mobility_data']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      Process.sleep(100)
+      # Poll until validation error renders
+      Enum.reduce_while(1..20, :waiting, fn _, _acc ->
+        html = render(view)
+
+        if html =~ "Validation failed" do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
 
       assert render(view) =~ "Validation failed: :cli_failed"
       assert File.exists?(graph_path)
@@ -1726,8 +1977,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       view |> element("input[phx-value-validation='mobility_data']") |> render_click()
       view |> element("button", "Run Validation") |> render_click()
 
-      # Wait for async task to complete
-      Process.sleep(100)
+      # Poll until results render
+      Enum.reduce_while(1..20, :waiting, fn _, _acc ->
+        html = render(view)
+
+        if html =~ "View Full Results" do
+          {:halt, :found}
+        else
+          Process.sleep(25)
+          {:cont, :waiting}
+        end
+      end)
+
       assert render(view) =~ "View Full Results"
 
       # Click Run Again
@@ -1837,7 +2098,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert has_element?(view, "#recent-validation-infos-#{mobility_run.id}", "9")
     end
 
-    test "pathways export blocks on materializer preflight issues", %{
+    test "pathways export succeeds with warnings from materializer preflight issues", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -1850,8 +2111,29 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       previous_export_test_pid = Application.get_env(:gtfs_planner, :export_test_pid)
 
+      my_preflight_issues = [
+        %{
+          code: :boarding_area_parent_station_missing,
+          severity: :blocking,
+          message: "Boarding area ba-22 is missing parent_station in stops.txt.",
+          context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-22"}
+        }
+      ]
+
       Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleShouldNotBeCalledMock)
-      Application.put_env(:gtfs_planner, :otp_gtfs_materializer_module, MaterializerBlockingMock)
+
+      Application.put_env(
+        :gtfs_planner,
+        :otp_gtfs_materializer_module,
+        MaterializerLenientMock
+      )
+
+      Application.put_env(
+        :gtfs_planner,
+        :materializer_mock_otp_preflight_issues,
+        my_preflight_issues
+      )
+
       Application.put_env(:gtfs_planner, :export_test_pid, self())
 
       on_exit(fn ->
@@ -1876,6 +2158,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
         else
           Application.delete_env(:gtfs_planner, :export_test_pid)
         end
+
+        receive do
+          {:materializer_temp_dir, temp_dir} -> File.rm_rf(temp_dir)
+        after
+          0 -> :ok
+        end
       end)
 
       conn = log_in_user(conn, user, organization: organization)
@@ -1891,13 +2179,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert materializer_opts[:preflight_mode] == :lenient
       assert materializer_opts[:force_rebuild] == true
 
+      # Wait for export task to complete
+      assert_receive {:materializer_temp_dir, _temp_dir}, 1000
       Process.sleep(100)
 
       html = render(view)
       assert html =~ "Boarding area ba-22 is missing parent_station in stops.txt."
+      assert has_element?(view, "#export-warning-panel")
+      assert html =~ "Export completed with warnings"
       refute html =~ "Exporting..."
       assert has_element?(view, "button", "Export GTFS")
-      refute html =~ "Export completed successfully"
     end
 
     test "full export uses direct export module path", %{
@@ -1966,9 +2257,20 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       assert_receive {:export_to_zip_called, ^organization_id, ^version_id, :full}, 500
 
-      Process.sleep(100)
+      # Poll until export task completes and flash renders
+      html =
+        Enum.reduce_while(1..20, "", fn _, _acc ->
+          html = render(view)
 
-      assert render(view) =~ "Export completed successfully"
+          if html =~ "Export completed" do
+            {:halt, html}
+          else
+            Process.sleep(25)
+            {:cont, html}
+          end
+        end)
+
+      assert html =~ "Export completed successfully"
     end
   end
 
@@ -2247,14 +2549,25 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       assert_receive {:export_to_zip_called, ^organization_id, ^version_id, :full}, 500
 
-      Process.sleep(100)
+      # Poll until export task completes and warning panel renders
+      html =
+        Enum.reduce_while(1..20, "", fn _, _acc ->
+          html = render(view)
 
-      html = render(view)
+          if has_element?(view, "#export-warning-panel") do
+            {:halt, html}
+          else
+            Process.sleep(25)
+            {:cont, html}
+          end
+        end)
+
       assert html =~ "2 data quality warnings"
       assert has_element?(view, "#export-warning-panel")
       assert html =~ "stop_times.txt.trip_id"
       assert html =~ "trips.txt.trip_id"
       assert html =~ "5 invalid"
+      assert html =~ "Export completed with warnings"
       refute html =~ "Export completed successfully"
     end
 
@@ -2292,9 +2605,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       assert_receive {:export_to_zip_called, ^organization_id, ^version_id, :full}, 500
 
-      Process.sleep(100)
+      # Poll until export task completes and flash renders
+      html =
+        Enum.reduce_while(1..20, "", fn _, _acc ->
+          html = render(view)
 
-      html = render(view)
+          if html =~ "Export completed" do
+            {:halt, html}
+          else
+            Process.sleep(25)
+            {:cont, html}
+          end
+        end)
+
       refute has_element?(view, "#export-warning-panel")
       assert html =~ "Export completed successfully"
     end
@@ -2368,7 +2691,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
           else: Application.delete_env(:gtfs_planner, :otp_preflight_module)
 
         Application.delete_env(:gtfs_planner, :export_test_pid)
-        Application.delete_env(:gtfs_planner, :materializer_mock_otp_preflight_issues)
 
         receive do
           {:materializer_temp_dir, temp_dir} -> File.rm_rf(temp_dir)
@@ -2389,6 +2711,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert_receive {:materializer_called, ^organization_id, ^version_id, materializer_opts}, 500
       assert materializer_opts[:preflight_mode] == :lenient
 
+      # Wait for export task to complete
+      assert_receive {:materializer_temp_dir, _temp_dir}, 1000
       Process.sleep(100)
 
       html = render(view)
@@ -2396,8 +2720,199 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert html =~ "stop_times.txt.trip_id"
       assert html =~ "trips.txt.trip_id"
       assert html =~ "5 invalid"
+      assert html =~ "Export completed with warnings"
       refute html =~ "Export completed successfully"
       refute html =~ "Exporting..."
+    end
+
+    test "pathways export deduplicates repeated warnings", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_export = Application.get_env(:gtfs_planner, :gtfs_export_module)
+
+      previous_materializer =
+        Application.get_env(:gtfs_planner, :otp_gtfs_materializer_module)
+
+      previous_export_test_pid = Application.get_env(:gtfs_planner, :export_test_pid)
+
+      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleShouldNotBeCalledMock)
+
+      Application.put_env(
+        :gtfs_planner,
+        :otp_gtfs_materializer_module,
+        MaterializerLenientMock
+      )
+
+      duplicate_issues = [
+        %{
+          code: :boarding_area_parent_station_missing,
+          severity: :blocking,
+          message: "Boarding area ba-1 is missing parent_station.",
+          context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-1"}
+        },
+        %{
+          code: :boarding_area_parent_station_missing,
+          severity: :blocking,
+          message: "Boarding area ba-1 is missing parent_station.",
+          context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-1"}
+        },
+        %{
+          code: :boarding_area_parent_station_missing,
+          severity: :blocking,
+          message: "Boarding area ba-2 is missing parent_station.",
+          context: %{file: "stops.txt", field: "parent_station", stop_id: "ba-2"}
+        }
+      ]
+
+      Application.put_env(
+        :gtfs_planner,
+        :materializer_mock_otp_preflight_issues,
+        duplicate_issues
+      )
+
+      Application.put_env(:gtfs_planner, :export_test_pid, self())
+
+      on_exit(fn ->
+        if previous_export,
+          do: Application.put_env(:gtfs_planner, :gtfs_export_module, previous_export),
+          else: Application.delete_env(:gtfs_planner, :gtfs_export_module)
+
+        if previous_materializer,
+          do:
+            Application.put_env(
+              :gtfs_planner,
+              :otp_gtfs_materializer_module,
+              previous_materializer
+            ),
+          else: Application.delete_env(:gtfs_planner, :otp_gtfs_materializer_module)
+
+        if previous_export_test_pid,
+          do: Application.put_env(:gtfs_planner, :export_test_pid, previous_export_test_pid),
+          else: Application.delete_env(:gtfs_planner, :export_test_pid)
+
+        if previous_materializer,
+          do:
+            Application.put_env(
+              :gtfs_planner,
+              :otp_gtfs_materializer_module,
+              previous_materializer
+            ),
+          else: Application.delete_env(:gtfs_planner, :otp_gtfs_materializer_module)
+
+        receive do
+          {:materializer_temp_dir, temp_dir} -> File.rm_rf(temp_dir)
+        after
+          0 -> :ok
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("input[name='export_type'][phx-value-type='pathways']") |> render_click()
+      view |> element("button", "Export GTFS") |> render_click()
+
+      assert_receive {:materializer_temp_dir, _temp_dir}, 1000
+      Process.sleep(100)
+
+      html = render(view)
+      assert has_element?(view, "#export-warning-panel")
+      # 3 input warnings deduplicated to 2 (ba-1 duplicate removed)
+      assert html =~ "2 data quality warning"
+      assert html =~ "ba-1"
+      assert html =~ "ba-2"
+      assert html =~ "Export completed with warnings"
+    end
+
+    test "full export deduplicates repeated preflight warnings", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      previous_export = Application.get_env(:gtfs_planner, :gtfs_export_module)
+      previous_preflight = Application.get_env(:gtfs_planner, :otp_preflight_module)
+
+      Application.put_env(:gtfs_planner, :gtfs_export_module, ExportModuleMock)
+
+      # Use an inline mock that returns duplicate issues
+      defmodule PreflightDuplicateIssuesMock do
+        def run(_organization_id, _gtfs_version_id) do
+          {:error,
+           [
+             %{
+               code: :stop_times_trip_id_missing_trip,
+               severity: :error,
+               message: "stop_times.txt.trip_id -> trips.txt.trip_id — 5 invalid",
+               details: %{
+                 source_file: "stop_times.txt",
+                 source_field: "trip_id",
+                 target_file: "trips.txt",
+                 target_field: "trip_id",
+                 invalid_count: 5
+               }
+             },
+             %{
+               code: :stop_times_trip_id_missing_trip,
+               severity: :error,
+               message: "stop_times.txt.trip_id -> trips.txt.trip_id — 5 invalid",
+               details: %{
+                 source_file: "stop_times.txt",
+                 source_field: "trip_id",
+                 target_file: "trips.txt",
+                 target_field: "trip_id",
+                 invalid_count: 5
+               }
+             }
+           ]}
+        end
+      end
+
+      Application.put_env(:gtfs_planner, :otp_preflight_module, PreflightDuplicateIssuesMock)
+      Application.put_env(:gtfs_planner, :export_test_pid, self())
+
+      on_exit(fn ->
+        if previous_export,
+          do: Application.put_env(:gtfs_planner, :gtfs_export_module, previous_export),
+          else: Application.delete_env(:gtfs_planner, :gtfs_export_module)
+
+        if previous_preflight,
+          do: Application.put_env(:gtfs_planner, :otp_preflight_module, previous_preflight),
+          else: Application.delete_env(:gtfs_planner, :otp_preflight_module)
+
+        Application.delete_env(:gtfs_planner, :export_test_pid)
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      view |> element("button", "Export GTFS") |> render_click()
+
+      organization_id = organization.id
+      version_id = version.id
+      assert_receive {:export_to_zip_called, ^organization_id, ^version_id, :full}, 500
+
+      # Poll until warning panel renders
+      html =
+        Enum.reduce_while(1..20, "", fn _, _acc ->
+          html = render(view)
+
+          if has_element?(view, "#export-warning-panel") do
+            {:halt, html}
+          else
+            Process.sleep(25)
+            {:cont, html}
+          end
+        end)
+
+      assert has_element?(view, "#export-warning-panel")
+      # 2 identical warnings deduplicated to 1
+      assert html =~ "1 data quality warning"
+      refute html =~ "2 data quality warning"
+      assert html =~ "Export completed with warnings"
     end
   end
 end
