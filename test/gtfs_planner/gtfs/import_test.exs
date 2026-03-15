@@ -1,5 +1,5 @@
 defmodule GtfsPlanner.Gtfs.ImportTest do
-  use GtfsPlanner.DataCase, async: true
+  use GtfsPlanner.DataCase, async: false
 
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlannerWeb.Gtfs.ImportLive
