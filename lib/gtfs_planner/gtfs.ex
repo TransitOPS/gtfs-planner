@@ -2294,7 +2294,7 @@ defmodule GtfsPlanner.Gtfs do
   `{:ok, %{rows: [...], renamed_stops_count: n, updated_pathways_count: n, updated_references_count: n}}`
   or `{:error, reason}`.
   """
-  def preview_station_naming(organization_id, gtfs_version_id, station_stop_id) do
+  def preview_station_naming(organization_id, gtfs_version_id, station_stop_id, style \\ :structured) do
     child_stops =
       from(s in Stop,
         where:
@@ -2322,7 +2322,11 @@ defmodule GtfsPlanner.Gtfs do
           )
           |> Repo.all()
 
-        naming_map = StationNaming.build_naming_map(child_stops, pathways, station_stop_id)
+        naming_map =
+          case style do
+            :kebab -> StationNaming.build_kebab_naming_map(child_stops)
+            _structured -> StationNaming.build_naming_map(child_stops, pathways, station_stop_id)
+          end
 
         old_id_set = MapSet.new(naming_map, & &1.old_id)
 
@@ -2382,9 +2386,9 @@ defmodule GtfsPlanner.Gtfs do
   Returns `{:ok, %{renamed_stops: n, updated_pathways: n, updated_references: n}}`
   or `{:error, reason}`.
   """
-  def apply_station_naming(organization_id, gtfs_version_id, station_stop_id) do
+  def apply_station_naming(organization_id, gtfs_version_id, station_stop_id, style \\ :structured) do
     with {:ok, preview} <-
-           preview_station_naming(organization_id, gtfs_version_id, station_stop_id) do
+           preview_station_naming(organization_id, gtfs_version_id, station_stop_id, style) do
       old_to_new = Map.new(preview.rows, fn %{old_id: old, new_id: new} -> {old, new} end)
       old_to_temp = build_temp_stop_id_map(preview.rows)
 
