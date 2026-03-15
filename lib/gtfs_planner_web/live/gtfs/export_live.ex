@@ -2561,8 +2561,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
     base
     |> maybe_put_warning_key(:code, Map.get(warning, "code"))
-    |> maybe_put_warning_key(:details, string_keys_to_atoms(Map.get(warning, "details")))
-    |> maybe_put_warning_key(:context, string_keys_to_atoms(Map.get(warning, "context")))
+    |> maybe_put_warning_key(:details, string_keys_to_known_atoms(Map.get(warning, "details")))
+    |> maybe_put_warning_key(:context, string_keys_to_known_atoms(Map.get(warning, "context")))
     |> maybe_put_warning_key(:stop_id, Map.get(warning, "stop_id"))
     |> maybe_put_warning_key(:pathway_id, Map.get(warning, "pathway_id"))
     |> maybe_put_warning_key(:trip_id, Map.get(warning, "trip_id"))
@@ -2571,22 +2571,32 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp maybe_put_warning_key(map, _key, nil), do: map
   defp maybe_put_warning_key(map, key, value), do: Map.put(map, key, value)
 
-  defp string_keys_to_atoms(nil), do: nil
+  @known_warning_keys ~w(source_file source_field target_file target_field invalid_count file field identifier stop_id pathway_id trip_id value)a
 
-  defp string_keys_to_atoms(map) when is_map(map) do
+  defp string_keys_to_known_atoms(nil), do: nil
+
+  defp string_keys_to_known_atoms(map) when is_map(map) do
+    known_strings = Map.new(@known_warning_keys, fn atom -> {Atom.to_string(atom), atom} end)
+
     Map.new(map, fn
-      {k, v} when is_binary(k) -> {String.to_atom(k), v}
-      {k, v} -> {k, v}
+      {k, v} when is_binary(k) ->
+        case Map.fetch(known_strings, k) do
+          {:ok, atom_key} -> {atom_key, v}
+          :error -> {k, v}
+        end
+
+      {k, v} ->
+        {k, v}
     end)
   end
 
-  defp string_keys_to_atoms(other), do: other
+  defp string_keys_to_known_atoms(other), do: other
 
   defp deduplicate_export_warnings(warnings) when is_list(warnings) do
     Enum.uniq_by(warnings, fn warning ->
       code = warning[:code] || :unknown
       identity = export_warning_identity(warning)
-      {code, identity}
+      {code, identity, warning[:message] || ""}
     end)
   end
 
