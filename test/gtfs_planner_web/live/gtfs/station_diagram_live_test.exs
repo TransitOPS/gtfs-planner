@@ -3040,6 +3040,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           is_bidirectional: true
         })
 
+      stop_d =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ARROW_D",
+          stop_name: "Arrow D",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 22.0}
+        })
+
+      stop_e =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ARROW_E",
+          stop_name: "Arrow E",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 62.0, "y" => 22.0}
+        })
+
+      one_way_exit_gate =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_d.stop_id, %{
+          pathway_mode: 7,
+          is_bidirectional: false
+        })
+
+      two_way_exit_gate =
+        pathway_fixture(organization.id, gtfs_version.id, stop_d.stop_id, stop_e.stop_id, %{
+          pathway_mode: 7,
+          is_bidirectional: true
+        })
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -3073,6 +3105,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(
                view,
                "#pathways-#{two_way_moving.id} [data-pathway-line][marker-end='url(#pathway-arrow)']"
+             )
+
+      # One-way exit gate: arrow at end only
+      assert has_element?(
+               view,
+               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-end='url(#pathway-arrow)']"
+             )
+
+      refute has_element?(
+               view,
+               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-start='url(#pathway-arrow)']"
+             )
+
+      # Bidirectional exit gate: arrows at both ends
+      assert has_element?(
+               view,
+               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-start='url(#pathway-arrow)']"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-end='url(#pathway-arrow)']"
              )
     end
 
@@ -4000,6 +4054,115 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute has_element?(view, "#pathways-#{pathway.id}[phx-click='edit_pathway']")
       refute has_element?(view, "#pathway-form")
+    end
+
+    test "pathway preview SVG renders when the drawer is open", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      from_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_FROM",
+          stop_name: "Preview From",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 14.0, "y" => 20.0}
+        })
+
+      to_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_TO",
+          stop_name: "Preview To",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 34.0, "y" => 20.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, from_stop.stop_id, to_stop.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: false
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      assert has_element?(view, "svg[data-pathway-preview]")
+    end
+
+    test "flip pathway swaps from/to stops and signage", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_x =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "FLIP_X",
+          stop_name: "Flip X",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 14.0, "y" => 30.0}
+        })
+
+      stop_y =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "FLIP_Y",
+          stop_name: "Flip Y",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 34.0, "y" => 30.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_x.stop_id, stop_y.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: false,
+          signposted_as: "To Y",
+          reversed_signposted_as: "To X"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='flip_pathway']")
+      |> render_click()
+
+      # Verify signage was swapped in the form (signposted_as is always visible)
+      assert has_element?(
+               view,
+               "#pathway-form input[name='signposted_as'][value='To X']"
+             )
+
+      # Verify the database record was updated with swapped stops and signage
+      updated = Gtfs.get_pathway_with_stops!(pathway.id)
+      assert updated.from_stop_id == stop_y.stop_id
+      assert updated.to_stop_id == stop_x.stop_id
+      assert updated.signposted_as == "To X"
+      assert updated.reversed_signposted_as == "To Y"
     end
   end
 
