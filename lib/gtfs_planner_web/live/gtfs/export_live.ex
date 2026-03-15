@@ -443,6 +443,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             {:ok, zip_binary, warnings} when warnings != [] ->
               socket
               |> push_gtfs_download(zip_binary)
+              |> put_flash(:info, "Export completed with warnings")
               |> assign(:export_warnings, warnings)
 
             {:ok, zip_binary} ->
@@ -2510,12 +2511,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
              force_rebuild: true
            ),
          {:ok, zip_binary} <- File.read(zip_path) do
-      otp_warnings =
-        case preflight_module().run(organization_id, gtfs_version_id) do
-          :ok -> []
-          {:error, issues} -> issues
-        end
-
+      otp_warnings = Map.get(meta, :otp_preflight_issues, [])
       materializer_warnings = Map.get(meta, :preflight_warnings, [])
 
       {:ok, zip_binary, otp_warnings ++ materializer_warnings}

@@ -95,7 +95,7 @@ defmodule GtfsPlanner.Otp.Materializer do
   defp build_and_persist(organization_id, gtfs_version_id, status_callback, preflight_mode, opts) do
     case Preflight.run(organization_id, gtfs_version_id) do
       :ok ->
-        do_build_and_persist(organization_id, gtfs_version_id, status_callback, opts)
+        do_build_and_persist(organization_id, gtfs_version_id, status_callback, [], opts)
 
       {:error, issues} ->
         handle_preflight_issues(
@@ -118,7 +118,7 @@ defmodule GtfsPlanner.Otp.Materializer do
          opts
        ) do
     emit_status(status_callback, %{phase: :preflight, preflight_issues_count: length(issues)})
-    do_build_and_persist(organization_id, gtfs_version_id, status_callback, opts)
+    do_build_and_persist(organization_id, gtfs_version_id, status_callback, issues, opts)
   end
 
   defp handle_preflight_issues(
@@ -133,7 +133,7 @@ defmodule GtfsPlanner.Otp.Materializer do
     {:error, issues}
   end
 
-  defp do_build_and_persist(organization_id, gtfs_version_id, status_callback, opts) do
+  defp do_build_and_persist(organization_id, gtfs_version_id, status_callback, otp_preflight_issues, opts) do
     pathways_preflight_outcome = run_pathways_preflight(organization_id, gtfs_version_id, opts)
     preflight_warnings = preflight_warnings(pathways_preflight_outcome)
 
@@ -176,7 +176,7 @@ defmodule GtfsPlanner.Otp.Materializer do
                  manifest_json: manifest_json
                }) do
           emit_status(status_callback, %{phase: :done, reused: false})
-          {:ok, zip_path, artifact_meta(artifact, false, preflight_warnings)}
+          {:ok, zip_path, artifact_meta(artifact, false, preflight_warnings, otp_preflight_issues)}
         else
           {:error, reason} ->
             emit_status(status_callback, %{phase: :failed, reason: :materialization_failed})
@@ -342,16 +342,17 @@ defmodule GtfsPlanner.Otp.Materializer do
   end
 
   defp artifact_meta(artifact, reused?) do
-    artifact_meta(artifact, reused?, [])
+    artifact_meta(artifact, reused?, [], [])
   end
 
-  defp artifact_meta(artifact, reused?, preflight_warnings) do
+  defp artifact_meta(artifact, reused?, preflight_warnings, otp_preflight_issues) do
     %{
       reused: reused?,
       content_hash: artifact.content_hash,
       file_size_bytes: artifact.file_size_bytes,
       manifest_json: artifact.manifest_json,
-      preflight_warnings: preflight_warnings
+      preflight_warnings: preflight_warnings,
+      otp_preflight_issues: otp_preflight_issues
     }
   end
 
