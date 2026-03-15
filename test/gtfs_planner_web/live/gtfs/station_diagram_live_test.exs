@@ -4219,6 +4219,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#lists-section", "Pathway not found.")
     end
 
+    test "flip pathway with stale valid id shows not found error without crashing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "flip_pathway", %{"id" => Ecto.UUID.generate()})
+
+      assert has_element?(view, "#lists-section", "Pathway not found.")
+    end
+
     test "flip pathway for pathway outside station shows unauthorized error without crashing", %{
       conn: conn,
       user: user,
