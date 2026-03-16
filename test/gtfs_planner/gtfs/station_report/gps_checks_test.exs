@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.StationReport.GpsChecksTest do
   use ExUnit.Case, async: true
 
+  alias GtfsPlanner.Gtfs.StationReport.Helpers
   alias GtfsPlanner.Gtfs.StationReport.GpsChecks
   alias GtfsPlanner.Gtfs.Stop
 
@@ -51,6 +52,28 @@ defmodule GtfsPlanner.Gtfs.StationReport.GpsChecksTest do
       assert item.status == :pass
     end
 
+    test "entrance_gps_distance fails when raw distance is just above 500m" do
+      station = stop("STATION", 1, stop_lat: dec("0"), stop_lon: dec("0"))
+      entrance = stop("E1", 2, stop_lat: dec(lat_for_distance_m(500.04)), stop_lon: dec("0"))
+
+      distance =
+        Helpers.haversine(
+          station.stop_lat,
+          station.stop_lon,
+          entrance.stop_lat,
+          entrance.stop_lon
+        )
+
+      assert distance > 500
+      assert Float.round(distance, 1) == 500.0
+
+      items = GpsChecks.validate(station, [entrance])
+      item = find_item(items, "entrance_gps_distance")
+
+      assert item.status == :fail
+      assert [%{id: "E1", reason: "500.0m from station"}] = item.details
+    end
+
     test "child stops with nil coordinates are skipped" do
       station = stop("STATION", 1, stop_lat: dec("47.0"), stop_lon: dec("-122.0"))
       child = stop("E1", 2, stop_lat: nil, stop_lon: nil)
@@ -72,14 +95,14 @@ defmodule GtfsPlanner.Gtfs.StationReport.GpsChecksTest do
       end)
     end
 
-    test "optional_gps_clustering fails when type-3 node is far" do
+    test "optional_gps_clustering warns when type-3 node is far" do
       station = stop("STATION", 1, stop_lat: dec("47.0"), stop_lon: dec("-122.0"))
       node = stop("G1", 3, stop_lat: dec("47.01"), stop_lon: dec("-122.0"))
 
       items = GpsChecks.validate(station, [node])
       item = find_item(items, "optional_gps_clustering")
 
-      assert item.status == :fail
+      assert item.status == :warn
       assert item.category == :warning
       assert [%{id: "G1", reason: _}] = item.details
     end
@@ -93,9 +116,28 @@ defmodule GtfsPlanner.Gtfs.StationReport.GpsChecksTest do
 
       assert item.status == :pass
     end
+
+    test "optional_gps_clustering warns when raw distance is just above 200m" do
+      station = stop("STATION", 1, stop_lat: dec("0"), stop_lon: dec("0"))
+      node = stop("G1", 3, stop_lat: dec(lat_for_distance_m(200.04)), stop_lon: dec("0"))
+
+      distance =
+        Helpers.haversine(station.stop_lat, station.stop_lon, node.stop_lat, node.stop_lon)
+
+      assert distance > 200
+      assert Float.round(distance, 1) == 200.0
+
+      items = GpsChecks.validate(station, [node])
+      item = find_item(items, "optional_gps_clustering")
+
+      assert item.status == :warn
+      assert [%{id: "G1", reason: "200.0m from station"}] = item.details
+    end
   end
 
-  defp stop(stop_id, location_type, attrs \\ []) do
+  defp stop(stop_id, location_type), do: stop(stop_id, location_type, [])
+
+  defp stop(stop_id, location_type, attrs) do
     attrs = Map.new(attrs)
 
     %Stop{
@@ -109,7 +151,12 @@ defmodule GtfsPlanner.Gtfs.StationReport.GpsChecksTest do
     }
   end
 
+  defp dec(value) when is_float(value), do: Decimal.from_float(value)
   defp dec(value), do: Decimal.new(value)
+
+  defp lat_for_distance_m(distance_m) do
+    distance_m / 6_371_000.0 * 180.0 / :math.pi()
+  end
 
   defp find_item(items, id) do
     Enum.find(items, &(&1.id == id))

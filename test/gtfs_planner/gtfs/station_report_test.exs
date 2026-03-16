@@ -53,6 +53,34 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert "mechanical_stair_count" in unavailable_item.details
     end
 
+    test "gps section includes gps validation items from GpsChecks" do
+      report =
+        StationReport.build(%{
+          station:
+            stop("STATION", 1, stop_lat: Decimal.new("47.0"), stop_lon: Decimal.new("-122.0")),
+          child_stops: [
+            stop("E1", 2,
+              parent_station: "STATION",
+              stop_lat: Decimal.new("47.0"),
+              stop_lon: Decimal.new("-122.0001")
+            ),
+            stop("G1", 3,
+              parent_station: "STATION",
+              stop_lat: Decimal.new("47.01"),
+              stop_lon: Decimal.new("122.0")
+            )
+          ],
+          levels: [],
+          pathways: []
+        })
+
+      gps = section(report, "gps")
+
+      assert item(gps, "positive_longitude").status == :fail
+      assert item(gps, "entrance_gps_distance").status == :pass
+      assert item(gps, "optional_gps_clustering").status == :warn
+    end
+
     test "respects directed pathways for entrance to platform reachability" do
       report =
         StationReport.build(%{

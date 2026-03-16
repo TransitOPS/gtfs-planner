@@ -89,10 +89,12 @@ defmodule GtfsPlanner.Gtfs.StationReport.GpsChecks do
         child_lat = Helpers.decimal_to_float(stop.stop_lat)
         child_lon = Helpers.decimal_to_float(stop.stop_lon)
         distance = Helpers.haversine(station_lat, station_lon, child_lat, child_lon)
-        {stop.stop_id, Float.round(distance, 1)}
+        {stop.stop_id, distance}
       end)
       |> Enum.filter(fn {_id, distance} -> distance > @entrance_distance_threshold_m end)
-      |> Enum.map(fn {id, distance} -> %{id: id, reason: "#{distance}m from station"} end)
+      |> Enum.map(fn {id, distance} ->
+        %{id: id, reason: "#{Float.round(distance, 1)}m from station"}
+      end)
 
     Helpers.item(
       "entrance_gps_distance",
@@ -138,15 +140,17 @@ defmodule GtfsPlanner.Gtfs.StationReport.GpsChecks do
         child_lat = Helpers.decimal_to_float(stop.stop_lat)
         child_lon = Helpers.decimal_to_float(stop.stop_lon)
         distance = Helpers.haversine(station_lat, station_lon, child_lat, child_lon)
-        {stop.stop_id, Float.round(distance, 1)}
+        {stop.stop_id, distance}
       end)
       |> Enum.filter(fn {_id, distance} -> distance > @clustering_distance_threshold_m end)
-      |> Enum.map(fn {id, distance} -> %{id: id, reason: "#{distance}m from station"} end)
+      |> Enum.map(fn {id, distance} ->
+        %{id: id, reason: "#{Float.round(distance, 1)}m from station"}
+      end)
 
     Helpers.item(
       "optional_gps_clustering",
       "Optional node GPS clustering",
-      if(flagged == [], do: :pass, else: :fail),
+      if(flagged == [], do: :pass, else: :warn),
       :warning,
       length(flagged),
       flagged
