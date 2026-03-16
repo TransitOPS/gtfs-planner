@@ -273,7 +273,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
-      pair_dom = "ENT_1__BOARD_1"
+      pair_dom = "ENT_1__PLAT_1"
 
       view
       |> element("#report-entrance-ENT_1 > summary")
@@ -293,12 +293,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
                "To platform"
              )
 
-      assert has_element?(
-               view,
-               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(2) td:nth-child(4)",
-               "Boarding 1"
-             )
-
       view
       |> element("#report-trip-direction-button-#{pair_dom}")
       |> render_click()
@@ -308,12 +302,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(
                view,
                "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
-               "From boarding"
-             )
-
-      assert has_element?(
-               view,
-               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(2) td:nth-child(4)",
                "To entrance"
              )
     end
@@ -421,7 +409,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
-      pair_dom = "ENT_REV__BOARD_REV"
+      pair_dom = "ENT_REV__PLAT_REV"
 
       view
       |> element("#report-entrance-ENT_REV > summary")
@@ -517,7 +505,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
-      pair_dom = "ENT_FWD_ONLY__BOARD_FWD_ONLY"
+      pair_dom = "ENT_FWD_ONLY__PLAT_FWD_ONLY"
 
       view
       |> element("#report-entrance-ENT_FWD_ONLY > summary")
@@ -620,7 +608,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
-      pair_dom = "ENT_REV_WS__BOARD_REV_WS"
+      pair_dom = "ENT_REV_WS__PLAT_REV_WS"
 
       view
       |> element("#report-entrance-ENT_REV_WS > summary")
