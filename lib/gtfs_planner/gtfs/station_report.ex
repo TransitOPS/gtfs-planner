@@ -111,7 +111,13 @@ defmodule GtfsPlanner.Gtfs.StationReport do
           level_index,
           platform_target_index
         ),
-        accessibility_section(child_stops, core_pathways, stop_index, level_index),
+        accessibility_section(
+          child_stops,
+          core_pathways,
+          stop_index,
+          level_index,
+          platform_target_index
+        ),
         attribute_completeness_section(station_pathways),
         unavailable_section()
       ]
@@ -338,9 +344,9 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     }
   end
 
-  defp accessibility_section(child_stops, pathways, stop_index, level_index) do
+  defp accessibility_section(child_stops, pathways, stop_index, level_index, platform_target_index) do
     entrances = Enum.filter(child_stops, &(&1.location_type == 2))
-    boarding_areas = Enum.filter(child_stops, &(&1.location_type == 4))
+    platforms = Enum.filter(child_stops, &(&1.location_type == 0))
 
     step_free_directed =
       pathways
@@ -354,7 +360,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       )
       |> build_directed_adjacency()
 
-    step_free_result = step_free_result(entrances, boarding_areas, step_free_directed)
+    step_free_result = step_free_result(entrances, platforms, step_free_directed, platform_target_index)
 
     wheelchair_distribution =
       child_stops
@@ -385,7 +391,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       items: [
         item(
           "step_free_routes",
-          "Step-free routes (entrance x boarding)",
+          "Step-free routes (entrance x platform)",
           case step_free_result.status do
             :ok -> :pass
             :missing_pairs -> :warn
@@ -658,14 +664,14 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     }
   end
 
-  defp step_free_result(entrances, boarding_areas, directed) do
+  defp step_free_result(entrances, platforms, directed, platform_target_index) do
     cond do
-      entrances == [] or boarding_areas == [] ->
+      entrances == [] or platforms == [] ->
         %{
           status: :missing_pairs,
           summary: %{
             entrances: length(entrances),
-            boarding_areas: length(boarding_areas),
+            platforms: length(platforms),
             connected_pairs: 0,
             total_pairs: 0
           },
@@ -674,13 +680,19 @@ defmodule GtfsPlanner.Gtfs.StationReport do
 
       true ->
         matrix =
-          for entrance <- entrances, boarding_area <- boarding_areas do
-            reachable =
-              reachable?(entrance.stop_id, MapSet.new([boarding_area.stop_id]), directed)
+          for entrance <- entrances, platform <- platforms do
+            targets =
+              Map.get(
+                platform_target_index,
+                platform.stop_id,
+                MapSet.new([platform.stop_id])
+              )
+
+            reachable = reachable?(entrance.stop_id, targets, directed)
 
             %{
               entrance_stop_id: entrance.stop_id,
-              platform_stop_id: boarding_area.stop_id,
+              platform_stop_id: platform.stop_id,
               reachable: reachable
             }
           end
@@ -692,7 +704,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
           status: if(connected_pairs == total_pairs, do: :ok, else: :gaps),
           summary: %{
             entrances: length(entrances),
-            boarding_areas: length(boarding_areas),
+            platforms: length(platforms),
             connected_pairs: connected_pairs,
             total_pairs: total_pairs
           },
@@ -900,14 +912,6 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     Map.update(adjacency, from_stop_id, [edge], &[edge | &1])
   end
 
-  defp shortest_directed_path(adjacency, start_stop_id, target_stop_id) do
-    shortest_directed_path_to_any(
-      adjacency,
-      start_stop_id,
-      MapSet.new([target_stop_id])
-    )
-  end
-
   defp shortest_directed_path_to_any(adjacency, start_stop_id, target_ids) do
     if MapSet.member?(target_ids, start_stop_id) do
       {:found, reconstruct_path(%{}, start_stop_id, start_stop_id)}
@@ -993,20 +997,6 @@ defmodule GtfsPlanner.Gtfs.StationReport do
           %{stop_id: stop_id, pathway_id: pathway_id, pathway_mode: pathway_mode} | acc
         ])
     end
-  end
-
-  defp entrances_and_boarding_areas(child_stops) do
-    entrances =
-      child_stops
-      |> Enum.filter(&(&1.location_type == 2))
-      |> Enum.sort_by(& &1.stop_id)
-
-    boarding_areas =
-      child_stops
-      |> Enum.filter(&(&1.location_type == 4))
-      |> Enum.sort_by(& &1.stop_id)
-
-    {entrances, boarding_areas}
   end
 
   defp entrances_and_platforms(child_stops) do

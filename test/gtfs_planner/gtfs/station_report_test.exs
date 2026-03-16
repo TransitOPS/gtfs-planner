@@ -41,7 +41,7 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
 
       accessibility = section(report, "accessibility")
       step_free = item(accessibility, "step_free_routes")
-      assert step_free.status == :fail
+      assert step_free.status == :pass
       assert step_free.value.connected_pairs == 1
 
       unavailable = section(report, "not_available")
@@ -77,6 +77,7 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
           station: stop("STATION", 1),
           child_stops: [
             stop("E1", 2, parent_station: "STATION", level_id: "L1"),
+            stop("P1", 0, parent_station: "STATION", level_id: "L2"),
             stop("B1", 4, parent_station: "P1", level_id: "L2")
           ],
           levels: [
@@ -94,7 +95,7 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
 
       assert step_free.status == :fail
 
-      assert [%{entrance_stop_id: "E1", platform_stop_id: "B1", reachable: false}] =
+      assert [%{entrance_stop_id: "E1", platform_stop_id: "P1", reachable: false}] =
                step_free.details
     end
 
