@@ -925,6 +925,43 @@ defmodule GtfsPlanner.GtfsTest do
       assert refreshed_pathway.to_stop_id == "other-child"
     end
 
+    test "updates stop_id and cascades to pathway to_stop_id", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: level,
+      child: child
+    } do
+      other_child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "other-child",
+          stop_name: "Platform B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      {:ok, pathway} =
+        Gtfs.create_pathway(%{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          pathway_id: "pw-2",
+          from_stop_id: other_child.stop_id,
+          to_stop_id: child.stop_id,
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      assert {:ok, updated} =
+               Gtfs.update_stop_with_cascade(child, %{stop_id: "new-child-id", stop_name: "Platform A"})
+
+      assert updated.stop_id == "new-child-id"
+
+      refreshed_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
+      assert refreshed_pathway.from_stop_id == "other-child"
+      assert refreshed_pathway.to_stop_id == "new-child-id"
+    end
+
     test "cascades to boarding area parent_station", %{
       organization: org,
       gtfs_version: version,
