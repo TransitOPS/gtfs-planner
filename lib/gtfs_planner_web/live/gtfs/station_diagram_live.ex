@@ -835,8 +835,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                put_flash(socket, :error, "Stop \"#{query}\" does not belong to this station")}
 
             is_nil(stop.diagram_coordinate) ->
-              {:noreply,
-               put_flash(socket, :error, "Stop \"#{query}\" has no diagram position")}
+              {:noreply, put_flash(socket, :error, "Stop \"#{query}\" has no diagram position")}
 
             true ->
               level =

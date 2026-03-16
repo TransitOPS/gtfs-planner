@@ -736,7 +736,7 @@ const DiagramCanvasHook = {
 
     this.handleEvent("center_on_stop", ({x, y}) => {
       this._pendingCenter = {x, y};
-      this.applyPendingCenter();
+      this.applyPendingCenter({consume: !this._imageLoadInProgress});
     });
   },
 
@@ -1724,10 +1724,12 @@ const DiagramCanvasHook = {
     this.updateViewBox();
   },
 
-  applyPendingCenter() {
+  applyPendingCenter({consume = true} = {}) {
     if (!this._pendingCenter) return;
     const {x, y} = this._pendingCenter;
-    this._pendingCenter = null;
+    if (consume) {
+      this._pendingCenter = null;
+    }
     this.centerOnPoint(x, y);
   },
 
@@ -1785,6 +1787,7 @@ const DiagramCanvasHook = {
     }
 
     this.currentImageHref = href;
+    this._imageLoadInProgress = true;
     const img = new Image();
 
     img.onload = () => {
@@ -1802,7 +1805,12 @@ const DiagramCanvasHook = {
       imageEl.setAttribute("height", this.baseH);
 
       this.syncOverlayViewBox();
+      this._imageLoadInProgress = false;
       this.applyPendingCenter();
+    };
+
+    img.onerror = () => {
+      this._imageLoadInProgress = false;
     };
 
     img.src = href;

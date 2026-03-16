@@ -2885,7 +2885,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     form = assigns.pathway_form
     pathway = assigns.editing_pathway
 
-    mode = parse_preview_int(form[:pathway_mode] && form[:pathway_mode].value, pathway.pathway_mode)
+    mode =
+      parse_preview_int(form[:pathway_mode] && form[:pathway_mode].value, pathway.pathway_mode)
 
     bidirectional? =
       case form[:is_bidirectional] && form[:is_bidirectional].value do
@@ -3060,26 +3061,47 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp pathway_preview_line(%{mode: 1} = assigns) do
     ~H"""
-    <line x1="22" y1="16" x2="458" y2="16" stroke="#FF00FF" stroke-width="1.2"
+    <line
+      x1="22"
+      y1="16"
+      x2="458"
+      y2="16"
+      stroke="#FF00FF"
+      stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
-      marker-end="url(#preview-arrow)" />
+      marker-end="url(#preview-arrow)"
+    />
     """
   end
 
   defp pathway_preview_line(%{mode: 2} = assigns) do
     ~H"""
-    <line x1="22" y1="16" x2="458" y2="16" stroke="#FF00FF" stroke-width="1.2"
+    <line
+      x1="22"
+      y1="16"
+      x2="458"
+      y2="16"
+      stroke="#FF00FF"
+      stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
-      marker-end="url(#preview-arrow)" />
+      marker-end="url(#preview-arrow)"
+    />
     <line x1="240" y1="11" x2="240" y2="21" stroke="#FF00FF" stroke-width="1" />
     """
   end
 
   defp pathway_preview_line(%{mode: 3} = assigns) do
     ~H"""
-    <line x1="22" y1="16" x2="458" y2="16" stroke="#FF00FF" stroke-width="1.2"
+    <line
+      x1="22"
+      y1="16"
+      x2="458"
+      y2="16"
+      stroke="#FF00FF"
+      stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
-      marker-end="url(#preview-arrow)" />
+      marker-end="url(#preview-arrow)"
+    />
     <line x1="236" y1="11" x2="244" y2="21" stroke="#FF00FF" stroke-width="1" />
     <line x1="244" y1="11" x2="236" y2="21" stroke="#FF00FF" stroke-width="1" />
     """
@@ -3087,9 +3109,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp pathway_preview_line(%{mode: 4} = assigns) do
     ~H"""
-    <line x1="22" y1="16" x2="458" y2="16" stroke="#FF00FF" stroke-width="1.2"
+    <line
+      x1="22"
+      y1="16"
+      x2="458"
+      y2="16"
+      stroke="#FF00FF"
+      stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
-      marker-end="url(#preview-arrow)" />
+      marker-end="url(#preview-arrow)"
+    />
     <line x1="234" y1="11" x2="234" y2="21" stroke="#FF00FF" stroke-width="1" />
     <line x1="240" y1="11" x2="240" y2="21" stroke="#FF00FF" stroke-width="1" />
     <line x1="246" y1="11" x2="246" y2="21" stroke="#FF00FF" stroke-width="1" />
@@ -3098,38 +3127,83 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp pathway_preview_line(%{mode: 5} = assigns) do
     ~H"""
-    <line x1="22" y1="16" x2="215" y2="16" stroke="#FF00FF" stroke-width="1.2"
-      marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil} />
+    <line
+      x1="22"
+      y1="16"
+      x2="215"
+      y2="16"
+      stroke="#FF00FF"
+      stroke-width="1.2"
+      marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
+    />
     <rect x="215" y="8" width="50" height="16" rx="2" fill="white" stroke="#FF00FF" stroke-width="1" />
-    <text x="240" y="16" text-anchor="middle" dominant-baseline="central" font-family="Inter, sans-serif" font-size="10" fill="#FF00FF">&#x2195;</text>
-    <line x1="265" y1="16" x2="458" y2="16" stroke="#FF00FF" stroke-width="1.2"
-      marker-end="url(#preview-arrow)" />
+    <text
+      x="240"
+      y="16"
+      text-anchor="middle"
+      dominant-baseline="central"
+      font-family="Inter, sans-serif"
+      font-size="10"
+      fill="#FF00FF"
+    >
+      &#x2195;
+    </text>
+    <line
+      x1="265"
+      y1="16"
+      x2="458"
+      y2="16"
+      stroke="#FF00FF"
+      stroke-width="1.2"
+      marker-end="url(#preview-arrow)"
+    />
     """
   end
 
   defp pathway_preview_line(%{mode: 6} = assigns) do
     ~H"""
-    <line x1="22" y1="14" x2="458" y2="14" stroke="#FF00FF" stroke-width="1"
+    <line
+      x1="22"
+      y1="14"
+      x2="458"
+      y2="14"
+      stroke="#FF00FF"
+      stroke-width="1"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
-      marker-end="url(#preview-arrow)" />
+      marker-end="url(#preview-arrow)"
+    />
     <line x1="22" y1="18" x2="458" y2="18" stroke="#FF00FF" stroke-width="1" />
     """
   end
 
   defp pathway_preview_line(%{mode: 7} = assigns) do
     ~H"""
-    <line x1="22" y1="14" x2="458" y2="14" stroke="#FF00FF" stroke-width="1"
+    <line
+      x1="22"
+      y1="14"
+      x2="458"
+      y2="14"
+      stroke="#FF00FF"
+      stroke-width="1"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
-      marker-end="url(#preview-arrow)" />
+      marker-end="url(#preview-arrow)"
+    />
     <line x1="22" y1="18" x2="458" y2="18" stroke="#FF00FF" stroke-width="1" />
     """
   end
 
   defp pathway_preview_line(assigns) do
     ~H"""
-    <line x1="22" y1="16" x2="458" y2="16" stroke="#FF00FF" stroke-width="1.2"
+    <line
+      x1="22"
+      y1="16"
+      x2="458"
+      y2="16"
+      stroke="#FF00FF"
+      stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
-      marker-end="url(#preview-arrow)" />
+      marker-end="url(#preview-arrow)"
+    />
     """
   end
 
