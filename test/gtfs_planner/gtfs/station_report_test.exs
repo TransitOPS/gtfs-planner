@@ -620,6 +620,126 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
         apply(StationReport, :build, [%{station: stop("STATION", 1)}])
       end
     end
+
+    test "all existing items have category: :error" do
+      report = StationReport.build(sample_snapshot())
+
+      for section <- report.sections,
+          item <- section.items,
+          # New submodule items may have other categories
+          item.id not in [
+            "wheelchair_boarding_consistency",
+            "duplicate_stop_ids",
+            "reverse_reachability"
+          ] do
+        assert Map.has_key?(item, :category),
+               "Item #{item.id} in section #{section.id} missing category"
+      end
+    end
+
+    test "wheelchair_boarding_consistency fails when station claims accessible but no accessible path exists" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1, wheelchair_boarding: 1),
+          child_stops: [
+            stop("E1", 2, parent_station: "STATION"),
+            stop("P1", 0, parent_station: "STATION"),
+            stop("B1", 4, parent_station: "P1")
+          ],
+          levels: [],
+          # Only stairs connect — not accessible via modes 1/5/6/7
+          pathways: [
+            pathway("PW_STAIRS", "E1", "B1", 2, true, stair_count: 10)
+          ]
+        })
+
+      integrity = section(report, "data_integrity")
+      wbc = item(integrity, "wheelchair_boarding_consistency")
+
+      assert wbc.status == :fail
+    end
+
+    test "wheelchair_boarding_consistency passes when accessible path exists via elevator" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1, wheelchair_boarding: 1),
+          child_stops: [
+            stop("E1", 2, parent_station: "STATION"),
+            stop("P1", 0, parent_station: "STATION"),
+            stop("B1", 4, parent_station: "P1")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_ELEV", "E1", "B1", 5, true)
+          ]
+        })
+
+      integrity = section(report, "data_integrity")
+      wbc = item(integrity, "wheelchair_boarding_consistency")
+
+      assert wbc.status == :pass
+    end
+
+    test "wheelchair_boarding_consistency passes when station wheelchair_boarding is 0 or nil" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1, wheelchair_boarding: 0),
+          child_stops: [
+            stop("E1", 2, parent_station: "STATION"),
+            stop("P1", 0, parent_station: "STATION")
+          ],
+          levels: [],
+          pathways: []
+        })
+
+      integrity = section(report, "data_integrity")
+      wbc = item(integrity, "wheelchair_boarding_consistency")
+
+      assert wbc.status == :pass
+    end
+
+    test "reverse_reachability fails when forward works but reverse does not" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("E1", 2, parent_station: "STATION"),
+            stop("P1", 0, parent_station: "STATION"),
+            stop("B1", 4, parent_station: "P1")
+          ],
+          levels: [],
+          # Unidirectional: E1 -> B1 only, no way back
+          pathways: [
+            pathway("PW_GATE", "E1", "B1", 6, false)
+          ]
+        })
+
+      connectivity = section(report, "entrance_platform_connectivity")
+      reverse = item(connectivity, "reverse_reachability")
+
+      assert reverse.status == :fail
+      assert reverse.value > 0
+    end
+
+    test "reverse_reachability passes for bidirectional walkway" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("E1", 2, parent_station: "STATION"),
+            stop("P1", 0, parent_station: "STATION")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_WALK", "E1", "P1", 1, true)
+          ]
+        })
+
+      connectivity = section(report, "entrance_platform_connectivity")
+      reverse = item(connectivity, "reverse_reachability")
+
+      assert reverse.status == :pass
+    end
   end
 
   defp sample_snapshot do

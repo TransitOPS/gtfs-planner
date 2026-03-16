@@ -10,10 +10,13 @@ defmodule GtfsPlanner.Gtfs.StationReport do
 
   @type status :: :pass | :fail | :warn | :info
 
+  @type category :: :error | :warning | :convention | :analysis
+
   @type item :: %{
           id: String.t(),
           label: String.t(),
           status: status(),
+          category: category(),
           value: term(),
           details: term()
         }
@@ -98,6 +101,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
         data_integrity_section(
           station,
           child_stops,
+          core_pathways,
           undirected,
           directed,
           stop_index,
@@ -226,6 +230,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
   defp data_integrity_section(
          station,
          child_stops,
+         core_pathways,
          undirected,
          directed,
          stop_index,
@@ -282,6 +287,18 @@ defmodule GtfsPlanner.Gtfs.StationReport do
 
     platform_interconnection =
       platform_interconnection_result(platforms, platform_target_index, directed)
+
+    # Duplicate stop_ids
+    all_stops = [station | child_stops]
+
+    duplicate_stop_ids =
+      all_stops
+      |> Enum.group_by(& &1.stop_id)
+      |> Enum.filter(fn {_id, group} -> length(group) > 1 end)
+      |> Enum.map(fn {id, _group} -> id end)
+
+    # Wheelchair boarding consistency
+    wheelchair_item = wheelchair_boarding_consistency(station, entrances, core_pathways, platform_target_index)
 
     %{
       id: "data_integrity",
@@ -341,6 +358,14 @@ defmodule GtfsPlanner.Gtfs.StationReport do
             disconnected: length(platform_interconnection.unreachable)
           },
           platform_interconnection.details
+        ),
+        wheelchair_item,
+        item(
+          "duplicate_stop_ids",
+          "Unique stop_id values",
+          if(duplicate_stop_ids == [], do: :pass, else: :fail),
+          length(duplicate_stop_ids),
+          duplicate_stop_ids
         )
       ]
     }
@@ -525,6 +550,12 @@ defmodule GtfsPlanner.Gtfs.StationReport do
                 total_pairs: 0
               },
               []
+            ),
+            item(
+              "reverse_reachability",
+              "Platform-to-entrance reverse reachability",
+              :pass,
+              0
             )
           ]
         }
@@ -532,6 +563,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       true ->
         all_adjacency = build_path_traversal_adjacency(pathways)
         step_free_adjacency = build_step_free_path_traversal_adjacency(pathways)
+        directed = build_directed_adjacency(pathways)
 
         details =
           for entrance <- entrances, platform <- platforms do
@@ -590,6 +622,31 @@ defmodule GtfsPlanner.Gtfs.StationReport do
         accessible_pairs = Enum.count(details, & &1.accessible)
         total_pairs = length(details)
 
+        # Reverse reachability: check platform->entrance for pairs that are forward-reachable
+        entrance_ids = MapSet.new(Enum.map(entrances, & &1.stop_id))
+
+        reverse_failures =
+          details
+          |> Enum.filter(& &1.reachable)
+          |> Enum.reject(fn detail ->
+            targets =
+              Map.get(
+                platform_target_index,
+                detail.platform_stop_id,
+                MapSet.new([detail.platform_stop_id])
+              )
+
+            Enum.any?(targets, fn target_id ->
+              reachable?(target_id, entrance_ids, directed)
+            end)
+          end)
+          |> Enum.map(fn detail ->
+            %{
+              id: "#{detail.entrance_stop_id}->#{detail.platform_stop_id}",
+              reason: "forward reachable but reverse not"
+            }
+          end)
+
         %{
           id: "entrance_platform_connectivity",
           title: "Entrance -> Platform Connectivity",
@@ -606,6 +663,13 @@ defmodule GtfsPlanner.Gtfs.StationReport do
                 total_pairs: total_pairs
               },
               details
+            ),
+            item(
+              "reverse_reachability",
+              "Platform-to-entrance reverse reachability",
+              if(reverse_failures == [], do: :pass, else: :fail),
+              length(reverse_failures),
+              reverse_failures
             )
           ]
         }
@@ -626,6 +690,53 @@ defmodule GtfsPlanner.Gtfs.StationReport do
         )
       ]
     }
+  end
+
+  @accessible_modes MapSet.new([1, 5, 6, 7])
+
+  defp wheelchair_boarding_consistency(station, entrances, pathways, platform_target_index) do
+    wheelchair_val = station.wheelchair_boarding
+
+    cond do
+      wheelchair_val != 1 ->
+        item(
+          "wheelchair_boarding_consistency",
+          "Wheelchair boarding consistency",
+          :pass,
+          "not applicable"
+        )
+
+      entrances == [] or map_size(platform_target_index) == 0 ->
+        item(
+          "wheelchair_boarding_consistency",
+          "Wheelchair boarding consistency",
+          :fail,
+          "no entrances or platforms"
+        )
+
+      true ->
+        accessible_directed =
+          pathways
+          |> Enum.filter(&MapSet.member?(@accessible_modes, normalize_pathway_mode(&1.pathway_mode)))
+          |> build_directed_adjacency()
+
+        all_targets =
+          platform_target_index
+          |> Map.values()
+          |> Enum.reduce(MapSet.new(), &MapSet.union/2)
+
+        has_accessible_path =
+          Enum.any?(entrances, fn entrance ->
+            reachable?(entrance.stop_id, all_targets, accessible_directed)
+          end)
+
+        item(
+          "wheelchair_boarding_consistency",
+          "Wheelchair boarding consistency",
+          if(has_accessible_path, do: :pass, else: :fail),
+          if(has_accessible_path, do: "accessible path exists", else: "no accessible path")
+        )
+    end
   end
 
   defp entrance_to_platform_result(entrances, all_platform_targets, directed) do
@@ -840,7 +951,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
   end
 
   defp item(id, label, status, value, details \\ nil) do
-    %{id: id, label: label, status: status, value: value, details: details}
+    %{id: id, label: label, status: status, category: :error, value: value, details: details}
   end
 
   defp reachable?(from_stop_id, target_ids, directed) do
