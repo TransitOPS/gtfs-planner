@@ -81,6 +81,40 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert item(gps, "optional_gps_clustering").status == :warn
     end
 
+    test "includes naming validation items in the built report" do
+      report =
+        StationReport.build(%{
+          station: %Stop{
+            stop_id: "STATION",
+            stop_name: "Station",
+            location_type: 1
+          },
+          child_stops: [
+            %Stop{
+              stop_id: "generic_lobby",
+              stop_name: "Fare Line Mezzanine Paid",
+              location_type: 3,
+              parent_station: "STATION"
+            },
+            %Stop{
+              stop_id: "ba_platform_1",
+              stop_name: "platform a",
+              location_type: 4,
+              parent_station: "STATION"
+            }
+          ],
+          levels: [],
+          pathways: []
+        })
+
+      naming = section(report, "naming_conventions")
+
+      assert item(naming, "naming_title_case").status == :warn
+      assert item(naming, "naming_jargon").status == :warn
+      assert item(naming, "naming_node_prefix").details == ["generic_lobby"]
+      assert item(naming, "naming_boarding_prefix").details == ["ba_platform_1"]
+    end
+
     test "respects directed pathways for entrance to platform reachability" do
       report =
         StationReport.build(%{

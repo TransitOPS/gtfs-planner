@@ -8,7 +8,14 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecks do
 
   alias GtfsPlanner.Gtfs.StationReport.Helpers
 
-  @jargon_keywords ~w[paid unpaid fareline fare_line mezzanine_paid mezzanine_unpaid]
+  @jargon_patterns [
+    {"mezzanine_unpaid", ~r/\bmezzanine unpaid\b/},
+    {"mezzanine_paid", ~r/\bmezzanine paid\b/},
+    {"fare_line", ~r/\bfare line\b/},
+    {"fareline", ~r/\bfareline\b/},
+    {"unpaid", ~r/\bunpaid\b/},
+    {"paid", ~r/\bpaid\b/}
+  ]
 
   @doc """
   Returns naming convention validation items for a station and its child stops.
@@ -53,11 +60,13 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecks do
       stops
       |> Enum.filter(&Helpers.present?(&1.stop_name))
       |> Enum.map(fn stop ->
-        lowered = String.downcase(stop.stop_name)
+        normalized = normalize_name(stop.stop_name)
 
         matches =
-          @jargon_keywords
-          |> Enum.filter(&String.contains?(lowered, &1))
+          @jargon_patterns
+          |> Enum.flat_map(fn {label, pattern} ->
+            if Regex.match?(pattern, normalized), do: [label], else: []
+          end)
 
         {stop.stop_id, matches}
       end)
@@ -74,6 +83,14 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecks do
       length(flagged),
       flagged
     )
+  end
+
+  defp normalize_name(name) do
+    name
+    |> String.downcase()
+    |> String.replace(~r/[_-]+/, " ")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
   end
 
   defp node_prefix_check(child_stops) do

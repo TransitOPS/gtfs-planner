@@ -104,6 +104,30 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecksTest do
       assert String.contains?(reason, "paid")
     end
 
+    test "naming_jargon matches spaced variants" do
+      station = stop("STATION", 1, stop_name: "Station")
+      child = stop("N1", 3, stop_name: "Fare Line Mezzanine Paid")
+
+      items = NamingChecks.validate(station, [child])
+      item = find_item(items, "naming_jargon")
+
+      assert item.status == :warn
+      assert [%{id: "N1", reason: reason}] = item.details
+      assert String.contains?(reason, "fare_line")
+      assert String.contains?(reason, "mezzanine_paid")
+    end
+
+    test "naming_jargon does not match paid inside unpaid" do
+      station = stop("STATION", 1, stop_name: "Station")
+      child = stop("N1", 3, stop_name: "Unpaid Area")
+
+      items = NamingChecks.validate(station, [child])
+      item = find_item(items, "naming_jargon")
+
+      assert item.status == :warn
+      assert [%{id: "N1", reason: "contains: unpaid"}] = item.details
+    end
+
     test "naming_jargon passes when no jargon detected" do
       station = stop("STATION", 1, stop_name: "Station")
       child = stop("N1", 3, stop_name: "Concourse Level")
