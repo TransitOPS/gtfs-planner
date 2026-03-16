@@ -674,6 +674,8 @@ const DiagramCanvasHook = {
     this.panStart = { x: 0, y: 0 };
     this._canvasKey = svg.getAttribute("data-canvas-key");
     this.currentImageHref = null;
+    this._activeImageLoadToken = 0;
+    this._imageLoadInProgress = false;
     this.overlay = null;
     this.tooltipEl = null;
     this.tooltipState = {
@@ -733,6 +735,20 @@ const DiagramCanvasHook = {
 
     svg.addEventListener("gesturestart", this._handleGesture);
     svg.addEventListener("gesturechange", this._handleGesture);
+
+    this.handleEvent("center_on_stop", ({x, y}) => {
+      if (!this.hasFiniteCenterPoint({x, y})) {
+        this._pendingCenter = null;
+        return;
+      }
+
+      this._pendingCenter = {x, y};
+      this.applyPendingCenter({consume: !this._imageLoadInProgress});
+    });
+  },
+
+  hasFiniteCenterPoint(point) {
+    return Number.isFinite(point?.x) && Number.isFinite(point?.y);
   },
 
   refreshTooltipElements() {
@@ -1712,6 +1728,30 @@ const DiagramCanvasHook = {
     this.repositionTooltipIfVisible();
   },
 
+  centerOnPoint(x, y) {
+    this.viewBox.x = x - this.viewBox.w / 2;
+    this.viewBox.y = y - this.viewBox.h / 2;
+    this.clampViewBox();
+    this.updateViewBox();
+  },
+
+  applyPendingCenter({consume = true} = {}) {
+    if (!this._pendingCenter) return;
+
+    if (!this.hasFiniteCenterPoint(this._pendingCenter)) {
+      this._pendingCenter = null;
+      return;
+    }
+
+    const {x, y} = this._pendingCenter;
+
+    if (consume) {
+      this._pendingCenter = null;
+    }
+
+    this.centerOnPoint(x, y);
+  },
+
   applyImageDimensions() {
     const imageEl = this.el.querySelector("image");
 
@@ -1755,20 +1795,35 @@ const DiagramCanvasHook = {
     const imageEl = svg.querySelector("image");
 
     if (!imageEl) {
+      this._activeImageLoadToken += 1;
+      this._imageLoadInProgress = false;
       return;
     }
 
     const href = imageEl.getAttribute("href");
 
-    if (!href || (!forceReset && href === this.currentImageHref)) {
+    if (!href) {
+      this._activeImageLoadToken += 1;
+      this._imageLoadInProgress = false;
+      return;
+    }
+
+    if (!forceReset && href === this.currentImageHref) {
       this.applyImageDimensions();
       return;
     }
 
     this.currentImageHref = href;
+    const loadToken = this._activeImageLoadToken + 1;
+    this._activeImageLoadToken = loadToken;
+    this._imageLoadInProgress = true;
     const img = new Image();
 
     img.onload = () => {
+      if (loadToken !== this._activeImageLoadToken) {
+        return;
+      }
+
       const naturalW = img.naturalWidth || 1;
       const naturalH = img.naturalHeight || 1;
 
@@ -1783,6 +1838,15 @@ const DiagramCanvasHook = {
       imageEl.setAttribute("height", this.baseH);
 
       this.syncOverlayViewBox();
+      this._imageLoadInProgress = false;
+      this.applyPendingCenter();
+    };
+
+    img.onerror = () => {
+      if (loadToken !== this._activeImageLoadToken) {
+        return;
+      }
+      this._imageLoadInProgress = false;
     };
 
     img.src = href;

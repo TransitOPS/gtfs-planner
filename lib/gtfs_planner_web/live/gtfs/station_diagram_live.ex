@@ -803,44 +803,111 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("edit_child_stop", %{"id" => id}, socket) do
     stop = Gtfs.get_stop!(id)
-    coord = stop.diagram_coordinate
-    pending_xy = %{x: to_float(coord["x"]), y: to_float(coord["y"])}
-    station = socket.assigns.station
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
 
-    parent_platform =
-      if stop.location_type == 4 and
-           MapSet.member?(platform_stop_ids, stop.parent_station) do
-        stop.parent_station
-      else
-        ""
+    socket =
+      case stop_diagram_point(stop) do
+        {:ok, pending_xy} ->
+          open_edit_sidebar(socket, stop, pending_xy)
+
+        :error ->
+          put_flash(socket, :error, ~s(Stop "#{stop.stop_id}" has no diagram position))
       end
 
-    form =
-      to_form(%{
-        "stop_id" => stop.stop_id,
-        "stop_name" => stop.stop_name,
-        "location_type" => to_string(stop.location_type),
-        "parent_platform" => parent_platform,
-        "level_id" => stop.level_id,
-        "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
-        "platform_code" => stop.platform_code || "",
-        "stop_lat" => to_optional_string(stop.stop_lat),
-        "stop_lon" => to_optional_string(stop.stop_lon)
-      })
+    {:noreply, socket}
+  end
 
-    {:noreply,
-     socket
-     |> reset_reposition_state()
-     |> stream_insert(:child_stops, stop)
-     |> assign(:pending_xy, pending_xy)
-     |> assign(:selected_stop_id, stop.id)
-     |> assign(:active_point_id, stop.id)
-     |> assign(:editing_level, false)
-     |> assign(:stop_id_mode, :manual)
-     |> assign(:child_stop_form, form)}
+  @impl true
+  def handle_event("search_stop", %{"stop_id_query" => query}, socket) when is_binary(query) do
+    query = String.trim(query)
+
+    if query == "" do
+      {:noreply, socket}
+    else
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
+      station = socket.assigns.station
+
+      case Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, query) do
+        nil ->
+          {:noreply, put_flash(socket, :error, "Stop \"#{query}\" not found")}
+
+        stop ->
+          platform_stop_ids =
+            platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
+
+          belongs_to_station =
+            stop.parent_station == station.stop_id or
+              MapSet.member?(platform_stop_ids, stop.parent_station)
+
+          diagram_point = stop_diagram_point(stop)
+
+          cond do
+            not belongs_to_station ->
+              {:noreply,
+               put_flash(socket, :error, "Stop \"#{query}\" does not belong to this station")}
+
+            diagram_point == :error ->
+              {:noreply, put_flash(socket, :error, "Stop \"#{query}\" has no diagram position")}
+
+            true ->
+              level =
+                Enum.find(socket.assigns.levels, fn l ->
+                  l.level_id == stop.level_id
+                end)
+
+              cond do
+                is_nil(level) ->
+                  {:noreply,
+                   put_flash(
+                     socket,
+                     :error,
+                     ~s(Stop "#{query}" is not assigned to a known station level)
+                   )}
+
+                true ->
+                  socket =
+                    if level.id != socket.assigns.active_level.id do
+                      socket
+                      |> disable_measurement()
+                      |> assign(:active_level, level)
+                      |> assign(:pending_xy, nil)
+                      |> assign(:diagram_error, nil)
+                      |> assign(:show_walkability_drawer, false)
+                      |> assign(:walkability_stop, nil)
+                      |> assign(
+                        :walkability_form,
+                        to_form(default_walkability_form_params(), as: :walkability)
+                      )
+                      |> clear_walkability_selection()
+                      |> assign(:walkability_last_results, [])
+                      |> assign(:walkability_mode, :create)
+                      |> assign(:editing_walkability_test, nil)
+                      |> reset_reposition_state()
+                      |> load_level_data(level)
+                    else
+                      socket
+                    end
+
+                  {:ok, pending_xy} = diagram_point
+
+                  {:noreply,
+                   socket
+                   |> open_edit_sidebar(stop, pending_xy)
+                   |> push_event("center_on_stop", pending_xy)}
+              end
+          end
+      end
+    end
+  end
+
+  @impl true
+  def handle_event("search_stop", %{"stop_id_query" => _query}, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("search_stop", _params, socket) do
+    {:noreply, socket}
   end
 
   @impl true
@@ -2879,6 +2946,68 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:reposition_search, "")
     |> assign(:reposition_stops, [])
   end
+
+  defp open_edit_sidebar(socket, stop, pending_xy) do
+    station = socket.assigns.station
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
+
+    parent_platform =
+      if stop.location_type == 4 and
+           MapSet.member?(platform_stop_ids, stop.parent_station) do
+        stop.parent_station
+      else
+        ""
+      end
+
+    form =
+      to_form(%{
+        "stop_id" => stop.stop_id,
+        "stop_name" => stop.stop_name,
+        "location_type" => to_string(stop.location_type),
+        "parent_platform" => parent_platform,
+        "level_id" => stop.level_id,
+        "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
+        "platform_code" => stop.platform_code || "",
+        "stop_lat" => to_optional_string(stop.stop_lat),
+        "stop_lon" => to_optional_string(stop.stop_lon)
+      })
+
+    socket
+    |> reset_reposition_state()
+    |> stream_insert(:child_stops, stop)
+    |> assign(:pending_xy, pending_xy)
+    |> assign(:selected_stop_id, stop.id)
+    |> assign(:active_point_id, stop.id)
+    |> assign(:editing_level, false)
+    |> assign(:stop_id_mode, :manual)
+    |> assign(:child_stop_form, form)
+  end
+
+  defp stop_diagram_point(stop) do
+    coord = stop.diagram_coordinate
+
+    with %{} <- coord,
+         {:ok, x} <- parse_diagram_coordinate(Map.get(coord, "x") || Map.get(coord, :x)),
+         {:ok, y} <- parse_diagram_coordinate(Map.get(coord, "y") || Map.get(coord, :y)) do
+      {:ok, %{x: x, y: y}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp parse_diagram_coordinate(value) when is_float(value), do: {:ok, value}
+  defp parse_diagram_coordinate(value) when is_integer(value), do: {:ok, value / 1}
+
+  defp parse_diagram_coordinate(value) when is_binary(value) do
+    case Float.parse(value) do
+      {parsed, ""} -> {:ok, parsed}
+      _ -> :error
+    end
+  end
+
+  defp parse_diagram_coordinate(_), do: :error
 
   defp restream_active_stop(socket) do
     case socket.assigns.active_point_id do
