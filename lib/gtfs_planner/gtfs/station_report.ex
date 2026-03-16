@@ -80,6 +80,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     stop_index = index_by_stop_id([station | child_stops])
     level_index = index_levels(levels)
     pathway_index = pathway_index(pathways)
+    platform_target_index = build_platform_target_index(child_stops)
     node_set = MapSet.new(Enum.map(child_stops, & &1.stop_id))
 
     station_pathways = Enum.filter(pathways, &pathway_touches_nodes?(&1, node_set))
@@ -919,6 +920,38 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       |> Enum.sort_by(& &1.stop_id)
 
     {entrances, boarding_areas}
+  end
+
+  defp entrances_and_platforms(child_stops) do
+    entrances =
+      child_stops
+      |> Enum.filter(&(&1.location_type == 2))
+      |> Enum.sort_by(& &1.stop_id)
+
+    platforms =
+      child_stops
+      |> Enum.filter(&(&1.location_type == 0))
+      |> Enum.sort_by(& &1.stop_id)
+
+    {entrances, platforms}
+  end
+
+  defp build_platform_target_index(child_stops) do
+    boarding_areas_by_parent =
+      child_stops
+      |> Enum.filter(&(&1.location_type == 4))
+      |> Enum.group_by(& &1.parent_station)
+
+    child_stops
+    |> Enum.filter(&(&1.location_type == 0))
+    |> Map.new(fn platform ->
+      ba_ids =
+        boarding_areas_by_parent
+        |> Map.get(platform.stop_id, [])
+        |> Enum.map(& &1.stop_id)
+
+      {platform.stop_id, MapSet.new([platform.stop_id | ba_ids])}
+    end)
   end
 
   defp pathway_id_sort_key(pathway), do: pathway.pathway_id || ""
