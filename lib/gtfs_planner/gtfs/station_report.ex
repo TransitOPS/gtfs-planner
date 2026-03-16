@@ -947,6 +947,12 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     Map.get(level_index, stop.level_id)
   end
 
+  defp traversed_reverse?(nil, _from_stop_id, _to_stop_id), do: nil
+
+  defp traversed_reverse?(pathway, from_stop_id, to_stop_id) do
+    pathway.from_stop_id == to_stop_id and pathway.to_stop_id == from_stop_id
+  end
+
   defp path_segments(path), do: do_path_segments(path, [])
 
   defp do_path_segments([from_hop, to_hop | rest], acc) do
@@ -979,7 +985,17 @@ defmodule GtfsPlanner.Gtfs.StationReport do
         from_stop = Map.get(stop_index, from_hop.stop_id)
         level_diff = compute_level_diff(from_stop, to_stop, level_index)
         traversal = if pathway, do: TraversalCalculator.calculate(pathway, level_diff), else: nil
-        build_enriched_hop(to_hop, to_stop, pathway, traversal, level_diff, level_index)
+        traversed_reverse? = traversed_reverse?(pathway, from_hop.stop_id, to_hop.stop_id)
+
+        build_enriched_hop(
+          to_hop,
+          to_stop,
+          pathway,
+          traversal,
+          level_diff,
+          level_index,
+          traversed_reverse?
+        )
       end)
 
     hops = [start_enriched | enriched_hops]
@@ -993,7 +1009,15 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     }
   end
 
-  defp build_enriched_hop(hop, stop, pathway, traversal, level_diff, level_index) do
+  defp build_enriched_hop(
+         hop,
+         stop,
+         pathway,
+         traversal,
+         level_diff,
+         level_index,
+         traversed_reverse? \\ nil
+       ) do
     stop_level = if stop, do: stop.level_id, else: nil
 
     level_data =
@@ -1016,6 +1040,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       pathway_mode_label:
         if(is_integer(hop.pathway_mode), do: Pathway.mode_label(hop.pathway_mode), else: nil),
       is_bidirectional: pathway && pathway.is_bidirectional,
+      traversed_reverse?: traversed_reverse?,
       signposted_as: pathway && pathway.signposted_as,
       reversed_signposted_as: pathway && pathway.reversed_signposted_as,
       level_diff: level_diff,

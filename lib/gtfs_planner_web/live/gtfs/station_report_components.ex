@@ -1132,7 +1132,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   defp display_path(nil, _reversed?), do: []
 
   defp display_path(%{hops: hops}, false) do
-    Enum.map(hops, &Map.put(&1, :display_signposted_as, &1.signposted_as))
+    Enum.map(hops, &Map.put(&1, :display_signposted_as, signage_for_display(&1)))
   end
 
   defp display_path(%{hops: hops}, true) do
@@ -1143,22 +1143,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
       [start_hop | rest] ->
         {rebuilt, _last_source} =
           Enum.map_reduce(rest, start_hop, fn hop, source_segment_hop ->
-            display_signposted_as =
-              source_segment_hop.reversed_signposted_as || source_segment_hop.signposted_as
-
             rebuilt_hop =
               hop
               |> Map.put(:pathway_id, source_segment_hop.pathway_id)
               |> Map.put(:pathway_mode, source_segment_hop.pathway_mode)
               |> Map.put(:pathway_mode_label, source_segment_hop.pathway_mode_label)
               |> Map.put(:is_bidirectional, source_segment_hop.is_bidirectional)
+              |> Map.put(:traversed_reverse?, reverse_traversal(source_segment_hop))
               |> Map.put(:signposted_as, source_segment_hop.signposted_as)
               |> Map.put(:reversed_signposted_as, source_segment_hop.reversed_signposted_as)
               |> Map.put(:level_diff, source_segment_hop.level_diff)
               |> Map.put(:time_seconds, source_segment_hop.time_seconds)
               |> Map.put(:distance_meters, source_segment_hop.distance_meters)
               |> Map.put(:calculation_method, source_segment_hop.calculation_method)
-              |> Map.put(:display_signposted_as, display_signposted_as)
+              |> Map.put(:display_signposted_as, nil)
+
+            rebuilt_hop =
+              Map.put(rebuilt_hop, :display_signposted_as, signage_for_display(rebuilt_hop))
 
             {rebuilt_hop, hop}
           end)
@@ -1173,6 +1174,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     |> Map.put(:pathway_mode, nil)
     |> Map.put(:pathway_mode_label, nil)
     |> Map.put(:is_bidirectional, nil)
+    |> Map.put(:traversed_reverse?, nil)
     |> Map.put(:signposted_as, nil)
     |> Map.put(:reversed_signposted_as, nil)
     |> Map.put(:level_diff, nil)
@@ -1181,6 +1183,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     |> Map.put(:calculation_method, :origin)
     |> Map.put(:display_signposted_as, nil)
   end
+
+  defp signage_for_display(%{pathway_id: pathway_id}) when pathway_id in [nil, ""], do: nil
+
+  defp signage_for_display(hop) do
+    if hop.traversed_reverse? do
+      hop.reversed_signposted_as || hop.signposted_as
+    else
+      hop.signposted_as || hop.reversed_signposted_as
+    end
+  end
+
+  defp reverse_traversal(%{traversed_reverse?: traversed_reverse?})
+       when is_boolean(traversed_reverse?) do
+    not traversed_reverse?
+  end
+
+  defp reverse_traversal(_), do: nil
 
   defp pair_id(detail) do
     "#{detail.entrance_stop_id}::#{detail.platform_stop_id}"
