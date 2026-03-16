@@ -1199,7 +1199,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     hop
     |> Map.get(:display_signposted_as)
     |> case do
-      value when value in [nil, ""] -> false
+      nil -> false
+      value when is_binary(value) -> String.trim(value) != ""
       _ -> true
     end
   end
