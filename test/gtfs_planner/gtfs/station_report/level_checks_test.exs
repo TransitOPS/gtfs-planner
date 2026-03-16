@@ -19,6 +19,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.LevelChecksTest do
 
     test "level_referential_integrity warns for orphan level" do
       child_stops = [stop("P1", 0, level_id: "L1")]
+
       levels = [
         %{level: level("L1", 0.0), stop_count: 1},
         %{level: level("L_UNUSED", 1.0), stop_count: 0}

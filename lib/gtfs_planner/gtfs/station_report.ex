@@ -325,7 +325,8 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       |> Enum.map(fn {id, _group} -> id end)
 
     # Wheelchair boarding consistency
-    wheelchair_item = wheelchair_boarding_consistency(station, entrances, core_pathways, platform_target_index)
+    wheelchair_item =
+      wheelchair_boarding_consistency(station, entrances, core_pathways, platform_target_index)
 
     %{
       id: "data_integrity",
@@ -744,7 +745,9 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       true ->
         accessible_directed =
           pathways
-          |> Enum.filter(&MapSet.member?(@accessible_modes, normalize_pathway_mode(&1.pathway_mode)))
+          |> Enum.filter(
+            &MapSet.member?(@accessible_modes, normalize_pathway_mode(&1.pathway_mode))
+          )
           |> build_directed_adjacency()
 
         all_targets =

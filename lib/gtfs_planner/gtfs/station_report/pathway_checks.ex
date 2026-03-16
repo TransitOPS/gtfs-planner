@@ -150,7 +150,9 @@ defmodule GtfsPlanner.Gtfs.StationReport.PathwayChecks do
   defp stair_sign_consistency(pathways, stop_index, level_index) do
     flagged =
       pathways
-      |> Enum.filter(&(&1.pathway_mode == 2 and is_integer(&1.stair_count) and &1.stair_count != 0))
+      |> Enum.filter(
+        &(&1.pathway_mode == 2 and is_integer(&1.stair_count) and &1.stair_count != 0)
+      )
       |> Enum.filter(fn pw ->
         from_idx = level_index_for(pw.from_stop_id, stop_index, level_index)
         to_idx = level_index_for(pw.to_stop_id, stop_index, level_index)
