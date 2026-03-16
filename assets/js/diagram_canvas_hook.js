@@ -733,6 +733,11 @@ const DiagramCanvasHook = {
 
     svg.addEventListener("gesturestart", this._handleGesture);
     svg.addEventListener("gesturechange", this._handleGesture);
+
+    this.handleEvent("center_on_stop", ({x, y}) => {
+      this._pendingCenter = {x, y};
+      this.applyPendingCenter();
+    });
   },
 
   refreshTooltipElements() {
@@ -1712,6 +1717,20 @@ const DiagramCanvasHook = {
     this.repositionTooltipIfVisible();
   },
 
+  centerOnPoint(x, y) {
+    this.viewBox.x = x - this.viewBox.w / 2;
+    this.viewBox.y = y - this.viewBox.h / 2;
+    this.clampViewBox();
+    this.updateViewBox();
+  },
+
+  applyPendingCenter() {
+    if (!this._pendingCenter) return;
+    const {x, y} = this._pendingCenter;
+    this._pendingCenter = null;
+    this.centerOnPoint(x, y);
+  },
+
   applyImageDimensions() {
     const imageEl = this.el.querySelector("image");
 
@@ -1783,6 +1802,7 @@ const DiagramCanvasHook = {
       imageEl.setAttribute("height", this.baseH);
 
       this.syncOverlayViewBox();
+      this.applyPendingCenter();
     };
 
     img.src = href;
