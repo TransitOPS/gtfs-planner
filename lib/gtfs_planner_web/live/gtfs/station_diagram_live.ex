@@ -967,10 +967,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
         end
 
-      stop_id ->
-        stop = Gtfs.get_stop!(stop_id)
+      selected_id ->
+        stop = Gtfs.get_stop!(selected_id)
 
-        case Gtfs.update_stop(stop, stop_attrs) do
+        stop_attrs =
+          if stop_attrs.stop_id in [nil, ""] do
+            generated =
+              Gtfs.generate_kebab_stop_id(
+                organization_id,
+                gtfs_version_id,
+                stop_attrs.stop_name,
+                stop.stop_id
+              )
+
+            %{stop_attrs | stop_id: generated}
+          else
+            stop_attrs
+          end
+
+        result =
+          if stop_attrs.stop_id != stop.stop_id do
+            Gtfs.update_stop_with_cascade(stop, stop_attrs)
+          else
+            Gtfs.update_stop(stop, stop_attrs)
+          end
+
+        case result do
           {:ok, updated_stop} ->
             {:noreply,
              socket

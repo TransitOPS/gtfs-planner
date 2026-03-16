@@ -801,6 +801,143 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "generate_kebab_stop_id/4" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "generates kebab-01 from stop name", %{organization: org, gtfs_version: version} do
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == "platform-2-01"
+    end
+
+    test "increments to -02 when -01 already exists", %{organization: org, gtfs_version: version} do
+      _stop = stop_fixture(org.id, version.id, %{stop_id: "platform-2-01"})
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == "platform-2-02"
+    end
+
+    test "skips multiple collisions", %{organization: org, gtfs_version: version} do
+      _stop1 = stop_fixture(org.id, version.id, %{stop_id: "platform-2-01"})
+      _stop2 = stop_fixture(org.id, version.id, %{stop_id: "platform-2-02"})
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == "platform-2-03"
+    end
+
+    test "falls back to 'stop' when name is empty", %{organization: org, gtfs_version: version} do
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "") == "stop-01"
+    end
+
+    test "excludes current stop_id from collision check", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      _stop = stop_fixture(org.id, version.id, %{stop_id: "platform-2-01"})
+
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2", "platform-2-01") ==
+               "platform-2-01"
+    end
+  end
+
+  describe "update_stop_with_cascade/2" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "test-station",
+          stop_name: "Test Station",
+          location_type: 1
+        })
+
+      level = level_fixture(organization.id, gtfs_version.id)
+
+      child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "old-child-id",
+          stop_name: "Platform A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        child: child
+      }
+    end
+
+    test "delegates to update_stop when stop_id unchanged", %{child: child} do
+      assert {:ok, updated} =
+               Gtfs.update_stop_with_cascade(child, %{stop_id: "old-child-id", stop_name: "New Name"})
+
+      assert updated.stop_name == "New Name"
+      assert updated.stop_id == "old-child-id"
+    end
+
+    test "updates stop_id and cascades to pathway from_stop_id", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: level,
+      child: child
+    } do
+      other_child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "other-child",
+          stop_name: "Platform B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      {:ok, pathway} =
+        Gtfs.create_pathway(%{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          pathway_id: "pw-1",
+          from_stop_id: child.stop_id,
+          to_stop_id: other_child.stop_id,
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      assert {:ok, updated} =
+               Gtfs.update_stop_with_cascade(child, %{stop_id: "new-child-id", stop_name: "Platform A"})
+
+      assert updated.stop_id == "new-child-id"
+
+      refreshed_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
+      assert refreshed_pathway.from_stop_id == "new-child-id"
+      assert refreshed_pathway.to_stop_id == "other-child"
+    end
+
+    test "cascades to boarding area parent_station", %{
+      organization: org,
+      gtfs_version: version,
+      level: level,
+      child: child
+    } do
+      boarding =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "boarding-1",
+          stop_name: "Boarding 1",
+          location_type: 4,
+          parent_station: child.stop_id,
+          level_id: level.level_id
+        })
+
+      assert {:ok, _updated} =
+               Gtfs.update_stop_with_cascade(child, %{stop_id: "renamed-child", stop_name: "Platform A"})
+
+      refreshed_boarding = Repo.get!(GtfsPlanner.Gtfs.Stop, boarding.id)
+      assert refreshed_boarding.parent_station == "renamed-child"
+    end
+  end
+
   describe "list_stations/2" do
     setup do
       organization = organization_fixture()
