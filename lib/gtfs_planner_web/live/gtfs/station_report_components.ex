@@ -887,7 +887,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
           </div>
           <div>
             <div class="mt-1 mb-2">
-              <span class="text-xs font-medium text-base-content/55">Accessible path (step-free)</span>
+              <span class="text-xs font-medium text-base-content/55">
+                Accessible path (step-free)
+              </span>
             </div>
             <.trip_visualization
               enriched={@detail.accessible_path.enriched}

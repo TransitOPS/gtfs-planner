@@ -7072,6 +7072,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
       view |> element("[phx-click='open_naming_drawer']") |> render_click()
+      view |> element("button", "Structured") |> render_click()
 
       html =
         view

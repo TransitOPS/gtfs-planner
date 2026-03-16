@@ -279,7 +279,9 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       |> Enum.reduce(MapSet.new(), &MapSet.union/2)
 
     entrance_platform = entrance_to_platform_result(entrances, all_platform_targets, directed)
-    platform_interconnection = platform_interconnection_result(platforms, platform_target_index, directed)
+
+    platform_interconnection =
+      platform_interconnection_result(platforms, platform_target_index, directed)
 
     %{
       id: "data_integrity",
@@ -344,7 +346,13 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     }
   end
 
-  defp accessibility_section(child_stops, pathways, stop_index, level_index, platform_target_index) do
+  defp accessibility_section(
+         child_stops,
+         pathways,
+         stop_index,
+         level_index,
+         platform_target_index
+       ) do
     entrances = Enum.filter(child_stops, &(&1.location_type == 2))
     platforms = Enum.filter(child_stops, &(&1.location_type == 0))
 
@@ -360,7 +368,8 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       )
       |> build_directed_adjacency()
 
-    step_free_result = step_free_result(entrances, platforms, step_free_directed, platform_target_index)
+    step_free_result =
+      step_free_result(entrances, platforms, step_free_directed, platform_target_index)
 
     wheelchair_distribution =
       child_stops
