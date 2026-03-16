@@ -6814,6 +6814,228 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "rename-me-01")
     end
 
+    test "excluding a row updates selection and pathway counts", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _path_child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PATH_CHILD",
+          stop_name: "Path Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 12.0}
+        })
+
+      _other_child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_CHILD",
+          stop_name: "Other Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 18.0, "y" => 18.0}
+        })
+
+      _pathway =
+        pathway_fixture(organization.id, gtfs_version.id, "PATH_CHILD", station.stop_id, %{
+          pathway_mode: 1
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      html = render_click(view, "open_naming_drawer")
+      assert html =~ ~r/>\s*2\s*<\/span>\s*child stops\s*will be renamed\./s
+      assert html =~ ~r/>\s*1\s*<\/span>\s*pathway reference\s*will be updated\./s
+
+      assert has_element?(
+               view,
+               "input[aria-label='Select all child stops for renaming'][checked]"
+             )
+
+      assert has_element?(view, "input[aria-label='Select PATH_CHILD for renaming'][checked]")
+
+      html =
+        view
+        |> element("input[aria-label='Select PATH_CHILD for renaming']")
+        |> render_click()
+
+      assert html =~
+               ~r/>\s*1\s*<\/span>\s*of\s*<span[^>]*>\s*2\s*<\/span>\s*child stops selected for renaming\./s
+
+      assert html =~
+               ~r/>\s*0\s*<\/span>\s*pathway references\s*will be updated for the selected stops\./s
+
+      assert has_element?(view, "#naming-row-PATH_CHILD.opacity-40")
+
+      refute has_element?(
+               view,
+               "input[aria-label='Select all child stops for renaming'][checked]"
+             )
+
+      refute has_element?(view, "input[aria-label='Select PATH_CHILD for renaming'][checked]")
+      assert has_element?(view, "input[aria-label='Select OTHER_CHILD for renaming'][checked]")
+    end
+
+    test "select all toggles all naming rows on and off", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _child_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ALL_CHILD_A",
+          stop_name: "All Child A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 14.0, "y" => 14.0}
+        })
+
+      _child_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ALL_CHILD_B",
+          stop_name: "All Child B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 22.0, "y" => 22.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("[phx-click='open_naming_drawer']") |> render_click()
+
+      html =
+        view
+        |> element("input[aria-label='Select all child stops for renaming']")
+        |> render_click()
+
+      assert html =~
+               ~r/>\s*0\s*<\/span>\s*of\s*<span[^>]*>\s*2\s*<\/span>\s*child stops selected for renaming\./s
+
+      assert has_element?(view, "#naming-row-ALL_CHILD_A.opacity-40")
+      assert has_element?(view, "#naming-row-ALL_CHILD_B.opacity-40")
+      assert has_element?(view, "button[phx-click='apply_naming_convention'][disabled]")
+
+      html =
+        view
+        |> element("input[aria-label='Select all child stops for renaming']")
+        |> render_click()
+
+      assert html =~ ~r/>\s*2\s*<\/span>\s*child stops\s*will be renamed\./s
+      refute has_element?(view, "#naming-row-ALL_CHILD_A.opacity-40")
+      refute has_element?(view, "#naming-row-ALL_CHILD_B.opacity-40")
+      refute has_element?(view, "button[phx-click='apply_naming_convention'][disabled]")
+    end
+
+    test "selection resets when closing the drawer or changing naming style", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "RESET_CHILD",
+          stop_name: "Reset Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 16.0, "y" => 16.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("[phx-click='open_naming_drawer']") |> render_click()
+      view |> element("input[aria-label='Select RESET_CHILD for renaming']") |> render_click()
+      assert has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
+
+      view |> element("button", "Cancel") |> render_click()
+      view |> element("[phx-click='open_naming_drawer']") |> render_click()
+      refute has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
+      assert has_element?(view, "input[aria-label='Select RESET_CHILD for renaming'][checked]")
+
+      view |> element("input[aria-label='Select RESET_CHILD for renaming']") |> render_click()
+      assert has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
+
+      html = view |> element("button", "Name-based") |> render_click()
+      refute has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
+      assert has_element?(view, "input[aria-label='Select RESET_CHILD for renaming'][checked]")
+      assert html =~ "reset-child-01"
+    end
+
+    test "applying naming from the drawer only renames selected rows", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      selected_child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SUBSET_SELECTED",
+          stop_name: "Subset Selected",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 24.0, "y" => 24.0}
+        })
+
+      unselected_child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SUBSET_UNSELECTED",
+          stop_name: "Subset Unselected",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 28.0, "y" => 28.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("[phx-click='open_naming_drawer']") |> render_click()
+      view |> element("button", "Name-based") |> render_click()
+
+      view
+      |> element("input[aria-label='Select SUBSET_UNSELECTED for renaming']")
+      |> render_click()
+
+      html = view |> element("button", "Apply naming convention") |> render_click()
+
+      assert html =~ "Renamed 1 child stop"
+
+      assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, selected_child.stop_id) ==
+               nil
+
+      assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "subset-selected-01")
+      assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, unselected_child.stop_id)
+      refute Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "subset-unselected-01")
+    end
+
     test "drawer shows no-stops message when station has no children", %{
       conn: conn,
       user: user,
