@@ -404,6 +404,121 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute Enum.any?(created_stops, &(&1.stop_name == "Child Lat Invalid"))
     end
 
+    test "editing child stop with blank stop_id auto-generates kebab ID", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OLD_MANUAL_ID",
+          stop_name: "Mezzanine West",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      other_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "other-stop",
+          stop_name: "Other Stop",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 30.0}
+        })
+
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          child_stop.stop_id,
+          other_stop.stop_id
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "",
+        "stop_name" => "Mezzanine West",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_submit()
+
+      refute has_element?(view, "#child-stop-form")
+
+      updated_stop = Gtfs.get_stop!(child_stop.id)
+      assert updated_stop.stop_id == "mezzanine-west-01"
+
+      updated_pathway = Gtfs.get_pathway!(pathway.id)
+      assert updated_pathway.from_stop_id == "mezzanine-west-01"
+      assert updated_pathway.to_stop_id == "other-stop"
+    end
+
+    test "editing child stop with blank stop_id shows error when sequences exhausted", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      for n <- 1..99 do
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "exhaust-#{String.pad_leading(Integer.to_string(n), 2, "0")}"
+        })
+      end
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "WILL_EXHAUST",
+          stop_name: "Exhaust",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "",
+        "stop_name" => "Exhaust",
+        "location_type" => "0",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#child-stop-form")
+      assert render(view) =~ "exhausted"
+
+      unchanged_stop = Gtfs.get_stop!(child_stop.id)
+      assert unchanged_stop.stop_id == "WILL_EXHAUST"
+    end
+
     test "boarding area form shows parent platform options and no-platform info message", %{
       conn: conn,
       user: user,

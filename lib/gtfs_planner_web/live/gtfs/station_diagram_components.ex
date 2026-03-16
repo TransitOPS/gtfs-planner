@@ -2401,14 +2401,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             field={@child_stop_form[:stop_id]}
             type="text"
             label="Stop ID"
-            placeholder="e.g., stop_001"
-            required
-            readonly={@selected_stop_id != nil}
-            class={[
-              @selected_stop_id && "w-full input input-lg bg-base-200",
-              !@selected_stop_id && "w-full input input-lg"
-            ]}
+            placeholder="e.g., platform-2-01"
+            required={@is_new_stop && @stop_id_mode == :manual}
+            class="w-full input input-lg"
           />
+          <p :if={!@is_new_stop} class="text-xs text-base-content/60">
+            Leave blank to auto-generate from stop name
+          </p>
           <button
             :if={@is_new_stop}
             type="button"

@@ -762,6 +762,65 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
+  @doc """
+  Generates a kebab-case stop_id from a stop name with a two-digit sequence suffix.
+
+  Tries `{kebab}-01`, `{kebab}-02`, etc. until finding one that does not collide
+  with existing stop_ids in the same organization and version. The optional
+  `exclude_stop_id` is ignored during collision checks (useful when renaming a stop
+  so its own current ID is not treated as a collision).
+  """
+  def generate_kebab_stop_id(organization_id, gtfs_version_id, stop_name, exclude_stop_id \\ nil) do
+    kebab =
+      case Stop.kebabify(stop_name) do
+        "" -> "stop"
+        k -> k
+      end
+
+    escaped_kebab = escape_like_pattern(kebab)
+
+    query =
+      from(s in Stop,
+        where:
+          s.organization_id == ^organization_id and
+            s.gtfs_version_id == ^gtfs_version_id and
+            fragment(
+              "? LIKE ? ESCAPE ?",
+              s.stop_id,
+              ^"#{escaped_kebab}-%",
+              ^"\\"
+            ),
+        select: s.stop_id
+      )
+
+    query =
+      if is_nil(exclude_stop_id) do
+        query
+      else
+        where(query, [s], s.stop_id != ^exclude_stop_id)
+      end
+
+    existing_ids =
+      query
+      |> Repo.all()
+      |> MapSet.new()
+
+    seq =
+      1..99
+      |> Enum.find(fn n ->
+        candidate = "#{kebab}-#{String.pad_leading(Integer.to_string(n), 2, "0")}"
+        not MapSet.member?(existing_ids, candidate)
+      end)
+
+    case seq do
+      nil ->
+        {:error, "Unable to generate unique stop ID — all sequences exhausted"}
+
+      n ->
+        {:ok, "#{kebab}-#{String.pad_leading(Integer.to_string(n), 2, "0")}"}
+    end
+  end
+
   defp escape_like_pattern(value) when is_binary(value) do
     value
     |> String.replace("\\", "\\\\")
@@ -813,6 +872,50 @@ defmodule GtfsPlanner.Gtfs do
     |> Stop.changeset(attrs)
     |> Repo.update()
     |> broadcast([:stops, :updated])
+  end
+
+  @doc """
+  Updates a stop, cascading stop_id changes to all referencing records when the
+  stop_id is modified. Delegates to `update_stop/2` when the stop_id is unchanged.
+  """
+  def update_stop_with_cascade(%Stop{} = stop, attrs) do
+    new_stop_id = attrs[:stop_id] || attrs["stop_id"]
+
+    if new_stop_id == stop.stop_id or is_nil(new_stop_id) do
+      update_stop(stop, attrs)
+    else
+      mapping = %{stop.stop_id => new_stop_id}
+      now = DateTime.utc_now()
+
+      multi =
+        Ecto.Multi.new()
+        |> Ecto.Multi.run(:update_stop, fn _repo, _changes ->
+          stop
+          |> Stop.changeset(attrs)
+          |> Repo.update()
+        end)
+        |> Ecto.Multi.run(:cascade_references, fn repo, _changes ->
+          {:ok,
+           update_stop_id_references(
+             repo,
+             mapping,
+             stop.organization_id,
+             stop.gtfs_version_id,
+             now
+           )}
+        end)
+
+      case Repo.transaction(multi) do
+        {:ok, %{update_stop: updated_stop}} ->
+          broadcast({:ok, updated_stop}, [:stops, :updated])
+
+        {:error, :update_stop, changeset, _changes} ->
+          {:error, changeset}
+
+        {:error, _step, reason, _changes} ->
+          {:error, reason}
+      end
+    end
   end
 
   @doc """
