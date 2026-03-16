@@ -120,11 +120,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     sections = report.sections
     integrity_section = find_section(sections, "data_integrity")
     gps_section = find_section(sections, "gps")
+    naming_section = find_section(sections, "naming_conventions")
+    pathway_section = find_section(sections, "pathway_validation")
+    levels_section = find_section(sections, "levels_validation")
     accessibility_section = find_section(sections, "accessibility")
     inventory_section = find_section(sections, "inventory")
     completeness_section = find_section(sections, "attribute_completeness")
 
-    integrity_items = items_for(integrity_section) ++ items_for(gps_section)
+    all_integrity_items =
+      items_for(integrity_section) ++
+        items_for(gps_section) ++
+        items_for(naming_section) ++
+        items_for(pathway_section) ++
+        items_for(levels_section)
+
+    # Only count :error and :warning category items toward the integrity fail tally
+    countable_items =
+      Enum.filter(all_integrity_items, fn item ->
+        category = Map.get(item, :category, :error)
+        category in [:error, :warning]
+      end)
+
     accessibility_items = items_for(accessibility_section)
 
     {nodes, edges} = inventory_counts(inventory_section)
@@ -132,8 +148,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
 
     %{
       integrity: %{
-        fails: Enum.count(integrity_items, &(&1.status == :fail)),
-        total: length(integrity_items)
+        fails: Enum.count(countable_items, &(&1.status == :fail)),
+        total: length(countable_items)
       },
       accessibility: %{
         fails: Enum.count(accessibility_items, &(&1.status == :fail)),
@@ -195,6 +211,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   attr :section, :map, required: true
   attr :gps_section, :map, default: nil
   attr :methodology_mode, :boolean, default: false
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
 
   def integrity_section(assigns) do
     ~H"""
@@ -224,7 +242,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         </div>
       <% else %>
         <div class="divide-y divide-base-content/10">
-          <.check_row :for={item <- @section.items} item={item} />
+          <.check_row
+            :for={item <- @section.items}
+            item={item}
+            gtfs_version_id={@gtfs_version_id}
+            station_stop_id={@station_stop_id}
+          />
 
           <div :if={@gps_section} id="report-section-gps" class="px-4 py-4">
             <.gps_item :for={item <- @gps_section.items} item={item} />
@@ -236,6 +259,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   end
 
   attr :item, :map, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
 
   defp check_row(assigns) do
     ~H"""
@@ -251,11 +276,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
           </div>
           <.stop_id_list
             :if={
-              @item.status == :fail and is_list(@item.details) and @item.details != [] and
+              @item.status in [:fail, :warn] and is_list(@item.details) and @item.details != [] and
                 @item.id not in ["entrance_to_platform_connectivity", "platform_interconnection"]
             }
             item={@item}
             ids={@item.details}
+            gtfs_version_id={@gtfs_version_id}
+            station_stop_id={@station_stop_id}
           />
           <.connectivity_details
             :if={
@@ -290,14 +317,50 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
 
   attr :item, :map, required: true
   attr :ids, :list, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
 
   defp stop_id_list(assigns) do
     ~H"""
-    <div id={"report-item-#{@item.id}-details"} class="mt-2">
-      <p class="font-mono text-xs text-base-content/60">
-        {Enum.join(@ids, ", ")}
-      </p>
+    <div id={"report-item-#{@item.id}-details"} class="mt-2 space-y-0.5">
+      <%= for detail <- @ids do %>
+        <%= if is_map(detail) do %>
+          <div class="flex items-baseline gap-2 text-xs">
+            <.entity_link
+              id={detail.id}
+              gtfs_version_id={@gtfs_version_id}
+              station_stop_id={@station_stop_id}
+            />
+            <span class="text-base-content/50">{Map.get(detail, :reason, "")}</span>
+          </div>
+        <% else %>
+          <.entity_link
+            id={to_string(detail)}
+            gtfs_version_id={@gtfs_version_id}
+            station_stop_id={@station_stop_id}
+          />
+        <% end %>
+      <% end %>
     </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
+
+  defp entity_link(assigns) do
+    ~H"""
+    <%= if @gtfs_version_id && @station_stop_id do %>
+      <.link
+        navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station_stop_id}/diagram"}
+        class="font-mono text-xs text-primary hover:underline"
+      >
+        {@id}
+      </.link>
+    <% else %>
+      <span class="font-mono text-xs text-base-content/60">{@id}</span>
+    <% end %>
     """
   end
 
@@ -1366,6 +1429,96 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
 
   defp bool_flag(true), do: "yes"
   defp bool_flag(false), do: "no"
+
+  # ============================================================================
+  # Naming Conventions section
+  # ============================================================================
+
+  attr :section, :map, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
+
+  def naming_conventions_section(assigns) do
+    ~H"""
+    <section
+      :if={@section}
+      id="report-section-naming_conventions"
+      class="rounded-xl border border-base-content/20 bg-base-100"
+    >
+      <header class="border-b border-base-content/20 px-4 py-3">
+        <h2 class="text-base font-semibold">{@section.title}</h2>
+      </header>
+      <div class="divide-y divide-base-content/10">
+        <.check_row
+          :for={item <- @section.items}
+          item={item}
+          gtfs_version_id={@gtfs_version_id}
+          station_stop_id={@station_stop_id}
+        />
+      </div>
+    </section>
+    """
+  end
+
+  # ============================================================================
+  # Pathway Validation section
+  # ============================================================================
+
+  attr :section, :map, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
+
+  def pathway_validation_section(assigns) do
+    ~H"""
+    <section
+      :if={@section}
+      id="report-section-pathway_validation"
+      class="rounded-xl border border-base-content/20 bg-base-100"
+    >
+      <header class="border-b border-base-content/20 px-4 py-3">
+        <h2 class="text-base font-semibold">{@section.title}</h2>
+      </header>
+      <div class="divide-y divide-base-content/10">
+        <.check_row
+          :for={item <- @section.items}
+          item={item}
+          gtfs_version_id={@gtfs_version_id}
+          station_stop_id={@station_stop_id}
+        />
+      </div>
+    </section>
+    """
+  end
+
+  # ============================================================================
+  # Levels Validation section
+  # ============================================================================
+
+  attr :section, :map, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
+
+  def levels_validation_section(assigns) do
+    ~H"""
+    <section
+      :if={@section}
+      id="report-section-levels_validation"
+      class="rounded-xl border border-base-content/20 bg-base-100"
+    >
+      <header class="border-b border-base-content/20 px-4 py-3">
+        <h2 class="text-base font-semibold">{@section.title}</h2>
+      </header>
+      <div class="divide-y divide-base-content/10">
+        <.check_row
+          :for={item <- @section.items}
+          item={item}
+          gtfs_version_id={@gtfs_version_id}
+          station_stop_id={@station_stop_id}
+        />
+      </div>
+    </section>
+    """
+  end
 
   # ============================================================================
   # Inventory section
