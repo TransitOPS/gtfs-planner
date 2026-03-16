@@ -674,6 +674,8 @@ const DiagramCanvasHook = {
     this.panStart = { x: 0, y: 0 };
     this._canvasKey = svg.getAttribute("data-canvas-key");
     this.currentImageHref = null;
+    this._activeImageLoadToken = 0;
+    this._imageLoadInProgress = false;
     this.overlay = null;
     this.tooltipEl = null;
     this.tooltipState = {
@@ -1776,21 +1778,35 @@ const DiagramCanvasHook = {
     const imageEl = svg.querySelector("image");
 
     if (!imageEl) {
+      this._activeImageLoadToken += 1;
+      this._imageLoadInProgress = false;
       return;
     }
 
     const href = imageEl.getAttribute("href");
 
-    if (!href || (!forceReset && href === this.currentImageHref)) {
+    if (!href) {
+      this._activeImageLoadToken += 1;
+      this._imageLoadInProgress = false;
+      return;
+    }
+
+    if (!forceReset && href === this.currentImageHref) {
       this.applyImageDimensions();
       return;
     }
 
     this.currentImageHref = href;
+    const loadToken = this._activeImageLoadToken + 1;
+    this._activeImageLoadToken = loadToken;
     this._imageLoadInProgress = true;
     const img = new Image();
 
     img.onload = () => {
+      if (loadToken !== this._activeImageLoadToken) {
+        return;
+      }
+
       const naturalW = img.naturalWidth || 1;
       const naturalH = img.naturalHeight || 1;
 
@@ -1810,6 +1826,9 @@ const DiagramCanvasHook = {
     };
 
     img.onerror = () => {
+      if (loadToken !== this._activeImageLoadToken) {
+        return;
+      }
       this._imageLoadInProgress = false;
     };
 
