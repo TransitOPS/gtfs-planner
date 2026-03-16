@@ -71,6 +71,25 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert [%{entrance_stop_id: "E1", reachable: false}] = connectivity.details
     end
 
+    test "single-platform stations pass interconnection when no peer platform exists" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("P1", 0, parent_station: "STATION")
+          ],
+          levels: [],
+          pathways: []
+        })
+
+      integrity = section(report, "data_integrity")
+      interconnection = item(integrity, "platform_interconnection")
+
+      assert interconnection.status == :pass
+      assert interconnection.value == %{connected: 1, disconnected: 0}
+      assert [%{platform_stop_id: "P1", connected: true}] = interconnection.details
+    end
+
     test "step-free metric excludes stairs and escalators" do
       report =
         StationReport.build(%{
@@ -414,6 +433,54 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert detail.platform_stop_id == "PLAT_A"
     end
 
+    test "warn summary preserves entrance and platform counts when pairs cannot be formed" do
+      entrance_only_report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("ENT_A", 2, parent_station: "STATION")
+          ],
+          levels: [],
+          pathways: []
+        })
+
+      section = section(entrance_only_report, "entrance_platform_connectivity")
+      item = item(section, "entrance_platform_paths")
+
+      assert item.status == :warn
+
+      assert item.value == %{
+               entrances: 1,
+               platforms: 0,
+               connected_pairs: 0,
+               accessible_pairs: 0,
+               total_pairs: 0
+             }
+
+      platform_only_report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("PLAT_A", 0, parent_station: "STATION")
+          ],
+          levels: [],
+          pathways: []
+        })
+
+      section = section(platform_only_report, "entrance_platform_connectivity")
+      item = item(section, "entrance_platform_paths")
+
+      assert item.status == :warn
+
+      assert item.value == %{
+               entrances: 0,
+               platforms: 1,
+               connected_pairs: 0,
+               accessible_pairs: 0,
+               total_pairs: 0
+             }
+    end
+
     test "accessible path differs from default when only stairs connect directly" do
       report =
         StationReport.build(%{
@@ -538,7 +605,7 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert item.status == :warn
 
       assert item.value == %{
-               entrances: 0,
+               entrances: 1,
                platforms: 0,
                connected_pairs: 0,
                accessible_pairs: 0,

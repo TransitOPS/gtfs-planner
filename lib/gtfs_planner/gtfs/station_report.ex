@@ -518,8 +518,8 @@ defmodule GtfsPlanner.Gtfs.StationReport do
               "Entrance-to-platform directed paths",
               :warn,
               %{
-                entrances: 0,
-                platforms: 0,
+                entrances: length(entrances),
+                platforms: length(platforms),
                 connected_pairs: 0,
                 accessible_pairs: 0,
                 total_pairs: 0
@@ -656,10 +656,14 @@ defmodule GtfsPlanner.Gtfs.StationReport do
         own_targets =
           Map.get(platform_target_index, platform.stop_id, MapSet.new([platform.stop_id]))
 
-        # Start BFS from any node in own target set
         reachable =
-          own_targets
-          |> Enum.any?(fn start_id -> reachable?(start_id, other_targets, directed) end)
+          if MapSet.size(other_targets) == 0 do
+            true
+          else
+            # Start BFS from any node in own target set
+            own_targets
+            |> Enum.any?(fn start_id -> reachable?(start_id, other_targets, directed) end)
+          end
 
         %{platform_stop_id: platform.stop_id, connected: reachable}
       end)
