@@ -8,6 +8,13 @@ defmodule GtfsPlanner.Gtfs.StationReport do
 
   alias GtfsPlanner.Gtfs.{Pathway, Stop, TraversalCalculator}
 
+  alias GtfsPlanner.Gtfs.StationReport.{
+    GpsChecks,
+    LevelChecks,
+    NamingChecks,
+    PathwayChecks
+  }
+
   @type status :: :pass | :fail | :warn | :info
 
   @type category :: :error | :warning | :convention | :analysis
@@ -92,12 +99,17 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     directed = build_directed_adjacency(core_pathways)
     undirected = build_undirected_adjacency(core_pathways)
 
+    # Build GPS section and append submodule GPS checks
+    base_gps = gps_section(station, child_stops)
+    gps_check_items = GpsChecks.validate(station, child_stops)
+    merged_gps = Map.update!(base_gps, :items, &(&1 ++ gps_check_items))
+
     %{
       station_stop_id: station.stop_id,
       generated_at: DateTime.utc_now() |> DateTime.truncate(:second),
       sections: [
         inventory_section(station, child_stops, levels, station_pathways),
-        gps_section(station, child_stops),
+        merged_gps,
         data_integrity_section(
           station,
           child_stops,
@@ -107,6 +119,11 @@ defmodule GtfsPlanner.Gtfs.StationReport do
           stop_index,
           platform_target_index
         ),
+        %{
+          id: "naming_conventions",
+          title: "Naming & ID Conventions",
+          items: NamingChecks.validate(station, child_stops)
+        },
         entrance_platform_connectivity_section(
           child_stops,
           core_pathways,
@@ -115,6 +132,16 @@ defmodule GtfsPlanner.Gtfs.StationReport do
           level_index,
           platform_target_index
         ),
+        %{
+          id: "pathway_validation",
+          title: "Pathway Validation",
+          items: PathwayChecks.validate(core_pathways, stop_index, level_index)
+        },
+        %{
+          id: "levels_validation",
+          title: "Levels Validation",
+          items: LevelChecks.validate(child_stops, levels)
+        },
         accessibility_section(
           child_stops,
           core_pathways,

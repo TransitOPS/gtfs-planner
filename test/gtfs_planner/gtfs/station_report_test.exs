@@ -16,7 +16,10 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
                "inventory",
                "gps",
                "data_integrity",
+               "naming_conventions",
                "entrance_platform_connectivity",
+               "pathway_validation",
+               "levels_validation",
                "accessibility",
                "attribute_completeness",
                "not_available"
