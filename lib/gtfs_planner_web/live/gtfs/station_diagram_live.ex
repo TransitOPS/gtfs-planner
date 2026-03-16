@@ -807,7 +807,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
-  def handle_event("search_stop", %{"stop_id_query" => query}, socket) do
+  def handle_event("search_stop", %{"stop_id_query" => query}, socket) when is_binary(query) do
     query = String.trim(query)
 
     if query == "" do
@@ -879,6 +879,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           end
       end
     end
+  end
+
+  @impl true
+  def handle_event("search_stop", %{"stop_id_query" => _query}, socket) do
+    {:noreply, socket}
   end
 
   @impl true

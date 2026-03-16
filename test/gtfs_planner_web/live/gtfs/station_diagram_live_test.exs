@@ -7187,6 +7187,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert valid_result =~ "Search Child Submit"
       assert valid_result =~ "SEARCH_CHILD_SUBMIT"
 
+      {:ok, blank_view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      refute has_element?(blank_view, "#child-stop-drawer[open]")
+
+      blank_view
+      |> form("#diagram-action-strip form[phx-submit='search_stop']", %{"stop_id_query" => "   "})
+      |> render_submit()
+
+      refute has_element?(blank_view, "#flash-error")
+      refute has_element?(blank_view, "#child-stop-drawer[open]")
+
       view
       |> form("#diagram-action-strip form[phx-submit='search_stop']", %{
         "stop_id_query" => "NONEXISTENT_SUBMIT_STOP"
@@ -7194,10 +7206,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_submit()
 
       assert has_element?(view, "#flash-error", ~s(Stop "NONEXISTENT_SUBMIT_STOP" not found))
-
-      view
-      |> form("#diagram-action-strip form[phx-submit='search_stop']", %{"stop_id_query" => "   "})
-      |> render_submit()
 
       assert has_element?(view, "#diagram-action-strip form[phx-submit='search_stop']")
     end
