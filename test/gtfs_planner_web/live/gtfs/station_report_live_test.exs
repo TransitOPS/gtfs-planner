@@ -433,6 +433,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
                "To platform"
              )
 
+      assert has_element?(
+               view,
+               "#report-trip-analysis-#{pair_dom}",
+               "100.0% signposted"
+             )
+
       refute has_element?(
                view,
                "#report-trip-steps-#{pair_dom} tbody tr:nth-child(2) td:nth-child(4)",

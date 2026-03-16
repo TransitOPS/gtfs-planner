@@ -269,7 +269,7 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert detail.enriched.totals.has_elevator
       assert detail.enriched.totals.has_stairs == false
       assert detail.enriched.totals.level_changes == 1
-      assert detail.enriched.totals.signposted_segments == 1
+      assert detail.enriched.totals.signposted_segments == 2
       assert detail.enriched.all_bidirectional == false
     end
 
@@ -302,6 +302,7 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert detail.reachable
       refute detail.enriched.hops |> Enum.at(1) |> Map.get(:traversed_reverse?)
       assert detail.enriched.hops |> Enum.at(2) |> Map.get(:traversed_reverse?)
+      assert detail.enriched.totals.signposted_segments == 2
 
       assert detail.enriched.hops |> Enum.at(2) |> Map.get(:reversed_signposted_as) ==
                "To platform"
