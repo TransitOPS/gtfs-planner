@@ -3420,19 +3420,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     preview_ids = naming_preview_id_set(socket.assigns.naming_preview)
     excluded_ids = MapSet.intersection(excluded_ids, preview_ids)
     selected_ids = MapSet.difference(preview_ids, excluded_ids)
+    {updated_pathways_count, error} = naming_selected_preview_state(socket, selected_ids)
 
     socket
     |> assign(:naming_excluded_ids, excluded_ids)
     |> assign(:naming_renamed_stops_count, MapSet.size(selected_ids))
-    |> assign(
-      :naming_updated_pathways_count,
-      naming_selected_pathway_count(socket, selected_ids)
-    )
+    |> assign(:naming_updated_pathways_count, updated_pathways_count)
+    |> assign(:naming_error, error)
   end
 
-  defp naming_selected_pathway_count(socket, selected_ids) do
+  defp naming_selected_preview_state(socket, selected_ids) do
     if MapSet.size(selected_ids) == 0 do
-      0
+      {0, nil}
     else
       org_id = socket.assigns.current_organization.id
       version_id = socket.assigns.current_gtfs_version.id
@@ -3440,8 +3439,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       style = socket.assigns.naming_style
 
       case Gtfs.preview_station_naming(org_id, version_id, station_stop_id, style, selected_ids) do
-        {:ok, preview} -> preview.updated_pathways_count
-        {:error, _reason} -> 0
+        {:ok, preview} ->
+          {preview.updated_pathways_count, nil}
+
+        {:error, :no_stops} ->
+          {0, nil}
+
+        {:error, {:naming_collision, collisions}} ->
+          {0, "Naming collision detected: #{Enum.join(collisions, ", ")}"}
+
+        {:error, reason} ->
+          {0, "Failed to preview naming: #{inspect(reason)}"}
       end
     end
   end

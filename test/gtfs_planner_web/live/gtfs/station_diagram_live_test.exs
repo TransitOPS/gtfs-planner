@@ -7036,6 +7036,52 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "subset-unselected-01")
     end
 
+    test "excluding a row surfaces subset collisions and disables apply", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _selected_child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AAA_CHILD",
+          stop_name: "AAA Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 24.0, "y" => 24.0}
+        })
+
+      blocker_id = "naming_station_platform_general_ground_01"
+
+      _blocking_child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: blocker_id,
+          stop_name: "Blocking Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 28.0, "y" => 28.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("[phx-click='open_naming_drawer']") |> render_click()
+
+      html =
+        view
+        |> element("input[aria-label='Select #{blocker_id} for renaming']")
+        |> render_click()
+
+      assert html =~ "Naming collision detected: #{blocker_id}"
+      assert has_element?(view, "button[phx-click='apply_naming_convention'][disabled]")
+    end
+
     test "drawer shows no-stops message when station has no children", %{
       conn: conn,
       user: user,

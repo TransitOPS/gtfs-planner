@@ -4000,7 +4000,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             phx-click="apply_naming_convention"
             phx-disable-with="Applying…"
             disabled={
-              @preview_rows == [] || @applying? || MapSet.size(@excluded_ids) == length(@preview_rows)
+              @preview_rows == [] || @applying? || @error ||
+                MapSet.size(@excluded_ids) == length(@preview_rows)
             }
           >
             Apply naming convention
