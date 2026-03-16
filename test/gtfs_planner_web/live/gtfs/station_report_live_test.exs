@@ -318,6 +318,337 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
              )
     end
 
+    test "uses reverse signage when the final segment is traversed against pathway direction", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_REV",
+          stop_name: "Reverse Signage Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      level_1 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L1_REV",
+          level_name: "Street",
+          level_index: 0.0
+        })
+
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L2_REV",
+          level_name: "Platform",
+          level_index: 1.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_1.id
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id
+        })
+
+      entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_REV",
+          stop_name: "Reverse Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L1_REV"
+        })
+
+      concourse =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "GEN_REV",
+          stop_name: "Reverse Concourse",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: "L1_REV"
+        })
+
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_REV",
+          stop_name: "Reverse Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L2_REV"
+        })
+
+      _boarding =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BOARD_REV",
+          stop_name: "Reverse Boarding",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: "L2_REV"
+        })
+
+      _lobby =
+        pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, concourse.stop_id, %{
+          pathway_id: "PATH_REV_1",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "To concourse",
+          reversed_signposted_as: "To entrance"
+        })
+
+      _final =
+        pathway_fixture(organization.id, gtfs_version.id, "BOARD_REV", concourse.stop_id, %{
+          pathway_id: "PATH_REV_2",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "To concourse",
+          reversed_signposted_as: "To platform"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      pair_dom = "ENT_REV__BOARD_REV"
+
+      view
+      |> element("#report-entrance-ENT_REV > summary")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(2) td:nth-child(4)",
+               "To platform"
+             )
+
+      assert has_element?(
+               view,
+               "#report-trip-analysis-#{pair_dom}",
+               "100.0% signposted"
+             )
+
+      refute has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(2) td:nth-child(4)",
+               "To concourse"
+             )
+
+      view
+      |> element("#report-trip-direction-button-#{pair_dom}")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "To concourse"
+             )
+    end
+
+    test "does not display reverse-only signage on forward traversal", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_FWD_ONLY",
+          level_name: "Concourse",
+          level_index: 0.0
+        })
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_FWD_ONLY",
+          stop_name: "Forward Only Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_FWD_ONLY",
+          stop_name: "Entrance Forward Only",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_FWD_ONLY",
+          stop_name: "Platform Forward Only",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      _boarding =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BOARD_FWD_ONLY",
+          stop_name: "Boarding Forward Only",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id
+        })
+
+      _pathway =
+        pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, "BOARD_FWD_ONLY", %{
+          pathway_id: "PATH_FWD_ONLY",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          reversed_signposted_as: "To entrance"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      pair_dom = "ENT_FWD_ONLY__BOARD_FWD_ONLY"
+
+      view
+      |> element("#report-entrance-ENT_FWD_ONLY > summary")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "-"
+             )
+
+      assert has_element?(
+               view,
+               "#report-trip-analysis-#{pair_dom}",
+               "0.0% signposted"
+             )
+
+      refute has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "To entrance"
+             )
+
+      view
+      |> element("#report-trip-direction-button-#{pair_dom}")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "To entrance"
+             )
+
+      assert has_element?(
+               view,
+               "#report-trip-analysis-#{pair_dom}",
+               "100.0% signposted"
+             )
+    end
+
+    test "falls back to forward signage when reverse signage is whitespace only", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_REV_WS",
+          level_name: "Concourse",
+          level_index: 0.0
+        })
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_REV_WS",
+          stop_name: "Reverse Whitespace Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_REV_WS",
+          stop_name: "Entrance Reverse Whitespace",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_REV_WS",
+          stop_name: "Platform Reverse Whitespace",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      _boarding =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BOARD_REV_WS",
+          stop_name: "Boarding Reverse Whitespace",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id
+        })
+
+      _pathway =
+        pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, "BOARD_REV_WS", %{
+          pathway_id: "PATH_REV_WS",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "To platform",
+          reversed_signposted_as: "   "
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      pair_dom = "ENT_REV_WS__BOARD_REV_WS"
+
+      view
+      |> element("#report-entrance-ENT_REV_WS > summary")
+      |> render_click()
+
+      view
+      |> element("#report-trip-direction-button-#{pair_dom}")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "To platform"
+             )
+
+      assert has_element?(
+               view,
+               "#report-trip-analysis-#{pair_dom}",
+               "100.0% signposted"
+             )
+
+      refute has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "-"
+             )
+    end
+
     test "redirects with flash when station is missing", %{
       conn: conn,
       user: user,

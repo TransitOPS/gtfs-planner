@@ -6705,7 +6705,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "Apply naming"
     end
 
-    test "clicking Apply naming opens drawer with structured preview by default", %{
+    test "clicking Apply naming opens drawer with name-based preview by default", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -6732,9 +6732,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert html =~ "naming-drawer"
       assert html =~ "CHILD_N1"
-      assert html =~ "naming_station_platform_general_ground_01"
+      assert html =~ "child-n1-01"
       assert html =~ "Apply naming convention"
-      assert html =~ "deterministic convention"
+      assert html =~ "kebab-case"
     end
 
     test "changing naming style refreshes preview rows", %{
@@ -6761,10 +6761,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
       html = render_click(view, "open_naming_drawer")
-      assert html =~ "deterministic convention"
-      assert html =~ "naming_station_platform_general_ground_01"
-      refute html =~ "kebab-case"
-      refute html =~ "style-child-01"
+      assert html =~ "kebab-case"
+      assert html =~ "style-child-01"
+      refute html =~ "deterministic convention"
+      refute html =~ "naming_station_platform_general_ground_01"
 
       html = view |> element("button", "Name-based") |> render_click()
       assert html =~ "kebab-case"
@@ -6860,7 +6860,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
-      html = render_click(view, "open_naming_drawer")
+      view |> element("[phx-click='open_naming_drawer']") |> render_click()
+      html = view |> element("button", "Structured") |> render_click()
 
       assert html =~ "Naming collision detected"
       refute html =~ "No child stops to rename"

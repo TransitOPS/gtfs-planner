@@ -947,6 +947,21 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     Map.get(level_index, stop.level_id)
   end
 
+  defp traversed_reverse?(nil, _from_stop_id, _to_stop_id), do: nil
+
+  defp traversed_reverse?(pathway, from_stop_id, to_stop_id) do
+    pathway.from_stop_id == to_stop_id and pathway.to_stop_id == from_stop_id
+  end
+
+  defp effective_signposted_as(%{traversed_reverse?: true, is_bidirectional: true} = hop) do
+    normalize_signposted_as(hop.reversed_signposted_as) ||
+      normalize_signposted_as(hop.signposted_as)
+  end
+
+  defp effective_signposted_as(hop) do
+    normalize_signposted_as(hop.signposted_as)
+  end
+
   defp path_segments(path), do: do_path_segments(path, [])
 
   defp do_path_segments([from_hop, to_hop | rest], acc) do
@@ -979,7 +994,17 @@ defmodule GtfsPlanner.Gtfs.StationReport do
         from_stop = Map.get(stop_index, from_hop.stop_id)
         level_diff = compute_level_diff(from_stop, to_stop, level_index)
         traversal = if pathway, do: TraversalCalculator.calculate(pathway, level_diff), else: nil
-        build_enriched_hop(to_hop, to_stop, pathway, traversal, level_diff, level_index)
+        traversed_reverse? = traversed_reverse?(pathway, from_hop.stop_id, to_hop.stop_id)
+
+        build_enriched_hop(
+          to_hop,
+          to_stop,
+          pathway,
+          traversal,
+          level_diff,
+          level_index,
+          traversed_reverse?
+        )
       end)
 
     hops = [start_enriched | enriched_hops]
@@ -993,7 +1018,15 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     }
   end
 
-  defp build_enriched_hop(hop, stop, pathway, traversal, level_diff, level_index) do
+  defp build_enriched_hop(
+         hop,
+         stop,
+         pathway,
+         traversal,
+         level_diff,
+         level_index,
+         traversed_reverse? \\ nil
+       ) do
     stop_level = if stop, do: stop.level_id, else: nil
 
     level_data =
@@ -1016,6 +1049,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       pathway_mode_label:
         if(is_integer(hop.pathway_mode), do: Pathway.mode_label(hop.pathway_mode), else: nil),
       is_bidirectional: pathway && pathway.is_bidirectional,
+      traversed_reverse?: traversed_reverse?,
       signposted_as: pathway && pathway.signposted_as,
       reversed_signposted_as: pathway && pathway.reversed_signposted_as,
       level_diff: level_diff,
@@ -1052,7 +1086,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       |> Enum.uniq()
       |> length()
 
-    signposted_segments = Enum.count(pathway_hops, &present?(&1.signposted_as))
+    signposted_segments = Enum.count(pathway_hops, &present?(effective_signposted_as(&1)))
     has_stairs = Enum.any?(pathway_hops, &(&1.pathway_mode == 2))
     has_escalator = Enum.any?(pathway_hops, &(&1.pathway_mode == 4))
     has_elevator = Enum.any?(pathway_hops, &(&1.pathway_mode == 5))
@@ -1122,4 +1156,13 @@ defmodule GtfsPlanner.Gtfs.StationReport do
   defp present?(value) when is_binary(value), do: String.trim(value) != ""
   defp present?(nil), do: false
   defp present?(_), do: true
+
+  defp normalize_signposted_as(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_signposted_as(value), do: value
 end

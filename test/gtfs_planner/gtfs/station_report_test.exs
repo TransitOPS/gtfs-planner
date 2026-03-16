@@ -273,6 +273,92 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert detail.enriched.all_bidirectional == false
     end
 
+    test "entrance to platform paths mark reverse traversal for bidirectional segments" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("ENT_A", 2, parent_station: "STATION"),
+            stop("GEN_A", 3, parent_station: "STATION"),
+            stop("BOARD_A", 4, parent_station: "PLAT_A")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_LOBBY", "ENT_A", "GEN_A", 1, true,
+              signposted_as: "To concourse",
+              reversed_signposted_as: "To entrance"
+            ),
+            pathway("PW_FINAL", "BOARD_A", "GEN_A", 1, true,
+              signposted_as: "To concourse",
+              reversed_signposted_as: "To platform"
+            )
+          ]
+        })
+
+      section = section(report, "entrance_platform_connectivity")
+      item = item(section, "entrance_platform_paths")
+      [detail] = item.details
+
+      assert detail.reachable
+      refute detail.enriched.hops |> Enum.at(1) |> Map.get(:traversed_reverse?)
+      assert detail.enriched.hops |> Enum.at(2) |> Map.get(:traversed_reverse?)
+      assert detail.enriched.totals.signposted_segments == 2
+
+      assert detail.enriched.hops |> Enum.at(2) |> Map.get(:reversed_signposted_as) ==
+               "To platform"
+    end
+
+    test "entrance to platform paths do not count reverse-only signage on forward traversal" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("ENT_A", 2, parent_station: "STATION"),
+            stop("BOARD_A", 4, parent_station: "PLAT_A")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_DIRECT", "ENT_A", "BOARD_A", 1, true,
+              reversed_signposted_as: "To entrance"
+            )
+          ]
+        })
+
+      section = section(report, "entrance_platform_connectivity")
+      item = item(section, "entrance_platform_paths")
+      [detail] = item.details
+
+      assert detail.reachable
+      refute detail.enriched.hops |> Enum.at(1) |> Map.get(:traversed_reverse?)
+      assert detail.enriched.totals.signposted_segments == 0
+    end
+
+    test "entrance to platform paths fall back to forward signage when reverse signage is whitespace" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("ENT_A", 2, parent_station: "STATION"),
+            stop("BOARD_A", 4, parent_station: "PLAT_A")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_DIRECT", "BOARD_A", "ENT_A", 1, true,
+              signposted_as: "To platform",
+              reversed_signposted_as: "   "
+            )
+          ]
+        })
+
+      section = section(report, "entrance_platform_connectivity")
+      item = item(section, "entrance_platform_paths")
+      [detail] = item.details
+
+      assert detail.reachable
+      assert detail.enriched.hops |> Enum.at(1) |> Map.get(:traversed_reverse?)
+      assert detail.enriched.totals.signposted_segments == 1
+    end
+
     test "entrance to platform paths warn when entrances or platforms are missing" do
       report =
         StationReport.build(%{
