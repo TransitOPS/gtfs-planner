@@ -1797,6 +1797,7 @@ const DiagramCanvasHook = {
     if (!imageEl) {
       this._activeImageLoadToken += 1;
       this._imageLoadInProgress = false;
+      this.currentImageHref = null;
       return;
     }
 
@@ -1805,6 +1806,7 @@ const DiagramCanvasHook = {
     if (!href) {
       this._activeImageLoadToken += 1;
       this._imageLoadInProgress = false;
+      this.currentImageHref = null;
       return;
     }
 
