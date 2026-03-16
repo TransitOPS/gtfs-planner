@@ -2496,66 +2496,105 @@ defmodule GtfsPlanner.Gtfs do
   Returns `{:ok, %{renamed_stops: n, updated_pathways: n, updated_references: n}}`
   or `{:error, reason}`.
   """
-  def apply_station_naming(
-        organization_id,
-        gtfs_version_id,
-        station_stop_id,
-        style \\ :structured
-      ) do
+  def apply_station_naming(organization_id, gtfs_version_id, station_stop_id),
+    do: do_apply_station_naming(organization_id, gtfs_version_id, station_stop_id, :structured, nil)
+
+  def apply_station_naming(organization_id, gtfs_version_id, station_stop_id, style),
+    do: do_apply_station_naming(organization_id, gtfs_version_id, station_stop_id, style, nil)
+
+  def apply_station_naming(organization_id, gtfs_version_id, station_stop_id, style, selected_ids),
+    do: do_apply_station_naming(organization_id, gtfs_version_id, station_stop_id, style, selected_ids)
+
+  defp do_apply_station_naming(
+         organization_id,
+         gtfs_version_id,
+         station_stop_id,
+         style,
+         selected_ids
+       ) do
     with {:ok, preview} <-
            preview_station_naming(organization_id, gtfs_version_id, station_stop_id, style) do
-      old_to_new = Map.new(preview.rows, fn %{old_id: old, new_id: new} -> {old, new} end)
-      old_to_temp = build_temp_stop_id_map(preview.rows)
+      rows =
+        if selected_ids do
+          Enum.filter(preview.rows, fn %{old_id: old_id} ->
+            MapSet.member?(selected_ids, old_id)
+          end)
+        else
+          preview.rows
+        end
 
-      temp_to_new =
-        Map.new(old_to_temp, fn {old_id, temp_id} -> {temp_id, Map.fetch!(old_to_new, old_id)} end)
+      case rows do
+        [] ->
+          {:ok, %{renamed_stops: 0, updated_pathways: 0, updated_references: 0}}
 
-      now = DateTime.utc_now()
+        _ ->
+          old_to_new = Map.new(rows, fn %{old_id: old, new_id: new} -> {old, new} end)
+          old_to_temp = build_temp_stop_id_map(rows)
 
-      multi =
-        Ecto.Multi.new()
-        |> Ecto.Multi.run(:rename_stops_to_temp, fn repo, _changes ->
-          {:ok,
-           update_stop_field_values(
-             repo,
-             :stop_id,
-             old_to_temp,
-             organization_id,
-             gtfs_version_id,
-             now
-           )}
-        end)
-        |> Ecto.Multi.run(:update_refs_to_temp, fn repo, _changes ->
-          {:ok,
-           update_stop_id_references(repo, old_to_temp, organization_id, gtfs_version_id, now)}
-        end)
-        |> Ecto.Multi.run(:rename_stops_to_final, fn repo, _changes ->
-          {:ok,
-           update_stop_field_values(
-             repo,
-             :stop_id,
-             temp_to_new,
-             organization_id,
-             gtfs_version_id,
-             now
-           )}
-        end)
-        |> Ecto.Multi.run(:update_refs_to_final, fn repo, _changes ->
-          {:ok,
-           update_stop_id_references(repo, temp_to_new, organization_id, gtfs_version_id, now)}
-        end)
+          temp_to_new =
+            Map.new(old_to_temp, fn {old_id, temp_id} ->
+              {temp_id, Map.fetch!(old_to_new, old_id)}
+            end)
 
-      case Repo.transaction(multi) do
-        {:ok, %{rename_stops_to_final: renamed, update_refs_to_final: refs}} ->
-          {:ok,
-           %{
-             renamed_stops: renamed,
-             updated_pathways: refs.pathways,
-             updated_references: refs.total
-           }}
+          now = DateTime.utc_now()
 
-        {:error, _step, reason, _changes} ->
-          {:error, reason}
+          multi =
+            Ecto.Multi.new()
+            |> Ecto.Multi.run(:rename_stops_to_temp, fn repo, _changes ->
+              {:ok,
+               update_stop_field_values(
+                 repo,
+                 :stop_id,
+                 old_to_temp,
+                 organization_id,
+                 gtfs_version_id,
+                 now
+               )}
+            end)
+            |> Ecto.Multi.run(:update_refs_to_temp, fn repo, _changes ->
+              {:ok,
+               update_stop_id_references(
+                 repo,
+                 old_to_temp,
+                 organization_id,
+                 gtfs_version_id,
+                 now
+               )}
+            end)
+            |> Ecto.Multi.run(:rename_stops_to_final, fn repo, _changes ->
+              {:ok,
+               update_stop_field_values(
+                 repo,
+                 :stop_id,
+                 temp_to_new,
+                 organization_id,
+                 gtfs_version_id,
+                 now
+               )}
+            end)
+            |> Ecto.Multi.run(:update_refs_to_final, fn repo, _changes ->
+              {:ok,
+               update_stop_id_references(
+                 repo,
+                 temp_to_new,
+                 organization_id,
+                 gtfs_version_id,
+                 now
+               )}
+            end)
+
+          case Repo.transaction(multi) do
+            {:ok, %{rename_stops_to_final: renamed, update_refs_to_final: refs}} ->
+              {:ok,
+               %{
+                 renamed_stops: renamed,
+                 updated_pathways: refs.pathways,
+                 updated_references: refs.total
+               }}
+
+            {:error, _step, reason, _changes} ->
+              {:error, reason}
+          end
       end
     end
   end

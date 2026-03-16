@@ -563,4 +563,80 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
       assert updated_walkability_test.stop_id == "hub_platform_elevator_l1_01"
     end
   end
+
+  describe "apply_station_naming/5 with selected_ids" do
+    test "renames only selected stops", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SEL_STATION",
+          stop_name: "Sel Station",
+          location_type: 1
+        })
+
+      _platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SEL_PLAT",
+          stop_name: "Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _entrance =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SEL_ENT",
+          stop_name: "Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      selected = MapSet.new(["SEL_PLAT"])
+
+      assert {:ok, %{renamed_stops: 1}} =
+               Gtfs.apply_station_naming(org.id, version.id, station.stop_id, :structured, selected)
+
+      # Selected stop was renamed
+      refute Gtfs.get_stop_by_stop_id(org.id, version.id, "SEL_PLAT")
+
+      # Unselected stop retains its original stop_id
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "SEL_ENT")
+    end
+
+    test "renames nothing when selected_ids is empty", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "EMPTY_SEL",
+          stop_name: "Empty Sel",
+          location_type: 1
+        })
+
+      _platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "EMPTY_SEL_PLAT",
+          stop_name: "Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      assert {:ok, %{renamed_stops: 0}} =
+               Gtfs.apply_station_naming(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 :structured,
+                 MapSet.new()
+               )
+
+      # Original stop_id still exists
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "EMPTY_SEL_PLAT")
+    end
+  end
 end
