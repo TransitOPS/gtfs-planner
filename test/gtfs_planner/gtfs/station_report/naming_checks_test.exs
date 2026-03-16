@@ -59,6 +59,17 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecksTest do
       assert [%{id: "E1", reason: "expected \"West Entrance\""}] = item.details
     end
 
+    test "naming_title_case warns for uppercase four-letter words that are not acronyms" do
+      station = stop("STATION", 1, stop_name: "Station")
+      child = stop("E1", 2, stop_name: "EXIT Plaza")
+
+      items = NamingChecks.validate(station, [child])
+      item = find_item(items, "naming_title_case")
+
+      assert item.status == :warn
+      assert [%{id: "E1", reason: "expected \"Exit Plaza\""}] = item.details
+    end
+
     test "naming_title_case preserves four-letter acronyms" do
       station = stop("STATION", 1, stop_name: "Station")
       child = stop("E1", 2, stop_name: "MUNI Entrance")
