@@ -82,7 +82,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:walkability_mode, :create)
      |> assign(:editing_walkability_test, nil)
      |> assign(:show_naming_drawer, false)
-     |> assign(:naming_style, :kebab)
+     |> assign(:naming_style, :structured)
      |> assign(:naming_preview, [])
      |> assign(:naming_renamed_stops_count, 0)
      |> assign(:naming_updated_pathways_count, 0)
@@ -1618,7 +1618,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:show_naming_drawer, false)
-     |> assign(:naming_style, :kebab)
+     |> assign(:naming_style, :structured)
      |> assign(:naming_preview, [])
      |> assign(:naming_renamed_stops_count, 0)
      |> assign(:naming_updated_pathways_count, 0)
@@ -1629,37 +1629,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("toggle_naming_row", %{"id" => old_id}, socket) do
-    excluded = socket.assigns.naming_excluded_ids
+    preview_ids = naming_preview_id_set(socket.assigns.naming_preview)
+    excluded = MapSet.intersection(socket.assigns.naming_excluded_ids, preview_ids)
 
     excluded =
-      if MapSet.member?(excluded, old_id),
-        do: MapSet.delete(excluded, old_id),
-        else: MapSet.put(excluded, old_id)
+      cond do
+        not MapSet.member?(preview_ids, old_id) ->
+          excluded
 
-    selected_count = length(socket.assigns.naming_preview) - MapSet.size(excluded)
+        MapSet.member?(excluded, old_id) ->
+          MapSet.delete(excluded, old_id)
 
-    {:noreply,
-     socket
-     |> assign(:naming_excluded_ids, excluded)
-     |> assign(:naming_renamed_stops_count, selected_count)}
+        true ->
+          MapSet.put(excluded, old_id)
+      end
+
+    {:noreply, assign_naming_selection(socket, excluded)}
   end
 
   @impl true
   def handle_event("toggle_naming_select_all", _params, socket) do
-    excluded = socket.assigns.naming_excluded_ids
     preview = socket.assigns.naming_preview
+    preview_ids = naming_preview_id_set(preview)
+    excluded = MapSet.intersection(socket.assigns.naming_excluded_ids, preview_ids)
 
     {excluded, selected_count} =
       if MapSet.size(excluded) == 0 do
-        all_ids = MapSet.new(preview, & &1.old_id)
-        {all_ids, 0}
+        {preview_ids, 0}
       else
         {MapSet.new(), length(preview)}
       end
 
     {:noreply,
      socket
-     |> assign(:naming_excluded_ids, excluded)
+     |> assign_naming_selection(excluded)
      |> assign(:naming_renamed_stops_count, selected_count)}
   end
 
@@ -1695,7 +1698,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> assign(:show_naming_drawer, false)
-         |> assign(:naming_style, :kebab)
+         |> assign(:naming_style, :structured)
          |> assign(:naming_preview, [])
          |> assign(:naming_applying?, false)
          |> assign(:naming_error, nil)
@@ -3412,6 +3415,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         |> assign(:naming_error, "Naming collision detected: #{Enum.join(collisions, ", ")}")
     end
   end
+
+  defp assign_naming_selection(socket, excluded_ids) do
+    preview_ids = naming_preview_id_set(socket.assigns.naming_preview)
+    excluded_ids = MapSet.intersection(excluded_ids, preview_ids)
+    selected_ids = MapSet.difference(preview_ids, excluded_ids)
+
+    socket
+    |> assign(:naming_excluded_ids, excluded_ids)
+    |> assign(:naming_renamed_stops_count, MapSet.size(selected_ids))
+    |> assign(
+      :naming_updated_pathways_count,
+      naming_selected_pathway_count(socket, selected_ids)
+    )
+  end
+
+  defp naming_selected_pathway_count(socket, selected_ids) do
+    if MapSet.size(selected_ids) == 0 do
+      0
+    else
+      org_id = socket.assigns.current_organization.id
+      version_id = socket.assigns.current_gtfs_version.id
+      station_stop_id = socket.assigns.station.stop_id
+      style = socket.assigns.naming_style
+
+      case Gtfs.preview_station_naming(org_id, version_id, station_stop_id, style, selected_ids) do
+        {:ok, preview} -> preview.updated_pathways_count
+        {:error, _reason} -> 0
+      end
+    end
+  end
+
+  defp naming_preview_id_set(preview_rows), do: MapSet.new(preview_rows, & &1.old_id)
 
   defp purge_otp_artifact(organization_id, gtfs_version_id) do
     case Lifecycle.purge_artifact_on_success(organization_id, gtfs_version_id) do

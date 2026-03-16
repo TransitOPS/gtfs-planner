@@ -282,6 +282,54 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
     end
   end
 
+  describe "preview_station_naming/5 with selected_ids" do
+    test "limits collisions and counts to the selected subset", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SUBSET",
+          stop_name: "Subset",
+          location_type: 1
+        })
+
+      _selected =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SUBSET_KEEP",
+          stop_name: "Keep",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _colliding_unselected =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SUBSET_OTHER",
+          stop_name: "Keep",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _pathway =
+        pathway_fixture(org.id, version.id, "SUBSET_KEEP", station.stop_id, %{pathway_mode: 1})
+
+      assert {:ok, preview} =
+               Gtfs.preview_station_naming(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 :kebab,
+                 MapSet.new(["SUBSET_KEEP"])
+               )
+
+      assert preview.renamed_stops_count == 1
+      assert preview.updated_pathways_count == 1
+      assert [%{old_id: "SUBSET_KEEP", new_id: "keep-01"}] = preview.rows
+    end
+  end
+
   describe "apply_station_naming/4 with :kebab style" do
     test "renames stops using kebab-cased names", %{
       organization: org,
@@ -534,7 +582,9 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
       refute Gtfs.get_stop_by_stop_id(org.id, version.id, "BOARD_01")
 
       # Find the renamed boarding area and verify its parent_station still points to the renamed platform
-      renamed_boarding = Gtfs.get_stop_by_stop_id(org.id, version.id, "hub_boarding_general_l1_01")
+      renamed_boarding =
+        Gtfs.get_stop_by_stop_id(org.id, version.id, "hub_boarding_general_l1_01")
+
       assert renamed_boarding
       assert renamed_boarding.parent_station == "hub_platform_elevator_l1_01"
 
@@ -597,7 +647,13 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
       selected = MapSet.new(["SEL_PLAT"])
 
       assert {:ok, %{renamed_stops: 1}} =
-               Gtfs.apply_station_naming(org.id, version.id, station.stop_id, :structured, selected)
+               Gtfs.apply_station_naming(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 :structured,
+                 selected
+               )
 
       # Selected stop was renamed
       refute Gtfs.get_stop_by_stop_id(org.id, version.id, "SEL_PLAT")
@@ -637,6 +693,49 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
 
       # Original stop_id still exists
       assert Gtfs.get_stop_by_stop_id(org.id, version.id, "EMPTY_SEL_PLAT")
+    end
+
+    test "can rename a selected subset even when unselected rows would collide", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "COLLIDE_SUBSET",
+          stop_name: "Subset Station",
+          location_type: 1
+        })
+
+      _selected =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "COLLIDE_SELECTED",
+          stop_name: "Shared Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _unselected =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "COLLIDE_UNSELECTED",
+          stop_name: "Shared Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      assert {:ok, %{renamed_stops: 1}} =
+               Gtfs.apply_station_naming(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 :kebab,
+                 MapSet.new(["COLLIDE_SELECTED"])
+               )
+
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "shared-name-01")
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "COLLIDE_UNSELECTED")
+      refute Gtfs.get_stop_by_stop_id(org.id, version.id, "COLLIDE_SELECTED")
     end
   end
 end

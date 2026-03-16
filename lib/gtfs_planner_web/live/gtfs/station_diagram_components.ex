@@ -3940,6 +3940,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                       type="checkbox"
                       class="checkbox checkbox-xs"
                       checked={MapSet.size(@excluded_ids) == 0}
+                      aria-label="Select all child stops for renaming"
                       phx-click="toggle_naming_select_all"
                     />
                   </th>
@@ -3958,6 +3959,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                       type="checkbox"
                       class="checkbox checkbox-xs"
                       checked={not MapSet.member?(@excluded_ids, row.old_id)}
+                      aria-label={"Select #{row.old_id} for renaming"}
                       phx-click="toggle_naming_row"
                       phx-value-id={row.old_id}
                     />
@@ -3980,7 +3982,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               {if(@renamed_stops_count == 1, do: "child stop", else: "child stops")} will be renamed.
             </span>
             <span class="font-medium">{@updated_pathways_count}</span>
-            {if(@updated_pathways_count == 1, do: "pathway reference", else: "pathway references")} will be updated.
+            {if(@updated_pathways_count == 1, do: "pathway reference", else: "pathway references")}
+            {if(MapSet.size(@excluded_ids) > 0,
+              do: " will be updated for the selected stops.",
+              else: " will be updated."
+            )}
           </p>
         </div>
 
@@ -3993,7 +3999,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             class="btn btn-primary btn-sm"
             phx-click="apply_naming_convention"
             phx-disable-with="Applying…"
-            disabled={@preview_rows == [] || @applying? || MapSet.size(@excluded_ids) == length(@preview_rows)}
+            disabled={
+              @preview_rows == [] || @applying? || MapSet.size(@excluded_ids) == length(@preview_rows)
+            }
           >
             Apply naming convention
           </button>
