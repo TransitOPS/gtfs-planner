@@ -807,6 +807,81 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("search_stop", %{"stop_id_query" => query}, socket) do
+    query = String.trim(query)
+
+    if query == "" do
+      {:noreply, socket}
+    else
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
+      station = socket.assigns.station
+
+      case Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, query) do
+        nil ->
+          {:noreply, put_flash(socket, :error, "Stop \"#{query}\" not found")}
+
+        stop ->
+          platform_stop_ids =
+            platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
+
+          belongs_to_station =
+            stop.parent_station == station.stop_id or
+              MapSet.member?(platform_stop_ids, stop.parent_station)
+
+          cond do
+            not belongs_to_station ->
+              {:noreply,
+               put_flash(socket, :error, "Stop \"#{query}\" does not belong to this station")}
+
+            is_nil(stop.diagram_coordinate) ->
+              {:noreply,
+               put_flash(socket, :error, "Stop \"#{query}\" has no diagram position")}
+
+            true ->
+              level =
+                Enum.find(socket.assigns.levels, fn l ->
+                  l.level_id == stop.level_id
+                end)
+
+              socket =
+                if level && level.id != socket.assigns.active_level.id do
+                  socket
+                  |> disable_measurement()
+                  |> assign(:active_level, level)
+                  |> assign(:pending_xy, nil)
+                  |> assign(:diagram_error, nil)
+                  |> assign(:show_walkability_drawer, false)
+                  |> assign(:walkability_stop, nil)
+                  |> assign(
+                    :walkability_form,
+                    to_form(default_walkability_form_params(), as: :walkability)
+                  )
+                  |> clear_walkability_selection()
+                  |> assign(:walkability_last_results, [])
+                  |> assign(:walkability_mode, :create)
+                  |> assign(:editing_walkability_test, nil)
+                  |> reset_reposition_state()
+                  |> load_level_data(level)
+                else
+                  socket
+                end
+
+              coord = stop.diagram_coordinate
+
+              {:noreply,
+               socket
+               |> open_edit_sidebar(stop)
+               |> push_event("center_on_stop", %{
+                 x: to_float(coord["x"]),
+                 y: to_float(coord["y"])
+               })}
+          end
+      end
+    end
+  end
+
+  @impl true
   def handle_event("toggle_level_edit", _params, socket) do
     {:noreply, assign(socket, :editing_level, !socket.assigns.editing_level)}
   end
