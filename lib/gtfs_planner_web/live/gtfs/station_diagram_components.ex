@@ -216,7 +216,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
           <div class="ml-auto flex items-center gap-2">
             <%= if @mode == :view and @has_diagram do %>
-              <form phx-submit="search_stop" class="flex items-center">
+              <form id="stop-search-form" phx-submit="search_stop" class="flex items-center">
                 <input
                   type="text"
                   name="stop_id_query"

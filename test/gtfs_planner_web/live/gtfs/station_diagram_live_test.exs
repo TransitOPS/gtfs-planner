@@ -7179,7 +7179,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      refute has_element?(view, "#diagram-action-strip form[phx-submit='search_stop']")
+      refute has_element?(view, "#stop-search-form")
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
       {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-diagram.png")
@@ -7187,16 +7187,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert has_element?(view, "#diagram-action-strip form[phx-submit='search_stop']")
+      assert has_element?(view, "#stop-search-form")
 
       render_hook(view, "switch_mode", %{"mode" => "add"})
-      refute has_element?(view, "#diagram-action-strip form[phx-submit='search_stop']")
+      refute has_element?(view, "#stop-search-form")
 
       render_hook(view, "switch_mode", %{"mode" => "connect"})
-      refute has_element?(view, "#diagram-action-strip form[phx-submit='search_stop']")
+      refute has_element?(view, "#stop-search-form")
     end
 
-    test "search form submit handles valid, invalid, and empty query without crashing", %{
+    test "search form submit handles valid and invalid query without crashing", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -7224,7 +7224,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       valid_result =
         view
-        |> form("#diagram-action-strip form[phx-submit='search_stop']", %{
+        |> form("#stop-search-form", %{
           "stop_id_query" => child_stop.stop_id
         })
         |> render_submit()
@@ -7232,27 +7232,41 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert valid_result =~ "Search Child Submit"
       assert valid_result =~ "SEARCH_CHILD_SUBMIT"
 
-      {:ok, blank_view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      refute has_element?(blank_view, "#child-stop-drawer[open]")
-
-      blank_view
-      |> form("#diagram-action-strip form[phx-submit='search_stop']", %{"stop_id_query" => "   "})
-      |> render_submit()
-
-      refute has_element?(blank_view, "#flash-error")
-      refute has_element?(blank_view, "#child-stop-drawer[open]")
-
       view
-      |> form("#diagram-action-strip form[phx-submit='search_stop']", %{
+      |> form("#stop-search-form", %{
         "stop_id_query" => "NONEXISTENT_SUBMIT_STOP"
       })
       |> render_submit()
 
       assert has_element?(view, "#flash-error", ~s(Stop "NONEXISTENT_SUBMIT_STOP" not found))
 
-      assert has_element?(view, "#diagram-action-strip form[phx-submit='search_stop']")
+      assert has_element?(view, "#stop-search-form")
+    end
+
+    test "blank search query is ignored without flash or sidebar", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-blank-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      refute has_element?(view, "#child-stop-drawer[open]")
+
+      view
+      |> form("#stop-search-form", %{"stop_id_query" => "   "})
+      |> render_submit()
+
+      refute has_element?(view, "#flash-error")
+      refute has_element?(view, "#child-stop-drawer[open]")
     end
 
     test "stop found on current level opens edit sidebar", %{
@@ -7273,13 +7287,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
         })
 
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-current-level-diagram.png")
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       result =
-        render_hook(view, "search_stop", %{"stop_id_query" => child_stop.stop_id})
+        view
+        |> form("#stop-search-form", %{"stop_id_query" => child_stop.stop_id})
+        |> render_submit()
 
       assert result =~ "Search Child 1"
       assert result =~ "SEARCH_CHILD_1"
@@ -7296,6 +7315,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       organization: organization,
       gtfs_version: gtfs_version,
       station: station,
+      level: level,
       level_2: level_2
     } do
       child_stop =
@@ -7308,17 +7328,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
         })
 
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-different-level-diagram.png")
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       result =
-        render_hook(view, "search_stop", %{"stop_id_query" => child_stop.stop_id})
+        view
+        |> form("#stop-search-form", %{"stop_id_query" => child_stop.stop_id})
+        |> render_submit()
 
       assert result =~ "Search Child L2"
       assert result =~ "SEARCH_CHILD_L2"
       assert_push_event(view, "center_on_stop", %{x: 50.0, y: 50.0})
+
+      assert has_element?(
+               view,
+               "#diagram-action-strip form[phx-change='switch_level'] option[value='#{level_2.id}'][selected]"
+             )
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.active_level.id == level_2.id
@@ -7330,14 +7360,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       user: user,
       organization: organization,
       gtfs_version: gtfs_version,
-      station: station
+      station: station,
+      level: level
     } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-not-found-diagram.png")
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      render_hook(view, "search_stop", %{"stop_id_query" => "NONEXISTENT_STOP"})
+      view
+      |> form("#stop-search-form", %{"stop_id_query" => "NONEXISTENT_STOP"})
+      |> render_submit()
 
       assert has_element?(view, "#flash-error", ~s(Stop "NONEXISTENT_STOP" not found))
     end
@@ -7367,12 +7403,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
         })
 
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-other-station-diagram.png")
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      render_hook(view, "search_stop", %{"stop_id_query" => "OTHER_CHILD"})
+      view
+      |> form("#stop-search-form", %{"stop_id_query" => "OTHER_CHILD"})
+      |> render_submit()
 
       assert has_element?(
                view,
@@ -7399,12 +7440,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           diagram_coordinate: nil
         })
 
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-no-coord-diagram.png")
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      render_hook(view, "search_stop", %{"stop_id_query" => "NO_COORD_CHILD"})
+      view
+      |> form("#stop-search-form", %{"stop_id_query" => "NO_COORD_CHILD"})
+      |> render_submit()
 
       assert has_element?(
                view,
@@ -7418,7 +7464,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       user: user,
       organization: organization,
       gtfs_version: gtfs_version,
-      station: station
+      station: station,
+      level: level
     } do
       _orphan_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -7430,12 +7477,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           diagram_coordinate: %{"x" => 14.0, "y" => 28.0}
         })
 
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-orphan-level-diagram.png")
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      render_hook(view, "search_stop", %{"stop_id_query" => "ORPHAN_LEVEL_CHILD"})
+      view
+      |> form("#stop-search-form", %{"stop_id_query" => "ORPHAN_LEVEL_CHILD"})
+      |> render_submit()
 
       assert has_element?(
                view,
