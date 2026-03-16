@@ -52,6 +52,10 @@ defmodule GtfsPlanner.Gtfs.StationReport.HelpersTest do
       assert Helpers.title_case("ADA entrance to NYC") == "ADA Entrance to NYC"
     end
 
+    test "normalizes non-acronym all-caps words" do
+      assert Helpers.title_case("WEST entrance") == "West Entrance"
+    end
+
     test "handles single word" do
       assert Helpers.title_case("entrance") == "Entrance"
     end

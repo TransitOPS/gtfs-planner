@@ -125,7 +125,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.Helpers do
   defp clamp(value, _min, _max), do: value
 
   defp acronym?(word) do
-    String.length(word) <= 4 and
+    String.length(word) <= 3 and
       String.match?(word, ~r/[[:upper:]]/) and
       not String.match?(word, ~r/[[:lower:]]/)
   end
