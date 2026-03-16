@@ -101,7 +101,8 @@ defmodule GtfsPlanner.Gtfs.StationReport do
           core_pathways,
           pathway_index,
           stop_index,
-          level_index
+          level_index,
+          platform_target_index
         ),
         accessibility_section(child_stops, core_pathways, stop_index, level_index),
         attribute_completeness_section(station_pathways),
@@ -466,67 +467,107 @@ defmodule GtfsPlanner.Gtfs.StationReport do
          pathways,
          pathway_index,
          stop_index,
-         level_index
+         level_index,
+         platform_target_index
        ) do
-    {entrances, boarding_areas} = entrances_and_boarding_areas(child_stops)
+    {entrances, platforms} = entrances_and_platforms(child_stops)
 
     cond do
-      entrances == [] or boarding_areas == [] ->
+      entrances == [] or platforms == [] ->
         %{
           id: "entrance_platform_connectivity",
-          title: "Entrance -> Boarding Connectivity",
+          title: "Entrance -> Platform Connectivity",
           items: [
             item(
               "entrance_platform_paths",
-              "Entrance-to-boarding directed shortest paths",
+              "Entrance-to-platform directed paths",
               :warn,
-              %{entrances: 0, boarding_areas: 0, connected_pairs: 0, total_pairs: 0},
+              %{
+                entrances: 0,
+                platforms: 0,
+                connected_pairs: 0,
+                accessible_pairs: 0,
+                total_pairs: 0
+              },
               []
             )
           ]
         }
 
       true ->
-        adjacency = build_path_traversal_adjacency(pathways)
+        all_adjacency = build_path_traversal_adjacency(pathways)
+        step_free_adjacency = build_step_free_path_traversal_adjacency(pathways)
 
         details =
-          for entrance <- entrances, boarding_area <- boarding_areas do
-            case shortest_directed_path(adjacency, entrance.stop_id, boarding_area.stop_id) do
-              {:found, path} ->
-                %{
-                  entrance_stop_id: entrance.stop_id,
-                  platform_stop_id: boarding_area.stop_id,
-                  reachable: true,
-                  path: path,
-                  enriched: enrich_path(path, pathway_index, stop_index, level_index)
-                }
+          for entrance <- entrances, platform <- platforms do
+            targets =
+              Map.get(
+                platform_target_index,
+                platform.stop_id,
+                MapSet.new([platform.stop_id])
+              )
 
-              :not_found ->
-                %{
-                  entrance_stop_id: entrance.stop_id,
-                  platform_stop_id: boarding_area.stop_id,
-                  reachable: false,
-                  path: [],
-                  enriched: nil
-                }
-            end
+            shortest_result =
+              shortest_directed_path_to_any(all_adjacency, entrance.stop_id, targets)
+
+            accessible_result =
+              shortest_directed_path_to_any(step_free_adjacency, entrance.stop_id, targets)
+
+            {shortest_data, accessible_data, paths_identical} =
+              case {shortest_result, accessible_result} do
+                {{:found, s_path}, {:found, a_path}} ->
+                  s_enriched = enrich_path(s_path, pathway_index, stop_index, level_index)
+                  a_enriched = enrich_path(a_path, pathway_index, stop_index, level_index)
+
+                  identical =
+                    Enum.map(s_path, & &1.stop_id) == Enum.map(a_path, & &1.stop_id)
+
+                  {
+                    %{path: s_path, enriched: s_enriched},
+                    %{path: a_path, enriched: a_enriched},
+                    identical
+                  }
+
+                {{:found, s_path}, :not_found} ->
+                  s_enriched = enrich_path(s_path, pathway_index, stop_index, level_index)
+                  {%{path: s_path, enriched: s_enriched}, nil, false}
+
+                {:not_found, {:found, a_path}} ->
+                  a_enriched = enrich_path(a_path, pathway_index, stop_index, level_index)
+                  {nil, %{path: a_path, enriched: a_enriched}, false}
+
+                {:not_found, :not_found} ->
+                  {nil, nil, false}
+              end
+
+            %{
+              entrance_stop_id: entrance.stop_id,
+              platform_stop_id: platform.stop_id,
+              reachable: shortest_data != nil,
+              accessible: accessible_data != nil,
+              shortest: shortest_data,
+              accessible_path: accessible_data,
+              paths_identical: paths_identical
+            }
           end
 
         connected_pairs = Enum.count(details, & &1.reachable)
+        accessible_pairs = Enum.count(details, & &1.accessible)
         total_pairs = length(details)
 
         %{
           id: "entrance_platform_connectivity",
-          title: "Entrance -> Boarding Connectivity",
+          title: "Entrance -> Platform Connectivity",
           items: [
             item(
               "entrance_platform_paths",
-              "Entrance-to-boarding directed shortest paths",
+              "Entrance-to-platform directed paths",
               if(connected_pairs == total_pairs and total_pairs > 0, do: :pass, else: :fail),
               %{
                 entrances: length(entrances),
-                boarding_areas: length(boarding_areas),
+                platforms: length(platforms),
                 connected_pairs: connected_pairs,
+                accessible_pairs: accessible_pairs,
                 total_pairs: total_pairs
               },
               details
