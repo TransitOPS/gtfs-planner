@@ -59,9 +59,9 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecksTest do
       assert [%{id: "E1", reason: "expected \"West Entrance\""}] = item.details
     end
 
-    test "naming_title_case preserves known four-letter acronyms" do
+    test "naming_title_case preserves four-letter acronyms" do
       station = stop("STATION", 1, stop_name: "Station")
-      child = stop("E1", 2, stop_name: "PATH Entrance")
+      child = stop("E1", 2, stop_name: "MUNI Entrance")
 
       items = NamingChecks.validate(station, [child])
       item = find_item(items, "naming_title_case")
