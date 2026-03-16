@@ -809,22 +809,22 @@ defmodule GtfsPlanner.GtfsTest do
     end
 
     test "generates kebab-01 from stop name", %{organization: org, gtfs_version: version} do
-      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == "platform-2-01"
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == {:ok, "platform-2-01"}
     end
 
     test "increments to -02 when -01 already exists", %{organization: org, gtfs_version: version} do
       _stop = stop_fixture(org.id, version.id, %{stop_id: "platform-2-01"})
-      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == "platform-2-02"
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == {:ok, "platform-2-02"}
     end
 
     test "skips multiple collisions", %{organization: org, gtfs_version: version} do
       _stop1 = stop_fixture(org.id, version.id, %{stop_id: "platform-2-01"})
       _stop2 = stop_fixture(org.id, version.id, %{stop_id: "platform-2-02"})
-      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == "platform-2-03"
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == {:ok, "platform-2-03"}
     end
 
     test "falls back to 'stop' when name is empty", %{organization: org, gtfs_version: version} do
-      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "") == "stop-01"
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "") == {:ok, "stop-01"}
     end
 
     test "excludes current stop_id from collision check", %{
@@ -834,7 +834,17 @@ defmodule GtfsPlanner.GtfsTest do
       _stop = stop_fixture(org.id, version.id, %{stop_id: "platform-2-01"})
 
       assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2", "platform-2-01") ==
-               "platform-2-01"
+               {:ok, "platform-2-01"}
+    end
+
+    test "returns error when all sequences exhausted", %{organization: org, gtfs_version: version} do
+      for n <- 1..99 do
+        stop_fixture(org.id, version.id, %{
+          stop_id: "x-#{String.pad_leading(Integer.to_string(n), 2, "0")}"
+        })
+      end
+
+      assert {:error, _msg} = Gtfs.generate_kebab_stop_id(org.id, version.id, "X")
     end
   end
 

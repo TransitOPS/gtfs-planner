@@ -814,10 +814,10 @@ defmodule GtfsPlanner.Gtfs do
 
     case seq do
       nil ->
-        raise "Unable to generate unique kebab stop_id for #{inspect(kebab)}"
+        {:error, "Unable to generate unique stop ID — all sequences exhausted"}
 
       n ->
-        "#{kebab}-#{String.pad_leading(Integer.to_string(n), 2, "0")}"
+        {:ok, "#{kebab}-#{String.pad_leading(Integer.to_string(n), 2, "0")}"}
     end
   end
 
@@ -893,17 +893,6 @@ defmodule GtfsPlanner.Gtfs do
           stop
           |> Stop.changeset(attrs)
           |> Repo.update()
-        end)
-        |> Ecto.Multi.run(:cascade_parent_station, fn repo, _changes ->
-          {:ok,
-           update_stop_field_values(
-             repo,
-             :parent_station,
-             mapping,
-             stop.organization_id,
-             stop.gtfs_version_id,
-             now
-           )}
         end)
         |> Ecto.Multi.run(:cascade_references, fn repo, _changes ->
           {:ok,
