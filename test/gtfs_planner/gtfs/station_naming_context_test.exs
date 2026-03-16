@@ -110,6 +110,49 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
 
       assert "st_platform_general_lvl_01" in collisions
     end
+
+    test "preview includes boarding areas that are children of platforms", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARD_STATION",
+          stop_name: "Board Station",
+          location_type: 1
+        })
+
+      platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLAT_B",
+          stop_name: "Platform B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "ground"
+        })
+
+      _boarding_area =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BA_1",
+          stop_name: "Boarding Area 1",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: "ground"
+        })
+
+      _pathway =
+        pathway_fixture(org.id, version.id, "PLAT_B", "BA_1", %{
+          pathway_mode: 1
+        })
+
+      assert {:ok, preview} =
+               Gtfs.preview_station_naming(org.id, version.id, station.stop_id)
+
+      old_ids = Enum.map(preview.rows, & &1.old_id)
+      assert "PLAT_B" in old_ids
+      assert "BA_1" in old_ids
+      assert length(preview.rows) == 2
+    end
   end
 
   describe "preview_station_naming/4 with :kebab style" do
@@ -236,6 +279,54 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
                Gtfs.preview_station_naming(org.id, version.id, station.stop_id, :kebab)
 
       assert "main-hall-01" in collisions
+    end
+  end
+
+  describe "preview_station_naming/5 with selected_ids" do
+    test "limits collisions and counts to the selected subset", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SUBSET",
+          stop_name: "Subset",
+          location_type: 1
+        })
+
+      _selected =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SUBSET_KEEP",
+          stop_name: "Keep",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _colliding_unselected =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SUBSET_OTHER",
+          stop_name: "Keep",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _pathway =
+        pathway_fixture(org.id, version.id, "SUBSET_KEEP", station.stop_id, %{pathway_mode: 1})
+
+      assert {:ok, preview} =
+               Gtfs.preview_station_naming(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 :kebab,
+                 MapSet.new(["SUBSET_KEEP"])
+               )
+
+      assert preview.renamed_stops_count == 1
+      assert preview.updated_pathways_count == 1
+      assert [%{old_id: "SUBSET_KEEP", new_id: "keep-01"}] = preview.rows
     end
   end
 
@@ -479,13 +570,23 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
           address_lon: Decimal.new("-71.0589")
         })
 
-      assert {:ok, %{renamed_stops: 1, updated_references: updated_references}} =
+      assert {:ok, %{renamed_stops: 2, updated_references: updated_references}} =
                Gtfs.apply_station_naming(org.id, version.id, station.stop_id)
 
       assert updated_references > 0
 
       assert Gtfs.get_stop_by_stop_id(org.id, version.id, "hub_platform_elevator_l1_01")
       refute Gtfs.get_stop_by_stop_id(org.id, version.id, platform.stop_id)
+
+      # Boarding area was also renamed (no longer exists as BOARD_01)
+      refute Gtfs.get_stop_by_stop_id(org.id, version.id, "BOARD_01")
+
+      # Find the renamed boarding area and verify its parent_station still points to the renamed platform
+      renamed_boarding =
+        Gtfs.get_stop_by_stop_id(org.id, version.id, "hub_boarding_general_l1_01")
+
+      assert renamed_boarding
+      assert renamed_boarding.parent_station == "hub_platform_elevator_l1_01"
 
       stop_times =
         from(st in GtfsPlanner.Gtfs.StopTime,
@@ -510,10 +611,218 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
 
       updated_walkability_test = Repo.get!(WalkabilityTest, walkability_test.id)
       assert updated_walkability_test.stop_id == "hub_platform_elevator_l1_01"
+    end
+  end
 
-      updated_boarding = Gtfs.get_stop_by_stop_id(org.id, version.id, "BOARD_01")
+  describe "apply_station_naming/5 with selected_ids" do
+    test "renames only selected stops", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SEL_STATION",
+          stop_name: "Sel Station",
+          location_type: 1
+        })
 
-      assert updated_boarding.parent_station == "hub_platform_elevator_l1_01"
+      _platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SEL_PLAT",
+          stop_name: "Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _entrance =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SEL_ENT",
+          stop_name: "Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      selected = MapSet.new(["SEL_PLAT"])
+
+      assert {:ok, %{renamed_stops: 1}} =
+               Gtfs.apply_station_naming(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 :structured,
+                 selected
+               )
+
+      # Selected stop was renamed
+      refute Gtfs.get_stop_by_stop_id(org.id, version.id, "SEL_PLAT")
+
+      # Unselected stop retains its original stop_id
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "SEL_ENT")
+    end
+
+    test "renames nothing when selected_ids is empty", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "EMPTY_SEL",
+          stop_name: "Empty Sel",
+          location_type: 1
+        })
+
+      _platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "EMPTY_SEL_PLAT",
+          stop_name: "Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      assert {:ok, %{renamed_stops: 0}} =
+               Gtfs.apply_station_naming(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 :structured,
+                 MapSet.new()
+               )
+
+      # Original stop_id still exists
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "EMPTY_SEL_PLAT")
+    end
+
+    test "renames nothing for an empty selection even when the full rename would collide", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "EMPTY_COLLIDE",
+          stop_name: "Empty Collide",
+          location_type: 1
+        })
+
+      _child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "EMPTY_COLLIDE_CHILD",
+          stop_name: "Main Hall",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _blocker =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "main-hall-01",
+          stop_name: "Existing Main Hall",
+          location_type: 0,
+          level_id: "L1"
+        })
+
+      assert {:error, {:naming_collision, _collisions}} =
+               Gtfs.preview_station_naming(org.id, version.id, station.stop_id, :kebab)
+
+      assert {:ok, %{renamed_stops: 0}} =
+               Gtfs.apply_station_naming(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 :kebab,
+                 MapSet.new()
+               )
+
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "EMPTY_COLLIDE_CHILD")
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "main-hall-01")
+    end
+
+    test "can rename a selected subset even when unselected rows would collide", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "COLLIDE_SUBSET",
+          stop_name: "Subset Station",
+          location_type: 1
+        })
+
+      _selected =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "COLLIDE_SELECTED",
+          stop_name: "Shared Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _unselected =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "COLLIDE_UNSELECTED",
+          stop_name: "Shared Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      assert {:ok, %{renamed_stops: 1}} =
+               Gtfs.apply_station_naming(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 :kebab,
+                 MapSet.new(["COLLIDE_SELECTED"])
+               )
+
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "shared-name-01")
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "COLLIDE_UNSELECTED")
+      refute Gtfs.get_stop_by_stop_id(org.id, version.id, "COLLIDE_SELECTED")
+    end
+
+    test "rejects a selected subset when it would collide with an unselected stop id", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PARTIAL_CONFLICT",
+          stop_name: "Partial Conflict",
+          location_type: 1
+        })
+
+      _selected =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PARTIAL_SELECTED",
+          stop_name: "Target",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _unselected =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "target-01",
+          stop_name: "Other",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      assert {:error, {:naming_collision, collisions}} =
+               Gtfs.apply_station_naming(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 :kebab,
+                 MapSet.new(["PARTIAL_SELECTED"])
+               )
+
+      assert "target-01" in collisions
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "PARTIAL_SELECTED")
+      assert Gtfs.get_stop_by_stop_id(org.id, version.id, "target-01")
     end
   end
 end
