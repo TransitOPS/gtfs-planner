@@ -7037,7 +7037,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, selected_child.stop_id) ==
                nil
 
-      assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "subset-selected-01")
+      assert Gtfs.get_stop_by_stop_id(
+               organization.id,
+               gtfs_version.id,
+               "naming_station_platform_general_ground_01"
+             )
+
       assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, unselected_child.stop_id)
       refute Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "subset-unselected-01")
 
