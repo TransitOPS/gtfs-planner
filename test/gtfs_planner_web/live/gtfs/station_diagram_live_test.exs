@@ -7238,6 +7238,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert result =~ "Search Child 1"
       assert result =~ "SEARCH_CHILD_1"
+      assert_push_event(view, "center_on_stop", %{x: 30.0, y: 40.0})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.selected_stop_id == child_stop.id
+      assert state.socket.assigns.active_level.id == level.id
     end
 
     test "stop found on different level switches level and opens sidebar", %{
@@ -7268,6 +7273,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert result =~ "Search Child L2"
       assert result =~ "SEARCH_CHILD_L2"
+      assert_push_event(view, "center_on_stop", %{x: 50.0, y: 50.0})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.active_level.id == level_2.id
+      assert state.socket.assigns.selected_stop_id == child_stop.id
     end
 
     test "stop not found shows flash error", %{
@@ -7356,6 +7366,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#flash-error",
                ~s(Stop "NO_COORD_CHILD" has no diagram position)
              )
+    end
+
+    test "malformed search_stop payload is ignored", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "search_stop", %{"stop_id_query" => 123})
+      render_hook(view, "search_stop", %{})
+
+      refute has_element?(view, "#flash-error")
     end
   end
 end
