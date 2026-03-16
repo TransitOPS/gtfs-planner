@@ -14,8 +14,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
 
   @methodology_sections [
     "data_integrity",
+    "naming_conventions",
     "accessibility",
     "entrance_platform_connectivity",
+    "pathway_validation",
+    "levels_validation",
     "attribute_completeness"
   ]
 
@@ -154,6 +157,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
             section={find_section(@report, "data_integrity")}
             gps_section={find_section(@report, "gps")}
             methodology_mode={Map.get(@methodology_by_section, "data_integrity", false)}
+            gtfs_version_id={to_string(@current_gtfs_version.id)}
+            station_stop_id={@stop_id}
+          />
+
+          <.naming_conventions_section
+            section={find_section(@report, "naming_conventions")}
+            gtfs_version_id={to_string(@current_gtfs_version.id)}
+            station_stop_id={@stop_id}
           />
 
           <.entrance_platform_connectivity_section
@@ -163,6 +174,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
             }
             reversed_pairs={@reversed_pairs}
             expanded_entrances={@expanded_entrances}
+          />
+
+          <.pathway_validation_section
+            section={find_section(@report, "pathway_validation")}
+            gtfs_version_id={to_string(@current_gtfs_version.id)}
+            station_stop_id={@stop_id}
+          />
+
+          <.levels_validation_section
+            section={find_section(@report, "levels_validation")}
+            gtfs_version_id={to_string(@current_gtfs_version.id)}
+            station_stop_id={@stop_id}
           />
 
           <.accessibility_section
@@ -225,8 +248,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
   defp default_methodology_by_section do
     %{
       "data_integrity" => false,
+      "naming_conventions" => false,
       "accessibility" => false,
       "entrance_platform_connectivity" => false,
+      "pathway_validation" => false,
+      "levels_validation" => false,
       "attribute_completeness" => false
     }
   end
