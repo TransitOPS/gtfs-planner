@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.Helpers do
   """
 
   @earth_radius_m 6_371_000.0
+  @known_acronyms MapSet.new(~w[BART MBTA PATH])
 
   @doc """
   Builds a report item map with all required keys including `category`.
@@ -125,8 +126,11 @@ defmodule GtfsPlanner.Gtfs.StationReport.Helpers do
   defp clamp(value, _min, _max), do: value
 
   defp acronym?(word) do
-    String.length(word) <= 3 and
-      String.match?(word, ~r/[[:upper:]]/) and
+    upcase_token?(word) and (String.length(word) <= 3 or MapSet.member?(@known_acronyms, word))
+  end
+
+  defp upcase_token?(word) do
+    String.match?(word, ~r/[[:upper:]]/) and
       not String.match?(word, ~r/[[:lower:]]/)
   end
 

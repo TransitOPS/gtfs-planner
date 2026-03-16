@@ -56,6 +56,12 @@ defmodule GtfsPlanner.Gtfs.StationReport.HelpersTest do
       assert Helpers.title_case("WEST entrance") == "West Entrance"
     end
 
+    test "preserves known four-letter acronyms" do
+      assert Helpers.title_case("PATH entrance") == "PATH Entrance"
+      assert Helpers.title_case("MBTA station") == "MBTA Station"
+      assert Helpers.title_case("BART plaza") == "BART Plaza"
+    end
+
     test "handles single word" do
       assert Helpers.title_case("entrance") == "Entrance"
     end
