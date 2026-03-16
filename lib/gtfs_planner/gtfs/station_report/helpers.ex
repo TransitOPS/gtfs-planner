@@ -39,6 +39,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.Helpers do
         :math.cos(deg_to_rad(lat1)) * :math.cos(deg_to_rad(lat2)) *
           :math.sin(dlon / 2) * :math.sin(dlon / 2)
 
+    a = clamp(a, 0.0, 1.0)
     c = 2 * :math.atan2(:math.sqrt(a), :math.sqrt(1 - a))
 
     @earth_radius_m * c
@@ -58,10 +59,15 @@ defmodule GtfsPlanner.Gtfs.StationReport.Helpers do
     |> Enum.map(fn {word, index} ->
       downcased = String.downcase(word)
 
-      if index > 0 and MapSet.member?(minor_words, downcased) do
-        downcased
-      else
-        capitalize_word(downcased)
+      cond do
+        acronym?(word) ->
+          word
+
+        index > 0 and MapSet.member?(minor_words, downcased) ->
+          downcased
+
+        true ->
+          capitalize_word(downcased)
       end
     end)
     |> Enum.join(" ")
@@ -113,6 +119,16 @@ defmodule GtfsPlanner.Gtfs.StationReport.Helpers do
   # Private helpers
 
   defp deg_to_rad(deg), do: deg * :math.pi() / 180.0
+
+  defp clamp(value, min, _max) when value < min, do: min
+  defp clamp(value, _min, max) when value > max, do: max
+  defp clamp(value, _min, _max), do: value
+
+  defp acronym?(word) do
+    String.length(word) <= 4 and
+      String.match?(word, ~r/[[:upper:]]/) and
+      not String.match?(word, ~r/[[:lower:]]/)
+  end
 
   defp capitalize_word(""), do: ""
 

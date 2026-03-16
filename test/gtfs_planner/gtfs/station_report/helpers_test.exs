@@ -29,6 +29,13 @@ defmodule GtfsPlanner.Gtfs.StationReport.HelpersTest do
       distance = Helpers.haversine(Decimal.new("0.0"), 0.0, 0.0, Decimal.new("1.0"))
       assert_in_delta distance, 111_195, 200
     end
+
+    test "clamps near-antipodal calculations to a finite maximum distance" do
+      distance = Helpers.haversine(89.999999, 0.0, -89.999999, 180.0)
+
+      assert distance == distance
+      assert_in_delta distance, :math.pi() * 6_371_000.0, 1.0
+    end
   end
 
   describe "title_case/1" do
@@ -40,8 +47,9 @@ defmodule GtfsPlanner.Gtfs.StationReport.HelpersTest do
       assert Helpers.title_case("gate of the north") == "Gate of the North"
     end
 
-    test "does not preserve all-caps tokens" do
-      assert Helpers.title_case("JFK") == "Jfk"
+    test "preserves acronym-style tokens" do
+      assert Helpers.title_case("JFK") == "JFK"
+      assert Helpers.title_case("ADA entrance to NYC") == "ADA Entrance to NYC"
     end
 
     test "handles single word" do
