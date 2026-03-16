@@ -630,6 +630,128 @@ defmodule GtfsPlanner.ValidationsTest do
       assert Validations.get_active_pathways_trip_test(org.id, version.id) == nil
     end
 
+    test "get_active_station_reachability_run/3 returns newest active run for station", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station_stop_id = "station-active"
+
+      {:ok, older_pending_run} =
+        Validations.create_station_reachability_run(org.id, version.id, station_stop_id)
+
+      Process.sleep(10)
+
+      {:ok, latest_pending_run} =
+        Validations.create_station_reachability_run(org.id, version.id, station_stop_id)
+
+      {:ok, latest_running_run} = Validations.mark_running(latest_pending_run)
+
+      {:ok, _other_station_run} =
+        Validations.create_station_reachability_run(org.id, version.id, "station-other")
+
+      {:ok, _terminal_run} =
+        older_pending_run
+        |> GtfsPlanner.Validations.ValidationRun.changeset(%{
+          status: "completed",
+          completed_at: DateTime.utc_now()
+        })
+        |> GtfsPlanner.Repo.update()
+
+      assert %GtfsPlanner.Validations.ValidationRun{id: run_id} =
+               Validations.get_active_station_reachability_run(
+                 org.id,
+                 version.id,
+                 station_stop_id
+               )
+
+      assert run_id == latest_running_run.id
+    end
+
+    test "get_active_station_reachability_run/3 returns nil when no active station run exists", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station_stop_id = "station-inactive"
+
+      {:ok, run} =
+        Validations.create_station_reachability_run(org.id, version.id, station_stop_id)
+
+      {:ok, _failed_run} =
+        run
+        |> GtfsPlanner.Validations.ValidationRun.changeset(%{
+          status: "failed",
+          completed_at: DateTime.utc_now()
+        })
+        |> GtfsPlanner.Repo.update()
+
+      assert Validations.get_active_station_reachability_run(org.id, version.id, station_stop_id) ==
+               nil
+    end
+
+    test "reusable_station_reachability_run/4 returns stale for old active run", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station_stop_id = "station-stale"
+
+      {:ok, pending_run} =
+        Validations.create_station_reachability_run(org.id, version.id, station_stop_id)
+
+      {:ok, running_run} = Validations.mark_running(pending_run)
+
+      old_started_at = DateTime.add(DateTime.utc_now(), -300, :second)
+
+      {:ok, running_run} =
+        running_run
+        |> GtfsPlanner.Validations.ValidationRun.changeset(%{started_at: old_started_at})
+        |> GtfsPlanner.Repo.update()
+
+      assert {:stale, %GtfsPlanner.Validations.ValidationRun{id: run_id}} =
+               Validations.reusable_station_reachability_run(
+                 org.id,
+                 version.id,
+                 station_stop_id,
+                 max_age_seconds: 60
+               )
+
+      assert run_id == running_run.id
+    end
+
+    test "reusable_station_reachability_run/4 returns active run when fresh", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station_stop_id = "station-fresh"
+
+      {:ok, pending_run} =
+        Validations.create_station_reachability_run(org.id, version.id, station_stop_id)
+
+      {:ok, running_run} = Validations.mark_running(pending_run)
+
+      assert {:ok, %GtfsPlanner.Validations.ValidationRun{id: run_id}} =
+               Validations.reusable_station_reachability_run(
+                 org.id,
+                 version.id,
+                 station_stop_id,
+                 max_age_seconds: 60
+               )
+
+      assert run_id == running_run.id
+    end
+
+    test "reusable_station_reachability_run/4 returns none when no active run", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      assert :none =
+               Validations.reusable_station_reachability_run(
+                 org.id,
+                 version.id,
+                 "missing-station",
+                 max_age_seconds: 60
+               )
+    end
+
     test "get_pathways_trip_test_status/1 returns normalized status for pathways run", %{
       organization: org,
       gtfs_version: version
@@ -1114,7 +1236,7 @@ defmodule GtfsPlanner.ValidationsTest do
       assert fetched.organization_id == org.id
     end
 
-    test "list_walkability_tests_for_stop_ids/2 scopes by org and stop ids", %{
+    test "list_walkability_tests_for_stop_ids/3 scopes by org/version and stop ids", %{
       organization: org,
       gtfs_version: version
     } do
@@ -1153,10 +1275,10 @@ defmodule GtfsPlanner.ValidationsTest do
           address: "Address D"
         })
 
-      assert [] = Validations.list_walkability_tests_for_stop_ids(org.id, [])
+      assert [] = Validations.list_walkability_tests_for_stop_ids(org.id, version.id, [])
 
       results =
-        Validations.list_walkability_tests_for_stop_ids(org.id, [
+        Validations.list_walkability_tests_for_stop_ids(org.id, version.id, [
           "stop-included-a",
           "stop-included-b"
         ])

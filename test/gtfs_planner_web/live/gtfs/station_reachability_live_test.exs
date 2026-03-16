@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.ValidationsFixtures
   import GtfsPlanner.VersionsFixtures
+  import Ecto.Query
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Repo
@@ -262,6 +263,294 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
 
       assert has_element?(view, "#station-reachability-progress .loading-spinner")
       assert has_element?(view, "#station-reachability-progress", "Running pathways trip test...")
+      assert has_element?(view, "#run-station-reachability[disabled]")
+      assert has_element?(view, "#station-reachability-run-state", "Run in progress")
+      assert has_element?(view, "#station-reachability-run-state", "Last checked")
+    end
+
+    test "mount resumes active station reachability run from backend state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      {:ok, pending_run} =
+        Validations.create_station_reachability_run(
+          organization.id,
+          gtfs_version.id,
+          station.stop_id
+        )
+
+      {:ok, active_run} = Validations.mark_running(pending_run)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      assert has_element?(view, "#station-reachability-progress")
+      assert has_element?(view, "#station-reachability-progress", "Running pathways trip test...")
+      assert has_element?(view, "#station-reachability-run-state", active_run.id)
+      assert has_element?(view, "#run-station-reachability[disabled]")
+    end
+
+    test "mount ignores stale active run and leaves run action enabled", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      {:ok, pending_run} =
+        Validations.create_station_reachability_run(
+          organization.id,
+          gtfs_version.id,
+          station.stop_id
+        )
+
+      {:ok, stale_run} = Validations.mark_running(pending_run)
+
+      stale_started_at = DateTime.add(DateTime.utc_now(), -1_800, :second)
+
+      {:ok, stale_run} =
+        stale_run
+        |> ValidationRun.changeset(%{started_at: stale_started_at})
+        |> Repo.update()
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      refute has_element?(view, "#station-reachability-progress")
+
+      assert has_element?(
+               view,
+               "#run-station-reachability[phx-click='run_reachability']:not([disabled])"
+             )
+
+      stale_run = Repo.get!(ValidationRun, stale_run.id)
+      assert stale_run.status == "failed"
+    end
+
+    test "run click reuses active backend run and does not create duplicate", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      {:ok, pending_run} =
+        Validations.create_station_reachability_run(
+          organization.id,
+          gtfs_version.id,
+          station.stop_id
+        )
+
+      {:ok, active_run} = Validations.mark_running(pending_run)
+
+      assert view
+             |> element("#run-station-reachability")
+             |> render_click()
+
+      refute_receive {:station_reachability_runner_started, _run_id}, 100
+
+      assert has_element?(view, "#station-reachability-progress")
+      assert has_element?(view, "#station-reachability-run-state", active_run.id)
+
+      station_runs =
+        Validations.list_validation_runs(organization.id, gtfs_version.id)
+        |> Enum.filter(fn run ->
+          run.run_type == "station_reachability" and
+            get_in(run.result_json || %{}, ["metadata", "station_stop_id"]) == station.stop_id
+        end)
+
+      assert length(station_runs) == 1
+    end
+
+    test "run click replaces stale backend run with a new run", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      {:ok, pending_run} =
+        Validations.create_station_reachability_run(
+          organization.id,
+          gtfs_version.id,
+          station.stop_id
+        )
+
+      {:ok, stale_run} = Validations.mark_running(pending_run)
+
+      stale_started_at = DateTime.add(DateTime.utc_now(), -1_800, :second)
+
+      {:ok, stale_run} =
+        stale_run
+        |> ValidationRun.changeset(%{started_at: stale_started_at})
+        |> Repo.update()
+
+      assert view
+             |> element("#run-station-reachability")
+             |> render_click()
+
+      assert_receive {:station_reachability_runner_started, new_run_id}
+      refute new_run_id == stale_run.id
+
+      stale_run = Repo.get!(ValidationRun, stale_run.id)
+      assert stale_run.status == "failed"
+
+      new_run = Repo.get!(ValidationRun, new_run_id)
+      assert new_run.status == "running"
+      assert new_run.run_type == "station_reachability"
+    end
+
+    test "polling keeps spinner active for pending status", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      assert view
+             |> element("#run-station-reachability")
+             |> render_click()
+
+      assert_receive {:station_reachability_runner_started, run_id}
+
+      run = Repo.get!(ValidationRun, run_id)
+
+      assert {:ok, _pending_run} =
+               run
+               |> ValidationRun.changeset(%{status: "pending"})
+               |> Repo.update()
+
+      send(view.pid, {:poll_pathways_trip_test_status, run.id})
+      _ = render(view)
+
+      assert has_element?(view, "#station-reachability-progress")
+      assert has_element?(view, "#station-reachability-progress", "Checking existing export...")
+      assert has_element?(view, "#run-station-reachability[disabled]")
+    end
+
+    test "polling does not override detailed prep phase with generic running label", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      assert view
+             |> element("#run-station-reachability")
+             |> render_click()
+
+      assert_receive {:station_reachability_runner_started, run_id}
+
+      send(view.pid, {:pathways_prep_progress, %{scope: :graph, phase: :building}})
+      _ = render(view)
+
+      assert has_element?(view, "#station-reachability-progress", "Building OTP graph...")
+
+      run = Repo.get!(ValidationRun, run_id)
+
+      assert {:ok, _running_run} =
+               run
+               |> ValidationRun.changeset(%{status: "running"})
+               |> Repo.update()
+
+      send(view.pid, {:poll_pathways_trip_test_status, run.id})
+      _ = render(view)
+
+      assert has_element?(view, "#station-reachability-progress", "Building OTP graph...")
+      refute has_element?(view, "#station-reachability-progress", "Running pathways trip test...")
+    end
+
+    test "polling replaces terminal detailed phase with running phase", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      assert view
+             |> element("#run-station-reachability")
+             |> render_click()
+
+      assert_receive {:station_reachability_runner_started, run_id}
+
+      send(view.pid, {:pathways_prep_progress, %{scope: :gtfs, phase: :done}})
+      _ = render(view)
+
+      assert has_element?(
+               view,
+               "#station-reachability-progress",
+               "GTFS export preparation complete"
+             )
+
+      send(view.pid, {:poll_pathways_trip_test_status, run_id})
+      _ = render(view)
+
+      assert has_element?(view, "#station-reachability-progress", "Running pathways trip test...")
+
+      refute has_element?(
+               view,
+               "#station-reachability-progress",
+               "GTFS export preparation complete"
+             )
+    end
+
+    test "polling tolerates unexpected status values without crashing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      assert view
+             |> element("#run-station-reachability")
+             |> render_click()
+
+      assert_receive {:station_reachability_runner_started, run_id}
+
+      from(vr in ValidationRun, where: vr.id == ^run_id)
+      |> Repo.update_all(set: [status: "queued"])
+
+      send(view.pid, {:poll_pathways_trip_test_status, run_id})
+      _ = render(view)
+
+      assert has_element?(view, "#station-reachability-progress")
       assert has_element?(view, "#run-station-reachability[disabled]")
     end
 

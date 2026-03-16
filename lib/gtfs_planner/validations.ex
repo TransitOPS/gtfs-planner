@@ -12,6 +12,7 @@ defmodule GtfsPlanner.Validations do
   alias GtfsPlanner.Validations.WalkabilityTest
 
   @pathways_report_version 1
+  @default_station_reachability_active_run_max_age_seconds 1200
 
   @doc """
   Creates a new validation run with status "started".
@@ -94,6 +95,101 @@ defmodule GtfsPlanner.Validations do
     |> order_by([run], desc: run.started_at, desc: run.inserted_at, desc: run.id)
     |> limit(1)
     |> Repo.one()
+  end
+
+  @doc """
+  Returns the newest active station reachability run for an organization,
+  GTFS version, and station stop id.
+
+  Active means status is `pending`, `started`, or `running`.
+  """
+  @spec get_active_station_reachability_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          ValidationRun.t() | nil
+  def get_active_station_reachability_run(organization_id, gtfs_version_id, station_stop_id)
+      when is_binary(station_stop_id) and station_stop_id != "" do
+    ValidationRun
+    |> where([run], run.organization_id == ^organization_id)
+    |> where([run], run.gtfs_version_id == ^gtfs_version_id)
+    |> where([run], run.run_type == "station_reachability")
+    |> where([run], run.status in ["pending", "started", "running"])
+    |> where(
+      [run],
+      fragment(
+        "COALESCE((?->'metadata'->>'station_stop_id'), (?->>'station_stop_id')) = ?",
+        run.result_json,
+        run.result_json,
+        ^station_stop_id
+      )
+    )
+    |> order_by([run], desc: run.started_at, desc: run.inserted_at, desc: run.id)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  def get_active_station_reachability_run(_organization_id, _gtfs_version_id, _station_stop_id),
+    do: nil
+
+  @doc """
+  Returns the current station reachability run reuse decision.
+
+  - `{:ok, run}` when an active run exists and is fresh.
+  - `{:stale, run}` when an active run exists but is stale.
+  - `:none` when no active run exists.
+  """
+  @spec reusable_station_reachability_run(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          keyword()
+        ) ::
+          {:ok, ValidationRun.t()} | {:stale, ValidationRun.t()} | :none
+  def reusable_station_reachability_run(
+        organization_id,
+        gtfs_version_id,
+        station_stop_id,
+        opts \\ []
+      ) do
+    case get_active_station_reachability_run(organization_id, gtfs_version_id, station_stop_id) do
+      nil ->
+        :none
+
+      %ValidationRun{} = run ->
+        if station_reachability_active_run_stale?(run, opts) do
+          {:stale, run}
+        else
+          {:ok, run}
+        end
+    end
+  end
+
+  @spec station_reachability_active_run_stale?(ValidationRun.t(), keyword()) :: boolean()
+  defp station_reachability_active_run_stale?(
+         %ValidationRun{started_at: %DateTime{} = started_at},
+         opts
+       ) do
+    DateTime.diff(DateTime.utc_now(), started_at, :second) >
+      station_reachability_active_run_max_age_seconds(opts)
+  end
+
+  defp station_reachability_active_run_stale?(%ValidationRun{}, _opts), do: false
+
+  @spec station_reachability_active_run_max_age_seconds(keyword()) :: pos_integer()
+  defp station_reachability_active_run_max_age_seconds(opts) do
+    case Keyword.get(
+           opts,
+           :max_age_seconds,
+           Application.get_env(
+             :gtfs_planner,
+             :station_reachability_active_run_max_age_seconds,
+             @default_station_reachability_active_run_max_age_seconds
+           )
+         ) do
+      value when is_integer(value) and value > 0 ->
+        value
+
+      _value ->
+        @default_station_reachability_active_run_max_age_seconds
+    end
   end
 
   @doc """

@@ -13,10 +13,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.ExportLive
   alias LiveSelect.Component, as: LiveSelectComponent
+  require Logger
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @pathways_trip_test_poll_interval_ms 250
+  @pathways_results_retry_limit 40
 
   @pathways_failure_messages %{
     no_walkability_tests: "No pathways tests are configured for this GTFS version.",
@@ -30,6 +32,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
     scoring_failure: "Pathways validation failed due to scoring errors.",
     pathways_runner_spawn_failed: "Pathways validation could not start.",
     pathways_trip_test_failed: "Pathways validation failed before OTP checks completed.",
+    pathways_stale_active_run:
+      "A stale pathways validation run was detected and replaced with a new run.",
     pathways_persistence_failed: "Pathways validation could not save run results.",
     pathways_export_prep_failed: "Pathways export preparation failed before runtime checks.",
     pathways_task_crashed: "Pathways validation task crashed unexpectedly.",
@@ -61,8 +65,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
      |> assign(:validation_run_id, nil)
      |> assign(:validating, false)
      |> assign(:validation_progress, nil)
+     |> assign(:validation_last_checked_at, nil)
      |> assign(:validation_result, nil)
      |> assign(:validation_error, nil)
+     |> assign(:pathways_results_retry_count, 0)
      |> assign(:pathways_failure, nil)
      |> assign(:pathways_failure_diagnostics, [])
      |> assign(:pathways_case_results, [])
@@ -109,14 +115,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
 
         case station_scope_data(organization_id, gtfs_version_id, station) do
           {:ok, scope_data} ->
+            base_socket =
+              socket
+              |> assign(:stop_id, stop_id)
+              |> assign(:station, station)
+              |> assign(:recent_validation_runs, recent_validation_runs)
+              |> assign(:station_walkability_tests, scope_data.station_walkability_tests)
+              |> assign(:station_stop_labels, scope_data.station_stop_labels)
+              |> assign(:platform_stop_ids, scope_data.platform_stop_ids)
+
             {:noreply,
-             socket
-             |> assign(:stop_id, stop_id)
-             |> assign(:station, station)
-             |> assign(:recent_validation_runs, recent_validation_runs)
-             |> assign(:station_walkability_tests, scope_data.station_walkability_tests)
-             |> assign(:station_stop_labels, scope_data.station_stop_labels)
-             |> assign(:platform_stop_ids, scope_data.platform_stop_ids)}
+             maybe_resume_active_station_reachability_run(
+               base_socket,
+               organization_id,
+               gtfs_version_id,
+               stop_id
+             )}
 
           {:error, :station_not_found} ->
             {:noreply,
@@ -184,6 +198,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
               <span class="loading loading-spinner loading-sm"></span>
               <span>{phase_label(Map.get(@validation_progress || %{}, :phase))}</span>
             </div>
+            <p id="station-reachability-run-state" class="text-xs text-base-content/70">
+              Run in progress · {@validation_run_id || "pending"}
+              <%= if @validation_last_checked_at do %>
+                · Last checked {format_poll_time(@validation_last_checked_at)}
+              <% end %>
+            </p>
           </div>
         <% end %>
 
@@ -710,33 +730,45 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.stop_id
 
-    case apply(Validations, :start_station_reachability_test, [
+    case Validations.reusable_station_reachability_run(
            organization_id,
            gtfs_version_id,
-           station_stop_id,
-           [status_callback: pathways_prep_status_callback(self())]
-         ]) do
-      {:ok, run} ->
-        Process.send_after(
-          self(),
-          {:poll_pathways_trip_test_status, run.id},
-          @pathways_trip_test_poll_interval_ms
+           station_stop_id
+         ) do
+      {:ok, active_run} ->
+        Logger.info(
+          "Resuming active station reachability run=#{active_run.id} station_stop_id=#{station_stop_id}"
         )
 
         {:noreply,
          socket
-         |> assign(:validation_run_id, run.id)
-         |> assign(:validating, true)
-         |> assign(:pathways_prep_detailed_progress, false)
-         |> assign(:validation_progress, pathways_status_progress(run.status))
-         |> assign(:validation_error, nil)
-         |> assign(:validation_result, nil)
-         |> assign(:pathways_failure_diagnostics, [])
-         |> assign(:pathways_case_results, [])
-         |> assign(:pathways_failure, nil)}
+         |> put_flash(:info, "A reachability run is already in progress. Resuming status.")
+         |> resume_station_reachability_run(active_run)}
 
-      {:error, reason} ->
-        {:noreply, assign_pathways_error_panel(socket, reason)}
+      {:stale, stale_run} ->
+        Logger.warning(
+          "Stale station reachability run detected run=#{stale_run.id} station_stop_id=#{station_stop_id}; starting new run"
+        )
+
+        _ = mark_stale_station_reachability_run(stale_run)
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "Previous run was stale. Starting a new reachability run.")
+         |> start_station_reachability_run(
+           organization_id,
+           gtfs_version_id,
+           station_stop_id
+         )}
+
+      :none ->
+        {:noreply,
+         start_station_reachability_run(
+           socket,
+           organization_id,
+           gtfs_version_id,
+           station_stop_id
+         )}
     end
   end
 
@@ -782,72 +814,132 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   def handle_info({:poll_pathways_trip_test_status, validation_run_id}, socket) do
     if socket.assigns.validation_run_id == validation_run_id and socket.assigns.validating do
       case Validations.get_pathways_trip_test_status(validation_run_id) do
-        {:ok, %{status: status} = status_payload} when status in ["started", "running"] ->
-          Process.send_after(
-            self(),
-            {:poll_pathways_trip_test_status, validation_run_id},
-            @pathways_trip_test_poll_interval_ms
-          )
-
-          {:noreply,
-           socket
-           |> assign(:validation_progress, to_validation_progress(status_payload))}
-
-        {:ok, %{status: "completed"} = status_payload} ->
-          case Validations.get_pathways_trip_test_results(validation_run_id) do
-            {:ok, pathways_results} ->
-              {:noreply,
-               socket
-               |> assign(:validating, false)
-               |> assign(:pathways_prep_detailed_progress, false)
-               |> assign(:validation_progress, to_validation_progress(status_payload))
-               |> assign(:validation_result, map_completed_validation_result(pathways_results))
-               |> assign(:validation_error, nil)
-               |> assign(:pathways_failure_diagnostics, [])
-               |> assign(:pathways_selection, pathways_selection(pathways_results))
-               |> assign(
-                 :pathways_case_results,
-                 Map.get(pathways_results, :walkability_test_run_results, [])
-               )
-               |> refresh_recent_validation_runs()}
-
-            {:error, reason} ->
-              {:noreply,
-               socket
-               |> assign(:validating, false)
-               |> assign(:pathways_prep_detailed_progress, false)
-               |> assign(:validation_progress, to_validation_progress(status_payload))
-               |> assign(:validation_result, nil)
-               |> assign(:pathways_case_results, [])
-               |> assign_pathways_error_panel(reason)
-               |> refresh_recent_validation_runs()}
-          end
-
-        {:ok, %{status: "failed"} = status_payload} ->
-          error_payload = Map.get(status_payload, :error_payload) || status_payload
-
-          {:noreply,
-           socket
-           |> assign(:validating, false)
-           |> assign(:pathways_prep_detailed_progress, false)
-           |> assign(:validation_progress, to_validation_progress(status_payload))
-           |> assign(:pathways_case_results, [])
-           |> assign(:pathways_selection, default_pathways_selection())
-           |> assign_pathways_error_panel(error_payload)
-           |> refresh_recent_validation_runs()}
-
         {:ok, status_payload} ->
-          {:noreply,
-           socket
-           |> assign(:validating, false)
-           |> assign(:pathways_prep_detailed_progress, false)
-           |> assign(:validation_progress, to_validation_progress(status_payload))}
+          case status_payload_status(status_payload) do
+            status when status in ["pending", "started", "running"] ->
+              Process.send_after(
+                self(),
+                {:poll_pathways_trip_test_status, validation_run_id},
+                @pathways_trip_test_poll_interval_ms
+              )
+
+              {:noreply,
+               socket
+               |> assign(:pathways_results_retry_count, 0)
+               |> assign(:validation_last_checked_at, DateTime.utc_now())
+               |> maybe_assign_pathways_status_progress(status_payload)}
+
+            "completed" ->
+              case Validations.get_pathways_trip_test_results(validation_run_id) do
+                {:ok, pathways_results} ->
+                  {:noreply,
+                   socket
+                   |> assign(:validating, false)
+                   |> assign(:pathways_prep_detailed_progress, false)
+                   |> assign(:pathways_results_retry_count, 0)
+                   |> assign(:validation_last_checked_at, DateTime.utc_now())
+                   |> assign(:validation_progress, to_validation_progress(status_payload))
+                   |> assign(
+                     :validation_result,
+                     map_completed_validation_result(pathways_results)
+                   )
+                   |> assign(:validation_error, nil)
+                   |> assign(:pathways_failure_diagnostics, [])
+                   |> assign(:pathways_selection, pathways_selection(pathways_results))
+                   |> assign(
+                     :pathways_case_results,
+                     Map.get(pathways_results, :walkability_test_run_results, [])
+                   )
+                   |> refresh_recent_validation_runs()}
+
+                {:error, reason} when reason in [:run_not_completed, :not_found] ->
+                  retry_count = socket.assigns.pathways_results_retry_count
+
+                  if retry_count < @pathways_results_retry_limit do
+                    Process.send_after(
+                      self(),
+                      {:poll_pathways_trip_test_status, validation_run_id},
+                      @pathways_trip_test_poll_interval_ms
+                    )
+
+                    {:noreply,
+                     socket
+                     |> assign(:validating, true)
+                     |> assign(:pathways_prep_detailed_progress, true)
+                     |> assign(:pathways_results_retry_count, retry_count + 1)
+                     |> assign(:validation_last_checked_at, DateTime.utc_now())
+                     |> assign(:validation_progress, %{
+                       phase: {:pathways_prep, :finalizing_results},
+                       percent: phase_percent(:finalizing_results)
+                     })}
+                  else
+                    {:noreply,
+                     socket
+                     |> assign(:validating, false)
+                     |> assign(:pathways_prep_detailed_progress, false)
+                     |> assign(:pathways_results_retry_count, 0)
+                     |> assign(:validation_last_checked_at, DateTime.utc_now())
+                     |> assign(:validation_progress, to_validation_progress(status_payload))
+                     |> assign(:validation_result, nil)
+                     |> assign(:pathways_case_results, [])
+                     |> assign_pathways_error_panel(reason)
+                     |> refresh_recent_validation_runs()}
+                  end
+
+                {:error, reason} ->
+                  {:noreply,
+                   socket
+                   |> assign(:validating, false)
+                   |> assign(:pathways_prep_detailed_progress, false)
+                   |> assign(:pathways_results_retry_count, 0)
+                   |> assign(:validation_last_checked_at, DateTime.utc_now())
+                   |> assign(:validation_progress, to_validation_progress(status_payload))
+                   |> assign(:validation_result, nil)
+                   |> assign(:pathways_case_results, [])
+                   |> assign_pathways_error_panel(reason)
+                   |> refresh_recent_validation_runs()}
+              end
+
+            "failed" ->
+              error_payload =
+                status_payload_value(status_payload, :error_payload) || status_payload
+
+              {:noreply,
+               socket
+               |> assign(:validating, false)
+               |> assign(:pathways_prep_detailed_progress, false)
+               |> assign(:pathways_results_retry_count, 0)
+               |> assign(:validation_last_checked_at, DateTime.utc_now())
+               |> assign(:validation_progress, to_validation_progress(status_payload))
+               |> assign(:pathways_case_results, [])
+               |> assign(:pathways_selection, default_pathways_selection())
+               |> assign_pathways_error_panel(error_payload)
+               |> refresh_recent_validation_runs()}
+
+            status ->
+              Logger.warning(
+                "Unexpected pathways status while polling station reachability run=#{validation_run_id} status=#{inspect(status)} payload=#{inspect(status_payload)}"
+              )
+
+              Process.send_after(
+                self(),
+                {:poll_pathways_trip_test_status, validation_run_id},
+                @pathways_trip_test_poll_interval_ms
+              )
+
+              {:noreply,
+               socket
+               |> assign(:validation_last_checked_at, DateTime.utc_now())
+               |> maybe_assign_pathways_status_progress(status_payload)}
+          end
 
         {:error, reason} ->
           {:noreply,
            socket
            |> assign(:validating, false)
            |> assign(:pathways_prep_detailed_progress, false)
+           |> assign(:pathways_results_retry_count, 0)
+           |> assign(:validation_last_checked_at, DateTime.utc_now())
            |> assign(:pathways_selection, default_pathways_selection())
            |> assign_pathways_error_panel(reason)}
       end
@@ -857,20 +949,64 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   end
 
   defp to_validation_progress(status_payload) do
-    phase = status_phase(status_payload.status)
+    status = status_payload_status(status_payload)
+    phase = status_phase(status)
 
     %{
       phase: {:pathways_prep, phase},
       percent: phase_percent(phase),
-      status: status_payload.status,
-      started_at: status_payload.started_at,
-      completed_at: status_payload.completed_at,
-      duration_ms: status_payload.duration_ms,
-      errors_count: status_payload.errors_count,
-      warnings_count: status_payload.warnings_count,
-      infos_count: status_payload.infos_count
+      status: status,
+      started_at: status_payload_value(status_payload, :started_at),
+      completed_at: status_payload_value(status_payload, :completed_at),
+      duration_ms: status_payload_value(status_payload, :duration_ms),
+      errors_count: status_payload_value(status_payload, :errors_count),
+      warnings_count: status_payload_value(status_payload, :warnings_count),
+      infos_count: status_payload_value(status_payload, :infos_count)
     }
   end
+
+  defp maybe_assign_pathways_status_progress(socket, status_payload) do
+    if keep_detailed_pathways_progress?(socket, status_payload) do
+      socket
+    else
+      assign(socket, :validation_progress, to_validation_progress(status_payload))
+    end
+  end
+
+  defp keep_detailed_pathways_progress?(socket, status_payload) do
+    socket.assigns.pathways_prep_detailed_progress and
+      status_payload_status(status_payload) in ["pending", "started", "running"] and
+      not terminal_detailed_pathways_phase?(socket.assigns.validation_progress)
+  end
+
+  defp terminal_detailed_pathways_phase?(%{phase: {:pathways_prep, phase}}),
+    do: terminal_pathways_prep_phase?(phase)
+
+  defp terminal_detailed_pathways_phase?(_progress), do: false
+
+  defp terminal_pathways_prep_phase?(:done), do: true
+  defp terminal_pathways_prep_phase?({:gtfs, :done}), do: true
+  defp terminal_pathways_prep_phase?({:graph, :done}), do: true
+  defp terminal_pathways_prep_phase?({:otp, :stopped}), do: true
+
+  defp terminal_pathways_prep_phase?({:suite, :finished, _completed, _total, _test_case_id}),
+    do: true
+
+  defp terminal_pathways_prep_phase?(_phase), do: false
+
+  defp status_payload_status(status_payload) do
+    case status_payload_value(status_payload, :status) do
+      status when is_binary(status) and status != "" -> status
+      status when is_atom(status) -> Atom.to_string(status)
+      _status -> "running"
+    end
+  end
+
+  defp status_payload_value(status_payload, key) when is_map(status_payload) do
+    Map.get(status_payload, key) || Map.get(status_payload, Atom.to_string(key))
+  end
+
+  defp status_payload_value(_status_payload, _key), do: nil
 
   defp top_failure_rows(pathways_results) do
     pathways_results
@@ -999,6 +1135,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
       "pathways_runner_spawn_failed" -> :pathways_runner_spawn_failed
       "pathways_trip_test_failed" -> :pathways_trip_test_failed
       "pathways_persistence_failed" -> :pathways_persistence_failed
+      "pathways_stale_active_run" -> :pathways_stale_active_run
       "pathways_export_prep_failed" -> :pathways_export_prep_failed
       "pathways_task_crashed" -> :pathways_task_crashed
       "pathways_status_unavailable" -> :pathways_status_unavailable
@@ -1109,6 +1246,97 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
     else
       socket
     end
+  end
+
+  defp maybe_resume_active_station_reachability_run(
+         socket,
+         organization_id,
+         gtfs_version_id,
+         station_stop_id
+       ) do
+    case Validations.reusable_station_reachability_run(
+           organization_id,
+           gtfs_version_id,
+           station_stop_id
+         ) do
+      :none ->
+        socket
+
+      {:ok, active_run} ->
+        Logger.info(
+          "Recovered active station reachability run=#{active_run.id} station_stop_id=#{station_stop_id}"
+        )
+
+        resume_station_reachability_run(socket, active_run)
+
+      {:stale, stale_run} ->
+        Logger.warning(
+          "Skipping stale station reachability run=#{stale_run.id} station_stop_id=#{station_stop_id}"
+        )
+
+        _ = mark_stale_station_reachability_run(stale_run)
+
+        socket
+        |> assign(:validating, false)
+        |> assign(:validation_run_id, nil)
+        |> assign(:pathways_prep_detailed_progress, false)
+        |> assign(:validation_progress, nil)
+        |> refresh_recent_validation_runs()
+    end
+  end
+
+  defp mark_stale_station_reachability_run(run) do
+    Validations.mark_pathways_failed(run, %{
+      reason: :pathways_stale_active_run,
+      details: %{
+        stale_run_id: run.id,
+        started_at: stale_run_started_at(run),
+        action: "superseded_by_new_run"
+      }
+    })
+  end
+
+  defp stale_run_started_at(%{started_at: %DateTime{} = started_at}),
+    do: DateTime.to_iso8601(started_at)
+
+  defp stale_run_started_at(_run), do: nil
+
+  defp start_station_reachability_run(socket, organization_id, gtfs_version_id, station_stop_id) do
+    case apply(Validations, :start_station_reachability_test, [
+           organization_id,
+           gtfs_version_id,
+           station_stop_id,
+           [status_callback: pathways_prep_status_callback(self())]
+         ]) do
+      {:ok, run} ->
+        socket
+        |> resume_station_reachability_run(run)
+        |> assign(:validation_progress, pathways_status_progress(run.status))
+
+      {:error, reason} ->
+        assign_pathways_error_panel(socket, reason)
+    end
+  end
+
+  defp resume_station_reachability_run(socket, run) do
+    Process.send_after(
+      self(),
+      {:poll_pathways_trip_test_status, run.id},
+      @pathways_trip_test_poll_interval_ms
+    )
+
+    socket
+    |> assign(:validation_run_id, run.id)
+    |> assign(:validating, true)
+    |> assign(:pathways_prep_detailed_progress, false)
+    |> assign(:pathways_results_retry_count, 0)
+    |> assign(:validation_last_checked_at, DateTime.utc_now())
+    |> assign(:validation_progress, pathways_status_progress(run.status))
+    |> assign(:validation_error, nil)
+    |> assign(:validation_result, nil)
+    |> assign(:pathways_failure_diagnostics, [])
+    |> assign(:pathways_case_results, [])
+    |> assign(:pathways_failure, nil)
   end
 
   defp refresh_station_walkability_tests(socket) do
@@ -1476,6 +1704,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
 
   defp format_date(datetime), do: Calendar.strftime(datetime, "%b %d, %Y %I:%M %p")
 
+  defp format_poll_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%H:%M:%S")
+  defp format_poll_time(_datetime), do: "—"
+
   defp pathways_prep_status_callback(live_view_pid) do
     fn payload ->
       send(live_view_pid, {:pathways_prep_progress, payload})
@@ -1485,9 +1716,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   defp pathways_status_progress("started"),
     do: %{phase: {:pathways_prep, :cache_check}, percent: 10}
 
+  defp pathways_status_progress("pending"),
+    do: %{phase: {:pathways_prep, :cache_check}, percent: 10}
+
   defp pathways_status_progress("running"), do: %{phase: {:pathways_prep, :running}, percent: 50}
   defp pathways_status_progress(_status), do: %{phase: :processing, percent: 95}
 
+  defp status_phase("pending"), do: :cache_check
   defp status_phase("started"), do: :cache_check
   defp status_phase("running"), do: :running
   defp status_phase("completed"), do: :done
@@ -1530,6 +1765,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   defp phase_label({:pathways_prep, {:suite, :finished, _completed, _total, _test_case_id}}),
     do: "Pathways suite finished"
 
+  defp phase_label({:pathways_prep, :finalizing_results}),
+    do: "Finalizing validation results..."
+
   defp phase_label({:pathways_prep, :running}), do: "Running pathways trip test..."
   defp phase_label(_), do: "Preparing..."
 
@@ -1562,6 +1800,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   defp phase_percent({:suite, :running, _completed, _total, _test_case_id}), do: 98
   defp phase_percent({:suite, :finishing, _completed, _total, _test_case_id}), do: 99
   defp phase_percent({:suite, :finished, _completed, _total, _test_case_id}), do: 100
+  defp phase_percent(:finalizing_results), do: 99
   defp phase_percent(_), do: 5
 
   defp pathways_prep_phase(payload) when is_map(payload) do
