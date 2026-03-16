@@ -82,13 +82,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:walkability_mode, :create)
      |> assign(:editing_walkability_test, nil)
      |> assign(:show_naming_drawer, false)
-     |> assign(:naming_style, :kebab)
+     |> assign(:naming_style, :structured)
      |> assign(:naming_preview, [])
      |> assign(:naming_renamed_stops_count, 0)
      |> assign(:naming_updated_pathways_count, 0)
      |> assign(:naming_applying?, false)
      |> assign(:naming_error, nil)
      |> assign(:naming_status, nil)
+     |> assign(:naming_excluded_ids, MapSet.new())
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg .svg),
        max_file_size: 10_000_000,
@@ -394,10 +395,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           updated_pathways_count={@naming_updated_pathways_count}
           applying?={@naming_applying?}
           error={@naming_error}
+          excluded_ids={@naming_excluded_ids}
         />
 
         <div :if={@naming_status} role="status" aria-live="polite" class="mx-4 sm:mx-6 lg:mx-8 mt-2">
-          <div class="alert alert-success text-sm">
+          <div class="alert alert-success alert-soft text-sm">
             <span>{@naming_status}</span>
             <button type="button" class="btn btn-ghost btn-xs" phx-click="dismiss_naming_status">
               Dismiss
@@ -1616,12 +1618,52 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:show_naming_drawer, false)
-     |> assign(:naming_style, :kebab)
+     |> assign(:naming_style, :structured)
      |> assign(:naming_preview, [])
      |> assign(:naming_renamed_stops_count, 0)
      |> assign(:naming_updated_pathways_count, 0)
      |> assign(:naming_applying?, false)
-     |> assign(:naming_error, nil)}
+     |> assign(:naming_error, nil)
+     |> assign(:naming_excluded_ids, MapSet.new())}
+  end
+
+  @impl true
+  def handle_event("toggle_naming_row", %{"id" => old_id}, socket) do
+    preview_ids = naming_preview_id_set(socket.assigns.naming_preview)
+    excluded = MapSet.intersection(socket.assigns.naming_excluded_ids, preview_ids)
+
+    excluded =
+      cond do
+        not MapSet.member?(preview_ids, old_id) ->
+          excluded
+
+        MapSet.member?(excluded, old_id) ->
+          MapSet.delete(excluded, old_id)
+
+        true ->
+          MapSet.put(excluded, old_id)
+      end
+
+    {:noreply, assign_naming_selection(socket, excluded)}
+  end
+
+  @impl true
+  def handle_event("toggle_naming_select_all", _params, socket) do
+    preview = socket.assigns.naming_preview
+    preview_ids = naming_preview_id_set(preview)
+    excluded = MapSet.intersection(socket.assigns.naming_excluded_ids, preview_ids)
+
+    {excluded, selected_count} =
+      if MapSet.size(excluded) == 0 do
+        {preview_ids, 0}
+      else
+        {MapSet.new(), length(preview)}
+      end
+
+    {:noreply,
+     socket
+     |> assign_naming_selection(excluded)
+     |> assign(:naming_renamed_stops_count, selected_count)}
   end
 
   @impl true
@@ -1638,10 +1680,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
     style = socket.assigns.naming_style
+    excluded = socket.assigns.naming_excluded_ids
+
+    selected_ids =
+      socket.assigns.naming_preview
+      |> MapSet.new(& &1.old_id)
+      |> MapSet.difference(excluded)
 
     socket = assign(socket, :naming_applying?, true)
 
-    case Gtfs.apply_station_naming(org_id, version_id, station_stop_id, style) do
+    case Gtfs.apply_station_naming(org_id, version_id, station_stop_id, style, selected_ids) do
       {:ok, %{renamed_stops: stops, updated_pathways: pathways}} ->
         status =
           "Renamed #{stops} #{ngettext("child stop", "child stops", stops)}, " <>
@@ -1650,10 +1698,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> assign(:show_naming_drawer, false)
-         |> assign(:naming_style, :kebab)
+         |> assign(:naming_style, :structured)
          |> assign(:naming_preview, [])
          |> assign(:naming_applying?, false)
          |> assign(:naming_error, nil)
+         |> assign(:naming_excluded_ids, MapSet.new())
          |> assign(:naming_status, status)
          |> refresh_lists()}
 
@@ -3348,6 +3397,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         |> assign(:naming_renamed_stops_count, preview.renamed_stops_count)
         |> assign(:naming_updated_pathways_count, preview.updated_pathways_count)
         |> assign(:naming_error, nil)
+        |> assign(:naming_excluded_ids, MapSet.new())
 
       {:error, :no_stops} ->
         socket
@@ -3365,6 +3415,46 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         |> assign(:naming_error, "Naming collision detected: #{Enum.join(collisions, ", ")}")
     end
   end
+
+  defp assign_naming_selection(socket, excluded_ids) do
+    preview_ids = naming_preview_id_set(socket.assigns.naming_preview)
+    excluded_ids = MapSet.intersection(excluded_ids, preview_ids)
+    selected_ids = MapSet.difference(preview_ids, excluded_ids)
+    {updated_pathways_count, error} = naming_selected_preview_state(socket, selected_ids)
+
+    socket
+    |> assign(:naming_excluded_ids, excluded_ids)
+    |> assign(:naming_renamed_stops_count, MapSet.size(selected_ids))
+    |> assign(:naming_updated_pathways_count, updated_pathways_count)
+    |> assign(:naming_error, error)
+  end
+
+  defp naming_selected_preview_state(socket, selected_ids) do
+    if MapSet.size(selected_ids) == 0 do
+      {0, nil}
+    else
+      org_id = socket.assigns.current_organization.id
+      version_id = socket.assigns.current_gtfs_version.id
+      station_stop_id = socket.assigns.station.stop_id
+      style = socket.assigns.naming_style
+
+      case Gtfs.preview_station_naming(org_id, version_id, station_stop_id, style, selected_ids) do
+        {:ok, preview} ->
+          {preview.updated_pathways_count, nil}
+
+        {:error, :no_stops} ->
+          {0, nil}
+
+        {:error, {:naming_collision, collisions}} ->
+          {0, "Naming collision detected: #{Enum.join(collisions, ", ")}"}
+
+        {:error, reason} ->
+          {0, "Failed to preview naming: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  defp naming_preview_id_set(preview_rows), do: MapSet.new(preview_rows, & &1.old_id)
 
   defp purge_otp_artifact(organization_id, gtfs_version_id) do
     case Lifecycle.purge_artifact_on_success(organization_id, gtfs_version_id) do
