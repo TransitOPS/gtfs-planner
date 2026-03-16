@@ -803,44 +803,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("edit_child_stop", %{"id" => id}, socket) do
     stop = Gtfs.get_stop!(id)
-    coord = stop.diagram_coordinate
-    pending_xy = %{x: to_float(coord["x"]), y: to_float(coord["y"])}
-    station = socket.assigns.station
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
-
-    parent_platform =
-      if stop.location_type == 4 and
-           MapSet.member?(platform_stop_ids, stop.parent_station) do
-        stop.parent_station
-      else
-        ""
-      end
-
-    form =
-      to_form(%{
-        "stop_id" => stop.stop_id,
-        "stop_name" => stop.stop_name,
-        "location_type" => to_string(stop.location_type),
-        "parent_platform" => parent_platform,
-        "level_id" => stop.level_id,
-        "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
-        "platform_code" => stop.platform_code || "",
-        "stop_lat" => to_optional_string(stop.stop_lat),
-        "stop_lon" => to_optional_string(stop.stop_lon)
-      })
-
-    {:noreply,
-     socket
-     |> reset_reposition_state()
-     |> stream_insert(:child_stops, stop)
-     |> assign(:pending_xy, pending_xy)
-     |> assign(:selected_stop_id, stop.id)
-     |> assign(:active_point_id, stop.id)
-     |> assign(:editing_level, false)
-     |> assign(:stop_id_mode, :manual)
-     |> assign(:child_stop_form, form)}
+    {:noreply, open_edit_sidebar(socket, stop)}
   end
 
   @impl true
@@ -2878,6 +2841,46 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:reposition_mode, false)
     |> assign(:reposition_search, "")
     |> assign(:reposition_stops, [])
+  end
+
+  defp open_edit_sidebar(socket, stop) do
+    coord = stop.diagram_coordinate
+    pending_xy = %{x: to_float(coord["x"]), y: to_float(coord["y"])}
+    station = socket.assigns.station
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
+
+    parent_platform =
+      if stop.location_type == 4 and
+           MapSet.member?(platform_stop_ids, stop.parent_station) do
+        stop.parent_station
+      else
+        ""
+      end
+
+    form =
+      to_form(%{
+        "stop_id" => stop.stop_id,
+        "stop_name" => stop.stop_name,
+        "location_type" => to_string(stop.location_type),
+        "parent_platform" => parent_platform,
+        "level_id" => stop.level_id,
+        "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
+        "platform_code" => stop.platform_code || "",
+        "stop_lat" => to_optional_string(stop.stop_lat),
+        "stop_lon" => to_optional_string(stop.stop_lon)
+      })
+
+    socket
+    |> reset_reposition_state()
+    |> stream_insert(:child_stops, stop)
+    |> assign(:pending_xy, pending_xy)
+    |> assign(:selected_stop_id, stop.id)
+    |> assign(:active_point_id, stop.id)
+    |> assign(:editing_level, false)
+    |> assign(:stop_id_mode, :manual)
+    |> assign(:child_stop_form, form)
   end
 
   defp restream_active_stop(socket) do
