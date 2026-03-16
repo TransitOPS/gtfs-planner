@@ -399,7 +399,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         />
 
         <div :if={@naming_status} role="status" aria-live="polite" class="mx-4 sm:mx-6 lg:mx-8 mt-2">
-          <div class="alert alert-success text-sm">
+          <div class="alert alert-success alert-soft text-sm">
             <span>{@naming_status}</span>
             <button type="button" class="btn btn-ghost btn-xs" phx-click="dismiss_naming_status">
               Dismiss
