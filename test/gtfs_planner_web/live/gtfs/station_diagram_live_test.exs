@@ -7060,4 +7060,213 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#flash-error", "Invalid drag position")
     end
   end
+
+  describe "StationDiagramLive - search_stop" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SEARCH_STATION",
+          stop_name: "Search Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "SEARCH_L1",
+          level_name: "Level 1",
+          level_index: 0.0
+        })
+
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "SEARCH_L2",
+          level_name: "Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        level_2: level_2
+      }
+    end
+
+    test "stop found on current level opens edit sidebar", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SEARCH_CHILD_1",
+          stop_name: "Search Child 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      result =
+        render_hook(view, "search_stop", %{"stop_id_query" => child_stop.stop_id})
+
+      assert result =~ "Search Child 1"
+      assert result =~ "SEARCH_CHILD_1"
+    end
+
+    test "stop found on different level switches level and opens sidebar", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level_2: level_2
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SEARCH_CHILD_L2",
+          stop_name: "Search Child L2",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      result =
+        render_hook(view, "search_stop", %{"stop_id_query" => child_stop.stop_id})
+
+      assert result =~ "Search Child L2"
+      assert result =~ "SEARCH_CHILD_L2"
+    end
+
+    test "stop not found shows flash error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "search_stop", %{"stop_id_query" => "NONEXISTENT_STOP"})
+
+      assert has_element?(view, "#flash-error", ~s(Stop "NONEXISTENT_STOP" not found))
+    end
+
+    test "stop belonging to different station shows flash error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      other_station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_STATION",
+          stop_name: "Other Station",
+          location_type: 1
+        })
+
+      _other_child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_CHILD",
+          stop_name: "Other Child",
+          location_type: 0,
+          parent_station: other_station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "search_stop", %{"stop_id_query" => "OTHER_CHILD"})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               ~s(Stop "OTHER_CHILD" does not belong to this station)
+             )
+    end
+
+    test "stop with no diagram position shows flash error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _no_coord_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NO_COORD_CHILD",
+          stop_name: "No Coord Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: nil
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "search_stop", %{"stop_id_query" => "NO_COORD_CHILD"})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               ~s(Stop "NO_COORD_CHILD" has no diagram position)
+             )
+    end
+  end
 end
