@@ -50,7 +50,7 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert "mechanical_stair_count" in unavailable_item.details
     end
 
-    test "respects directed pathways for entrance to boarding reachability" do
+    test "respects directed pathways for entrance to platform reachability" do
       report =
         StationReport.build(%{
           station: stop("STATION", 1),
@@ -66,7 +66,7 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
         })
 
       integrity = section(report, "data_integrity")
-      connectivity = item(integrity, "entrance_to_boarding_connectivity")
+      connectivity = item(integrity, "entrance_to_platform_connectivity")
       assert connectivity.status == :fail
       assert [%{entrance_stop_id: "E1", reachable: false}] = connectivity.details
     end
