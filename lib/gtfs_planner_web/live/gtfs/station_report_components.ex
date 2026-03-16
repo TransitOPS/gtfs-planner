@@ -252,14 +252,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
           <.stop_id_list
             :if={
               @item.status == :fail and is_list(@item.details) and @item.details != [] and
-                @item.id not in ["entrance_to_boarding_connectivity", "boarding_area_interconnection"]
+                @item.id not in ["entrance_to_platform_connectivity", "platform_interconnection"]
             }
             item={@item}
             ids={@item.details}
           />
           <.connectivity_details
             :if={
-              @item.id in ["entrance_to_boarding_connectivity", "boarding_area_interconnection"] and
+              @item.id in ["entrance_to_platform_connectivity", "platform_interconnection"] and
                 is_list(@item.details)
             }
             item={@item}
@@ -324,6 +324,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   defp connectivity_ok?(_), do: false
 
   defp connectivity_id(%{entrance_stop_id: id}), do: id
+  defp connectivity_id(%{platform_stop_id: id}), do: id
   defp connectivity_id(%{boarding_stop_id: id}), do: id
   defp connectivity_id(_), do: ""
 
@@ -513,8 +514,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
             Map.get(@summary, :entrances, 0) == 0 ->
               "No entrances defined"
 
-            Map.get(@summary, :boarding_areas, Map.get(@summary, :platforms, 0)) == 0 ->
-              "No boarding areas defined"
+            Map.get(@summary, :platforms, 0) == 0 ->
+              "No platforms defined"
 
             true ->
               "No route data"
@@ -743,11 +744,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
           <p class="text-sm font-medium">{@item.label}</p>
           <p class="text-xs text-base-content/60 mt-0.5">
             {Map.get(@summary, :connected_pairs, 0)}/{Map.get(@summary, :total_pairs, 0)} pairs connected
-            · {Map.get(@summary, :entrances, 0)} entrances · {Map.get(
-              @summary,
-              :boarding_areas,
-              Map.get(@summary, :platforms, 0)
-            )} boarding areas
+            · {Map.get(@summary, :accessible_pairs, 0)} accessible
+            · {Map.get(@summary, :entrances, 0)} entrances · {Map.get(@summary, :platforms, 0)} platforms
           </p>
         </div>
       </div>
@@ -823,15 +821,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
                 </span>
               </div>
 
-              <%= if detail.reachable and detail.enriched do %>
-                <.trip_visualization
-                  detail={detail}
-                  pair_id={pair_id(detail)}
-                  reversed?={MapSet.member?(@reversed_pairs, pair_id(detail))}
-                />
-              <% else %>
-                <p class="mt-2 text-xs text-base-content/60">No directed path found.</p>
-              <% end %>
+              <.dual_path_display
+                detail={detail}
+                pair_id={pair_id(detail)}
+                reversed_pairs={@reversed_pairs}
+              />
             </div>
           </div>
         </details>
@@ -863,17 +857,71 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
 
   attr :detail, :map, required: true
   attr :pair_id, :string, required: true
+  attr :reversed_pairs, :any, default: MapSet.new()
+
+  defp dual_path_display(assigns) do
+    ~H"""
+    <%= cond do %>
+      <% not @detail.reachable -> %>
+        <p class="mt-2 text-xs text-base-content/60">No directed path found.</p>
+      <% @detail.paths_identical and @detail.shortest -> %>
+        <div class="mt-1 mb-2">
+          <span class="text-xs font-medium text-base-content/55">Default + Accessible</span>
+        </div>
+        <.trip_visualization
+          enriched={@detail.shortest.enriched}
+          pair_id={@pair_id}
+          reversed?={MapSet.member?(@reversed_pairs, @pair_id)}
+        />
+      <% @detail.shortest && @detail.accessible_path && not @detail.paths_identical -> %>
+        <div class="space-y-4">
+          <div>
+            <div class="mt-1 mb-2">
+              <span class="text-xs font-medium text-base-content/55">Default path</span>
+            </div>
+            <.trip_visualization
+              enriched={@detail.shortest.enriched}
+              pair_id={"#{@pair_id}::default"}
+              reversed?={MapSet.member?(@reversed_pairs, "#{@pair_id}::default")}
+            />
+          </div>
+          <div>
+            <div class="mt-1 mb-2">
+              <span class="text-xs font-medium text-base-content/55">Accessible path (step-free)</span>
+            </div>
+            <.trip_visualization
+              enriched={@detail.accessible_path.enriched}
+              pair_id={"#{@pair_id}::accessible"}
+              reversed?={MapSet.member?(@reversed_pairs, "#{@pair_id}::accessible")}
+            />
+          </div>
+        </div>
+      <% @detail.shortest && not @detail.accessible -> %>
+        <.trip_visualization
+          enriched={@detail.shortest.enriched}
+          pair_id={@pair_id}
+          reversed?={MapSet.member?(@reversed_pairs, @pair_id)}
+        />
+        <p class="text-xs text-warning mt-2">No step-free route available.</p>
+      <% true -> %>
+        <p class="mt-2 text-xs text-base-content/60">No directed path found.</p>
+    <% end %>
+    """
+  end
+
+  attr :enriched, :map, required: true
+  attr :pair_id, :string, required: true
   attr :reversed?, :boolean, required: true
 
   defp trip_visualization(assigns) do
-    display_hops = display_path(assigns.detail.enriched, assigns.reversed?)
-    totals = assigns.detail.enriched.totals
+    display_hops = display_path(assigns.enriched, assigns.reversed?)
+    totals = assigns.enriched.totals
 
     assigns =
       assigns
       |> assign(:display_hops, display_hops)
       |> assign(:totals, totals)
-      |> assign(:has_unidirectional, not assigns.detail.enriched.all_bidirectional)
+      |> assign(:has_unidirectional, not assigns.enriched.all_bidirectional)
 
     ~H"""
     <div id={"report-trip-visualization-#{dom_token(@pair_id)}"} class="mt-3 space-y-3">
@@ -1759,16 +1807,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
           "Pass when the station has at least one entrance and at least one platform among child stops."
       },
       %{
-        item_id: "entrance_to_boarding_connectivity",
+        item_id: "entrance_to_platform_connectivity",
         reporting_unit: "reachable/unreachable counts + per-entrance detail",
         methodology:
-          "Run directed reachability from each entrance to any boarding area using BFS over directed pathway edges."
+          "Run directed reachability from each entrance to any platform (or boarding area under it) using BFS over directed pathway edges."
       },
       %{
-        item_id: "boarding_area_interconnection",
-        reporting_unit: "connected/disconnected counts + per-boarding detail",
+        item_id: "platform_interconnection",
+        reporting_unit: "connected/disconnected counts + per-platform detail",
         methodology:
-          "For each boarding area, run directed reachability to at least one other boarding area in the same graph."
+          "For each platform, run directed reachability from the platform (or its boarding areas) to at least one other platform in the same graph."
       },
       %{
         item_id: "gps_presence_by_type",
@@ -1786,9 +1834,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     [
       %{
         item_id: "step_free_routes",
-        reporting_unit: "connected_pairs/total_pairs + entrance x boarding matrix",
+        reporting_unit: "connected_pairs/total_pairs + entrance x platform matrix",
         methodology:
-          "Build directed adjacency using only pathway modes 1, 3, 5, 6, and 7; evaluate reachability for each entrance-boarding pair."
+          "Build directed adjacency using only pathway modes 1, 3, 5, 6, and 7; evaluate reachability for each entrance-platform pair (targeting platforms and boarding areas under them)."
       },
       %{
         item_id: "wheelchair_boarding_distribution",
@@ -1844,9 +1892,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     [
       %{
         item_id: "entrance_platform_paths",
-        reporting_unit: "connected_pairs/total_pairs + pair matrix + hop paths",
+        reporting_unit: "connected_pairs/total_pairs + pair matrix + dual hop paths",
         methodology:
-          "Build directed adjacency from all station pathways, then run deterministic shortest-path BFS for each entrance-boarding pair and report hop-by-hop pathway metadata."
+          "Build directed adjacency from all station pathways and a step-free subset, then run multi-target BFS for each entrance-platform pair. Report both default and accessible (step-free) paths with hop-by-hop pathway metadata."
       }
     ]
     |> apply_methodology_labels(item_labels)
