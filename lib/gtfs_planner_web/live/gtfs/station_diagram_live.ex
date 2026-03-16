@@ -82,7 +82,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:walkability_mode, :create)
      |> assign(:editing_walkability_test, nil)
      |> assign(:show_naming_drawer, false)
-     |> assign(:naming_style, :structured)
+     |> assign(:naming_style, :kebab)
      |> assign(:naming_preview, [])
      |> assign(:naming_renamed_stops_count, 0)
      |> assign(:naming_updated_pathways_count, 0)
@@ -1618,7 +1618,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:show_naming_drawer, false)
-     |> assign(:naming_style, :structured)
+     |> assign(:naming_style, :kebab)
      |> assign(:naming_preview, [])
      |> assign(:naming_renamed_stops_count, 0)
      |> assign(:naming_updated_pathways_count, 0)
@@ -1698,7 +1698,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> assign(:show_naming_drawer, false)
-         |> assign(:naming_style, :structured)
+         |> assign(:naming_style, :kebab)
          |> assign(:naming_preview, [])
          |> assign(:naming_applying?, false)
          |> assign(:naming_error, nil)
