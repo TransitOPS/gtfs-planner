@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import DiagramCanvasHook from "../diagram_canvas_hook";
 
 describe("DiagramCanvasHook.scaleOverlayElements", () => {
@@ -664,5 +664,35 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(tooltip.getAttribute("aria-hidden")).toBe("true");
 
     hook.removeTooltipListeners();
+  });
+});
+
+describe("DiagramCanvasHook pending center validation", () => {
+  it("ignores invalid pending center coordinates", () => {
+    const centerOnPoint = vi.fn();
+    const hook = {
+      ...DiagramCanvasHook,
+      _pendingCenter: { x: Number.NaN, y: 20 },
+      centerOnPoint,
+    };
+
+    hook.applyPendingCenter();
+
+    expect(centerOnPoint).not.toHaveBeenCalled();
+    expect(hook._pendingCenter).toBeNull();
+  });
+
+  it("accepts finite pending center coordinates", () => {
+    const centerOnPoint = vi.fn();
+    const hook = {
+      ...DiagramCanvasHook,
+      _pendingCenter: { x: 12.5, y: 42 },
+      centerOnPoint,
+    };
+
+    hook.applyPendingCenter();
+
+    expect(centerOnPoint).toHaveBeenCalledWith(12.5, 42);
+    expect(hook._pendingCenter).toBeNull();
   });
 });

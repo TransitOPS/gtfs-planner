@@ -803,7 +803,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("edit_child_stop", %{"id" => id}, socket) do
     stop = Gtfs.get_stop!(id)
-    {:noreply, open_edit_sidebar(socket, stop)}
+
+    socket =
+      case stop_diagram_point(stop) do
+        {:ok, pending_xy} ->
+          open_edit_sidebar(socket, stop, pending_xy)
+
+        :error ->
+          put_flash(socket, :error, ~s(Stop "#{stop.stop_id}" has no diagram position))
+      end
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -829,12 +839,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             stop.parent_station == station.stop_id or
               MapSet.member?(platform_stop_ids, stop.parent_station)
 
+          diagram_point = stop_diagram_point(stop)
+
           cond do
             not belongs_to_station ->
               {:noreply,
                put_flash(socket, :error, "Stop \"#{query}\" does not belong to this station")}
 
-            is_nil(stop.diagram_coordinate) ->
+            diagram_point == :error ->
               {:noreply, put_flash(socket, :error, "Stop \"#{query}\" has no diagram position")}
 
             true ->
@@ -843,38 +855,46 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   l.level_id == stop.level_id
                 end)
 
-              socket =
-                if level && level.id != socket.assigns.active_level.id do
-                  socket
-                  |> disable_measurement()
-                  |> assign(:active_level, level)
-                  |> assign(:pending_xy, nil)
-                  |> assign(:diagram_error, nil)
-                  |> assign(:show_walkability_drawer, false)
-                  |> assign(:walkability_stop, nil)
-                  |> assign(
-                    :walkability_form,
-                    to_form(default_walkability_form_params(), as: :walkability)
-                  )
-                  |> clear_walkability_selection()
-                  |> assign(:walkability_last_results, [])
-                  |> assign(:walkability_mode, :create)
-                  |> assign(:editing_walkability_test, nil)
-                  |> reset_reposition_state()
-                  |> load_level_data(level)
-                else
-                  socket
-                end
+              cond do
+                is_nil(level) ->
+                  {:noreply,
+                   put_flash(
+                     socket,
+                     :error,
+                     ~s(Stop "#{query}" is not assigned to a known station level)
+                   )}
 
-              coord = stop.diagram_coordinate
+                true ->
+                  socket =
+                    if level.id != socket.assigns.active_level.id do
+                      socket
+                      |> disable_measurement()
+                      |> assign(:active_level, level)
+                      |> assign(:pending_xy, nil)
+                      |> assign(:diagram_error, nil)
+                      |> assign(:show_walkability_drawer, false)
+                      |> assign(:walkability_stop, nil)
+                      |> assign(
+                        :walkability_form,
+                        to_form(default_walkability_form_params(), as: :walkability)
+                      )
+                      |> clear_walkability_selection()
+                      |> assign(:walkability_last_results, [])
+                      |> assign(:walkability_mode, :create)
+                      |> assign(:editing_walkability_test, nil)
+                      |> reset_reposition_state()
+                      |> load_level_data(level)
+                    else
+                      socket
+                    end
 
-              {:noreply,
-               socket
-               |> open_edit_sidebar(stop)
-               |> push_event("center_on_stop", %{
-                 x: to_float(coord["x"]),
-                 y: to_float(coord["y"])
-               })}
+                  {:ok, pending_xy} = diagram_point
+
+                  {:noreply,
+                   socket
+                   |> open_edit_sidebar(stop, pending_xy)
+                   |> push_event("center_on_stop", pending_xy)}
+              end
           end
       end
     end
@@ -2927,9 +2947,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:reposition_stops, [])
   end
 
-  defp open_edit_sidebar(socket, stop) do
-    coord = stop.diagram_coordinate
-    pending_xy = %{x: to_float(coord["x"]), y: to_float(coord["y"])}
+  defp open_edit_sidebar(socket, stop, pending_xy) do
     station = socket.assigns.station
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
@@ -2966,6 +2984,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:stop_id_mode, :manual)
     |> assign(:child_stop_form, form)
   end
+
+  defp stop_diagram_point(stop) do
+    coord = stop.diagram_coordinate
+
+    with %{} <- coord,
+         {:ok, x} <- parse_diagram_coordinate(Map.get(coord, "x") || Map.get(coord, :x)),
+         {:ok, y} <- parse_diagram_coordinate(Map.get(coord, "y") || Map.get(coord, :y)) do
+      {:ok, %{x: x, y: y}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp parse_diagram_coordinate(value) when is_float(value), do: {:ok, value}
+  defp parse_diagram_coordinate(value) when is_integer(value), do: {:ok, value / 1}
+
+  defp parse_diagram_coordinate(value) when is_binary(value) do
+    case Float.parse(value) do
+      {parsed, ""} -> {:ok, parsed}
+      _ -> :error
+    end
+  end
+
+  defp parse_diagram_coordinate(_), do: :error
 
   defp restream_active_stop(socket) do
     case socket.assigns.active_point_id do

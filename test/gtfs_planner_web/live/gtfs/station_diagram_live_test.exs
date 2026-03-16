@@ -100,6 +100,42 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert result =~ ~r/value=\"Child Stop 1\"/
     end
 
+    test "clicking child stop without diagram coordinates shows flash error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_STOP_NO_COORD",
+          stop_name: "Child Stop No Coord",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: nil
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               ~s(Stop "CHILD_STOP_NO_COORD" has no diagram position)
+             )
+
+      refute has_element?(view, "#child-stop-drawer[open]")
+    end
+
     test "new child stop drawer locks level to active level with hidden field", %{
       conn: conn,
       user: user,
@@ -7374,6 +7410,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                view,
                "#flash-error",
                ~s(Stop "NO_COORD_CHILD" has no diagram position)
+             )
+    end
+
+    test "stop on unknown station level shows flash error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      _orphan_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ORPHAN_LEVEL_CHILD",
+          stop_name: "Orphan Level Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "UNKNOWN_LEVEL",
+          diagram_coordinate: %{"x" => 14.0, "y" => 28.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "search_stop", %{"stop_id_query" => "ORPHAN_LEVEL_CHILD"})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               ~s(Stop "ORPHAN_LEVEL_CHILD" is not assigned to a known station level)
              )
     end
 

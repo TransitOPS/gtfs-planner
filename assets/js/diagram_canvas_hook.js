@@ -737,9 +737,18 @@ const DiagramCanvasHook = {
     svg.addEventListener("gesturechange", this._handleGesture);
 
     this.handleEvent("center_on_stop", ({x, y}) => {
+      if (!this.hasFiniteCenterPoint({x, y})) {
+        this._pendingCenter = null;
+        return;
+      }
+
       this._pendingCenter = {x, y};
       this.applyPendingCenter({consume: !this._imageLoadInProgress});
     });
+  },
+
+  hasFiniteCenterPoint(point) {
+    return Number.isFinite(point?.x) && Number.isFinite(point?.y);
   },
 
   refreshTooltipElements() {
@@ -1728,10 +1737,18 @@ const DiagramCanvasHook = {
 
   applyPendingCenter({consume = true} = {}) {
     if (!this._pendingCenter) return;
+
+    if (!this.hasFiniteCenterPoint(this._pendingCenter)) {
+      this._pendingCenter = null;
+      return;
+    }
+
     const {x, y} = this._pendingCenter;
+
     if (consume) {
       this._pendingCenter = null;
     }
+
     this.centerOnPoint(x, y);
   },
 
