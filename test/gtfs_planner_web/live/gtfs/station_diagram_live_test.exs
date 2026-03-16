@@ -100,6 +100,42 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert result =~ ~r/value=\"Child Stop 1\"/
     end
 
+    test "clicking child stop without diagram coordinates shows flash error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_STOP_NO_COORD",
+          stop_name: "Child Stop No Coord",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: nil
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               ~s(Stop "CHILD_STOP_NO_COORD" has no diagram position)
+             )
+
+      refute has_element?(view, "#child-stop-drawer[open]")
+    end
+
     test "new child stop drawer locks level to active level with hidden field", %{
       conn: conn,
       user: user,
@@ -4219,8 +4255,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "svg[data-pathway-preview]")
       assert has_element?(view, "svg[data-pathway-preview] g title", "Preview From")
       assert has_element?(view, "svg[data-pathway-preview] g title", "Preview To")
-      assert has_element?(view, "svg[data-pathway-preview] rect[x='215'][y='8'][width='50'][height='16']")
-      assert has_element?(view, "svg[data-pathway-preview] line[marker-start='url(#preview-arrow)']")
+
+      assert has_element?(
+               view,
+               "svg[data-pathway-preview] rect[x='215'][y='8'][width='50'][height='16']"
+             )
+
+      assert has_element?(
+               view,
+               "svg[data-pathway-preview] line[marker-start='url(#preview-arrow)']"
+             )
+
       assert has_element?(view, "svg[data-pathway-preview] text", "Forward Sign →")
       assert has_element?(view, "svg[data-pathway-preview] text", "← Reverse Sign")
 
@@ -7058,6 +7103,415 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       unchanged = Gtfs.get_stop!(child_stop.id)
       assert unchanged.diagram_coordinate == %{"x" => 60.0, "y" => 60.0}
       assert has_element?(view, "#flash-error", "Invalid drag position")
+    end
+  end
+
+  describe "StationDiagramLive - search_stop" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SEARCH_STATION",
+          stop_name: "Search Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "SEARCH_L1",
+          level_name: "Level 1",
+          level_index: 0.0
+        })
+
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "SEARCH_L2",
+          level_name: "Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        level_2: level_2
+      }
+    end
+
+    test "search form is only shown in view mode with a diagram", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      refute has_element?(view, "#stop-search-form")
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-diagram.png")
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#stop-search-form")
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      refute has_element?(view, "#stop-search-form")
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+      refute has_element?(view, "#stop-search-form")
+    end
+
+    test "search form submit handles valid and invalid query without crashing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SEARCH_CHILD_SUBMIT",
+          stop_name: "Search Child Submit",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 22.0, "y" => 33.0}
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-submit-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      valid_result =
+        view
+        |> form("#stop-search-form", %{
+          "stop_id_query" => child_stop.stop_id
+        })
+        |> render_submit()
+
+      assert valid_result =~ "Search Child Submit"
+      assert valid_result =~ "SEARCH_CHILD_SUBMIT"
+
+      view
+      |> form("#stop-search-form", %{
+        "stop_id_query" => "NONEXISTENT_SUBMIT_STOP"
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#flash-error", ~s(Stop "NONEXISTENT_SUBMIT_STOP" not found))
+
+      assert has_element?(view, "#stop-search-form")
+    end
+
+    test "blank search query is ignored without flash or sidebar", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-blank-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      refute has_element?(view, "#child-stop-drawer[open]")
+
+      view
+      |> form("#stop-search-form", %{"stop_id_query" => "   "})
+      |> render_submit()
+
+      refute has_element?(view, "#flash-error")
+      refute has_element?(view, "#child-stop-drawer[open]")
+    end
+
+    test "stop found on current level opens edit sidebar", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SEARCH_CHILD_1",
+          stop_name: "Search Child 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-current-level-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      result =
+        view
+        |> form("#stop-search-form", %{"stop_id_query" => child_stop.stop_id})
+        |> render_submit()
+
+      assert result =~ "Search Child 1"
+      assert result =~ "SEARCH_CHILD_1"
+      assert_push_event(view, "center_on_stop", %{x: 30.0, y: 40.0})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.selected_stop_id == child_stop.id
+      assert state.socket.assigns.active_level.id == level.id
+    end
+
+    test "stop found on different level switches level and opens sidebar", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      level_2: level_2
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SEARCH_CHILD_L2",
+          stop_name: "Search Child L2",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-different-level-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      result =
+        view
+        |> form("#stop-search-form", %{"stop_id_query" => child_stop.stop_id})
+        |> render_submit()
+
+      assert result =~ "Search Child L2"
+      assert result =~ "SEARCH_CHILD_L2"
+      assert_push_event(view, "center_on_stop", %{x: 50.0, y: 50.0})
+
+      assert has_element?(
+               view,
+               "#diagram-action-strip form[phx-change='switch_level'] option[value='#{level_2.id}'][selected]"
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.active_level.id == level_2.id
+      assert state.socket.assigns.selected_stop_id == child_stop.id
+    end
+
+    test "stop not found shows flash error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-not-found-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> form("#stop-search-form", %{"stop_id_query" => "NONEXISTENT_STOP"})
+      |> render_submit()
+
+      assert has_element?(view, "#flash-error", ~s(Stop "NONEXISTENT_STOP" not found))
+    end
+
+    test "stop belonging to different station shows flash error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      other_station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_STATION",
+          stop_name: "Other Station",
+          location_type: 1
+        })
+
+      _other_child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_CHILD",
+          stop_name: "Other Child",
+          location_type: 0,
+          parent_station: other_station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-other-station-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> form("#stop-search-form", %{"stop_id_query" => "OTHER_CHILD"})
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               ~s(Stop "OTHER_CHILD" does not belong to this station)
+             )
+    end
+
+    test "stop with no diagram position shows flash error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _no_coord_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NO_COORD_CHILD",
+          stop_name: "No Coord Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: nil
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-no-coord-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> form("#stop-search-form", %{"stop_id_query" => "NO_COORD_CHILD"})
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               ~s(Stop "NO_COORD_CHILD" has no diagram position)
+             )
+    end
+
+    test "stop on unknown station level shows flash error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      _orphan_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ORPHAN_LEVEL_CHILD",
+          stop_name: "Orphan Level Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "UNKNOWN_LEVEL",
+          diagram_coordinate: %{"x" => 14.0, "y" => 28.0}
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-orphan-level-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> form("#stop-search-form", %{"stop_id_query" => "ORPHAN_LEVEL_CHILD"})
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               ~s(Stop "ORPHAN_LEVEL_CHILD" is not assigned to a known station level)
+             )
+    end
+
+    test "malformed search_stop payload is ignored", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "search_stop", %{"stop_id_query" => 123})
+      render_hook(view, "search_stop", %{})
+
+      refute has_element?(view, "#flash-error")
     end
   end
 end

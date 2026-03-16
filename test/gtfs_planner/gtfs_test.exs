@@ -809,18 +809,23 @@ defmodule GtfsPlanner.GtfsTest do
     end
 
     test "generates kebab-01 from stop name", %{organization: org, gtfs_version: version} do
-      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == {:ok, "platform-2-01"}
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") ==
+               {:ok, "platform-2-01"}
     end
 
     test "increments to -02 when -01 already exists", %{organization: org, gtfs_version: version} do
       _stop = stop_fixture(org.id, version.id, %{stop_id: "platform-2-01"})
-      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == {:ok, "platform-2-02"}
+
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") ==
+               {:ok, "platform-2-02"}
     end
 
     test "skips multiple collisions", %{organization: org, gtfs_version: version} do
       _stop1 = stop_fixture(org.id, version.id, %{stop_id: "platform-2-01"})
       _stop2 = stop_fixture(org.id, version.id, %{stop_id: "platform-2-02"})
-      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") == {:ok, "platform-2-03"}
+
+      assert Gtfs.generate_kebab_stop_id(org.id, version.id, "Platform 2") ==
+               {:ok, "platform-2-03"}
     end
 
     test "falls back to 'stop' when name is empty", %{organization: org, gtfs_version: version} do
@@ -882,7 +887,10 @@ defmodule GtfsPlanner.GtfsTest do
 
     test "delegates to update_stop when stop_id unchanged", %{child: child} do
       assert {:ok, updated} =
-               Gtfs.update_stop_with_cascade(child, %{stop_id: "old-child-id", stop_name: "New Name"})
+               Gtfs.update_stop_with_cascade(child, %{
+                 stop_id: "old-child-id",
+                 stop_name: "New Name"
+               })
 
       assert updated.stop_name == "New Name"
       assert updated.stop_id == "old-child-id"
@@ -916,7 +924,10 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       assert {:ok, updated} =
-               Gtfs.update_stop_with_cascade(child, %{stop_id: "new-child-id", stop_name: "Platform A"})
+               Gtfs.update_stop_with_cascade(child, %{
+                 stop_id: "new-child-id",
+                 stop_name: "Platform A"
+               })
 
       assert updated.stop_id == "new-child-id"
 
@@ -953,7 +964,10 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       assert {:ok, updated} =
-               Gtfs.update_stop_with_cascade(child, %{stop_id: "new-child-id", stop_name: "Platform A"})
+               Gtfs.update_stop_with_cascade(child, %{
+                 stop_id: "new-child-id",
+                 stop_name: "Platform A"
+               })
 
       assert updated.stop_id == "new-child-id"
 
@@ -978,7 +992,10 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       assert {:ok, _updated} =
-               Gtfs.update_stop_with_cascade(child, %{stop_id: "renamed-child", stop_name: "Platform A"})
+               Gtfs.update_stop_with_cascade(child, %{
+                 stop_id: "renamed-child",
+                 stop_name: "Platform A"
+               })
 
       refreshed_boarding = Repo.get!(GtfsPlanner.Gtfs.Stop, boarding.id)
       assert refreshed_boarding.parent_station == "renamed-child"
