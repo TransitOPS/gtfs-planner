@@ -6967,13 +6967,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
       view |> element("[phx-click='open_naming_drawer']") |> render_click()
+      view |> element("button", "Structured") |> render_click()
       view |> element("input[aria-label='Select RESET_CHILD for renaming']") |> render_click()
       assert has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
 
       view |> element("button", "Cancel") |> render_click()
-      view |> element("[phx-click='open_naming_drawer']") |> render_click()
+      html = view |> element("[phx-click='open_naming_drawer']") |> render_click()
       refute has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
       assert has_element?(view, "input[aria-label='Select RESET_CHILD for renaming'][checked]")
+      assert has_element?(view, "button.btn-primary", "Name-based")
+      refute has_element?(view, "button.btn-primary", "Structured")
+      assert html =~ "kebab-case"
+      assert html =~ "reset-child-01"
+      refute html =~ "deterministic convention"
 
       view |> element("input[aria-label='Select RESET_CHILD for renaming']") |> render_click()
       assert has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
@@ -7018,7 +7024,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
       view |> element("[phx-click='open_naming_drawer']") |> render_click()
-      view |> element("button", "Name-based") |> render_click()
+      view |> element("button", "Structured") |> render_click()
 
       view
       |> element("input[aria-label='Select SUBSET_UNSELECTED for renaming']")
@@ -7034,6 +7040,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "subset-selected-01")
       assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, unselected_child.stop_id)
       refute Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "subset-unselected-01")
+
+      html = view |> element("[phx-click='open_naming_drawer']") |> render_click()
+
+      assert has_element?(view, "button.btn-primary", "Name-based")
+      refute has_element?(view, "button.btn-primary", "Structured")
+      assert html =~ "kebab-case"
+      assert html =~ "subset-unselected-01"
+      refute html =~ "deterministic convention"
     end
 
     test "excluding a row surfaces subset collisions and disables apply", %{
