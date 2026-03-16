@@ -815,6 +815,12 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     end)
   end
 
+  defp build_step_free_path_traversal_adjacency(pathways) do
+    pathways
+    |> Enum.filter(&MapSet.member?(@step_free_modes, normalize_pathway_mode(&1.pathway_mode)))
+    |> build_path_traversal_adjacency()
+  end
+
   defp put_path_edge(adjacency, from_stop_id, to_stop_id, pathway) do
     edge = %{
       to_stop_id: to_stop_id,
@@ -826,31 +832,43 @@ defmodule GtfsPlanner.Gtfs.StationReport do
   end
 
   defp shortest_directed_path(adjacency, start_stop_id, target_stop_id) do
-    queue = :queue.from_list([start_stop_id])
-    visited = MapSet.new([start_stop_id])
-
-    do_shortest_directed_path(
-      queue,
-      visited,
-      %{},
+    shortest_directed_path_to_any(
       adjacency,
       start_stop_id,
-      target_stop_id
+      MapSet.new([target_stop_id])
     )
   end
 
-  defp do_shortest_directed_path(
+  defp shortest_directed_path_to_any(adjacency, start_stop_id, target_ids) do
+    if MapSet.member?(target_ids, start_stop_id) do
+      {:found, reconstruct_path(%{}, start_stop_id, start_stop_id)}
+    else
+      queue = :queue.from_list([start_stop_id])
+      visited = MapSet.new([start_stop_id])
+
+      do_shortest_directed_path_to_any(
+        queue,
+        visited,
+        %{},
+        adjacency,
+        start_stop_id,
+        target_ids
+      )
+    end
+  end
+
+  defp do_shortest_directed_path_to_any(
          queue,
          visited,
          came_from,
          adjacency,
          start_stop_id,
-         target_stop_id
+         target_ids
        ) do
     case :queue.out(queue) do
       {{:value, current}, rest} ->
-        if current == target_stop_id do
-          {:found, reconstruct_path(came_from, start_stop_id, target_stop_id)}
+        if MapSet.member?(target_ids, current) do
+          {:found, reconstruct_path(came_from, start_stop_id, current)}
         else
           neighbors = Map.get(adjacency, current, [])
 
@@ -873,13 +891,13 @@ defmodule GtfsPlanner.Gtfs.StationReport do
               end
             end)
 
-          do_shortest_directed_path(
+          do_shortest_directed_path_to_any(
             next_queue,
             next_visited,
             next_came_from,
             adjacency,
             start_stop_id,
-            target_stop_id
+            target_ids
           )
         end
 
