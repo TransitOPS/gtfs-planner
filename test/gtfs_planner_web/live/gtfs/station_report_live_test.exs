@@ -558,6 +558,97 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
              )
     end
 
+    test "falls back to forward signage when reverse signage is whitespace only", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_REV_WS",
+          level_name: "Concourse",
+          level_index: 0.0
+        })
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_REV_WS",
+          stop_name: "Reverse Whitespace Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_REV_WS",
+          stop_name: "Entrance Reverse Whitespace",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_REV_WS",
+          stop_name: "Platform Reverse Whitespace",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      _boarding =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BOARD_REV_WS",
+          stop_name: "Boarding Reverse Whitespace",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id
+        })
+
+      _pathway =
+        pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, "BOARD_REV_WS", %{
+          pathway_id: "PATH_REV_WS",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "To platform",
+          reversed_signposted_as: "   "
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      pair_dom = "ENT_REV_WS__BOARD_REV_WS"
+
+      view
+      |> element("#report-entrance-ENT_REV_WS > summary")
+      |> render_click()
+
+      view
+      |> element("#report-trip-direction-button-#{pair_dom}")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "To platform"
+             )
+
+      assert has_element?(
+               view,
+               "#report-trip-analysis-#{pair_dom}",
+               "100.0% signposted"
+             )
+
+      refute has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "-"
+             )
+    end
+
     test "redirects with flash when station is missing", %{
       conn: conn,
       user: user,

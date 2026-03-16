@@ -1188,7 +1188,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   defp signage_for_display(%{pathway_id: pathway_id}) when pathway_id in [nil, ""], do: nil
 
   defp signage_for_display(%{traversed_reverse?: true, is_bidirectional: true} = hop) do
-    normalize_signage_for_display(hop.reversed_signposted_as || hop.signposted_as)
+    normalize_signage_for_display(hop.reversed_signposted_as) ||
+      normalize_signage_for_display(hop.signposted_as)
   end
 
   defp signage_for_display(hop) do
