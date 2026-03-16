@@ -2403,12 +2403,14 @@ defmodule GtfsPlanner.Gtfs do
         station_stop_id,
         style \\ :structured
       ) do
+    descendant_ids = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
+
     child_stops =
       from(s in Stop,
         where:
           s.organization_id == ^organization_id and
             s.gtfs_version_id == ^gtfs_version_id and
-            s.parent_station == ^station_stop_id and
+            s.stop_id in subquery(descendant_ids) and
             s.location_type in [0, 2, 3, 4],
         order_by: [asc: s.stop_id]
       )

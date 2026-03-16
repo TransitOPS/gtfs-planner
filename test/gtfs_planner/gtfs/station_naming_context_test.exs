@@ -110,6 +110,49 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
 
       assert "st_platform_general_lvl_01" in collisions
     end
+
+    test "preview includes boarding areas that are children of platforms", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BOARD_STATION",
+          stop_name: "Board Station",
+          location_type: 1
+        })
+
+      platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLAT_B",
+          stop_name: "Platform B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "ground"
+        })
+
+      _boarding_area =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BA_1",
+          stop_name: "Boarding Area 1",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: "ground"
+        })
+
+      _pathway =
+        pathway_fixture(org.id, version.id, "PLAT_B", "BA_1", %{
+          pathway_mode: 1
+        })
+
+      assert {:ok, preview} =
+               Gtfs.preview_station_naming(org.id, version.id, station.stop_id)
+
+      old_ids = Enum.map(preview.rows, & &1.old_id)
+      assert "PLAT_B" in old_ids
+      assert "BA_1" in old_ids
+      assert length(preview.rows) == 2
+    end
   end
 
   describe "preview_station_naming/4 with :kebab style" do
@@ -479,13 +522,21 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
           address_lon: Decimal.new("-71.0589")
         })
 
-      assert {:ok, %{renamed_stops: 1, updated_references: updated_references}} =
+      assert {:ok, %{renamed_stops: 2, updated_references: updated_references}} =
                Gtfs.apply_station_naming(org.id, version.id, station.stop_id)
 
       assert updated_references > 0
 
       assert Gtfs.get_stop_by_stop_id(org.id, version.id, "hub_platform_elevator_l1_01")
       refute Gtfs.get_stop_by_stop_id(org.id, version.id, platform.stop_id)
+
+      # Boarding area was also renamed (no longer exists as BOARD_01)
+      refute Gtfs.get_stop_by_stop_id(org.id, version.id, "BOARD_01")
+
+      # Find the renamed boarding area and verify its parent_station still points to the renamed platform
+      renamed_boarding = Gtfs.get_stop_by_stop_id(org.id, version.id, "hub_boarding_general_l1_01")
+      assert renamed_boarding
+      assert renamed_boarding.parent_station == "hub_platform_elevator_l1_01"
 
       stop_times =
         from(st in GtfsPlanner.Gtfs.StopTime,
@@ -510,10 +561,6 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
 
       updated_walkability_test = Repo.get!(WalkabilityTest, walkability_test.id)
       assert updated_walkability_test.stop_id == "hub_platform_elevator_l1_01"
-
-      updated_boarding = Gtfs.get_stop_by_stop_id(org.id, version.id, "BOARD_01")
-
-      assert updated_boarding.parent_station == "hub_platform_elevator_l1_01"
     end
   end
 end
