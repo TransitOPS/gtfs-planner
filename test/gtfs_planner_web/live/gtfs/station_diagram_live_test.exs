@@ -422,6 +422,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
         })
 
+      other_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "other-stop",
+          stop_name: "Other Stop",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 30.0}
+        })
+
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          child_stop.stop_id,
+          other_stop.stop_id
+        )
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -445,6 +463,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       updated_stop = Gtfs.get_stop!(child_stop.id)
       assert updated_stop.stop_id == "mezzanine-west-01"
+
+      updated_pathway = Gtfs.get_pathway!(pathway.id)
+      assert updated_pathway.from_stop_id == "mezzanine-west-01"
+      assert updated_pathway.to_stop_id == "other-stop"
     end
 
     test "editing child stop with blank stop_id shows error when sequences exhausted", %{
