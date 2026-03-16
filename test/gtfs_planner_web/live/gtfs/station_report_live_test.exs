@@ -456,6 +456,92 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
              )
     end
 
+    test "does not display reverse-only signage on forward traversal", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_FWD_ONLY",
+          level_name: "Concourse",
+          level_index: 0.0
+        })
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_FWD_ONLY",
+          stop_name: "Forward Only Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_FWD_ONLY",
+          stop_name: "Entrance Forward Only",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_FWD_ONLY",
+          stop_name: "Platform Forward Only",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      _boarding =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BOARD_FWD_ONLY",
+          stop_name: "Boarding Forward Only",
+          location_type: 4,
+          parent_station: platform.stop_id,
+          level_id: level.level_id
+        })
+
+      _pathway =
+        pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, "BOARD_FWD_ONLY", %{
+          pathway_id: "PATH_FWD_ONLY",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          reversed_signposted_as: "To entrance"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      pair_dom = "ENT_FWD_ONLY__BOARD_FWD_ONLY"
+
+      view
+      |> element("#report-entrance-ENT_FWD_ONLY > summary")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "-"
+             )
+
+      assert has_element?(
+               view,
+               "#report-trip-analysis-#{pair_dom}",
+               "0.0% signposted"
+             )
+
+      refute has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "To entrance"
+             )
+    end
+
     test "redirects with flash when station is missing", %{
       conn: conn,
       user: user,
