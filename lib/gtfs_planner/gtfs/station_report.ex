@@ -954,11 +954,12 @@ defmodule GtfsPlanner.Gtfs.StationReport do
   end
 
   defp effective_signposted_as(%{traversed_reverse?: true, is_bidirectional: true} = hop) do
-    hop.reversed_signposted_as || hop.signposted_as
+    normalize_signposted_as(hop.reversed_signposted_as) ||
+      normalize_signposted_as(hop.signposted_as)
   end
 
   defp effective_signposted_as(hop) do
-    hop.signposted_as
+    normalize_signposted_as(hop.signposted_as)
   end
 
   defp path_segments(path), do: do_path_segments(path, [])
@@ -1155,4 +1156,13 @@ defmodule GtfsPlanner.Gtfs.StationReport do
   defp present?(value) when is_binary(value), do: String.trim(value) != ""
   defp present?(nil), do: false
   defp present?(_), do: true
+
+  defp normalize_signposted_as(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_signposted_as(value), do: value
 end
