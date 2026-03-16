@@ -882,6 +882,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("search_stop", _params, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_event("toggle_level_edit", _params, socket) do
     {:noreply, assign(socket, :editing_level, !socket.assigns.editing_level)}
   end

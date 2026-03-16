@@ -7121,6 +7121,87 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
     end
 
+    test "search form is only shown in view mode with a diagram", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      refute has_element?(view, "#diagram-action-strip form[phx-submit='search_stop']")
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-diagram.png")
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#diagram-action-strip form[phx-submit='search_stop']")
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      refute has_element?(view, "#diagram-action-strip form[phx-submit='search_stop']")
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+      refute has_element?(view, "#diagram-action-strip form[phx-submit='search_stop']")
+    end
+
+    test "search form submit handles valid, invalid, and empty query without crashing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SEARCH_CHILD_SUBMIT",
+          stop_name: "Search Child Submit",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 22.0, "y" => 33.0}
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-submit-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      valid_result =
+        view
+        |> form("#diagram-action-strip form[phx-submit='search_stop']", %{
+          "stop_id_query" => child_stop.stop_id
+        })
+        |> render_submit()
+
+      assert valid_result =~ "Search Child Submit"
+      assert valid_result =~ "SEARCH_CHILD_SUBMIT"
+
+      view
+      |> form("#diagram-action-strip form[phx-submit='search_stop']", %{
+        "stop_id_query" => "NONEXISTENT_SUBMIT_STOP"
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#flash-error", ~s(Stop "NONEXISTENT_SUBMIT_STOP" not found))
+
+      view
+      |> form("#diagram-action-strip form[phx-submit='search_stop']", %{"stop_id_query" => "   "})
+      |> render_submit()
+
+      assert has_element?(view, "#diagram-action-strip form[phx-submit='search_stop']")
+    end
+
     test "stop found on current level opens edit sidebar", %{
       conn: conn,
       user: user,
