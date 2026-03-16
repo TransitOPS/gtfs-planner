@@ -3829,6 +3829,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :updated_pathways_count, :integer, default: 0
   attr :applying?, :boolean, default: false
   attr :error, :string, default: nil
+  attr :excluded_ids, :any, default: %MapSet{}
 
   def naming_drawer(assigns) do
     ~H"""
@@ -3934,12 +3935,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <table class="table table-xs table-pin-rows">
               <thead>
                 <tr>
+                  <th class="w-8">
+                    <input
+                      type="checkbox"
+                      class="checkbox checkbox-xs"
+                      checked={MapSet.size(@excluded_ids) == 0}
+                      phx-click="toggle_naming_select_all"
+                    />
+                  </th>
                   <th>Current stop_id</th>
                   <th>New stop_id</th>
                 </tr>
               </thead>
               <tbody>
-                <tr :for={row <- @preview_rows}>
+                <tr
+                  :for={row <- @preview_rows}
+                  id={"naming-row-#{row.old_id}"}
+                  class={MapSet.member?(@excluded_ids, row.old_id) && "opacity-40"}
+                >
+                  <td class="w-8">
+                    <input
+                      type="checkbox"
+                      class="checkbox checkbox-xs"
+                      checked={not MapSet.member?(@excluded_ids, row.old_id)}
+                      phx-click="toggle_naming_row"
+                      phx-value-id={row.old_id}
+                    />
+                  </td>
                   <td class="font-mono text-xs">{row.old_id}</td>
                   <td class="font-mono text-xs">{row.new_id}</td>
                 </tr>
@@ -3948,8 +3970,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
 
           <p class="text-sm text-base-content/70 mt-3">
-            <span class="font-medium">{@renamed_stops_count}</span>
-            {if(@renamed_stops_count == 1, do: "child stop", else: "child stops")} will be renamed.
+            <span :if={MapSet.size(@excluded_ids) > 0}>
+              <span class="font-medium">{@renamed_stops_count}</span>
+              of <span class="font-medium">{length(@preview_rows)}</span>
+              child stops selected for renaming.
+            </span>
+            <span :if={MapSet.size(@excluded_ids) == 0}>
+              <span class="font-medium">{@renamed_stops_count}</span>
+              {if(@renamed_stops_count == 1, do: "child stop", else: "child stops")} will be renamed.
+            </span>
             <span class="font-medium">{@updated_pathways_count}</span>
             {if(@updated_pathways_count == 1, do: "pathway reference", else: "pathway references")} will be updated.
           </p>
@@ -3964,7 +3993,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             class="btn btn-primary btn-sm"
             phx-click="apply_naming_convention"
             phx-disable-with="Applying…"
-            disabled={@preview_rows == [] || @applying?}
+            disabled={@preview_rows == [] || @applying? || MapSet.size(@excluded_ids) == length(@preview_rows)}
           >
             Apply naming convention
           </button>
