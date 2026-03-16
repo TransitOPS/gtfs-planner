@@ -89,6 +89,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:naming_applying?, false)
      |> assign(:naming_error, nil)
      |> assign(:naming_status, nil)
+     |> assign(:naming_excluded_ids, MapSet.new())
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg .svg),
        max_file_size: 10_000_000,
@@ -394,6 +395,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           updated_pathways_count={@naming_updated_pathways_count}
           applying?={@naming_applying?}
           error={@naming_error}
+          excluded_ids={@naming_excluded_ids}
         />
 
         <div :if={@naming_status} role="status" aria-live="polite" class="mx-4 sm:mx-6 lg:mx-8 mt-2">
@@ -1621,7 +1623,44 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:naming_renamed_stops_count, 0)
      |> assign(:naming_updated_pathways_count, 0)
      |> assign(:naming_applying?, false)
-     |> assign(:naming_error, nil)}
+     |> assign(:naming_error, nil)
+     |> assign(:naming_excluded_ids, MapSet.new())}
+  end
+
+  @impl true
+  def handle_event("toggle_naming_row", %{"id" => old_id}, socket) do
+    excluded = socket.assigns.naming_excluded_ids
+
+    excluded =
+      if MapSet.member?(excluded, old_id),
+        do: MapSet.delete(excluded, old_id),
+        else: MapSet.put(excluded, old_id)
+
+    selected_count = length(socket.assigns.naming_preview) - MapSet.size(excluded)
+
+    {:noreply,
+     socket
+     |> assign(:naming_excluded_ids, excluded)
+     |> assign(:naming_renamed_stops_count, selected_count)}
+  end
+
+  @impl true
+  def handle_event("toggle_naming_select_all", _params, socket) do
+    excluded = socket.assigns.naming_excluded_ids
+    preview = socket.assigns.naming_preview
+
+    {excluded, selected_count} =
+      if MapSet.size(excluded) == 0 do
+        all_ids = MapSet.new(preview, & &1.old_id)
+        {all_ids, 0}
+      else
+        {MapSet.new(), length(preview)}
+      end
+
+    {:noreply,
+     socket
+     |> assign(:naming_excluded_ids, excluded)
+     |> assign(:naming_renamed_stops_count, selected_count)}
   end
 
   @impl true
@@ -1638,10 +1677,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
     style = socket.assigns.naming_style
+    excluded = socket.assigns.naming_excluded_ids
+
+    selected_ids =
+      socket.assigns.naming_preview
+      |> MapSet.new(& &1.old_id)
+      |> MapSet.difference(excluded)
 
     socket = assign(socket, :naming_applying?, true)
 
-    case Gtfs.apply_station_naming(org_id, version_id, station_stop_id, style) do
+    case Gtfs.apply_station_naming(org_id, version_id, station_stop_id, style, selected_ids) do
       {:ok, %{renamed_stops: stops, updated_pathways: pathways}} ->
         status =
           "Renamed #{stops} #{ngettext("child stop", "child stops", stops)}, " <>
@@ -1654,6 +1699,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:naming_preview, [])
          |> assign(:naming_applying?, false)
          |> assign(:naming_error, nil)
+         |> assign(:naming_excluded_ids, MapSet.new())
          |> assign(:naming_status, status)
          |> refresh_lists()}
 
@@ -3348,6 +3394,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         |> assign(:naming_renamed_stops_count, preview.renamed_stops_count)
         |> assign(:naming_updated_pathways_count, preview.updated_pathways_count)
         |> assign(:naming_error, nil)
+        |> assign(:naming_excluded_ids, MapSet.new())
 
       {:error, :no_stops} ->
         socket
