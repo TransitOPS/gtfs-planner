@@ -1085,7 +1085,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   defp analysis_cards(assigns) do
     segments = Enum.drop(assigns.hops, 1)
     segment_count = max(length(segments), 1)
-    signage_pct = Float.round(assigns.totals.signposted_segments * 100.0 / segment_count, 1)
+    signposted_segments = Enum.count(segments, &present_signage?/1)
+    signage_pct = Float.round(signposted_segments * 100.0 / segment_count, 1)
     method_breakdown = Enum.frequencies_by(segments, &(&1.calculation_method || :unknown))
 
     efficiency =
@@ -1192,6 +1193,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
 
   defp signage_for_display(hop) do
     hop.signposted_as
+  end
+
+  defp present_signage?(hop) do
+    hop
+    |> Map.get(:display_signposted_as)
+    |> case do
+      value when value in [nil, ""] -> false
+      _ -> true
+    end
   end
 
   defp reverse_traversal(%{traversed_reverse?: traversed_reverse?})

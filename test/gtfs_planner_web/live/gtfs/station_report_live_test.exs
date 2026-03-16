@@ -540,6 +540,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
                "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
                "To entrance"
              )
+
+      view
+      |> element("#report-trip-direction-button-#{pair_dom}")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#report-trip-steps-#{pair_dom} tbody tr:nth-child(1) td:nth-child(4)",
+               "To entrance"
+             )
+
+      assert has_element?(
+               view,
+               "#report-trip-analysis-#{pair_dom}",
+               "100.0% signposted"
+             )
     end
 
     test "redirects with flash when station is missing", %{
