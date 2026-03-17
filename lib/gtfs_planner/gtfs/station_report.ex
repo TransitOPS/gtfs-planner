@@ -740,7 +740,9 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       true ->
         accessible_directed =
           pathways
-          |> Enum.filter(&MapSet.member?(@step_free_modes, normalize_pathway_mode(&1.pathway_mode)))
+          |> Enum.filter(
+            &MapSet.member?(@step_free_modes, normalize_pathway_mode(&1.pathway_mode))
+          )
           |> build_directed_adjacency()
 
         all_targets =

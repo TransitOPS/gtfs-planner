@@ -215,6 +215,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   attr :station_stop_id, :string, default: nil
 
   def integrity_section(assigns) do
+    assigns =
+      assigns
+      |> assign(:gps_table_items, gps_table_items(assigns.gps_section))
+      |> assign(:gps_check_items, gps_check_items(assigns.gps_section))
+
     ~H"""
     <section
       id="report-section-data_integrity"
@@ -249,13 +254,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
             station_stop_id={@station_stop_id}
           />
 
-          <div :if={@gps_section} id="report-section-gps" class="px-4 py-4">
-            <.gps_item :for={item <- @gps_section.items} item={item} />
+          <div :if={@gps_section} id="report-section-gps" class="px-4 py-4 space-y-4">
+            <.gps_item :for={item <- @gps_table_items} item={item} />
+
+            <div :if={@gps_check_items != []} class="divide-y divide-base-content/10">
+              <.check_row
+                :for={item <- @gps_check_items}
+                item={item}
+                gtfs_version_id={@gtfs_version_id}
+                station_stop_id={@station_stop_id}
+              />
+            </div>
           </div>
         </div>
       <% end %>
     </section>
     """
+  end
+
+  defp gps_table_items(nil), do: []
+
+  defp gps_table_items(%{items: items}) do
+    Enum.filter(items, &(&1.id == "gps_presence_by_type" and is_map(&1.value)))
+  end
+
+  defp gps_check_items(nil), do: []
+
+  defp gps_check_items(%{items: items}) do
+    Enum.reject(items, &(&1.id == "gps_presence_by_type" and is_map(&1.value)))
   end
 
   attr :item, :map, required: true

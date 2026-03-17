@@ -131,8 +131,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(view, "#station-report")
       assert has_element?(view, "#report-section-inventory")
       assert has_element?(view, "#report-section-data_integrity")
+      assert has_element?(view, "#report-section-naming_conventions")
       assert has_element?(view, "#report-section-entrance_platform_connectivity")
+      assert has_element?(view, "#report-section-pathway_validation")
+      assert has_element?(view, "#report-section-levels_validation")
       assert has_element?(view, "#report-item-node_inventory")
+      assert has_element?(view, "#report-item-naming_title_case")
+      assert has_element?(view, "#report-item-pathway_missing_traversal_time")
+      assert has_element?(view, "#report-item-level_referential_integrity")
       assert has_element?(view, "#report-item-step_free_routes")
       assert has_element?(view, "#report-item-entrance_platform_paths")
       assert has_element?(view, "#report-item-unavailable_metrics")
@@ -163,6 +169,42 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
                "#station-sub-nav a[aria-current='page']",
                "Report"
              )
+    end
+
+    test "renders failing gps validation items with their details", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_GPS",
+          stop_name: "Station GPS",
+          location_type: 1,
+          stop_lat: Decimal.new("47.0"),
+          stop_lon: Decimal.new("122.0")
+        })
+
+      _entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_GPS",
+          stop_name: "Entrance GPS",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L_GPS",
+          stop_lat: Decimal.new("47.0"),
+          stop_lon: Decimal.new("-122.0001")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(view, "#report-item-positive_longitude")
+      assert has_element?(view, "#report-item-positive_longitude", "Longitude sign consistency")
+      assert has_element?(view, "#report-item-positive_longitude-details", "ENT_GPS")
     end
 
     test "toggles methodology mode in data quality section on and off", %{
