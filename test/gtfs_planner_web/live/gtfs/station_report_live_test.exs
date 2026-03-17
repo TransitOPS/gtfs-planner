@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlannerWeb.Gtfs.StationReportComponents
 
   describe "StationReportLive" do
     setup do
@@ -288,6 +289,45 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
                "#report-item-entrance_gps_distance-details",
                "m from station"
              )
+    end
+
+    test "summary strip surfaces warning-only gps integrity reports" do
+      report = %{
+        sections: [
+          %{id: "data_integrity", items: []},
+          %{
+            id: "gps",
+            items: [
+              %{
+                id: "optional_gps_clustering",
+                label: "Optional node GPS clustering",
+                status: :warn,
+                category: :warning,
+                value: 1,
+                details: [%{id: "G1", reason: "200.0m from station"}]
+              }
+            ]
+          },
+          %{id: "naming_conventions", items: []},
+          %{id: "pathway_validation", items: []},
+          %{id: "levels_validation", items: []},
+          %{id: "accessibility", items: []},
+          %{
+            id: "inventory",
+            items: [
+              %{id: "node_inventory", value: %{}},
+              %{id: "edge_inventory", value: %{}}
+            ]
+          },
+          %{id: "attribute_completeness", items: []}
+        ]
+      }
+
+      html = render_component(&StationReportComponents.summary_strip/1, report: report)
+
+      assert html =~ "Integrity"
+      assert html =~ "1 warning"
+      refute html =~ ">OK<"
     end
 
     test "toggles methodology mode in data quality section on and off", %{

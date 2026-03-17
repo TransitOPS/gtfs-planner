@@ -50,12 +50,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         <p class={[
           "text-lg font-semibold mt-0.5",
           @stats.integrity.fails > 0 && "text-error",
-          @stats.integrity.fails == 0 && "text-success"
+          (@stats.integrity.fails == 0 and @stats.integrity.warns > 0) && "text-warning",
+          (@stats.integrity.fails == 0 and @stats.integrity.warns == 0) && "text-success"
         ]}>
-          {if @stats.integrity.fails > 0,
-            do:
-              "#{@stats.integrity.fails} #{if @stats.integrity.fails == 1, do: "issue", else: "issues"}",
-            else: "OK"}
+          <%= cond do %>
+            <% @stats.integrity.fails > 0 -> %>
+              {@stats.integrity.fails} {if @stats.integrity.fails == 1, do: "issue", else: "issues"}
+            <% @stats.integrity.warns > 0 -> %>
+              {@stats.integrity.warns} {if @stats.integrity.warns == 1,
+                do: "warning",
+                else: "warnings"}
+            <% true -> %>
+              OK
+          <% end %>
         </p>
       </div>
 
@@ -149,6 +156,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     %{
       integrity: %{
         fails: Enum.count(countable_items, &(&1.status == :fail)),
+        warns: Enum.count(countable_items, &(&1.status == :warn)),
         total: length(countable_items)
       },
       accessibility: %{
