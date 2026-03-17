@@ -907,6 +907,155 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert reverse.status == :fail
       assert [%{id: "E1->P1", reason: "forward reachable but reverse not"}] = reverse.details
     end
+
+    test "wheelchair_boarding_contradicts_context warns when stop marked 2 but siblings mostly 1" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("N1", 3, parent_station: "STATION", level_id: "L1", wheelchair_boarding: 1),
+            stop("N2", 3, parent_station: "STATION", level_id: "L1", wheelchair_boarding: 1),
+            stop("N3", 3, parent_station: "STATION", level_id: "L1", wheelchair_boarding: 2)
+          ],
+          levels: [%{level: level("L1", 0.0), stop_count: 3}],
+          pathways: []
+        })
+
+      integrity = section(report, "data_integrity")
+      wbc = item(integrity, "wheelchair_boarding_contradicts_context")
+
+      assert wbc.status == :warn
+      assert [%{id: "N3", reason: reason}] = wbc.details
+      assert String.contains?(reason, "67%")
+    end
+
+    test "wheelchair_boarding_contradicts_context passes when all siblings are 2" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("N1", 3, parent_station: "STATION", level_id: "L1", wheelchair_boarding: 2),
+            stop("N2", 3, parent_station: "STATION", level_id: "L1", wheelchair_boarding: 2)
+          ],
+          levels: [%{level: level("L1", 0.0), stop_count: 2}],
+          pathways: []
+        })
+
+      integrity = section(report, "data_integrity")
+      wbc = item(integrity, "wheelchair_boarding_contradicts_context")
+
+      assert wbc.status == :pass
+    end
+
+    test "wheelchair_boarding_contradicts_context skips stops without level_id" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("N1", 3, parent_station: "STATION", wheelchair_boarding: 1),
+            stop("N2", 3, parent_station: "STATION", wheelchair_boarding: 2)
+          ],
+          levels: [],
+          pathways: []
+        })
+
+      integrity = section(report, "data_integrity")
+      wbc = item(integrity, "wheelchair_boarding_contradicts_context")
+
+      assert wbc.status == :pass
+    end
+
+    test "wheelchair_inferrable warns when stop wb=0 connected only to stairs" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("E1", 2, parent_station: "STATION", wheelchair_boarding: 0),
+            stop("N1", 3, parent_station: "STATION", wheelchair_boarding: 0),
+            stop("P1", 0, parent_station: "STATION")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_STAIRS", "E1", "N1", 2, true, stair_count: 10)
+          ]
+        })
+
+      integrity = section(report, "data_integrity")
+      wi = item(integrity, "wheelchair_boarding_inferrable")
+
+      assert wi.status == :warn
+      ids = Enum.map(wi.details, & &1.id)
+      assert "E1" in ids
+      assert "N1" in ids
+
+      detail = Enum.find(wi.details, &(&1.id == "E1"))
+      assert String.contains?(detail.reason, "suggest 2")
+    end
+
+    test "wheelchair_inferrable warns when stop wb=nil connected to elevator" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("E1", 2, parent_station: "STATION", wheelchair_boarding: nil),
+            stop("N1", 3, parent_station: "STATION", wheelchair_boarding: nil),
+            stop("P1", 0, parent_station: "STATION")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_ELEV", "E1", "N1", 5, true)
+          ]
+        })
+
+      integrity = section(report, "data_integrity")
+      wi = item(integrity, "wheelchair_boarding_inferrable")
+
+      assert wi.status == :warn
+      detail = Enum.find(wi.details, &(&1.id == "E1"))
+      assert String.contains?(detail.reason, "suggest 1")
+    end
+
+    test "wheelchair_inferrable passes when wb already set correctly" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("E1", 2, parent_station: "STATION", wheelchair_boarding: 1),
+            stop("N1", 3, parent_station: "STATION", wheelchair_boarding: 1),
+            stop("P1", 0, parent_station: "STATION")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_ELEV", "E1", "N1", 5, true)
+          ]
+        })
+
+      integrity = section(report, "data_integrity")
+      wi = item(integrity, "wheelchair_boarding_inferrable")
+
+      assert wi.status == :pass
+    end
+
+    test "wheelchair_inferrable passes when connected to walkway only" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("E1", 2, parent_station: "STATION", wheelchair_boarding: 0),
+            stop("N1", 3, parent_station: "STATION"),
+            stop("P1", 0, parent_station: "STATION")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_WALK", "E1", "N1", 1, true)
+          ]
+        })
+
+      integrity = section(report, "data_integrity")
+      wi = item(integrity, "wheelchair_boarding_inferrable")
+
+      assert wi.status == :pass
+    end
   end
 
   defp sample_snapshot do

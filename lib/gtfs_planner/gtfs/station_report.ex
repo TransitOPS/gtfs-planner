@@ -388,6 +388,8 @@ defmodule GtfsPlanner.Gtfs.StationReport do
           platform_interconnection.details
         ),
         wheelchair_item,
+        wheelchair_contradicts_context(child_stops),
+        wheelchair_inferrable(child_stops, core_pathways),
         item(
           "duplicate_stop_ids",
           "Unique stop_id values",
@@ -762,6 +764,88 @@ defmodule GtfsPlanner.Gtfs.StationReport do
           if(has_accessible_path, do: "accessible path exists", else: "no accessible path")
         )
     end
+  end
+
+  defp wheelchair_contradicts_context(child_stops) do
+    by_level =
+      child_stops
+      |> Enum.filter(&present?(&1.level_id))
+      |> Enum.group_by(& &1.level_id)
+
+    flagged =
+      Enum.flat_map(by_level, fn {_level_id, siblings} ->
+        with_value = Enum.filter(siblings, &(&1.wheelchair_boarding in [1, 2]))
+
+        if length(with_value) >= 2 do
+          accessible_count = Enum.count(with_value, &(&1.wheelchair_boarding == 1))
+          ratio = accessible_count / length(with_value)
+
+          if ratio > 0.5 do
+            with_value
+            |> Enum.filter(&(&1.wheelchair_boarding == 2))
+            |> Enum.map(fn stop ->
+              pct = round(ratio * 100)
+
+              %{
+                id: stop.stop_id,
+                reason: "marked not-accessible but #{pct}% of level siblings are accessible"
+              }
+            end)
+          else
+            []
+          end
+        else
+          []
+        end
+      end)
+
+    item(
+      "wheelchair_boarding_contradicts_context",
+      "wheelchair_boarding=2 consistent with accessible siblings",
+      if(flagged == [], do: :pass, else: :warn),
+      length(flagged),
+      flagged
+    )
+  end
+
+  defp wheelchair_inferrable(child_stops, pathways) do
+    connected_modes =
+      Enum.reduce(pathways, %{}, fn pw, acc ->
+        mode = normalize_pathway_mode(pw.pathway_mode)
+
+        acc
+        |> Map.update(pw.from_stop_id, MapSet.new([mode]), &MapSet.put(&1, mode))
+        |> Map.update(pw.to_stop_id, MapSet.new([mode]), &MapSet.put(&1, mode))
+      end)
+
+    flagged =
+      child_stops
+      |> Enum.filter(&(&1.wheelchair_boarding in [0, nil]))
+      |> Enum.flat_map(fn stop ->
+        modes = Map.get(connected_modes, stop.stop_id, MapSet.new())
+
+        cond do
+          MapSet.size(modes) == 0 ->
+            []
+
+          MapSet.subset?(modes, MapSet.new([2])) ->
+            [%{id: stop.stop_id, reason: "only stairs connected, suggest 2"}]
+
+          MapSet.member?(modes, 5) ->
+            [%{id: stop.stop_id, reason: "elevator connected, suggest 1"}]
+
+          true ->
+            []
+        end
+      end)
+
+    item(
+      "wheelchair_boarding_inferrable",
+      "wheelchair_boarding determinable from connected pathways",
+      if(flagged == [], do: :pass, else: :warn),
+      length(flagged),
+      flagged
+    )
   end
 
   defp entrance_to_platform_result(entrances, all_platform_targets, directed) do
