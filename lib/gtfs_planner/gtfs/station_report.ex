@@ -135,7 +135,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
         %{
           id: "pathway_validation",
           title: "Pathway Validation",
-          items: PathwayChecks.validate(core_pathways, stop_index, level_index)
+          items: PathwayChecks.validate(station_pathways, stop_index, level_index)
         },
         %{
           id: "levels_validation",

@@ -161,13 +161,10 @@ defmodule GtfsPlanner.Gtfs.StationReport.PathwayChecks do
       |> Enum.filter(fn pw ->
         from_idx = level_index_for(pw.from_stop_id, stop_index, level_index)
         to_idx = level_index_for(pw.to_stop_id, stop_index, level_index)
-        going_up = to_idx > from_idx
 
-        cond do
-          going_up and pw.stair_count < 0 -> true
-          not going_up and pw.stair_count > 0 -> true
-          true -> false
-        end
+        from_idx != to_idx and
+          ((to_idx > from_idx and pw.stair_count < 0) or
+             (to_idx < from_idx and pw.stair_count > 0))
       end)
       |> Enum.map(& &1.pathway_id)
 
@@ -228,10 +225,10 @@ defmodule GtfsPlanner.Gtfs.StationReport.PathwayChecks do
       |> Enum.map(fn pw ->
         length_m = Helpers.decimal_to_float(pw.length)
         speed = length_m / pw.traversal_time
-        {pw.pathway_id, Float.round(speed, 2)}
+        {pw.pathway_id, speed}
       end)
       |> Enum.filter(fn {_id, speed} -> speed < 0.5 or speed > 2.0 end)
-      |> Enum.map(fn {id, speed} -> %{id: id, reason: "#{speed} m/s"} end)
+      |> Enum.map(fn {id, speed} -> %{id: id, reason: "#{Float.round(speed, 2)} m/s"} end)
 
     Helpers.item(
       "pathway_speed_plausibility",

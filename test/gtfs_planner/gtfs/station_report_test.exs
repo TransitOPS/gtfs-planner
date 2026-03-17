@@ -115,6 +115,39 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert item(naming, "naming_boarding_prefix").details == ["ba_platform_1"]
     end
 
+    test "includes pathway validation items in the built report" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("ENT_A", 2, parent_station: "STATION", level_id: "L1"),
+            stop("PLAT_A", 0, parent_station: "STATION", level_id: "L2")
+          ],
+          levels: [
+            %{level: level("L1", 0.0), stop_count: 1},
+            %{level: level("L2", 1.0), stop_count: 1}
+          ],
+          pathways: [
+            pathway("PW_STAIR", "ENT_A", "PLAT_A", 2, true, stair_count: -5),
+            pathway("PW_FAST", "ENT_A", "PLAT_A", 1, true,
+              length: Decimal.new("100"),
+              traversal_time: 10
+            )
+          ]
+        })
+
+      validation = section(report, "pathway_validation")
+
+      assert item(validation, "pathway_stair_sign_consistency").status == :fail
+      assert "PW_STAIR" in item(validation, "pathway_stair_sign_consistency").details
+      assert item(validation, "pathway_speed_plausibility").status == :warn
+
+      assert [%{id: "PW_FAST", reason: reason}] =
+               item(validation, "pathway_speed_plausibility").details
+
+      assert String.contains?(reason, "m/s")
+    end
+
     test "respects directed pathways for entrance to platform reachability" do
       report =
         StationReport.build(%{

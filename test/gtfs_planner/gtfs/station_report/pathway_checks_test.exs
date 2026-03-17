@@ -62,6 +62,24 @@ defmodule GtfsPlanner.Gtfs.StationReport.PathwayChecksTest do
       assert item.status == :pass
     end
 
+    test "pathway_speed_plausibility warns just above the upper bound before rounding" do
+      pw = pathway("PW1", "A", "B", 1, true, length: Decimal.new("20.04"), traversal_time: 10)
+      items = PathwayChecks.validate([pw], stop_index(), %{})
+      item = find_item(items, "pathway_speed_plausibility")
+
+      assert item.status == :warn
+      assert [%{id: "PW1", reason: "2.0 m/s"}] = item.details
+    end
+
+    test "pathway_speed_plausibility warns just below the lower bound before rounding" do
+      pw = pathway("PW1", "A", "B", 1, true, length: Decimal.new("4.96"), traversal_time: 10)
+      items = PathwayChecks.validate([pw], stop_index(), %{})
+      item = find_item(items, "pathway_speed_plausibility")
+
+      assert item.status == :warn
+      assert [%{id: "PW1", reason: "0.5 m/s"}] = item.details
+    end
+
     test "pathway_dangling_refs fails when stop_id not in index" do
       pw = pathway("PW1", "MISSING_A", "B", 1, true)
       items = PathwayChecks.validate([pw], %{"B" => %Stop{stop_id: "B"}}, %{})
@@ -120,6 +138,25 @@ defmodule GtfsPlanner.Gtfs.StationReport.PathwayChecksTest do
       assert item.status == :fail
       assert item.category == :error
       assert "PW1" in item.details
+    end
+
+    test "pathway_stair_sign_consistency skips equal-level endpoints" do
+      si = %{
+        "A" => %Stop{stop_id: "A", level_id: "L1"},
+        "B" => %Stop{stop_id: "B", level_id: "L2"}
+      }
+
+      li = %{
+        "L1" => %Level{level_id: "L1", level_index: 0.0},
+        "L2" => %Level{level_id: "L2", level_index: 0.0}
+      }
+
+      pw = pathway("PW1", "A", "B", 2, true, stair_count: 10)
+      items = PathwayChecks.validate([pw], si, li)
+      item = find_item(items, "pathway_stair_sign_consistency")
+
+      assert item.status == :pass
+      assert item.details == []
     end
 
     test "pathway_traversal_time_outliers flags extreme values" do
