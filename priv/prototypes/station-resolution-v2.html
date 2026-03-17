@@ -4,33 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Station Data Resolution Tool</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script>
-tailwind.config = {
-  theme: {
-    extend: {
-      fontFamily: {
-        sans: ['Inter', 'Helvetica Neue', 'Helvetica', 'sans-serif'],
-        mono: ['"IBM Plex Mono"', 'Menlo', 'monospace'],
-      },
-      colors: {
-        ink: { 50: '#F7F7F7', 100: '#E8E8E8', 200: '#D4D4D4', 300: '#ABABAB', 400: '#8A8A8A', 500: '#6B6B6B', 600: '#4A4A4A', 700: '#333333', 800: '#1A1A1A', 900: '#0A0A0A' },
-        correction: { light: '#EFF6FF', DEFAULT: '#1D4ED8', dark: '#1E3A8A' },
-        addition: { light: '#ECFDF5', DEFAULT: '#047857', dark: '#064E3B' },
-        collision: { light: '#FFFBEB', DEFAULT: '#B45309', dark: '#78350F' },
-        upstream: { light: '#F5F3FF', DEFAULT: '#6D28D9', dark: '#4C1D95' },
-        risk: { light: '#FEF2F2', DEFAULT: '#DC2626', dark: '#991B1B' },
-      },
-      fontSize: {
-        'micro': ['11px', '16px'],
-      }
-    }
-  }
-}
-</script>
+<link rel="stylesheet" href="station-resolution-v2.css">
 <style>
   [x-cloak] { display: none !important; }
+  body {
+    font-family: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  }
+  .font-mono {
+    font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  }
   .scroll-thin::-webkit-scrollbar { width: 4px; }
   .scroll-thin::-webkit-scrollbar-track { background: transparent; }
   .scroll-thin::-webkit-scrollbar-thumb { background: #D4D4D4; border-radius: 2px; }
@@ -101,7 +83,7 @@ tailwind.config = {
             <div class="text-micro font-mono text-ink-300 flex-shrink-0" id="station-central-status">—</div>
           </div>
         </li>
-        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('riverside')">
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" data-station="riverside" onclick="selectStation('riverside')">
           <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-riverside">
             <div class="w-2 h-2 rounded-full bg-correction flex-shrink-0"></div>
             <div class="flex-1 min-w-0">
@@ -110,10 +92,10 @@ tailwind.config = {
                 <span class="text-micro font-mono text-ink-400">4 operations</span>
               </div>
             </div>
-            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0" id="station-riverside-status">—</div>
           </div>
         </li>
-        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('market')">
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" data-station="market" onclick="selectStation('market')">
           <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-market">
             <div class="w-2 h-2 rounded-full bg-correction flex-shrink-0"></div>
             <div class="flex-1 min-w-0">
@@ -122,10 +104,10 @@ tailwind.config = {
                 <span class="text-micro font-mono text-ink-400">3 operations</span>
               </div>
             </div>
-            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0" id="station-market-status">—</div>
           </div>
         </li>
-        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('northgate')">
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" data-station="northgate" onclick="selectStation('northgate')">
           <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-northgate">
             <div class="w-2 h-2 rounded-full bg-correction flex-shrink-0"></div>
             <div class="flex-1 min-w-0">
@@ -134,10 +116,10 @@ tailwind.config = {
                 <span class="text-micro font-mono text-ink-400">3 operations</span>
               </div>
             </div>
-            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0" id="station-northgate-status">—</div>
           </div>
         </li>
-        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('convention')">
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" data-station="convention" onclick="selectStation('convention')">
           <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-convention">
             <div class="w-2 h-2 rounded-full bg-upstream flex-shrink-0"></div>
             <div class="flex-1 min-w-0">
@@ -146,10 +128,10 @@ tailwind.config = {
                 <span class="text-micro font-mono text-ink-400">2 operations</span>
               </div>
             </div>
-            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0" id="station-convention-status">—</div>
           </div>
         </li>
-        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('airport')">
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" data-station="airport" onclick="selectStation('airport')">
           <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-airport">
             <div class="w-2 h-2 rounded-full bg-addition flex-shrink-0"></div>
             <div class="flex-1 min-w-0">
@@ -158,10 +140,10 @@ tailwind.config = {
                 <span class="text-micro font-mono text-ink-400">1 operation</span>
               </div>
             </div>
-            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0" id="station-airport-status">—</div>
           </div>
         </li>
-        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('eastport')">
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" data-station="eastport" onclick="selectStation('eastport')">
           <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-eastport">
             <div class="w-2 h-2 rounded-full bg-correction flex-shrink-0"></div>
             <div class="flex-1 min-w-0">
@@ -170,7 +152,7 @@ tailwind.config = {
                 <span class="text-micro font-mono text-ink-400">1 operation</span>
               </div>
             </div>
-            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0" id="station-eastport-status">—</div>
           </div>
         </li>
       </ul>
@@ -296,65 +278,14 @@ tailwind.config = {
               </div>
             </div>
 
-            <!-- Small Multiples: Ours vs Incoming graph summary -->
             <div class="grid grid-cols-2 gap-4 pb-4">
               <div class="border border-ink-200 rounded-lg p-3.5">
                 <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-2">Ours (enriched)</div>
-                <div class="grid grid-cols-3 gap-3">
-                  <div>
-                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">4</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Platforms</div>
-                  </div>
-                  <div>
-                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">5</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Entrances</div>
-                  </div>
-                  <div>
-                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">3</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Levels</div>
-                  </div>
-                  <div>
-                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">12</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Nodes</div>
-                  </div>
-                  <div>
-                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">18</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Pathways</div>
-                  </div>
-                  <div>
-                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">2</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Boarding</div>
-                  </div>
-                </div>
+                <div class="grid grid-cols-3 gap-3" id="review-ours-summary"></div>
               </div>
               <div class="border border-ink-200 rounded-lg p-3.5">
                 <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-2">Incoming (upstream)</div>
-                <div class="grid grid-cols-3 gap-3">
-                  <div>
-                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">4</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Platforms</div>
-                  </div>
-                  <div>
-                    <div class="text-lg font-semibold font-mono leading-none text-correction">3</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Entrances</div>
-                  </div>
-                  <div>
-                    <div class="text-lg font-semibold font-mono leading-none text-correction">4</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Levels</div>
-                  </div>
-                  <div>
-                    <div class="text-lg font-semibold font-mono leading-none text-correction">8</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Nodes</div>
-                  </div>
-                  <div>
-                    <div class="text-lg font-semibold font-mono leading-none text-correction">14</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Pathways</div>
-                  </div>
-                  <div>
-                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">2</div>
-                    <div class="text-micro text-ink-400 mt-0.5">Boarding</div>
-                  </div>
-                </div>
+                <div class="grid grid-cols-3 gap-3" id="review-incoming-summary"></div>
               </div>
             </div>
           </div>
@@ -364,284 +295,17 @@ tailwind.config = {
         <div class="flex-1 overflow-y-auto scroll-thin" id="operations-scroll">
             <div class="max-w-3xl mx-auto px-8 py-6 pb-24">
 
-              <!-- Triage summary -->
               <div class="flex items-center gap-4 mb-6 pb-4 border-b border-ink-100">
                 <div class="text-micro font-semibold uppercase tracking-widest text-ink-400">Triage</div>
-                <div class="flex gap-3 text-[13px]">
-                  <span class="font-medium text-collision">2 collisions — need judgment</span>
-                  <span class="text-ink-300">·</span>
-                  <span class="text-correction">2 corrections — review &amp; apply</span>
-                  <span class="text-ink-300">·</span>
-                  <span class="text-addition">1 our work — confirm</span>
-                </div>
+                <div class="flex gap-3 text-[13px]" id="review-triage"></div>
               </div>
 
-              <!-- ════ OPERATION 1: COLLISION ════ -->
-              <div class="mb-5 border border-collision rounded-lg bg-white shadow-sm" id="op-1">
-                <div class="flex items-start justify-between px-5 pt-4 pb-3">
-                  <div class="flex items-start gap-3">
-                    <span class="flex items-center justify-center w-6 h-6 bg-collision text-white text-micro font-semibold rounded-md flex-shrink-0 mt-px">1</span>
-                    <div>
-                      <div class="flex items-center gap-2 mb-1">
-                        <span class="text-micro font-semibold uppercase tracking-wide text-collision">Collision</span>
-                        <span class="text-micro font-mono text-ink-300">·</span>
-                        <span class="text-micro text-risk font-medium">Accessibility risk</span>
-                      </div>
-                      <h3 class="text-[15px] font-medium text-ink-800 leading-snug">
-                        Walkway width conflict between Entrance A and Concourse
-                      </h3>
-                    </div>
-                  </div>
-                </div>
-                <div class="px-5 pb-5">
-                  <p class="text-[13px] text-ink-600 leading-relaxed mb-3">
-                    Both sides changed the minimum width of the walkway connecting Entrance A to the concourse level.
-                    Your team widened it to 1.8 m; the upstream narrowed it to 0.9 m. The original measurement was 1.2 m.
-                  </p>
+              <div id="operations-list"></div>
 
-                  <div class="flex gap-3 mb-3">
-                    <div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5">
-                      <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Ours</div>
-                      <div class="font-mono text-[13px]">Minimum width: <strong>1.8 m</strong></div>
-                    </div>
-                    <div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5">
-                      <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Incoming</div>
-                      <div class="font-mono text-[13px]">Minimum width: <strong class="text-risk">0.9 m</strong></div>
-                    </div>
-                  </div>
-
-                  <div class="border-l-2 border-risk bg-risk-light rounded-r-md px-3 py-2.5 mb-3">
-                    <div class="text-micro font-semibold text-risk-dark mb-0.5">Impact</div>
-                    <p class="text-[13px] text-ink-600">0.9 m is below typical wheelchair clearance (1.0 m). Accepting the incoming value may affect accessible routing. If the physical walkway was narrowed, accept for accuracy. If not, keep your measurement or correct to the actual width.</p>
-                  </div>
-
-                  <details class="mb-3">
-                    <summary class="text-micro font-medium text-ink-400 cursor-pointer hover:text-ink-600">1 pathway affected</summary>
-                    <div class="mt-2 font-mono text-micro text-ink-500 bg-ink-50 border border-ink-100 rounded-md px-3 py-2">
-                      Walkway: Entrance A → Node 7 (Concourse Level) · traversal time: 45 s · width changed
-                    </div>
-                  </details>
-
-                  <div class="flex items-center gap-2">
-                    <button onclick="resolveOp('op-1', 'applied')" class="bg-correction text-white text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-correction-dark state-transition">Apply Incoming (0.9 m)</button>
-                    <button onclick="resolveOp('op-1', 'kept')" class="border border-ink-200 text-ink-600 text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-ink-50 state-transition">Keep Ours (1.8 m)</button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- ════ OPERATION 2: COLLISION ════ -->
-              <div class="mb-5 border border-collision rounded-lg bg-white shadow-sm" id="op-2">
-                <div class="flex items-start justify-between px-5 pt-4 pb-3">
-                  <div class="flex items-start gap-3">
-                    <span class="flex items-center justify-center w-6 h-6 bg-collision text-white text-micro font-semibold rounded-md flex-shrink-0 mt-px">2</span>
-                    <div>
-                      <div class="flex items-center gap-2 mb-1">
-                        <span class="text-micro font-semibold uppercase tracking-wide text-collision">Collision</span>
-                        <span class="text-micro font-mono text-ink-300">·</span>
-                        <span class="text-micro text-ink-400 font-medium">Structural</span>
-                      </div>
-                      <h3 class="text-[15px] font-medium text-ink-800 leading-snug">
-                        Escalator traversal time differs between Mezzanine and Platform Level
-                      </h3>
-                    </div>
-                  </div>
-                </div>
-                <div class="px-5 pb-5">
-                  <p class="text-[13px] text-ink-600 leading-relaxed mb-3">
-                    Both versions modified the traversal time for the escalator between the mezzanine and platform level.
-                    Your team set it to 90 seconds (measured on-site); the upstream set it to 65 seconds.
-                  </p>
-                  <div class="flex gap-3 mb-3">
-                    <div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5">
-                      <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Ours</div>
-                      <div class="font-mono text-[13px]">Traversal time: <strong>90 s</strong></div>
-                    </div>
-                    <div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5">
-                      <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Incoming</div>
-                      <div class="font-mono text-[13px]">Traversal time: <strong>65 s</strong></div>
-                    </div>
-                  </div>
-                  <div class="border-l-2 border-collision bg-collision-light rounded-r-md px-3 py-2.5 mb-3">
-                    <div class="text-micro font-semibold text-collision-dark mb-0.5">Impact</div>
-                    <p class="text-[13px] text-ink-600">Traversal time affects trip planning and routing. If your team measured on-site, that is likely more accurate. The upstream value may be an estimate.</p>
-                  </div>
-                  <details class="mb-3">
-                    <summary class="text-micro font-medium text-ink-400 cursor-pointer hover:text-ink-600">1 pathway affected</summary>
-                    <div class="mt-2 font-mono text-micro text-ink-500 bg-ink-50 border border-ink-100 rounded-md px-3 py-2">
-                      Escalator: Node 3 (Mezzanine) → Node 9 (Platform Level) · mode: escalator · time changed
-                    </div>
-                  </details>
-                  <div class="flex items-center gap-2">
-                    <button onclick="resolveOp('op-2', 'applied')" class="bg-correction text-white text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-correction-dark state-transition">Apply Incoming (65 s)</button>
-                    <button onclick="resolveOp('op-2', 'kept')" class="border border-ink-200 text-ink-600 text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-ink-50 state-transition">Keep Ours (90 s)</button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- ════ OPERATION 3: INCOMING CORRECTION (GROUPED) ════ -->
-              <div class="mb-5 border border-ink-200 rounded-lg bg-white shadow-sm" id="op-3">
-                <div class="flex items-start justify-between px-5 pt-4 pb-3">
-                  <div class="flex items-start gap-3">
-                    <span class="flex items-center justify-center w-6 h-6 bg-correction text-white text-micro font-semibold rounded-md flex-shrink-0 mt-px">3</span>
-                    <div>
-                      <div class="flex items-center gap-2 mb-1">
-                        <span class="text-micro font-semibold uppercase tracking-wide text-correction">Incoming Correction</span>
-                        <span class="text-micro font-mono text-ink-300">·</span>
-                        <span class="text-micro text-ink-400 font-medium">3 related changes</span>
-                      </div>
-                      <h3 class="text-[15px] font-medium text-ink-800 leading-snug">
-                        New mezzanine level inserted + level reordering + staircase replaced with elevator
-                      </h3>
-                    </div>
-                  </div>
-                </div>
-                <div class="px-5 pb-5">
-                  <p class="text-[13px] text-ink-600 leading-relaxed mb-3">
-                    Upstream added a mezzanine level between the concourse and platform level, reindexed the existing floors to accommodate it, and replaced the staircase between those levels with an elevator. These three changes form one structural operation: the station gained a new floor with step-free vertical access.
-                  </p>
-
-                  <div class="border border-ink-100 rounded-md divide-y divide-ink-100 mb-3">
-                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
-                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">3a</span>
-                      <div>
-                        <div class="text-[13px] font-medium text-ink-700">New level: Mezzanine (floor index 2)</div>
-                        <div class="text-[13px] text-ink-500 mt-0.5">Inserted between Concourse (reindexed to 0) and Platform Level (reindexed to 3).</div>
-                      </div>
-                    </div>
-                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
-                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">3b</span>
-                      <div>
-                        <div class="text-[13px] font-medium text-ink-700">Level indices updated on 3 existing floors</div>
-                        <div class="text-[13px] text-ink-500 mt-0.5">Concourse: 1 → 0. Street Level: 2 → 1. Platform Level: 2 → 3.</div>
-                      </div>
-                    </div>
-                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
-                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">3c</span>
-                      <div>
-                        <div class="text-[13px] font-medium text-ink-700">Staircase replaced with elevator (Concourse → Platform Level)</div>
-                        <div class="text-[13px] text-ink-500 mt-0.5">Positive accessibility impact: step-free access where only stairs existed.</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="border-l-2 border-correction bg-correction-light rounded-r-md px-3 py-2.5 mb-3">
-                    <div class="text-micro font-semibold text-correction-dark mb-0.5">Impact</div>
-                    <p class="text-[13px] text-ink-600">Structural change. Accepting updates the vertical structure of the station and adds step-free access. 4 nodes in our graph reference levels that would be renumbered. 6 pathways span the affected floors.</p>
-                  </div>
-
-                  <div class="flex items-center gap-2">
-                    <button onclick="resolveOp('op-3', 'applied')" class="bg-correction text-white text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-correction-dark state-transition">Apply All 3 Changes</button>
-                    <button onclick="resolveOp('op-3', 'kept')" class="border border-ink-200 text-ink-600 text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-ink-50 state-transition">Keep Current Structure</button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- ════ OPERATION 4: INCOMING CORRECTION ════ -->
-              <div class="mb-5 border border-ink-200 rounded-lg bg-white shadow-sm" id="op-4">
-                <div class="flex items-start justify-between px-5 pt-4 pb-3">
-                  <div class="flex items-start gap-3">
-                    <span class="flex items-center justify-center w-6 h-6 bg-correction text-white text-micro font-semibold rounded-md flex-shrink-0 mt-px">4</span>
-                    <div>
-                      <div class="flex items-center gap-2 mb-1">
-                        <span class="text-micro font-semibold uppercase tracking-wide text-correction">Incoming Correction</span>
-                        <span class="text-micro font-mono text-ink-300">·</span>
-                        <span class="text-micro text-ink-400 font-medium">3 related changes</span>
-                      </div>
-                      <h3 class="text-[15px] font-medium text-ink-800 leading-snug">
-                        Platform corrections: "Track 4" repositioned, "Track 2" renamed, wheelchair access confirmed on "Track 1"
-                      </h3>
-                    </div>
-                  </div>
-                </div>
-                <div class="px-5 pb-5">
-                  <p class="text-[13px] text-ink-600 leading-relaxed mb-3">
-                    Upstream corrected three platform attributes. These are independent fixes grouped because they share the same pattern: base data improvements that do not affect the pathways your team built.
-                  </p>
-                  <div class="border border-ink-100 rounded-md divide-y divide-ink-100 mb-3">
-                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
-                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">4a</span>
-                      <div class="flex-1">
-                        <div class="text-[13px] font-medium text-ink-700">Platform "Track 4" relocated ~15 m</div>
-                        <div class="flex gap-2 mt-1 text-micro font-mono text-ink-400">
-                          <span>42.36541, -71.06129</span>
-                          <span class="text-ink-300">→</span>
-                          <span>42.36554, -71.06118</span>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
-                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">4b</span>
-                      <div class="flex-1">
-                        <div class="text-[13px] font-medium text-ink-700">Platform "Track 2" renamed to "Track 2 — Westbound"</div>
-                        <div class="text-[13px] text-ink-500 mt-0.5">Directional qualifier added to match rider-facing signage.</div>
-                      </div>
-                    </div>
-                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
-                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">4c</span>
-                      <div class="flex-1">
-                        <div class="text-[13px] font-medium text-ink-700">Platform "Track 1" wheelchair access confirmed</div>
-                        <div class="text-[13px] text-ink-500 mt-0.5">Updated from unknown to accessible. Improves trip planner accuracy.</div>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="border-l-2 border-correction bg-correction-light rounded-r-md px-3 py-2.5 mb-3">
-                    <div class="text-micro font-semibold text-correction-dark mb-0.5">Impact</div>
-                    <p class="text-[13px] text-ink-600">Low risk. Coordinate, naming, and accessibility corrections from upstream. "Track 4" anchors 2 pathways in your graph — applying updates their spatial reference point. No structural breakage.</p>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <button onclick="resolveOp('op-4', 'applied')" class="bg-correction text-white text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-correction-dark state-transition">Apply All 3 Corrections</button>
-                    <button onclick="resolveOp('op-4', 'kept')" class="border border-ink-200 text-ink-600 text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-ink-50 state-transition">Keep Current Values</button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- ════ OPERATION 5: OUR ADDITION ════ -->
-              <div class="mb-5 border border-ink-200 rounded-lg bg-white shadow-sm" id="op-5">
-                <div class="flex items-start justify-between px-5 pt-4 pb-3">
-                  <div class="flex items-start gap-3">
-                    <span class="flex items-center justify-center w-6 h-6 bg-addition text-white text-micro font-semibold rounded-md flex-shrink-0 mt-px">5</span>
-                    <div>
-                      <div class="flex items-center gap-2 mb-1">
-                        <span class="text-micro font-semibold uppercase tracking-wide text-addition">Our Addition</span>
-                        <span class="text-micro font-mono text-ink-300">·</span>
-                        <span class="text-micro text-ink-400 font-medium">8 entities</span>
-                      </div>
-                      <h3 class="text-[15px] font-medium text-ink-800 leading-snug">
-                        2 new entrances (North Plaza, South Concourse) with wayfinding connections
-                      </h3>
-                    </div>
-                  </div>
-                </div>
-                <div class="px-5 pb-5">
-                  <p class="text-[13px] text-ink-600 leading-relaxed mb-3">
-                    Your team added 2 entrances, 4 pathfinding nodes, and 6 walkway pathways connecting them to the concourse level. This is enrichment work — none of it exists in the upstream feed.
-                  </p>
-                  <details class="mb-3">
-                    <summary class="text-micro font-medium text-ink-400 cursor-pointer hover:text-ink-600">8 entities: 2 entrances, 4 nodes, 6 walkways</summary>
-                    <div class="mt-2 font-mono text-micro text-ink-500 bg-ink-50 border border-ink-100 rounded-md px-3 py-2 space-y-1">
-                      <div>Entrance: North Plaza (Street Level) — connected via 3 walkways</div>
-                      <div>Entrance: South Concourse (Concourse Level) — connected via 3 walkways</div>
-                      <div>Node: NP-1, NP-2 (North Plaza routing)</div>
-                      <div>Node: SC-1, SC-2 (South Concourse routing)</div>
-                    </div>
-                  </details>
-                  <div class="border-l-2 border-addition bg-addition-light rounded-r-md px-3 py-2.5 mb-3">
-                    <div class="text-micro font-semibold text-addition-dark mb-0.5">Impact</div>
-                    <p class="text-[13px] text-ink-600">No conflict. This is your team's pathways enrichment. Confirm to keep it in the merged output.</p>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <button onclick="resolveOp('op-5', 'kept')" class="bg-addition text-white text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-addition-dark state-transition">Confirm — Keep Our Work</button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Station complete state -->
               <div id="station-complete" class="hidden mt-8 border-t-2 border-addition pt-6 text-center">
-                <div class="text-addition font-semibold text-[15px] mb-1">All operations resolved for Central Station.</div>
-                <div class="text-[13px] text-ink-500 mb-4">All operations reviewed. Ready to merge.</div>
-                <button class="border border-ink-200 text-ink-600 text-[13px] font-medium px-4 py-2 rounded-md hover:bg-ink-50 state-transition" onclick="selectStation('riverside')">
-                  Next: Riverside Terminal →
-                </button>
+                <div class="text-addition font-semibold text-[15px] mb-1" id="station-complete-title"></div>
+                <div class="text-[13px] text-ink-500 mb-4" id="station-complete-copy">All operations reviewed. Ready to merge.</div>
+                <button class="border border-ink-200 text-ink-600 text-[13px] font-medium px-4 py-2 rounded-md hover:bg-ink-50 state-transition" id="station-complete-next" onclick="goToNextStation()"></button>
               </div>
 
             </div>
@@ -655,10 +319,91 @@ tailwind.config = {
 </div>
 
 <script>
+  const STATION_ORDER = ['central', 'riverside', 'market', 'northgate', 'convention', 'airport', 'eastport'];
+  const SUMMARY_LABELS = ['Platforms', 'Entrances', 'Levels', 'Nodes', 'Pathways', 'Boarding'];
+  const TYPE_STYLES = {
+    collision: { text: 'text-collision', border: 'border-collision', badge: 'bg-collision', panel: 'bg-collision-light', label: 'Collision' },
+    correction: { text: 'text-correction', border: 'border-ink-200', badge: 'bg-correction', panel: 'bg-correction-light', label: 'Incoming Correction' },
+    addition: { text: 'text-addition', border: 'border-ink-200', badge: 'bg-addition', panel: 'bg-addition-light', label: 'Our Addition' },
+    upstream: { text: 'text-upstream', border: 'border-ink-200', badge: 'bg-upstream', panel: 'bg-correction-light', label: 'Incoming Addition' }
+  };
+  const STATION_DATA = {
+    central: {
+      name: 'Central Station',
+      underlyingChanges: 9,
+      summary: {
+        ours: [4, 5, 3, 12, 18, 2],
+        incoming: [4, 3, 4, 8, 14, 2]
+      },
+      operations: [
+        { id: 'walkway-width', type: 'collision', badge: 'Accessibility risk', title: 'Walkway width conflict between Entrance A and Concourse', description: 'Both sides changed the minimum width of the walkway connecting Entrance A to the concourse level.', ours: 'Minimum width: 1.8 m', incoming: 'Minimum width: 0.9 m', impact: 'Incoming is below typical wheelchair clearance. Keep the measured value unless the walkway was physically narrowed.', applyLabel: 'Apply Incoming (0.9 m)', keepLabel: 'Keep Ours (1.8 m)' },
+        { id: 'escalator-time', type: 'collision', badge: 'Structural', title: 'Escalator traversal time differs between Mezzanine and Platform Level', description: 'Your team recorded 90 seconds on site; the upstream feed reports 65 seconds.', ours: 'Traversal time: 90 s', incoming: 'Traversal time: 65 s', impact: 'Traversal time affects trip planning and routing, so favor the measurement you trust.', applyLabel: 'Apply Incoming (65 s)', keepLabel: 'Keep Ours (90 s)' },
+        { id: 'mezzanine-structure', type: 'correction', badge: '3 related changes', title: 'Mezzanine level inserted with elevator access', description: 'Incoming adds a mezzanine, reorders existing levels, and replaces stairs with an elevator.', bullets: ['New level: Mezzanine inserted between concourse and platform.', '3 existing floor indices updated.', 'Staircase replaced with elevator for step-free access.'], impact: 'Structural change that renumbers connected nodes and pathways.', applyLabel: 'Apply All 3 Changes', keepLabel: 'Keep Current Structure' },
+        { id: 'platform-corrections', type: 'correction', badge: '3 related changes', title: 'Platform naming, position, and accessibility corrections', description: 'Incoming corrects a platform coordinate, adds rider-facing naming, and confirms wheelchair access.', bullets: ['Track 4 repositioned by ~15 m.', 'Track 2 renamed to include westbound direction.', 'Track 1 wheelchair access confirmed.'], impact: 'Low-risk upstream corrections that improve base rider data.', applyLabel: 'Apply All 3 Corrections', keepLabel: 'Keep Current Values' },
+        { id: 'new-entrances', type: 'addition', badge: '8 entities', title: '2 new entrances with wayfinding connections', description: 'Your team added two entrances, four nodes, and connecting walkways not present upstream.', bullets: ['North Plaza entrance with 3 walkways.', 'South Concourse entrance with 3 walkways.', '4 supporting wayfinding nodes.'], impact: 'No conflict. Confirm to keep the enrichment in the merged output.', keepLabel: 'Confirm - Keep Our Work' }
+      ]
+    },
+    riverside: {
+      name: 'Riverside Terminal',
+      underlyingChanges: 6,
+      summary: { ours: [3, 4, 2, 9, 12, 1], incoming: [3, 4, 2, 8, 11, 1] },
+      operations: [
+        { id: 'bay-rename', type: 'correction', badge: 'Naming', title: 'Bus bay labels updated to match new signage', description: 'Incoming renames bays B and C to reflect the current rider-facing naming scheme.', ours: 'Bays B / C', incoming: 'Bays East / West', impact: 'Low risk. Naming alignment reduces rider confusion.', applyLabel: 'Apply Incoming Names', keepLabel: 'Keep Current Labels' },
+        { id: 'ramp-slope', type: 'correction', badge: 'Accessibility', title: 'Ramp slope corrected at west entrance', description: 'Incoming revises the west entrance ramp grade from 1:14 to 1:12.', ours: 'Slope: 1:14', incoming: 'Slope: 1:12', impact: 'Accessibility metadata should reflect the physical ramp.', applyLabel: 'Apply Incoming Slope', keepLabel: 'Keep Current Slope' },
+        { id: 'service-corridor', type: 'collision', badge: 'Routing', title: 'Service corridor travel time differs', description: 'The travel time between the terminal hall and commuter platforms differs between the two versions.', ours: 'Traversal time: 140 s', incoming: 'Traversal time: 115 s', impact: 'Routing estimates change. Keep the value backed by the best observation.', applyLabel: 'Apply Incoming Time', keepLabel: 'Keep Ours' },
+        { id: 'north-entrance', type: 'addition', badge: '3 entities', title: 'North entrance and connector added by your team', description: 'Your enrichment added a new entrance and two link pathways to the terminal hall.', bullets: ['North entrance retained only in our enriched version.', '2 connector pathways depend on this entrance.'], impact: 'No upstream conflict. Confirm to keep your added access point.', keepLabel: 'Confirm - Keep Our Work' }
+      ]
+    },
+    market: {
+      name: 'Market Square',
+      underlyingChanges: 5,
+      summary: { ours: [2, 3, 2, 7, 10, 1], incoming: [2, 2, 2, 7, 9, 1] },
+      operations: [
+        { id: 'stairs-elevator', type: 'correction', badge: 'Accessibility', title: 'Elevator replaces stair-only connection to mezzanine', description: 'Incoming replaces a stair-only connection with an elevator between the plaza and mezzanine.', bullets: ['Vertical access becomes step-free.', '1 linked pathway changes mode.'], impact: 'Positive accessibility change with limited routing impact.', applyLabel: 'Apply Elevator Update', keepLabel: 'Keep Current Structure' },
+        { id: 'vendor-entry', type: 'collision', badge: 'Naming', title: 'South arcade entrance name conflicts', description: 'Both versions renamed the south arcade entrance differently after the retail refresh.', ours: 'South Arcade', incoming: 'Market Arcade South', impact: 'Use the name that matches posted signage.', applyLabel: 'Apply Incoming Name', keepLabel: 'Keep Ours' },
+        { id: 'plaza-entry', type: 'addition', badge: '2 entities', title: 'Plaza entrance added in enrichment', description: 'Your team added a new plaza entrance with a short connector walkway.', impact: 'No conflict. Confirm to keep the extra entrance in the merged output.', keepLabel: 'Confirm - Keep Our Work' }
+      ]
+    },
+    northgate: {
+      name: 'Northgate Junction',
+      underlyingChanges: 4,
+      summary: { ours: [3, 2, 3, 8, 11, 2], incoming: [3, 2, 3, 7, 10, 2] },
+      operations: [
+        { id: 'ped-bridge', type: 'correction', badge: 'Coordinates', title: 'Pedestrian bridge nodes shifted to corrected coordinates', description: 'Incoming adjusts the bridge node positions to match the rebuilt overpass alignment.', impact: 'Low risk. Spatial correction updates two connected pathways.', applyLabel: 'Apply Coordinate Fix', keepLabel: 'Keep Current Coordinates' },
+        { id: 'lift-capacity', type: 'correction', badge: 'Accessibility', title: 'Lift availability confirmed on platform transfer', description: 'Incoming marks the transfer lift as available during service hours.', ours: 'Availability: unknown', incoming: 'Availability: service hours', impact: 'Improves accessibility routing accuracy.', applyLabel: 'Apply Availability', keepLabel: 'Keep Current Value' },
+        { id: 'north-loop', type: 'addition', badge: '3 entities', title: 'North loop connector added by your team', description: 'Your enrichment added a short connector loop linking the bus and rail concourses.', impact: 'No upstream conflict. Confirm to keep the added connection.', keepLabel: 'Confirm - Keep Our Work' }
+      ]
+    },
+    convention: {
+      name: 'Convention Center',
+      underlyingChanges: 3,
+      summary: { ours: [2, 2, 2, 5, 7, 1], incoming: [2, 3, 2, 6, 8, 1] },
+      operations: [
+        { id: 'event-entry', type: 'upstream', badge: 'New upstream', title: 'Temporary event entrance added upstream', description: 'Incoming adds an event-day entrance on the west plaza with one connecting walkway.', impact: 'Review whether the entrance should be carried into your enriched branch.', applyLabel: 'Apply Incoming Addition', keepLabel: 'Skip For Now' },
+        { id: 'hall-name', type: 'correction', badge: 'Naming', title: 'Concourse hall renamed to match building signage', description: 'Incoming updates the hall name after the venue rebrand.', ours: 'Exhibit Hall', incoming: 'Grand Hall', impact: 'Low risk naming correction.', applyLabel: 'Apply New Name', keepLabel: 'Keep Current Name' }
+      ]
+    },
+    airport: {
+      name: 'Airport Link',
+      underlyingChanges: 2,
+      summary: { ours: [1, 1, 2, 4, 5, 1], incoming: [1, 1, 2, 4, 5, 1] },
+      operations: [
+        { id: 'shuttle-connector', type: 'addition', badge: '2 entities', title: 'Shuttle connector path added by your team', description: 'Your enrichment adds the shuttle stop connector from curbside to the station entrance.', impact: 'No conflict. Confirm to keep the added airport transfer path.', keepLabel: 'Confirm - Keep Our Work' }
+      ]
+    },
+    eastport: {
+      name: 'Eastport',
+      underlyingChanges: 1,
+      summary: { ours: [1, 1, 1, 3, 4, 1], incoming: [1, 1, 1, 3, 4, 1] },
+      operations: [
+        { id: 'dock-name', type: 'correction', badge: 'Naming', title: 'Dock entrance name corrected', description: 'Incoming updates the dock entrance name to match the latest harbor signage.', ours: 'Pier Entrance', incoming: 'Harbor Gate', impact: 'Low risk naming change.', applyLabel: 'Apply Incoming Name', keepLabel: 'Keep Current Name' }
+      ]
+    }
+  };
+  const TOTAL_OPS = Object.fromEntries(STATION_ORDER.map((stationId) => [stationId, STATION_DATA[stationId].operations.length]));
   let selectedStation = null;
-  let resolvedOps = {};
-  const TOTAL_OPS = { central: 5, riverside: 4, market: 3, northgate: 3, convention: 2, airport: 1, eastport: 1 };
-  let stationResolvedCounts = { central: 0, riverside: 0, market: 0, northgate: 0, convention: 0, airport: 0, eastport: 0 };
+  let resolvedOps = Object.fromEntries(STATION_ORDER.map((stationId) => [stationId, {}]));
+  let stationResolvedCounts = Object.fromEntries(STATION_ORDER.map((stationId) => [stationId, 0]));
   let stationsFullyResolved = new Set();
 
   function selectStation(id) {
@@ -674,47 +419,22 @@ tailwind.config = {
       activeItem.classList.add('bg-correction-light');
     }
 
-    const prompt = document.getElementById('sidebar-prompt');
-    if (id === 'central') {
-      prompt.innerHTML = `<div class="text-xs text-correction-dark font-medium">Reviewing ↓</div><div class="text-xs text-ink-500 mt-0.5">Central Station — 2 collisions, 2 corrections, 1 confirmation.</div>`;
-    } else {
-      const total = TOTAL_OPS[id] || 0;
-      const nameEl = activeItem?.querySelector('.text-\\[13px\\]');
-      const name = nameEl ? nameEl.textContent : id;
-      prompt.innerHTML = `<div class="text-xs text-correction-dark font-medium">Reviewing ↓</div><div class="text-xs text-ink-500 mt-0.5">${name} — ${total} operations to review.</div>`;
-    }
-
+    renderStation(id);
     document.getElementById('operations-scroll')?.scrollTo(0, 0);
   }
 
   function resolveOp(opId, action) {
-    const opEl = document.getElementById(opId);
-    if (!opEl || resolvedOps[opId]) return;
-    resolvedOps[opId] = action;
+    if (!selectedStation || resolvedOps[selectedStation][opId]) return;
+    resolvedOps[selectedStation][opId] = action;
+    stationResolvedCounts[selectedStation] = Object.keys(resolvedOps[selectedStation]).length;
 
-    const actionsDiv = opEl.querySelector('.flex.items-center.gap-2:last-child');
-    if (action === 'applied') {
-      actionsDiv.innerHTML = `<span class="inline-flex items-center gap-1.5 text-[13px] font-medium text-correction"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>Incoming applied</span>`;
-      opEl.style.opacity = '0.6';
-    } else {
-      actionsDiv.innerHTML = `<span class="inline-flex items-center gap-1.5 text-[13px] font-medium text-ink-400"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>Keeping ours</span>`;
-      opEl.style.opacity = '0.6';
+    if (stationResolvedCounts[selectedStation] >= TOTAL_OPS[selectedStation]) {
+      stationsFullyResolved.add(selectedStation);
     }
 
-    stationResolvedCounts.central = Object.keys(resolvedOps).length;
-    const count = stationResolvedCounts.central;
-    const total = TOTAL_OPS.central;
-    document.getElementById('station-resolved-count').textContent = count;
-    document.getElementById('station-progress-bar').style.width = `${(count / total) * 100}%`;
-
-    if (count >= total) {
-      stationsFullyResolved.add('central');
-      document.getElementById('station-complete').classList.remove('hidden');
-      document.getElementById('station-central-status').textContent = '✓';
-      document.getElementById('station-central-status').classList.add('text-addition', 'font-medium');
-      document.getElementById('station-central-status').classList.remove('text-ink-300');
-      updateGlobalProgress();
-    }
+    updateStationStatus(selectedStation);
+    updateGlobalProgress();
+    renderStation(selectedStation);
   }
 
   function updateGlobalProgress() {
@@ -723,14 +443,177 @@ tailwind.config = {
     document.getElementById('global-progress-bar').style.width = `${(resolved / 7) * 100}%`;
   }
 
+  function renderStation(id) {
+    const station = STATION_DATA[id];
+    const resolvedCount = stationResolvedCounts[id];
+    const total = TOTAL_OPS[id];
+
+    document.getElementById('review-station-name').textContent = station.name;
+    document.getElementById('review-station-meta').textContent = `${total} operations · ${station.underlyingChanges} underlying changes`;
+    document.getElementById('station-resolved-count').textContent = resolvedCount;
+    document.getElementById('station-total-count').textContent = total;
+    document.getElementById('station-progress-bar').style.width = `${(resolvedCount / total) * 100}%`;
+    document.getElementById('review-ours-summary').innerHTML = renderSummaryGrid(station.summary.ours, false);
+    document.getElementById('review-incoming-summary').innerHTML = renderSummaryGrid(station.summary.incoming, true);
+    document.getElementById('review-triage').innerHTML = renderTriage(station.operations);
+    document.getElementById('operations-list').innerHTML = station.operations.map((operation, index) => renderOperation(operation, index, resolvedOps[id][operation.id])).join('');
+
+    const prompt = document.getElementById('sidebar-prompt');
+    prompt.innerHTML = `<div class="text-xs text-correction-dark font-medium">Reviewing ↓</div><div class="text-xs text-ink-500 mt-0.5">${station.name} — ${renderPromptSummary(station.operations)}</div>`;
+
+    const completeEl = document.getElementById('station-complete');
+    if (resolvedCount >= total) {
+      completeEl.classList.remove('hidden');
+      document.getElementById('station-complete-title').textContent = `All operations resolved for ${station.name}.`;
+      document.getElementById('station-complete-next').textContent = nextStationLabel(id);
+    } else {
+      completeEl.classList.add('hidden');
+    }
+  }
+
+  function renderSummaryGrid(values, highlightChanges) {
+    return values.map((value, index) => {
+      const referenceValue = STATION_DATA[selectedStation].summary.ours[index];
+      const valueClass = highlightChanges && value !== referenceValue ? 'text-correction' : 'text-ink-800';
+      return `<div><div class="text-lg font-semibold font-mono leading-none ${valueClass}">${value}</div><div class="text-micro text-ink-400 mt-0.5">${SUMMARY_LABELS[index]}</div></div>`;
+    }).join('');
+  }
+
+  function renderTriage(operations) {
+    const counts = operations.reduce((acc, operation) => {
+      acc[operation.type] = (acc[operation.type] || 0) + 1;
+      return acc;
+    }, {});
+
+    return Object.entries(counts).map(([type, count]) => {
+      const copy = type === 'collision'
+        ? `${count} collision${count === 1 ? '' : 's'} - need judgment`
+        : type === 'correction'
+          ? `${count} correction${count === 1 ? '' : 's'} - review and apply`
+          : type === 'upstream'
+            ? `${count} incoming addition${count === 1 ? '' : 's'} - review`
+            : `${count} our work item${count === 1 ? '' : 's'} - confirm`;
+      return `<span class="${TYPE_STYLES[type].text}">${copy}</span>`;
+    }).join('<span class="text-ink-300">·</span>');
+  }
+
+  function renderOperation(operation, index, resolution) {
+    const styles = TYPE_STYLES[operation.type];
+    const resolvedMarkup = resolution
+      ? `<span class="inline-flex items-center gap-1.5 text-[13px] font-medium ${resolution === 'applied' ? 'text-correction' : 'text-ink-400'}"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>${resolution === 'applied' ? 'Incoming applied' : 'Keeping ours'}</span>`
+      : renderOperationButtons(operation);
+    const comparisonMarkup = operation.ours || operation.incoming
+      ? `<div class="flex gap-3 mb-3">${operation.ours ? `<div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5"><div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Ours</div><div class="font-mono text-[13px]">${operation.ours}</div></div>` : ''}${operation.incoming ? `<div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5"><div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Incoming</div><div class="font-mono text-[13px]">${operation.incoming}</div></div>` : ''}</div>`
+      : '';
+    const bulletsMarkup = operation.bullets
+      ? `<div class="border border-ink-100 rounded-md divide-y divide-ink-100 mb-3">${operation.bullets.map((bullet, bulletIndex) => `<div class="px-3 py-2.5 flex gap-3 items-baseline"><span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">${index + 1}${String.fromCharCode(97 + bulletIndex)}</span><div class="text-[13px] text-ink-600">${bullet}</div></div>`).join('')}</div>`
+      : '';
+
+    return `
+      <div class="mb-5 border ${styles.border} rounded-lg bg-white shadow-sm" style="${resolution ? 'opacity: 0.6;' : ''}">
+        <div class="flex items-start justify-between px-5 pt-4 pb-3">
+          <div class="flex items-start gap-3">
+            <span class="flex items-center justify-center w-6 h-6 ${styles.badge} text-white text-micro font-semibold rounded-md flex-shrink-0 mt-px">${index + 1}</span>
+            <div>
+              <div class="flex items-center gap-2 mb-1">
+                <span class="text-micro font-semibold uppercase tracking-wide ${styles.text}">${styles.label}</span>
+                ${operation.badge ? `<span class="text-micro font-mono text-ink-300">·</span><span class="text-micro text-ink-400 font-medium">${operation.badge}</span>` : ''}
+              </div>
+              <h3 class="text-[15px] font-medium text-ink-800 leading-snug">${operation.title}</h3>
+            </div>
+          </div>
+        </div>
+        <div class="px-5 pb-5">
+          <p class="text-[13px] text-ink-600 leading-relaxed mb-3">${operation.description}</p>
+          ${comparisonMarkup}
+          ${bulletsMarkup}
+          <div class="border-l-2 ${operation.type === 'collision' ? 'border-collision bg-collision-light' : operation.type === 'addition' ? 'border-addition bg-addition-light' : operation.type === 'upstream' ? 'border-upstream bg-correction-light' : 'border-correction bg-correction-light'} rounded-r-md px-3 py-2.5 mb-3">
+            <div class="text-micro font-semibold ${styles.text} mb-0.5">Impact</div>
+            <p class="text-[13px] text-ink-600">${operation.impact}</p>
+          </div>
+          <div class="flex items-center gap-2">${resolvedMarkup}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderOperationButtons(operation) {
+    const primaryClass = operation.type === 'addition' ? 'bg-addition hover:bg-addition-dark' : operation.type === 'upstream' ? 'bg-upstream hover:bg-upstream-dark' : 'bg-correction hover:bg-correction-dark';
+    const buttons = [];
+
+    if (operation.applyLabel) {
+      buttons.push(`<button onclick="resolveOp('${operation.id}', 'applied')" class="${primaryClass} text-white text-[13px] font-medium px-3.5 py-2 rounded-md state-transition">${operation.applyLabel}</button>`);
+    }
+
+    if (operation.keepLabel) {
+      const keepClass = operation.type === 'addition' && !operation.applyLabel
+        ? 'bg-addition hover:bg-addition-dark text-white'
+        : 'border border-ink-200 text-ink-600 hover:bg-ink-50';
+      buttons.push(`<button onclick="resolveOp('${operation.id}', 'kept')" class="${keepClass} text-[13px] font-medium px-3.5 py-2 rounded-md state-transition">${operation.keepLabel}</button>`);
+    }
+
+    return buttons.join('');
+  }
+
+  function renderPromptSummary(operations) {
+    const counts = operations.reduce((acc, operation) => {
+      acc[operation.type] = (acc[operation.type] || 0) + 1;
+      return acc;
+    }, {});
+    const parts = [];
+
+    if (counts.collision) parts.push(`${counts.collision} collision${counts.collision === 1 ? '' : 's'}`);
+    if (counts.correction) parts.push(`${counts.correction} correction${counts.correction === 1 ? '' : 's'}`);
+    if (counts.upstream) parts.push(`${counts.upstream} incoming addition${counts.upstream === 1 ? '' : 's'}`);
+    if (counts.addition) parts.push(`${counts.addition} confirmation${counts.addition === 1 ? '' : 's'}`);
+
+    return parts.join(', ');
+  }
+
+  function updateStationStatus(id) {
+    const statusEl = document.getElementById(`station-${id}-status`);
+    if (!statusEl) return;
+
+    if (stationResolvedCounts[id] >= TOTAL_OPS[id]) {
+      statusEl.textContent = '✓';
+      statusEl.classList.add('text-addition', 'font-medium');
+      statusEl.classList.remove('text-ink-300');
+    } else {
+      statusEl.textContent = '—';
+      statusEl.classList.remove('text-addition', 'font-medium');
+      statusEl.classList.add('text-ink-300');
+    }
+  }
+
+  function nextStationLabel(id) {
+    const currentIndex = STATION_ORDER.indexOf(id);
+    const nextId = STATION_ORDER[currentIndex + 1];
+    return nextId ? `Next: ${STATION_DATA[nextId].name} ->` : 'Back to Guide';
+  }
+
+  function goToNextStation() {
+    if (!selectedStation) return;
+    const currentIndex = STATION_ORDER.indexOf(selectedStation);
+    const nextId = STATION_ORDER[currentIndex + 1];
+    if (nextId) {
+      selectStation(nextId);
+      return;
+    }
+
+    toggleOnboarding();
+  }
+
   function toggleOnboarding() {
     selectedStation = null;
     document.getElementById('welcome-state').style.display = 'block';
     document.getElementById('review-state').style.display = 'none';
+    document.getElementById('sidebar-prompt').innerHTML = '<div class="text-xs text-correction-dark font-medium">Start here ↓</div><div class="text-xs text-ink-500 mt-0.5">Central Station has 2 collisions that need your judgment.</div>';
     document.querySelectorAll('.station-item').forEach(el => {
       el.classList.remove('bg-correction-light');
     });
   }
+
+  STATION_ORDER.forEach(updateStationStatus);
 </script>
 
 </body>
