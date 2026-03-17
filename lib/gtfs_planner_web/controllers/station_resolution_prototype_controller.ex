@@ -8,4 +8,12 @@ defmodule GtfsPlannerWeb.StationResolutionPrototypeController do
     |> put_resp_content_type("text/html")
     |> send_file(200, path)
   end
+
+  def stylesheet(conn, _params) do
+    path = Application.app_dir(:gtfs_planner, "priv/prototypes/station-resolution-v2.css")
+
+    conn
+    |> put_resp_content_type("text/css")
+    |> send_file(200, path)
+  end
 end

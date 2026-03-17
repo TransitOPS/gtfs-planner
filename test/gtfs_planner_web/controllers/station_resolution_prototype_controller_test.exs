@@ -4,6 +4,7 @@ defmodule GtfsPlannerWeb.StationResolutionPrototypeControllerTest do
   import GtfsPlanner.AccountsFixtures
 
   @endpoint_path "/station-data-resolution-prototype"
+  @stylesheet_path "/station-data-resolution-prototype/station-resolution-v2.css"
 
   describe "GET /station-data-resolution-prototype" do
     test "returns 200 with HTML content type for authenticated user", %{conn: conn} do
@@ -27,6 +28,13 @@ defmodule GtfsPlannerWeb.StationResolutionPrototypeControllerTest do
       assert conn.resp_body == expected
     end
 
+    test "prototype references the served stylesheet path", %{conn: conn} do
+      user = user_fixture()
+      conn = conn |> log_in_user(user) |> get(@endpoint_path)
+
+      assert conn.resp_body =~ ~s(<link rel="stylesheet" href="#{@stylesheet_path}">)
+    end
+
     test "redirects unauthenticated user to login", %{conn: conn} do
       conn = get(conn, @endpoint_path)
 
@@ -37,6 +45,35 @@ defmodule GtfsPlannerWeb.StationResolutionPrototypeControllerTest do
       conn = get(conn, "/prototypes/station-resolution-v2.html")
 
       assert conn.status == 404
+    end
+  end
+
+  describe "GET /station-data-resolution-prototype/station-resolution-v2.css" do
+    test "returns 200 with CSS content type for authenticated user", %{conn: conn} do
+      user = user_fixture()
+      conn = conn |> log_in_user(user) |> get(@stylesheet_path)
+
+      assert conn.status == 200
+      assert {"content-type", content_type} = List.keyfind(conn.resp_headers, "content-type", 0)
+      assert content_type =~ "text/css"
+    end
+
+    test "response body exactly matches the CSS file in priv/prototypes", %{conn: conn} do
+      user = user_fixture()
+      conn = conn |> log_in_user(user) |> get(@stylesheet_path)
+
+      expected =
+        File.read!(
+          Application.app_dir(:gtfs_planner, "priv/prototypes/station-resolution-v2.css")
+        )
+
+      assert conn.resp_body == expected
+    end
+
+    test "redirects unauthenticated user to login", %{conn: conn} do
+      conn = get(conn, @stylesheet_path)
+
+      assert redirected_to(conn) == "/users/log_in"
     end
   end
 end

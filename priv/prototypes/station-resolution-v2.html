@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Station Data Resolution Tool</title>
-<link rel="stylesheet" href="station-resolution-v2.css">
+<link rel="stylesheet" href="/station-data-resolution-prototype/station-resolution-v2.css">
 <style>
   [x-cloak] { display: none !important; }
   body {
@@ -379,7 +379,7 @@
       underlyingChanges: 3,
       summary: { ours: [2, 2, 2, 5, 7, 1], incoming: [2, 3, 2, 6, 8, 1] },
       operations: [
-        { id: 'event-entry', type: 'upstream', badge: 'New upstream', title: 'Temporary event entrance added upstream', description: 'Incoming adds an event-day entrance on the west plaza with one connecting walkway.', impact: 'Review whether the entrance should be carried into your enriched branch.', applyLabel: 'Apply Incoming Addition', keepLabel: 'Skip For Now' },
+        { id: 'event-entry', type: 'upstream', badge: 'New upstream', title: 'Temporary event entrance added upstream', description: 'Incoming adds an event-day entrance on the west plaza with one connecting walkway.', impact: 'Review whether the entrance should be carried into your enriched branch.', applyLabel: 'Apply Incoming Addition', deferLabel: 'Skip For Now' },
         { id: 'hall-name', type: 'correction', badge: 'Naming', title: 'Concourse hall renamed to match building signage', description: 'Incoming updates the hall name after the venue rebrand.', ours: 'Exhibit Hall', incoming: 'Grand Hall', impact: 'Low risk naming correction.', applyLabel: 'Apply New Name', keepLabel: 'Keep Current Name' }
       ]
     },
@@ -403,6 +403,7 @@
   const TOTAL_OPS = Object.fromEntries(STATION_ORDER.map((stationId) => [stationId, STATION_DATA[stationId].operations.length]));
   let selectedStation = null;
   let resolvedOps = Object.fromEntries(STATION_ORDER.map((stationId) => [stationId, {}]));
+  let deferredOps = Object.fromEntries(STATION_ORDER.map((stationId) => [stationId, {}]));
   let stationResolvedCounts = Object.fromEntries(STATION_ORDER.map((stationId) => [stationId, 0]));
   let stationsFullyResolved = new Set();
 
@@ -424,12 +425,25 @@
   }
 
   function resolveOp(opId, action) {
-    if (!selectedStation || resolvedOps[selectedStation][opId]) return;
+    if (!selectedStation) return;
+
+    if (action === 'deferred') {
+      deferredOps[selectedStation][opId] = true;
+      updateStationStatus(selectedStation);
+      renderStation(selectedStation);
+      return;
+    }
+
+    if (resolvedOps[selectedStation][opId]) return;
+
     resolvedOps[selectedStation][opId] = action;
-    stationResolvedCounts[selectedStation] = Object.keys(resolvedOps[selectedStation]).length;
+    delete deferredOps[selectedStation][opId];
+    stationResolvedCounts[selectedStation] = countResolvedOps(selectedStation);
 
     if (stationResolvedCounts[selectedStation] >= TOTAL_OPS[selectedStation]) {
       stationsFullyResolved.add(selectedStation);
+    } else {
+      stationsFullyResolved.delete(selectedStation);
     }
 
     updateStationStatus(selectedStation);
@@ -456,7 +470,7 @@
     document.getElementById('review-ours-summary').innerHTML = renderSummaryGrid(station.summary.ours, false);
     document.getElementById('review-incoming-summary').innerHTML = renderSummaryGrid(station.summary.incoming, true);
     document.getElementById('review-triage').innerHTML = renderTriage(station.operations);
-    document.getElementById('operations-list').innerHTML = station.operations.map((operation, index) => renderOperation(operation, index, resolvedOps[id][operation.id])).join('');
+    document.getElementById('operations-list').innerHTML = station.operations.map((operation, index) => renderOperation(operation, index, resolvedOps[id][operation.id], deferredOps[id][operation.id])).join('');
 
     const prompt = document.getElementById('sidebar-prompt');
     prompt.innerHTML = `<div class="text-xs text-correction-dark font-medium">Reviewing ↓</div><div class="text-xs text-ink-500 mt-0.5">${station.name} — ${renderPromptSummary(station.operations)}</div>`;
@@ -497,11 +511,11 @@
     }).join('<span class="text-ink-300">·</span>');
   }
 
-  function renderOperation(operation, index, resolution) {
+  function renderOperation(operation, index, resolution, deferred) {
     const styles = TYPE_STYLES[operation.type];
     const resolvedMarkup = resolution
       ? `<span class="inline-flex items-center gap-1.5 text-[13px] font-medium ${resolution === 'applied' ? 'text-correction' : 'text-ink-400'}"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>${resolution === 'applied' ? 'Incoming applied' : 'Keeping ours'}</span>`
-      : renderOperationButtons(operation);
+      : renderOperationButtons(operation, deferred);
     const comparisonMarkup = operation.ours || operation.incoming
       ? `<div class="flex gap-3 mb-3">${operation.ours ? `<div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5"><div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Ours</div><div class="font-mono text-[13px]">${operation.ours}</div></div>` : ''}${operation.incoming ? `<div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5"><div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Incoming</div><div class="font-mono text-[13px]">${operation.incoming}</div></div>` : ''}</div>`
       : '';
@@ -537,7 +551,7 @@
     `;
   }
 
-  function renderOperationButtons(operation) {
+  function renderOperationButtons(operation, deferred) {
     const primaryClass = operation.type === 'addition' ? 'bg-addition hover:bg-addition-dark' : operation.type === 'upstream' ? 'bg-upstream hover:bg-upstream-dark' : 'bg-correction hover:bg-correction-dark';
     const buttons = [];
 
@@ -552,7 +566,19 @@
       buttons.push(`<button onclick="resolveOp('${operation.id}', 'kept')" class="${keepClass} text-[13px] font-medium px-3.5 py-2 rounded-md state-transition">${operation.keepLabel}</button>`);
     }
 
-    return buttons.join('');
+    if (operation.deferLabel) {
+      buttons.push(`<button onclick="resolveOp('${operation.id}', 'deferred')" class="border border-ink-200 text-ink-600 text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-ink-50 state-transition">${operation.deferLabel}</button>`);
+    }
+
+    if (!deferred) {
+      return buttons.join('');
+    }
+
+    return `<span class="text-[13px] text-upstream-dark font-medium">Deferred for now</span>${buttons.join('')}`;
+  }
+
+  function countResolvedOps(stationId) {
+    return Object.keys(resolvedOps[stationId]).length;
   }
 
   function renderPromptSummary(operations) {

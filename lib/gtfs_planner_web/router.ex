@@ -65,6 +65,7 @@ defmodule GtfsPlannerWeb.Router do
 
     delete "/users/log_out", UserSessionController, :delete
     get "/station-data-resolution-prototype", StationResolutionPrototypeController, :index
+    get "/station-data-resolution-prototype/station-resolution-v2.css", StationResolutionPrototypeController, :stylesheet
 
     live_session :require_authenticated_user,
       on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do
