@@ -4,7 +4,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   Transforms raw report data into structured, information-dense displays.
   """
   use Phoenix.Component
-  import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
+  import GtfsPlannerWeb.CoreComponents, only: [icon: 1, drawer: 1, input: 1]
 
   alias GtfsPlanner.Gtfs.{Stop, Pathway}
 
@@ -50,12 +50,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         <p class={[
           "text-lg font-semibold mt-0.5",
           @stats.integrity.fails > 0 && "text-error",
-          @stats.integrity.fails == 0 && "text-success"
+          (@stats.integrity.fails == 0 and @stats.integrity.warns > 0) && "text-warning",
+          (@stats.integrity.fails == 0 and @stats.integrity.warns == 0) && "text-success"
         ]}>
-          {if @stats.integrity.fails > 0,
-            do:
-              "#{@stats.integrity.fails} #{if @stats.integrity.fails == 1, do: "issue", else: "issues"}",
-            else: "OK"}
+          <%= cond do %>
+            <% @stats.integrity.fails > 0 -> %>
+              {@stats.integrity.fails} {if @stats.integrity.fails == 1, do: "issue", else: "issues"}
+            <% @stats.integrity.warns > 0 -> %>
+              {@stats.integrity.warns} {if @stats.integrity.warns == 1,
+                do: "warning",
+                else: "warnings"}
+            <% true -> %>
+              OK
+          <% end %>
         </p>
       </div>
 
@@ -120,11 +127,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     sections = report.sections
     integrity_section = find_section(sections, "data_integrity")
     gps_section = find_section(sections, "gps")
+    naming_section = find_section(sections, "naming_conventions")
+    pathway_section = find_section(sections, "pathway_validation")
+    levels_section = find_section(sections, "levels_validation")
     accessibility_section = find_section(sections, "accessibility")
     inventory_section = find_section(sections, "inventory")
     completeness_section = find_section(sections, "attribute_completeness")
 
-    integrity_items = items_for(integrity_section) ++ items_for(gps_section)
+    all_integrity_items =
+      items_for(integrity_section) ++
+        items_for(gps_section) ++
+        items_for(naming_section) ++
+        items_for(pathway_section) ++
+        items_for(levels_section)
+
+    # Only count :error and :warning category items toward the integrity fail tally
+    countable_items =
+      Enum.filter(all_integrity_items, fn item ->
+        category = Map.get(item, :category, :error)
+        category in [:error, :warning]
+      end)
+
     accessibility_items = items_for(accessibility_section)
 
     {nodes, edges} = inventory_counts(inventory_section)
@@ -132,8 +155,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
 
     %{
       integrity: %{
-        fails: Enum.count(integrity_items, &(&1.status == :fail)),
-        total: length(integrity_items)
+        fails: Enum.count(countable_items, &(&1.status == :fail)),
+        warns: Enum.count(countable_items, &(&1.status == :warn)),
+        total: length(countable_items)
       },
       accessibility: %{
         fails: Enum.count(accessibility_items, &(&1.status == :fail)),
@@ -195,8 +219,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   attr :section, :map, required: true
   attr :gps_section, :map, default: nil
   attr :methodology_mode, :boolean, default: false
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
 
   def integrity_section(assigns) do
+    assigns =
+      assigns
+      |> assign(:gps_table_items, gps_table_items(assigns.gps_section))
+      |> assign(:gps_check_items, gps_check_items(assigns.gps_section))
+
     ~H"""
     <section
       id="report-section-data_integrity"
@@ -224,10 +255,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         </div>
       <% else %>
         <div class="divide-y divide-base-content/10">
-          <.check_row :for={item <- @section.items} item={item} />
+          <.check_row
+            :for={item <- @section.items}
+            item={item}
+            gtfs_version_id={@gtfs_version_id}
+            station_stop_id={@station_stop_id}
+          />
 
-          <div :if={@gps_section} id="report-section-gps" class="px-4 py-4">
-            <.gps_item :for={item <- @gps_section.items} item={item} />
+          <div :if={@gps_section} id="report-section-gps" class="px-4 py-4 space-y-4">
+            <.gps_item :for={item <- @gps_table_items} item={item} />
+
+            <div :if={@gps_check_items != []} class="divide-y divide-base-content/10">
+              <.check_row
+                :for={item <- @gps_check_items}
+                item={item}
+                gtfs_version_id={@gtfs_version_id}
+                station_stop_id={@station_stop_id}
+              />
+            </div>
           </div>
         </div>
       <% end %>
@@ -235,7 +280,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     """
   end
 
+  defp gps_table_items(nil), do: []
+
+  defp gps_table_items(%{items: items}) do
+    Enum.filter(items, &(&1.id == "gps_presence_by_type" and is_map(&1.value)))
+  end
+
+  defp gps_check_items(nil), do: []
+
+  defp gps_check_items(%{items: items}) do
+    Enum.reject(items, &(&1.id == "gps_presence_by_type" and is_map(&1.value)))
+  end
+
   attr :item, :map, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
 
   defp check_row(assigns) do
     ~H"""
@@ -251,11 +310,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
           </div>
           <.stop_id_list
             :if={
-              @item.status == :fail and is_list(@item.details) and @item.details != [] and
+              @item.status in [:fail, :warn] and is_list(@item.details) and @item.details != [] and
                 @item.id not in ["entrance_to_platform_connectivity", "platform_interconnection"]
             }
             item={@item}
             ids={@item.details}
+            gtfs_version_id={@gtfs_version_id}
+            station_stop_id={@station_stop_id}
           />
           <.connectivity_details
             :if={
@@ -290,14 +351,56 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
 
   attr :item, :map, required: true
   attr :ids, :list, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
 
   defp stop_id_list(assigns) do
+    assigns = assign(assigns, :entity_type, entity_type_for_item(assigns.item.id))
+
     ~H"""
-    <div id={"report-item-#{@item.id}-details"} class="mt-2">
-      <p class="font-mono text-xs text-base-content/60">
-        {Enum.join(@ids, ", ")}
-      </p>
+    <div id={"report-item-#{@item.id}-details"} class="mt-2 space-y-0.5">
+      <%= for detail <- @ids do %>
+        <%= if is_map(detail) do %>
+          <div class="flex items-baseline gap-2 text-xs">
+            <.entity_link
+              id={detail.id}
+              gtfs_version_id={@gtfs_version_id}
+              station_stop_id={@station_stop_id}
+            />
+            <span class="text-base-content/50">{Map.get(detail, :reason, "")}</span>
+          </div>
+        <% else %>
+          <.entity_link
+            id={to_string(detail)}
+            gtfs_version_id={@gtfs_version_id}
+            station_stop_id={@station_stop_id}
+          />
+        <% end %>
+      <% end %>
     </div>
+    """
+  end
+
+  defp entity_type_for_item("pathway_" <> _), do: "pathway"
+  defp entity_type_for_item(_), do: "stop"
+
+  attr :id, :string, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
+  attr :entity_type, :string, default: "stop"
+
+  defp entity_link(assigns) do
+    ~H"""
+    <%= if @gtfs_version_id && @station_stop_id do %>
+      <.link
+        navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station_stop_id}/diagram"}
+        class="font-mono text-xs text-primary hover:underline"
+      >
+        {@id}
+      </.link>
+    <% else %>
+      <span class="font-mono text-xs text-base-content/60">{@id}</span>
+    <% end %>
     """
   end
 
@@ -1368,6 +1471,96 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   defp bool_flag(false), do: "no"
 
   # ============================================================================
+  # Naming Conventions section
+  # ============================================================================
+
+  attr :section, :map, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
+
+  def naming_conventions_section(assigns) do
+    ~H"""
+    <section
+      :if={@section}
+      id="report-section-naming_conventions"
+      class="rounded-xl border border-base-content/20 bg-base-100"
+    >
+      <header class="border-b border-base-content/20 px-4 py-3">
+        <h2 class="text-base font-semibold">{@section.title}</h2>
+      </header>
+      <div class="divide-y divide-base-content/10">
+        <.check_row
+          :for={item <- @section.items}
+          item={item}
+          gtfs_version_id={@gtfs_version_id}
+          station_stop_id={@station_stop_id}
+        />
+      </div>
+    </section>
+    """
+  end
+
+  # ============================================================================
+  # Pathway Validation section
+  # ============================================================================
+
+  attr :section, :map, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
+
+  def pathway_validation_section(assigns) do
+    ~H"""
+    <section
+      :if={@section}
+      id="report-section-pathway_validation"
+      class="rounded-xl border border-base-content/20 bg-base-100"
+    >
+      <header class="border-b border-base-content/20 px-4 py-3">
+        <h2 class="text-base font-semibold">{@section.title}</h2>
+      </header>
+      <div class="divide-y divide-base-content/10">
+        <.check_row
+          :for={item <- @section.items}
+          item={item}
+          gtfs_version_id={@gtfs_version_id}
+          station_stop_id={@station_stop_id}
+        />
+      </div>
+    </section>
+    """
+  end
+
+  # ============================================================================
+  # Levels Validation section
+  # ============================================================================
+
+  attr :section, :map, required: true
+  attr :gtfs_version_id, :string, default: nil
+  attr :station_stop_id, :string, default: nil
+
+  def levels_validation_section(assigns) do
+    ~H"""
+    <section
+      :if={@section}
+      id="report-section-levels_validation"
+      class="rounded-xl border border-base-content/20 bg-base-100"
+    >
+      <header class="border-b border-base-content/20 px-4 py-3">
+        <h2 class="text-base font-semibold">{@section.title}</h2>
+      </header>
+      <div class="divide-y divide-base-content/10">
+        <.check_row
+          :for={item <- @section.items}
+          item={item}
+          gtfs_version_id={@gtfs_version_id}
+          station_stop_id={@station_stop_id}
+        />
+      </div>
+    </section>
+    """
+  end
+
+  # ============================================================================
   # Inventory section
   # ============================================================================
 
@@ -1825,6 +2018,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         reporting_unit: "present/missing counts by location_type",
         methodology:
           "Group stops by location_type and count records with both stop_lat and stop_lon present versus missing."
+      },
+      %{
+        item_id: "positive_longitude",
+        reporting_unit: "count + stop_id list",
+        methodology:
+          "Compare each child stop longitude sign to the station longitude sign and flag children with opposite signs."
+      },
+      %{
+        item_id: "entrance_gps_distance",
+        reporting_unit: "count + stop_id/reason list",
+        methodology:
+          "Measure haversine distance from the station to each entrance with coordinates and flag entrances more than 500 meters away."
+      },
+      %{
+        item_id: "optional_gps_clustering",
+        reporting_unit: "count + stop_id/reason list",
+        methodology:
+          "Measure haversine distance from the station to optional location_type 3/4 nodes with coordinates and warn when they are more than 200 meters away."
       }
     ]
     |> apply_methodology_labels(item_labels)
@@ -1943,4 +2154,141 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
 
   defp format_percent(value) when is_integer(value), do: Integer.to_string(value)
   defp format_percent(_), do: "0"
+
+  # ============================================================================
+  # Entity drawer
+  # ============================================================================
+
+  attr :drawer_entity, :any, default: nil
+  attr :drawer_type, :atom, default: nil
+  attr :drawer_form, :any, default: nil
+  attr :drawer_error, :string, default: nil
+
+  def entity_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="report-entity-drawer"
+      open={@drawer_entity != nil}
+      on_close="close_entity_drawer"
+      title={drawer_title(@drawer_type, @drawer_entity)}
+    >
+      <div :if={@drawer_error} class="mb-4 text-sm text-error">{@drawer_error}</div>
+
+      <.stop_drawer_form
+        :if={@drawer_type == :stop && @drawer_entity && @drawer_form}
+        entity={@drawer_entity}
+        form={@drawer_form}
+      />
+
+      <.pathway_drawer_form
+        :if={@drawer_type == :pathway && @drawer_entity && @drawer_form}
+        entity={@drawer_entity}
+        form={@drawer_form}
+      />
+    </.drawer>
+    """
+  end
+
+  defp drawer_title(:stop, %{stop_id: stop_id}), do: stop_id
+  defp drawer_title(:pathway, %{pathway_id: pathway_id}), do: pathway_id
+  defp drawer_title(_, _), do: ""
+
+  attr :entity, :map, required: true
+  attr :form, :any, required: true
+
+  defp stop_drawer_form(assigns) do
+    ~H"""
+    <div class="space-y-4">
+      <dl class="space-y-2 text-sm">
+        <div class="flex justify-between">
+          <dt class="text-base-content/60">stop_id</dt>
+          <dd class="font-mono">{@entity.stop_id}</dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-base-content/60">location_type</dt>
+          <dd class="font-mono">
+            {@entity.location_type} — {Stop.location_type_label(@entity.location_type)}
+          </dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-base-content/60">parent_station</dt>
+          <dd class="font-mono">{@entity.parent_station || "—"}</dd>
+        </div>
+      </dl>
+
+      <.form for={@form} id="report-stop-edit-form" phx-submit="save_entity" class="space-y-3">
+        <.input field={@form[:stop_name]} label="stop_name" type="text" />
+        <div class="grid grid-cols-2 gap-3">
+          <.input field={@form[:stop_lat]} label="stop_lat" type="text" />
+          <.input field={@form[:stop_lon]} label="stop_lon" type="text" />
+        </div>
+        <.input field={@form[:level_id]} label="level_id" type="text" />
+        <.input
+          field={@form[:wheelchair_boarding]}
+          label="wheelchair_boarding"
+          type="select"
+          options={[
+            {"", ""},
+            {"0 — No info", "0"},
+            {"1 — Accessible", "1"},
+            {"2 — Not accessible", "2"}
+          ]}
+        />
+        <.input field={@form[:platform_code]} label="platform_code" type="text" />
+        <button type="submit" class="btn btn-primary btn-sm w-full">Save changes</button>
+      </.form>
+    </div>
+    """
+  end
+
+  attr :entity, :map, required: true
+  attr :form, :any, required: true
+
+  defp pathway_drawer_form(assigns) do
+    ~H"""
+    <div class="space-y-4">
+      <dl class="space-y-2 text-sm">
+        <div class="flex justify-between">
+          <dt class="text-base-content/60">pathway_id</dt>
+          <dd class="font-mono">{@entity.pathway_id}</dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-base-content/60">pathway_mode</dt>
+          <dd class="font-mono">
+            {@entity.pathway_mode} — {Pathway.mode_label(@entity.pathway_mode)}
+          </dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-base-content/60">from_stop_id</dt>
+          <dd class="font-mono">{@entity.from_stop_id}</dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-base-content/60">to_stop_id</dt>
+          <dd class="font-mono">{@entity.to_stop_id}</dd>
+        </div>
+      </dl>
+
+      <.form for={@form} id="report-pathway-edit-form" phx-submit="save_entity" class="space-y-3">
+        <.input field={@form[:traversal_time]} label="traversal_time (seconds)" type="number" />
+        <div class="grid grid-cols-2 gap-3">
+          <.input field={@form[:length]} label="length (meters)" type="text" />
+          <.input field={@form[:min_width]} label="min_width (meters)" type="text" />
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <.input field={@form[:stair_count]} label="stair_count" type="number" />
+          <.input field={@form[:max_slope]} label="max_slope" type="text" />
+        </div>
+        <.input
+          field={@form[:is_bidirectional]}
+          label="is_bidirectional"
+          type="select"
+          options={[{"Yes", "true"}, {"No", "false"}]}
+        />
+        <.input field={@form[:signposted_as]} label="signposted_as" type="text" />
+        <.input field={@form[:reversed_signposted_as]} label="reversed_signposted_as" type="text" />
+        <button type="submit" class="btn btn-primary btn-sm w-full">Save changes</button>
+      </.form>
+    </div>
+    """
+  end
 end

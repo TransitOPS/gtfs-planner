@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlannerWeb.Gtfs.StationReportComponents
 
   describe "StationReportLive" do
     setup do
@@ -131,8 +132,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(view, "#station-report")
       assert has_element?(view, "#report-section-inventory")
       assert has_element?(view, "#report-section-data_integrity")
+      assert has_element?(view, "#report-section-naming_conventions")
       assert has_element?(view, "#report-section-entrance_platform_connectivity")
+      assert has_element?(view, "#report-section-pathway_validation")
+      assert has_element?(view, "#report-section-levels_validation")
       assert has_element?(view, "#report-item-node_inventory")
+      assert has_element?(view, "#report-item-naming_title_case")
+      assert has_element?(view, "#report-item-pathway_missing_traversal_time")
+      assert has_element?(view, "#report-item-level_referential_integrity")
       assert has_element?(view, "#report-item-step_free_routes")
       assert has_element?(view, "#report-item-entrance_platform_paths")
       assert has_element?(view, "#report-item-unavailable_metrics")
@@ -165,6 +172,164 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
              )
     end
 
+    test "renders new validation sections and links flagged ids to the diagram page", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      _missing_level_platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_MISSING_LEVEL",
+          stop_name: "Platform Missing Level",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L_MISSING"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      diagram_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
+      html = render(view)
+
+      assert has_element?(
+               view,
+               "#report-section-naming_conventions h2",
+               "Naming & ID Conventions"
+             )
+
+      assert has_element?(view, "#report-section-pathway_validation h2", "Pathway Validation")
+      assert has_element?(view, "#report-section-levels_validation h2", "Levels Validation")
+      assert has_element?(view, "#report-item-pathway_missing_traversal_time")
+
+      assert has_element?(view, "#report-item-naming_entrance_prefix-details a", "ENT_1")
+      assert has_element?(view, "#report-item-level_referential_integrity-details a", "L_MISSING")
+      assert html =~ ~s(href="#{diagram_path}")
+    end
+
+    test "renders failing gps validation items with their details", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_GPS",
+          stop_name: "Station GPS",
+          location_type: 1,
+          stop_lat: Decimal.new("47.0"),
+          stop_lon: Decimal.new("122.0")
+        })
+
+      _entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_GPS",
+          stop_name: "Entrance GPS",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L_GPS",
+          stop_lat: Decimal.new("47.0"),
+          stop_lon: Decimal.new("-122.0001")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(view, "#report-item-positive_longitude")
+      assert has_element?(view, "#report-item-positive_longitude", "Longitude sign consistency")
+      assert has_element?(view, "#report-item-positive_longitude-details", "ENT_GPS")
+    end
+
+    test "renders map-based gps validation details with stop id and reason", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_GPS_DISTANCE",
+          stop_name: "Station GPS Distance",
+          location_type: 1,
+          stop_lat: Decimal.new("47.0"),
+          stop_lon: Decimal.new("-122.0")
+        })
+
+      _entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_GPS_FAR",
+          stop_name: "Far Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L_GPS_DISTANCE",
+          stop_lat: Decimal.new("48.0"),
+          stop_lon: Decimal.new("-122.0")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(view, "#report-item-entrance_gps_distance")
+
+      assert has_element?(
+               view,
+               "#report-item-entrance_gps_distance-details",
+               "ENT_GPS_FAR"
+             )
+
+      assert has_element?(
+               view,
+               "#report-item-entrance_gps_distance-details",
+               "m from station"
+             )
+    end
+
+    test "summary strip surfaces warning-only gps integrity reports" do
+      report = %{
+        sections: [
+          %{id: "data_integrity", items: []},
+          %{
+            id: "gps",
+            items: [
+              %{
+                id: "optional_gps_clustering",
+                label: "Optional node GPS clustering",
+                status: :warn,
+                category: :warning,
+                value: 1,
+                details: [%{id: "G1", reason: "200.0m from station"}]
+              }
+            ]
+          },
+          %{id: "naming_conventions", items: []},
+          %{id: "pathway_validation", items: []},
+          %{id: "levels_validation", items: []},
+          %{id: "accessibility", items: []},
+          %{
+            id: "inventory",
+            items: [
+              %{id: "node_inventory", value: %{}},
+              %{id: "edge_inventory", value: %{}}
+            ]
+          },
+          %{id: "attribute_completeness", items: []}
+        ]
+      }
+
+      html = render_component(&StationReportComponents.summary_strip/1, report: report)
+
+      assert html =~ "Integrity"
+      assert html =~ "1 warning"
+      refute html =~ ">OK<"
+    end
+
     test "toggles methodology mode in data quality section on and off", %{
       conn: conn,
       user: user,
@@ -188,6 +353,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
                view,
                "#report-method-data_integrity-isolated_nodes"
              )
+
+      assert has_element?(view, "#report-method-data_integrity-positive_longitude")
+      assert has_element?(view, "#report-method-data_integrity-entrance_gps_distance")
+      assert has_element?(view, "#report-method-data_integrity-optional_gps_clustering")
 
       refute has_element?(view, "#report-item-isolated_nodes")
       assert has_element?(view, "#report-section-data_integrity-methodology-toggle", "back")
