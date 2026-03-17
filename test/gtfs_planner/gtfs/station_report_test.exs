@@ -128,6 +128,10 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
             %{level: level("L2", 1.0), stop_count: 1}
           ],
           pathways: [
+            pathway("PW_STATION", "STATION", "ENT_A", 1, true,
+              length: Decimal.new("100"),
+              traversal_time: 10
+            ),
             pathway("PW_STAIR", "ENT_A", "PLAT_A", 2, true, stair_count: -5),
             pathway("PW_FAST", "ENT_A", "PLAT_A", 1, true,
               length: Decimal.new("100"),
@@ -142,10 +146,15 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert "PW_STAIR" in item(validation, "pathway_stair_sign_consistency").details
       assert item(validation, "pathway_speed_plausibility").status == :warn
 
-      assert [%{id: "PW_FAST", reason: reason}] =
-               item(validation, "pathway_speed_plausibility").details
+      assert Enum.any?(
+               item(validation, "pathway_speed_plausibility").details,
+               &(&1.id == "PW_STATION")
+             )
 
-      assert String.contains?(reason, "m/s")
+      assert Enum.any?(
+               item(validation, "pathway_speed_plausibility").details,
+               &(&1.id == "PW_FAST" and String.contains?(&1.reason, "m/s"))
+             )
     end
 
     test "includes level validation items in the built report" do

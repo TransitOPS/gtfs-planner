@@ -228,7 +228,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.PathwayChecks do
         {pw.pathway_id, speed}
       end)
       |> Enum.filter(fn {_id, speed} -> speed < 0.5 or speed > 2.0 end)
-      |> Enum.map(fn {id, speed} -> %{id: id, reason: "#{Float.round(speed, 2)} m/s"} end)
+      |> Enum.map(fn {id, speed} -> %{id: id, reason: "#{format_speed(speed)} m/s"} end)
 
     Helpers.item(
       "pathway_speed_plausibility",
@@ -238,6 +238,14 @@ defmodule GtfsPlanner.Gtfs.StationReport.PathwayChecks do
       length(flagged),
       flagged
     )
+  end
+
+  defp format_speed(speed) do
+    speed
+    |> Float.round(3)
+    |> :erlang.float_to_binary(decimals: 3)
+    |> String.trim_trailing("0")
+    |> String.trim_trailing(".")
   end
 
   # 10. Signage formatting
