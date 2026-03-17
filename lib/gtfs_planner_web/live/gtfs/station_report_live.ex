@@ -135,14 +135,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
 
       stop ->
         form =
-          to_form(%{
-            "stop_name" => stop.stop_name || "",
-            "stop_lat" => to_optional_string(stop.stop_lat),
-            "stop_lon" => to_optional_string(stop.stop_lon),
-            "level_id" => stop.level_id || "",
-            "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
-            "platform_code" => stop.platform_code || ""
-          })
+          to_form(
+            %{
+              "stop_name" => stop.stop_name || "",
+              "stop_lat" => to_optional_string(stop.stop_lat),
+              "stop_lon" => to_optional_string(stop.stop_lon),
+              "level_id" => stop.level_id || "",
+              "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
+              "platform_code" => stop.platform_code || ""
+            },
+            as: :stop
+          )
 
         {:noreply,
          socket
@@ -167,16 +170,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
 
       pathway ->
         form =
-          to_form(%{
-            "traversal_time" => to_optional_string(pathway.traversal_time),
-            "length" => to_optional_string(pathway.length),
-            "stair_count" => to_optional_string(pathway.stair_count),
-            "max_slope" => to_optional_string(pathway.max_slope),
-            "min_width" => to_optional_string(pathway.min_width),
-            "is_bidirectional" => to_string(pathway.is_bidirectional),
-            "signposted_as" => pathway.signposted_as || "",
-            "reversed_signposted_as" => pathway.reversed_signposted_as || ""
-          })
+          to_form(
+            %{
+              "traversal_time" => to_optional_string(pathway.traversal_time),
+              "length" => to_optional_string(pathway.length),
+              "stair_count" => to_optional_string(pathway.stair_count),
+              "max_slope" => to_optional_string(pathway.max_slope),
+              "min_width" => to_optional_string(pathway.min_width),
+              "is_bidirectional" => to_string(pathway.is_bidirectional),
+              "signposted_as" => pathway.signposted_as || "",
+              "reversed_signposted_as" => pathway.reversed_signposted_as || ""
+            },
+            as: :pathway
+          )
 
         {:noreply,
          socket
