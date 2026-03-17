@@ -62,6 +62,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.HelpersTest do
       assert Helpers.title_case("MBTA station") == "MBTA Station"
       assert Helpers.title_case("BART plaza") == "BART Plaza"
       assert Helpers.title_case("MUNI entrance") == "MUNI Entrance"
+      assert Helpers.title_case("DART station") == "DART Station"
     end
 
     test "handles single word" do

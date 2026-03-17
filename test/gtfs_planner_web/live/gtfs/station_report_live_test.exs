@@ -193,7 +193,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       diagram_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
       html = render(view)
 
-      assert has_element?(view, "#report-section-naming_conventions h2", "Naming & ID Conventions")
+      assert has_element?(
+               view,
+               "#report-section-naming_conventions h2",
+               "Naming & ID Conventions"
+             )
+
       assert has_element?(view, "#report-section-pathway_validation h2", "Pathway Validation")
       assert has_element?(view, "#report-section-levels_validation h2", "Levels Validation")
       assert has_element?(view, "#report-item-pathway_missing_traversal_time")

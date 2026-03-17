@@ -2260,8 +2260,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         </div>
       </dl>
 
-      <.form for={@form} id="report-pathway-edit-form" phx-submit="save_entity" class="space-y-3"
-      >
+      <.form for={@form} id="report-pathway-edit-form" phx-submit="save_entity" class="space-y-3">
         <.input field={@form[:traversal_time]} label="traversal_time (seconds)" type="number" />
         <div class="grid grid-cols-2 gap-3">
           <.input field={@form[:length]} label="length (meters)" type="text" />
