@@ -171,6 +171,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
              )
     end
 
+    test "renders new validation sections and links flagged ids to the diagram page", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      _missing_level_platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_MISSING_LEVEL",
+          stop_name: "Platform Missing Level",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L_MISSING"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      diagram_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
+      html = render(view)
+
+      assert has_element?(view, "#report-section-naming_conventions h2", "Naming & ID Conventions")
+      assert has_element?(view, "#report-section-pathway_validation h2", "Pathway Validation")
+      assert has_element?(view, "#report-section-levels_validation h2", "Levels Validation")
+      assert has_element?(view, "#report-item-pathway_missing_traversal_time")
+
+      assert has_element?(view, "#report-item-naming_entrance_prefix-details a", "ENT_1")
+      assert has_element?(view, "#report-item-level_referential_integrity-details a", "L_MISSING")
+      assert html =~ ~s(href="#{diagram_path}")
+    end
+
     test "renders failing gps validation items with their details", %{
       conn: conn,
       user: user,

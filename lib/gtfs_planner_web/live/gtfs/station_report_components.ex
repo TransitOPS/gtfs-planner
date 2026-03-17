@@ -356,14 +356,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
           <div class="flex items-baseline gap-2 text-xs">
             <.entity_link
               id={detail.id}
-              entity_type={@entity_type}
+              gtfs_version_id={@gtfs_version_id}
+              station_stop_id={@station_stop_id}
             />
             <span class="text-base-content/50">{Map.get(detail, :reason, "")}</span>
           </div>
         <% else %>
           <.entity_link
             id={to_string(detail)}
-            entity_type={@entity_type}
+            gtfs_version_id={@gtfs_version_id}
+            station_stop_id={@station_stop_id}
           />
         <% end %>
       <% end %>
@@ -381,14 +383,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
 
   defp entity_link(assigns) do
     ~H"""
-    <span
-      phx-click="select_entity"
-      phx-value-entity_id={@id}
-      phx-value-entity_type={@entity_type}
-      class="font-mono text-xs text-primary hover:underline cursor-pointer"
-    >
-      {@id}
-    </span>
+    <%= if @gtfs_version_id && @station_stop_id do %>
+      <.link
+        navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station_stop_id}/diagram"}
+        class="font-mono text-xs text-primary hover:underline"
+      >
+        {@id}
+      </.link>
+    <% else %>
+      <span class="font-mono text-xs text-base-content/60">{@id}</span>
+    <% end %>
     """
   end
 
