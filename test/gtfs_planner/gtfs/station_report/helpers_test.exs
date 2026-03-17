@@ -55,6 +55,8 @@ defmodule GtfsPlanner.Gtfs.StationReport.HelpersTest do
     test "normalizes non-acronym all-caps words" do
       assert Helpers.title_case("WEST entrance") == "West Entrance"
       assert Helpers.title_case("EXIT plaza") == "Exit Plaza"
+      assert Helpers.title_case("MAIN entrance") == "Main Entrance"
+      assert Helpers.title_case("GATE plaza") == "Gate Plaza"
     end
 
     test "preserves four-letter acronyms" do

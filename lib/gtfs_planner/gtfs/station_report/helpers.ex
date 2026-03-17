@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.Helpers do
   """
 
   @earth_radius_m 6_371_000.0
-  @non_acronym_upcase_words MapSet.new(~w[EAST EXIT WEST])
+  @known_acronyms MapSet.new(~w[BART DART MBTA MUNI PATH])
 
   @doc """
   Builds a report item map with all required keys including `category`.
@@ -190,8 +190,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.Helpers do
 
   defp acronym?(word) do
     upcase_token?(word) and
-      (String.length(word) <= 3 or
-         (String.length(word) == 4 and not MapSet.member?(@non_acronym_upcase_words, word)))
+      (String.length(word) <= 3 or MapSet.member?(@known_acronyms, word))
   end
 
   defp upcase_token?(word) do
