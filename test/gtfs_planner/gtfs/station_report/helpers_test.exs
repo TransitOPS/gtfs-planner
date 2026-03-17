@@ -142,6 +142,75 @@ defmodule GtfsPlanner.Gtfs.StationReport.HelpersTest do
     end
   end
 
+  describe "levenshtein/2" do
+    test "identical strings return 0" do
+      assert Helpers.levenshtein("same", "same") == 0
+    end
+
+    test "single deletion" do
+      assert Helpers.levenshtein("gate", "ate") == 1
+    end
+
+    test "single substitution" do
+      assert Helpers.levenshtein("exit", "ecit") == 1
+    end
+
+    test "single deletion in longer word" do
+      assert Helpers.levenshtein("mezzanine", "mezzaine") == 1
+    end
+
+    test "empty vs non-empty" do
+      assert Helpers.levenshtein("", "abc") == 3
+      assert Helpers.levenshtein("abc", "") == 3
+    end
+
+    test "both empty" do
+      assert Helpers.levenshtein("", "") == 0
+    end
+
+    test "larger distance" do
+      assert Helpers.levenshtein("kitten", "sitting") == 3
+    end
+  end
+
+  describe "tokenize_stop_id/1" do
+    test "splits on underscores and downcases" do
+      assert Helpers.tokenize_stop_id("entrance_Main_North") == ["entrance", "main", "north"]
+    end
+
+    test "handles empty string" do
+      assert Helpers.tokenize_stop_id("") == []
+    end
+
+    test "handles nil" do
+      assert Helpers.tokenize_stop_id(nil) == []
+    end
+
+    test "skips consecutive underscores" do
+      assert Helpers.tokenize_stop_id("node__lobby") == ["node", "lobby"]
+    end
+  end
+
+  describe "extract_direction_tokens/1" do
+    test "extracts cardinal directions" do
+      assert Helpers.extract_direction_tokens("NW Entrance North") ==
+               MapSet.new(["nw", "north"])
+    end
+
+    test "returns empty set for non-directional text" do
+      assert Helpers.extract_direction_tokens("Main Lobby") == MapSet.new()
+    end
+
+    test "extracts from underscore-separated IDs" do
+      assert Helpers.extract_direction_tokens("entrance_se_corner") ==
+               MapSet.new(["se"])
+    end
+
+    test "handles nil" do
+      assert Helpers.extract_direction_tokens(nil) == MapSet.new()
+    end
+  end
+
   describe "decimal_to_float/1" do
     test "converts Decimal to float" do
       assert Helpers.decimal_to_float(Decimal.new("1.5")) == 1.5

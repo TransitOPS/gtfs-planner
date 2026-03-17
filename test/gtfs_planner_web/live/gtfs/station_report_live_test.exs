@@ -207,6 +207,52 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(view, "#report-item-positive_longitude-details", "ENT_GPS")
     end
 
+    test "renders map-based gps validation details with stop id and reason", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_GPS_DISTANCE",
+          stop_name: "Station GPS Distance",
+          location_type: 1,
+          stop_lat: Decimal.new("47.0"),
+          stop_lon: Decimal.new("-122.0")
+        })
+
+      _entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_GPS_FAR",
+          stop_name: "Far Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L_GPS_DISTANCE",
+          stop_lat: Decimal.new("48.0"),
+          stop_lon: Decimal.new("-122.0")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(view, "#report-item-entrance_gps_distance")
+
+      assert has_element?(
+               view,
+               "#report-item-entrance_gps_distance-details",
+               "ENT_GPS_FAR"
+             )
+
+      assert has_element?(
+               view,
+               "#report-item-entrance_gps_distance-details",
+               "m from station"
+             )
+    end
+
     test "toggles methodology mode in data quality section on and off", %{
       conn: conn,
       user: user,
@@ -230,6 +276,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
                view,
                "#report-method-data_integrity-isolated_nodes"
              )
+
+      assert has_element?(view, "#report-method-data_integrity-positive_longitude")
+      assert has_element?(view, "#report-method-data_integrity-entrance_gps_distance")
+      assert has_element?(view, "#report-method-data_integrity-optional_gps_clustering")
 
       refute has_element?(view, "#report-item-isolated_nodes")
       assert has_element?(view, "#report-section-data_integrity-methodology-toggle", "back")

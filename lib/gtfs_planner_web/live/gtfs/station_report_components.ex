@@ -2006,6 +2006,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         reporting_unit: "present/missing counts by location_type",
         methodology:
           "Group stops by location_type and count records with both stop_lat and stop_lon present versus missing."
+      },
+      %{
+        item_id: "positive_longitude",
+        reporting_unit: "count + stop_id list",
+        methodology:
+          "Compare each child stop longitude sign to the station longitude sign and flag children with opposite signs."
+      },
+      %{
+        item_id: "entrance_gps_distance",
+        reporting_unit: "count + stop_id/reason list",
+        methodology:
+          "Measure haversine distance from the station to each entrance with coordinates and flag entrances more than 500 meters away."
+      },
+      %{
+        item_id: "optional_gps_clustering",
+        reporting_unit: "count + stop_id/reason list",
+        methodology:
+          "Measure haversine distance from the station to optional location_type 3/4 nodes with coordinates and warn when they are more than 200 meters away."
       }
     ]
     |> apply_methodology_labels(item_labels)

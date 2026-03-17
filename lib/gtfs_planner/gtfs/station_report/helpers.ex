@@ -109,6 +109,69 @@ defmodule GtfsPlanner.Gtfs.StationReport.Helpers do
   def present?(_), do: true
 
   @doc """
+  Computes the Levenshtein edit distance between two strings.
+  """
+  @spec levenshtein(String.t(), String.t()) :: non_neg_integer()
+  def levenshtein(a, b) do
+    a_chars = String.graphemes(a)
+    b_chars = String.graphemes(b)
+    a_len = length(a_chars)
+    b_len = length(b_chars)
+
+    if a_len == 0 do
+      b_len
+    else
+      row = Enum.to_list(0..b_len)
+
+      Enum.reduce(Enum.with_index(a_chars, 1), row, fn {a_ch, i}, prev_row ->
+        Enum.reduce(Enum.with_index(b_chars, 1), {[i], i - 1}, fn {b_ch, j}, {curr, diag} ->
+          cost = if a_ch == b_ch, do: 0, else: 1
+          above = Enum.at(prev_row, j)
+          left = List.last(curr)
+          val = min(min(above + 1, left + 1), diag + cost)
+          {curr ++ [val], above}
+        end)
+        |> elem(0)
+      end)
+      |> List.last()
+    end
+  end
+
+  @doc """
+  Tokenizes a stop_id by splitting on underscores and downcasing.
+  """
+  @spec tokenize_stop_id(String.t()) :: [String.t()]
+  def tokenize_stop_id(stop_id) when is_binary(stop_id) do
+    stop_id
+    |> String.downcase()
+    |> String.split("_", trim: true)
+  end
+
+  def tokenize_stop_id(_), do: []
+
+  @directions MapSet.new(~w[
+    n s e w ne nw se sw
+    north south east west
+    northeast northwest southeast southwest
+    nb sb eb wb
+    northbound southbound eastbound westbound
+  ])
+
+  @doc """
+  Extracts cardinal/ordinal direction tokens from text.
+  """
+  @spec extract_direction_tokens(String.t()) :: MapSet.t()
+  def extract_direction_tokens(text) when is_binary(text) do
+    text
+    |> String.downcase()
+    |> String.split(~r/[\s_\-]+/, trim: true)
+    |> Enum.filter(&MapSet.member?(@directions, &1))
+    |> MapSet.new()
+  end
+
+  def extract_direction_tokens(_), do: MapSet.new()
+
+  @doc """
   Converts a Decimal, float, integer, or nil to float.
   """
   @spec decimal_to_float(term()) :: float() | nil
