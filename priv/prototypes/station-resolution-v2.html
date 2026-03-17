@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Station Data Resolution Tool</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      fontFamily: {
+        sans: ['Inter', 'Helvetica Neue', 'Helvetica', 'sans-serif'],
+        mono: ['"IBM Plex Mono"', 'Menlo', 'monospace'],
+      },
+      colors: {
+        ink: { 50: '#F7F7F7', 100: '#E8E8E8', 200: '#D4D4D4', 300: '#ABABAB', 400: '#8A8A8A', 500: '#6B6B6B', 600: '#4A4A4A', 700: '#333333', 800: '#1A1A1A', 900: '#0A0A0A' },
+        correction: { light: '#EFF6FF', DEFAULT: '#1D4ED8', dark: '#1E3A8A' },
+        addition: { light: '#ECFDF5', DEFAULT: '#047857', dark: '#064E3B' },
+        collision: { light: '#FFFBEB', DEFAULT: '#B45309', dark: '#78350F' },
+        upstream: { light: '#F5F3FF', DEFAULT: '#6D28D9', dark: '#4C1D95' },
+        risk: { light: '#FEF2F2', DEFAULT: '#DC2626', dark: '#991B1B' },
+      },
+      fontSize: {
+        'micro': ['11px', '16px'],
+      }
+    }
+  }
+}
+</script>
+<style>
+  [x-cloak] { display: none !important; }
+  .scroll-thin::-webkit-scrollbar { width: 4px; }
+  .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+  .scroll-thin::-webkit-scrollbar-thumb { background: #D4D4D4; border-radius: 2px; }
+  .state-transition { transition: background-color 0.08s ease, border-color 0.08s ease, color 0.08s ease, opacity 0.08s ease; }
+  .step-line { position: relative; }
+  .step-line::before {
+    content: '';
+    position: absolute;
+    left: 11px;
+    top: 28px;
+    bottom: 4px;
+    width: 1px;
+    background: #D4D4D4;
+  }
+  .step-line:last-child::before { display: none; }
+</style>
+</head>
+<body class="font-sans text-sm text-ink-800 bg-ink-50 antialiased">
+
+<div id="app" class="h-screen flex flex-col overflow-hidden">
+
+  <!-- ═══════════ TOP BAR ═══════════ -->
+  <header class="h-12 flex items-center justify-between px-6 border-b border-ink-200 bg-white flex-shrink-0">
+    <div class="flex items-center gap-4">
+      <h1 class="text-[13px] font-semibold tracking-wide uppercase">Station Data Resolution</h1>
+      <span class="text-micro font-mono text-ink-400">ours: enriched-2026-03 → incoming: upstream-2026-03-15</span>
+    </div>
+    <div class="flex items-center gap-5">
+      <div class="flex items-center gap-3 text-xs text-ink-500">
+        <span class="font-mono"><strong class="text-ink-800 font-medium" id="global-resolved">0</strong> / 7 stations resolved</span>
+        <div class="w-32 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+          <div id="global-progress-bar" class="h-full bg-addition rounded-full state-transition" style="width: 0%"></div>
+        </div>
+      </div>
+      <button id="help-toggle" onclick="toggleOnboarding()" class="text-micro font-medium text-ink-400 hover:text-ink-700 border border-ink-200 rounded-md px-2.5 py-1 state-transition">Guide</button>
+    </div>
+  </header>
+
+  <!-- ═══════════ MAIN SHELL ═══════════ -->
+  <div class="flex flex-1 overflow-hidden">
+
+    <!-- ═══════════ SIDEBAR ═══════════ -->
+    <nav class="w-[272px] border-r border-ink-200 bg-white flex flex-col flex-shrink-0">
+
+      <div class="px-4 pt-4 pb-3 border-b border-ink-100">
+        <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Stations to Review</div>
+        <div class="font-mono text-xs text-ink-500">
+          <strong class="text-ink-800 font-medium">7</strong> stations · <strong class="text-ink-800 font-medium">34</strong> changes · <strong class="text-collision font-medium">2</strong> collisions
+        </div>
+      </div>
+
+      <div id="sidebar-prompt" class="px-4 py-3 bg-correction-light border-b border-ink-100">
+        <div class="text-xs text-correction-dark font-medium">Start here ↓</div>
+        <div class="text-xs text-ink-500 mt-0.5">Central Station has 2 collisions that need your judgment.</div>
+      </div>
+
+      <ul class="flex-1 overflow-y-auto scroll-thin">
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" data-station="central" onclick="selectStation('central')">
+          <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-central">
+            <div class="w-2 h-2 rounded-full bg-collision flex-shrink-0" title="Has collisions"></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-[13px] font-medium truncate">Central Station</div>
+              <div class="flex gap-2 mt-0.5">
+                <span class="text-micro font-mono text-collision">2 collisions</span>
+                <span class="text-micro font-mono text-ink-400">5 operations</span>
+              </div>
+            </div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0" id="station-central-status">—</div>
+          </div>
+        </li>
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('riverside')">
+          <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-riverside">
+            <div class="w-2 h-2 rounded-full bg-correction flex-shrink-0"></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-[13px] font-medium truncate">Riverside Terminal</div>
+              <div class="flex gap-2 mt-0.5">
+                <span class="text-micro font-mono text-ink-400">4 operations</span>
+              </div>
+            </div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+          </div>
+        </li>
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('market')">
+          <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-market">
+            <div class="w-2 h-2 rounded-full bg-correction flex-shrink-0"></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-[13px] font-medium truncate">Market Square</div>
+              <div class="flex gap-2 mt-0.5">
+                <span class="text-micro font-mono text-ink-400">3 operations</span>
+              </div>
+            </div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+          </div>
+        </li>
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('northgate')">
+          <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-northgate">
+            <div class="w-2 h-2 rounded-full bg-correction flex-shrink-0"></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-[13px] font-medium truncate">Northgate Junction</div>
+              <div class="flex gap-2 mt-0.5">
+                <span class="text-micro font-mono text-ink-400">3 operations</span>
+              </div>
+            </div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+          </div>
+        </li>
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('convention')">
+          <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-convention">
+            <div class="w-2 h-2 rounded-full bg-upstream flex-shrink-0"></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-[13px] font-medium truncate">Convention Center</div>
+              <div class="flex gap-2 mt-0.5">
+                <span class="text-micro font-mono text-ink-400">2 operations</span>
+              </div>
+            </div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+          </div>
+        </li>
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('airport')">
+          <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-airport">
+            <div class="w-2 h-2 rounded-full bg-addition flex-shrink-0"></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-[13px] font-medium truncate">Airport Link</div>
+              <div class="flex gap-2 mt-0.5">
+                <span class="text-micro font-mono text-ink-400">1 operation</span>
+              </div>
+            </div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+          </div>
+        </li>
+        <li class="station-item cursor-pointer border-b border-ink-100 state-transition hover:bg-ink-50" onclick="selectStation('eastport')">
+          <div class="flex items-center gap-2.5 px-4 py-2.5" id="station-eastport">
+            <div class="w-2 h-2 rounded-full bg-correction flex-shrink-0"></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-[13px] font-medium truncate">Eastport</div>
+              <div class="flex gap-2 mt-0.5">
+                <span class="text-micro font-mono text-ink-400">1 operation</span>
+              </div>
+            </div>
+            <div class="text-micro font-mono text-ink-300 flex-shrink-0">—</div>
+          </div>
+        </li>
+      </ul>
+
+      <div class="px-4 py-3 border-t border-ink-100 bg-ink-50">
+        <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-2">Dot = highest-priority type</div>
+        <div class="grid grid-cols-2 gap-x-3 gap-y-1">
+          <div class="flex items-center gap-1.5 text-micro text-ink-500"><span class="w-2 h-2 rounded-full bg-collision"></span>Collision</div>
+          <div class="flex items-center gap-1.5 text-micro text-ink-500"><span class="w-2 h-2 rounded-full bg-correction"></span>Correction</div>
+          <div class="flex items-center gap-1.5 text-micro text-ink-500"><span class="w-2 h-2 rounded-full bg-upstream"></span>New Upstream</div>
+          <div class="flex items-center gap-1.5 text-micro text-ink-500"><span class="w-2 h-2 rounded-full bg-addition"></span>Our Work</div>
+        </div>
+      </div>
+    </nav>
+
+    <!-- ═══════════ MAIN PANEL ═══════════ -->
+    <main class="flex-1 flex flex-col overflow-hidden">
+
+      <!-- ═══════════ ONBOARDING / WELCOME STATE ═══════════ -->
+      <div id="welcome-state" class="flex-1 overflow-y-auto scroll-thin">
+        <div class="max-w-2xl mx-auto px-8 py-12">
+
+          <div class="mb-10">
+            <h2 class="text-xl font-semibold text-ink-800 mb-3">You have two versions of the same station data.</h2>
+            <p class="text-[15px] text-ink-600 leading-relaxed mb-4">
+              <strong class="text-ink-800">Ours</strong> is the version your team enriched — new entrances, pathways, wayfinding nodes.
+              <strong class="text-ink-800">Incoming</strong> is the updated upstream feed — corrected coordinates, renamed platforms, revised levels.
+            </p>
+            <p class="text-[15px] text-ink-600 leading-relaxed">
+              This tool compares them <strong class="text-ink-800">station by station</strong>, not row by row.
+              A new entrance, its level, and its connecting walkway are shown as one operation — because that is what they are.
+            </p>
+          </div>
+
+          <div class="mb-10">
+            <h3 class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-4">How a review works</h3>
+            <div class="space-y-0">
+
+              <div class="step-line flex gap-3 pb-5">
+                <div class="w-6 h-6 rounded-full bg-ink-800 text-white flex items-center justify-center text-micro font-semibold flex-shrink-0">1</div>
+                <div>
+                  <div class="text-sm font-medium text-ink-800">Pick a station from the left.</div>
+                  <div class="text-[13px] text-ink-500 mt-0.5">Stations are sorted by urgency. Collisions — where both sides changed the same thing — appear first because they need your judgment.</div>
+                </div>
+              </div>
+
+              <div class="step-line flex gap-3 pb-5">
+                <div class="w-6 h-6 rounded-full bg-ink-800 text-white flex items-center justify-center text-micro font-semibold flex-shrink-0">2</div>
+                <div>
+                  <div class="text-sm font-medium text-ink-800">Review grouped operations, not individual edits.</div>
+                  <div class="text-[13px] text-ink-500 mt-0.5">Each card represents a logical change: "2 new entrances with walkway connections" — not 8 separate row modifications across 3 CSV files. You see the infrastructure change, not the data plumbing.</div>
+                </div>
+              </div>
+
+              <div class="flex gap-3">
+                <div class="w-6 h-6 rounded-full bg-ink-800 text-white flex items-center justify-center text-micro font-semibold flex-shrink-0">3</div>
+                <div>
+                  <div class="text-sm font-medium text-ink-800">Decide: apply incoming, or keep ours.</div>
+                  <div class="text-[13px] text-ink-500 mt-0.5">Each operation is classified — incoming correction, our addition, collision, or new upstream — so you know what kind of judgment is needed before you read the details.</div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <div class="mb-10">
+            <h3 class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-4">Four types of change</h3>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="border border-ink-200 bg-white p-4 rounded-lg shadow-sm">
+                <div class="flex items-center gap-2 mb-1.5">
+                  <span class="w-2.5 h-2.5 rounded-sm bg-correction"></span>
+                  <span class="text-[13px] font-semibold text-correction-dark">Incoming Correction</span>
+                </div>
+                <p class="text-[13px] text-ink-500 leading-relaxed">Upstream fixed something: coordinates, names, accessibility data. Usually apply these — they improve the foundation your enrichment depends on.</p>
+              </div>
+              <div class="border border-ink-200 bg-white p-4 rounded-lg shadow-sm">
+                <div class="flex items-center gap-2 mb-1.5">
+                  <span class="w-2.5 h-2.5 rounded-sm bg-addition"></span>
+                  <span class="text-[13px] font-semibold text-addition-dark">Our Addition</span>
+                </div>
+                <p class="text-[13px] text-ink-500 leading-relaxed">Entrances, pathways, and nodes your team added. These are safe to keep — scan for completeness, but action is rarely needed.</p>
+              </div>
+              <div class="border border-ink-200 bg-white p-4 rounded-lg shadow-sm">
+                <div class="flex items-center gap-2 mb-1.5">
+                  <span class="w-2.5 h-2.5 rounded-sm bg-collision"></span>
+                  <span class="text-[13px] font-semibold text-collision-dark">Collision</span>
+                </div>
+                <p class="text-[13px] text-ink-500 leading-relaxed">Both sides changed the same thing independently. Rare, but requires careful review — neither version can be assumed correct.</p>
+              </div>
+              <div class="border border-ink-200 bg-white p-4 rounded-lg shadow-sm">
+                <div class="flex items-center gap-2 mb-1.5">
+                  <span class="w-2.5 h-2.5 rounded-sm bg-upstream"></span>
+                  <span class="text-[13px] font-semibold text-upstream-dark">Incoming Addition</span>
+                </div>
+                <p class="text-[13px] text-ink-500 leading-relaxed">Upstream added something new that your version doesn't have. Worth reviewing, typically uncommon.</p>
+              </div>
+            </div>
+          </div>
+
+          <button onclick="selectStation('central')" class="bg-ink-800 text-white text-sm font-medium px-5 py-2.5 rounded-md hover:bg-ink-900 state-transition">
+            Start with Central Station — 2 collisions need your judgment
+          </button>
+
+        </div>
+      </div>
+
+      <!-- ═══════════ STATION REVIEW STATE ═══════════ -->
+      <div id="review-state" class="flex-1 flex flex-col overflow-hidden" style="display: none;">
+
+        <!-- Station Header + Graph Summary -->
+        <div class="flex-shrink-0 border-b border-ink-200 bg-white">
+          <div class="max-w-4xl mx-auto px-8">
+            <div class="flex items-baseline justify-between pt-5 pb-3">
+              <div>
+                <h2 class="text-xl font-semibold" id="review-station-name">Central Station</h2>
+                <div class="text-micro font-mono text-ink-400 mt-0.5" id="review-station-meta">5 operations · 9 underlying changes</div>
+              </div>
+              <div class="flex items-center gap-4 text-xs">
+                <span class="font-mono text-ink-500"><strong class="text-ink-800 font-medium" id="station-resolved-count">0</strong> / <span id="station-total-count">5</span> resolved</span>
+                <div class="w-24 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+                  <div id="station-progress-bar" class="h-full bg-addition rounded-full state-transition" style="width: 0%"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Small Multiples: Ours vs Incoming graph summary -->
+            <div class="grid grid-cols-2 gap-4 pb-4">
+              <div class="border border-ink-200 rounded-lg p-3.5">
+                <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-2">Ours (enriched)</div>
+                <div class="grid grid-cols-3 gap-3">
+                  <div>
+                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">4</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Platforms</div>
+                  </div>
+                  <div>
+                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">5</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Entrances</div>
+                  </div>
+                  <div>
+                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">3</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Levels</div>
+                  </div>
+                  <div>
+                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">12</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Nodes</div>
+                  </div>
+                  <div>
+                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">18</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Pathways</div>
+                  </div>
+                  <div>
+                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">2</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Boarding</div>
+                  </div>
+                </div>
+              </div>
+              <div class="border border-ink-200 rounded-lg p-3.5">
+                <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-2">Incoming (upstream)</div>
+                <div class="grid grid-cols-3 gap-3">
+                  <div>
+                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">4</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Platforms</div>
+                  </div>
+                  <div>
+                    <div class="text-lg font-semibold font-mono leading-none text-correction">3</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Entrances</div>
+                  </div>
+                  <div>
+                    <div class="text-lg font-semibold font-mono leading-none text-correction">4</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Levels</div>
+                  </div>
+                  <div>
+                    <div class="text-lg font-semibold font-mono leading-none text-correction">8</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Nodes</div>
+                  </div>
+                  <div>
+                    <div class="text-lg font-semibold font-mono leading-none text-correction">14</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Pathways</div>
+                  </div>
+                  <div>
+                    <div class="text-lg font-semibold text-ink-800 font-mono leading-none">2</div>
+                    <div class="text-micro text-ink-400 mt-0.5">Boarding</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Scrollable Operations List -->
+        <div class="flex-1 overflow-y-auto scroll-thin" id="operations-scroll">
+            <div class="max-w-3xl mx-auto px-8 py-6 pb-24">
+
+              <!-- Triage summary -->
+              <div class="flex items-center gap-4 mb-6 pb-4 border-b border-ink-100">
+                <div class="text-micro font-semibold uppercase tracking-widest text-ink-400">Triage</div>
+                <div class="flex gap-3 text-[13px]">
+                  <span class="font-medium text-collision">2 collisions — need judgment</span>
+                  <span class="text-ink-300">·</span>
+                  <span class="text-correction">2 corrections — review &amp; apply</span>
+                  <span class="text-ink-300">·</span>
+                  <span class="text-addition">1 our work — confirm</span>
+                </div>
+              </div>
+
+              <!-- ════ OPERATION 1: COLLISION ════ -->
+              <div class="mb-5 border border-collision rounded-lg bg-white shadow-sm" id="op-1">
+                <div class="flex items-start justify-between px-5 pt-4 pb-3">
+                  <div class="flex items-start gap-3">
+                    <span class="flex items-center justify-center w-6 h-6 bg-collision text-white text-micro font-semibold rounded-md flex-shrink-0 mt-px">1</span>
+                    <div>
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="text-micro font-semibold uppercase tracking-wide text-collision">Collision</span>
+                        <span class="text-micro font-mono text-ink-300">·</span>
+                        <span class="text-micro text-risk font-medium">Accessibility risk</span>
+                      </div>
+                      <h3 class="text-[15px] font-medium text-ink-800 leading-snug">
+                        Walkway width conflict between Entrance A and Concourse
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+                <div class="px-5 pb-5">
+                  <p class="text-[13px] text-ink-600 leading-relaxed mb-3">
+                    Both sides changed the minimum width of the walkway connecting Entrance A to the concourse level.
+                    Your team widened it to 1.8 m; the upstream narrowed it to 0.9 m. The original measurement was 1.2 m.
+                  </p>
+
+                  <div class="flex gap-3 mb-3">
+                    <div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5">
+                      <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Ours</div>
+                      <div class="font-mono text-[13px]">Minimum width: <strong>1.8 m</strong></div>
+                    </div>
+                    <div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5">
+                      <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Incoming</div>
+                      <div class="font-mono text-[13px]">Minimum width: <strong class="text-risk">0.9 m</strong></div>
+                    </div>
+                  </div>
+
+                  <div class="border-l-2 border-risk bg-risk-light rounded-r-md px-3 py-2.5 mb-3">
+                    <div class="text-micro font-semibold text-risk-dark mb-0.5">Impact</div>
+                    <p class="text-[13px] text-ink-600">0.9 m is below typical wheelchair clearance (1.0 m). Accepting the incoming value may affect accessible routing. If the physical walkway was narrowed, accept for accuracy. If not, keep your measurement or correct to the actual width.</p>
+                  </div>
+
+                  <details class="mb-3">
+                    <summary class="text-micro font-medium text-ink-400 cursor-pointer hover:text-ink-600">1 pathway affected</summary>
+                    <div class="mt-2 font-mono text-micro text-ink-500 bg-ink-50 border border-ink-100 rounded-md px-3 py-2">
+                      Walkway: Entrance A → Node 7 (Concourse Level) · traversal time: 45 s · width changed
+                    </div>
+                  </details>
+
+                  <div class="flex items-center gap-2">
+                    <button onclick="resolveOp('op-1', 'applied')" class="bg-correction text-white text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-correction-dark state-transition">Apply Incoming (0.9 m)</button>
+                    <button onclick="resolveOp('op-1', 'kept')" class="border border-ink-200 text-ink-600 text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-ink-50 state-transition">Keep Ours (1.8 m)</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ════ OPERATION 2: COLLISION ════ -->
+              <div class="mb-5 border border-collision rounded-lg bg-white shadow-sm" id="op-2">
+                <div class="flex items-start justify-between px-5 pt-4 pb-3">
+                  <div class="flex items-start gap-3">
+                    <span class="flex items-center justify-center w-6 h-6 bg-collision text-white text-micro font-semibold rounded-md flex-shrink-0 mt-px">2</span>
+                    <div>
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="text-micro font-semibold uppercase tracking-wide text-collision">Collision</span>
+                        <span class="text-micro font-mono text-ink-300">·</span>
+                        <span class="text-micro text-ink-400 font-medium">Structural</span>
+                      </div>
+                      <h3 class="text-[15px] font-medium text-ink-800 leading-snug">
+                        Escalator traversal time differs between Mezzanine and Platform Level
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+                <div class="px-5 pb-5">
+                  <p class="text-[13px] text-ink-600 leading-relaxed mb-3">
+                    Both versions modified the traversal time for the escalator between the mezzanine and platform level.
+                    Your team set it to 90 seconds (measured on-site); the upstream set it to 65 seconds.
+                  </p>
+                  <div class="flex gap-3 mb-3">
+                    <div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5">
+                      <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Ours</div>
+                      <div class="font-mono text-[13px]">Traversal time: <strong>90 s</strong></div>
+                    </div>
+                    <div class="flex-1 bg-ink-50 border border-ink-100 rounded-md px-3 py-2.5">
+                      <div class="text-micro font-semibold uppercase tracking-widest text-ink-400 mb-1">Incoming</div>
+                      <div class="font-mono text-[13px]">Traversal time: <strong>65 s</strong></div>
+                    </div>
+                  </div>
+                  <div class="border-l-2 border-collision bg-collision-light rounded-r-md px-3 py-2.5 mb-3">
+                    <div class="text-micro font-semibold text-collision-dark mb-0.5">Impact</div>
+                    <p class="text-[13px] text-ink-600">Traversal time affects trip planning and routing. If your team measured on-site, that is likely more accurate. The upstream value may be an estimate.</p>
+                  </div>
+                  <details class="mb-3">
+                    <summary class="text-micro font-medium text-ink-400 cursor-pointer hover:text-ink-600">1 pathway affected</summary>
+                    <div class="mt-2 font-mono text-micro text-ink-500 bg-ink-50 border border-ink-100 rounded-md px-3 py-2">
+                      Escalator: Node 3 (Mezzanine) → Node 9 (Platform Level) · mode: escalator · time changed
+                    </div>
+                  </details>
+                  <div class="flex items-center gap-2">
+                    <button onclick="resolveOp('op-2', 'applied')" class="bg-correction text-white text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-correction-dark state-transition">Apply Incoming (65 s)</button>
+                    <button onclick="resolveOp('op-2', 'kept')" class="border border-ink-200 text-ink-600 text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-ink-50 state-transition">Keep Ours (90 s)</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ════ OPERATION 3: INCOMING CORRECTION (GROUPED) ════ -->
+              <div class="mb-5 border border-ink-200 rounded-lg bg-white shadow-sm" id="op-3">
+                <div class="flex items-start justify-between px-5 pt-4 pb-3">
+                  <div class="flex items-start gap-3">
+                    <span class="flex items-center justify-center w-6 h-6 bg-correction text-white text-micro font-semibold rounded-md flex-shrink-0 mt-px">3</span>
+                    <div>
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="text-micro font-semibold uppercase tracking-wide text-correction">Incoming Correction</span>
+                        <span class="text-micro font-mono text-ink-300">·</span>
+                        <span class="text-micro text-ink-400 font-medium">3 related changes</span>
+                      </div>
+                      <h3 class="text-[15px] font-medium text-ink-800 leading-snug">
+                        New mezzanine level inserted + level reordering + staircase replaced with elevator
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+                <div class="px-5 pb-5">
+                  <p class="text-[13px] text-ink-600 leading-relaxed mb-3">
+                    Upstream added a mezzanine level between the concourse and platform level, reindexed the existing floors to accommodate it, and replaced the staircase between those levels with an elevator. These three changes form one structural operation: the station gained a new floor with step-free vertical access.
+                  </p>
+
+                  <div class="border border-ink-100 rounded-md divide-y divide-ink-100 mb-3">
+                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
+                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">3a</span>
+                      <div>
+                        <div class="text-[13px] font-medium text-ink-700">New level: Mezzanine (floor index 2)</div>
+                        <div class="text-[13px] text-ink-500 mt-0.5">Inserted between Concourse (reindexed to 0) and Platform Level (reindexed to 3).</div>
+                      </div>
+                    </div>
+                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
+                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">3b</span>
+                      <div>
+                        <div class="text-[13px] font-medium text-ink-700">Level indices updated on 3 existing floors</div>
+                        <div class="text-[13px] text-ink-500 mt-0.5">Concourse: 1 → 0. Street Level: 2 → 1. Platform Level: 2 → 3.</div>
+                      </div>
+                    </div>
+                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
+                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">3c</span>
+                      <div>
+                        <div class="text-[13px] font-medium text-ink-700">Staircase replaced with elevator (Concourse → Platform Level)</div>
+                        <div class="text-[13px] text-ink-500 mt-0.5">Positive accessibility impact: step-free access where only stairs existed.</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="border-l-2 border-correction bg-correction-light rounded-r-md px-3 py-2.5 mb-3">
+                    <div class="text-micro font-semibold text-correction-dark mb-0.5">Impact</div>
+                    <p class="text-[13px] text-ink-600">Structural change. Accepting updates the vertical structure of the station and adds step-free access. 4 nodes in our graph reference levels that would be renumbered. 6 pathways span the affected floors.</p>
+                  </div>
+
+                  <div class="flex items-center gap-2">
+                    <button onclick="resolveOp('op-3', 'applied')" class="bg-correction text-white text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-correction-dark state-transition">Apply All 3 Changes</button>
+                    <button onclick="resolveOp('op-3', 'kept')" class="border border-ink-200 text-ink-600 text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-ink-50 state-transition">Keep Current Structure</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ════ OPERATION 4: INCOMING CORRECTION ════ -->
+              <div class="mb-5 border border-ink-200 rounded-lg bg-white shadow-sm" id="op-4">
+                <div class="flex items-start justify-between px-5 pt-4 pb-3">
+                  <div class="flex items-start gap-3">
+                    <span class="flex items-center justify-center w-6 h-6 bg-correction text-white text-micro font-semibold rounded-md flex-shrink-0 mt-px">4</span>
+                    <div>
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="text-micro font-semibold uppercase tracking-wide text-correction">Incoming Correction</span>
+                        <span class="text-micro font-mono text-ink-300">·</span>
+                        <span class="text-micro text-ink-400 font-medium">3 related changes</span>
+                      </div>
+                      <h3 class="text-[15px] font-medium text-ink-800 leading-snug">
+                        Platform corrections: "Track 4" repositioned, "Track 2" renamed, wheelchair access confirmed on "Track 1"
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+                <div class="px-5 pb-5">
+                  <p class="text-[13px] text-ink-600 leading-relaxed mb-3">
+                    Upstream corrected three platform attributes. These are independent fixes grouped because they share the same pattern: base data improvements that do not affect the pathways your team built.
+                  </p>
+                  <div class="border border-ink-100 rounded-md divide-y divide-ink-100 mb-3">
+                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
+                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">4a</span>
+                      <div class="flex-1">
+                        <div class="text-[13px] font-medium text-ink-700">Platform "Track 4" relocated ~15 m</div>
+                        <div class="flex gap-2 mt-1 text-micro font-mono text-ink-400">
+                          <span>42.36541, -71.06129</span>
+                          <span class="text-ink-300">→</span>
+                          <span>42.36554, -71.06118</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
+                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">4b</span>
+                      <div class="flex-1">
+                        <div class="text-[13px] font-medium text-ink-700">Platform "Track 2" renamed to "Track 2 — Westbound"</div>
+                        <div class="text-[13px] text-ink-500 mt-0.5">Directional qualifier added to match rider-facing signage.</div>
+                      </div>
+                    </div>
+                    <div class="px-3 py-2.5 flex gap-3 items-baseline">
+                      <span class="text-micro font-mono text-ink-300 w-4 flex-shrink-0">4c</span>
+                      <div class="flex-1">
+                        <div class="text-[13px] font-medium text-ink-700">Platform "Track 1" wheelchair access confirmed</div>
+                        <div class="text-[13px] text-ink-500 mt-0.5">Updated from unknown to accessible. Improves trip planner accuracy.</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="border-l-2 border-correction bg-correction-light rounded-r-md px-3 py-2.5 mb-3">
+                    <div class="text-micro font-semibold text-correction-dark mb-0.5">Impact</div>
+                    <p class="text-[13px] text-ink-600">Low risk. Coordinate, naming, and accessibility corrections from upstream. "Track 4" anchors 2 pathways in your graph — applying updates their spatial reference point. No structural breakage.</p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button onclick="resolveOp('op-4', 'applied')" class="bg-correction text-white text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-correction-dark state-transition">Apply All 3 Corrections</button>
+                    <button onclick="resolveOp('op-4', 'kept')" class="border border-ink-200 text-ink-600 text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-ink-50 state-transition">Keep Current Values</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ════ OPERATION 5: OUR ADDITION ════ -->
+              <div class="mb-5 border border-ink-200 rounded-lg bg-white shadow-sm" id="op-5">
+                <div class="flex items-start justify-between px-5 pt-4 pb-3">
+                  <div class="flex items-start gap-3">
+                    <span class="flex items-center justify-center w-6 h-6 bg-addition text-white text-micro font-semibold rounded-md flex-shrink-0 mt-px">5</span>
+                    <div>
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="text-micro font-semibold uppercase tracking-wide text-addition">Our Addition</span>
+                        <span class="text-micro font-mono text-ink-300">·</span>
+                        <span class="text-micro text-ink-400 font-medium">8 entities</span>
+                      </div>
+                      <h3 class="text-[15px] font-medium text-ink-800 leading-snug">
+                        2 new entrances (North Plaza, South Concourse) with wayfinding connections
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+                <div class="px-5 pb-5">
+                  <p class="text-[13px] text-ink-600 leading-relaxed mb-3">
+                    Your team added 2 entrances, 4 pathfinding nodes, and 6 walkway pathways connecting them to the concourse level. This is enrichment work — none of it exists in the upstream feed.
+                  </p>
+                  <details class="mb-3">
+                    <summary class="text-micro font-medium text-ink-400 cursor-pointer hover:text-ink-600">8 entities: 2 entrances, 4 nodes, 6 walkways</summary>
+                    <div class="mt-2 font-mono text-micro text-ink-500 bg-ink-50 border border-ink-100 rounded-md px-3 py-2 space-y-1">
+                      <div>Entrance: North Plaza (Street Level) — connected via 3 walkways</div>
+                      <div>Entrance: South Concourse (Concourse Level) — connected via 3 walkways</div>
+                      <div>Node: NP-1, NP-2 (North Plaza routing)</div>
+                      <div>Node: SC-1, SC-2 (South Concourse routing)</div>
+                    </div>
+                  </details>
+                  <div class="border-l-2 border-addition bg-addition-light rounded-r-md px-3 py-2.5 mb-3">
+                    <div class="text-micro font-semibold text-addition-dark mb-0.5">Impact</div>
+                    <p class="text-[13px] text-ink-600">No conflict. This is your team's pathways enrichment. Confirm to keep it in the merged output.</p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button onclick="resolveOp('op-5', 'kept')" class="bg-addition text-white text-[13px] font-medium px-3.5 py-2 rounded-md hover:bg-addition-dark state-transition">Confirm — Keep Our Work</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Station complete state -->
+              <div id="station-complete" class="hidden mt-8 border-t-2 border-addition pt-6 text-center">
+                <div class="text-addition font-semibold text-[15px] mb-1">All operations resolved for Central Station.</div>
+                <div class="text-[13px] text-ink-500 mb-4">All operations reviewed. Ready to merge.</div>
+                <button class="border border-ink-200 text-ink-600 text-[13px] font-medium px-4 py-2 rounded-md hover:bg-ink-50 state-transition" onclick="selectStation('riverside')">
+                  Next: Riverside Terminal →
+                </button>
+              </div>
+
+            </div>
+          </div>
+
+      </div>
+
+    </main>
+
+  </div>
+</div>
+
+<script>
+  let selectedStation = null;
+  let resolvedOps = {};
+  const TOTAL_OPS = { central: 5, riverside: 4, market: 3, northgate: 3, convention: 2, airport: 1, eastport: 1 };
+  let stationResolvedCounts = { central: 0, riverside: 0, market: 0, northgate: 0, convention: 0, airport: 0, eastport: 0 };
+  let stationsFullyResolved = new Set();
+
+  function selectStation(id) {
+    selectedStation = id;
+    document.getElementById('welcome-state').style.display = 'none';
+    document.getElementById('review-state').style.display = 'flex';
+
+    document.querySelectorAll('.station-item').forEach(el => {
+      el.classList.remove('bg-correction-light');
+    });
+    const activeItem = document.querySelector(`[data-station="${id}"]`);
+    if (activeItem) {
+      activeItem.classList.add('bg-correction-light');
+    }
+
+    const prompt = document.getElementById('sidebar-prompt');
+    if (id === 'central') {
+      prompt.innerHTML = `<div class="text-xs text-correction-dark font-medium">Reviewing ↓</div><div class="text-xs text-ink-500 mt-0.5">Central Station — 2 collisions, 2 corrections, 1 confirmation.</div>`;
+    } else {
+      const total = TOTAL_OPS[id] || 0;
+      const nameEl = activeItem?.querySelector('.text-\\[13px\\]');
+      const name = nameEl ? nameEl.textContent : id;
+      prompt.innerHTML = `<div class="text-xs text-correction-dark font-medium">Reviewing ↓</div><div class="text-xs text-ink-500 mt-0.5">${name} — ${total} operations to review.</div>`;
+    }
+
+    document.getElementById('operations-scroll')?.scrollTo(0, 0);
+  }
+
+  function resolveOp(opId, action) {
+    const opEl = document.getElementById(opId);
+    if (!opEl || resolvedOps[opId]) return;
+    resolvedOps[opId] = action;
+
+    const actionsDiv = opEl.querySelector('.flex.items-center.gap-2:last-child');
+    if (action === 'applied') {
+      actionsDiv.innerHTML = `<span class="inline-flex items-center gap-1.5 text-[13px] font-medium text-correction"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>Incoming applied</span>`;
+      opEl.style.opacity = '0.6';
+    } else {
+      actionsDiv.innerHTML = `<span class="inline-flex items-center gap-1.5 text-[13px] font-medium text-ink-400"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>Keeping ours</span>`;
+      opEl.style.opacity = '0.6';
+    }
+
+    stationResolvedCounts.central = Object.keys(resolvedOps).length;
+    const count = stationResolvedCounts.central;
+    const total = TOTAL_OPS.central;
+    document.getElementById('station-resolved-count').textContent = count;
+    document.getElementById('station-progress-bar').style.width = `${(count / total) * 100}%`;
+
+    if (count >= total) {
+      stationsFullyResolved.add('central');
+      document.getElementById('station-complete').classList.remove('hidden');
+      document.getElementById('station-central-status').textContent = '✓';
+      document.getElementById('station-central-status').classList.add('text-addition', 'font-medium');
+      document.getElementById('station-central-status').classList.remove('text-ink-300');
+      updateGlobalProgress();
+    }
+  }
+
+  function updateGlobalProgress() {
+    const resolved = stationsFullyResolved.size;
+    document.getElementById('global-resolved').textContent = resolved;
+    document.getElementById('global-progress-bar').style.width = `${(resolved / 7) * 100}%`;
+  }
+
+  function toggleOnboarding() {
+    selectedStation = null;
+    document.getElementById('welcome-state').style.display = 'block';
+    document.getElementById('review-state').style.display = 'none';
+    document.querySelectorAll('.station-item').forEach(el => {
+      el.classList.remove('bg-correction-light');
+    });
+  }
+</script>
+
+</body>
+</html>
