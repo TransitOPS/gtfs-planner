@@ -68,7 +68,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.PathwayChecksTest do
       item = find_item(items, "pathway_speed_plausibility")
 
       assert item.status == :warn
-      assert [%{id: "PW1", reason: "2.0 m/s"}] = item.details
+      assert [%{id: "PW1", reason: "2.004 m/s"}] = item.details
     end
 
     test "pathway_speed_plausibility warns just below the lower bound before rounding" do
@@ -77,7 +77,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.PathwayChecksTest do
       item = find_item(items, "pathway_speed_plausibility")
 
       assert item.status == :warn
-      assert [%{id: "PW1", reason: "0.5 m/s"}] = item.details
+      assert [%{id: "PW1", reason: "0.496 m/s"}] = item.details
     end
 
     test "pathway_dangling_refs fails when stop_id not in index" do
