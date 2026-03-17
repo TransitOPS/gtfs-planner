@@ -148,6 +148,31 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert String.contains?(reason, "m/s")
     end
 
+    test "includes level validation items in the built report" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("PLAT_A", 0, parent_station: "STATION", level_id: nil),
+            stop("PLAT_B", 0, parent_station: "STATION", level_id: "L_UNKNOWN")
+          ],
+          levels: [
+            %{level: level("L1", 0.0), stop_count: 0},
+            %{
+              level: %Level{level_id: "GROUND_LEVEL", level_index: 1.0, level_name: "Ground"},
+              stop_count: 0
+            }
+          ],
+          pathways: []
+        })
+
+      validation = section(report, "levels_validation")
+
+      assert item(validation, "level_referential_integrity").status == :fail
+      assert item(validation, "platforms_missing_level").status == :warn
+      assert item(validation, "level_naming_consistency").status == :warn
+    end
+
     test "respects directed pathways for entrance to platform reachability" do
       report =
         StationReport.build(%{

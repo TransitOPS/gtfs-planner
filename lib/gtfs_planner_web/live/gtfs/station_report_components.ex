@@ -2150,7 +2150,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         </div>
         <div class="flex justify-between">
           <dt class="text-base-content/60">location_type</dt>
-          <dd class="font-mono">{@entity.location_type} — {Stop.location_type_label(@entity.location_type)}</dd>
+          <dd class="font-mono">
+            {@entity.location_type} — {Stop.location_type_label(@entity.location_type)}
+          </dd>
         </div>
         <div class="flex justify-between">
           <dt class="text-base-content/60">parent_station</dt>
@@ -2158,7 +2160,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         </div>
       </dl>
 
-      <.form for={@form} id="report-stop-edit-form" phx-submit="save_entity" as={:stop} class="space-y-3">
+      <.form
+        for={@form}
+        id="report-stop-edit-form"
+        phx-submit="save_entity"
+        as={:stop}
+        class="space-y-3"
+      >
         <.input field={@form[:stop_name]} label="stop_name" type="text" />
         <div class="grid grid-cols-2 gap-3">
           <.input field={@form[:stop_lat]} label="stop_lat" type="text" />
@@ -2169,7 +2177,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
           field={@form[:wheelchair_boarding]}
           label="wheelchair_boarding"
           type="select"
-          options={[{"", ""}, {"0 — No info", "0"}, {"1 — Accessible", "1"}, {"2 — Not accessible", "2"}]}
+          options={[
+            {"", ""},
+            {"0 — No info", "0"},
+            {"1 — Accessible", "1"},
+            {"2 — Not accessible", "2"}
+          ]}
         />
         <.input field={@form[:platform_code]} label="platform_code" type="text" />
         <button type="submit" class="btn btn-primary btn-sm w-full">Save changes</button>
@@ -2191,7 +2204,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         </div>
         <div class="flex justify-between">
           <dt class="text-base-content/60">pathway_mode</dt>
-          <dd class="font-mono">{@entity.pathway_mode} — {Pathway.mode_label(@entity.pathway_mode)}</dd>
+          <dd class="font-mono">
+            {@entity.pathway_mode} — {Pathway.mode_label(@entity.pathway_mode)}
+          </dd>
         </div>
         <div class="flex justify-between">
           <dt class="text-base-content/60">from_stop_id</dt>
@@ -2203,7 +2218,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
         </div>
       </dl>
 
-      <.form for={@form} id="report-pathway-edit-form" phx-submit="save_entity" as={:pathway} class="space-y-3">
+      <.form
+        for={@form}
+        id="report-pathway-edit-form"
+        phx-submit="save_entity"
+        as={:pathway}
+        class="space-y-3"
+      >
         <.input field={@form[:traversal_time]} label="traversal_time (seconds)" type="number" />
         <div class="grid grid-cols-2 gap-3">
           <.input field={@form[:length]} label="length (meters)" type="text" />
