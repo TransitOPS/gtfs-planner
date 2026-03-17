@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
   import GtfsPlannerWeb.Gtfs.StationReportComponents
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.{Pathway, Stop}
   alias GtfsPlanner.Gtfs.StationReport
   alias GtfsPlanner.Versions
 
@@ -131,7 +132,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
 
     case Gtfs.get_stop_by_stop_id(org_id, version_id, entity_id) do
       nil ->
-        {:noreply, assign(socket, :drawer_error, "Stop not found: #{entity_id}")}
+        {:noreply, assign_drawer_error(socket, :stop, "Stop not found: #{entity_id}")}
 
       stop ->
         form =
@@ -166,7 +167,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
 
     case Gtfs.get_pathway_by_pathway_id(org_id, version_id, entity_id) do
       nil ->
-        {:noreply, assign(socket, :drawer_error, "Pathway not found: #{entity_id}")}
+        {:noreply, assign_drawer_error(socket, :pathway, "Pathway not found: #{entity_id}")}
 
       pathway ->
         form =
@@ -197,48 +198,52 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
 
   @impl true
   def handle_event("close_entity_drawer", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:drawer_entity, nil)
-     |> assign(:drawer_type, nil)
-     |> assign(:drawer_form, nil)
-     |> assign(:drawer_error, nil)}
+    {:noreply, reset_drawer(socket)}
   end
 
   @impl true
   def handle_event("save_entity", %{"stop" => stop_params}, socket) do
-    stop = socket.assigns.drawer_entity
+    case {socket.assigns.drawer_type, socket.assigns.drawer_entity} do
+      {:stop, %Stop{} = stop} ->
+        case Gtfs.update_stop(stop, stop_params) do
+          {:ok, _updated} ->
+            {:noreply,
+             socket
+             |> reset_drawer()
+             |> rebuild_report()}
 
-    case Gtfs.update_stop(stop, stop_params) do
-      {:ok, _updated} ->
-        {:noreply,
-         socket
-         |> assign(:drawer_entity, nil)
-         |> assign(:drawer_type, nil)
-         |> assign(:drawer_form, nil)
-         |> assign(:drawer_error, nil)
-         |> rebuild_report()}
+          {:error, changeset} ->
+            {:noreply,
+             socket
+             |> assign(:drawer_form, to_form(changeset, as: :stop))
+             |> assign(:drawer_error, nil)}
+        end
 
-      {:error, changeset} ->
-        {:noreply, assign(socket, :drawer_form, to_form(changeset, as: :stop))}
+      _ ->
+        {:noreply, assign_drawer_error(socket, :stop, "Stop is no longer available for editing")}
     end
   end
 
   def handle_event("save_entity", %{"pathway" => pathway_params}, socket) do
-    pathway = socket.assigns.drawer_entity
+    case {socket.assigns.drawer_type, socket.assigns.drawer_entity} do
+      {:pathway, %Pathway{} = pathway} ->
+        case Gtfs.update_pathway(pathway, pathway_params) do
+          {:ok, _updated} ->
+            {:noreply,
+             socket
+             |> reset_drawer()
+             |> rebuild_report()}
 
-    case Gtfs.update_pathway(pathway, pathway_params) do
-      {:ok, _updated} ->
+          {:error, changeset} ->
+            {:noreply,
+             socket
+             |> assign(:drawer_form, to_form(changeset, as: :pathway))
+             |> assign(:drawer_error, nil)}
+        end
+
+      _ ->
         {:noreply,
-         socket
-         |> assign(:drawer_entity, nil)
-         |> assign(:drawer_type, nil)
-         |> assign(:drawer_form, nil)
-         |> assign(:drawer_error, nil)
-         |> rebuild_report()}
-
-      {:error, changeset} ->
-        {:noreply, assign(socket, :drawer_form, to_form(changeset, as: :pathway))}
+         assign_drawer_error(socket, :pathway, "Pathway is no longer available for editing")}
     end
   end
 
@@ -415,6 +420,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
       {:error, _} ->
         socket
     end
+  end
+
+  defp reset_drawer(socket) do
+    socket
+    |> assign(:drawer_entity, nil)
+    |> assign(:drawer_type, nil)
+    |> assign(:drawer_form, nil)
+    |> assign(:drawer_error, nil)
+  end
+
+  defp assign_drawer_error(socket, drawer_type, message) do
+    socket
+    |> assign(:drawer_entity, nil)
+    |> assign(:drawer_type, drawer_type)
+    |> assign(:drawer_form, nil)
+    |> assign(:drawer_error, message)
   end
 
   defp to_optional_string(nil), do: ""

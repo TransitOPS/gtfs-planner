@@ -94,6 +94,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
           pathway_id: "PATH_1",
           pathway_mode: 5,
           is_bidirectional: true,
+          traversal_time: nil,
           min_width: Decimal.new("1.5"),
           signposted_as: "To platform",
           reversed_signposted_as: "To entrance"
@@ -172,7 +173,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
              )
     end
 
-    test "renders new validation sections and links flagged ids to the diagram page", %{
+    test "renders new validation sections and flagged ids open the edit drawer", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -191,8 +192,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
-      diagram_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
-
       assert has_element?(
                view,
                "#report-section-naming_conventions h2",
@@ -203,13 +202,124 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(view, "#report-section-levels_validation h2", "Levels Validation")
       assert has_element?(view, "#report-item-pathway_missing_traversal_time")
 
-      assert has_element?(view, "#report-item-naming_entrance_prefix-details a", "ENT_1")
+      result =
+        view
+        |> element(
+          "#report-item-naming_entrance_prefix-details span[phx-value-entity_id='ENT_1'][phx-value-entity_type='stop']"
+        )
+        |> render_click()
 
-      assert has_element?(
-               view,
-               "#report-item-level_referential_integrity-details a[href='#{diagram_path}']",
-               "L_MISSING"
-             )
+      assert result =~ "report-stop-edit-form"
+      assert result =~ "ENT_1"
+      assert result =~ "Entrance"
+    end
+
+    test "invalid stop edits keep the drawer open and show validation errors", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      view
+      |> element(
+        "#report-item-naming_entrance_prefix-details span[phx-value-entity_id='ENT_1'][phx-value-entity_type='stop']"
+      )
+      |> render_click()
+
+      html =
+        view
+        |> form("#report-stop-edit-form",
+          stop: %{
+            stop_name: "Entrance",
+            stop_lat: "999",
+            stop_lon: "-122.0",
+            level_id: "L1",
+            wheelchair_boarding: "1",
+            platform_code: ""
+          }
+        )
+        |> render_submit()
+
+      assert html =~ "report-stop-edit-form"
+      assert html =~ "must be less than or equal to 90"
+      assert has_element?(view, "#report-stop-edit-form")
+    end
+
+    test "pathway edits rerender the report after a successful save", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(view, "#report-item-pathway_missing_traversal_time-details", "PATH_1")
+
+      view
+      |> element(
+        "#report-item-pathway_missing_traversal_time-details span[phx-value-entity_id='PATH_1'][phx-value-entity_type='pathway']"
+      )
+      |> render_click()
+
+      refute has_element?(view, "#report-stop-edit-form")
+      assert has_element?(view, "#report-pathway-edit-form")
+
+      view
+      |> form("#report-pathway-edit-form",
+        pathway: %{
+          traversal_time: "45",
+          length: "12.5",
+          min_width: "1.5",
+          stair_count: "",
+          max_slope: "",
+          is_bidirectional: "true",
+          signposted_as: "To platform",
+          reversed_signposted_as: "To entrance"
+        }
+      )
+      |> render_submit()
+
+      refute has_element?(view, "#report-pathway-edit-form")
+      refute has_element?(view, "#report-item-pathway_missing_traversal_time-details", "PATH_1")
+
+      pathway =
+        Gtfs.get_pathway_by_pathway_id(organization.id, gtfs_version.id, "PATH_1")
+
+      assert pathway.traversal_time == 45
+    end
+
+    test "missing entity selection clears the prior drawer content and shows an error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      view
+      |> element(
+        "#report-item-naming_entrance_prefix-details span[phx-value-entity_id='ENT_1'][phx-value-entity_type='stop']"
+      )
+      |> render_click()
+
+      assert has_element?(view, "#report-stop-edit-form")
+
+      html =
+        render_click(view, "select_entity", %{
+          "entity_id" => "MISSING_STOP",
+          "entity_type" => "stop"
+        })
+
+      assert html =~ "Stop not found: MISSING_STOP"
+      refute has_element?(view, "#report-stop-edit-form")
     end
 
     test "renders failing gps validation items with their details", %{
