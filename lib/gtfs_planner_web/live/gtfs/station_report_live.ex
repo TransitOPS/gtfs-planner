@@ -35,7 +35,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
      |> assign(:stop_id, nil)
      |> assign(:reversed_pairs, MapSet.new())
      |> assign(:expanded_entrances, MapSet.new())
-     |> assign(:methodology_by_section, default_methodology_by_section())}
+     |> assign(:methodology_by_section, default_methodology_by_section())
+     |> assign(:drawer_entity, nil)
+     |> assign(:drawer_type, nil)
+     |> assign(:drawer_form, nil)
+     |> assign(:drawer_error, nil)}
   end
 
   @impl true
@@ -121,6 +125,120 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
   def handle_event("toggle_connectivity_entrance", _params, socket), do: {:noreply, socket}
 
   @impl true
+  def handle_event("select_entity", %{"entity_id" => entity_id, "entity_type" => "stop"}, socket) do
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.get_stop_by_stop_id(org_id, version_id, entity_id) do
+      nil ->
+        {:noreply, assign(socket, :drawer_error, "Stop not found: #{entity_id}")}
+
+      stop ->
+        form =
+          to_form(%{
+            "stop_name" => stop.stop_name || "",
+            "stop_lat" => to_optional_string(stop.stop_lat),
+            "stop_lon" => to_optional_string(stop.stop_lon),
+            "level_id" => stop.level_id || "",
+            "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
+            "platform_code" => stop.platform_code || ""
+          })
+
+        {:noreply,
+         socket
+         |> assign(:drawer_entity, stop)
+         |> assign(:drawer_type, :stop)
+         |> assign(:drawer_form, form)
+         |> assign(:drawer_error, nil)}
+    end
+  end
+
+  def handle_event(
+        "select_entity",
+        %{"entity_id" => entity_id, "entity_type" => "pathway"},
+        socket
+      ) do
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.get_pathway_by_pathway_id(org_id, version_id, entity_id) do
+      nil ->
+        {:noreply, assign(socket, :drawer_error, "Pathway not found: #{entity_id}")}
+
+      pathway ->
+        form =
+          to_form(%{
+            "traversal_time" => to_optional_string(pathway.traversal_time),
+            "length" => to_optional_string(pathway.length),
+            "stair_count" => to_optional_string(pathway.stair_count),
+            "max_slope" => to_optional_string(pathway.max_slope),
+            "min_width" => to_optional_string(pathway.min_width),
+            "is_bidirectional" => to_string(pathway.is_bidirectional),
+            "signposted_as" => pathway.signposted_as || "",
+            "reversed_signposted_as" => pathway.reversed_signposted_as || ""
+          })
+
+        {:noreply,
+         socket
+         |> assign(:drawer_entity, pathway)
+         |> assign(:drawer_type, :pathway)
+         |> assign(:drawer_form, form)
+         |> assign(:drawer_error, nil)}
+    end
+  end
+
+  def handle_event("select_entity", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("close_entity_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:drawer_entity, nil)
+     |> assign(:drawer_type, nil)
+     |> assign(:drawer_form, nil)
+     |> assign(:drawer_error, nil)}
+  end
+
+  @impl true
+  def handle_event("save_entity", %{"stop" => stop_params}, socket) do
+    stop = socket.assigns.drawer_entity
+
+    case Gtfs.update_stop(stop, stop_params) do
+      {:ok, _updated} ->
+        {:noreply,
+         socket
+         |> assign(:drawer_entity, nil)
+         |> assign(:drawer_type, nil)
+         |> assign(:drawer_form, nil)
+         |> assign(:drawer_error, nil)
+         |> rebuild_report()}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :drawer_form, to_form(changeset, as: :stop))}
+    end
+  end
+
+  def handle_event("save_entity", %{"pathway" => pathway_params}, socket) do
+    pathway = socket.assigns.drawer_entity
+
+    case Gtfs.update_pathway(pathway, pathway_params) do
+      {:ok, _updated} ->
+        {:noreply,
+         socket
+         |> assign(:drawer_entity, nil)
+         |> assign(:drawer_type, nil)
+         |> assign(:drawer_form, nil)
+         |> assign(:drawer_error, nil)
+         |> rebuild_report()}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :drawer_form, to_form(changeset, as: :pathway))}
+    end
+  end
+
+  def handle_event("save_entity", _params, socket), do: {:noreply, socket}
+
+  @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app
@@ -203,6 +321,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
           <.unavailable_section section={find_section(@report, "not_available")} />
         <% end %>
       </div>
+
+      <.entity_drawer
+        drawer_entity={@drawer_entity}
+        drawer_type={@drawer_type}
+        drawer_form={@drawer_form}
+        drawer_error={@drawer_error}
+      />
     </Layouts.app>
     """
   end
@@ -269,4 +394,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLive do
 
     assign(socket, key, next)
   end
+
+  defp rebuild_report(socket) do
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    stop_id = socket.assigns.stop_id
+
+    case Gtfs.get_station_report_snapshot(org_id, version_id, stop_id) do
+      {:ok, snapshot} ->
+        socket
+        |> assign(:station, snapshot.station)
+        |> assign(:report, StationReport.build(snapshot))
+
+      {:error, _} ->
+        socket
+    end
+  end
+
+  defp to_optional_string(nil), do: ""
+  defp to_optional_string(value), do: to_string(value)
 end

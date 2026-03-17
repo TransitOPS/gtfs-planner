@@ -1473,6 +1473,20 @@ defmodule GtfsPlanner.Gtfs do
   def get_pathway!(id), do: Repo.get!(Pathway, id)
 
   @doc """
+  Gets a single pathway by its GTFS pathway_id within an org+version scope.
+
+  Returns `nil` if no matching pathway exists.
+  """
+  def get_pathway_by_pathway_id(organization_id, gtfs_version_id, pathway_id) do
+    from(p in Pathway,
+      where:
+        p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id and
+          p.pathway_id == ^pathway_id
+    )
+    |> Repo.one()
+  end
+
+  @doc """
   Gets a single pathway with manually populated from_stop and to_stop.
 
   Raises `Ecto.NoResultsError` if the Pathway does not exist.
