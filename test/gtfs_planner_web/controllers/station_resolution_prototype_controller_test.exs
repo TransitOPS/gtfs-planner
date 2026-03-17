@@ -20,7 +20,9 @@ defmodule GtfsPlannerWeb.StationResolutionPrototypeControllerTest do
       conn = conn |> log_in_user(user) |> get(@endpoint_path)
 
       expected =
-        File.read!(Application.app_dir(:gtfs_planner, "priv/prototypes/station-resolution-v2.html"))
+        File.read!(
+          Application.app_dir(:gtfs_planner, "priv/prototypes/station-resolution-v2.html")
+        )
 
       assert conn.resp_body == expected
     end
@@ -34,15 +36,7 @@ defmodule GtfsPlannerWeb.StationResolutionPrototypeControllerTest do
     test "prototype is not served as a direct static asset", %{conn: conn} do
       conn = get(conn, "/prototypes/station-resolution-v2.html")
 
-      # Should not return the prototype content; expect 404 or redirect
-      refute conn.status == 200 &&
-               conn.resp_body ==
-                 File.read!(
-                   Application.app_dir(
-                     :gtfs_planner,
-                     "priv/prototypes/station-resolution-v2.html"
-                   )
-                 )
+      assert conn.status == 404
     end
   end
 end
