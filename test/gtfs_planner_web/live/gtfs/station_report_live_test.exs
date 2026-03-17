@@ -192,7 +192,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       diagram_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
-      html = render(view)
 
       assert has_element?(
                view,
@@ -205,8 +204,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportLiveTest do
       assert has_element?(view, "#report-item-pathway_missing_traversal_time")
 
       assert has_element?(view, "#report-item-naming_entrance_prefix-details a", "ENT_1")
-      assert has_element?(view, "#report-item-level_referential_integrity-details a", "L_MISSING")
-      assert html =~ ~s(href="#{diagram_path}")
+
+      assert has_element?(
+               view,
+               "#report-item-level_referential_integrity-details a[href='#{diagram_path}']",
+               "L_MISSING"
+             )
     end
 
     test "renders failing gps validation items with their details", %{
