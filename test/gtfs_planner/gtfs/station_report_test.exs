@@ -803,6 +803,27 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       assert wbc.status == :pass
     end
 
+    test "wheelchair_boarding_consistency passes when accessible path exists via moving walkway" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1, wheelchair_boarding: 1),
+          child_stops: [
+            stop("E1", 2, parent_station: "STATION"),
+            stop("P1", 0, parent_station: "STATION"),
+            stop("B1", 4, parent_station: "P1")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_MOVING", "E1", "B1", 3, true)
+          ]
+        })
+
+      integrity = section(report, "data_integrity")
+      wbc = item(integrity, "wheelchair_boarding_consistency")
+
+      assert wbc.status == :pass
+    end
+
     test "wheelchair_boarding_consistency passes when station wheelchair_boarding is 0 or nil" do
       report =
         StationReport.build(%{
@@ -862,6 +883,29 @@ defmodule GtfsPlanner.Gtfs.StationReportTest do
       reverse = item(connectivity, "reverse_reachability")
 
       assert reverse.status == :pass
+    end
+
+    test "reverse_reachability fails when reverse only reaches a different entrance" do
+      report =
+        StationReport.build(%{
+          station: stop("STATION", 1),
+          child_stops: [
+            stop("E1", 2, parent_station: "STATION"),
+            stop("E2", 2, parent_station: "STATION"),
+            stop("P1", 0, parent_station: "STATION")
+          ],
+          levels: [],
+          pathways: [
+            pathway("PW_IN", "E1", "P1", 1, false),
+            pathway("PW_OUT_OTHER", "P1", "E2", 1, false)
+          ]
+        })
+
+      connectivity = section(report, "entrance_platform_connectivity")
+      reverse = item(connectivity, "reverse_reachability")
+
+      assert reverse.status == :fail
+      assert [%{id: "E1->P1", reason: "forward reachable but reverse not"}] = reverse.details
     end
   end
 

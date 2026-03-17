@@ -650,23 +650,20 @@ defmodule GtfsPlanner.Gtfs.StationReport do
         accessible_pairs = Enum.count(details, & &1.accessible)
         total_pairs = length(details)
 
-        # Reverse reachability: check platform->entrance for pairs that are forward-reachable
-        entrance_ids = MapSet.new(Enum.map(entrances, & &1.stop_id))
-
         reverse_failures =
           details
           |> Enum.filter(& &1.reachable)
           |> Enum.reject(fn detail ->
-            targets =
-              Map.get(
-                platform_target_index,
-                detail.platform_stop_id,
-                MapSet.new([detail.platform_stop_id])
-              )
+            reverse_start_stop_id =
+              detail.shortest.path
+              |> List.last()
+              |> Map.fetch!(:stop_id)
 
-            Enum.any?(targets, fn target_id ->
-              reachable?(target_id, entrance_ids, directed)
-            end)
+            reachable?(
+              reverse_start_stop_id,
+              MapSet.new([detail.entrance_stop_id]),
+              directed
+            )
           end)
           |> Enum.map(fn detail ->
             %{
@@ -720,8 +717,6 @@ defmodule GtfsPlanner.Gtfs.StationReport do
     }
   end
 
-  @accessible_modes MapSet.new([1, 5, 6, 7])
-
   defp wheelchair_boarding_consistency(station, entrances, pathways, platform_target_index) do
     wheelchair_val = station.wheelchair_boarding
 
@@ -745,9 +740,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
       true ->
         accessible_directed =
           pathways
-          |> Enum.filter(
-            &MapSet.member?(@accessible_modes, normalize_pathway_mode(&1.pathway_mode))
-          )
+          |> Enum.filter(&MapSet.member?(@step_free_modes, normalize_pathway_mode(&1.pathway_mode)))
           |> build_directed_adjacency()
 
         all_targets =
