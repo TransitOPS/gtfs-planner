@@ -207,6 +207,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
           station.stop_id
         )
 
+      {:ok, older_run} =
+        older_run
+        |> ValidationRun.changeset(%{started_at: ~U[2026-01-15 15:30:00Z]})
+        |> Repo.update()
+
+      {:ok, newer_run} =
+        newer_run
+        |> ValidationRun.changeset(%{started_at: ~U[2026-01-15 18:05:00Z]})
+        |> Repo.update()
+
       assert {:ok, _} =
                Validations.mark_pathways_failed(older_run, %{reason: :pathways_trip_test_failed})
 
@@ -221,6 +231,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert has_element?(view, "#recent-station-runs")
       assert has_element?(view, "#recent-station-run-#{older_run.id}")
       assert has_element?(view, "#recent-station-run-#{newer_run.id}")
+
+      assert has_element?(
+               view,
+               "#recent-station-run-#{older_run.id}",
+               "Jan 15, 2026 10:30 AM EST"
+             )
+
+      assert has_element?(
+               view,
+               "#recent-station-run-#{newer_run.id}",
+               "Jan 15, 2026 01:05 PM EST"
+             )
 
       assert has_element?(
                view,
@@ -295,7 +317,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert has_element?(view, "#run-station-reachability[disabled]")
     end
 
-    test "mount ignores stale active run and leaves run action enabled", %{
+    test "mount resumes old active run and keeps run action disabled", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -323,18 +345,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
 
-      refute has_element?(view, "#station-reachability-progress")
-
-      assert has_element?(
-               view,
-               "#run-station-reachability[phx-click='run_reachability']:not([disabled])"
-             )
+      assert has_element?(view, "#station-reachability-progress")
+      assert has_element?(view, "#run-station-reachability[disabled]")
+      assert has_element?(view, "#station-reachability-run-state", stale_run.id)
 
       stale_run = Repo.get!(ValidationRun, stale_run.id)
-      assert stale_run.status == "failed"
+      assert stale_run.status == "running"
     end
 
-    test "run click reuses active backend run and does not create duplicate", %{
+    test "run click reuses active backend run regardless of age", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -355,6 +374,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
 
       {:ok, active_run} = Validations.mark_running(pending_run)
 
+      old_started_at = DateTime.add(DateTime.utc_now(), -1_800, :second)
+
+      {:ok, active_run} =
+        active_run
+        |> ValidationRun.changeset(%{started_at: old_started_at})
+        |> Repo.update()
+
       assert view
              |> element("#run-station-reachability")
              |> render_click()
@@ -372,49 +398,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
         end)
 
       assert length(station_runs) == 1
-    end
-
-    test "run click replaces stale backend run with a new run", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
-
-      {:ok, pending_run} =
-        Validations.create_station_reachability_run(
-          organization.id,
-          gtfs_version.id,
-          station.stop_id
-        )
-
-      {:ok, stale_run} = Validations.mark_running(pending_run)
-
-      stale_started_at = DateTime.add(DateTime.utc_now(), -1_800, :second)
-
-      {:ok, stale_run} =
-        stale_run
-        |> ValidationRun.changeset(%{started_at: stale_started_at})
-        |> Repo.update()
-
-      assert view
-             |> element("#run-station-reachability")
-             |> render_click()
-
-      assert_receive {:station_reachability_runner_started, new_run_id}
-      refute new_run_id == stale_run.id
-
-      stale_run = Repo.get!(ValidationRun, stale_run.id)
-      assert stale_run.status == "failed"
-
-      new_run = Repo.get!(ValidationRun, new_run_id)
-      assert new_run.status == "running"
-      assert new_run.run_type == "station_reachability"
     end
 
     test "polling keeps spinner active for pending status", %{

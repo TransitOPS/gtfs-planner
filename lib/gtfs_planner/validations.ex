@@ -12,7 +12,6 @@ defmodule GtfsPlanner.Validations do
   alias GtfsPlanner.Validations.WalkabilityTest
 
   @pathways_report_version 1
-  @default_station_reachability_active_run_max_age_seconds 1200
 
   @doc """
   Creates a new validation run with status "started".
@@ -132,8 +131,7 @@ defmodule GtfsPlanner.Validations do
   @doc """
   Returns the current station reachability run reuse decision.
 
-  - `{:ok, run}` when an active run exists and is fresh.
-  - `{:stale, run}` when an active run exists but is stale.
+  - `{:ok, run}` when an active run exists.
   - `:none` when no active run exists.
   """
   @spec reusable_station_reachability_run(
@@ -142,53 +140,19 @@ defmodule GtfsPlanner.Validations do
           String.t(),
           keyword()
         ) ::
-          {:ok, ValidationRun.t()} | {:stale, ValidationRun.t()} | :none
+          {:ok, ValidationRun.t()} | :none
   def reusable_station_reachability_run(
         organization_id,
         gtfs_version_id,
         station_stop_id,
-        opts \\ []
+        _opts \\ []
       ) do
     case get_active_station_reachability_run(organization_id, gtfs_version_id, station_stop_id) do
       nil ->
         :none
 
       %ValidationRun{} = run ->
-        if station_reachability_active_run_stale?(run, opts) do
-          {:stale, run}
-        else
-          {:ok, run}
-        end
-    end
-  end
-
-  @spec station_reachability_active_run_stale?(ValidationRun.t(), keyword()) :: boolean()
-  defp station_reachability_active_run_stale?(
-         %ValidationRun{started_at: %DateTime{} = started_at},
-         opts
-       ) do
-    DateTime.diff(DateTime.utc_now(), started_at, :second) >
-      station_reachability_active_run_max_age_seconds(opts)
-  end
-
-  defp station_reachability_active_run_stale?(%ValidationRun{}, _opts), do: false
-
-  @spec station_reachability_active_run_max_age_seconds(keyword()) :: pos_integer()
-  defp station_reachability_active_run_max_age_seconds(opts) do
-    case Keyword.get(
-           opts,
-           :max_age_seconds,
-           Application.get_env(
-             :gtfs_planner,
-             :station_reachability_active_run_max_age_seconds,
-             @default_station_reachability_active_run_max_age_seconds
-           )
-         ) do
-      value when is_integer(value) and value > 0 ->
-        value
-
-      _value ->
-        @default_station_reachability_active_run_max_age_seconds
+        {:ok, run}
     end
   end
 

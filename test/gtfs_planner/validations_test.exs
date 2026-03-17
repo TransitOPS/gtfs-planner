@@ -688,7 +688,7 @@ defmodule GtfsPlanner.ValidationsTest do
                nil
     end
 
-    test "reusable_station_reachability_run/4 returns stale for old active run", %{
+    test "reusable_station_reachability_run/4 returns active run for old active run", %{
       organization: org,
       gtfs_version: version
     } do
@@ -706,7 +706,7 @@ defmodule GtfsPlanner.ValidationsTest do
         |> GtfsPlanner.Validations.ValidationRun.changeset(%{started_at: old_started_at})
         |> GtfsPlanner.Repo.update()
 
-      assert {:stale, %GtfsPlanner.Validations.ValidationRun{id: run_id}} =
+      assert {:ok, %GtfsPlanner.Validations.ValidationRun{id: run_id}} =
                Validations.reusable_station_reachability_run(
                  org.id,
                  version.id,
@@ -715,6 +715,9 @@ defmodule GtfsPlanner.ValidationsTest do
                )
 
       assert run_id == running_run.id
+
+      persisted_run = Validations.get_validation_run!(running_run.id)
+      assert persisted_run.status == "running"
     end
 
     test "reusable_station_reachability_run/4 returns active run when fresh", %{

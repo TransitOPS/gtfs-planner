@@ -415,7 +415,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
                           {run.id}
                         </.link>
                       </td>
-                      <td class="text-sm text-base-content/70">{format_date(run.started_at)}</td>
+                      <td class="text-sm text-base-content/70">{format_est_date(run.started_at)}</td>
                       <td>
                         <span class="badge badge-outline badge-sm">{run.status}</span>
                       </td>
@@ -744,22 +744,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
          socket
          |> put_flash(:info, "A reachability run is already in progress. Resuming status.")
          |> resume_station_reachability_run(active_run)}
-
-      {:stale, stale_run} ->
-        Logger.warning(
-          "Stale station reachability run detected run=#{stale_run.id} station_stop_id=#{station_stop_id}; starting new run"
-        )
-
-        _ = mark_stale_station_reachability_run(stale_run)
-
-        {:noreply,
-         socket
-         |> put_flash(:info, "Previous run was stale. Starting a new reachability run.")
-         |> start_station_reachability_run(
-           organization_id,
-           gtfs_version_id,
-           station_stop_id
-         )}
 
       :none ->
         {:noreply,
@@ -1268,38 +1252,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
         )
 
         resume_station_reachability_run(socket, active_run)
-
-      {:stale, stale_run} ->
-        Logger.warning(
-          "Skipping stale station reachability run=#{stale_run.id} station_stop_id=#{station_stop_id}"
-        )
-
-        _ = mark_stale_station_reachability_run(stale_run)
-
-        socket
-        |> assign(:validating, false)
-        |> assign(:validation_run_id, nil)
-        |> assign(:pathways_prep_detailed_progress, false)
-        |> assign(:validation_progress, nil)
-        |> refresh_recent_validation_runs()
     end
   end
-
-  defp mark_stale_station_reachability_run(run) do
-    Validations.mark_pathways_failed(run, %{
-      reason: :pathways_stale_active_run,
-      details: %{
-        stale_run_id: run.id,
-        started_at: stale_run_started_at(run),
-        action: "superseded_by_new_run"
-      }
-    })
-  end
-
-  defp stale_run_started_at(%{started_at: %DateTime{} = started_at}),
-    do: DateTime.to_iso8601(started_at)
-
-  defp stale_run_started_at(_run), do: nil
 
   defp start_station_reachability_run(socket, organization_id, gtfs_version_id, station_stop_id) do
     case apply(Validations, :start_station_reachability_test, [
@@ -1702,7 +1656,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   defp present_coordinate?(%Decimal{}), do: true
   defp present_coordinate?(_value), do: false
 
-  defp format_date(datetime), do: Calendar.strftime(datetime, "%b %d, %Y %I:%M %p")
+  defp format_est_date(%DateTime{} = datetime) do
+    datetime
+    |> DateTime.add(-5 * 60 * 60, :second)
+    |> Calendar.strftime("%b %d, %Y %I:%M %p EST")
+  end
+
+  defp format_est_date(_datetime), do: "—"
 
   defp format_poll_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%H:%M:%S")
   defp format_poll_time(_datetime), do: "—"
