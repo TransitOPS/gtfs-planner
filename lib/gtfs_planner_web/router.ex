@@ -64,6 +64,7 @@ defmodule GtfsPlannerWeb.Router do
     pipe_through [:browser, :require_authenticated_user]
 
     delete "/users/log_out", UserSessionController, :delete
+    get "/station-data-resolution-prototype", StationResolutionPrototypeController, :index
 
     live_session :require_authenticated_user,
       on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do
