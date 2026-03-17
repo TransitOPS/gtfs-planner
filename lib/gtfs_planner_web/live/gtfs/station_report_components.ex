@@ -362,19 +362,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
       <%= for detail <- @ids do %>
         <%= if is_map(detail) do %>
           <div class="flex items-baseline gap-2 text-xs">
-            <.entity_link
-              id={detail.id}
-              gtfs_version_id={@gtfs_version_id}
-              station_stop_id={@station_stop_id}
-            />
+            <.entity_link id={detail.id} entity_type={@entity_type} />
             <span class="text-base-content/50">{Map.get(detail, :reason, "")}</span>
           </div>
         <% else %>
-          <.entity_link
-            id={to_string(detail)}
-            gtfs_version_id={@gtfs_version_id}
-            station_stop_id={@station_stop_id}
-          />
+          <.entity_link id={to_string(detail)} entity_type={@entity_type} />
         <% end %>
       <% end %>
     </div>
@@ -391,16 +383,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
 
   defp entity_link(assigns) do
     ~H"""
-    <%= if @gtfs_version_id && @station_stop_id do %>
-      <.link
-        navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station_stop_id}/diagram"}
-        class="font-mono text-xs text-primary hover:underline"
-      >
-        {@id}
-      </.link>
-    <% else %>
-      <span class="font-mono text-xs text-base-content/60">{@id}</span>
-    <% end %>
+    <span
+      phx-click="select_entity"
+      phx-value-entity_id={@id}
+      phx-value-entity_type={@entity_type}
+      class="font-mono text-xs text-primary hover:underline cursor-pointer"
+    >
+      {@id}
+    </span>
     """
   end
 
@@ -2168,7 +2158,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
     ~H"""
     <.drawer
       id="report-entity-drawer"
-      open={@drawer_entity != nil}
+      open={drawer_open?(@drawer_entity, @drawer_error)}
       on_close="close_entity_drawer"
       title={drawer_title(@drawer_type, @drawer_entity)}
     >
@@ -2190,8 +2180,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportComponents do
   end
 
   defp drawer_title(:stop, %{stop_id: stop_id}), do: stop_id
+  defp drawer_title(:stop, nil), do: "Stop not found"
   defp drawer_title(:pathway, %{pathway_id: pathway_id}), do: pathway_id
+  defp drawer_title(:pathway, nil), do: "Pathway not found"
   defp drawer_title(_, _), do: ""
+
+  defp drawer_open?(drawer_entity, drawer_error),
+    do: not is_nil(drawer_entity) or not is_nil(drawer_error)
 
   attr :entity, :map, required: true
   attr :form, :any, required: true
