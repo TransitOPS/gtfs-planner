@@ -1656,6 +1656,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp handle_pathways_trip_test_completed(socket, validation_run_id) do
     case Validations.get_pathways_trip_test_results(validation_run_id) do
       {:ok, result_payload} ->
+        maybe_cleanup_runtime_artifacts(
+          socket.assigns.current_organization.id,
+          socket.assigns.current_gtfs_version.id
+        )
+
         persisted_summary = pathways_summary_from_result_json(result_payload.result_json || %{})
 
         top_failure_categories =
@@ -1700,6 +1705,24 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            reason: :pathways_results_unavailable,
            details: %{error: inspect(reason)}
          })}
+    end
+  end
+
+  defp maybe_cleanup_runtime_artifacts(organization_id, gtfs_version_id) do
+    runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module, Runtime)
+
+    case runtime_module.cleanup_on_success(organization_id, gtfs_version_id) do
+      :ok ->
+        :ok
+
+      {:ok, _cleanup_result} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("Runtime.cleanup_on_success failed: #{inspect(reason)}")
+
+      other ->
+        Logger.error("Runtime.cleanup_on_success returned unexpected result: #{inspect(other)}")
     end
   end
 

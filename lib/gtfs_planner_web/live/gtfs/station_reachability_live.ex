@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Otp.Lifecycle
+  alias GtfsPlanner.Otp.Runtime
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.ExportLive
@@ -816,6 +817,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
             "completed" ->
               case Validations.get_pathways_trip_test_results(validation_run_id) do
                 {:ok, pathways_results} ->
+                  maybe_cleanup_runtime_artifacts(
+                    socket.assigns.current_organization.id,
+                    socket.assigns.current_gtfs_version.id
+                  )
+
                   {:noreply,
                    socket
                    |> assign(:validating, false)
@@ -1642,6 +1648,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
       {:ok, :purged} -> :ok
       {:ok, :not_found} -> :ok
       {:error, _reason} -> :ok
+    end
+  end
+
+  defp runtime_cleanup_module do
+    Application.get_env(:gtfs_planner, :otp_runtime_module, Runtime)
+  end
+
+  defp maybe_cleanup_runtime_artifacts(organization_id, gtfs_version_id) do
+    case runtime_cleanup_module().cleanup_on_success(organization_id, gtfs_version_id) do
+      {:ok, _cleanup_result} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "Station reachability runtime cleanup failed organization_id=#{organization_id} gtfs_version_id=#{gtfs_version_id} reason=#{inspect(reason)}"
+        )
+
+        :ok
+
+      unexpected ->
+        Logger.error(
+          "Station reachability runtime cleanup returned unexpected result organization_id=#{organization_id} gtfs_version_id=#{gtfs_version_id} result=#{inspect(unexpected)}"
+        )
+
+        :ok
     end
   end
 

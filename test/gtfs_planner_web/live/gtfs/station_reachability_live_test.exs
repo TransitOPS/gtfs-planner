@@ -26,6 +26,86 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
     end
   end
 
+  defmodule StationReachabilityRuntimeCleanupNotifyMock do
+    def run_with_otp(_organization_id, _gtfs_version_id, callback, opts) do
+      case opts[:status_callback] do
+        status_callback when is_function(status_callback, 1) ->
+          status_callback.(%{scope: :gtfs, phase: :cache_check})
+          status_callback.(%{scope: :graph, phase: :done})
+          status_callback.(%{scope: :otp, phase: :ready})
+          status_callback.(%{scope: :suite, phase: :finished, completed: 1, total: 1})
+          status_callback.(%{scope: :otp, phase: :stopped})
+
+        _other ->
+          :ok
+      end
+
+      callback.(%GtfsPlanner.Otp.Runtime.Session{
+        command: "java",
+        args: ["-jar", "/tmp/otp.jar"],
+        host: "127.0.0.1",
+        port: 8080,
+        base_url: "http://127.0.0.1:8080",
+        graphql_url: "http://127.0.0.1:8080/otp/routers/default/index/graphql",
+        graph_workspace_dir: "/tmp/runtime",
+        process: make_ref(),
+        runtime_log_path: "/tmp/runtime/runtime.log"
+      })
+    end
+
+    def cleanup_on_success(organization_id, gtfs_version_id) do
+      case Application.get_env(:gtfs_planner, :station_reachability_runtime_cleanup_test_pid) do
+        pid when is_pid(pid) ->
+          send(pid, {:runtime_cleanup_called, organization_id, gtfs_version_id})
+
+        _other ->
+          :ok
+      end
+
+      {:ok, %{graph: :purged, gtfs: :purged}}
+    end
+  end
+
+  defmodule StationReachabilityRuntimeCleanupFailureMock do
+    def run_with_otp(_organization_id, _gtfs_version_id, callback, opts) do
+      case opts[:status_callback] do
+        status_callback when is_function(status_callback, 1) ->
+          status_callback.(%{scope: :gtfs, phase: :cache_check})
+          status_callback.(%{scope: :graph, phase: :done})
+          status_callback.(%{scope: :otp, phase: :ready})
+          status_callback.(%{scope: :suite, phase: :finished, completed: 1, total: 1})
+          status_callback.(%{scope: :otp, phase: :stopped})
+
+        _other ->
+          :ok
+      end
+
+      callback.(%GtfsPlanner.Otp.Runtime.Session{
+        command: "java",
+        args: ["-jar", "/tmp/otp.jar"],
+        host: "127.0.0.1",
+        port: 8080,
+        base_url: "http://127.0.0.1:8080",
+        graphql_url: "http://127.0.0.1:8080/otp/routers/default/index/graphql",
+        graph_workspace_dir: "/tmp/runtime",
+        process: make_ref(),
+        runtime_log_path: "/tmp/runtime/runtime.log"
+      })
+    end
+
+    def cleanup_on_success(organization_id, gtfs_version_id) do
+      case Application.get_env(:gtfs_planner, :station_reachability_runtime_cleanup_test_pid) do
+        pid when is_pid(pid) ->
+          send(pid, {:runtime_cleanup_called, organization_id, gtfs_version_id})
+
+        _other ->
+          :ok
+      end
+
+      {:error, :simulated_failure}
+    end
+  end
+
   describe "StationReachabilityLive" do
     setup do
       previous_runner_module =
@@ -650,6 +730,183 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       refute has_element?(view, "#reachability-summary-total")
       refute has_element?(view, "#reachability-summary-pass-rate")
       refute has_element?(view, "#station-reachability-top-failures")
+    end
+
+    test "station reachability success triggers runtime cleanup", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      previous_runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module)
+
+      previous_cleanup_test_pid =
+        Application.get_env(:gtfs_planner, :station_reachability_runtime_cleanup_test_pid)
+
+      Application.put_env(
+        :gtfs_planner,
+        :otp_runtime_module,
+        StationReachabilityRuntimeCleanupNotifyMock
+      )
+
+      Application.put_env(:gtfs_planner, :station_reachability_runtime_cleanup_test_pid, self())
+
+      on_exit(fn ->
+        if previous_runtime_module do
+          Application.put_env(:gtfs_planner, :otp_runtime_module, previous_runtime_module)
+        else
+          Application.delete_env(:gtfs_planner, :otp_runtime_module)
+        end
+
+        if previous_cleanup_test_pid do
+          Application.put_env(
+            :gtfs_planner,
+            :station_reachability_runtime_cleanup_test_pid,
+            previous_cleanup_test_pid
+          )
+        else
+          Application.delete_env(:gtfs_planner, :station_reachability_runtime_cleanup_test_pid)
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.stop_id,
+          address: "Cleanup Success Plaza"
+        })
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      assert view
+             |> element("#run-station-reachability")
+             |> render_click()
+
+      assert_receive {:station_reachability_runner_started, run_id}
+
+      run = Repo.get!(ValidationRun, run_id)
+
+      run_result = %{
+        suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},
+        selected_test_case_ids: [walkability_test.id],
+        summary: %{total: 1, passed: 1, failed: 0, query_failure: 0, scoring_failure: 0},
+        cases: [
+          %{
+            test_case_id: walkability_test.id,
+            status: :passed,
+            route_output: %{route_exists: true}
+          }
+        ]
+      }
+
+      assert {:ok, _completed_run} = Validations.mark_pathways_completed(run, run_result, 20)
+
+      send(view.pid, {:poll_pathways_trip_test_status, run.id})
+      _ = render(view)
+
+      organization_id = organization.id
+      version_id = gtfs_version.id
+      assert_receive {:runtime_cleanup_called, ^organization_id, ^version_id}, 1_000
+
+      completed_run = Repo.get!(ValidationRun, run.id)
+      assert completed_run.status == "completed"
+
+      assert has_element?(view, "#station-reachability-summary")
+      assert has_element?(view, "#station-trip-overview")
+    end
+
+    test "cleanup failure remains non-fatal for completed station reachability run", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      previous_runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module)
+
+      previous_cleanup_test_pid =
+        Application.get_env(:gtfs_planner, :station_reachability_runtime_cleanup_test_pid)
+
+      Application.put_env(
+        :gtfs_planner,
+        :otp_runtime_module,
+        StationReachabilityRuntimeCleanupFailureMock
+      )
+
+      Application.put_env(:gtfs_planner, :station_reachability_runtime_cleanup_test_pid, self())
+
+      on_exit(fn ->
+        if previous_runtime_module do
+          Application.put_env(:gtfs_planner, :otp_runtime_module, previous_runtime_module)
+        else
+          Application.delete_env(:gtfs_planner, :otp_runtime_module)
+        end
+
+        if previous_cleanup_test_pid do
+          Application.put_env(
+            :gtfs_planner,
+            :station_reachability_runtime_cleanup_test_pid,
+            previous_cleanup_test_pid
+          )
+        else
+          Application.delete_env(:gtfs_planner, :station_reachability_runtime_cleanup_test_pid)
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.stop_id,
+          address: "Cleanup Failure Plaza"
+        })
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      assert view
+             |> element("#run-station-reachability")
+             |> render_click()
+
+      assert_receive {:station_reachability_runner_started, run_id}
+
+      run = Repo.get!(ValidationRun, run_id)
+
+      run_result = %{
+        suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},
+        selected_test_case_ids: [walkability_test.id],
+        summary: %{total: 1, passed: 1, failed: 0, query_failure: 0, scoring_failure: 0},
+        cases: [
+          %{
+            test_case_id: walkability_test.id,
+            status: :passed,
+            route_output: %{route_exists: true}
+          }
+        ]
+      }
+
+      assert {:ok, _completed_run} = Validations.mark_pathways_completed(run, run_result, 20)
+
+      send(view.pid, {:poll_pathways_trip_test_status, run.id})
+      _ = render(view)
+
+      organization_id = organization.id
+      version_id = gtfs_version.id
+      assert_receive {:runtime_cleanup_called, ^organization_id, ^version_id}, 1_000
+
+      completed_run = Repo.get!(ValidationRun, run.id)
+      assert completed_run.status == "completed"
+
+      assert has_element?(view, "#station-reachability-summary")
+      assert has_element?(view, "#station-trip-overview")
+      refute has_element?(view, "#station-reachability-error-panel")
     end
 
     test "polling renders case rows for selected test cases only", %{
