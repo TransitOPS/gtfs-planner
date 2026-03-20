@@ -26,7 +26,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Check for changes
         id: changes
         uses: ./.github/actions/changed
@@ -48,13 +48,13 @@ jobs:
     if: ${{ needs.changes.outputs.elixir-changed == 'true' }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Set up Elixir
         uses: ./.github/actions/elixir
         id: beam
       - name: Restore dependencies cache
         id: deps_cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           # Cache key based on Erlang/Elixir version and the mix.lock hash
           key: |
@@ -71,7 +71,7 @@ jobs:
           mix deps.compile
           MIX_ENV=test mix deps.compile
       - name: Save dependencies cache
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         if: steps.deps_cache.outputs.cache-hit != 'true'
         with:
           key: |
@@ -99,13 +99,13 @@ jobs:
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5 --memory 3000000000
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Set up Elixir
         uses: ./.github/actions/elixir
         id: beam
       - name: Restore dependencies cache
         id: deps_cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           # Cache key based on Erlang/Elixir version and the mix.lock hash
           key: |
@@ -125,13 +125,13 @@ jobs:
     if: ${{ needs.changes.outputs.elixir-changed == 'true' }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Set up Elixir
         uses: ./.github/actions/elixir
         id: beam
       - name: Restore dependencies cache
         id: deps_cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           # Cache key based on Erlang/Elixir version and the mix.lock hash
           key: |
@@ -149,7 +149,7 @@ jobs:
         run: mise run lint:elixir:sobelow
       - name: Restore PLT cache
         id: plt_cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           # Cache key based on Erlang/Elixir version and the mix.lock hash
           key: |
@@ -161,7 +161,7 @@ jobs:
         if: steps.plt_cache.outputs.cache-hit != 'true'
         run: mix dialyzer --plt
       - name: Save PLT cache
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         if: steps.plt_cache.outputs.cache-hit != 'true'
         with:
           key: |
@@ -177,7 +177,7 @@ jobs:
     if: ${{ needs.changes.outputs.js-changed == 'true' }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Set up Elixir
         uses: ./.github/actions/elixir
         id: beam
@@ -190,7 +190,7 @@ jobs:
           cache-dependency-path: "assets/package-lock.json"
       - name: Restore Elixir dependencies cache
         id: mix_deps_cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           # Cache key based on Erlang/Elixir version and the mix.lock hash
           key: |
@@ -214,7 +214,7 @@ jobs:
     needs: [changes]
     if: ${{ needs.changes.outputs.docker-changed == 'true' || github.event_name == 'schedule' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           lfs: true
       - name: Free disk space (targeted)
@@ -232,9 +232,9 @@ jobs:
           echo "Disk usage after cleanup:"
           df -h
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Set cache parameters
         id: cache-outputs
         run: |
@@ -244,7 +244,7 @@ jobs:
             echo cache-from= >> "$GITHUB_OUTPUT"
           fi
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           load: true
@@ -252,7 +252,7 @@ jobs:
           cache-from: ${{ steps.cache-outputs.outputs.cache-from }}
           tags: pathways
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: pathways
           trivy-config: trivy.yml
@@ -265,8 +265,8 @@ jobs:
     needs: [changes]
     if: ${{ needs.changes.outputs.infra-changed == 'true' }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: jdx/mise-action@v3
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:
           install: true
           install_args: "opentofu shellcheck uv"
