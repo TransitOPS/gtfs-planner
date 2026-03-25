@@ -198,47 +198,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
     end
   end
 
-  defmodule RuntimePathwaysCleanupNotifyMock do
-    def run_with_otp(_organization_id, _gtfs_version_id, callback, opts) do
-      case opts[:status_callback] do
-        status_callback when is_function(status_callback, 1) ->
-          status_callback.(%{scope: :gtfs, phase: :cache_check})
-          status_callback.(%{scope: :graph, phase: :building})
-          status_callback.(%{scope: :graph, phase: :done})
-          status_callback.(%{scope: :otp, phase: :ready})
-          status_callback.(%{scope: :suite, phase: :finishing, completed: 1, total: 1})
-          status_callback.(%{scope: :suite, phase: :finished, completed: 1, total: 1})
-
-        _other ->
-          :ok
-      end
-
-      callback.(%Session{
-        command: "java",
-        args: ["-jar", "/tmp/otp.jar"],
-        host: "127.0.0.1",
-        port: 8080,
-        base_url: "http://127.0.0.1:8080",
-        graphql_url: "http://127.0.0.1:8080/otp/routers/default/index/graphql",
-        graph_workspace_dir: "/tmp/runtime",
-        process: make_ref(),
-        runtime_log_path: "/tmp/runtime/runtime.log"
-      })
-    end
-
-    def cleanup_on_success(organization_id, gtfs_version_id) do
-      case Application.get_env(:gtfs_planner, :runtime_cleanup_test_pid) do
-        pid when is_pid(pid) ->
-          send(pid, {:runtime_cleanup_called, organization_id, gtfs_version_id})
-
-        _other ->
-          :ok
-      end
-
-      {:ok, %{graph: :purged, gtfs: :purged}}
-    end
-  end
-
   defmodule PathwaysRunnerNotifyMock do
     def run(validation_run, organization_id, gtfs_version_id, _opts) do
       case Application.get_env(:gtfs_planner, :pathways_runner_test_pid) do
@@ -752,50 +711,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
           {:cont, :waiting}
         end
       end)
-
-      [latest_run | _rest] =
-        Validations.list_recent_validation_runs(organization.id, version.id, 5)
-
-      assert latest_run.run_type == "pathways_tests"
-      assert latest_run.status == "completed"
-    end
-
-    test "pathways success triggers runtime cleanup", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      previous_runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module)
-      previous_cleanup_test_pid = Application.get_env(:gtfs_planner, :runtime_cleanup_test_pid)
-
-      Application.put_env(:gtfs_planner, :otp_runtime_module, RuntimePathwaysCleanupNotifyMock)
-      Application.put_env(:gtfs_planner, :runtime_cleanup_test_pid, self())
-
-      on_exit(fn ->
-        if previous_runtime_module do
-          Application.put_env(:gtfs_planner, :otp_runtime_module, previous_runtime_module)
-        else
-          Application.delete_env(:gtfs_planner, :otp_runtime_module)
-        end
-
-        if previous_cleanup_test_pid do
-          Application.put_env(:gtfs_planner, :runtime_cleanup_test_pid, previous_cleanup_test_pid)
-        else
-          Application.delete_env(:gtfs_planner, :runtime_cleanup_test_pid)
-        end
-      end)
-
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
-
-      view |> element("input[phx-value-validation='pathways_tests']") |> render_click()
-      view |> element("button", "Run Validation") |> render_click()
-
-      organization_id = organization.id
-      version_id = version.id
-
-      assert_receive {:runtime_cleanup_called, ^organization_id, ^version_id}, 1_000
 
       [latest_run | _rest] =
         Validations.list_recent_validation_runs(organization.id, version.id, 5)

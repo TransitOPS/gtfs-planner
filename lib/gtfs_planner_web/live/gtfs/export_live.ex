@@ -916,58 +916,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             <% end %>
           <% end %>
 
-          <%= if @pathways_prep_error do %>
-            <div role="alert" class="alert alert-error mb-6" id="pathways-prep-error">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                class="stroke-current shrink-0 h-6 w-6"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
-              </svg>
-              <div class="space-y-1">
-                <h3 class="font-semibold text-base-content">{@pathways_prep_error.summary}</h3>
-                <p class="text-sm text-base-content/80">
-                  Fix the issues below, then run validation again.
-                </p>
-
-                <%= if @pathways_prep_error.blocking_errors != [] do %>
-                  <div class="mt-2" id="pathways-prep-blocking-errors">
-                    <h4 class="font-medium text-base-content">Blocking errors</h4>
-                    <ul class="list-disc pl-5 text-sm text-base-content/80">
-                      <li :for={issue <- @pathways_prep_error.blocking_errors}>{issue.message}</li>
-                    </ul>
-                  </div>
-                <% end %>
-
-                <%= if @pathways_prep_error.warnings != [] do %>
-                  <div class="mt-2" id="pathways-prep-warnings">
-                    <h4 class="font-medium text-base-content">Warnings</h4>
-                    <ul class="list-disc pl-5 text-sm text-base-content/80">
-                      <li :for={issue <- @pathways_prep_error.warnings}>{issue.message}</li>
-                    </ul>
-                  </div>
-                <% end %>
-
-                <%= if @pathways_prep_error.blocking_errors == [] and @pathways_prep_error.warnings == [] and
-                      @pathways_prep_error.issues != [] do %>
-                  <ul
-                    class="list-disc pl-5 text-sm text-base-content/80"
-                    id="pathways-prep-error-list"
-                  >
-                    <li :for={issue <- @pathways_prep_error.issues}>{issue.message}</li>
-                  </ul>
-                <% end %>
-              </div>
-            </div>
-          <% end %>
-
           <%= cond do %>
             <% @validating -> %>
               <div class="space-y-4">
@@ -1656,11 +1604,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp handle_pathways_trip_test_completed(socket, validation_run_id) do
     case Validations.get_pathways_trip_test_results(validation_run_id) do
       {:ok, result_payload} ->
-        maybe_cleanup_runtime_artifacts(
-          socket.assigns.current_organization.id,
-          socket.assigns.current_gtfs_version.id
-        )
-
         persisted_summary = pathways_summary_from_result_json(result_payload.result_json || %{})
 
         top_failure_categories =
@@ -1705,24 +1648,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            reason: :pathways_results_unavailable,
            details: %{error: inspect(reason)}
          })}
-    end
-  end
-
-  defp maybe_cleanup_runtime_artifacts(organization_id, gtfs_version_id) do
-    runtime_module = Application.get_env(:gtfs_planner, :otp_runtime_module, Runtime)
-
-    case runtime_module.cleanup_on_success(organization_id, gtfs_version_id) do
-      :ok ->
-        :ok
-
-      {:ok, _cleanup_result} ->
-        :ok
-
-      {:error, reason} ->
-        Logger.error("Runtime.cleanup_on_success failed: #{inspect(reason)}")
-
-      other ->
-        Logger.error("Runtime.cleanup_on_success returned unexpected result: #{inspect(other)}")
     end
   end
 
