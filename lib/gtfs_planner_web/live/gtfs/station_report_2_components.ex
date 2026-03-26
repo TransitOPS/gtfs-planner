@@ -463,7 +463,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp stop_name_link(assigns) do
     ~H"""
-    <span
+    <button
+      type="button"
       phx-click="select_entity"
       phx-value-entity_id={@stop_id}
       phx-value-entity_type="stop"
@@ -471,7 +472,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       class={"text-xs text-teal-600 hover:text-teal-700 cursor-pointer #{@class}"}
     >
       <%= @name %>
-    </span>
+    </button>
     """
   end
 
