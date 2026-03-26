@@ -125,6 +125,7 @@ defmodule GtfsPlannerWeb.Router do
       live "/stops/:stop_id", Gtfs.StopDetailLive, :show
       live "/stops/:stop_id/diagram", Gtfs.StationDiagramLive, :index
       live "/stops/:stop_id/report", Gtfs.StationReportLive, :index
+      live "/stops/:stop_id/report_2", Gtfs.StationReport2Live, :index
       live "/import", Gtfs.ImportLive, :index
       live "/export", Gtfs.ExportLive, :index
       live "/validation/:validation_id", Gtfs.ValidationResultLive, :show
