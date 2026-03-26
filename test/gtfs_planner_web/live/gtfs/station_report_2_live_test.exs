@@ -241,5 +241,76 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
       assert to_path == "/gtfs/#{gtfs_version.id}/stops"
     end
+
+    test "station inventory section renders node and edge counts", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      assert has_element?(view, "#report2-station-inventory")
+      refute has_element?(view, "#report2-station-inventory p", "Not yet implemented")
+
+      html = render(view)
+      assert html =~ "Node inventory by location type"
+      assert html =~ "Edge inventory by pathway mode"
+      assert html =~ "Pathway directionality"
+      assert html =~ "Level count, names, and indices"
+    end
+
+    test "station inventory shows all location types and pathway modes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, _view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      # All 5 location types present
+      assert html =~ "Stop/Platform"
+      assert html =~ "Station"
+      assert html =~ "Entrance/Exit"
+      assert html =~ "Generic Node"
+      assert html =~ "Boarding Area"
+
+      # All 7 pathway modes present
+      assert html =~ "Walkway"
+      assert html =~ "Stairs"
+      assert html =~ "Moving Sidewalk"
+      assert html =~ "Escalator"
+      assert html =~ "Elevator"
+      assert html =~ "Fare Gate"
+      assert html =~ "Exit Gate"
+
+      # Directionality labels
+      assert html =~ "Bidirectional"
+      assert html =~ "Unidirectional"
+    end
+
+    test "levels table renders level data", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, _view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      assert html =~ "L1"
+      assert html =~ "Street"
+    end
   end
 end
