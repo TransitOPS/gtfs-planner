@@ -5,6 +5,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.StationReport2Components
+  import GtfsPlannerWeb.Gtfs.StationReportComponents, only: [entity_drawer: 1]
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.StationReport2.{DataQuality, Gps}
@@ -24,7 +25,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:report, nil)
      |> assign(:stop_id, nil)
      |> assign(:data_quality_items, [])
-     |> assign(:gps_items, [])}
+     |> assign(:gps_items, [])
+     |> assign(:drawer_entity, nil)
+     |> assign(:drawer_type, nil)
+     |> assign(:drawer_form, nil)
+     |> assign(:drawer_error, nil)}
   end
 
   @impl true
@@ -43,7 +48,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
          |> assign(:station, snapshot.station)
          |> assign(:report, snapshot)
          |> assign(:data_quality_items, data_quality_items)
-         |> assign(:gps_items, gps_items)}
+         |> assign(:gps_items, gps_items)
+         |> reset_drawer()}
 
       {:error, :not_found} ->
         {:noreply,
@@ -70,6 +76,50 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     else
       {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("select_entity", %{"entity_id" => entity_id, "entity_type" => "stop"}, socket) do
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.get_stop_by_stop_id(org_id, version_id, entity_id) do
+      nil ->
+        {:noreply, assign_drawer_error(socket, :stop, "Stop not found: #{entity_id}")}
+
+      stop ->
+        form =
+          to_form(
+            %{
+              "stop_name" => stop.stop_name || "",
+              "stop_lat" => to_optional_string(stop.stop_lat),
+              "stop_lon" => to_optional_string(stop.stop_lon),
+              "level_id" => stop.level_id || "",
+              "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
+              "platform_code" => stop.platform_code || ""
+            },
+            as: :stop
+          )
+
+        {:noreply,
+         socket
+         |> assign(:drawer_entity, stop)
+         |> assign(:drawer_type, :stop)
+         |> assign(:drawer_form, form)
+         |> assign(:drawer_error, nil)}
+    end
+  end
+
+  def handle_event("select_entity", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("close_entity_drawer", _params, socket) do
+    {:noreply, reset_drawer(socket)}
+  end
+
+  @impl true
+  def handle_event("save_entity", _params, socket) do
+    {:noreply, socket}
   end
 
   @impl true
@@ -104,6 +154,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
           <.accessibility_section report={@report} />
         <% end %>
       </div>
+
+      <.entity_drawer
+        drawer_entity={@drawer_entity}
+        drawer_type={@drawer_type}
+        drawer_form={@drawer_form}
+        drawer_error={@drawer_error}
+      />
     </Layouts.app>
     """
   end
@@ -118,4 +175,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
       Ecto.Query.CastError -> false
     end
   end
+
+  defp reset_drawer(socket) do
+    socket
+    |> assign(:drawer_entity, nil)
+    |> assign(:drawer_type, nil)
+    |> assign(:drawer_form, nil)
+    |> assign(:drawer_error, nil)
+  end
+
+  defp assign_drawer_error(socket, drawer_type, message) do
+    socket
+    |> assign(:drawer_entity, nil)
+    |> assign(:drawer_type, drawer_type)
+    |> assign(:drawer_form, nil)
+    |> assign(:drawer_error, message)
+  end
+
+  defp to_optional_string(nil), do: ""
+  defp to_optional_string(value), do: to_string(value)
 end
