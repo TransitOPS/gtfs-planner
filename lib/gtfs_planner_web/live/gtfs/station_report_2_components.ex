@@ -100,9 +100,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     """
   end
 
-  attr :items, :list, required: true
-  attr :gtfs_version_id, :any, required: true
-
   attr :count, :integer, required: true
   attr :label, :string, required: true
 
@@ -165,6 +162,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     end
   end
 
+
+  attr :items, :list, required: true
+  attr :gtfs_version_id, :any, required: true
 
   def data_quality_section(assigns) do
     ~H"""
