@@ -374,7 +374,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       refute has_element?(view, "#report2-data-quality details details")
     end
 
-    test "submitting drawer form does not crash and leaves data unchanged", %{
+    test "submitting drawer form saves the stop and closes the drawer", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -393,9 +393,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
       assert has_element?(view, "#report-stop-edit-form")
 
-      original_stop = Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "ENT_1")
-
-      # Submit the form — Report 2 handles this as a no-op
+      # Submit the form with changed data
       view
       |> form("#report-stop-edit-form",
         stop: %{
@@ -409,12 +407,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       )
       |> render_submit()
 
-      # LiveView did not crash
+      # LiveView did not crash and report is still visible
       assert has_element?(view, "#station-report-2")
 
-      # Data was not mutated
+      # Drawer was closed after successful save
+      refute has_element?(view, "#report-stop-edit-form")
+
+      # Data was persisted
       reloaded_stop = Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "ENT_1")
-      assert reloaded_stop.stop_name == original_stop.stop_name
+      assert reloaded_stop.stop_name == "Changed Name"
     end
 
     test "redirects with flash when station is missing", %{

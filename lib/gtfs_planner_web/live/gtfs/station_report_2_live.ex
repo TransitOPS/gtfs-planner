@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   import GtfsPlannerWeb.Gtfs.StationReportComponents, only: [entity_drawer: 1]
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StationReport2.{DataQuality, Gps}
   alias GtfsPlanner.Versions
 
@@ -110,6 +111,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     end
   end
 
+  @impl true
   def handle_event("select_entity", _params, socket), do: {:noreply, socket}
 
   @impl true
@@ -118,6 +120,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   end
 
   @impl true
+  def handle_event("save_entity", %{"stop" => stop_params}, socket) do
+    case {socket.assigns.drawer_type, socket.assigns.drawer_entity} do
+      {:stop, %Stop{} = stop} ->
+        case Gtfs.update_stop(stop, stop_params) do
+          {:ok, _updated} ->
+            {:noreply,
+             socket
+             |> reset_drawer()
+             |> rebuild_report()}
+
+          {:error, changeset} ->
+            {:noreply,
+             socket
+             |> assign(:drawer_form, to_form(changeset, as: :stop))
+             |> assign(:drawer_error, nil)}
+        end
+
+      _ ->
+        {:noreply, assign_drawer_error(socket, :stop, "Stop is no longer available for editing")}
+    end
+  end
+
   def handle_event("save_entity", _params, socket) do
     {:noreply, socket}
   end
@@ -173,6 +197,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
       end
     rescue
       Ecto.Query.CastError -> false
+    end
+  end
+
+  defp rebuild_report(socket) do
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    stop_id = socket.assigns.stop_id
+
+    case Gtfs.get_station_report_snapshot(org_id, version_id, stop_id) do
+      {:ok, snapshot} ->
+        socket
+        |> assign(:station, snapshot.station)
+        |> assign(:report, snapshot)
+        |> assign(:data_quality_items, DataQuality.build(snapshot))
+        |> assign(:gps_items, Gps.build(snapshot))
+
+      {:error, _} ->
+        socket
     end
   end
 
