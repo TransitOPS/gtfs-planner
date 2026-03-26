@@ -31,39 +31,40 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
       |> Enum.reduce(MapSet.new(), &MapSet.union/2)
 
     [
-      isolated_nodes_item(child_stops, undirected),
+      isolated_nodes_item(child_stops, undirected, stop_index),
       boarding_area_parent_consistency_item(boarding_areas, stop_index),
-      station_parent_consistency_item(station, platforms, entrances, generic_nodes),
+      station_parent_consistency_item(station, platforms, entrances, generic_nodes, stop_index),
       orphaned_platforms_item(platforms, boarding_areas),
       minimum_station_children_item(entrances, platforms),
-      entrance_to_platform_connectivity_item(entrances, all_platform_targets, directed),
-      platform_interconnection_item(platforms, platform_target_index, directed),
+      entrance_to_platform_connectivity_item(entrances, all_platform_targets, directed, stop_index),
+      platform_interconnection_item(platforms, platform_target_index, directed, stop_index),
       wheelchair_boarding_consistency_item(
         station,
         entrances,
         core_pathways,
         platform_target_index
       ),
-      wheelchair_contradicts_context_item(child_stops),
-      wheelchair_inferrable_item(child_stops, core_pathways),
-      duplicate_stop_ids_item(station, child_stops)
+      wheelchair_contradicts_context_item(child_stops, stop_index),
+      wheelchair_inferrable_item(child_stops, core_pathways, stop_index),
+      duplicate_stop_ids_item(station, child_stops, stop_index)
     ]
   end
 
   # --- Check builders ---
 
-  defp isolated_nodes_item(child_stops, undirected) do
+  defp isolated_nodes_item(child_stops, undirected, stop_index) do
     monitored = Enum.filter(child_stops, &(&1.location_type in [2, 3, 4]))
 
-    isolated_ids =
+    isolated =
       monitored
       |> Enum.map(& &1.stop_id)
       |> Enum.reject(fn stop_id ->
         neighbors = Map.get(undirected, stop_id, MapSet.new())
         MapSet.size(neighbors) > 0
       end)
+      |> Enum.map(&stop_id_entry(&1, stop_index))
 
-    count = length(isolated_ids)
+    count = length(isolated)
 
     %{
       id: "isolated_nodes",
@@ -75,7 +76,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
       value_format: :count,
       detail_label: "Show affected stops",
       detail_layout: if(count > 0, do: :stop_ids),
-      details: isolated_ids
+      details: isolated
     }
   end
 
@@ -86,7 +87,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
         parent = Map.get(stop_index, stop.parent_station)
         is_nil(parent) or Map.get(parent, :location_type) != 0
       end)
-      |> Enum.map(& &1.stop_id)
+      |> Enum.map(&stop_id_entry(&1.stop_id, stop_index))
 
     count = length(bad)
 
@@ -103,13 +104,13 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
     }
   end
 
-  defp station_parent_consistency_item(station, platforms, entrances, generic_nodes) do
+  defp station_parent_consistency_item(station, platforms, entrances, generic_nodes, stop_index) do
     station_stop_id = station.stop_id
 
     violations =
       (platforms ++ entrances ++ generic_nodes)
       |> Enum.filter(&(&1.parent_station != station_stop_id))
-      |> Enum.map(& &1.stop_id)
+      |> Enum.map(&stop_id_entry(&1.stop_id, stop_index))
 
     count = length(violations)
 
@@ -168,15 +169,24 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
     }
   end
 
-  defp entrance_to_platform_connectivity_item(entrances, all_platform_targets, directed) do
-    details =
+  defp entrance_to_platform_connectivity_item(
+         entrances,
+         all_platform_targets,
+         directed,
+         stop_index
+       ) do
+    checked =
       Enum.map(entrances, fn entrance ->
         reachable = reachable?(entrance.stop_id, all_platform_targets, directed)
         %{stop_id: entrance.stop_id, reachable: reachable}
       end)
 
-    unreachable = details |> Enum.reject(& &1.reachable) |> Enum.map(& &1.stop_id)
-    reachable_count = length(details) - length(unreachable)
+    unreachable =
+      checked
+      |> Enum.reject(& &1.reachable)
+      |> Enum.map(&stop_id_entry(&1.stop_id, stop_index))
+
+    reachable_count = length(checked) - length(unreachable)
     unreachable_count = length(unreachable)
 
     %{
@@ -192,8 +202,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
     }
   end
 
-  defp platform_interconnection_item(platforms, platform_target_index, directed) do
-    details =
+  defp platform_interconnection_item(platforms, platform_target_index, directed, stop_index) do
+    checked =
       Enum.map(platforms, fn platform ->
         other_targets =
           platform_target_index
@@ -216,8 +226,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
         %{stop_id: platform.stop_id, connected: connected}
       end)
 
-    disconnected = details |> Enum.reject(& &1.connected) |> Enum.map(& &1.stop_id)
-    connected_count = length(details) - length(disconnected)
+    disconnected =
+      checked
+      |> Enum.reject(& &1.connected)
+      |> Enum.map(&stop_id_entry(&1.stop_id, stop_index))
+
+    connected_count = length(checked) - length(disconnected)
     disconnected_count = length(disconnected)
 
     %{
@@ -305,7 +319,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
     end
   end
 
-  defp wheelchair_contradicts_context_item(child_stops) do
+  defp wheelchair_contradicts_context_item(child_stops, _stop_index) do
     by_level =
       child_stops
       |> Enum.filter(&Helpers.present?(&1.level_id))
@@ -327,6 +341,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
 
               %{
                 id: stop.stop_id,
+                name: stop_display_name(stop, stop.stop_id),
                 reason:
                   "marked not-accessible but #{pct}% of level siblings are accessible"
               }
@@ -354,7 +369,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
     }
   end
 
-  defp wheelchair_inferrable_item(child_stops, pathways) do
+  defp wheelchair_inferrable_item(child_stops, pathways, stop_index) do
     connected_modes =
       Enum.reduce(pathways, %{}, fn pw, acc ->
         mode = normalize_pathway_mode(pw.pathway_mode)
@@ -369,16 +384,17 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
       |> Enum.filter(&(&1.wheelchair_boarding in [0, nil]))
       |> Enum.flat_map(fn stop ->
         modes = Map.get(connected_modes, stop.stop_id, MapSet.new())
+        name = stop_display_name(Map.get(stop_index, stop.stop_id), stop.stop_id)
 
         cond do
           MapSet.size(modes) == 0 ->
             []
 
           MapSet.subset?(modes, MapSet.new([2])) ->
-            [%{id: stop.stop_id, reason: "only stairs connected \u2192 suggest 2"}]
+            [%{id: stop.stop_id, name: name, reason: "only stairs connected \u2192 suggest 2"}]
 
           MapSet.member?(modes, 5) ->
-            [%{id: stop.stop_id, reason: "elevator connected \u2192 suggest 1"}]
+            [%{id: stop.stop_id, name: name, reason: "elevator connected \u2192 suggest 1"}]
 
           true ->
             []
@@ -401,14 +417,14 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
     }
   end
 
-  defp duplicate_stop_ids_item(station, child_stops) do
+  defp duplicate_stop_ids_item(station, child_stops, stop_index) do
     all_stops = [station | child_stops]
 
     duplicates =
       all_stops
       |> Enum.group_by(& &1.stop_id)
       |> Enum.filter(fn {_id, group} -> length(group) > 1 end)
-      |> Enum.map(fn {id, _group} -> id end)
+      |> Enum.map(fn {id, _group} -> stop_id_entry(id, stop_index) end)
 
     count = length(duplicates)
 
@@ -424,6 +440,15 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
       details: duplicates
     }
   end
+
+  # --- Name resolution helpers ---
+
+  defp stop_id_entry(id, stop_index) do
+    %{id: id, name: stop_display_name(Map.get(stop_index, id), id)}
+  end
+
+  defp stop_display_name(%{stop_name: name}, _id) when is_binary(name) and name != "", do: name
+  defp stop_display_name(_stop_or_nil, id), do: id
 
   # --- Graph utilities (duplicated from StationReport) ---
 
