@@ -7,16 +7,161 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   @max_visible 5
 
+  alias GtfsPlanner.Gtfs.{Stop, Pathway}
+
   attr :report, :map, default: nil
 
   def station_inventory_section(assigns) do
+    inventory = compute_inventory(assigns.report)
+    assigns = assign(assigns, :inventory, inventory)
+
     ~H"""
     <section id="report2-station-inventory">
-      <h2 class="text-lg font-semibold">Station Inventory</h2>
-      <p class="text-base-content/60">Not yet implemented.</p>
+      <h2 class="text-2xl font-bold text-gray-900 mb-6">Station Inventory</h2>
+
+      <%!-- Node inventory by location type --%>
+      <div class="mb-6">
+        <div class="bg-white border border-gray-400 rounded-lg shadow-sm overflow-hidden">
+          <div class="bg-gray-50 border-b border-gray-400 px-5 py-3">
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Node inventory by location type</h2>
+          </div>
+          <div class="p-5">
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+              <.stat_card :for={item <- @inventory.node_counts} count={item.count} label={item.label} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <%!-- Edge inventory by pathway mode --%>
+      <div class="mb-6">
+        <div class="bg-white border border-gray-400 rounded-lg shadow-sm overflow-hidden">
+          <div class="bg-gray-50 border-b border-gray-400 px-5 py-3">
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Edge inventory by pathway mode</h2>
+          </div>
+          <div class="p-5">
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+              <.stat_card :for={item <- @inventory.edge_counts} count={item.count} label={item.label} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <%!-- Pathway directionality --%>
+      <div class="mb-6">
+        <div class="bg-white border border-gray-400 rounded-lg shadow-sm overflow-hidden">
+          <div class="bg-gray-50 border-b border-gray-400 px-5 py-3">
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Pathway directionality</h2>
+          </div>
+          <div class="p-5">
+            <div class="grid grid-cols-2 gap-4" style="max-width: 400px;">
+              <.stat_card count={@inventory.directionality.bidirectional} label="Bidirectional" />
+              <.stat_card count={@inventory.directionality.unidirectional} label="Unidirectional" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <%!-- Level count, names, and indices --%>
+      <div class="mb-6">
+        <div class="bg-white border border-gray-400 rounded-lg shadow-sm overflow-hidden">
+          <div class="bg-gray-50 border-b border-gray-400 px-5 py-3">
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Level count, names, and indices</h2>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left">
+              <thead>
+                <tr class="border-b border-gray-200">
+                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Level</th>
+                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Name</th>
+                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Index</th>
+                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Nodes</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-200">
+                <tr :for={level <- @inventory.levels}>
+                  <td class="px-5 py-3.5 text-sm text-gray-900 font-mono text-[13px]">
+                    {level.level_id}
+                  </td>
+                  <td class="px-5 py-3.5 text-sm text-gray-900">{level.level_name || "—"}</td>
+                  <td class="px-5 py-3.5 text-sm text-gray-900 text-right tabular-nums">
+                    {format_level_index(level.level_index)}
+                  </td>
+                  <td class="px-5 py-3.5 text-sm font-medium text-gray-900 text-right tabular-nums">
+                    {level.node_count}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </section>
     """
   end
+
+  attr :count, :integer, required: true
+  attr :label, :string, required: true
+
+  defp stat_card(assigns) do
+    ~H"""
+    <div class="rounded-lg bg-gray-50 border border-gray-200 px-4 py-4">
+      <div class="text-2xl font-semibold text-gray-900 leading-tight">{@count}</div>
+      <p class="mt-1 text-sm font-medium text-gray-500">{@label}</p>
+    </div>
+    """
+  end
+
+  defp compute_inventory(snapshot) do
+    all_stops = [snapshot.station | snapshot.child_stops]
+    node_count_map = Enum.frequencies_by(all_stops, & &1.location_type)
+
+    node_counts =
+      Enum.map(0..4, fn type ->
+        %{label: Stop.location_type_label(type), count: Map.get(node_count_map, type, 0)}
+      end)
+
+    edge_count_map = Enum.frequencies_by(snapshot.pathways, & &1.pathway_mode)
+
+    edge_counts =
+      Enum.map(1..7, fn mode ->
+        %{label: Pathway.mode_label(mode), count: Map.get(edge_count_map, mode, 0)}
+      end)
+
+    {bi, uni} =
+      Enum.reduce(snapshot.pathways, {0, 0}, fn pathway, {bi, uni} ->
+        if pathway.is_bidirectional, do: {bi + 1, uni}, else: {bi, uni + 1}
+      end)
+
+    levels =
+      Enum.map(snapshot.levels, fn %{level: level, stop_count: stop_count} ->
+        %{
+          level_id: level.level_id,
+          level_name: level.level_name,
+          level_index: level.level_index,
+          node_count: stop_count
+        }
+      end)
+
+    %{
+      node_counts: node_counts,
+      edge_counts: edge_counts,
+      directionality: %{bidirectional: bi, unidirectional: uni},
+      levels: levels
+    }
+  end
+
+  defp format_level_index(index) when is_float(index) do
+    formatted = :erlang.float_to_binary(abs(index), decimals: 1)
+
+    if index < 0 do
+      # Use typographic minus (−) not hyphen-minus (-)
+      "−" <> formatted
+    else
+      formatted
+    end
+  end
+
 
   attr :items, :list, required: true
   attr :gtfs_version_id, :any, required: true
