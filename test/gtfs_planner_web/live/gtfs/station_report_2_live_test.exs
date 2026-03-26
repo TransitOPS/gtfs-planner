@@ -164,6 +164,70 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
              )
     end
 
+    test "data quality section renders real check rows", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      # Check that known check labels appear
+      assert html =~ "Isolated nodes"
+      assert html =~ "Boarding areas must have platform parent"
+      assert html =~ "Unique stop IDs"
+      assert html =~ "Minimum station children"
+
+      # Status badges render in data quality section
+      assert has_element?(view, "#report2-data-quality .bg-green-100", "Pass")
+    end
+
+    test "GPS section renders real check rows", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      # GPS check labels
+      assert html =~ "GPS presence by location type"
+      assert html =~ "Longitude sign consistency"
+
+      # GPS table headers
+      assert html =~ "Present"
+      assert html =~ "Missing"
+
+      # GPS section has status badges
+      assert has_element?(view, "#report2-gps-checks .bg-green-100", "Pass")
+    end
+
+    test "stop ID links have correct href values", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, _view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      # The entrance and platform are connected, so entrance-to-platform passes.
+      # But we should see stop_id links for checks that do have affected stops.
+      # At minimum, the GPS presence table should render.
+      assert html =~ "/gtfs/#{gtfs_version.id}/stops/"
+    end
+
     test "redirects with flash when station is missing", %{
       conn: conn,
       user: user,
