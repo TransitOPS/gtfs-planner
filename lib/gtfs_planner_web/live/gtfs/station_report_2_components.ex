@@ -405,9 +405,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp check_details(%{item: %{detail_layout: :stop_ids, details: details}} = assigns)
        when is_list(details) and details != [] do
     ~H"""
-    <details class="mt-2.5">
-      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700" style="transition-duration: 15ms;">
-        <svg class="chevron w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
+    <details class="group mt-2.5">
+      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
+        <svg class="w-3 h-3 transition-transform duration-150 group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
         <%= @item.detail_label %>
       </summary>
       <div class="mt-2 grid grid-cols-1 gap-0.5">
@@ -420,9 +420,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp check_details(%{item: %{detail_layout: :stop_ids_with_dots, details: details}} = assigns)
        when is_list(details) and details != [] do
     ~H"""
-    <details class="mt-2.5">
-      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700" style="transition-duration: 15ms;">
-        <svg class="chevron w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
+    <details class="group mt-2.5">
+      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
+        <svg class="w-3 h-3 transition-transform duration-150 group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
         <%= @item.detail_label %>
       </summary>
       <div class="mt-2 grid grid-cols-1 gap-1">
@@ -438,9 +438,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp check_details(%{item: %{detail_layout: :stop_ids_with_reasons, details: details}} = assigns)
        when is_list(details) and details != [] do
     ~H"""
-    <details class="mt-2.5">
-      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700" style="transition-duration: 15ms;">
-        <svg class="chevron w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
+    <details class="group mt-2.5">
+      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
+        <svg class="w-3 h-3 transition-transform duration-150 group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
         <%= @item.detail_label %>
       </summary>
       <div class="mt-2 grid grid-cols-1 gap-1.5">
@@ -469,7 +469,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       phx-value-entity_id={@stop_id}
       phx-value-entity_type="stop"
       title={@stop_id}
-      class={"text-xs text-teal-600 hover:text-teal-700 cursor-pointer #{@class}"}
+      class={"text-left text-xs text-teal-600 hover:text-teal-700 cursor-pointer #{@class}"}
     >
       <%= @name %>
     </button>
