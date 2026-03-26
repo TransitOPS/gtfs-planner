@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs
 
   describe "StationReport2Live" do
     setup do
@@ -224,6 +225,196 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
       # Stop-name links use phx-click="select_entity" instead of navigation hrefs
       assert has_element?(view, "[phx-click='select_entity'][phx-value-entity_type='stop']")
+    end
+
+    test "detail links show stop-name text and title with raw stop_id", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_DL",
+          stop_name: "Detail Link Station",
+          location_type: 1,
+          stop_lat: Decimal.new("47.0"),
+          stop_lon: Decimal.new("122.0")
+        })
+
+      _entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_DL",
+          stop_name: "Entrance Detail",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L_DL",
+          stop_lat: Decimal.new("47.0"),
+          stop_lon: Decimal.new("-122.0001")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      # The stop-name link shows the human-readable name, not the raw ID
+      assert has_element?(
+               view,
+               "[phx-click='select_entity'][phx-value-entity_id='ENT_DL']",
+               "Entrance Detail"
+             )
+
+      # The title attribute exposes the raw stop_id for inspection
+      assert has_element?(
+               view,
+               "[phx-click='select_entity'][phx-value-entity_id='ENT_DL'][title='ENT_DL']"
+             )
+    end
+
+    test "clicking a detail link opens the entity drawer", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      refute has_element?(view, "#report-stop-edit-form")
+
+      # Click a stop-name link to open the drawer
+      view
+      |> element("[phx-click='select_entity'][phx-value-entity_type='stop']", "Entrance")
+      |> render_click()
+
+      assert has_element?(view, "#report-entity-drawer")
+      assert has_element?(view, "#report-stop-edit-form")
+    end
+
+    test "closing the entity drawer hides the form", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      # Open the drawer
+      view
+      |> element("[phx-click='select_entity'][phx-value-entity_type='stop']", "Entrance")
+      |> render_click()
+
+      assert has_element?(view, "#report-stop-edit-form")
+
+      # Close the drawer
+      render_click(view, "close_entity_drawer")
+
+      refute has_element?(view, "#report-stop-edit-form")
+    end
+
+    test "large detail sets render without nested overflow text", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_EXPAND",
+          stop_name: "Expand Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      # Create many isolated generic nodes (type 3) to trigger a large detail list
+      for i <- 1..12 do
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "GEN_EXP_#{i}",
+          stop_name: "Generic Node #{i}",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+      end
+
+      # Need at least one entrance and platform for minimum_station_children
+      _entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_EXP",
+          stop_name: "Entrance Expand",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      _platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_EXP",
+          stop_name: "Platform Expand",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      # All 12 generic nodes plus the entrance should appear as isolated
+      # Verify there is no nested "+ N more" overflow element
+      refute has_element?(view, "#report2-data-quality details details")
+    end
+
+    test "submitting drawer form does not crash and leaves data unchanged", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      # Open the drawer
+      view
+      |> element("[phx-click='select_entity'][phx-value-entity_type='stop']", "Entrance")
+      |> render_click()
+
+      assert has_element?(view, "#report-stop-edit-form")
+
+      original_stop = Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "ENT_1")
+
+      # Submit the form — Report 2 handles this as a no-op
+      view
+      |> form("#report-stop-edit-form",
+        stop: %{
+          stop_name: "Changed Name",
+          stop_lat: "48.0",
+          stop_lon: "-123.0",
+          level_id: "L1",
+          wheelchair_boarding: "1",
+          platform_code: ""
+        }
+      )
+      |> render_submit()
+
+      # LiveView did not crash
+      assert has_element?(view, "#station-report-2")
+
+      # Data was not mutated
+      reloaded_stop = Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "ENT_1")
+      assert reloaded_stop.stop_name == original_stop.stop_name
     end
 
     test "redirects with flash when station is missing", %{
