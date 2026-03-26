@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   import GtfsPlannerWeb.Gtfs.StationReport2Components
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.StationReport2.{DataQuality, Gps}
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -21,7 +22,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:user_roles, user_roles)
      |> assign(:station, nil)
      |> assign(:report, nil)
-     |> assign(:stop_id, nil)}
+     |> assign(:stop_id, nil)
+     |> assign(:data_quality_items, [])
+     |> assign(:gps_items, [])}
   end
 
   @impl true
@@ -31,11 +34,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
     case Gtfs.get_station_report_snapshot(organization_id, gtfs_version_id, stop_id) do
       {:ok, snapshot} ->
+        data_quality_items = DataQuality.build(snapshot)
+        gps_items = Gps.build(snapshot)
+
         {:noreply,
          socket
          |> assign(:stop_id, stop_id)
          |> assign(:station, snapshot.station)
-         |> assign(:report, snapshot)}
+         |> assign(:report, snapshot)
+         |> assign(:data_quality_items, data_quality_items)
+         |> assign(:gps_items, gps_items)}
 
       {:error, :not_found} ->
         {:noreply,
@@ -88,8 +96,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
       <div id="station-report-2" class="space-y-6">
         <%= if @report do %>
           <.station_inventory_section report={@report} />
-          <.data_quality_section report={@report} />
-          <.gps_checks_section report={@report} />
+          <.data_quality_section items={@data_quality_items} gtfs_version_id={@current_gtfs_version.id} />
+          <.gps_checks_section items={@gps_items} gtfs_version_id={@current_gtfs_version.id} />
           <.naming_conventions_section report={@report} />
           <.reachability_connectivity_section report={@report} />
           <.pathway_field_completeness_section report={@report} />
