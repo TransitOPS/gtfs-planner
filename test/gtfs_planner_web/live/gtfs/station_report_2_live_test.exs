@@ -370,6 +370,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
 
       # All 12 generic nodes plus the entrance should appear as isolated
+      # Verify the last generic node renders (confirms full list is present)
+      assert has_element?(view, "[phx-value-entity_id='GEN_EXP_12']")
       # Verify there is no nested "+ N more" overflow element
       refute has_element?(view, "#report2-data-quality details details")
     end
