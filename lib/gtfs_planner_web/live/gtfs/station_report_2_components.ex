@@ -80,10 +80,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
               </thead>
               <tbody class="divide-y divide-gray-200">
                 <tr :for={level <- @inventory.levels}>
-                  <td class="px-5 py-3.5 text-sm text-gray-900" style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;">
+                  <td class="px-5 py-3.5 text-sm text-gray-900 font-mono text-[13px]">
                     {level.level_id}
                   </td>
-                  <td class="px-5 py-3.5 text-sm text-gray-900">{level.level_name}</td>
+                  <td class="px-5 py-3.5 text-sm text-gray-900">{level.level_name || "—"}</td>
                   <td class="px-5 py-3.5 text-sm text-gray-900 text-right tabular-nums">
                     {format_level_index(level.level_index)}
                   </td>
@@ -165,9 +165,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     end
   end
 
-  defp format_level_index(index) when is_integer(index) do
-    format_level_index(index / 1)
-  end
 
   def data_quality_section(assigns) do
     ~H"""
