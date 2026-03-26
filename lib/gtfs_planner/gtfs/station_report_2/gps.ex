@@ -22,9 +22,11 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Gps do
 
   @spec build(%{station: map(), child_stops: [map()]}) :: [map()]
   def build(%{station: station, child_stops: child_stops}) do
+    stop_index = Map.new([station | child_stops], fn stop -> {stop.stop_id, stop} end)
+
     [
       gps_presence_by_type_item(station, child_stops)
-      | wrap_gps_checks(GpsChecks.validate(station, child_stops))
+      | wrap_gps_checks(GpsChecks.validate(station, child_stops), stop_index)
     ]
   end
 
@@ -69,7 +71,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Gps do
     }
   end
 
-  defp wrap_gps_checks(items) do
+  defp wrap_gps_checks(items, stop_index) do
     Enum.map(items, fn item ->
       {description, detail_label, _base_layout} = metadata_for(item.id)
 
@@ -82,9 +84,31 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Gps do
         value_format: :count,
         detail_label: detail_label,
         detail_layout: detail_layout_for(item),
-        details: item.details
+        details: enrich_details(item.details, stop_index)
       }
     end)
+  end
+
+  defp enrich_details(nil, _stop_index), do: nil
+  defp enrich_details([], _stop_index), do: []
+
+  defp enrich_details([%{id: _, reason: _} | _] = details, stop_index) do
+    Enum.map(details, fn %{id: id, reason: reason} ->
+      %{id: id, name: stop_display_name(stop_index, id), reason: reason}
+    end)
+  end
+
+  defp enrich_details([id | _] = details, stop_index) when is_binary(id) do
+    Enum.map(details, fn id ->
+      %{id: id, name: stop_display_name(stop_index, id)}
+    end)
+  end
+
+  defp stop_display_name(stop_index, id) do
+    case Map.get(stop_index, id) do
+      %{stop_name: name} when is_binary(name) and name != "" -> name
+      _ -> id
+    end
   end
 
   defp label_for("positive_longitude"), do: "Longitude sign consistency"
