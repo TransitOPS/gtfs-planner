@@ -96,8 +96,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
       <div id="station-report-2" class="space-y-6">
         <%= if @report do %>
           <.station_inventory_section report={@report} />
-          <.data_quality_section items={@data_quality_items} gtfs_version_id={@current_gtfs_version.id} />
-          <.gps_checks_section items={@gps_items} gtfs_version_id={@current_gtfs_version.id} />
+          <.data_quality_section items={@data_quality_items} />
+          <.gps_checks_section items={@gps_items} />
           <.naming_conventions_section report={@report} />
           <.reachability_connectivity_section report={@report} />
           <.pathway_field_completeness_section report={@report} />

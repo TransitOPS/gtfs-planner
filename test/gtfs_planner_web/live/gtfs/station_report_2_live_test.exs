@@ -210,7 +210,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert has_element?(view, "#report2-gps-checks .bg-green-100", "Pass")
     end
 
-    test "stop ID links have correct href values", %{
+    test "stop name links use phx-click select_entity", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -219,13 +219,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
+      {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
 
-      # The entrance and platform are connected, so entrance-to-platform passes.
-      # But we should see stop_id links for checks that do have affected stops.
-      # At minimum, the GPS presence table should render.
-      assert html =~ "/gtfs/#{gtfs_version.id}/stops/"
+      # Stop-name links use phx-click="select_entity" instead of navigation hrefs
+      assert has_element?(view, "[phx-click='select_entity'][phx-value-entity_type='stop']")
     end
 
     test "redirects with flash when station is missing", %{
