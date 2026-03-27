@@ -23,13 +23,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     assigns = assign(assigns, :sections, @toc_sections)
 
     ~H"""
-    <nav aria-label="Report sections" class="mb-2">
-      <p class="text-sm text-gray-500 mb-3">Station structure, data quality, and connectivity checks.</p>
-      <ol class="flex flex-wrap gap-x-1 gap-y-1 text-xs text-gray-500">
+    <nav aria-label="Report sections" class="bg-white border border-gray-400 rounded-lg shadow-card px-5 py-4">
+      <p class="text-sm font-medium text-gray-900 mb-2">Station structure, data quality, and connectivity checks.</p>
+      <ol class="flex flex-wrap gap-x-1 gap-y-1 text-[13px] text-gray-500">
         <%= for {section, idx} <- Enum.with_index(@sections) do %>
           <li class="flex items-center gap-1">
             <span :if={idx > 0} class="text-gray-300">/</span>
-            <a href={"##{section.id}"} class="hover:text-gray-900 hover:underline">{section.label}</a>
+            <a href={"##{section.id}"} class="text-teal-600 hover:text-teal-700 hover:underline">{section.label}</a>
           </li>
         <% end %>
       </ol>
