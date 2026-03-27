@@ -282,9 +282,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       <table class="w-full text-sm" style="border-collapse: collapse;">
         <thead>
           <tr class="border-b border-gray-200">
-            <th class="text-left pb-2.5 pt-1 text-[11px] font-medium text-gray-500 uppercase tracking-wider">{@summary.source_label}</th>
-            <th class="text-left pb-2.5 pt-1 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Reachable</th>
-            <th class="text-left pb-2.5 pt-1 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Unreachable</th>
+            <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">{@summary.source_label}</th>
+            <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Reachable</th>
+            <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Unreachable</th>
             <th class="text-left pb-2.5 pt-1 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Status</th>
           </tr>
         </thead>
