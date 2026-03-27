@@ -235,7 +235,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         />
       </:sub_header>
 
-      <div class="hidden print:block print:font-bold print:text-2xl print:leading-snug print:text-gray-900 print:mb-8 print:font-[Inter,ui-sans-serif,system-ui,sans-serif]">
+      <div class="hidden print:block print:font-bold print:text-2xl print:leading-[1.3] print:text-gray-900 print:mb-8 print:font-[Inter,ui-sans-serif,system-ui,sans-serif]">
         <div>Pathways Report:</div>
         <div :if={@station}>{@station.stop_name || @station.stop_id}</div>
       </div>
