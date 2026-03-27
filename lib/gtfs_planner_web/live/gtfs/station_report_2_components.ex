@@ -10,28 +10,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   alias GtfsPlanner.Gtfs.{Pathway, Stop}
 
   @toc_sections [
-    %{id: "report2-station-inventory", label: "Station Inventory"},
-    %{id: "report2-data-quality", label: "Data Quality"},
-    %{id: "report2-gps-checks", label: "GPS"},
-    %{id: "report2-naming-conventions", label: "Naming & ID Conventions"},
-    %{id: "report2-reachability-connectivity", label: "Reachability & Connectivity"},
-    %{id: "report2-pathway-field-completeness", label: "Pathway Field Completeness"},
-    %{id: "report2-accessibility", label: "Accessibility"}
+    %{id: "report2-station-inventory", label: "Station Inventory", desc: "Node counts by location type, edge counts by pathway mode, directionality, and levels."},
+    %{id: "report2-data-quality", label: "Data Quality", desc: "Structural checks for orphaned nodes, duplicate IDs, missing parents, and required children."},
+    %{id: "report2-gps-checks", label: "GPS", desc: "Coordinate presence, longitude sign consistency, entrance distance, and clustering."},
+    %{id: "report2-naming-conventions", label: "Naming & ID Conventions", desc: "Title case, ID prefix conventions, prefix/type alignment, and auto-generated name detection."},
+    %{id: "report2-reachability-connectivity", label: "Reachability & Connectivity", desc: "Pathway connectivity between entrances, platforms, and exits."},
+    %{id: "report2-pathway-field-completeness", label: "Pathway Field Completeness", desc: "Fill rates for optional pathway fields like traversal time, stair count, and slope."},
+    %{id: "report2-accessibility", label: "Accessibility", desc: "Wheelchair boarding and accessible pathway coverage."}
   ]
 
   def report_toc(assigns) do
     assigns = assign(assigns, :sections, @toc_sections)
 
     ~H"""
-    <nav aria-label="Report sections" class="bg-white border border-gray-400 rounded-lg shadow-card px-5 py-4">
-      <p class="text-sm font-medium text-gray-900 mb-2">Station structure, data quality, and connectivity checks.</p>
-      <ol class="flex flex-wrap gap-x-1 gap-y-1 text-[13px] text-gray-500">
-        <%= for {section, idx} <- Enum.with_index(@sections) do %>
-          <li class="flex items-center gap-1">
-            <span :if={idx > 0} class="text-gray-300">/</span>
-            <a href={"##{section.id}"} class="text-teal-600 hover:text-teal-700 hover:underline">{section.label}</a>
-          </li>
-        <% end %>
+    <nav aria-label="Report sections" class="mb-2">
+      <h1 class="text-2xl font-bold text-gray-900 mb-4">Station structure, data quality, and connectivity checks</h1>
+      <ol class="space-y-2">
+        <li :for={section <- @sections}>
+          <a href={"##{section.id}"} class="text-sm font-semibold text-teal-600 hover:text-teal-700 hover:underline">{section.label}</a>
+          <span class="text-sm text-gray-500"> — {section.desc}</span>
+        </li>
       </ol>
     </nav>
     """
