@@ -205,11 +205,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
     ~H"""
     <section id="report2-naming-conventions">
+      <div class="flex items-baseline justify-between mb-3 px-1">
+        <h2 class="text-xl font-semibold text-gray-900" style="line-height: 1.375;">Naming &amp; ID Conventions</h2>
+        <span class="text-xs text-gray-500">{@fail_count} of {length(@checks)} checks failed</span>
+      </div>
       <div class="bg-white border border-gray-400 rounded-lg shadow-card overflow-hidden">
-        <div class="bg-gray-50 border-b border-gray-400 px-5 py-3 flex items-center justify-between">
-          <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Naming &amp; ID Conventions</h2>
-          <span class="text-xs text-gray-500">{@fail_count} of {length(@checks)} checks failed</span>
-        </div>
 
         <table class="w-full text-sm" style="border-collapse: collapse;">
           <thead>
