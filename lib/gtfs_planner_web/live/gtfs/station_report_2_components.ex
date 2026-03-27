@@ -5,8 +5,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   """
   use Phoenix.Component
 
-  @max_visible 5
-
   alias GtfsPlanner.Gtfs.{Stop, Pathway}
 
   attr :report, :map, default: nil
@@ -164,7 +162,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
 
   attr :items, :list, required: true
-  attr :gtfs_version_id, :any, required: true
 
   def data_quality_section(assigns) do
     ~H"""
@@ -174,11 +171,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       </div>
       <div class="bg-white border border-gray-400 rounded-lg shadow-card overflow-hidden">
         <div class="divide-y divide-gray-200">
-          <.report_check_row
-            :for={item <- @items}
-            item={item}
-            gtfs_version_id={@gtfs_version_id}
-          />
+          <.report_check_row :for={item <- @items} item={item} />
         </div>
       </div>
     </section>
@@ -186,7 +179,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   end
 
   attr :items, :list, required: true
-  attr :gtfs_version_id, :any, required: true
 
   def gps_checks_section(assigns) do
     ~H"""
@@ -196,11 +188,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       </div>
       <div class="bg-white border border-gray-400 rounded-lg shadow-card overflow-hidden">
         <div class="divide-y divide-gray-200">
-          <.report_check_row
-            :for={item <- @items}
-            item={item}
-            gtfs_version_id={@gtfs_version_id}
-          />
+          <.report_check_row :for={item <- @items} item={item} />
         </div>
       </div>
     </section>
@@ -254,7 +242,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   # --- Private components ---
 
   attr :item, :map, required: true
-  attr :gtfs_version_id, :any, required: true
 
   defp report_check_row(assigns) do
     ~H"""
@@ -267,11 +254,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
             <.check_value item={@item} />
           </div>
           <p class="text-xs text-gray-500 mt-0.5"><%= @item.description %></p>
-          <.check_details
-            :if={@item.detail_layout != nil}
-            item={@item}
-            gtfs_version_id={@gtfs_version_id}
-          />
+          <.check_details :if={@item.detail_layout != nil} item={@item} />
         </div>
       </div>
     </div>
@@ -391,7 +374,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   end
 
   attr :item, :map, required: true
-  attr :gtfs_version_id, :any, required: true
 
   defp check_details(%{item: %{detail_layout: :table}} = assigns) do
     ~H"""
@@ -422,20 +404,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp check_details(%{item: %{detail_layout: :stop_ids, details: details}} = assigns)
        when is_list(details) and details != [] do
-    assigns =
-      assigns
-      |> assign(:visible, Enum.take(details, @max_visible))
-      |> assign(:overflow, Enum.drop(details, @max_visible))
-
     ~H"""
-    <details class="mt-2.5">
-      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700" style="transition-duration: 15ms;">
-        <svg class="chevron w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
+    <details class="group mt-2.5">
+      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
+        <svg class="w-3 h-3 transition-transform duration-150 group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
         <%= @item.detail_label %>
       </summary>
       <div class="mt-2 grid grid-cols-1 gap-0.5">
-        <.stop_id_link :for={stop_id <- @visible} stop_id={stop_id} gtfs_version_id={@gtfs_version_id} />
-        <.overflow_stop_ids :if={@overflow != []} overflow={@overflow} gtfs_version_id={@gtfs_version_id} />
+        <.stop_name_link :for={entry <- @item.details} stop_id={entry.id} name={entry.name} />
       </div>
     </details>
     """
@@ -443,23 +419,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp check_details(%{item: %{detail_layout: :stop_ids_with_dots, details: details}} = assigns)
        when is_list(details) and details != [] do
-    assigns =
-      assigns
-      |> assign(:visible, Enum.take(details, @max_visible))
-      |> assign(:overflow, Enum.drop(details, @max_visible))
-
     ~H"""
-    <details class="mt-2.5">
-      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700" style="transition-duration: 15ms;">
-        <svg class="chevron w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
+    <details class="group mt-2.5">
+      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
+        <svg class="w-3 h-3 transition-transform duration-150 group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
         <%= @item.detail_label %>
       </summary>
       <div class="mt-2 grid grid-cols-1 gap-1">
-        <div :for={stop_id <- @visible} class="flex items-center gap-2">
+        <div :for={entry <- @item.details} class="flex items-center gap-2">
           <span class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
-          <.stop_id_link_inline stop_id={stop_id} gtfs_version_id={@gtfs_version_id} />
+          <.stop_name_link stop_id={entry.id} name={entry.name} />
         </div>
-        <.overflow_stop_ids_with_dots :if={@overflow != []} overflow={@overflow} gtfs_version_id={@gtfs_version_id} />
       </div>
     </details>
     """
@@ -467,23 +437,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp check_details(%{item: %{detail_layout: :stop_ids_with_reasons, details: details}} = assigns)
        when is_list(details) and details != [] do
-    assigns =
-      assigns
-      |> assign(:visible, Enum.take(details, @max_visible))
-      |> assign(:overflow, Enum.drop(details, @max_visible))
-
     ~H"""
-    <details class="mt-2.5">
-      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700" style="transition-duration: 15ms;">
-        <svg class="chevron w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
+    <details class="group mt-2.5">
+      <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
+        <svg class="w-3 h-3 transition-transform duration-150 group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
         <%= @item.detail_label %>
       </summary>
       <div class="mt-2 grid grid-cols-1 gap-1.5">
-        <div :for={entry <- @visible} class="flex items-baseline gap-3">
-          <.stop_id_link stop_id={entry.id} gtfs_version_id={@gtfs_version_id} class="shrink-0" />
+        <div :for={entry <- @item.details} class="flex items-baseline gap-3">
+          <.stop_name_link stop_id={entry.id} name={entry.name} class="shrink-0" />
           <span class="text-xs text-gray-500"><%= entry.reason %></span>
         </div>
-        <.overflow_stop_ids_with_reasons :if={@overflow != []} overflow={@overflow} gtfs_version_id={@gtfs_version_id} />
       </div>
     </details>
     """
@@ -493,92 +457,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H""
   end
 
-  # --- Stop ID link helpers ---
-
   attr :stop_id, :string, required: true
-  attr :gtfs_version_id, :any, required: true
+  attr :name, :string, required: true
   attr :class, :string, default: ""
 
-  defp stop_id_link(assigns) do
+  defp stop_name_link(assigns) do
     ~H"""
-    <.link
-      navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/report_2"}
-      class={"text-xs text-teal-600 hover:text-teal-700 cursor-pointer #{@class}"}
-      style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;"
+    <button
+      type="button"
+      phx-click="select_entity"
+      phx-value-entity_id={@stop_id}
+      phx-value-entity_type="stop"
+      title={@stop_id}
+      class={"text-left text-xs text-teal-600 hover:text-teal-700 cursor-pointer #{@class}"}
     >
-      <%= @stop_id %>
-    </.link>
-    """
-  end
-
-  attr :stop_id, :string, required: true
-  attr :gtfs_version_id, :any, required: true
-
-  defp stop_id_link_inline(assigns) do
-    ~H"""
-    <.link
-      navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/report_2"}
-      class="text-xs text-gray-700 hover:text-teal-700 cursor-pointer"
-      style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;"
-    >
-      <%= @stop_id %>
-    </.link>
-    """
-  end
-
-  # --- Overflow (+ N more) helpers ---
-
-  attr :overflow, :list, required: true
-  attr :gtfs_version_id, :any, required: true
-
-  defp overflow_stop_ids(assigns) do
-    ~H"""
-    <details>
-      <summary class="text-xs text-gray-500 cursor-pointer mt-1" style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;">
-        + <%= length(@overflow) %> more
-      </summary>
-      <div class="grid grid-cols-1 gap-0.5 mt-0.5">
-        <.stop_id_link :for={stop_id <- @overflow} stop_id={stop_id} gtfs_version_id={@gtfs_version_id} />
-      </div>
-    </details>
-    """
-  end
-
-  attr :overflow, :list, required: true
-  attr :gtfs_version_id, :any, required: true
-
-  defp overflow_stop_ids_with_dots(assigns) do
-    ~H"""
-    <details>
-      <summary class="text-xs text-gray-500 cursor-pointer mt-1" style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;">
-        + <%= length(@overflow) %> more
-      </summary>
-      <div class="grid grid-cols-1 gap-1 mt-0.5">
-        <div :for={stop_id <- @overflow} class="flex items-center gap-2">
-          <span class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
-          <.stop_id_link_inline stop_id={stop_id} gtfs_version_id={@gtfs_version_id} />
-        </div>
-      </div>
-    </details>
-    """
-  end
-
-  attr :overflow, :list, required: true
-  attr :gtfs_version_id, :any, required: true
-
-  defp overflow_stop_ids_with_reasons(assigns) do
-    ~H"""
-    <details>
-      <summary class="text-xs text-gray-500 cursor-pointer mt-1" style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;">
-        + <%= length(@overflow) %> more
-      </summary>
-      <div class="grid grid-cols-1 gap-1.5 mt-0.5">
-        <div :for={entry <- @overflow} class="flex items-baseline gap-3">
-          <.stop_id_link stop_id={entry.id} gtfs_version_id={@gtfs_version_id} class="shrink-0" />
-          <span class="text-xs text-gray-500"><%= entry.reason %></span>
-        </div>
-      </div>
-    </details>
+      <%= @name %>
+    </button>
     """
   end
 
