@@ -54,7 +54,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
           level_id: "L_STREET"
         })
 
-      ent_b =
+      _ent_b =
         stop_fixture(organization.id, gtfs_version.id, %{
           stop_id: "ENT_B",
           stop_name: "Side Entrance",
