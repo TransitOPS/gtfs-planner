@@ -19,6 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     %{id: "report2-accessibility", label: "Accessibility", desc: "Wheelchair boarding and accessible pathway coverage."}
   ]
 
+  @doc "Renders the report table of contents. Accepts no assigns."
   def report_toc(assigns) do
     assigns = assign(assigns, :sections, @toc_sections)
 
