@@ -235,6 +235,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         />
       </:sub_header>
 
+      <div class="print-report-title hidden">
+        <div>Pathways Report:</div>
+        <div>{@station && (@station.stop_name || @station.stop_id)}</div>
+      </div>
+
       <div id="station-report-2" class="space-y-6">
         <%= if @report do %>
           <.report_toc />
