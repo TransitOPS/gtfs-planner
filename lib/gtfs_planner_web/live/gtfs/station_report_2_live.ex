@@ -9,7 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
-  alias GtfsPlanner.Gtfs.StationReport2.{Connectivity, DataQuality, Gps}
+  alias GtfsPlanner.Gtfs.StationReport2.{Connectivity, DataQuality, Gps, PathwayFieldCompleteness}
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -27,6 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:stop_id, nil)
      |> assign(:data_quality_items, [])
      |> assign(:gps_items, [])
+     |> assign(:pathway_field_completeness_groups, [])
      |> assign(:connectivity_summaries, nil)
      |> assign(:connectivity_view, :summary)
      |> assign(:connectivity_dimension, :entrance_to_platform)
@@ -63,6 +64,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
          |> assign(:report, snapshot)
          |> assign(:data_quality_items, DataQuality.build(snapshot))
          |> assign(:gps_items, Gps.build(snapshot))
+         |> assign(:pathway_field_completeness_groups, PathwayFieldCompleteness.build(snapshot))
          |> assign(:connectivity_summaries, connectivity_summaries)
          |> assign(:connectivity_view, connectivity_view)
          |> assign(:connectivity_dimension, dimension)
@@ -246,7 +248,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
             expanded_route={@expanded_route}
             expanded_route_key={@expanded_route_key}
           />
-          <.pathway_field_completeness_section report={@report} />
+          <.pathway_field_completeness_section groups={@pathway_field_completeness_groups} />
           <.accessibility_section report={@report} />
         <% end %>
       </div>
@@ -284,6 +286,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         |> assign(:report, snapshot)
         |> assign(:data_quality_items, DataQuality.build(snapshot))
         |> assign(:gps_items, Gps.build(snapshot))
+        |> assign(:pathway_field_completeness_groups, PathwayFieldCompleteness.build(snapshot))
         |> assign(:connectivity_summaries, Connectivity.build_summaries(snapshot))
 
       {:error, _} ->

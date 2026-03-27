@@ -386,14 +386,96 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     """
   end
 
-  attr :report, :map, default: nil
+  attr :groups, :list, required: true
 
   def pathway_field_completeness_section(assigns) do
     ~H"""
     <section id="report2-pathway-field-completeness">
       <h2 class="text-lg font-semibold">Pathway Field Completeness</h2>
-      <p class="text-base-content/60">Not yet implemented.</p>
+      <%= if @groups == [] do %>
+        <p class="text-base-content/60 mt-2">No pathway data available.</p>
+      <% else %>
+        <div class="mt-4 bg-white border border-gray-400 rounded-lg shadow-sm">
+          <div class="p-6">
+            <%= for {group, idx} <- Enum.with_index(@groups) do %>
+              <% last? = idx == length(@groups) - 1 %>
+              <div class={[
+                idx == 0 && !last? && "pb-5 border-b border-gray-200",
+                idx == 0 && last? && "",
+                idx > 0 && !last? && "py-5 border-b border-gray-200",
+                idx > 0 && last? && "pt-5"
+              ]}>
+                <div class="mb-3">
+                  <span class="text-xs font-semibold tracking-wider uppercase text-gray-500">
+                    {group.mode_label}
+                  </span>
+                </div>
+                <div class={if length(group.fields) > 1, do: "grid gap-4", else: nil}>
+                  <.field_completeness_row :for={field <- group.fields} field={field} />
+                </div>
+              </div>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
     </section>
+    """
+  end
+
+  attr :field, :map, required: true
+
+  defp field_completeness_row(assigns) do
+    ~H"""
+    <div class="flex items-center gap-4">
+      <span class="text-sm font-semibold text-gray-900 shrink-0" style="min-width: 120px;">
+        {@field.label}
+      </span>
+      <div class="flex-1 h-2 rounded-full bg-gray-100 overflow-hidden">
+        <div
+          class={[
+            "h-full rounded-full",
+            @field.status == :pass && "bg-green-700",
+            @field.status == :warn && "bg-yellow-600",
+            @field.status == :fail && "bg-red-600"
+          ]}
+          style={"width: #{@field.percent}%;"}
+        >
+        </div>
+      </div>
+      <span
+        class="text-sm font-medium text-gray-700 shrink-0"
+        style="min-width: 48px; text-align: right; font-variant-numeric: tabular-nums;"
+      >
+        {@field.present} / {@field.total}
+      </span>
+      <.field_completeness_badge status={@field.status} />
+    </div>
+    """
+  end
+
+  attr :status, :atom, required: true
+
+  defp field_completeness_badge(%{status: :pass} = assigns) do
+    ~H"""
+    <span class="inline-flex items-center px-2 text-xs font-semibold rounded bg-green-100 text-green-800 shrink-0" style="padding-top: 2px; padding-bottom: 2px;">
+      Pass
+    </span>
+    """
+  end
+
+  defp field_completeness_badge(%{status: :warn} = assigns) do
+    ~H"""
+    <span class="inline-flex items-center px-2 text-xs font-semibold rounded bg-yellow-100 text-yellow-800 shrink-0" style="padding-top: 2px; padding-bottom: 2px;">
+      Warn
+    </span>
+    """
+  end
+
+  defp field_completeness_badge(%{status: :fail} = assigns) do
+    ~H"""
+    <span class="inline-flex items-center px-2 text-xs font-semibold rounded bg-red-100 text-red-800 shrink-0" style="padding-top: 2px; padding-bottom: 2px;">
+      Fail
+    </span>
     """
   end
 
