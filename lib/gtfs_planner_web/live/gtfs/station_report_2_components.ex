@@ -424,6 +424,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   def reachability_connectivity_section(assigns) do
     ~H"""
     <section id="report2-reachability-connectivity">
+      <div class="flex items-baseline justify-between mb-3 px-1">
+        <h2 class="text-xl font-semibold text-gray-900" style="line-height: 1.375;">Reachability &amp; Connectivity</h2>
+      </div>
       <%= if @connectivity_view == :detail do %>
         <.connectivity_route_detail
           dimension={@connectivity_dimension}
@@ -434,12 +437,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       <% else %>
         <%= if @connectivity_summaries do %>
           <div>
-            <div class="flex items-center justify-between mb-5">
-              <div>
-                <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-widest mb-1">Connectivity</p>
-                <div class="h-px bg-gray-300"></div>
-              </div>
-            </div>
 
             <div class="flex flex-col gap-6">
               <.connectivity_summary_card
