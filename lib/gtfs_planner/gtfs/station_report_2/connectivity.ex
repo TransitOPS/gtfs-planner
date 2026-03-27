@@ -108,11 +108,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
     # Compute stats
     source_count = length(sources)
 
-    target_count =
-      case dimension do
-        :platform_to_platform -> length(targets)
-        _ -> length(targets)
-      end
+    target_count = length(targets)
 
     total_pairs =
       Enum.reduce(summary_rows, 0, fn row, acc ->
@@ -278,11 +274,16 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
         accessible = step_free_result != nil
 
         accessible_note =
-          cond do
-            accessible and enriched.totals.has_elevator -> "elevator route available"
-            accessible and enriched.totals.level_changes == 0 -> "same-level walkway"
-            not accessible and enriched.totals.has_stairs -> "stairs only"
-            true -> nil
+          case step_free_result do
+            {_sf_time, sf_enriched} ->
+              cond do
+                sf_enriched.totals.has_elevator -> "elevator route available"
+                sf_enriched.totals.level_changes == 0 -> "same-level walkway"
+                true -> nil
+              end
+
+            nil ->
+              if enriched.totals.has_stairs, do: "stairs only", else: nil
           end
 
         route_status =
@@ -359,11 +360,16 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
       start_ids
       |> Enum.map(fn start_id ->
         case Graph.shortest_directed_path_to_any(step_free_adj, start_id, target_ids) do
-          {:found, _path} -> true
-          :not_found -> false
+          {:found, path} ->
+            enriched = enrich_path(path, pathway_index, stop_index, level_index)
+            {enriched.totals.time_seconds, enriched}
+
+          :not_found ->
+            nil
         end
       end)
-      |> Enum.any?()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.min_by(fn {time, _} -> time end, fn -> nil end)
 
     case shortest_result do
       nil ->
@@ -373,14 +379,19 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
         source_level = level_for_stop(source, level_index)
         target_level = level_for_stop(target, level_index)
         meta = build_target_meta(target, target_level)
-        accessible = step_free_result
+        accessible = step_free_result != nil
 
         accessible_note =
-          cond do
-            accessible and enriched.totals.has_elevator -> "elevator route available"
-            accessible and enriched.totals.level_changes == 0 -> "same-level walkway"
-            not accessible and enriched.totals.has_stairs -> "stairs only"
-            true -> nil
+          case step_free_result do
+            {_sf_time, sf_enriched} ->
+              cond do
+                sf_enriched.totals.has_elevator -> "elevator route available"
+                sf_enriched.totals.level_changes == 0 -> "same-level walkway"
+                true -> nil
+              end
+
+            nil ->
+              if enriched.totals.has_stairs, do: "stairs only", else: nil
           end
 
         route_status =
@@ -422,7 +433,20 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
 
   # ── Path enrichment (copied from station_report.ex) ───────────────────────
 
-  defp enrich_path([], _pathway_index, _stop_index, _level_index), do: nil
+  defp enrich_path([], _pathway_index, _stop_index, _level_index) do
+    %{
+      hops: [],
+      totals: %{
+        time_seconds: 0.0,
+        distance_meters: 0.0,
+        level_changes: 0,
+        has_stairs: false,
+        has_escalator: false,
+        has_elevator: false
+      },
+      all_bidirectional: true
+    }
+  end
 
   defp enrich_path(path, pathway_index, stop_index, level_index) do
     [start_hop | _] = path

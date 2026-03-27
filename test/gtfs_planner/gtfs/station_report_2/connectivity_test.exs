@@ -276,6 +276,77 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
       assert target.accessible == true
       assert target.accessible_note == "elevator route available"
     end
+
+    test "accessible_note derived from step-free path when general path uses stairs" do
+      snapshot = %{
+        child_stops: [
+          make_stop(%{stop_id: "ENT_1", stop_name: "Entrance", location_type: 2, level_id: "L1"}),
+          make_stop(%{stop_id: "NODE_S", stop_name: "Stairs Node", location_type: 3, level_id: "L2"}),
+          make_stop(%{stop_id: "NODE_E", stop_name: "Elevator Node", location_type: 3, level_id: "L2"}),
+          make_stop(%{stop_id: "PLAT_1", stop_name: "Platform", location_type: 0, level_id: "L2"})
+        ],
+        pathways: [
+          # Stairs route: ENT_1 -> NODE_S -> PLAT_1 (shorter, general shortest path)
+          make_pathway(%{pathway_id: "PW_S1", from_stop_id: "ENT_1", to_stop_id: "NODE_S", pathway_mode: 2, traversal_time: 10}),
+          make_pathway(%{pathway_id: "PW_S2", from_stop_id: "NODE_S", to_stop_id: "PLAT_1", pathway_mode: 1, traversal_time: 10}),
+          # Elevator route: ENT_1 -> NODE_E -> PLAT_1 (longer, but step-free)
+          make_pathway(%{pathway_id: "PW_E1", from_stop_id: "ENT_1", to_stop_id: "NODE_E", pathway_mode: 5, traversal_time: 30}),
+          make_pathway(%{pathway_id: "PW_E2", from_stop_id: "NODE_E", to_stop_id: "PLAT_1", pathway_mode: 1, traversal_time: 30})
+        ],
+        levels: [
+          make_level(%{level_id: "L1", level_name: "Street", level_index: 0.0}),
+          make_level(%{level_id: "L2", level_name: "Platform", level_index: -1.0})
+        ]
+      }
+
+      groups = Connectivity.build_route_detail(snapshot, :entrance_to_platform)
+      target = hd(hd(groups).targets)
+      # General shortest path uses stairs, but step-free elevator route exists
+      assert target.accessible == true
+      assert target.accessible_note == "elevator route available"
+    end
+
+    test "accessible_note is stairs only when no step-free path exists" do
+      snapshot = %{
+        child_stops: [
+          make_stop(%{stop_id: "ENT_1", stop_name: "Entrance", location_type: 2, level_id: "L1"}),
+          make_stop(%{stop_id: "PLAT_1", stop_name: "Platform", location_type: 0, level_id: "L2"})
+        ],
+        pathways: [
+          # Only stairs (not step-free)
+          make_pathway(%{pathway_id: "PW_1", from_stop_id: "ENT_1", to_stop_id: "PLAT_1", pathway_mode: 2, traversal_time: 20})
+        ],
+        levels: [
+          make_level(%{level_id: "L1", level_name: "Street", level_index: 0.0}),
+          make_level(%{level_id: "L2", level_name: "Platform", level_index: -1.0})
+        ]
+      }
+
+      groups = Connectivity.build_route_detail(snapshot, :entrance_to_platform)
+      target = hd(hd(groups).targets)
+      assert target.accessible == false
+      assert target.accessible_note == "stairs only"
+    end
+
+    test "accessible_note is same-level walkway when step-free path has no level changes" do
+      snapshot = %{
+        child_stops: [
+          make_stop(%{stop_id: "ENT_1", stop_name: "Entrance", location_type: 2, level_id: "L1"}),
+          make_stop(%{stop_id: "PLAT_1", stop_name: "Platform", location_type: 0, level_id: "L1"})
+        ],
+        pathways: [
+          make_pathway(%{pathway_id: "PW_1", from_stop_id: "ENT_1", to_stop_id: "PLAT_1", pathway_mode: 1, traversal_time: 15})
+        ],
+        levels: [
+          make_level(%{level_id: "L1", level_name: "Street", level_index: 0.0})
+        ]
+      }
+
+      groups = Connectivity.build_route_detail(snapshot, :entrance_to_platform)
+      target = hd(hd(groups).targets)
+      assert target.accessible == true
+      assert target.accessible_note == "same-level walkway"
+    end
   end
 
   describe "build_expanded_route/3" do
