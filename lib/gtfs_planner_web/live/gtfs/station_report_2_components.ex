@@ -392,8 +392,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
       <p class="text-sm text-gray-700 mb-3">The following stop names appear auto-generated or are not human-readable:</p>
       <div class="space-y-2">
-        <div :for={detail <- @check.details} class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
-          <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
+        <div :for={detail <- @check.details} class="flex items-start gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
+              <span :if={detail.stop_name} class="text-gray-400">&mdash;</span>
+              <span :if={detail.stop_name} class="text-sm text-gray-900">{detail.stop_name}</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -414,24 +420,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   attr :rule, :string, required: true
   attr :id, :string, required: true
-
-  defp naming_rule_text(%{id: "naming_node_prefix"} = assigns) do
-    ~H"""
-    All generic node IDs use the <code class="bg-gray-100 px-1 rounded text-gray-700">node_</code> prefix.
-    """
-  end
-
-  defp naming_rule_text(%{id: "naming_boarding_prefix"} = assigns) do
-    ~H"""
-    All boarding area IDs use the <code class="bg-gray-100 px-1 rounded text-gray-700">boarding_</code> prefix.
-    """
-  end
-
-  defp naming_rule_text(%{id: "naming_entrance_prefix"} = assigns) do
-    ~H"""
-    All entrance/exit IDs use the <code class="bg-gray-100 px-1 rounded text-gray-700">entrance_</code> prefix.
-    """
-  end
 
   defp naming_rule_text(assigns) do
     ~H"""

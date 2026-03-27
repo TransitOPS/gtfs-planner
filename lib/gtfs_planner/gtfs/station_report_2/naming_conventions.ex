@@ -135,14 +135,15 @@ defmodule GtfsPlanner.Gtfs.StationReport2.NamingConventions do
     end)
   end
 
-  defp normalize_details(_id, details, _stop_index) do
+  defp normalize_details(_id, details, stop_index) do
     Enum.map(details, fn detail ->
       stop_id = if is_map(detail), do: detail.id, else: detail
+      stop = Map.get(stop_index, stop_id)
 
       %{
         stop_id: stop_id,
-        stop_name: nil,
-        location_type: nil,
+        stop_name: get_stop_field(stop, :stop_name),
+        location_type: get_stop_field(stop, :location_type),
         expected_prefix: nil
       }
     end)
