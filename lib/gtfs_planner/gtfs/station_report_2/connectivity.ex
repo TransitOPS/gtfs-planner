@@ -473,7 +473,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
         nil,
         %{time_seconds: 0.0, distance_meters: nil, calculation_method: :origin},
         nil,
-        level_index
+        level_index,
+        nil
       )
 
     enriched_hops =
@@ -517,7 +518,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
          traversal,
          level_diff,
          level_index,
-         traversed_reverse? \\ nil
+         traversed_reverse?
        ) do
     level_data =
       case stop do
