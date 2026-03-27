@@ -48,7 +48,6 @@ defmodule GtfsPlanner.Gtfs.Graph do
   """
   def build_path_traversal_adjacency(pathways) do
     pathways
-    |> Enum.sort_by(&pathway_id_sort_key/1)
     |> Enum.reduce(%{}, fn pathway, acc ->
       acc = put_path_edge(acc, pathway.from_stop_id, pathway.to_stop_id, pathway)
 
@@ -114,11 +113,12 @@ defmodule GtfsPlanner.Gtfs.Graph do
     if MapSet.size(target_ids) == 0 do
       false
     else
-      from_stop_id
-      |> bfs(directed_adjacency)
-      |> MapSet.intersection(target_ids)
-      |> MapSet.size()
-      |> Kernel.>(0)
+      do_reachable?(
+        :queue.from_list([from_stop_id]),
+        MapSet.new([from_stop_id]),
+        target_ids,
+        directed_adjacency
+      )
     end
   end
 
@@ -167,6 +167,31 @@ defmodule GtfsPlanner.Gtfs.Graph do
 
       {:empty, _} ->
         visited
+    end
+  end
+
+  defp do_reachable?(queue, visited, target_ids, directed) do
+    case :queue.out(queue) do
+      {{:value, current}, rest} ->
+        if MapSet.member?(target_ids, current) do
+          true
+        else
+          neighbors = Map.get(directed, current, MapSet.new())
+
+          {next_queue, next_visited} =
+            Enum.reduce(neighbors, {rest, visited}, fn neighbor, {q, v} ->
+              if MapSet.member?(v, neighbor) do
+                {q, v}
+              else
+                {:queue.in(neighbor, q), MapSet.put(v, neighbor)}
+              end
+            end)
+
+          do_reachable?(next_queue, next_visited, target_ids, directed)
+        end
+
+      {:empty, _} ->
+        false
     end
   end
 
@@ -225,8 +250,6 @@ defmodule GtfsPlanner.Gtfs.Graph do
     [%{stop_id: start_stop_id, pathway_id: nil, pathway_mode: nil} | path]
   end
 
-  defp reconstruct_path_hops(_came_from, nil, acc), do: acc
-
   defp reconstruct_path_hops(came_from, stop_id, acc) do
     case Map.get(came_from, stop_id) do
       nil ->
@@ -252,8 +275,6 @@ defmodule GtfsPlanner.Gtfs.Graph do
 
     Map.update(adjacency, from_stop_id, [edge], &[edge | &1])
   end
-
-  defp pathway_id_sort_key(pathway), do: pathway.pathway_id || ""
 
   defp normalize_pathway_mode(pathway_mode) when is_integer(pathway_mode), do: pathway_mode
   defp normalize_pathway_mode(_), do: -1
