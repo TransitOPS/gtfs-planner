@@ -176,10 +176,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
 
       # Side Entrance has no pathways → zero reachability → alert
-      assert has_element?(view, "[role='alert']")
-      html = render(view)
-      assert html =~ "Side Entrance"
-      assert html =~ "Needs immediate attention"
+      assert has_element?(view, "[role='alert']:not(#client-error):not(#server-error)")
+      alert_html = view |> element("[role='alert']:not(#client-error):not(#server-error)") |> render()
+      assert alert_html =~ "Side Entrance"
+      assert alert_html =~ "Needs immediate attention"
     end
 
     test "dimension badges reflect status correctly", %{
@@ -346,6 +346,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
 
       html = render(view)
       assert html =~ "No directed path exists"
+
+      # Click again to collapse
+      view
+      |> element(
+        "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_B'][phx-value-target_id='PLAT_1']"
+      )
+      |> render_click()
+
+      html = render(view)
+      refute html =~ "No directed path exists"
     end
 
     test "URL refresh restores correct view state", %{
@@ -366,6 +376,150 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
 
       assert html =~ "Connectivity — Route Detail"
       assert html =~ "Platform to platform"
+    end
+  end
+
+  describe "Connectivity accessible_note" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_ACC",
+          stop_name: "Accessible Note Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      _level1 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_ACC_STREET",
+          level_name: "Street",
+          level_index: 0.0
+        })
+
+      _level2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_ACC_PLATFORM",
+          level_name: "Platform",
+          level_index: -1.0
+        })
+
+      entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_ACC",
+          stop_name: "Accessible Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L_ACC_STREET"
+        })
+
+      # Intermediate nodes for diverging paths
+      _node_stairs =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NODE_STAIRS",
+          stop_name: "Stairs Node",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: "L_ACC_PLATFORM"
+        })
+
+      _node_elev =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NODE_ELEV",
+          stop_name: "Elevator Node",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: "L_ACC_PLATFORM"
+        })
+
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_ACC",
+          stop_name: "Accessible Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L_ACC_PLATFORM"
+        })
+
+      # Short path via stairs (mode 2): ENT_ACC → NODE_STAIRS → PLAT_ACC
+      # General BFS picks this as shortest (30s total)
+      _pw_stair1 =
+        pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, "NODE_STAIRS", %{
+          pathway_id: "PW_STAIR1",
+          pathway_mode: 2,
+          is_bidirectional: true,
+          traversal_time: 15
+        })
+
+      _pw_stair2 =
+        pathway_fixture(organization.id, gtfs_version.id, "NODE_STAIRS", platform.stop_id, %{
+          pathway_id: "PW_STAIR2",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          traversal_time: 15
+        })
+
+      # Longer path via elevator (mode 5): ENT_ACC → NODE_ELEV → PLAT_ACC
+      # Step-free BFS picks this (50s total, but stairs are filtered)
+      _pw_elev1 =
+        pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, "NODE_ELEV", %{
+          pathway_id: "PW_ELEV1",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          traversal_time: 25
+        })
+
+      _pw_elev2 =
+        pathway_fixture(organization.id, gtfs_version.id, "NODE_ELEV", platform.stop_id, %{
+          pathway_id: "PW_ELEV2",
+          pathway_mode: 5,
+          is_bidirectional: true,
+          traversal_time: 25
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station
+      }
+    end
+
+    test "shows elevator route available when general path uses stairs but step-free path uses elevator",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?connectivity=detail&dimension=entrance_to_platform"
+        )
+
+      # Expand the ENT_ACC → PLAT_ACC route
+      view
+      |> element(
+        "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_ACC'][phx-value-target_id='PLAT_ACC']"
+      )
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "elevator route available"
     end
   end
 
