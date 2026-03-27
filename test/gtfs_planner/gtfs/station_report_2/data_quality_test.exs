@@ -105,7 +105,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQualityTest do
 
       assert isolated.status == :fail
       assert isolated.value == 1
-      assert isolated.details == ["BA_1"]
+      assert isolated.details == [%{id: "BA_1", name: "Stop"}]
     end
 
     test "connected boarding area passes isolated_nodes check" do
@@ -142,7 +142,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQualityTest do
 
       assert check.status == :fail
       assert check.value == 1
-      assert "BA_1" in check.details
+      assert %{id: "BA_1", name: "Stop"} in check.details
     end
 
     test "boarding area with platform parent passes parent consistency" do
@@ -173,7 +173,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQualityTest do
       assert check.status == :fail
       assert check.value.unreachable == 1
       assert check.value.reachable == 0
-      assert "ENT_1" in check.details
+      assert %{id: "ENT_1", name: "Stop"} in check.details
     end
 
     test "entrance connected to platform passes connectivity check" do
@@ -211,7 +211,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQualityTest do
 
       assert check.status == :fail
       assert check.value == 1
-      assert "DUP_1" in check.details
+      assert %{id: "DUP_1", name: "Stop"} in check.details
     end
 
     test "wheelchair_boarding_consistency: station not wheelchair_boarding=1 passes" do
@@ -293,6 +293,87 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQualityTest do
 
       assert check.status == :info
       assert check.value == 1
+    end
+
+    test "empty stop_name falls back to stop_id in detail entries" do
+      ba =
+        make_stop(%{
+          stop_id: "BA_EMPTY",
+          stop_name: "",
+          location_type: 4,
+          parent_station: "STATION_1"
+        })
+
+      snapshot = %{station: make_station(), child_stops: [ba], pathways: []}
+      items = DataQuality.build(snapshot)
+      isolated = Enum.find(items, &(&1.id == "isolated_nodes"))
+
+      assert isolated.status == :fail
+      assert [%{id: "BA_EMPTY", name: "BA_EMPTY"}] = isolated.details
+    end
+
+    test "detail entries include stop_name when present" do
+      ba =
+        make_stop(%{
+          stop_id: "BA_NAMED",
+          stop_name: "Main Entrance BA",
+          location_type: 4,
+          parent_station: "STATION_1"
+        })
+
+      snapshot = %{station: make_station(), child_stops: [ba], pathways: []}
+      items = DataQuality.build(snapshot)
+      isolated = Enum.find(items, &(&1.id == "isolated_nodes"))
+
+      assert isolated.status == :fail
+      assert [%{id: "BA_NAMED", name: "Main Entrance BA"}] = isolated.details
+    end
+
+    test "wheelchair_inferrable details include name" do
+      platform =
+        make_stop(%{
+          stop_id: "PLAT_1",
+          stop_name: "Platform 1",
+          location_type: 0,
+          parent_station: "STATION_1",
+          wheelchair_boarding: nil
+        })
+
+      entrance =
+        make_stop(%{
+          stop_id: "ENT_1",
+          stop_name: "Entrance 1",
+          location_type: 2,
+          parent_station: "STATION_1",
+          wheelchair_boarding: nil
+        })
+
+      pw =
+        make_pathway(%{
+          from_stop_id: "ENT_1",
+          to_stop_id: "PLAT_1",
+          pathway_mode: 2,
+          is_bidirectional: true
+        })
+
+      snapshot = %{
+        station: make_station(),
+        child_stops: [entrance, platform],
+        pathways: [pw]
+      }
+
+      items = DataQuality.build(snapshot)
+      check = Enum.find(items, &(&1.id == "wheelchair_inferrable"))
+
+      assert check.status == :warn
+
+      Enum.each(check.details, fn detail ->
+        assert Map.has_key?(detail, :name), "Expected :name key in detail #{inspect(detail)}"
+      end)
+
+      names = Map.new(check.details, &{&1.id, &1.name})
+      assert names["ENT_1"] == "Entrance 1"
+      assert names["PLAT_1"] == "Platform 1"
     end
   end
 end

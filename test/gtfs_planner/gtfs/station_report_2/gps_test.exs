@@ -93,10 +93,11 @@ defmodule GtfsPlanner.Gtfs.StationReport2.GpsTest do
       assert dist_check.value == 0
     end
 
-    test "child with opposite longitude sign fails positive_longitude" do
+    test "child with opposite longitude sign fails positive_longitude with enriched details" do
       entrance =
         make_stop(%{
           stop_id: "ENT_1",
+          stop_name: "Main Entrance",
           location_type: 2,
           parent_station: "STATION_1",
           stop_lon: Decimal.new("74.0")
@@ -107,13 +108,14 @@ defmodule GtfsPlanner.Gtfs.StationReport2.GpsTest do
 
       assert check.status == :fail
       assert check.value == 1
+      assert [%{id: "ENT_1", name: "Main Entrance"}] = check.details
     end
 
-    test "entrance far from station fails entrance_gps_distance" do
-      # Place entrance on the other side of the world
+    test "entrance far from station fails entrance_gps_distance with enriched details" do
       entrance =
         make_stop(%{
           stop_id: "ENT_1",
+          stop_name: "Far Entrance",
           location_type: 2,
           parent_station: "STATION_1",
           stop_lat: Decimal.new("-33.8"),
@@ -125,8 +127,24 @@ defmodule GtfsPlanner.Gtfs.StationReport2.GpsTest do
 
       assert check.status == :fail
       assert check.value == 1
-      assert length(check.details) == 1
-      assert hd(check.details).id == "ENT_1"
+      assert [%{id: "ENT_1", name: "Far Entrance", reason: reason}] = check.details
+      assert is_binary(reason)
+    end
+
+    test "empty stop_name falls back to stop_id in enriched details" do
+      entrance =
+        make_stop(%{
+          stop_id: "ENT_1",
+          stop_name: "",
+          location_type: 2,
+          parent_station: "STATION_1",
+          stop_lon: Decimal.new("74.0")
+        })
+
+      items = Gps.build(%{station: make_station(), child_stops: [entrance]})
+      check = Enum.find(items, &(&1.id == "positive_longitude"))
+
+      assert [%{id: "ENT_1", name: "ENT_1"}] = check.details
     end
 
     test "gps_presence_by_type table details have correct structure" do
