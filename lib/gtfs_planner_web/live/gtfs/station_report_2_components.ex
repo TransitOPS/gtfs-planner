@@ -168,7 +168,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   def data_quality_section(assigns) do
     ~H"""
     <section id="report2-data-quality">
-      <div class="flex items-baseline justify-between mb-3 px-1">
+      <div class="flex items-baseline justify-between mt-4 mb-3 px-1">
         <h2 class="text-xl font-semibold text-gray-900" style="line-height: 1.375;">Data Quality</h2>
       </div>
       <div class="bg-white border border-gray-400 rounded-lg shadow-card overflow-hidden">
@@ -185,7 +185,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   def gps_checks_section(assigns) do
     ~H"""
     <section id="report2-gps-checks">
-      <div class="flex items-baseline justify-between mb-3 px-1">
+      <div class="flex items-baseline justify-between mt-4 mb-3 px-1">
         <h2 class="text-xl font-semibold text-gray-900" style="line-height: 1.375;">GPS</h2>
       </div>
       <div class="bg-white border border-gray-400 rounded-lg shadow-card overflow-hidden">
@@ -205,7 +205,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
     ~H"""
     <section id="report2-naming-conventions">
-      <div class="flex items-baseline justify-between mb-3 px-1">
+      <div class="flex items-baseline justify-between mt-4 mb-3 px-1">
         <h2 class="text-xl font-semibold text-gray-900" style="line-height: 1.375;">Naming &amp; ID Conventions</h2>
         <span class="text-xs text-gray-500">{@fail_count} of {length(@checks)} checks failed</span>
       </div>
@@ -424,7 +424,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   def reachability_connectivity_section(assigns) do
     ~H"""
     <section id="report2-reachability-connectivity">
-      <div class="flex items-baseline justify-between mb-3 px-1">
+      <div class="flex items-baseline justify-between mt-4 mb-3 px-1">
         <h2 class="text-xl font-semibold text-gray-900" style="line-height: 1.375;">Reachability &amp; Connectivity</h2>
       </div>
       <%= if @connectivity_view == :detail do %>
