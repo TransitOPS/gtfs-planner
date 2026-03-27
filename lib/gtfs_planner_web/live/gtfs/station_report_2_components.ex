@@ -9,6 +9,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   alias GtfsPlanner.Gtfs.{Pathway, Stop}
 
+  @toc_sections [
+    %{id: "report2-station-inventory", label: "Station Inventory"},
+    %{id: "report2-data-quality", label: "Data Quality"},
+    %{id: "report2-gps-checks", label: "GPS"},
+    %{id: "report2-naming-conventions", label: "Naming & ID Conventions"},
+    %{id: "report2-reachability-connectivity", label: "Reachability & Connectivity"},
+    %{id: "report2-pathway-field-completeness", label: "Pathway Field Completeness"},
+    %{id: "report2-accessibility", label: "Accessibility"}
+  ]
+
+  def report_toc(assigns) do
+    assigns = assign(assigns, :sections, @toc_sections)
+
+    ~H"""
+    <nav aria-label="Report sections" class="mb-2">
+      <p class="text-sm text-gray-500 mb-3">Station structure, data quality, and connectivity checks.</p>
+      <ol class="flex flex-wrap gap-x-1 gap-y-1 text-xs text-gray-500">
+        <%= for {section, idx} <- Enum.with_index(@sections) do %>
+          <li class="flex items-center gap-1">
+            <span :if={idx > 0} class="text-gray-300">/</span>
+            <a href={"##{section.id}"} class="hover:text-gray-900 hover:underline">{section.label}</a>
+          </li>
+        <% end %>
+      </ol>
+    </nav>
+    """
+  end
+
   attr :report, :map, default: nil
 
   def station_inventory_section(assigns) do
