@@ -23,7 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     assigns = assign(assigns, :sections, @toc_sections)
 
     ~H"""
-    <nav aria-label="Report sections" class="mb-2">
+    <nav aria-label="Report sections" class="mb-8">
       <h1 class="text-2xl font-bold text-gray-900 mb-4">Station structure, data quality, and connectivity checks</h1>
       <ol class="space-y-2">
         <li :for={section <- @sections}>
