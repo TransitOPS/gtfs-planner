@@ -283,12 +283,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
         }
 
       true ->
-        accessible_directed =
-          pathways
-          |> Enum.filter(
-            &(&1.pathway_mode in [1, 3, 5, 6, 7])
-          )
-          |> Graph.build_directed_adjacency()
+        accessible_directed = Graph.build_step_free_directed_adjacency(pathways)
 
         all_targets =
           platform_target_index

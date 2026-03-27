@@ -30,6 +30,16 @@ defmodule GtfsPlanner.Gtfs.Graph do
   end
 
   @doc """
+  Like `build_directed_adjacency/1` but filtered to step-free modes
+  (walkway, moving sidewalk, elevator, fare gate, exit gate).
+  """
+  def build_step_free_directed_adjacency(pathways) do
+    pathways
+    |> Enum.filter(&MapSet.member?(@step_free_modes, normalize_pathway_mode(&1.pathway_mode)))
+    |> build_directed_adjacency()
+  end
+
+  @doc """
   Builds an undirected adjacency map — all pathways treated as bidirectional.
   Returns `%{stop_id => MapSet.t(stop_id)}`.
   """
