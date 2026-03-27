@@ -1,13 +1,10 @@
 defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
   @moduledoc """
   Pure builder: snapshot -> list of data quality item maps with rendering metadata.
-
-  Duplicates graph/BFS logic from StationReport to avoid coupling with the legacy report.
   """
 
+  alias GtfsPlanner.Gtfs.Graph
   alias GtfsPlanner.Gtfs.StationReport.Helpers
-
-  @step_free_modes MapSet.new([1, 3, 5, 6, 7])
 
   @spec build(%{station: map(), child_stops: [map()], pathways: [map()]}) :: [map()]
   def build(%{station: station, child_stops: child_stops, pathways: pathways}) do
@@ -16,9 +13,9 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
 
     core_pathways = Enum.filter(pathways, &pathway_inside_nodes?(&1, node_set))
 
-    undirected = build_undirected_adjacency(core_pathways)
-    directed = build_directed_adjacency(core_pathways)
-    platform_target_index = build_platform_target_index(child_stops)
+    undirected = Graph.build_undirected_adjacency(core_pathways)
+    directed = Graph.build_directed_adjacency(core_pathways)
+    platform_target_index = Graph.build_platform_target_index(child_stops)
 
     boarding_areas = Enum.filter(child_stops, &(&1.location_type == 4))
     platforms = Enum.filter(child_stops, &(&1.location_type == 0))
@@ -177,7 +174,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
        ) do
     checked =
       Enum.map(entrances, fn entrance ->
-        reachable = reachable?(entrance.stop_id, all_platform_targets, directed)
+        reachable = Graph.reachable?(entrance.stop_id, all_platform_targets, directed)
         %{stop_id: entrance.stop_id, reachable: reachable}
       end)
 
@@ -219,7 +216,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
             true
           else
             Enum.any?(own_targets, fn start_id ->
-              reachable?(start_id, other_targets, directed)
+              Graph.reachable?(start_id, other_targets, directed)
             end)
           end
 
@@ -286,12 +283,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
         }
 
       true ->
-        accessible_directed =
-          pathways
-          |> Enum.filter(
-            &MapSet.member?(@step_free_modes, normalize_pathway_mode(&1.pathway_mode))
-          )
-          |> build_directed_adjacency()
+        accessible_directed = Graph.build_step_free_directed_adjacency(pathways)
 
         all_targets =
           platform_target_index
@@ -300,7 +292,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
 
         has_accessible_path =
           Enum.any?(entrances, fn entrance ->
-            reachable?(entrance.stop_id, all_targets, accessible_directed)
+            Graph.reachable?(entrance.stop_id, all_targets, accessible_directed)
           end)
 
         %{
@@ -449,87 +441,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
 
   defp stop_display_name(%{stop_name: name}, _id) when is_binary(name) and name != "", do: name
   defp stop_display_name(_stop_or_nil, id), do: id
-
-  # --- Graph utilities (duplicated from StationReport) ---
-
-  defp build_directed_adjacency(pathways) do
-    Enum.reduce(pathways, %{}, fn pathway, acc ->
-      acc = put_edge(acc, pathway.from_stop_id, pathway.to_stop_id)
-
-      if pathway.is_bidirectional do
-        put_edge(acc, pathway.to_stop_id, pathway.from_stop_id)
-      else
-        acc
-      end
-    end)
-  end
-
-  defp build_undirected_adjacency(pathways) do
-    Enum.reduce(pathways, %{}, fn pathway, acc ->
-      acc
-      |> put_edge(pathway.from_stop_id, pathway.to_stop_id)
-      |> put_edge(pathway.to_stop_id, pathway.from_stop_id)
-    end)
-  end
-
-  defp build_platform_target_index(child_stops) do
-    boarding_areas_by_parent =
-      child_stops
-      |> Enum.filter(&(&1.location_type == 4))
-      |> Enum.group_by(& &1.parent_station)
-
-    child_stops
-    |> Enum.filter(&(&1.location_type == 0))
-    |> Map.new(fn platform ->
-      ba_ids =
-        boarding_areas_by_parent
-        |> Map.get(platform.stop_id, [])
-        |> Enum.map(& &1.stop_id)
-
-      {platform.stop_id, MapSet.new([platform.stop_id | ba_ids])}
-    end)
-  end
-
-  defp reachable?(from_stop_id, target_ids, directed) do
-    if MapSet.size(target_ids) == 0 do
-      false
-    else
-      from_stop_id
-      |> bfs(directed)
-      |> MapSet.intersection(target_ids)
-      |> MapSet.size()
-      |> Kernel.>(0)
-    end
-  end
-
-  defp bfs(start, directed) do
-    do_bfs(:queue.from_list([start]), MapSet.new([start]), directed)
-  end
-
-  defp do_bfs(queue, visited, directed) do
-    case :queue.out(queue) do
-      {{:value, current}, rest} ->
-        neighbors = Map.get(directed, current, MapSet.new())
-
-        {next_queue, next_visited} =
-          Enum.reduce(neighbors, {rest, visited}, fn neighbor, {q, v} ->
-            if MapSet.member?(v, neighbor) do
-              {q, v}
-            else
-              {:queue.in(neighbor, q), MapSet.put(v, neighbor)}
-            end
-          end)
-
-        do_bfs(next_queue, next_visited, directed)
-
-      {:empty, _} ->
-        visited
-    end
-  end
-
-  defp put_edge(adjacency, from_stop_id, to_stop_id) do
-    Map.update(adjacency, from_stop_id, MapSet.new([to_stop_id]), &MapSet.put(&1, to_stop_id))
-  end
 
   defp pathway_inside_nodes?(pathway, node_set) do
     MapSet.member?(node_set, pathway.from_stop_id) and

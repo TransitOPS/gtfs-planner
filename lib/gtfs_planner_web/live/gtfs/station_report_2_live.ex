@@ -9,7 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
-  alias GtfsPlanner.Gtfs.StationReport2.{DataQuality, Gps}
+  alias GtfsPlanner.Gtfs.StationReport2.{Connectivity, DataQuality, Gps}
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -27,6 +27,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:stop_id, nil)
      |> assign(:data_quality_items, [])
      |> assign(:gps_items, [])
+     |> assign(:connectivity_summaries, nil)
+     |> assign(:connectivity_view, :summary)
+     |> assign(:connectivity_dimension, :entrance_to_platform)
+     |> assign(:route_detail_groups, [])
+     |> assign(:expanded_route, nil)
+     |> assign(:expanded_route_key, nil)
      |> assign(:drawer_entity, nil)
      |> assign(:drawer_type, nil)
      |> assign(:drawer_form, nil)
@@ -34,22 +40,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   end
 
   @impl true
-  def handle_params(%{"stop_id" => stop_id}, _uri, socket) do
+  def handle_params(%{"stop_id" => stop_id} = params, _uri, socket) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
     case Gtfs.get_station_report_snapshot(organization_id, gtfs_version_id, stop_id) do
       {:ok, snapshot} ->
-        data_quality_items = DataQuality.build(snapshot)
-        gps_items = Gps.build(snapshot)
+        connectivity_summaries = Connectivity.build_summaries(snapshot)
+        dimension = parse_dimension(params["dimension"])
+
+        {connectivity_view, route_detail_groups} =
+          if params["connectivity"] == "detail" do
+            {:detail, Connectivity.build_route_detail(snapshot, dimension)}
+          else
+            {:summary, []}
+          end
 
         {:noreply,
          socket
          |> assign(:stop_id, stop_id)
          |> assign(:station, snapshot.station)
          |> assign(:report, snapshot)
-         |> assign(:data_quality_items, data_quality_items)
-         |> assign(:gps_items, gps_items)
+         |> assign(:data_quality_items, DataQuality.build(snapshot))
+         |> assign(:gps_items, Gps.build(snapshot))
+         |> assign(:connectivity_summaries, connectivity_summaries)
+         |> assign(:connectivity_view, connectivity_view)
+         |> assign(:connectivity_dimension, dimension)
+         |> assign(:route_detail_groups, route_detail_groups)
+         |> assign(:expanded_route, nil)
+         |> assign(:expanded_route_key, nil)
          |> reset_drawer()}
 
       {:error, :not_found} ->
@@ -148,6 +167,50 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   end
 
   @impl true
+  def handle_event("navigate_connectivity_detail", %{"dimension" => dimension}, socket) do
+    version_id = socket.assigns.current_gtfs_version.id
+    stop_id = socket.assigns.stop_id
+
+    {:noreply,
+     push_patch(socket,
+       to: "/gtfs/#{version_id}/stops/#{stop_id}/report_2?connectivity=detail&dimension=#{dimension}"
+     )}
+  end
+
+  @impl true
+  def handle_event("navigate_connectivity_summary", _params, socket) do
+    version_id = socket.assigns.current_gtfs_version.id
+    stop_id = socket.assigns.stop_id
+
+    {:noreply,
+     push_patch(socket, to: "/gtfs/#{version_id}/stops/#{stop_id}/report_2")}
+  end
+
+  @impl true
+  def handle_event(
+        "toggle_route_expand",
+        %{"source_id" => source_id, "target_id" => target_id},
+        socket
+      ) do
+    key = {source_id, target_id}
+
+    if socket.assigns.expanded_route_key == key do
+      {:noreply,
+       socket
+       |> assign(:expanded_route, nil)
+       |> assign(:expanded_route_key, nil)}
+    else
+      snapshot = socket.assigns.report
+      expanded = Connectivity.build_expanded_route(snapshot, source_id, target_id)
+
+      {:noreply,
+       socket
+       |> assign(:expanded_route, expanded)
+       |> assign(:expanded_route_key, key)}
+    end
+  end
+
+  @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app
@@ -174,7 +237,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
           <.data_quality_section items={@data_quality_items} />
           <.gps_checks_section items={@gps_items} />
           <.naming_conventions_section report={@report} />
-          <.reachability_connectivity_section report={@report} />
+          <.reachability_connectivity_section
+            report={@report}
+            connectivity_summaries={@connectivity_summaries}
+            connectivity_view={@connectivity_view}
+            connectivity_dimension={@connectivity_dimension}
+            route_detail_groups={@route_detail_groups}
+            expanded_route={@expanded_route}
+            expanded_route_key={@expanded_route_key}
+          />
           <.pathway_field_completeness_section report={@report} />
           <.accessibility_section report={@report} />
         <% end %>
@@ -213,6 +284,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         |> assign(:report, snapshot)
         |> assign(:data_quality_items, DataQuality.build(snapshot))
         |> assign(:gps_items, Gps.build(snapshot))
+        |> assign(:connectivity_summaries, Connectivity.build_summaries(snapshot))
 
       {:error, _} ->
         socket
@@ -237,4 +309,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   defp to_optional_string(nil), do: ""
   defp to_optional_string(value), do: to_string(value)
+
+  defp parse_dimension("entrance_to_platform"), do: :entrance_to_platform
+  defp parse_dimension("platform_to_exit"), do: :platform_to_exit
+  defp parse_dimension("platform_to_platform"), do: :platform_to_platform
+  defp parse_dimension(_), do: :entrance_to_platform
 end
