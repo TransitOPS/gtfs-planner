@@ -142,6 +142,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     end
   end
 
+  @impl true
   def handle_event("save_entity", _params, socket) do
     {:noreply, socket}
   end
