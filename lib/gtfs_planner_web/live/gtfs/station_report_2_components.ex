@@ -5,6 +5,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   """
   use Phoenix.Component
 
+  import GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents
+
   alias GtfsPlanner.Gtfs.{Stop, Pathway}
 
   attr :report, :map, default: nil
@@ -207,13 +209,180 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   end
 
   attr :report, :map, default: nil
+  attr :connectivity_summaries, :map, default: nil
+  attr :connectivity_view, :atom, default: :summary
+  attr :connectivity_dimension, :atom, default: :entrance_to_platform
+  attr :route_detail_groups, :list, default: []
+  attr :expanded_route, :any, default: nil
+  attr :expanded_route_key, :any, default: nil
 
   def reachability_connectivity_section(assigns) do
     ~H"""
     <section id="report2-reachability-connectivity">
-      <h2 class="text-lg font-semibold">Reachability & Connectivity</h2>
-      <p class="text-base-content/60">Not yet implemented.</p>
+      <%= if @connectivity_view == :detail do %>
+        <.connectivity_route_detail
+          dimension={@connectivity_dimension}
+          groups={@route_detail_groups}
+          expanded_route={@expanded_route}
+          expanded_route_key={@expanded_route_key}
+        />
+      <% else %>
+        <%= if @connectivity_summaries do %>
+          <div>
+            <div class="flex items-center justify-between mb-5">
+              <div>
+                <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-widest mb-1">Connectivity</p>
+                <div class="h-px bg-gray-300"></div>
+              </div>
+            </div>
+
+            <div class="flex flex-col gap-6">
+              <.connectivity_summary_card
+                summary={@connectivity_summaries.entrance_to_platform}
+                dimension={:entrance_to_platform}
+              />
+              <.connectivity_summary_card
+                summary={@connectivity_summaries.platform_to_platform}
+                dimension={:platform_to_platform}
+              />
+              <.connectivity_summary_card
+                summary={@connectivity_summaries.platform_to_exit}
+                dimension={:platform_to_exit}
+              />
+            </div>
+          </div>
+        <% else %>
+          <.connectivity_empty_state
+            title="No pathways defined"
+            description="No pathways defined for this station."
+          />
+        <% end %>
+      <% end %>
     </section>
+    """
+  end
+
+  attr :summary, :map, required: true
+  attr :dimension, :atom, required: true
+
+  defp connectivity_summary_card(assigns) do
+    stats = assigns.summary.stats
+    stats_text = "#{stats.connected_pairs}/#{stats.total_pairs} pairs connected · #{stats.source_count} sources · #{stats.target_count} targets"
+    assigns = assign(assigns, :stats_text, stats_text)
+
+    ~H"""
+    <div class="bg-white border border-gray-400 rounded-lg p-6 shadow-card">
+      <div class="flex items-start justify-between gap-4 mb-1">
+        <h2 class="text-lg font-semibold text-gray-900">{@summary.title}</h2>
+        <.dimension_badge status={@summary.status} />
+      </div>
+      <p class="text-sm text-gray-600 mb-1">{@summary.description}</p>
+      <p class="text-sm text-gray-500 mb-5">{@stats_text}</p>
+
+      <table class="w-full text-sm" style="border-collapse: collapse;">
+        <thead>
+          <tr class="border-b border-gray-200">
+            <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">{@summary.source_label}</th>
+            <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Reachable</th>
+            <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Unreachable</th>
+            <th class="text-left pb-2.5 pt-1 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            :for={row <- @summary.summary_rows}
+            class="border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-colors duration-[15ms]"
+          >
+            <td class="py-3 pr-4 font-medium text-gray-900">
+              <button
+                type="button"
+                class="w-full text-left cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 rounded-sm"
+                phx-click="navigate_connectivity_detail"
+                phx-value-dimension={to_string(@dimension)}
+              >
+                {row.source_name}
+              </button>
+            </td>
+            <td class="py-3 pr-4 text-gray-700">{if row.reachable != [], do: Enum.join(row.reachable, ", "), else: "—"}</td>
+            <td class="py-3 pr-4 text-gray-700">{if row.unreachable != [], do: Enum.join(row.unreachable, ", "), else: "—"}</td>
+            <td class="py-3"><.reachability_status status={row.status} /></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <.alert_banner :for={msg <- @summary.alerts} message={msg} />
+    </div>
+    """
+  end
+
+  attr :status, :atom, required: true
+
+  defp reachability_status(%{status: :full} = assigns) do
+    ~H"""
+    <span class="inline-flex items-center gap-1.5" aria-label="Fully reachable">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+        <path d="M4 9.5L7.5 13L14 5" stroke="#059669" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </span>
+    """
+  end
+
+  defp reachability_status(%{status: :partial} = assigns) do
+    ~H"""
+    <span class="inline-flex items-center gap-1.5" aria-label="Partially reachable">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M8 1.5L14.5 13.5H1.5L8 1.5Z" stroke="#ca8a04" stroke-width="1.4" stroke-linejoin="round"/>
+        <text x="8" y="12" text-anchor="middle" font-size="8" font-weight="700" fill="#ca8a04">!</text>
+      </svg>
+      <span class="text-sm text-yellow-600 font-medium">Partial</span>
+    </span>
+    """
+  end
+
+  defp reachability_status(%{status: :none} = assigns) do
+    ~H"""
+    <span class="inline-flex items-center gap-1.5" aria-label="Not reachable">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M4 4L12 12M12 4L4 12" stroke="#dc2626" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+      <span class="text-sm text-red-600 font-medium">No reachability</span>
+    </span>
+    """
+  end
+
+  attr :status, :atom, required: true
+
+  defp dimension_badge(%{status: :passed} = assigns) do
+    ~H"""
+    <span class="inline-flex items-center px-3 py-1 text-xs font-semibold rounded tracking-wide bg-emerald-50 text-emerald-700 border border-emerald-200">
+      Passed
+    </span>
+    """
+  end
+
+  defp dimension_badge(%{status: :warning} = assigns) do
+    ~H"""
+    <span class="inline-flex items-center px-3 py-1 text-xs font-semibold rounded tracking-wide bg-white text-yellow-700 border border-yellow-400">
+      Warning
+    </span>
+    """
+  end
+
+  defp dimension_badge(%{status: :fail} = assigns) do
+    ~H"""
+    <span class="inline-flex items-center px-3 py-1 text-xs font-semibold rounded tracking-wide bg-red-100 text-red-800 border border-red-200">
+      Fail
+    </span>
+    """
+  end
+
+  attr :message, :string, required: true
+
+  defp alert_banner(assigns) do
+    ~H"""
+    <div class="mt-4 px-4 py-3 rounded-lg bg-red-50 border border-red-100" role="alert">
+      <p class="text-sm text-red-900 leading-relaxed">{@message}</p>
+    </div>
     """
   end
 
