@@ -67,14 +67,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
 
   defp source_group_card(assigns) do
     worst = worst_target_status(assigns.group.targets)
-    border_color = status_border_color(worst)
-    assigns = assign(assigns, :border_color, border_color)
+    dot_color = status_dot_color(worst)
+    assigns = assign(assigns, :dot_color, dot_color)
 
     ~H"""
-    <div class={"bg-white border border-gray-400 rounded-lg overflow-hidden border-l-4 #{@border_color} shadow-card"}>
+    <div class="bg-white border border-gray-400 rounded-lg overflow-hidden shadow-card">
       <div class="px-5 pt-4 pb-2 flex items-start justify-between">
         <div>
-          <div class="flex items-center gap-3">
+          <div class="flex items-center gap-2.5">
+            <span class={"w-2 h-2 rounded-full shrink-0 #{@dot_color}"}></span>
             <h3 class="text-base font-semibold text-gray-900">{@group.source.name}</h3>
             <.level_pill
               :if={@group.source.level_name}
@@ -82,7 +83,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
               index={@group.source.level_index}
             />
           </div>
-          <p class="text-xs text-gray-500 font-mono mt-1">{@group.source.stop_id}</p>
+          <p class="text-xs text-gray-500 font-mono mt-1 ml-[18px]">{@group.source.stop_id}</p>
         </div>
       </div>
 
@@ -370,13 +371,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     end
   end
 
-  defp status_border_color(:green), do: "border-l-green-400"
-  defp status_border_color(:red), do: "border-l-red-400"
-  defp status_border_color(_), do: "border-l-amber-400"
+  defp status_dot_color(:green), do: "bg-emerald-500"
+  defp status_dot_color(:red), do: "bg-red-400"
+  defp status_dot_color(_), do: "bg-amber-400"
 
-  defp route_badge_style(:reachable), do: {"Reachable", "bg-green-100", "text-green-800"}
-  defp route_badge_style(:long), do: {"Long route", "bg-amber-100", "text-amber-800"}
-  defp route_badge_style(:nopath), do: {"No path", "bg-red-100", "text-red-800"}
+  defp route_badge_style(:reachable), do: {"Reachable", "bg-emerald-50", "text-emerald-700"}
+  defp route_badge_style(:long), do: {"Long route", "bg-amber-50", "text-amber-700"}
+  defp route_badge_style(:nopath), do: {"No path", "bg-red-50", "text-red-700"}
 
   defp dimension_label(:entrance_to_platform), do: "Entrance to platform"
   defp dimension_label(:platform_to_exit), do: "Platform to exit"

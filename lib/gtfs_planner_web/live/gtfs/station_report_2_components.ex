@@ -315,7 +315,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <span class="inline-flex items-center gap-1.5" aria-label="Fully reachable">
       <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-        <path d="M4 9.5L7.5 13L14 5" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M4 9.5L7.5 13L14 5" stroke="#059669" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
     </span>
     """
@@ -348,7 +348,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp dimension_badge(%{status: :passed} = assigns) do
     ~H"""
-    <span class="inline-flex items-center px-3 py-1 text-xs font-semibold rounded tracking-wide bg-green-100 text-green-800 border-green-200">
+    <span class="inline-flex items-center px-3 py-1 text-xs font-semibold rounded tracking-wide bg-emerald-50 text-emerald-700 border border-emerald-200">
       Passed
     </span>
     """
