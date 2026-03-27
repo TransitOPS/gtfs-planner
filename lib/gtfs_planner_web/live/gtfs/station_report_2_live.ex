@@ -9,7 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
-  alias GtfsPlanner.Gtfs.StationReport2.{Connectivity, DataQuality, Gps, PathwayFieldCompleteness}
+  alias GtfsPlanner.Gtfs.StationReport2.{Connectivity, DataQuality, Gps, NamingConventions, PathwayFieldCompleteness}
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -27,6 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:stop_id, nil)
      |> assign(:data_quality_items, [])
      |> assign(:gps_items, [])
+     |> assign(:naming_convention_checks, [])
      |> assign(:pathway_field_completeness_groups, [])
      |> assign(:connectivity_summaries, nil)
      |> assign(:connectivity_view, :summary)
@@ -64,6 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
          |> assign(:report, snapshot)
          |> assign(:data_quality_items, DataQuality.build(snapshot))
          |> assign(:gps_items, Gps.build(snapshot))
+         |> assign(:naming_convention_checks, NamingConventions.build(snapshot))
          |> assign(:pathway_field_completeness_groups, PathwayFieldCompleteness.build(snapshot))
          |> assign(:connectivity_summaries, connectivity_summaries)
          |> assign(:connectivity_view, connectivity_view)
@@ -233,12 +235,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         />
       </:sub_header>
 
+      <div class="hidden print:block print:font-bold print:text-2xl print:leading-[1.3] print:text-gray-900 print:mb-8 print:font-[Inter,ui-sans-serif,system-ui,sans-serif]">
+        <div>Pathways Report:</div>
+        <div :if={@station}>{@station.stop_name || @station.stop_id}</div>
+      </div>
+
       <div id="station-report-2" class="space-y-6">
         <%= if @report do %>
+          <.report_toc station_name={@station.stop_name || @station.stop_id} />
           <.station_inventory_section report={@report} />
           <.data_quality_section items={@data_quality_items} />
           <.gps_checks_section items={@gps_items} />
-          <.naming_conventions_section report={@report} />
+          <.naming_conventions_section checks={@naming_convention_checks} />
           <.reachability_connectivity_section
             report={@report}
             connectivity_summaries={@connectivity_summaries}
@@ -286,6 +294,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         |> assign(:report, snapshot)
         |> assign(:data_quality_items, DataQuality.build(snapshot))
         |> assign(:gps_items, Gps.build(snapshot))
+        |> assign(:naming_convention_checks, NamingConventions.build(snapshot))
         |> assign(:pathway_field_completeness_groups, PathwayFieldCompleteness.build(snapshot))
         |> assign(:connectivity_summaries, Connectivity.build_summaries(snapshot))
 

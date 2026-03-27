@@ -224,3 +224,12 @@ body:has(#diagram-page[data-immersive="true"]) {
     transition-duration: 0ms;
   }
 }
+
+/* Print styles for Report 2 */
+@media print {
+  #app-header,
+  #sub-header-wrapper {
+    display: none !important;
+  }
+
+}
