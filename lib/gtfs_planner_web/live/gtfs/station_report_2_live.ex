@@ -242,7 +242,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
       <div id="station-report-2" class="space-y-6">
         <%= if @report do %>
-          <.report_toc />
+          <.report_toc station_name={@station.stop_name || @station.stop_id} />
           <.station_inventory_section report={@report} />
           <.data_quality_section items={@data_quality_items} />
           <.gps_checks_section items={@gps_items} />

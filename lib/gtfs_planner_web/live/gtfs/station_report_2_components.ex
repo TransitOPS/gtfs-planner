@@ -19,13 +19,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     %{id: "report2-accessibility", label: "Accessibility", desc: "Wheelchair boarding and accessible pathway coverage."}
   ]
 
-  @doc "Renders the report table of contents. Accepts no assigns."
+  attr :station_name, :string, required: true
+
+  @doc "Renders the report table of contents with the station name as heading."
   def report_toc(assigns) do
     assigns = assign(assigns, :sections, @toc_sections)
 
     ~H"""
     <nav aria-label="Report sections" class="mb-8">
-      <h1 class="text-2xl font-bold text-gray-900 mb-4">Station structure, data quality, and connectivity checks</h1>
+      <h1 class="text-2xl font-bold text-gray-900 mb-1">{@station_name}</h1>
+      <p class="text-sm text-gray-500 mb-4">Station structure, data quality, and connectivity checks</p>
       <ol class="space-y-2">
         <li :for={section <- @sections}>
           <a href={"##{section.id}"} class="text-sm font-semibold text-teal-600 hover:text-teal-700 hover:underline">{section.label}</a>
