@@ -109,12 +109,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     nopath = assigns.target.status == :nopath
     key = {assigns.source_id, assigns.target.stop_id}
     expanded = assigns.expanded_route_key == key
+    route_region_id = "route-#{assigns.source_id}-#{assigns.target.stop_id}"
 
     assigns =
       assigns
       |> assign(:nopath, nopath)
       |> assign(:expanded, expanded)
       |> assign(:key, key)
+      |> assign(:route_region_id, route_region_id)
 
     ~H"""
     <div class="border-b border-gray-100 last:border-b-0">
@@ -124,7 +126,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         phx-value-source_id={@source_id}
         phx-value-target_id={@target.stop_id}
         aria-expanded={to_string(@expanded)}
-        aria-controls={"route-#{@target.stop_id}"}
+        aria-controls={@route_region_id}
       >
         <div class="flex-1 min-w-0">
           <p class="text-sm font-medium text-gray-900">{@target.name}</p>
@@ -170,7 +172,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
       </button>
 
       <%= if @expanded and not @nopath and is_map(@expanded_route) do %>
-        <div id={"route-#{@target.stop_id}"} role="region" class="border-t border-gray-200 bg-gray-50">
+        <div id={@route_region_id} role="region" class="border-t border-gray-200 bg-gray-50">
           <div class="p-5 border-b border-gray-200">
             <div class="flex items-start justify-between mb-4">
               <div>
@@ -219,7 +221,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
       <% end %>
 
       <%= if @expanded and @nopath do %>
-        <div id={"route-#{@target.stop_id}"} role="region" class="border-t border-gray-200 bg-gray-50 px-5 py-6">
+        <div id={@route_region_id} role="region" class="border-t border-gray-200 bg-gray-50 px-5 py-6">
           <div class="flex items-center gap-3 text-sm text-gray-600">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path d="M4 4L12 12M12 4L4 12" stroke="#dc2626" stroke-width="1.8" stroke-linecap="round"/>
@@ -348,19 +350,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   # ── Helpers ────────────────────────────────────────────────────────────────
 
   defp group_steps_by_level(steps) do
-    {grouped, _} =
+    {grouped_rev, _} =
       Enum.reduce(steps, {[], nil}, fn step, {acc, current_level} ->
+        step_item = Map.put(step, :type, :step)
+
         if step.level_name != current_level and step.level_name != nil do
           level_item = %{type: :level, name: step.level_name, index: step.level_index}
-          step_item = Map.put(step, :type, :step)
-          {acc ++ [level_item, step_item], step.level_name}
+          {[step_item, level_item | acc], step.level_name}
         else
-          step_item = Map.put(step, :type, :step)
-          {acc ++ [step_item], current_level}
+          {[step_item | acc], current_level}
         end
       end)
 
-    grouped
+    Enum.reverse(grouped_rev)
   end
 
   defp worst_target_status(targets) do

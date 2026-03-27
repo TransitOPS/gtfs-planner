@@ -54,13 +54,27 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
     }
   end
 
-  defp build_dimension_summary(sources, targets, platform_target_index, directed, _child_stops, dimension) do
+  defp build_dimension_summary(
+         sources,
+         targets,
+         platform_target_index,
+         directed,
+         _child_stops,
+         dimension
+       ) do
     {title, description, source_label} = dimension_metadata(dimension)
 
     # Compute reachability for each source
     summary_rows =
       Enum.map(sources, fn source ->
         start_ids = source_start_ids(source, platform_target_index, dimension)
+
+        reachable_by_start =
+          start_ids
+          |> Enum.uniq()
+          |> Map.new(fn start_id -> {start_id, Graph.bfs(start_id, directed)} end)
+
+        reachable_sets = Enum.map(start_ids, &Map.fetch!(reachable_by_start, &1))
 
         {reachable_names, unreachable_names} =
           targets
@@ -72,8 +86,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
               {reach, unreach}
             else
               is_reachable =
-                Enum.any?(start_ids, fn start_id ->
-                  Graph.reachable?(start_id, target_set, directed)
+                Enum.any?(reachable_sets, fn reachable_set ->
+                  not MapSet.disjoint?(reachable_set, target_set)
                 end)
 
               name = target.stop_name || target.stop_id
@@ -469,6 +483,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
         to_stop = Map.get(stop_index, to_hop.stop_id)
         from_stop = Map.get(stop_index, from_hop.stop_id)
         level_diff = compute_level_diff(from_stop, to_stop, level_index)
+        traversed_reverse? = traversed_reverse?(pathway, from_hop.stop_id, to_hop.stop_id)
 
         traversal =
           if pathway, do: TraversalCalculator.calculate(pathway, level_diff), else: nil
@@ -479,7 +494,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
           pathway,
           traversal,
           level_diff,
-          level_index
+          level_index,
+          traversed_reverse?
         )
       end)
 
@@ -494,7 +510,15 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
     }
   end
 
-  defp build_enriched_hop(hop, stop, pathway, traversal, level_diff, level_index) do
+  defp build_enriched_hop(
+         hop,
+         stop,
+         pathway,
+         traversal,
+         level_diff,
+         level_index,
+         traversed_reverse? \\ nil
+       ) do
     level_data =
       case stop do
         nil -> nil
@@ -515,6 +539,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
       pathway_mode_label:
         if(is_integer(hop.pathway_mode), do: Pathway.mode_label(hop.pathway_mode), else: nil),
       is_bidirectional: pathway && pathway.is_bidirectional,
+      traversed_reverse?: traversed_reverse?,
       signposted_as: pathway && pathway.signposted_as,
       reversed_signposted_as: pathway && pathway.reversed_signposted_as,
       level_diff: level_diff,
@@ -801,6 +826,17 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
   end
 
   defp do_path_segments(_path, acc), do: Enum.reverse(acc)
+
+  defp traversed_reverse?(nil, _from_stop_id, _to_stop_id), do: nil
+
+  defp traversed_reverse?(pathway, from_stop_id, to_stop_id) do
+    pathway.from_stop_id == to_stop_id and pathway.to_stop_id == from_stop_id
+  end
+
+  defp effective_signposted_as(%{traversed_reverse?: true, is_bidirectional: true} = hop) do
+    normalize_signposted_as(hop.reversed_signposted_as) ||
+      normalize_signposted_as(hop.signposted_as)
+  end
 
   defp effective_signposted_as(hop) do
     normalize_signposted_as(hop.signposted_as)

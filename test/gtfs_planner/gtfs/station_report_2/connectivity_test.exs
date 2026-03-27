@@ -403,6 +403,31 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
       assert elevator_step.time_warning == true
     end
 
+    test "uses reversed signposted_as when traversing bidirectional edge in reverse" do
+      snapshot = %{
+        child_stops: [
+          make_stop(%{stop_id: "ENT_1", stop_name: "Entrance", location_type: 2}),
+          make_stop(%{stop_id: "PLAT_1", stop_name: "Platform", location_type: 0})
+        ],
+        pathways: [
+          make_pathway(%{
+            pathway_id: "PW_1",
+            from_stop_id: "ENT_1",
+            to_stop_id: "PLAT_1",
+            is_bidirectional: true,
+            signposted_as: "To Platform",
+            reversed_signposted_as: "To Entrance"
+          })
+        ],
+        levels: []
+      }
+
+      result = Connectivity.build_expanded_route(snapshot, "PLAT_1", "ENT_1")
+      destination_step = Enum.find(result.steps, &(&1.stop_id == "ENT_1"))
+
+      assert destination_step.instruction == "To Entrance"
+    end
+
     test "long route generates warning string" do
       snapshot = %{
         child_stops: [

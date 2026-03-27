@@ -213,7 +213,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       # Click the first row in entrance-to-platform table (use text match for uniqueness)
       view
       |> element(
-        "tr[phx-click='navigate_connectivity_detail'][phx-value-dimension='entrance_to_platform']",
+        "button[phx-click='navigate_connectivity_detail'][phx-value-dimension='entrance_to_platform']",
         "Main Entrance"
       )
       |> render_click()
@@ -315,6 +315,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       |> render_click()
 
       html = render(view)
+      assert has_element?(view, "#route-ENT_A-PLAT_1")
       # Step table should be visible with semantic table markup
       assert html =~ "<thead>"
       assert html =~ "Mode"

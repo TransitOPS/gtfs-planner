@@ -291,12 +291,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         <tbody>
           <tr
             :for={row <- @summary.summary_rows}
-            class="border-b border-gray-100 last:border-b-0 cursor-pointer hover:bg-gray-50 transition-colors duration-[15ms]"
-            phx-click="navigate_connectivity_detail"
-            phx-value-dimension={to_string(@dimension)}
-            tabindex="0"
+            class="border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-colors duration-[15ms]"
           >
-            <td class="py-3 pr-4 font-medium text-gray-900">{row.source_name}</td>
+            <td class="py-3 pr-4 font-medium text-gray-900">
+              <button
+                type="button"
+                class="w-full text-left cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 rounded-sm"
+                phx-click="navigate_connectivity_detail"
+                phx-value-dimension={to_string(@dimension)}
+              >
+                {row.source_name}
+              </button>
+            </td>
             <td class="py-3 pr-4 text-gray-700">{if row.reachable != [], do: Enum.join(row.reachable, ", "), else: "—"}</td>
             <td class="py-3 pr-4 text-gray-700">{if row.unreachable != [], do: Enum.join(row.unreachable, ", "), else: "—"}</td>
             <td class="py-3"><.reachability_status status={row.status} /></td>
@@ -364,7 +370,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp dimension_badge(%{status: :fail} = assigns) do
     ~H"""
-    <span class="inline-flex items-center px-3 py-1 text-xs font-semibold rounded tracking-wide bg-red-100 text-red-800 border-red-200">
+    <span class="inline-flex items-center px-3 py-1 text-xs font-semibold rounded tracking-wide bg-red-100 text-red-800 border border-red-200">
       Fail
     </span>
     """
