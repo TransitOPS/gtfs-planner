@@ -450,9 +450,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         />
       <% else %>
         <%= if @connectivity_summaries do %>
-          <div>
-
-            <div class="flex flex-col gap-6">
+          <div class="flex flex-col gap-6">
               <.connectivity_summary_card
                 summary={@connectivity_summaries.entrance_to_platform}
                 dimension={:entrance_to_platform}
@@ -466,7 +464,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
                 dimension={:platform_to_exit}
               />
             </div>
-          </div>
         <% else %>
           <.connectivity_empty_state
             title="No pathways defined"
