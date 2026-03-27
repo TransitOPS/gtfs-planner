@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   import GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents
 
-  alias GtfsPlanner.Gtfs.{Stop, Pathway}
+  alias GtfsPlanner.Gtfs.{Pathway, Stop}
 
   attr :report, :map, default: nil
 
@@ -197,14 +197,219 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     """
   end
 
-  attr :report, :map, default: nil
+  attr :checks, :list, required: true
 
   def naming_conventions_section(assigns) do
+    fail_count = Enum.count(assigns.checks, &(&1.status == :fail))
+    assigns = assign(assigns, :fail_count, fail_count)
+
     ~H"""
     <section id="report2-naming-conventions">
-      <h2 class="text-lg font-semibold">Naming Conventions</h2>
-      <p class="text-base-content/60">Not yet implemented.</p>
+      <div class="bg-white border border-gray-400 rounded-lg shadow-card overflow-hidden">
+        <div class="bg-gray-50 border-b border-gray-400 px-5 py-3 flex items-center justify-between">
+          <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Naming &amp; ID Conventions</h2>
+          <span class="text-xs text-gray-500">{@fail_count} of {length(@checks)} checks failed</span>
+        </div>
+
+        <table class="w-full text-sm" style="border-collapse: collapse;">
+          <thead>
+            <tr class="border-b border-gray-200">
+              <th class="w-8 py-2.5 px-4 bg-gray-50"></th>
+              <th class="text-left py-2.5 pr-4 text-[13px] font-medium text-gray-500 bg-gray-50">Check</th>
+              <th class="text-left py-2.5 pr-4 text-[13px] font-medium text-gray-500 bg-gray-50">Rule</th>
+              <th class="text-center py-2.5 px-4 text-[13px] font-medium text-gray-500 bg-gray-50 w-24">Result</th>
+              <th class="text-right py-2.5 px-4 text-[13px] font-medium text-gray-500 bg-gray-50 w-20" style="font-variant-numeric: tabular-nums;">Issues</th>
+            </tr>
+          </thead>
+          <tbody>
+            <%= for check <- @checks do %>
+              <.naming_check_row check={check} />
+            <% end %>
+          </tbody>
+        </table>
+      </div>
     </section>
+    """
+  end
+
+  attr :check, :map, required: true
+
+  defp naming_check_row(%{check: %{status: :pass}} = assigns) do
+    ~H"""
+    <tr class="border-b border-gray-200 last:border-b-0">
+      <td class="py-3 px-4 text-center">
+        <svg class="inline-block text-green-600" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </td>
+      <td class="py-3 pr-4 font-medium text-gray-900">{@check.label}</td>
+      <td class="py-3 pr-4 text-gray-600"><.naming_rule_text rule={@check.rule} id={@check.id} /></td>
+      <td class="py-3 px-4 text-center">
+        <span class="inline-flex items-center px-2 text-xs font-semibold tracking-wider uppercase rounded bg-green-100 text-[#166534]" style="padding-top: 2px; padding-bottom: 2px;">PASS</span>
+      </td>
+      <td class="py-3 px-4 text-right text-gray-400" style="font-variant-numeric: tabular-nums;">0</td>
+    </tr>
+    """
+  end
+
+  defp naming_check_row(%{check: %{status: :fail}} = assigns) do
+    ~H"""
+    <tr>
+      <td colspan="5">
+        <details class="group">
+          <summary class="grid cursor-pointer hover:bg-gray-50 border-b border-gray-200" style="grid-template-columns: 2rem 1fr 1fr 6rem 5rem; display: grid; list-style: none;">
+            <span class="py-3 px-4 text-center flex items-center justify-center">
+              <svg class="text-gray-400 transition-transform duration-150 group-open:rotate-180" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <span class="py-3 pr-4 font-medium text-gray-900 flex items-center">{@check.label}</span>
+            <span class="py-3 pr-4 text-gray-600 flex items-center"><.naming_rule_text rule={@check.rule} id={@check.id} /></span>
+            <span class="py-3 px-4 flex items-center justify-center">
+              <span class="inline-flex items-center px-2 text-xs font-semibold tracking-wider uppercase rounded bg-red-100 text-[#991b1b]" style="padding-top: 2px; padding-bottom: 2px;">FAIL</span>
+            </span>
+            <span class="py-3 px-4 flex items-center justify-end text-gray-700" style="font-variant-numeric: tabular-nums;">{@check.issue_count}</span>
+          </summary>
+          <div class="border-b border-gray-200">
+            <.naming_violation_panel check={@check} />
+          </div>
+        </details>
+      </td>
+    </tr>
+    """
+  end
+
+  attr :check, :map, required: true
+
+  defp naming_violation_panel(%{check: %{id: "naming_title_case"}} = assigns) do
+    ~H"""
+    <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
+      <p class="text-sm text-gray-700 mb-3">The following stop names do not use title case:</p>
+      <div class="space-y-2">
+        <div :for={detail <- @check.details} class="flex items-start gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
+              <span :if={detail.stop_name} class="text-gray-400">&mdash;</span>
+              <span :if={detail.stop_name} class="text-sm text-gray-900">{detail.stop_name}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp naming_violation_panel(%{check: %{id: "naming_node_prefix"}} = assigns) do
+    ~H"""
+    <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
+      <p class="text-sm text-gray-700 mb-3">The following generic nodes do not use the <code class="bg-white px-1 rounded border border-gray-200 text-gray-700">node_</code> prefix:</p>
+      <div class="space-y-2">
+        <div :for={detail <- @check.details} class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+          <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp naming_violation_panel(%{check: %{id: "naming_boarding_prefix"}} = assigns) do
+    ~H"""
+    <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
+      <p class="text-sm text-gray-700 mb-3">The following boarding areas do not use the <code class="bg-white px-1 rounded border border-gray-200 text-gray-700">boarding_</code> prefix:</p>
+      <div class="space-y-2">
+        <div :for={detail <- @check.details} class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+          <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp naming_violation_panel(%{check: %{id: "naming_entrance_prefix"}} = assigns) do
+    ~H"""
+    <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
+      <p class="text-sm text-gray-700 mb-3">The following entrances/exits do not use the <code class="bg-white px-1 rounded border border-gray-200 text-gray-700">entrance_</code> prefix:</p>
+      <div class="space-y-2">
+        <div :for={detail <- @check.details} class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+          <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp naming_violation_panel(%{check: %{id: "naming_prefix_type_mismatch"}} = assigns) do
+    ~H"""
+    <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
+      <p class="text-sm text-gray-700 mb-3">The following stops have a prefix that does not match their location type:</p>
+      <div class="bg-amber-50 border border-amber-200 rounded px-3 py-2.5 mb-3">
+        <p class="text-sm text-[#92400e]">
+          <span class="font-semibold">Expected prefixes by type:</span>
+          entrance/exit &rarr; <code class="text-[13px]">entrance_</code>&ensp;&middot;&ensp;boarding area &rarr; <code class="text-[13px]">boarding_</code>&ensp;&middot;&ensp;generic node &rarr; <code class="text-[13px]">node_</code>
+        </p>
+      </div>
+      <div class="space-y-2">
+        <div :for={detail <- @check.details} class="flex items-start gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
+              <span :if={detail.location_type} class="text-gray-400">&mdash;</span>
+              <span :if={detail.location_type} class="text-sm text-gray-600">location type {detail.location_type} ({Stop.location_type_label(detail.location_type)})</span>
+            </div>
+            <p :if={detail.expected_prefix} class="text-xs text-gray-500 mt-1">Expected prefix: <code class="text-[12px]">{detail.expected_prefix}</code></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp naming_violation_panel(%{check: %{id: "naming_autogenerated_name"}} = assigns) do
+    ~H"""
+    <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
+      <p class="text-sm text-gray-700 mb-3">The following stop names appear auto-generated or are not human-readable:</p>
+      <div class="space-y-2">
+        <div :for={detail <- @check.details} class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+          <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp naming_violation_panel(assigns) do
+    ~H"""
+    <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
+      <div class="space-y-2">
+        <div :for={detail <- @check.details} class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+          <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  attr :rule, :string, required: true
+  attr :id, :string, required: true
+
+  defp naming_rule_text(%{id: "naming_node_prefix"} = assigns) do
+    ~H"""
+    All generic node IDs use the <code class="bg-gray-100 px-1 rounded text-gray-700">node_</code> prefix.
+    """
+  end
+
+  defp naming_rule_text(%{id: "naming_boarding_prefix"} = assigns) do
+    ~H"""
+    All boarding area IDs use the <code class="bg-gray-100 px-1 rounded text-gray-700">boarding_</code> prefix.
+    """
+  end
+
+  defp naming_rule_text(%{id: "naming_entrance_prefix"} = assigns) do
+    ~H"""
+    All entrance/exit IDs use the <code class="bg-gray-100 px-1 rounded text-gray-700">entrance_</code> prefix.
+    """
+  end
+
+  defp naming_rule_text(assigns) do
+    ~H"""
+    {@rule}
     """
   end
 

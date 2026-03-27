@@ -420,6 +420,122 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert reloaded_stop.stop_name == "Changed Name"
     end
 
+    test "naming conventions section renders heading and summary", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, _view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      assert html =~ "Naming &amp; ID Conventions"
+      assert html =~ "of 6 checks failed"
+    end
+
+    test "naming conventions section renders all 6 check rows", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, _view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      assert html =~ "Stop name title case"
+      assert html =~ "Generic node ID prefix"
+      assert html =~ "Boarding area ID prefix"
+      assert html =~ "Entrance ID prefix"
+      assert html =~ "location type match"
+      assert html =~ "human-written"
+    end
+
+    test "naming conventions failing check renders FAIL badge", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_NC",
+          stop_name: "Naming Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      # Entrance without entrance_ prefix triggers naming_entrance_prefix failure
+      _bad_entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "door_main",
+          stop_name: "Main Door",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      assert has_element?(view, "#report2-naming-conventions .bg-red-100", "FAIL")
+    end
+
+    test "naming conventions passing check renders PASS badge", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      assert has_element?(view, "#report2-naming-conventions .bg-green-100", "PASS")
+    end
+
+    test "naming conventions prefix mismatch includes expected prefix", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_PM",
+          stop_name: "Prefix Mismatch Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      # boarding_ prefix on an entrance (type 2) triggers prefix_type_mismatch
+      _mismatched =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "boarding_north",
+          stop_name: "North Boarding",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, _view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      assert html =~ "Expected prefix"
+      assert html =~ "entrance_"
+    end
+
     test "redirects with flash when station is missing", %{
       conn: conn,
       user: user,
