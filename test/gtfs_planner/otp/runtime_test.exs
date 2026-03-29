@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
     end
 
     graph_fun = fn "org-1", "ver-1", opts ->
+      send(self(), {:graph_opts, opts})
       opts[:status_callback].(%{phase: :done, reused: true})
 
       {:ok, "/tmp/otp/Graph.obj",
@@ -32,6 +33,17 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
     assert result.graph_path == "/tmp/otp/Graph.obj"
     assert result.meta.gtfs.content_hash == "gtfs-hash"
     assert result.meta.graph.reused
+
+    assert_receive {:graph_opts, graph_opts}
+    assert graph_opts[:gtfs_zip_path] == "/tmp/otp/gtfs.zip"
+    assert graph_opts[:runtime_scope] == :default
+
+    assert graph_opts[:gtfs_meta] == %{
+             reused: false,
+             content_hash: "gtfs-hash",
+             file_size_bytes: 100,
+             manifest_json: %{}
+           }
 
     assert_receive {:status, %{scope: :gtfs, phase: :done, reused: false}}
     assert_receive {:status, %{scope: :graph, phase: :done, reused: true}}
@@ -56,6 +68,322 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
 
     assert_receive {:gtfs_opts, gtfs_opts}
     assert gtfs_opts[:preflight_mode] == :lenient
+  end
+
+  test "prepare_runtime/3 selects station_zip_path for station_reachability runtime scope" do
+    station_zip_path =
+      Path.join(
+        System.tmp_dir!(),
+        "station-#{System.unique_integer([:positive])}-runtime-test.zip"
+      )
+
+    write_runtime_gtfs_zip!(station_zip_path, ["32095"], ["32095"])
+    on_exit(fn -> File.rm(station_zip_path) end)
+
+    gtfs_fun = fn "org-1", "ver-1", _opts ->
+      {:ok, "/tmp/otp/source.zip",
+       %{content_hash: "hash", station_stop_id: "32095", station_zip_path: station_zip_path}}
+    end
+
+    graph_fun = fn "org-1", "ver-1", opts ->
+      send(self(), {:graph_opts, opts})
+      {:ok, "/tmp/otp/Graph.obj", %{}}
+    end
+
+    assert {:ok, result} =
+             Runtime.prepare_runtime("org-1", "ver-1",
+               runtime_scope: :station_reachability,
+               gtfs_materializer_fun: gtfs_fun,
+               graph_materializer_fun: graph_fun
+             )
+
+    assert result.gtfs_zip_path == station_zip_path
+
+    assert_receive {:graph_opts, graph_opts}
+    assert graph_opts[:gtfs_zip_path] == station_zip_path
+    assert graph_opts[:runtime_scope] == :station_reachability
+  end
+
+  test "prepare_runtime/3 ignores out-of-scope source stop_times by prechecking station-scoped artifact" do
+    source_zip_path =
+      Path.join(
+        System.tmp_dir!(),
+        "station-#{System.unique_integer([:positive])}-source-out-of-scope-runtime-test.zip"
+      )
+
+    station_zip_path =
+      Path.join(
+        System.tmp_dir!(),
+        "station-#{System.unique_integer([:positive])}-scoped-out-of-scope-runtime-test.zip"
+      )
+
+    write_runtime_gtfs_zip!(source_zip_path, ["32095", "15910"], ["15910"])
+    write_runtime_gtfs_zip!(station_zip_path, ["32095"], ["32095"])
+
+    on_exit(fn ->
+      File.rm(source_zip_path)
+      File.rm(station_zip_path)
+    end)
+
+    gtfs_fun = fn "org-1", "ver-1", _opts ->
+      {:ok, source_zip_path,
+       %{content_hash: "hash", station_stop_id: "32095", station_zip_path: station_zip_path}}
+    end
+
+    graph_fun = fn "org-1", "ver-1", opts ->
+      send(self(), {:graph_opts, opts})
+      {:ok, "/tmp/otp/Graph.obj", %{}}
+    end
+
+    assert {:ok, result} =
+             Runtime.prepare_runtime("org-1", "ver-1",
+               runtime_scope: :station_reachability,
+               gtfs_materializer_fun: gtfs_fun,
+               graph_materializer_fun: graph_fun
+             )
+
+    assert result.gtfs_zip_path == station_zip_path
+
+    assert_receive {:graph_opts, graph_opts}
+    assert graph_opts[:gtfs_zip_path] == station_zip_path
+    assert graph_opts[:runtime_scope] == :station_reachability
+  end
+
+  test "prepare_runtime/3 returns deterministic error when station scoped referential precheck fails" do
+    station_zip_path =
+      Path.join(
+        System.tmp_dir!(),
+        "station-#{System.unique_integer([:positive])}-precheck-fail-runtime-test.zip"
+      )
+
+    write_runtime_gtfs_zip!(station_zip_path, ["32095"], ["15910"])
+    on_exit(fn -> File.rm(station_zip_path) end)
+
+    gtfs_fun = fn "org-1", "ver-1", _opts ->
+      {:ok, "/tmp/otp/source.zip",
+       %{content_hash: "hash", station_stop_id: "32095", station_zip_path: station_zip_path}}
+    end
+
+    graph_fun = fn _org, _ver, _opts ->
+      send(self(), :graph_called)
+      {:ok, "/tmp/otp/Graph.obj", %{}}
+    end
+
+    assert {:error, [issue]} =
+             Runtime.prepare_runtime("org-1", "ver-1",
+               runtime_scope: :station_reachability,
+               gtfs_materializer_fun: gtfs_fun,
+               graph_materializer_fun: graph_fun
+             )
+
+    assert issue.code == :station_runtime_precheck_stop_times_stop_id_missing_stop
+    assert issue.severity == :error
+    assert issue.details.runtime_scope == :station_reachability
+    assert_station_runtime_boundary_details(issue.details)
+    assert issue.details.source_file == "stop_times.txt"
+    assert issue.details.source_field == "stop_id"
+    assert issue.details.target_file == "stops.txt"
+    assert issue.details.target_field == "stop_id"
+    assert issue.details.invalid_count == 1
+    assert issue.details.sample_values == ["15910"]
+    refute_received :graph_called
+  end
+
+  test "prepare_runtime/3 returns deterministic error when station scoped precheck cannot read artifact" do
+    station_zip_path =
+      Path.join(
+        System.tmp_dir!(),
+        "station-#{System.unique_integer([:positive])}-precheck-read-fail-runtime-test.zip"
+      )
+
+    File.write!(station_zip_path, "not-a-zip")
+    on_exit(fn -> File.rm(station_zip_path) end)
+
+    gtfs_fun = fn "org-1", "ver-1", _opts ->
+      {:ok, "/tmp/otp/source.zip",
+       %{content_hash: "hash", station_stop_id: "32095", station_zip_path: station_zip_path}}
+    end
+
+    graph_fun = fn _org, _ver, _opts ->
+      send(self(), :graph_called)
+      {:ok, "/tmp/otp/Graph.obj", %{}}
+    end
+
+    assert {:error, [issue]} =
+             Runtime.prepare_runtime("org-1", "ver-1",
+               runtime_scope: :station_reachability,
+               gtfs_materializer_fun: gtfs_fun,
+               graph_materializer_fun: graph_fun
+             )
+
+    assert issue.code == :station_runtime_precheck_artifact_read_failed
+    assert issue.severity == :error
+    assert issue.details.runtime_scope == :station_reachability
+    assert_station_runtime_boundary_details(issue.details)
+    assert issue.details.source_file == "runtime_input_gtfs_zip_path"
+    assert issue.details.source_field == "path"
+    assert issue.details.target_file == nil
+    assert issue.details.target_field == nil
+    assert issue.details.artifact_path == station_zip_path
+    assert is_integer(issue.details.issue_count)
+    assert issue.details.issue_count > 0
+    refute_received :graph_called
+  end
+
+  test "prepare_runtime/3 returns deterministic error when station_stop_id missing for station scope" do
+    station_zip_path =
+      Path.join(
+        System.tmp_dir!(),
+        "station-#{System.unique_integer([:positive])}-missing-stop-id-runtime-test.zip"
+      )
+
+    File.write!(station_zip_path, "station-zip")
+    on_exit(fn -> File.rm(station_zip_path) end)
+
+    gtfs_fun = fn "org-1", "ver-1", _opts ->
+      {:ok, "/tmp/otp/source.zip", %{content_hash: "hash", station_zip_path: station_zip_path}}
+    end
+
+    graph_fun = fn _org, _ver, _opts ->
+      send(self(), :graph_called)
+      {:ok, "/tmp/otp/Graph.obj", %{}}
+    end
+
+    assert {:error, [issue]} =
+             Runtime.prepare_runtime("org-1", "ver-1",
+               runtime_scope: :station_reachability,
+               gtfs_materializer_fun: gtfs_fun,
+               graph_materializer_fun: graph_fun
+             )
+
+    assert issue.code == :station_runtime_input_missing_station_stop_id
+    assert issue.severity == :error
+    assert issue.details.runtime_scope == :station_reachability
+    assert_station_runtime_boundary_details(issue.details)
+    refute_received :graph_called
+  end
+
+  test "prepare_runtime/3 returns deterministic error when station_zip_path unreadable for station scope" do
+    station_zip_path =
+      Path.join(
+        System.tmp_dir!(),
+        "station-#{System.unique_integer([:positive])}-missing-runtime-test.zip"
+      )
+
+    gtfs_fun = fn "org-1", "ver-1", _opts ->
+      {:ok, "/tmp/otp/source.zip",
+       %{content_hash: "hash", station_stop_id: "32095", station_zip_path: station_zip_path}}
+    end
+
+    graph_fun = fn _org, _ver, _opts ->
+      send(self(), :graph_called)
+      {:ok, "/tmp/otp/Graph.obj", %{}}
+    end
+
+    assert {:error, [issue]} =
+             Runtime.prepare_runtime("org-1", "ver-1",
+               runtime_scope: :station_reachability,
+               gtfs_materializer_fun: gtfs_fun,
+               graph_materializer_fun: graph_fun
+             )
+
+    assert issue.code == :station_runtime_input_station_zip_path_unreadable
+    assert issue.severity == :error
+    assert issue.details.runtime_scope == :station_reachability
+    assert_station_runtime_boundary_details(issue.details)
+    assert issue.details.source_file == "station_zip_path"
+    assert issue.details.source_field == "path"
+    assert issue.details.target_file == nil
+    assert issue.details.target_field == nil
+    assert issue.details.invalid_count == 1
+    assert issue.details.sample_values == [station_zip_path]
+    assert issue.details.station_zip_path == station_zip_path
+    refute_received :graph_called
+  end
+
+  test "prepare_runtime/3 returns deterministic error when station_zip_path missing for station scope" do
+    gtfs_fun = fn "org-1", "ver-1", _opts ->
+      {:ok, "/tmp/otp/source.zip", %{content_hash: "hash"}}
+    end
+
+    graph_fun = fn _org, _ver, _opts ->
+      send(self(), :graph_called)
+      {:ok, "/tmp/otp/Graph.obj", %{}}
+    end
+
+    assert {:error, [issue]} =
+             Runtime.prepare_runtime("org-1", "ver-1",
+               runtime_scope: :station_reachability,
+               gtfs_materializer_fun: gtfs_fun,
+               graph_materializer_fun: graph_fun
+             )
+
+    assert issue.code == :station_runtime_input_missing_station_zip_path
+    assert issue.severity == :error
+    assert issue.details.runtime_scope == :station_reachability
+    assert_station_runtime_boundary_details(issue.details)
+    refute_received :graph_called
+  end
+
+  test "prepare_runtime/3 returns deterministic error when runtime input lineage mismatches station zip" do
+    source_zip_path =
+      Path.join(
+        System.tmp_dir!(),
+        "station-#{System.unique_integer([:positive])}-source-lineage-runtime-test.zip"
+      )
+
+    station_zip_path =
+      Path.join(
+        System.tmp_dir!(),
+        "station-#{System.unique_integer([:positive])}-station-lineage-runtime-test.zip"
+      )
+
+    write_runtime_gtfs_zip!(source_zip_path, ["32095"], ["32095"])
+    write_runtime_gtfs_zip!(station_zip_path, ["32095"], ["32095"])
+
+    on_exit(fn ->
+      File.rm(source_zip_path)
+      File.rm(station_zip_path)
+    end)
+
+    gtfs_fun = fn "org-1", "ver-1", _opts ->
+      {:ok, source_zip_path,
+       %{content_hash: "hash", station_stop_id: "32095", station_zip_path: station_zip_path}}
+    end
+
+    runtime_input_selector = fn :station_reachability, _gtfs_zip_path, _gtfs_meta ->
+      {:ok, source_zip_path}
+    end
+
+    graph_fun = fn _org, _ver, _opts ->
+      send(self(), :graph_called)
+      {:ok, "/tmp/otp/Graph.obj", %{}}
+    end
+
+    assert {:error, [issue]} =
+             Runtime.prepare_runtime("org-1", "ver-1",
+               runtime_scope: :station_reachability,
+               gtfs_materializer_fun: gtfs_fun,
+               graph_materializer_fun: graph_fun,
+               runtime_input_gtfs_zip_path_fun: runtime_input_selector
+             )
+
+    assert issue.code == :station_runtime_input_lineage_mismatch
+    assert issue.severity == :error
+    assert issue.details.runtime_scope == :station_reachability
+    assert_station_runtime_boundary_details(issue.details)
+    assert issue.details.source_file == "runtime_input_gtfs_zip_path"
+    assert issue.details.source_field == "path"
+    assert issue.details.target_file == "station_zip_path"
+    assert issue.details.target_field == "path"
+    assert issue.details.invalid_count == 1
+    assert issue.details.runtime_input_gtfs_zip_path == source_zip_path
+    assert issue.details.station_zip_path == station_zip_path
+
+    assert Enum.sort(issue.details.sample_values) ==
+             Enum.sort([source_zip_path, station_zip_path])
+
+    refute_received :graph_called
   end
 
   test "prepare_runtime/3 returns GTFS errors without invoking graph materializer" do
@@ -213,6 +541,48 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
              )
 
     refute_received :started
+  end
+
+  test "run_with_otp/4 short-circuits before OTP start on station preflight blockers" do
+    parent = self()
+
+    blocking_issue = %{
+      code: :station_stop_lat_missing,
+      severity: :blocking,
+      context: %{file: "stops.txt", field: "stop_lat", station_stop_id: "station-1"}
+    }
+
+    gtfs_fun = fn "org-1", "ver-1", _opts ->
+      {:error, [blocking_issue]}
+    end
+
+    graph_fun = fn _org, _ver, _opts ->
+      send(parent, :graph_called)
+      {:ok, "/tmp/otp/Graph.obj", %{}}
+    end
+
+    start_server_fun = fn _graph_path, _opts ->
+      send(parent, :started)
+      {:ok, :unexpected}
+    end
+
+    assert {:error, [returned_issue]} =
+             Runtime.run_with_otp(
+               "org-1",
+               "ver-1",
+               fn _session ->
+                 send(parent, :callback_called)
+                 {:ok, :unexpected}
+               end,
+               gtfs_materializer_fun: gtfs_fun,
+               graph_materializer_fun: graph_fun,
+               start_server_fun: start_server_fun
+             )
+
+    assert returned_issue == blocking_issue
+    refute_received :graph_called
+    refute_received :started
+    refute_received :callback_called
   end
 
   test "run_with_otp/4 stops OTP when readiness fails" do
@@ -554,5 +924,48 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
 
     assert_receive :lock_acquired
     assert_receive :lock_released
+  end
+
+  defp write_runtime_gtfs_zip!(zip_path, stop_ids, stop_time_stop_ids) do
+    stops_body =
+      stop_ids
+      |> Enum.uniq()
+      |> Enum.map_join("\n", fn stop_id -> "#{stop_id},Station,1" end)
+
+    stop_times_body =
+      stop_time_stop_ids
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n", fn {stop_id, sequence} -> "trip-#{sequence},#{stop_id}" end)
+
+    stops_csv =
+      ["stop_id,stop_name,location_type", stops_body]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n")
+      |> Kernel.<>("\n")
+
+    stop_times_csv =
+      ["trip_id,stop_id", stop_times_body]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n")
+      |> Kernel.<>("\n")
+
+    files = [
+      {~c"stops.txt", stops_csv},
+      {~c"stop_times.txt", stop_times_csv}
+    ]
+
+    {:ok, _zip_path} = :zip.create(String.to_charlist(zip_path), files)
+  end
+
+  defp assert_station_runtime_boundary_details(details) when is_map(details) do
+    assert Map.has_key?(details, :source_file)
+    assert Map.has_key?(details, :source_field)
+    assert Map.has_key?(details, :target_file)
+    assert Map.has_key?(details, :target_field)
+    assert Map.has_key?(details, :invalid_count)
+    assert Map.has_key?(details, :sample_values)
+    assert is_integer(details.invalid_count)
+    assert details.invalid_count >= 0
+    assert is_list(details.sample_values)
   end
 end

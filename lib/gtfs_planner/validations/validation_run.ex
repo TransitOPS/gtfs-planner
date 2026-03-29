@@ -5,8 +5,8 @@ defmodule GtfsPlanner.Validations.ValidationRun do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  @run_types ["mobility_data", "pathways_tests"]
-  @statuses ["started", "running", "completed", "failed"]
+  @run_types ["mobility_data", "pathways_tests", "station_reachability"]
+  @statuses ["pending", "started", "running", "completed", "failed"]
 
   @type run_type :: String.t()
   @type status :: String.t()

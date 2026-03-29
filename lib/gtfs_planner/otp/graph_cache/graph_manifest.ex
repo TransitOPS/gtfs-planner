@@ -13,14 +13,22 @@ defmodule GtfsPlanner.Otp.GraphManifest do
   @spec schema_version() :: pos_integer()
   def schema_version, do: @schema_version
 
-  @spec build(String.t(), String.t(), String.t() | nil, map(), DateTime.t()) :: t()
-  def build(gtfs_content_hash, osm_fingerprint, otp_jar_sha256, build_metadata, built_at)
-      when is_binary(gtfs_content_hash) and is_binary(osm_fingerprint) and
-             (is_binary(otp_jar_sha256) or is_nil(otp_jar_sha256)) and is_map(build_metadata) and
-             is_struct(built_at, DateTime) do
+  @spec build(String.t(), String.t(), String.t(), String.t() | nil, map(), DateTime.t()) :: t()
+  def build(
+        gtfs_content_hash,
+        gtfs_input_sha256,
+        osm_fingerprint,
+        otp_jar_sha256,
+        build_metadata,
+        built_at
+      )
+      when is_binary(gtfs_content_hash) and is_binary(gtfs_input_sha256) and
+             is_binary(osm_fingerprint) and (is_binary(otp_jar_sha256) or is_nil(otp_jar_sha256)) and
+             is_map(build_metadata) and is_struct(built_at, DateTime) do
     %{
       "schema_version" => @schema_version,
       "gtfs_content_hash" => gtfs_content_hash,
+      "gtfs_input_sha256" => gtfs_input_sha256,
       "osm_fingerprint" => osm_fingerprint,
       "otp_jar_sha256" => otp_jar_sha256,
       "build" => build_metadata,
@@ -34,6 +42,7 @@ defmodule GtfsPlanner.Otp.GraphManifest do
   def valid?(manifest) when is_map(manifest) do
     is_integer(manifest["schema_version"]) and
       is_binary(manifest["gtfs_content_hash"]) and
+      is_binary(manifest["gtfs_input_sha256"]) and
       is_binary(manifest["osm_fingerprint"]) and
       (is_binary(manifest["otp_jar_sha256"]) or is_nil(manifest["otp_jar_sha256"])) and
       is_map(manifest["build"]) and

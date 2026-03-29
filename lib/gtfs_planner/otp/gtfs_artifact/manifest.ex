@@ -8,7 +8,7 @@ defmodule GtfsPlanner.Otp.Manifest do
     * at least one of `calendar.txt` or `calendar_dates.txt`
 
   Optional policy:
-    * `levels.txt` when present
+    * `levels.txt` and `attributions.txt` when present
   """
 
   alias GtfsPlanner.Gtfs.Export.FileSpec
@@ -42,7 +42,8 @@ defmodule GtfsPlanner.Otp.Manifest do
   @spec optional_specs() :: [map()]
   def optional_specs do
     [
-      FileSpec.levels_spec()
+      FileSpec.levels_spec(),
+      FileSpec.attributions_spec()
     ]
   end
 

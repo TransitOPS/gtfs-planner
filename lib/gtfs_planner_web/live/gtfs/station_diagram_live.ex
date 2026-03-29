@@ -186,7 +186,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       Validations.stop_ids_with_walkability_tests(organization_id, child_stop_ids)
 
     walkability_tests_list =
-      Validations.list_walkability_tests_for_stop_ids(organization_id, child_stop_ids)
+      Validations.list_walkability_tests_for_stop_ids(
+        organization_id,
+        gtfs_version_id,
+        child_stop_ids
+      )
 
     unassigned_child_stops =
       Enum.filter(all_child_stops, fn stop -> stop.level_id in [nil, ""] end)

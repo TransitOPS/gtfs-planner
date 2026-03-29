@@ -71,6 +71,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:pathways_prep_error, nil)
      |> assign(:export_warnings, [])
      |> assign(:recent_validation_display_counts_by_run_id, %{})
+     |> assign(:recent_validation_station_names_by_run_id, %{})
      |> assign(:recent_validation_runs, [])}
   end
 
@@ -85,20 +86,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> Gtfs.get_file_inventory(gtfs_version_id, export_type)
       |> Enum.sort_by(fn {filename, _count} -> filename end)
 
-    recent_validation_runs =
-      Validations.list_recent_validation_runs(organization_id, gtfs_version_id, 5)
-
-    recent_validation_display_counts_by_run_id =
-      build_recent_validation_display_counts_map(recent_validation_runs)
-
     {:noreply,
      socket
      |> assign(:file_inventory, file_inventory)
-     |> assign(
-       :recent_validation_display_counts_by_run_id,
-       recent_validation_display_counts_by_run_id
-     )
-     |> assign(:recent_validation_runs, recent_validation_runs)}
+     |> assign_recent_validation_data()}
   end
 
   @impl Phoenix.LiveView
@@ -360,14 +351,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                     pathways_summary: persisted_summary,
                     top_failure_categories: top_failure_categories
                   })
-                  |> assign(
-                    :recent_validation_runs,
-                    Validations.list_recent_validation_runs(
-                      socket.assigns.current_organization.id,
-                      socket.assigns.current_gtfs_version.id,
-                      5
-                    )
-                  )
+                  |> assign_recent_validation_data()
 
                 if socket.assigns.pending_mobility_validation do
                   run_mobility_data_validation(
@@ -498,14 +482,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 socket
                 |> assign(:validation_error, "Unauthorized access to validation run")
               else
-                # Refresh recent validation runs list
-                recent_validation_runs =
-                  Validations.list_recent_validation_runs(
-                    socket.assigns.current_organization.id,
-                    socket.assigns.current_gtfs_version.id,
-                    5
-                  )
-
                 socket
                 |> assign(:validation_result, %{
                   summary: %{
@@ -514,7 +490,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                     infos: run.infos_count
                   }
                 })
-                |> assign(:recent_validation_runs, recent_validation_runs)
+                |> assign_recent_validation_data()
               end
 
             {:error, reason} ->
@@ -921,6 +897,23 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 <% end %>
               </div>
             </div>
+
+            <%= if @pathways_failure do %>
+              <section
+                id="otp-data-requirements-summary"
+                class="mb-6 rounded-lg border border-base-300 bg-base-100 p-4"
+              >
+                <h3 class="text-sm font-semibold text-base-content">
+                  OTP data requirements (quick checks)
+                </h3>
+                <p class="mt-1 text-xs text-base-content/70">
+                  Fix these common blockers before rerunning pathways validation.
+                </p>
+                <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-base-content/85">
+                  <li :for={item <- otp_data_requirements_summary()}>{item}</li>
+                </ul>
+              </section>
+            <% end %>
           <% end %>
 
           <%= cond do %>
@@ -1078,10 +1071,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                         ) %>
                       <td>
                         <.link
-                          navigate={~p"/gtfs/#{@current_gtfs_version.id}/validation/#{run.id}"}
+                          navigate={validation_run_results_path(@current_gtfs_version.id, run)}
                           class="link link-primary"
                         >
-                          {format_run_type(run.run_type)}
+                          {format_run_type(run, @recent_validation_station_names_by_run_id)}
                         </.link>
                       </td>
                       <td class="text-sm text-base-content/70">
@@ -1196,9 +1189,27 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp phase_label(_), do: "Preparing..."
 
-  defp format_run_type("mobility_data"), do: "MobilityData"
-  defp format_run_type("pathways_tests"), do: "Pathways Tests"
-  defp format_run_type(type), do: type
+  defp format_run_type(%{run_type: "mobility_data"}, _station_names_by_run_id),
+    do: "MobilityData"
+
+  defp format_run_type(%{run_type: "pathways_tests"}, _station_names_by_run_id),
+    do: "Pathways Tests"
+
+  defp format_run_type(
+         %{run_type: "station_reachability", id: run_id},
+         station_names_by_run_id
+       )
+       when is_map(station_names_by_run_id) do
+    case Map.get(station_names_by_run_id, run_id) do
+      station_name when is_binary(station_name) and station_name != "" ->
+        "Station Reachability - #{station_name}"
+
+      _other ->
+        "Station Reachability"
+    end
+  end
+
+  defp format_run_type(%{run_type: type}, _station_names_by_run_id), do: type
 
   defp recent_validation_display_counts(%{run_type: "pathways_tests", result_json: result_json})
        when is_map(result_json) do
@@ -1225,6 +1236,90 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       {run.id, recent_validation_display_counts_from_source(run)}
     end)
     |> Map.new()
+  end
+
+  defp build_recent_validation_station_names_map(runs, organization_id, gtfs_version_id) do
+    runs
+    |> Enum.reduce(%{}, fn run, station_names_by_run_id ->
+      case station_reachability_station_stop_id(run) do
+        nil ->
+          station_names_by_run_id
+
+        station_stop_id ->
+          case station_name_for_stop_id(organization_id, gtfs_version_id, station_stop_id) do
+            nil -> station_names_by_run_id
+            station_name -> Map.put(station_names_by_run_id, run.id, station_name)
+          end
+      end
+    end)
+  end
+
+  defp station_reachability_station_stop_id(%{
+         run_type: "station_reachability",
+         result_json: result_json
+       })
+       when is_map(result_json) do
+    metadata = payload_value(result_json, :metadata)
+
+    payload_value(metadata, :station_stop_id) || payload_value(result_json, :station_stop_id)
+  end
+
+  defp station_reachability_station_stop_id(_run), do: nil
+
+  defp station_name_for_stop_id(organization_id, gtfs_version_id, station_stop_id)
+       when is_binary(station_stop_id) do
+    case Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, station_stop_id) do
+      %{stop_name: stop_name, stop_id: stop_id} ->
+        if is_binary(stop_name) and stop_name != "", do: stop_name, else: stop_id
+
+      _other ->
+        nil
+    end
+  end
+
+  defp station_name_for_stop_id(_organization_id, _gtfs_version_id, _station_stop_id), do: nil
+
+  defp validation_run_results_path(gtfs_version_id, run) do
+    case station_reachability_station_stop_id(run) do
+      station_stop_id when is_binary(station_stop_id) and station_stop_id != "" ->
+        ~p"/gtfs/#{gtfs_version_id}/station-reachability/#{run.id}?stop_id=#{station_stop_id}"
+
+      _other ->
+        if run.run_type == "station_reachability" do
+          ~p"/gtfs/#{gtfs_version_id}/station-reachability/#{run.id}"
+        else
+          ~p"/gtfs/#{gtfs_version_id}/validation/#{run.id}"
+        end
+    end
+  end
+
+  defp assign_recent_validation_data(socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    recent_validation_runs =
+      Validations.list_recent_validation_runs(organization_id, gtfs_version_id, 5)
+
+    recent_validation_display_counts_by_run_id =
+      build_recent_validation_display_counts_map(recent_validation_runs)
+
+    recent_validation_station_names_by_run_id =
+      build_recent_validation_station_names_map(
+        recent_validation_runs,
+        organization_id,
+        gtfs_version_id
+      )
+
+    socket
+    |> assign(
+      :recent_validation_display_counts_by_run_id,
+      recent_validation_display_counts_by_run_id
+    )
+    |> assign(
+      :recent_validation_station_names_by_run_id,
+      recent_validation_station_names_by_run_id
+    )
+    |> assign(:recent_validation_runs, recent_validation_runs)
   end
 
   defp recent_validation_display_counts_from_source(%{run_type: "pathways_tests"} = run) do
@@ -1521,14 +1616,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             pathways_summary: persisted_summary,
             top_failure_categories: top_failure_categories
           })
-          |> assign(
-            :recent_validation_runs,
-            Validations.list_recent_validation_runs(
-              socket.assigns.current_organization.id,
-              socket.assigns.current_gtfs_version.id,
-              5
-            )
-          )
+          |> assign_recent_validation_data()
 
         if socket.assigns.pending_mobility_validation do
           run_mobility_data_validation(
@@ -1601,6 +1689,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           | :unknown_build_failure
   def classify_pathways_failure_category(error_payload) when is_map(error_payload) do
     tokens = pathways_failure_classifier_tokens(error_payload)
+    issue_codes = pathways_failure_issue_codes_list(error_payload)
 
     failure_code =
       error_payload
@@ -1631,6 +1720,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         :pathways_task_crashed
       ] ->
         :pathways_internal_failure
+
+      category = classify_pathways_issue_code_category(issue_codes) ->
+        category
 
       tokens_match_any?(tokens, ["csv", "parse", "malformed", "invalid row"]) ->
         :csv_parse_malformed_rows
@@ -1776,6 +1868,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       code: code,
       severity: normalize_pathways_failure_issue_severity(payload_value(issue, :severity)),
       message: message,
+      context: context,
       context_summary: pathways_failure_issue_context_summary(context)
     }
   end
@@ -1785,9 +1878,167 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       code: :pathways_preflight_invalid_issue,
       severity: :blocking,
       message: "Pathways preflight returned malformed issue payload.",
+      context: %{},
       context_summary: inspect(issue)
     }
   end
+
+  defp classify_pathways_issue_code_category(issue_codes) when is_list(issue_codes) do
+    normalized_codes = issue_codes |> Enum.map(&normalize_issue_code/1) |> Enum.reject(&is_nil/1)
+
+    cond do
+      Enum.any?(
+        normalized_codes,
+        &(&1 in [
+            :station_runtime_input_missing_station_zip_path,
+            :station_runtime_input_missing_station_stop_id,
+            :station_runtime_input_lineage_mismatch
+          ])
+      ) ->
+        :pathways_internal_failure
+
+      Enum.any?(
+        normalized_codes,
+        &(&1 in [
+            :station_runtime_input_station_zip_path_unreadable,
+            :station_runtime_precheck_artifact_read_failed
+          ])
+      ) ->
+        :missing_corrupt_files_or_permissions
+
+      Enum.any?(
+        normalized_codes,
+        &(&1 in [:station_runtime_precheck_stop_times_stop_id_missing_stop])
+      ) ->
+        :referential_integrity
+
+      Enum.any?(normalized_codes, &(&1 in [:station_stop_lat_missing, :station_stop_lon_missing])) ->
+        :invalid_coordinates
+
+      Enum.any?(
+        normalized_codes,
+        &(&1 in [:station_stop_lat_not_numeric, :station_stop_lon_not_numeric])
+      ) ->
+        :invalid_coordinates
+
+      Enum.any?(
+        normalized_codes,
+        &(&1 in [:station_stop_lat_out_of_range, :station_stop_lon_out_of_range])
+      ) ->
+        :invalid_coordinates
+
+      Enum.any?(
+        normalized_codes,
+        &(&1 in [:boarding_area_parent_station_missing, :boarding_area_parent_station_not_found])
+      ) ->
+        :boarding_area_parent_integrity
+
+      Enum.any?(
+        normalized_codes,
+        &(&1 in [
+            :stop_times_trip_id_missing_trip,
+            :stop_times_stop_id_missing_stop,
+            :trips_route_id_missing_route,
+            :trips_service_id_missing_calendar,
+            :pathways_from_stop_id_missing_stop,
+            :pathways_to_stop_id_missing_stop,
+            :transfers_from_stop_id_missing_stop,
+            :transfers_to_stop_id_missing_stop,
+            :trips_shape_id_missing_shape,
+            :fare_rules_fare_id_missing_fare_attributes
+          ])
+      ) ->
+        :referential_integrity
+
+      true ->
+        nil
+    end
+  end
+
+  defp classify_pathways_issue_code_category(_issue_codes), do: nil
+
+  defp normalize_issue_code(code) when is_atom(code), do: code
+
+  defp normalize_issue_code(code) when is_binary(code) do
+    case code do
+      "stop_times_trip_id_missing_trip" ->
+        :stop_times_trip_id_missing_trip
+
+      "stop_times_stop_id_missing_stop" ->
+        :stop_times_stop_id_missing_stop
+
+      "trips_route_id_missing_route" ->
+        :trips_route_id_missing_route
+
+      "trips_service_id_missing_calendar" ->
+        :trips_service_id_missing_calendar
+
+      "trips_shape_id_missing_shape" ->
+        :trips_shape_id_missing_shape
+
+      "pathways_from_stop_id_missing_stop" ->
+        :pathways_from_stop_id_missing_stop
+
+      "pathways_to_stop_id_missing_stop" ->
+        :pathways_to_stop_id_missing_stop
+
+      "transfers_from_stop_id_missing_stop" ->
+        :transfers_from_stop_id_missing_stop
+
+      "transfers_to_stop_id_missing_stop" ->
+        :transfers_to_stop_id_missing_stop
+
+      "fare_rules_fare_id_missing_fare_attributes" ->
+        :fare_rules_fare_id_missing_fare_attributes
+
+      "station_stop_lat_missing" ->
+        :station_stop_lat_missing
+
+      "station_stop_lon_missing" ->
+        :station_stop_lon_missing
+
+      "station_stop_lat_not_numeric" ->
+        :station_stop_lat_not_numeric
+
+      "station_stop_lon_not_numeric" ->
+        :station_stop_lon_not_numeric
+
+      "station_stop_lat_out_of_range" ->
+        :station_stop_lat_out_of_range
+
+      "station_stop_lon_out_of_range" ->
+        :station_stop_lon_out_of_range
+
+      "boarding_area_parent_station_missing" ->
+        :boarding_area_parent_station_missing
+
+      "boarding_area_parent_station_not_found" ->
+        :boarding_area_parent_station_not_found
+
+      "station_runtime_input_missing_station_zip_path" ->
+        :station_runtime_input_missing_station_zip_path
+
+      "station_runtime_input_missing_station_stop_id" ->
+        :station_runtime_input_missing_station_stop_id
+
+      "station_runtime_input_station_zip_path_unreadable" ->
+        :station_runtime_input_station_zip_path_unreadable
+
+      "station_runtime_input_lineage_mismatch" ->
+        :station_runtime_input_lineage_mismatch
+
+      "station_runtime_precheck_stop_times_stop_id_missing_stop" ->
+        :station_runtime_precheck_stop_times_stop_id_missing_stop
+
+      "station_runtime_precheck_artifact_read_failed" ->
+        :station_runtime_precheck_artifact_read_failed
+
+      _other ->
+        nil
+    end
+  end
+
+  defp normalize_issue_code(_code), do: nil
 
   defp normalize_pathways_failure_issue_severity(:warning), do: :warning
   defp normalize_pathways_failure_issue_severity(:info), do: :info
@@ -2018,6 +2269,20 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
       _other ->
         nil
+    end
+  end
+
+  defp pathways_failure_issue_codes_list(error_payload) do
+    error_payload
+    |> payload_value(:issues)
+    |> case do
+      issues when is_list(issues) ->
+        issues
+        |> Enum.map(&payload_value(&1, :code))
+        |> Enum.reject(&is_nil/1)
+
+      _other ->
+        []
     end
   end
 

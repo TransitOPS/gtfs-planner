@@ -48,6 +48,38 @@ defmodule GtfsPlanner.Validations do
   end
 
   @doc """
+  Creates a station reachability validation run with status `pending`.
+
+  The station identifier is persisted in station run metadata so downstream
+  station-scoped execution can read it deterministically.
+  """
+  @spec create_station_reachability_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, ValidationRun.t()} | {:error, Ecto.Changeset.t()}
+  def create_station_reachability_run(organization_id, gtfs_version_id, station_stop_id)
+      when is_binary(station_stop_id) do
+    run_metadata = station_reachability_run_metadata(station_stop_id)
+
+    %ValidationRun{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id,
+      started_at: DateTime.utc_now()
+    }
+    |> ValidationRun.changeset(%{
+      run_type: "station_reachability",
+      status: "pending",
+      result_json: %{
+        "metadata" => run_metadata
+      }
+    })
+    |> Repo.insert()
+  end
+
+  @spec station_reachability_run_metadata(String.t()) :: map()
+  defp station_reachability_run_metadata(station_stop_id) do
+    %{"station_stop_id" => station_stop_id}
+  end
+
+  @doc """
   Returns the newest active pathways trip test run for an organization/version.
 
   Active means status is `started` or `running`.
@@ -62,6 +94,66 @@ defmodule GtfsPlanner.Validations do
     |> order_by([run], desc: run.started_at, desc: run.inserted_at, desc: run.id)
     |> limit(1)
     |> Repo.one()
+  end
+
+  @doc """
+  Returns the newest active station reachability run for an organization,
+  GTFS version, and station stop id.
+
+  Active means status is `pending`, `started`, or `running`.
+  """
+  @spec get_active_station_reachability_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          ValidationRun.t() | nil
+  def get_active_station_reachability_run(organization_id, gtfs_version_id, station_stop_id)
+      when is_binary(station_stop_id) and station_stop_id != "" do
+    ValidationRun
+    |> where([run], run.organization_id == ^organization_id)
+    |> where([run], run.gtfs_version_id == ^gtfs_version_id)
+    |> where([run], run.run_type == "station_reachability")
+    |> where([run], run.status in ["pending", "started", "running"])
+    |> where(
+      [run],
+      fragment(
+        "COALESCE((?->'metadata'->>'station_stop_id'), (?->>'station_stop_id')) = ?",
+        run.result_json,
+        run.result_json,
+        ^station_stop_id
+      )
+    )
+    |> order_by([run], desc: run.started_at, desc: run.inserted_at, desc: run.id)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  def get_active_station_reachability_run(_organization_id, _gtfs_version_id, _station_stop_id),
+    do: nil
+
+  @doc """
+  Returns the current station reachability run reuse decision.
+
+  - `{:ok, run}` when an active run exists.
+  - `:none` when no active run exists.
+  """
+  @spec reusable_station_reachability_run(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          keyword()
+        ) ::
+          {:ok, ValidationRun.t()} | :none
+  def reusable_station_reachability_run(
+        organization_id,
+        gtfs_version_id,
+        station_stop_id,
+        _opts \\ []
+      ) do
+    case get_active_station_reachability_run(organization_id, gtfs_version_id, station_stop_id) do
+      nil ->
+        :none
+
+      %ValidationRun{} = run ->
+        {:ok, run}
+    end
   end
 
   @doc """
@@ -100,6 +192,87 @@ defmodule GtfsPlanner.Validations do
 
   def start_pathways_trip_test(organization_id, gtfs_version_id, opts) do
     start_new_pathways_trip_test(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
+  Starts a station reachability test run for the given organization,
+  GTFS version, and station stop id.
+
+  Creates a station-scoped run, transitions it to `running`, then spawns the
+  existing pathways trip test runner under `GtfsPlanner.TaskSupervisor`.
+  """
+  @spec start_station_reachability_test(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
+          {:ok, ValidationRun.t()} | {:error, term()}
+  def start_station_reachability_test(
+        organization_id,
+        gtfs_version_id,
+        station_stop_id,
+        opts \\ []
+      ) do
+    opts =
+      Keyword.update(
+        opts,
+        :pathways_validity_opts,
+        [station_stop_id: station_stop_id],
+        fn pathways_validity_opts ->
+          Keyword.put(pathways_validity_opts, :station_stop_id, station_stop_id)
+        end
+      )
+
+    opts =
+      Keyword.update(
+        opts,
+        :runtime_opts,
+        station_reachability_runtime_opts(station_stop_id),
+        fn runtime_opts ->
+          runtime_opts
+          |> Keyword.put(:runtime_scope, :station_reachability)
+          |> Keyword.put(:gtfs_materializer_fun, station_gtfs_materializer_fun())
+          |> Keyword.put(:gtfs_opts, station_stop_id: station_stop_id)
+        end
+      )
+
+    with {:ok, pending_run} <-
+           create_station_reachability_run(organization_id, gtfs_version_id, station_stop_id),
+         {:ok, running_run} <- mark_running(pending_run),
+         :ok <-
+           spawn_pathways_trip_test_runner(running_run, organization_id, gtfs_version_id, opts) do
+      {:ok, running_run}
+    else
+      {:error, {:runner_spawn_failed, reason, running_run}} ->
+        _ =
+          mark_failed(running_run, %{
+            reason: :pathways_runner_spawn_failed,
+            details: %{error: inspect(reason)}
+          })
+
+        {:error, {:pathways_runner_spawn_failed, reason}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec station_reachability_runtime_opts(String.t()) :: keyword()
+  defp station_reachability_runtime_opts(station_stop_id) do
+    [
+      runtime_scope: :station_reachability,
+      gtfs_materializer_fun: station_gtfs_materializer_fun(),
+      gtfs_opts: [station_stop_id: station_stop_id],
+      return_runtime_meta: true
+    ]
+  end
+
+  @spec station_gtfs_materializer_fun() ::
+          (Ecto.UUID.t(), Ecto.UUID.t(), keyword() -> {:ok, String.t(), map()} | {:error, term()})
+  defp station_gtfs_materializer_fun do
+    fn organization_id, gtfs_version_id, gtfs_opts ->
+      apply(
+        GtfsPlanner.Otp.StationMaterializer,
+        :get_or_build_gtfs_zip,
+        [organization_id, gtfs_version_id, gtfs_opts]
+      )
+    end
   end
 
   @spec start_new_pathways_trip_test(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
@@ -198,6 +371,44 @@ defmodule GtfsPlanner.Validations do
   end
 
   @doc """
+  Lists recent station reachability runs scoped to organization, GTFS version,
+  and station stop id.
+
+  Results include terminal runs (`completed` and `failed`) only and are ordered
+  newest-first with deterministic tie-breaking.
+  """
+  @spec list_recent_station_reachability_runs(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          pos_integer()
+        ) :: [ValidationRun.t()]
+  def list_recent_station_reachability_runs(
+        organization_id,
+        gtfs_version_id,
+        station_stop_id,
+        limit \\ 5
+      ) do
+    ValidationRun
+    |> where([run], run.organization_id == ^organization_id)
+    |> where([run], run.gtfs_version_id == ^gtfs_version_id)
+    |> where([run], run.run_type == "station_reachability")
+    |> where([run], run.status in ["completed", "failed"])
+    |> where(
+      [run],
+      fragment(
+        "COALESCE((?->'metadata'->>'station_stop_id'), (?->>'station_stop_id')) = ?",
+        run.result_json,
+        run.result_json,
+        ^station_stop_id
+      )
+    )
+    |> order_by([run], desc: run.started_at, desc: run.inserted_at, desc: run.id)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  @doc """
   Lists persisted walkability test case results for a pathways validation run.
 
   Results are ordered deterministically by `order_index` ascending.
@@ -237,7 +448,8 @@ defmodule GtfsPlanner.Validations do
       nil ->
         {:error, :not_found}
 
-      %ValidationRun{run_type: "pathways_tests"} = run ->
+      %ValidationRun{run_type: run_type} = run
+      when run_type in ["pathways_tests", "station_reachability"] ->
         {:ok,
          %{
            id: run.id,
@@ -278,7 +490,8 @@ defmodule GtfsPlanner.Validations do
       nil ->
         {:error, :not_found}
 
-      %ValidationRun{run_type: "pathways_tests", status: "completed"} = run ->
+      %ValidationRun{run_type: run_type, status: "completed"} = run
+      when run_type in ["pathways_tests", "station_reachability"] ->
         {:ok,
          %{
            id: run.id,
@@ -288,7 +501,8 @@ defmodule GtfsPlanner.Validations do
            walkability_test_run_results: list_walkability_test_run_results(run.id)
          }}
 
-      %ValidationRun{run_type: "pathways_tests"} ->
+      %ValidationRun{run_type: run_type}
+      when run_type in ["pathways_tests", "station_reachability"] ->
         {:error, :run_not_completed}
 
       %ValidationRun{} ->
@@ -368,7 +582,8 @@ defmodule GtfsPlanner.Validations do
   end
 
   @doc """
-  Marks a pathways validation run as failed and stores structured error details.
+  Marks a pathways or station reachability run as failed and stores structured
+  error details.
 
   ## Examples
 
@@ -378,11 +593,15 @@ defmodule GtfsPlanner.Validations do
   """
   @spec mark_pathways_failed(ValidationRun.t(), term()) ::
           {:ok, ValidationRun.t()} | {:error, Ecto.Changeset.t() | :invalid_run_type}
-  def mark_pathways_failed(%ValidationRun{run_type: "pathways_tests"} = run, reason) do
+  def mark_pathways_failed(%ValidationRun{run_type: run_type} = run, reason)
+      when run_type in ["pathways_tests", "station_reachability"] do
+    result_json = station_terminal_result_json(run, reason)
+
     run
     |> ValidationRun.changeset(%{
       status: "failed",
       error_details: serialize_pathways_error(reason),
+      result_json: result_json,
       completed_at: DateTime.utc_now()
     })
     |> Repo.update()
@@ -391,18 +610,20 @@ defmodule GtfsPlanner.Validations do
   def mark_pathways_failed(%ValidationRun{}, _reason), do: {:error, :invalid_run_type}
 
   @doc """
-  Marks a pathways validation run as completed and persists run-level
-  report data and per-case result rows in a single database transaction.
+  Marks a pathways or station reachability validation run as completed and
+  persists run-level report data and per-case result rows in a single database
+  transaction.
 
-  Returns `{:error, :invalid_run_type}` when called for a non-pathways run.
+  Returns `{:error, :invalid_run_type}` when called for an unsupported run type.
   """
   @spec mark_pathways_completed(ValidationRun.t(), map(), non_neg_integer()) ::
           {:ok, ValidationRun.t()} | {:error, term()}
   def mark_pathways_completed(
-        %ValidationRun{run_type: "pathways_tests"} = run,
+        %ValidationRun{run_type: run_type} = run,
         run_result,
         duration_ms
-      ) do
+      )
+      when run_type in ["pathways_tests", "station_reachability"] do
     %{result_json: result_json, case_row_attrs: case_row_attrs} =
       transform_pathways_run_result(run_result)
 
@@ -414,6 +635,8 @@ defmodule GtfsPlanner.Validations do
         "started_at" => DateTime.to_iso8601(run.started_at),
         "completed_at" => DateTime.to_iso8601(now)
       })
+
+    result_json = station_terminal_result_json(run, run_result, result_json)
 
     Repo.transaction(fn ->
       with {:ok, completed_run} <-
@@ -430,6 +653,67 @@ defmodule GtfsPlanner.Validations do
   def mark_pathways_completed(%ValidationRun{}, _run_result, _duration_ms),
     do: {:error, :invalid_run_type}
 
+  @spec station_terminal_result_json(ValidationRun.t(), term(), map()) :: map()
+  defp station_terminal_result_json(
+         %ValidationRun{run_type: "station_reachability"} = run,
+         source_payload,
+         base_result_json
+       )
+       when is_map(base_result_json) do
+    existing_result_json = run.result_json || %{}
+    existing_metadata = normalize_station_metadata(Map.get(existing_result_json, "metadata"))
+
+    station_stop_id =
+      payload_value(existing_metadata, :station_stop_id) ||
+        payload_value(existing_result_json, :station_stop_id)
+
+    station_feed_summary =
+      extract_station_feed_summary(source_payload) ||
+        payload_value(existing_result_json, :station_feed_summary) || %{}
+
+    metadata =
+      existing_metadata
+      |> Map.put("station_stop_id", station_stop_id)
+
+    base_result_json
+    |> Map.put("metadata", metadata)
+    |> Map.put("station_stop_id", station_stop_id)
+    |> Map.put("station_feed_summary", normalize_pathways_json_term(station_feed_summary))
+  end
+
+  defp station_terminal_result_json(%ValidationRun{}, _source_payload, base_result_json)
+       when is_map(base_result_json),
+       do: base_result_json
+
+  @spec station_terminal_result_json(ValidationRun.t(), term()) :: map() | nil
+  defp station_terminal_result_json(
+         %ValidationRun{run_type: "station_reachability"} = run,
+         reason
+       ) do
+    station_terminal_result_json(run, reason, run.result_json || %{})
+  end
+
+  defp station_terminal_result_json(%ValidationRun{}, _reason), do: nil
+
+  @spec normalize_station_metadata(term()) :: map()
+  defp normalize_station_metadata(metadata) when is_map(metadata),
+    do: normalize_pathways_json_term(metadata)
+
+  defp normalize_station_metadata(_metadata), do: %{}
+
+  @spec extract_station_feed_summary(term()) :: map() | nil
+  defp extract_station_feed_summary(%{} = payload) do
+    payload_value(payload, :station_feed_summary) ||
+      payload
+      |> payload_value(:suite_meta)
+      |> payload_value(:station_feed_summary) ||
+      payload
+      |> payload_value(:details)
+      |> payload_value(:station_feed_summary)
+  end
+
+  defp extract_station_feed_summary(_payload), do: nil
+
   @doc """
   Transforms an in-memory pathways runtime result into persistence-ready payloads.
 
@@ -440,6 +724,7 @@ defmodule GtfsPlanner.Validations do
   @spec transform_pathways_run_result(%{
           required(:suite_meta) => map(),
           required(:selected_test_case_ids) => [Ecto.UUID.t()],
+          optional(:selection) => map(),
           required(:summary) => %{
             required(:total) => non_neg_integer(),
             required(:passed) => non_neg_integer(),
@@ -449,23 +734,112 @@ defmodule GtfsPlanner.Validations do
           },
           required(:cases) => [map()]
         }) :: %{result_json: map(), case_row_attrs: [map()]}
-  def transform_pathways_run_result(%{
-        suite_meta: suite_meta,
-        selected_test_case_ids: selected_test_case_ids,
-        summary: summary,
-        cases: cases
-      }) do
+  def transform_pathways_run_result(
+        %{
+          suite_meta: suite_meta,
+          selected_test_case_ids: selected_test_case_ids,
+          summary: summary,
+          cases: cases
+        } = run_result
+      ) do
+    selection = normalize_pathways_selection(Map.get(run_result, :selection))
+
     %{
       result_json: %{
         "report_version" => @pathways_report_version,
         "suite_meta" => suite_meta,
         "selected_test_case_ids" => selected_test_case_ids,
+        "selection" => selection,
         "summary" => normalize_pathways_summary(summary),
         "top_failure_categories" => top_failure_categories(summary)
       },
       case_row_attrs: normalize_pathways_case_rows(cases)
     }
   end
+
+  @spec normalize_pathways_selection(term()) :: map()
+  defp normalize_pathways_selection(selection) when is_map(selection) do
+    normalized_selection = normalize_pathways_json_term(selection)
+
+    %{
+      "total_candidates" =>
+        normalize_non_negative_integer(payload_value(normalized_selection, :total_candidates)),
+      "in_scope_candidates" =>
+        normalize_non_negative_integer(payload_value(normalized_selection, :in_scope_candidates)),
+      "selected_count" =>
+        normalize_non_negative_integer(payload_value(normalized_selection, :selected_count)),
+      "invalid_count" =>
+        normalize_non_negative_integer(payload_value(normalized_selection, :invalid_count)),
+      "scope_label" => normalize_scope_label(payload_value(normalized_selection, :scope_label)),
+      "selected_test_case_ids" =>
+        normalize_selection_id_list(payload_value(normalized_selection, :selected_test_case_ids)),
+      "invalid_test_case_ids" =>
+        normalize_selection_id_list(payload_value(normalized_selection, :invalid_test_case_ids)),
+      "invalid_cases" =>
+        normalize_selection_invalid_cases(payload_value(normalized_selection, :invalid_cases))
+    }
+  end
+
+  defp normalize_pathways_selection(_selection) do
+    %{
+      "total_candidates" => 0,
+      "in_scope_candidates" => 0,
+      "selected_count" => 0,
+      "invalid_count" => 0,
+      "scope_label" => nil,
+      "selected_test_case_ids" => [],
+      "invalid_test_case_ids" => [],
+      "invalid_cases" => []
+    }
+  end
+
+  @spec normalize_scope_label(term()) :: String.t() | nil
+  defp normalize_scope_label(scope_label) when is_binary(scope_label) do
+    scope_label = String.trim(scope_label)
+
+    if scope_label == "" do
+      nil
+    else
+      scope_label
+    end
+  end
+
+  defp normalize_scope_label(_scope_label), do: nil
+
+  @spec normalize_non_negative_integer(term()) :: non_neg_integer()
+  defp normalize_non_negative_integer(value) when is_integer(value) and value >= 0, do: value
+  defp normalize_non_negative_integer(_value), do: 0
+
+  @spec normalize_selection_id_list(term()) :: [String.t()]
+  defp normalize_selection_id_list(selection_ids) when is_list(selection_ids) do
+    Enum.map(selection_ids, &normalize_pathways_error_value/1)
+  end
+
+  defp normalize_selection_id_list(_selection_ids), do: []
+
+  @spec normalize_selection_invalid_cases(term()) :: [map()]
+  defp normalize_selection_invalid_cases(invalid_cases) when is_list(invalid_cases) do
+    Enum.map(invalid_cases, fn invalid_case ->
+      normalized_invalid_case = normalize_pathways_json_term(invalid_case)
+
+      %{
+        "test_case_id" =>
+          payload_value(normalized_invalid_case, :test_case_id) ||
+            payload_value(normalized_invalid_case, :walkability_test_id),
+        "walkability_test_id" => payload_value(normalized_invalid_case, :walkability_test_id),
+        "reason_code" =>
+          payload_value(normalized_invalid_case, :reason_code)
+          |> case do
+            nil -> nil
+            value -> normalize_pathways_error_value(value)
+          end,
+        "stop_id" => payload_value(normalized_invalid_case, :stop_id),
+        "address" => payload_value(normalized_invalid_case, :address)
+      }
+    end)
+  end
+
+  defp normalize_selection_invalid_cases(_invalid_cases), do: []
 
   # --- Walkability Tests ---
 
@@ -488,14 +862,18 @@ defmodule GtfsPlanner.Validations do
   end
 
   @doc """
-  Lists walkability tests for a given organization and stop ids.
+  Lists walkability tests for a given organization, GTFS version, and stop ids.
   Results are ordered by inserted_at descending.
   """
-  def list_walkability_tests_for_stop_ids(_organization_id, []), do: []
+  def list_walkability_tests_for_stop_ids(_organization_id, _gtfs_version_id, []), do: []
 
-  def list_walkability_tests_for_stop_ids(organization_id, stop_ids) do
+  def list_walkability_tests_for_stop_ids(organization_id, gtfs_version_id, stop_ids) do
     WalkabilityTest
-    |> where([wt], wt.organization_id == ^organization_id and wt.stop_id in ^stop_ids)
+    |> where(
+      [wt],
+      wt.organization_id == ^organization_id and wt.gtfs_version_id == ^gtfs_version_id and
+        wt.stop_id in ^stop_ids
+    )
     |> order_by([wt], desc: wt.inserted_at)
     |> Repo.all()
   end
