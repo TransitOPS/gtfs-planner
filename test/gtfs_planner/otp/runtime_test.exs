@@ -36,6 +36,7 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
 
     assert_receive {:graph_opts, graph_opts}
     assert graph_opts[:gtfs_zip_path] == "/tmp/otp/gtfs.zip"
+    assert graph_opts[:runtime_scope] == :default
 
     assert graph_opts[:gtfs_meta] == %{
              reused: false,
@@ -100,6 +101,7 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
 
     assert_receive {:graph_opts, graph_opts}
     assert graph_opts[:gtfs_zip_path] == station_zip_path
+    assert graph_opts[:runtime_scope] == :station_reachability
   end
 
   test "prepare_runtime/3 ignores out-of-scope source stop_times by prechecking station-scoped artifact" do
@@ -144,6 +146,7 @@ defmodule GtfsPlanner.Otp.RuntimeTest do
 
     assert_receive {:graph_opts, graph_opts}
     assert graph_opts[:gtfs_zip_path] == station_zip_path
+    assert graph_opts[:runtime_scope] == :station_reachability
   end
 
   test "prepare_runtime/3 returns deterministic error when station scoped referential precheck fails" do

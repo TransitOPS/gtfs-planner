@@ -98,7 +98,12 @@ defmodule GtfsPlanner.Otp.Runtime do
              runtime_input_gtfs_zip_path
            ),
          graph_opts <-
-           graph_opts_for_gtfs_input(base_graph_opts, runtime_input_gtfs_zip_path, gtfs_meta),
+           graph_opts_for_gtfs_input(
+             base_graph_opts,
+             runtime_input_gtfs_zip_path,
+             gtfs_meta,
+             runtime_scope
+           ),
          {:ok, graph_path, graph_meta} <-
            graph_materializer_fun.(organization_id, gtfs_version_id, graph_opts) do
       {:ok,
@@ -340,11 +345,12 @@ defmodule GtfsPlanner.Otp.Runtime do
     |> Enum.take(@station_runtime_precheck_sample_limit)
   end
 
-  defp graph_opts_for_gtfs_input(graph_opts, gtfs_zip_path, gtfs_meta)
+  defp graph_opts_for_gtfs_input(graph_opts, gtfs_zip_path, gtfs_meta, runtime_scope)
        when is_list(graph_opts) and is_binary(gtfs_zip_path) and is_map(gtfs_meta) do
     graph_opts
     |> Keyword.put(:gtfs_zip_path, gtfs_zip_path)
     |> Keyword.put(:gtfs_meta, gtfs_meta)
+    |> Keyword.put(:runtime_scope, runtime_scope)
   end
 
   @spec cleanup_on_success(Ecto.UUID.t(), Ecto.UUID.t()) ::

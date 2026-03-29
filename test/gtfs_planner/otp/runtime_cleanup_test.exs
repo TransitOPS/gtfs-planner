@@ -42,16 +42,25 @@ defmodule GtfsPlanner.Otp.RuntimeCleanupTest do
       %{organization: organization, gtfs_version: gtfs_version}
     end
 
-    test "purges graph workspace then GTFS artifact on success", %{
+    test "purges graph root scopes then GTFS artifact on success", %{
       organization: organization,
       gtfs_version: gtfs_version
     } do
-      workspace_path = GraphPath.workspace_dir(organization.id, gtfs_version.id)
-      graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id)
+      workspace_root_path = GraphPath.workspace_root_dir(organization.id, gtfs_version.id)
+
+      default_scope = %{runtime_scope: "default", gtfs_input_sha256: "hash-default"}
+      station_scope = %{runtime_scope: "station_reachability", gtfs_input_sha256: "hash-station"}
+
+      default_graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id, default_scope)
+      station_graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id, station_scope)
+
       zip_path = ArtifactPath.artifact_zip_path(organization.id, gtfs_version.id)
 
-      File.mkdir_p!(Path.dirname(graph_path))
-      File.write!(graph_path, "graph")
+      File.mkdir_p!(Path.dirname(default_graph_path))
+      File.write!(default_graph_path, "graph-default")
+
+      File.mkdir_p!(Path.dirname(station_graph_path))
+      File.write!(station_graph_path, "graph-station")
 
       File.mkdir_p!(Path.dirname(zip_path))
       File.write!(zip_path, "gtfs")
@@ -69,7 +78,7 @@ defmodule GtfsPlanner.Otp.RuntimeCleanupTest do
       assert {:ok, %{graph: :purged, gtfs: :purged}} =
                Runtime.cleanup_on_success(organization.id, gtfs_version.id)
 
-      refute File.exists?(workspace_path)
+      refute File.exists?(workspace_root_path)
       refute File.exists?(zip_path)
       assert {:error, :not_found} = Otp.fetch_artifact(organization.id, gtfs_version.id)
     end
@@ -89,10 +98,11 @@ defmodule GtfsPlanner.Otp.RuntimeCleanupTest do
       status_callback = fn payload -> send(self(), {:status, payload}) end
       organization_id = organization.id
       gtfs_version_id = gtfs_version.id
+      scope_key = %{runtime_scope: "default", gtfs_input_sha256: "hash-default"}
 
-      graph_path = GraphPath.graph_obj_path(organization_id, gtfs_version_id)
+      graph_path = GraphPath.graph_obj_path(organization_id, gtfs_version_id, scope_key)
       zip_path = ArtifactPath.artifact_zip_path(organization_id, gtfs_version_id)
-      workspace_path = GraphPath.workspace_dir(organization_id, gtfs_version_id)
+      workspace_root_path = GraphPath.workspace_root_dir(organization_id, gtfs_version_id)
 
       gtfs_fun = fn ^organization_id, ^gtfs_version_id, opts ->
         opts[:status_callback].(%{phase: :done, reused: false})
@@ -123,7 +133,7 @@ defmodule GtfsPlanner.Otp.RuntimeCleanupTest do
         {:ok, graph_path,
          %{
            reused: false,
-           manifest_path: GraphPath.manifest_path(organization_id, gtfs_version_id),
+           manifest_path: GraphPath.manifest_path(organization_id, gtfs_version_id, scope_key),
            manifest_json: %{}
          }}
       end
@@ -139,7 +149,7 @@ defmodule GtfsPlanner.Otp.RuntimeCleanupTest do
       assert prepared.graph_path == graph_path
       assert File.exists?(zip_path)
       assert File.exists?(graph_path)
-      assert File.exists?(workspace_path)
+      assert File.exists?(workspace_root_path)
 
       assert_receive {:status, %{scope: :gtfs, phase: :done, reused: false}}
       assert_receive {:status, %{scope: :graph, phase: :done, reused: false}}
@@ -147,7 +157,7 @@ defmodule GtfsPlanner.Otp.RuntimeCleanupTest do
       assert {:ok, %{graph: :purged, gtfs: :purged}} =
                Runtime.cleanup_on_success(organization_id, gtfs_version_id)
 
-      refute File.exists?(workspace_path)
+      refute File.exists?(workspace_root_path)
       refute File.exists?(zip_path)
       assert {:error, :not_found} = Otp.fetch_artifact(organization_id, gtfs_version_id)
     end
