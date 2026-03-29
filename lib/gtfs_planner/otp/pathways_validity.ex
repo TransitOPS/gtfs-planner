@@ -92,77 +92,103 @@ defmodule GtfsPlanner.Otp.PathwaysValidity do
   @spec run_in_session(Session.t(), Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
           {:ok, run_result()} | {:error, map()}
   def run_in_session(%Session{} = session, organization_id, gtfs_version_id, opts \\ []) do
-    case WalkabilitySuite.select_suite(organization_id, gtfs_version_id) do
-      {:ok, %{suite: [], invalid_cases: _invalid_cases, meta: suite_meta}} ->
-        {:error,
-         %{
-           reason: :no_walkability_tests,
-           organization_id: organization_id,
-           gtfs_version_id: gtfs_version_id,
-           suite_meta: suite_meta,
-           selected_test_case_ids: []
-         }}
+    with {:ok, suite_opts} <- suite_opts_for_run(organization_id, gtfs_version_id, opts),
+         {:ok, selection} <-
+           WalkabilitySuite.select_suite(organization_id, gtfs_version_id, suite_opts) do
+      case selection do
+        %{suite: [], meta: suite_meta, selection: selection_details} ->
+          {:error,
+           %{
+             reason: :no_walkability_tests,
+             organization_id: organization_id,
+             gtfs_version_id: gtfs_version_id,
+             suite_meta: suite_meta,
+             selection: selection_details,
+             selected_test_case_ids: []
+           }}
 
-      {:ok, %{suite: suite, invalid_cases: _invalid_cases, meta: suite_meta}} ->
-        status_callback = Keyword.get(opts, :status_callback, nil)
+        %{suite: suite, meta: suite_meta, selection: selection_details} ->
+          status_callback = Keyword.get(opts, :status_callback, nil)
 
-        request_fun =
-          Keyword.get(opts, :request_fun, fn graphql_url, request_opts ->
-            Req.post(Keyword.merge(request_opts, url: graphql_url))
-          end)
+          request_fun =
+            Keyword.get(opts, :request_fun, fn graphql_url, request_opts ->
+              Req.post(Keyword.merge(request_opts, url: graphql_url))
+            end)
 
-        selected_test_case_ids = Enum.map(suite, & &1.test_case_id)
-        selected_stop_ids = suite |> Enum.map(& &1.stop_id) |> Enum.uniq()
+          selected_test_case_ids = Enum.map(suite, & &1.test_case_id)
+          selected_stop_ids = suite |> Enum.map(& &1.stop_id) |> Enum.uniq()
 
-        destination_stops_by_stop_id =
-          build_destination_stops_by_stop_id(organization_id, gtfs_version_id, selected_stop_ids)
-
-        total = length(suite)
-
-        cases =
-          suite
-          |> Enum.with_index(0)
-          |> Enum.map(fn {suite_case, completed} ->
-            emit_status(status_callback, %{
-              scope: :suite,
-              phase: :running,
-              completed: completed,
-              total: total,
-              test_case_id: suite_case.test_case_id
-            })
-
-            execute_case(
-              suite_case,
-              destination_stops_by_stop_id,
-              session.graphql_url,
-              request_fun
+          destination_stops_by_stop_id =
+            build_destination_stops_by_stop_id(
+              organization_id,
+              gtfs_version_id,
+              selected_stop_ids
             )
-          end)
 
-        emit_status(status_callback, %{
-          scope: :suite,
-          phase: :finishing,
-          completed: total,
-          total: total
-        })
+          total = length(suite)
 
-        summary = summarize(cases)
+          cases =
+            suite
+            |> Enum.with_index(0)
+            |> Enum.map(fn {suite_case, completed} ->
+              emit_status(status_callback, %{
+                scope: :suite,
+                phase: :running,
+                completed: completed,
+                total: total,
+                test_case_id: suite_case.test_case_id
+              })
 
-        result = %{
-          suite_meta: suite_meta,
-          selected_test_case_ids: selected_test_case_ids,
-          summary: summary,
-          cases: cases
-        }
+              execute_case(
+                suite_case,
+                destination_stops_by_stop_id,
+                session.graphql_url,
+                request_fun
+              )
+            end)
 
-        emit_status(status_callback, %{
-          scope: :suite,
-          phase: :finished,
-          completed: total,
-          total: total
-        })
+          emit_status(status_callback, %{
+            scope: :suite,
+            phase: :finishing,
+            completed: total,
+            total: total
+          })
 
-        {:ok, result}
+          summary = summarize(cases)
+
+          result = %{
+            suite_meta: suite_meta,
+            selected_test_case_ids: selected_test_case_ids,
+            selection: selection_details,
+            summary: summary,
+            cases: cases
+          }
+
+          emit_status(status_callback, %{
+            scope: :suite,
+            phase: :finished,
+            completed: total,
+            total: total
+          })
+
+          {:ok, result}
+      end
+    end
+  end
+
+  defp suite_opts_for_run(organization_id, gtfs_version_id, opts) do
+    case Keyword.get(opts, :station_stop_id) do
+      nil ->
+        {:ok, []}
+
+      station_stop_id when is_binary(station_stop_id) ->
+        case Gtfs.list_station_scope_stop_ids(organization_id, gtfs_version_id, station_stop_id) do
+          {:ok, station_stop_ids} ->
+            {:ok, [allowed_stop_ids: station_stop_ids]}
+
+          {:error, :station_not_found} ->
+            {:error, %{reason: :station_not_found, station_stop_id: station_stop_id}}
+        end
     end
   end
 

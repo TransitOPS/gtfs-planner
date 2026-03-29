@@ -37,22 +37,47 @@ defmodule GtfsPlanner.Validations.WalkabilitySuite do
           ordering: String.t()
         }
 
+  @type selection_details :: %{
+          total_candidates: non_neg_integer(),
+          in_scope_candidates: non_neg_integer(),
+          selected_count: non_neg_integer(),
+          invalid_count: non_neg_integer(),
+          scope_label: String.t() | nil,
+          selected_test_case_ids: [Ecto.UUID.t()],
+          invalid_test_case_ids: [Ecto.UUID.t()],
+          invalid_cases: [invalid_case()]
+        }
+
   @type selection :: %{
           suite: [suite_case()],
           invalid_cases: [invalid_case()],
-          meta: suite_meta()
+          meta: suite_meta(),
+          selection: selection_details()
         }
 
-  @spec select_suite(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, selection()}
-  def select_suite(organization_id, gtfs_version_id) do
+  @spec select_suite(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: {:ok, selection()}
+  def select_suite(organization_id, gtfs_version_id, opts \\ []) do
     valid_stop_ids =
       organization_id
       |> Gtfs.list_stops(gtfs_version_id)
       |> MapSet.new(& &1.stop_id)
 
+    allowed_stop_ids =
+      opts
+      |> Keyword.get(:allowed_stop_ids)
+      |> normalize_allowed_stop_ids()
+
+    scope_label = normalize_scope_label(Keyword.get(opts, :scope_label))
+
+    all_candidates = Validations.list_walkability_tests(organization_id, gtfs_version_id)
+
+    in_scope_candidates =
+      Enum.filter(all_candidates, fn %WalkabilityTest{stop_id: stop_id} ->
+        in_scope_stop_id?(allowed_stop_ids, stop_id)
+      end)
+
     {suite, invalid_cases} =
-      organization_id
-      |> Validations.list_walkability_tests(gtfs_version_id)
+      in_scope_candidates
       |> Enum.map(&classify_row(&1, valid_stop_ids))
       |> Enum.reduce({[], []}, fn
         {:valid, suite_case}, {suite_acc, invalid_acc} ->
@@ -65,9 +90,12 @@ defmodule GtfsPlanner.Validations.WalkabilitySuite do
         {Enum.reverse(suite_acc), Enum.reverse(invalid_acc)}
       end)
 
-    total = length(suite) + length(invalid_cases)
+    total = length(in_scope_candidates)
     valid = length(suite)
     invalid = length(invalid_cases)
+
+    selected_test_case_ids = Enum.map(suite, & &1.walkability_test_id)
+    invalid_test_case_ids = Enum.map(invalid_cases, & &1.walkability_test_id)
 
     {:ok,
      %{
@@ -78,9 +106,43 @@ defmodule GtfsPlanner.Validations.WalkabilitySuite do
          valid: valid,
          invalid: invalid,
          ordering: @ordering
+       },
+       selection: %{
+         total_candidates: length(all_candidates),
+         in_scope_candidates: length(in_scope_candidates),
+         selected_count: valid,
+         invalid_count: invalid,
+         scope_label: scope_label,
+         selected_test_case_ids: selected_test_case_ids,
+         invalid_test_case_ids: invalid_test_case_ids,
+         invalid_cases: invalid_cases
        }
      }}
   end
+
+  defp normalize_scope_label(scope_label) when is_binary(scope_label) do
+    scope_label = String.trim(scope_label)
+
+    if scope_label == "" do
+      nil
+    else
+      scope_label
+    end
+  end
+
+  defp normalize_scope_label(_scope_label), do: nil
+
+  defp normalize_allowed_stop_ids(nil), do: nil
+
+  defp normalize_allowed_stop_ids(%MapSet{} = allowed_stop_ids), do: allowed_stop_ids
+
+  defp normalize_allowed_stop_ids(allowed_stop_ids) when is_list(allowed_stop_ids),
+    do: MapSet.new(allowed_stop_ids)
+
+  defp in_scope_stop_id?(nil, _stop_id), do: true
+
+  defp in_scope_stop_id?(%MapSet{} = allowed_stop_ids, stop_id),
+    do: MapSet.member?(allowed_stop_ids, stop_id)
 
   defp classify_row(%WalkabilityTest{} = walkability_test, valid_stop_ids) do
     case malformed_reason(walkability_test, valid_stop_ids) do

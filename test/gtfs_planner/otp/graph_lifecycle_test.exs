@@ -35,7 +35,7 @@ defmodule GtfsPlanner.Otp.GraphLifecycleTest do
       organization: organization,
       gtfs_version: gtfs_version
     } do
-      workspace_path = GraphPath.workspace_dir(organization.id, gtfs_version.id)
+      workspace_path = GraphPath.workspace_root_dir(organization.id, gtfs_version.id)
       graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id)
       build_log_path = GraphPath.build_log_path(organization.id, gtfs_version.id)
 
@@ -51,11 +51,38 @@ defmodule GtfsPlanner.Otp.GraphLifecycleTest do
       refute File.exists?(workspace_path)
     end
 
+    test "purges graph root containing scoped subdirectories", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      workspace_root_path = GraphPath.workspace_root_dir(organization.id, gtfs_version.id)
+
+      default_scope = %{runtime_scope: "default", gtfs_input_sha256: "abc123"}
+      station_scope = %{runtime_scope: "station_reachability", gtfs_input_sha256: "def456"}
+
+      default_graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id, default_scope)
+      station_graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id, station_scope)
+
+      File.mkdir_p!(Path.dirname(default_graph_path))
+      File.mkdir_p!(Path.dirname(station_graph_path))
+      File.write!(default_graph_path, "default-graph")
+      File.write!(station_graph_path, "station-graph")
+
+      assert File.exists?(workspace_root_path)
+      assert File.exists?(default_graph_path)
+      assert File.exists?(station_graph_path)
+
+      assert {:ok, :purged} =
+               GraphLifecycle.purge_graph_on_success(organization.id, gtfs_version.id)
+
+      refute File.exists?(workspace_root_path)
+    end
+
     test "returns not_found when graph workspace does not exist", %{
       organization: organization,
       gtfs_version: gtfs_version
     } do
-      workspace_path = GraphPath.workspace_dir(organization.id, gtfs_version.id)
+      workspace_path = GraphPath.workspace_root_dir(organization.id, gtfs_version.id)
 
       refute File.exists?(workspace_path)
 
@@ -67,7 +94,7 @@ defmodule GtfsPlanner.Otp.GraphLifecycleTest do
       organization: organization,
       gtfs_version: gtfs_version
     } do
-      workspace_path = GraphPath.workspace_dir(organization.id, gtfs_version.id)
+      workspace_path = GraphPath.workspace_root_dir(organization.id, gtfs_version.id)
       workspace_parent = Path.dirname(workspace_path)
 
       File.mkdir_p!(workspace_path)

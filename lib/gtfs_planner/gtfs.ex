@@ -1076,6 +1076,36 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns deterministic station-scope stop_ids for a station stop_id.
+
+  Scope includes:
+  - the station stop_id itself
+  - direct children where parent_station equals station stop_id
+  - boarding-area grandchildren where location_type is 4 and parent_station references a direct child
+  """
+  @spec list_station_scope_stop_ids(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, [String.t()]} | {:error, :station_not_found}
+  def list_station_scope_stop_ids(organization_id, gtfs_version_id, station_stop_id)
+      when is_binary(station_stop_id) do
+    case get_stop_by_stop_id(organization_id, gtfs_version_id, station_stop_id) do
+      nil ->
+        {:error, :station_not_found}
+
+      _station ->
+        descendant_stop_ids =
+          organization_id
+          |> descendant_stop_ids_query(gtfs_version_id, station_stop_id)
+          |> Repo.all()
+
+        {:ok,
+         descendant_stop_ids
+         |> Kernel.++([station_stop_id])
+         |> Enum.uniq()
+         |> Enum.sort()}
+    end
+  end
+
+  @doc """
   Returns the list of levels for a specific station with stop counts.
   Uses a hybrid approach: combines levels from child stops with levels from stop_levels table.
 
