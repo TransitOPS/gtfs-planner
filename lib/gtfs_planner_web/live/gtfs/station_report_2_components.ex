@@ -20,6 +20,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   ]
 
   attr :station_name, :string, required: true
+  slot :inner_block
 
   @doc "Renders the report table of contents with the station name as heading."
   def report_toc(assigns) do
@@ -27,8 +28,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
     ~H"""
     <nav aria-label="Report sections" class="mb-8">
-      <h1 class="text-2xl font-bold text-gray-900 mb-1">{@station_name}</h1>
-      <p class="text-sm text-gray-500 mb-4">Station structure, data quality, and connectivity checks</p>
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h1 class="text-2xl font-bold text-gray-900 mb-1">{@station_name}</h1>
+          <p class="text-sm text-gray-500 mb-4">Station structure, data quality, and connectivity checks</p>
+        </div>
+        {render_slot(@inner_block)}
+      </div>
       <ol class="space-y-2">
         <li :for={section <- @sections}>
           <a href={"##{section.id}"} class="text-sm font-semibold text-teal-600 hover:text-teal-700 hover:underline">{section.label}</a>
@@ -436,8 +442,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   attr :connectivity_view, :atom, default: :summary
   attr :connectivity_dimension, :atom, default: :entrance_to_platform
   attr :route_detail_groups, :list, default: []
-  attr :expanded_route, :any, default: nil
-  attr :expanded_route_key, :any, default: nil
+  attr :expanded_routes, :map, default: %{}
 
   def reachability_connectivity_section(assigns) do
     ~H"""
@@ -449,8 +454,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         <.connectivity_route_detail
           dimension={@connectivity_dimension}
           groups={@route_detail_groups}
-          expanded_route={@expanded_route}
-          expanded_route_key={@expanded_route_key}
+          expanded_routes={@expanded_routes}
         />
       <% else %>
         <%= if @connectivity_summaries do %>
