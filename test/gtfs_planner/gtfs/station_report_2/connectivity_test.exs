@@ -428,6 +428,78 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
       assert destination_step.instruction == "To Entrance"
     end
 
+    test "uses reversed signposted_as on non-bidirectional pathway traversed in reverse" do
+      snapshot = %{
+        child_stops: [
+          make_stop(%{stop_id: "ENT_1", stop_name: "Entrance", location_type: 2}),
+          make_stop(%{stop_id: "PLAT_1", stop_name: "Platform", location_type: 0})
+        ],
+        pathways: [
+          # Bidirectional pathway so BFS can reach ENT_1 from PLAT_1
+          make_pathway(%{
+            pathway_id: "PW_BIDIR",
+            from_stop_id: "ENT_1",
+            to_stop_id: "PLAT_1",
+            is_bidirectional: true,
+            signposted_as: nil,
+            reversed_signposted_as: nil,
+            traversal_time: 100
+          }),
+          # Unidirectional pathway (shorter) — also from ENT_1 → PLAT_1
+          # BFS traverses this in reverse because it's cheaper, but only
+          # the bidirectional edge is actually walkable in reverse.
+          # We test effective_signposted_as directly for the non-bidirectional case.
+          make_pathway(%{
+            pathway_id: "PW_UNI",
+            from_stop_id: "ENT_1",
+            to_stop_id: "PLAT_1",
+            is_bidirectional: false,
+            signposted_as: "Forward Only",
+            reversed_signposted_as: "Reverse Only",
+            traversal_time: 20
+          })
+        ],
+        levels: []
+      }
+
+      # Integration: the BFS uses the bidirectional edge for PLAT_1 → ENT_1
+      result = Connectivity.build_expanded_route(snapshot, "PLAT_1", "ENT_1")
+      assert is_map(result)
+
+      # Unit: directly test effective_signposted_as with the exact scenario the fix addresses
+      # (traversed_reverse? true on a non-bidirectional hop)
+      hop = %{
+        traversed_reverse?: true,
+        is_bidirectional: false,
+        signposted_as: "Forward Only",
+        reversed_signposted_as: "Reverse Only"
+      }
+
+      assert Connectivity.effective_signposted_as(hop) == "Reverse Only"
+    end
+
+    test "effective_signposted_as falls back to signposted_as when reversed is nil" do
+      hop = %{
+        traversed_reverse?: true,
+        is_bidirectional: false,
+        signposted_as: "Fallback",
+        reversed_signposted_as: nil
+      }
+
+      assert Connectivity.effective_signposted_as(hop) == "Fallback"
+    end
+
+    test "effective_signposted_as returns signposted_as for forward traversal" do
+      hop = %{
+        traversed_reverse?: false,
+        is_bidirectional: true,
+        signposted_as: "Forward",
+        reversed_signposted_as: "Reverse"
+      }
+
+      assert Connectivity.effective_signposted_as(hop) == "Forward"
+    end
+
     test "long route generates warning string" do
       snapshot = %{
         child_stops: [

@@ -232,4 +232,15 @@ body:has(#diagram-page[data-immersive="true"]) {
     display: none !important;
   }
 
+  #station-report-2 section {
+    break-before: page;
+  }
+
+  #station-report-2 *,
+  #station-report-2 *::before,
+  #station-report-2 *::after {
+    border-radius: 0 !important;
+    border-left: none !important;
+    border-right: none !important;
+  }
 }

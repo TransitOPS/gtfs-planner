@@ -87,25 +87,28 @@ defmodule GtfsPlanner.Gtfs.TraversalCalculator do
     traversal_time = normalize_number(pathway.traversal_time)
     normalized_level_diff = normalize_number(level_diff)
 
-    hop_time =
-      cond do
-        positive?(traversal_time) -> traversal_time
-        positive?(normalized_level_diff) -> normalized_level_diff * @elevator_hop_time
-        true -> @elevator_hop_time
-      end
+    cond do
+      positive?(traversal_time) ->
+        %{
+          time_seconds: traversal_time,
+          distance_meters: nil,
+          calculation_method: :elevator_traversal_time
+        }
 
-    method =
-      cond do
-        positive?(traversal_time) -> :elevator_traversal_time
-        positive?(normalized_level_diff) -> :elevator_level_diff_estimate
-        true -> :elevator_single_level_estimate
-      end
+      positive?(normalized_level_diff) ->
+        %{
+          time_seconds: @elevator_board_slack + normalized_level_diff * @elevator_hop_time,
+          distance_meters: nil,
+          calculation_method: :elevator_level_diff_estimate
+        }
 
-    %{
-      time_seconds: @elevator_board_slack + hop_time,
-      distance_meters: nil,
-      calculation_method: method
-    }
+      true ->
+        %{
+          time_seconds: @elevator_board_slack + @elevator_hop_time,
+          distance_meters: nil,
+          calculation_method: :elevator_single_level_estimate
+        }
+    end
   end
 
   defp positive?(value) when is_number(value), do: value > 0

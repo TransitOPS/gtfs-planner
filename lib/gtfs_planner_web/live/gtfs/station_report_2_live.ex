@@ -33,8 +33,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:connectivity_view, :summary)
      |> assign(:connectivity_dimension, :entrance_to_platform)
      |> assign(:route_detail_groups, [])
-     |> assign(:expanded_route, nil)
-     |> assign(:expanded_route_key, nil)
+     |> assign(:expanded_routes, %{})
      |> assign(:drawer_entity, nil)
      |> assign(:drawer_type, nil)
      |> assign(:drawer_form, nil)
@@ -71,8 +70,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
          |> assign(:connectivity_view, connectivity_view)
          |> assign(:connectivity_dimension, dimension)
          |> assign(:route_detail_groups, route_detail_groups)
-         |> assign(:expanded_route, nil)
-         |> assign(:expanded_route_key, nil)
+         |> assign(:expanded_routes, %{})
          |> reset_drawer()}
 
       {:error, :not_found} ->
@@ -197,21 +195,39 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         socket
       ) do
     key = {source_id, target_id}
+    expanded_routes = socket.assigns.expanded_routes
 
-    if socket.assigns.expanded_route_key == key do
-      {:noreply,
-       socket
-       |> assign(:expanded_route, nil)
-       |> assign(:expanded_route_key, nil)}
+    if Map.has_key?(expanded_routes, key) do
+      {:noreply, assign(socket, :expanded_routes, Map.delete(expanded_routes, key))}
     else
       snapshot = socket.assigns.report
-      expanded = Connectivity.build_expanded_route(snapshot, source_id, target_id)
+      route = Connectivity.build_expanded_route(snapshot, source_id, target_id)
 
-      {:noreply,
-       socket
-       |> assign(:expanded_route, expanded)
-       |> assign(:expanded_route_key, key)}
+      {:noreply, assign(socket, :expanded_routes, Map.put(expanded_routes, key, route))}
     end
+  end
+
+  @impl true
+  def handle_event("expand_all_routes", _params, socket) do
+    snapshot = socket.assigns.report
+    groups = socket.assigns.route_detail_groups
+
+    expanded_routes =
+      for group <- groups,
+          target <- group.targets,
+          reduce: socket.assigns.expanded_routes do
+        acc ->
+          key = {group.source.stop_id, target.stop_id}
+
+          if Map.has_key?(acc, key) do
+            acc
+          else
+            route = Connectivity.build_expanded_route(snapshot, group.source.stop_id, target.stop_id)
+            Map.put(acc, key, route)
+          end
+      end
+
+    {:noreply, assign(socket, :expanded_routes, expanded_routes)}
   end
 
   @impl true
@@ -242,7 +258,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
       <div id="station-report-2" class="space-y-6">
         <%= if @report do %>
-          <.report_toc station_name={@station.stop_name || @station.stop_id} />
+          <.report_toc station_name={@station.stop_name || @station.stop_id}>
+            <button
+              id="expand-all-btn"
+              type="button"
+              class="print:hidden inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors cursor-pointer"
+              phx-hook=".ExpandAll"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path d="M4 8V4m0 0h4M4 4l5 5M20 8V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5M20 16v4m0 0h-4m4 0l-5-5" />
+              </svg>
+              Expand all
+            </button>
+            <script :type={Phoenix.LiveView.ColocatedHook} name=".ExpandAll">
+              export default {
+                mounted() {
+                  this.el.addEventListener("click", () => {
+                    const container = document.getElementById("station-report-2")
+                    if (!container) return
+                    container.querySelectorAll("details:not([open])").forEach(d => d.open = true)
+                    this.pushEvent("expand_all_routes", {})
+                  })
+                }
+              }
+            </script>
+          </.report_toc>
           <.station_inventory_section report={@report} />
           <.data_quality_section items={@data_quality_items} />
           <.gps_checks_section items={@gps_items} />
@@ -253,8 +293,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
             connectivity_view={@connectivity_view}
             connectivity_dimension={@connectivity_dimension}
             route_detail_groups={@route_detail_groups}
-            expanded_route={@expanded_route}
-            expanded_route_key={@expanded_route_key}
+            expanded_routes={@expanded_routes}
           />
           <.pathway_field_completeness_section groups={@pathway_field_completeness_groups} />
           <.accessibility_section report={@report} />
