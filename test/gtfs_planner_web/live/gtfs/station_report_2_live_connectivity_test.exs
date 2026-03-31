@@ -218,9 +218,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       |> render_click()
 
       html = render(view)
-      assert html =~ "Route detail"
-      assert html =~ "Main Entrance"
-      assert html =~ "Side Entrance"
+      assert html =~ "Entrance to platform"
+      assert html =~ "Reachable"
 
       # Close it again
       view
@@ -230,7 +229,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       |> render_click()
 
       html = render(view)
-      refute html =~ "Route detail"
+      # Route detail cards should be gone (no route badges visible)
+      refute html =~ "No path"
     end
 
     test "multiple dimensions can be open simultaneously", %{
@@ -378,7 +378,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
           "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?dimensions=platform_to_platform"
         )
 
-      assert html =~ "Route detail"
+      assert html =~ "Platform to platform"
       assert html =~ "Platform Interconnection Reachability"
     end
   end

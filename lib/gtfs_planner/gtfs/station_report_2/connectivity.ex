@@ -842,8 +842,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
   with a fallback to `signposted_as`. Forward traversals always use `signposted_as`.
   """
   def effective_signposted_as(%{traversed_reverse?: true} = hop) do
-    normalize_signposted_as(hop.reversed_signposted_as) ||
-      normalize_signposted_as(hop.signposted_as)
+    normalize_signposted_as(hop.reversed_signposted_as)
   end
 
   def effective_signposted_as(hop) do
