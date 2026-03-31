@@ -215,28 +215,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         %{"dimension" => dimension_str, "source_stop_id" => source_stop_id},
         socket
       ) do
-    dimension = parse_dimension(dimension_str)
-    key = {dimension, source_stop_id}
-    expanded_sources = socket.assigns.connectivity_expanded_sources
-    route_details = socket.assigns.connectivity_route_details
+    {:noreply, toggle_connectivity_source(socket, dimension_str, source_stop_id)}
+  end
 
-    if MapSet.member?(expanded_sources, key) do
-      {:noreply,
-       assign(socket, :connectivity_expanded_sources, MapSet.delete(expanded_sources, key))}
+  @impl true
+  def handle_event(
+        "toggle_connectivity_source_keydown",
+        %{"dimension" => dimension_str, "source_stop_id" => source_stop_id, "key" => key},
+        socket
+      ) do
+    if key in ["Enter", " ", "Space", "Spacebar"] do
+      {:noreply, toggle_connectivity_source(socket, dimension_str, source_stop_id)}
     else
-      route_details =
-        if Map.has_key?(route_details, dimension) do
-          route_details
-        else
-          snapshot = socket.assigns.report
-          Map.put(route_details, dimension, Connectivity.build_route_detail(snapshot, dimension))
-        end
-
-      {:noreply,
-       socket
-       |> assign(:connectivity_expanded_sources, MapSet.put(expanded_sources, key))
-       |> assign(:connectivity_route_details, route_details)}
+      {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("toggle_connectivity_source_keydown", _params, socket) do
+    {:noreply, socket}
   end
 
   @impl true
@@ -307,6 +304,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:connectivity_expanded_sources, expanded_sources)
      |> assign(:connectivity_route_details, route_details)
      |> assign(:expanded_routes, expanded_routes)}
+  end
+
+  defp toggle_connectivity_source(socket, dimension_str, source_stop_id) do
+    dimension = parse_dimension(dimension_str)
+    key = {dimension, source_stop_id}
+    expanded_sources = socket.assigns.connectivity_expanded_sources
+    route_details = socket.assigns.connectivity_route_details
+
+    if MapSet.member?(expanded_sources, key) do
+      assign(socket, :connectivity_expanded_sources, MapSet.delete(expanded_sources, key))
+    else
+      route_details =
+        if Map.has_key?(route_details, dimension) do
+          route_details
+        else
+          snapshot = socket.assigns.report
+          Map.put(route_details, dimension, Connectivity.build_route_detail(snapshot, dimension))
+        end
+
+      socket
+      |> assign(:connectivity_expanded_sources, MapSet.put(expanded_sources, key))
+      |> assign(:connectivity_route_details, route_details)
+    end
   end
 
   @impl true
@@ -406,6 +426,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
     case Gtfs.get_station_report_snapshot(org_id, version_id, stop_id) do
       {:ok, snapshot} ->
+        connectivity_summaries = Connectivity.build_summaries(snapshot)
+
         socket
         |> assign(:station, snapshot.station)
         |> assign(:report, snapshot)
@@ -413,7 +435,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         |> assign(:gps_items, Gps.build(snapshot))
         |> assign(:naming_convention_checks, NamingConventions.build(snapshot))
         |> assign(:pathway_field_completeness_groups, PathwayFieldCompleteness.build(snapshot))
-        |> assign(:connectivity_summaries, Connectivity.build_summaries(snapshot))
+        |> assign(:connectivity_summaries, connectivity_summaries)
+        |> assign(:connectivity_expanded_sources, MapSet.new())
+        |> assign(:connectivity_route_details, %{})
+        |> assign(:expanded_routes, %{})
 
       {:error, _} ->
         socket

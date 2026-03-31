@@ -440,7 +440,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   attr :report, :map, default: nil
   attr :connectivity_summaries, :map, default: nil
   attr :expanded_routes, :map, default: %{}
-  attr :connectivity_expanded_sources, :any, default: nil
+  attr :connectivity_expanded_sources, :map, default: MapSet.new()
   attr :connectivity_route_details, :map, default: %{}
 
   def reachability_connectivity_section(assigns) do
@@ -472,7 +472,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   attr :summary, :map, required: true
   attr :dimension, :atom, required: true
-  attr :expanded_sources, :any, default: nil
+  attr :expanded_sources, :map, default: MapSet.new()
   attr :route_detail_groups, :list, default: []
   attr :expanded_routes, :map, default: %{}
 
@@ -539,7 +539,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
               <% row_expanded = MapSet.member?(@expanded_sources, {@dimension, row.source_stop_id}) %>
               <tr
                 class="border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-colors duration-[15ms] cursor-pointer"
+                role="button"
+                tabindex="0"
+                aria-expanded={row_expanded}
                 phx-click="toggle_connectivity_source"
+                phx-keydown="toggle_connectivity_source_keydown"
                 phx-value-dimension={to_string(@dimension)}
                 phx-value-source_stop_id={row.source_stop_id}
               >
