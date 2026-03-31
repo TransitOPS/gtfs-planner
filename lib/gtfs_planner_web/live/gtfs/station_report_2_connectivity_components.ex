@@ -52,6 +52,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         <.source_group_card
           :for={group <- @groups}
           group={group}
+          dimension={@dimension}
           expanded_routes={@expanded_routes}
         />
       </div>
@@ -60,12 +61,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   end
 
   attr :group, :map, required: true
+  attr :dimension, :atom, required: true
   attr :expanded_routes, :map, default: %{}
 
   def source_group_card(assigns) do
     worst = worst_target_status(assigns.group.targets)
     dot_color = status_dot_color(worst)
-    assigns = assign(assigns, :dot_color, dot_color)
+
+    assigns =
+      assigns
+      |> assign(:dot_color, dot_color)
+      |> assign(:dimension_label, dimension_label(assigns.dimension))
 
     ~H"""
     <div class="bg-white border border-gray-400 rounded-lg overflow-hidden shadow-card">
@@ -82,6 +88,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
           </div>
           <p class="text-xs text-gray-500 font-mono mt-1 ml-[18px]">{@group.source.stop_id}</p>
         </div>
+        <span class="text-[11px] font-medium text-gray-500 uppercase tracking-wider mt-0.5">{@dimension_label}</span>
       </div>
 
       <div>

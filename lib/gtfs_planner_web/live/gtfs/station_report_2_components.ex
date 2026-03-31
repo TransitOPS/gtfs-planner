@@ -439,11 +439,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   attr :report, :map, default: nil
   attr :connectivity_summaries, :map, default: nil
-  attr :connectivity_view, :atom, default: :summary
-  attr :connectivity_dimension, :atom, default: :entrance_to_platform
-  attr :route_detail_groups, :list, default: []
   attr :expanded_routes, :map, default: %{}
-  attr :connectivity_detail_dimensions, :any, default: nil
+  attr :connectivity_expanded_sources, :any, default: nil
   attr :connectivity_route_details, :map, default: %{}
 
   def reachability_connectivity_section(assigns) do
@@ -458,7 +455,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
             :for={dim <- [:entrance_to_platform, :platform_to_platform, :platform_to_exit]}
             summary={Map.get(@connectivity_summaries, dim)}
             dimension={dim}
-            detail_open={MapSet.member?(@connectivity_detail_dimensions, dim)}
+            expanded_sources={@connectivity_expanded_sources}
             route_detail_groups={Map.get(@connectivity_route_details, dim, [])}
             expanded_routes={@expanded_routes}
           />
@@ -475,14 +472,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   attr :summary, :map, required: true
   attr :dimension, :atom, required: true
-  attr :detail_open, :boolean, default: false
+  attr :expanded_sources, :any, default: nil
   attr :route_detail_groups, :list, default: []
   attr :expanded_routes, :map, default: %{}
 
   defp connectivity_dimension_section(assigns) do
     stats = assigns.summary.stats
     stats_text = "#{stats.connected_pairs}/#{stats.total_pairs} pairs connected · #{stats.source_count} sources · #{stats.target_count} targets"
-    assigns = assign(assigns, :stats_text, stats_text)
+
+    route_detail_by_source =
+      Map.new(assigns.route_detail_groups, fn group -> {group.source.stop_id, group} end)
+
+    all_source_ids =
+      Enum.map(assigns.summary.summary_rows, & &1.source_stop_id)
+
+    all_expanded =
+      all_source_ids != [] and
+        Enum.all?(all_source_ids, fn sid ->
+          MapSet.member?(assigns.expanded_sources, {assigns.dimension, sid})
+        end)
+
+    assigns =
+      assigns
+      |> assign(:stats_text, stats_text)
+      |> assign(:route_detail_by_source, route_detail_by_source)
+      |> assign(:all_expanded, all_expanded)
 
     ~H"""
     <div id={"connectivity-#{@dimension}"} class="bg-white border border-gray-400 rounded-lg overflow-hidden shadow-card">
@@ -497,9 +511,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
               phx-value-dimension={to_string(@dimension)}
               class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer"
             >
-              {if @detail_open, do: "Hide routes", else: "Show routes"}
+              {if @all_expanded, do: "Hide all routes", else: "Show all routes"}
               <svg
-                class={"w-3.5 h-3.5 transition-transform duration-150 #{if @detail_open, do: "rotate-180", else: ""}"}
+                class={"w-3.5 h-3.5 transition-transform duration-150 #{if @all_expanded, do: "rotate-180", else: ""}"}
                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"
               >
                 <path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round"/>
@@ -516,37 +530,54 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
               <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">{@summary.source_label}</th>
               <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Reachable</th>
               <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Unreachable</th>
-              <th class="text-left pb-2.5 pt-1 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Status</th>
+              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Status</th>
+              <th class="w-8 pb-2.5 pt-1"></th>
             </tr>
           </thead>
           <tbody>
-            <tr
-              :for={row <- @summary.summary_rows}
-              class="border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-colors duration-[15ms]"
-            >
-              <td class="py-3 pr-4 font-medium text-gray-900">{row.source_name}</td>
-              <td class="py-3 pr-4 text-gray-700">{if row.reachable != [], do: Enum.join(row.reachable, ", "), else: "—"}</td>
-              <td class="py-3 pr-4 text-gray-700">{if row.unreachable != [], do: Enum.join(row.unreachable, ", "), else: "—"}</td>
-              <td class="py-3"><.reachability_status status={row.status} /></td>
-            </tr>
+            <%= for row <- @summary.summary_rows do %>
+              <% row_expanded = MapSet.member?(@expanded_sources, {@dimension, row.source_stop_id}) %>
+              <tr
+                class="border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-colors duration-[15ms] cursor-pointer"
+                phx-click="toggle_connectivity_source"
+                phx-value-dimension={to_string(@dimension)}
+                phx-value-source_stop_id={row.source_stop_id}
+              >
+                <td class="py-3 pr-4 font-medium text-gray-900">{row.source_name}</td>
+                <td class="py-3 pr-4 text-gray-700">{if row.reachable != [], do: Enum.join(row.reachable, ", "), else: "—"}</td>
+                <td class="py-3 pr-4 text-gray-700">{if row.unreachable != [], do: Enum.join(row.unreachable, ", "), else: "—"}</td>
+                <td class="py-3 pr-4"><.reachability_status status={row.status} /></td>
+                <td class="py-3">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    class={"shrink-0 transition-transform duration-150 #{if row_expanded, do: "rotate-180", else: ""}"}
+                    aria-hidden="true"
+                  >
+                    <path d="M4 6L8 10L12 6" stroke="#9ca3af" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </td>
+              </tr>
+              <%= if row_expanded do %>
+                <% group = Map.get(@route_detail_by_source, row.source_stop_id) %>
+                <%= if group do %>
+                  <tr>
+                    <td colspan="5" class="p-0">
+                      <div class="bg-gray-50 border-t border-gray-200 px-4 py-4">
+                        <.source_group_card group={group} dimension={@dimension} expanded_routes={@expanded_routes} />
+                      </div>
+                    </td>
+                  </tr>
+                <% end %>
+              <% end %>
+            <% end %>
           </tbody>
         </table>
 
         <.alert_banner :for={msg <- @summary.alerts} message={msg} />
       </div>
-
-      <%= if @detail_open do %>
-        <div class="border-t border-gray-300 bg-gray-50 p-6">
-          <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-widest mb-4">Route detail</p>
-          <div class="flex flex-col gap-5">
-            <.source_group_card
-              :for={group <- @route_detail_groups}
-              group={group}
-              expanded_routes={@expanded_routes}
-            />
-          </div>
-        </div>
-      <% end %>
     </div>
     """
   end
