@@ -198,7 +198,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       assert html =~ "Fail"
     end
 
-    test "clicking summary row navigates to detail view with query params", %{
+    test "toggling dimension shows and hides route detail inline", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -210,44 +210,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
 
-      # Click the first row in entrance-to-platform table (use text match for uniqueness)
+      # Open entrance_to_platform detail
       view
       |> element(
-        "button[phx-click='navigate_connectivity_detail'][phx-value-dimension='entrance_to_platform']",
-        "Main Entrance"
+        "button[phx-click='toggle_connectivity_dimension'][phx-value-dimension='entrance_to_platform']"
       )
       |> render_click()
 
-      # URL should update with connectivity=detail
-      path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?connectivity=detail&dimension=entrance_to_platform"
-      assert_patch(view, path)
-    end
-
-    test "detail view renders source group cards", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, _view, html} =
-        live(
-          conn,
-          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?connectivity=detail&dimension=entrance_to_platform"
-        )
-
-      # Route detail header
-      assert html =~ "Connectivity — Route Detail"
-      assert html =~ "Entrance to platform"
-
-      # Source names
+      html = render(view)
+      assert html =~ "Route detail"
       assert html =~ "Main Entrance"
       assert html =~ "Side Entrance"
+
+      # Close it again
+      view
+      |> element(
+        "button[phx-click='toggle_connectivity_dimension'][phx-value-dimension='entrance_to_platform']"
+      )
+      |> render_click()
+
+      html = render(view)
+      refute html =~ "Route detail"
     end
 
-    test "back link from detail returns to summary view", %{
+    test "multiple dimensions can be open simultaneously", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -257,21 +243,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(
-          conn,
-          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?connectivity=detail&dimension=entrance_to_platform"
-        )
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
 
-      # Click back to summary
+      # Open both entrance_to_platform and platform_to_platform
       view
-      |> element("button", "Summary")
+      |> element(
+        "button[phx-click='toggle_connectivity_dimension'][phx-value-dimension='entrance_to_platform']"
+      )
       |> render_click()
 
-      path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2"
-      assert_patch(view, path)
+      view
+      |> element(
+        "button[phx-click='toggle_connectivity_dimension'][phx-value-dimension='platform_to_platform']"
+      )
+      |> render_click()
+
+      html = render(view)
+      # Both dimensions should show route detail sections
+      assert html =~ "Entrance-to-Platform Reachability"
+      assert html =~ "Platform Interconnection Reachability"
     end
 
-    test "target rows show route badges", %{
+    test "target rows show route badges when dimension is open", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -280,12 +273,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
-        live(
-          conn,
-          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?connectivity=detail&dimension=entrance_to_platform"
-        )
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
 
+      view
+      |> element(
+        "button[phx-click='toggle_connectivity_dimension'][phx-value-dimension='entrance_to_platform']"
+      )
+      |> render_click()
+
+      html = render(view)
       # Connected targets should show Reachable badge
       assert html =~ "Reachable"
       # Disconnected targets (Side Entrance → platforms) should show No path
@@ -302,10 +299,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(
-          conn,
-          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?connectivity=detail&dimension=entrance_to_platform"
-        )
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      # Open the dimension first
+      view
+      |> element(
+        "button[phx-click='toggle_connectivity_dimension'][phx-value-dimension='entrance_to_platform']"
+      )
+      |> render_click()
 
       # Click expand on a reachable target
       view
@@ -333,10 +334,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(
-          conn,
-          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?connectivity=detail&dimension=entrance_to_platform"
-        )
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      view
+      |> element(
+        "button[phx-click='toggle_connectivity_dimension'][phx-value-dimension='entrance_to_platform']"
+      )
+      |> render_click()
 
       # Click expand on a no-path target
       view
@@ -359,7 +363,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       refute html =~ "No directed path exists"
     end
 
-    test "URL refresh restores correct view state", %{
+    test "URL with dimensions param restores open dimensions", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -368,15 +372,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      # Load directly into detail view via URL
       {:ok, _view, html} =
         live(
           conn,
-          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?connectivity=detail&dimension=platform_to_platform"
+          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?dimensions=platform_to_platform"
         )
 
-      assert html =~ "Connectivity — Route Detail"
-      assert html =~ "Platform to platform"
+      assert html =~ "Route detail"
+      assert html =~ "Platform Interconnection Reachability"
     end
   end
 
@@ -507,10 +510,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(
-          conn,
-          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?connectivity=detail&dimension=entrance_to_platform"
-        )
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      # Open the entrance_to_platform dimension
+      view
+      |> element(
+        "button[phx-click='toggle_connectivity_dimension'][phx-value-dimension='entrance_to_platform']"
+      )
+      |> render_click()
 
       # Expand the ENT_ACC → PLAT_ACC route
       view
@@ -599,10 +606,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(
-          conn,
-          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?connectivity=detail&dimension=entrance_to_platform"
-        )
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+
+      # Open the entrance_to_platform dimension
+      view
+      |> element(
+        "button[phx-click='toggle_connectivity_dimension'][phx-value-dimension='entrance_to_platform']"
+      )
+      |> render_click()
 
       # Expand the ENT_SIGN → PLAT_SIGN route
       view

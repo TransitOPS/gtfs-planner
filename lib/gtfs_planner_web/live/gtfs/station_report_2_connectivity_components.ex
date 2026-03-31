@@ -62,7 +62,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   attr :group, :map, required: true
   attr :expanded_routes, :map, default: %{}
 
-  defp source_group_card(assigns) do
+  def source_group_card(assigns) do
     worst = worst_target_status(assigns.group.targets)
     dot_color = status_dot_color(worst)
     assigns = assign(assigns, :dot_color, dot_color)
