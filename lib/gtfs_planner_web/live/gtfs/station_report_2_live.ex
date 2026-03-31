@@ -30,9 +30,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:naming_convention_checks, [])
      |> assign(:pathway_field_completeness_groups, [])
      |> assign(:connectivity_summaries, nil)
-     |> assign(:connectivity_view, :summary)
-     |> assign(:connectivity_dimension, :entrance_to_platform)
-     |> assign(:route_detail_groups, [])
+     |> assign(:connectivity_expanded_sources, MapSet.new())
+     |> assign(:connectivity_route_details, %{})
      |> assign(:expanded_routes, %{})
      |> assign(:drawer_entity, nil)
      |> assign(:drawer_type, nil)
@@ -48,14 +47,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     case Gtfs.get_station_report_snapshot(organization_id, gtfs_version_id, stop_id) do
       {:ok, snapshot} ->
         connectivity_summaries = Connectivity.build_summaries(snapshot)
-        dimension = parse_dimension(params["dimension"])
 
-        {connectivity_view, route_detail_groups} =
-          if params["connectivity"] == "detail" do
-            {:detail, Connectivity.build_route_detail(snapshot, dimension)}
-          else
-            {:summary, []}
+        url_dimensions =
+          case params["dimensions"] do
+            nil -> []
+            str -> str |> String.split(",") |> Enum.map(&parse_dimension/1)
           end
+
+        route_details =
+          url_dimensions
+          |> Enum.into(%{}, fn dim -> {dim, Connectivity.build_route_detail(snapshot, dim)} end)
+
+        expanded_sources =
+          url_dimensions
+          |> Enum.flat_map(fn dim ->
+            case Map.get(connectivity_summaries, dim) do
+              nil -> []
+              summary -> Enum.map(summary.summary_rows, &{dim, &1.source_stop_id})
+            end
+          end)
+          |> MapSet.new()
 
         {:noreply,
          socket
@@ -67,9 +78,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
          |> assign(:naming_convention_checks, NamingConventions.build(snapshot))
          |> assign(:pathway_field_completeness_groups, PathwayFieldCompleteness.build(snapshot))
          |> assign(:connectivity_summaries, connectivity_summaries)
-         |> assign(:connectivity_view, connectivity_view)
-         |> assign(:connectivity_dimension, dimension)
-         |> assign(:route_detail_groups, route_detail_groups)
+         |> assign(:connectivity_expanded_sources, expanded_sources)
+         |> assign(:connectivity_route_details, route_details)
          |> assign(:expanded_routes, %{})
          |> reset_drawer()}
 
@@ -169,23 +179,61 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   end
 
   @impl true
-  def handle_event("navigate_connectivity_detail", %{"dimension" => dimension}, socket) do
-    version_id = socket.assigns.current_gtfs_version.id
-    stop_id = socket.assigns.stop_id
+  def handle_event("toggle_connectivity_dimension", %{"dimension" => dimension_str}, socket) do
+    dimension = parse_dimension(dimension_str)
+    expanded_sources = socket.assigns.connectivity_expanded_sources
+    route_details = socket.assigns.connectivity_route_details
+    summary = Map.get(socket.assigns.connectivity_summaries, dimension)
+    source_ids = if summary, do: Enum.map(summary.summary_rows, & &1.source_stop_id), else: []
+    all_keys = MapSet.new(source_ids, &{dimension, &1})
+    all_expanded = MapSet.subset?(all_keys, expanded_sources) and all_keys != MapSet.new()
 
-    {:noreply,
-     push_patch(socket,
-       to: "/gtfs/#{version_id}/stops/#{stop_id}/report_2?connectivity=detail&dimension=#{dimension}"
-     )}
+    if all_expanded do
+      {:noreply,
+       socket
+       |> assign(:connectivity_expanded_sources, MapSet.difference(expanded_sources, all_keys))
+       |> assign(:connectivity_route_details, Map.delete(route_details, dimension))}
+    else
+      route_details =
+        if Map.has_key?(route_details, dimension) do
+          route_details
+        else
+          snapshot = socket.assigns.report
+          Map.put(route_details, dimension, Connectivity.build_route_detail(snapshot, dimension))
+        end
+
+      {:noreply,
+       socket
+       |> assign(:connectivity_expanded_sources, MapSet.union(expanded_sources, all_keys))
+       |> assign(:connectivity_route_details, route_details)}
+    end
   end
 
   @impl true
-  def handle_event("navigate_connectivity_summary", _params, socket) do
-    version_id = socket.assigns.current_gtfs_version.id
-    stop_id = socket.assigns.stop_id
+  def handle_event(
+        "toggle_connectivity_source",
+        %{"dimension" => dimension_str, "source_stop_id" => source_stop_id},
+        socket
+      ) do
+    {:noreply, toggle_connectivity_source(socket, dimension_str, source_stop_id)}
+  end
 
-    {:noreply,
-     push_patch(socket, to: "/gtfs/#{version_id}/stops/#{stop_id}/report_2")}
+  @impl true
+  def handle_event(
+        "toggle_connectivity_source_keydown",
+        %{"dimension" => dimension_str, "source_stop_id" => source_stop_id, "key" => key},
+        socket
+      ) do
+    if key in ["Enter", " ", "Space", "Spacebar"] do
+      {:noreply, toggle_connectivity_source(socket, dimension_str, source_stop_id)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("toggle_connectivity_source_keydown", _params, socket) do
+    {:noreply, socket}
   end
 
   @impl true
@@ -210,10 +258,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   @impl true
   def handle_event("expand_all_routes", _params, socket) do
     snapshot = socket.assigns.report
-    groups = socket.assigns.route_detail_groups
+    dimensions = [:entrance_to_platform, :platform_to_platform, :platform_to_exit]
+    summaries = socket.assigns.connectivity_summaries
 
+    # Open all dimensions and build their route details
+    route_details =
+      Enum.into(dimensions, socket.assigns.connectivity_route_details, fn dim ->
+        if Map.has_key?(socket.assigns.connectivity_route_details, dim) do
+          {dim, socket.assigns.connectivity_route_details[dim]}
+        else
+          {dim, Connectivity.build_route_detail(snapshot, dim)}
+        end
+      end)
+
+    # Expand all sources across all dimensions
+    expanded_sources =
+      dimensions
+      |> Enum.flat_map(fn dim ->
+        case Map.get(summaries, dim) do
+          nil -> []
+          summary -> Enum.map(summary.summary_rows, &{dim, &1.source_stop_id})
+        end
+      end)
+      |> MapSet.new()
+
+    # Expand all individual routes across all dimensions
     expanded_routes =
-      for group <- groups,
+      for {_dim, groups} <- route_details,
+          group <- groups,
           target <- group.targets,
           reduce: socket.assigns.expanded_routes do
         acc ->
@@ -227,7 +299,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
           end
       end
 
-    {:noreply, assign(socket, :expanded_routes, expanded_routes)}
+    {:noreply,
+     socket
+     |> assign(:connectivity_expanded_sources, expanded_sources)
+     |> assign(:connectivity_route_details, route_details)
+     |> assign(:expanded_routes, expanded_routes)}
+  end
+
+  defp toggle_connectivity_source(socket, dimension_str, source_stop_id) do
+    dimension = parse_dimension(dimension_str)
+    key = {dimension, source_stop_id}
+    expanded_sources = socket.assigns.connectivity_expanded_sources
+    route_details = socket.assigns.connectivity_route_details
+
+    if MapSet.member?(expanded_sources, key) do
+      assign(socket, :connectivity_expanded_sources, MapSet.delete(expanded_sources, key))
+    else
+      route_details =
+        if Map.has_key?(route_details, dimension) do
+          route_details
+        else
+          snapshot = socket.assigns.report
+          Map.put(route_details, dimension, Connectivity.build_route_detail(snapshot, dimension))
+        end
+
+      socket
+      |> assign(:connectivity_expanded_sources, MapSet.put(expanded_sources, key))
+      |> assign(:connectivity_route_details, route_details)
+    end
   end
 
   @impl true
@@ -290,9 +389,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
           <.reachability_connectivity_section
             report={@report}
             connectivity_summaries={@connectivity_summaries}
-            connectivity_view={@connectivity_view}
-            connectivity_dimension={@connectivity_dimension}
-            route_detail_groups={@route_detail_groups}
+            connectivity_expanded_sources={@connectivity_expanded_sources}
+            connectivity_route_details={@connectivity_route_details}
             expanded_routes={@expanded_routes}
           />
           <.pathway_field_completeness_section groups={@pathway_field_completeness_groups} />
@@ -328,6 +426,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
     case Gtfs.get_station_report_snapshot(org_id, version_id, stop_id) do
       {:ok, snapshot} ->
+        connectivity_summaries = Connectivity.build_summaries(snapshot)
+
         socket
         |> assign(:station, snapshot.station)
         |> assign(:report, snapshot)
@@ -335,7 +435,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         |> assign(:gps_items, Gps.build(snapshot))
         |> assign(:naming_convention_checks, NamingConventions.build(snapshot))
         |> assign(:pathway_field_completeness_groups, PathwayFieldCompleteness.build(snapshot))
-        |> assign(:connectivity_summaries, Connectivity.build_summaries(snapshot))
+        |> assign(:connectivity_summaries, connectivity_summaries)
+        |> assign(:connectivity_expanded_sources, MapSet.new())
+        |> assign(:connectivity_route_details, %{})
+        |> assign(:expanded_routes, %{})
 
       {:error, _} ->
         socket

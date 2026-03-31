@@ -478,7 +478,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
       assert Connectivity.effective_signposted_as(hop) == "Reverse Only"
     end
 
-    test "effective_signposted_as falls back to signposted_as when reversed is nil" do
+    test "effective_signposted_as returns nil when reversed signage is missing" do
       hop = %{
         traversed_reverse?: true,
         is_bidirectional: false,
@@ -486,7 +486,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
         reversed_signposted_as: nil
       }
 
-      assert Connectivity.effective_signposted_as(hop) == "Fallback"
+      assert Connectivity.effective_signposted_as(hop) == nil
     end
 
     test "effective_signposted_as returns signposted_as for forward traversal" do

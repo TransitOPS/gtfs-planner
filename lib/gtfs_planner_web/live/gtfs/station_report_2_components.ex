@@ -439,10 +439,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   attr :report, :map, default: nil
   attr :connectivity_summaries, :map, default: nil
-  attr :connectivity_view, :atom, default: :summary
-  attr :connectivity_dimension, :atom, default: :entrance_to_platform
-  attr :route_detail_groups, :list, default: []
   attr :expanded_routes, :map, default: %{}
+  attr :connectivity_expanded_sources, :map, default: MapSet.new()
+  attr :connectivity_route_details, :map, default: %{}
 
   def reachability_connectivity_section(assigns) do
     ~H"""
@@ -450,34 +449,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       <div class="flex items-baseline justify-between mt-8 mb-3 px-1">
         <h2 class="text-xl font-semibold text-gray-900" style="line-height: 1.375;">Reachability &amp; Connectivity</h2>
       </div>
-      <%= if @connectivity_view == :detail do %>
-        <.connectivity_route_detail
-          dimension={@connectivity_dimension}
-          groups={@route_detail_groups}
-          expanded_routes={@expanded_routes}
-        />
-      <% else %>
-        <%= if @connectivity_summaries do %>
-          <div class="flex flex-col gap-6">
-              <.connectivity_summary_card
-                summary={@connectivity_summaries.entrance_to_platform}
-                dimension={:entrance_to_platform}
-              />
-              <.connectivity_summary_card
-                summary={@connectivity_summaries.platform_to_platform}
-                dimension={:platform_to_platform}
-              />
-              <.connectivity_summary_card
-                summary={@connectivity_summaries.platform_to_exit}
-                dimension={:platform_to_exit}
-              />
-            </div>
-        <% else %>
-          <.connectivity_empty_state
-            title="No pathways defined"
-            description="No pathways defined for this station."
+      <%= if @connectivity_summaries do %>
+        <div class="flex flex-col gap-6">
+          <.connectivity_dimension_section
+            :for={dim <- [:entrance_to_platform, :platform_to_platform, :platform_to_exit]}
+            summary={Map.get(@connectivity_summaries, dim)}
+            dimension={dim}
+            expanded_sources={@connectivity_expanded_sources}
+            route_detail_groups={Map.get(@connectivity_route_details, dim, [])}
+            expanded_routes={@expanded_routes}
           />
-        <% end %>
+        </div>
+      <% else %>
+        <.connectivity_empty_state
+          title="No pathways defined"
+          description="No pathways defined for this station."
+        />
       <% end %>
     </section>
     """
@@ -485,53 +472,116 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   attr :summary, :map, required: true
   attr :dimension, :atom, required: true
+  attr :expanded_sources, :map, default: MapSet.new()
+  attr :route_detail_groups, :list, default: []
+  attr :expanded_routes, :map, default: %{}
 
-  defp connectivity_summary_card(assigns) do
+  defp connectivity_dimension_section(assigns) do
     stats = assigns.summary.stats
     stats_text = "#{stats.connected_pairs}/#{stats.total_pairs} pairs connected · #{stats.source_count} sources · #{stats.target_count} targets"
-    assigns = assign(assigns, :stats_text, stats_text)
+
+    route_detail_by_source =
+      Map.new(assigns.route_detail_groups, fn group -> {group.source.stop_id, group} end)
+
+    all_source_ids =
+      Enum.map(assigns.summary.summary_rows, & &1.source_stop_id)
+
+    all_expanded =
+      all_source_ids != [] and
+        Enum.all?(all_source_ids, fn sid ->
+          MapSet.member?(assigns.expanded_sources, {assigns.dimension, sid})
+        end)
+
+    assigns =
+      assigns
+      |> assign(:stats_text, stats_text)
+      |> assign(:route_detail_by_source, route_detail_by_source)
+      |> assign(:all_expanded, all_expanded)
 
     ~H"""
-    <div class="bg-white border border-gray-400 rounded-lg p-6 shadow-card">
-      <div class="flex items-start justify-between gap-4 mb-1">
-        <h2 class="text-lg font-semibold text-gray-900">{@summary.title}</h2>
-        <.dimension_badge status={@summary.status} />
-      </div>
-      <p class="text-sm text-gray-600 mb-1">{@summary.description}</p>
-      <p class="text-sm text-gray-500 mb-5">{@stats_text}</p>
-
-      <table class="w-full text-sm" style="border-collapse: collapse;">
-        <thead>
-          <tr class="border-b border-gray-200">
-            <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">{@summary.source_label}</th>
-            <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Reachable</th>
-            <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Unreachable</th>
-            <th class="text-left pb-2.5 pt-1 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            :for={row <- @summary.summary_rows}
-            class="border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-colors duration-[15ms]"
-          >
-            <td class="py-3 pr-4 font-medium text-gray-900">
-              <button
-                type="button"
-                class="w-full text-left cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 rounded-sm"
-                phx-click="navigate_connectivity_detail"
-                phx-value-dimension={to_string(@dimension)}
+    <div id={"connectivity-#{@dimension}"} class="bg-white border border-gray-400 rounded-lg overflow-hidden shadow-card">
+      <div class="p-6">
+        <div class="flex items-start justify-between gap-4 mb-1">
+          <h2 class="text-lg font-semibold text-gray-900">{@summary.title}</h2>
+          <div class="flex items-center gap-3">
+            <.dimension_badge status={@summary.status} />
+            <button
+              type="button"
+              phx-click="toggle_connectivity_dimension"
+              phx-value-dimension={to_string(@dimension)}
+              class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer"
+            >
+              {if @all_expanded, do: "Hide all routes", else: "Show all routes"}
+              <svg
+                class={"w-3.5 h-3.5 transition-transform duration-150 #{if @all_expanded, do: "rotate-180", else: ""}"}
+                fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"
               >
-                {row.source_name}
-              </button>
-            </td>
-            <td class="py-3 pr-4 text-gray-700">{if row.reachable != [], do: Enum.join(row.reachable, ", "), else: "—"}</td>
-            <td class="py-3 pr-4 text-gray-700">{if row.unreachable != [], do: Enum.join(row.unreachable, ", "), else: "—"}</td>
-            <td class="py-3"><.reachability_status status={row.status} /></td>
-          </tr>
-        </tbody>
-      </table>
+                <path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <p class="text-sm text-gray-600 mb-1">{@summary.description}</p>
+        <p class="text-sm text-gray-500 mb-5">{@stats_text}</p>
 
-      <.alert_banner :for={msg <- @summary.alerts} message={msg} />
+        <table class="w-full text-sm" style="border-collapse: collapse;">
+          <thead>
+            <tr class="border-b border-gray-200">
+              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">{@summary.source_label}</th>
+              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Reachable</th>
+              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Unreachable</th>
+              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Status</th>
+              <th class="w-8 pb-2.5 pt-1"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <%= for row <- @summary.summary_rows do %>
+              <% row_expanded = MapSet.member?(@expanded_sources, {@dimension, row.source_stop_id}) %>
+              <tr
+                class="border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-colors duration-[15ms] cursor-pointer"
+                role="button"
+                tabindex="0"
+                aria-expanded={row_expanded}
+                phx-click="toggle_connectivity_source"
+                phx-keydown="toggle_connectivity_source_keydown"
+                phx-value-dimension={to_string(@dimension)}
+                phx-value-source_stop_id={row.source_stop_id}
+              >
+                <td class="py-3 pr-4 font-medium text-gray-900">{row.source_name}</td>
+                <td class="py-3 pr-4 text-gray-700">{if row.reachable != [], do: Enum.join(row.reachable, ", "), else: "—"}</td>
+                <td class="py-3 pr-4 text-gray-700">{if row.unreachable != [], do: Enum.join(row.unreachable, ", "), else: "—"}</td>
+                <td class="py-3 pr-4"><.reachability_status status={row.status} /></td>
+                <td class="py-3">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    class={"shrink-0 transition-transform duration-150 #{if row_expanded, do: "rotate-180", else: ""}"}
+                    aria-hidden="true"
+                  >
+                    <path d="M4 6L8 10L12 6" stroke="#9ca3af" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </td>
+              </tr>
+              <%= if row_expanded do %>
+                <% group = Map.get(@route_detail_by_source, row.source_stop_id) %>
+                <%= if group do %>
+                  <tr>
+                    <td colspan="5" class="p-0">
+                      <div class="bg-gray-50 border-t border-gray-200 px-4 py-4">
+                        <.source_group_card group={group} dimension={@dimension} expanded_routes={@expanded_routes} />
+                      </div>
+                    </td>
+                  </tr>
+                <% end %>
+              <% end %>
+            <% end %>
+          </tbody>
+        </table>
+
+        <.alert_banner :for={msg <- @summary.alerts} message={msg} />
+      </div>
     </div>
     """
   end

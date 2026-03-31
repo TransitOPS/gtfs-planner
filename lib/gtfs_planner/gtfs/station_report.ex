@@ -1297,8 +1297,7 @@ defmodule GtfsPlanner.Gtfs.StationReport do
   end
 
   defp effective_signposted_as(%{traversed_reverse?: true, is_bidirectional: true} = hop) do
-    normalize_signposted_as(hop.reversed_signposted_as) ||
-      normalize_signposted_as(hop.signposted_as)
+    normalize_signposted_as(hop.reversed_signposted_as)
   end
 
   defp effective_signposted_as(hop) do
