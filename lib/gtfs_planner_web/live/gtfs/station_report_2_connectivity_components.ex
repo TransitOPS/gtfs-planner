@@ -19,8 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
 
   attr :dimension, :atom, required: true
   attr :groups, :list, required: true
-  attr :expanded_route, :any, default: nil
-  attr :expanded_route_key, :any, default: nil
+  attr :expanded_routes, :map, default: %{}
 
   def connectivity_route_detail(assigns) do
     assigns = assign(assigns, :dimension_label, dimension_label(assigns.dimension))
@@ -53,8 +52,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         <.source_group_card
           :for={group <- @groups}
           group={group}
-          expanded_route={@expanded_route}
-          expanded_route_key={@expanded_route_key}
+          expanded_routes={@expanded_routes}
         />
       </div>
     </div>
@@ -62,8 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   end
 
   attr :group, :map, required: true
-  attr :expanded_route, :any, default: nil
-  attr :expanded_route_key, :any, default: nil
+  attr :expanded_routes, :map, default: %{}
 
   defp source_group_card(assigns) do
     worst = worst_target_status(assigns.group.targets)
@@ -92,8 +89,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
           :for={target <- @group.targets}
           target={target}
           source_id={@group.source.stop_id}
-          expanded_route={@expanded_route}
-          expanded_route_key={@expanded_route_key}
+          expanded_routes={@expanded_routes}
         />
       </div>
     </div>
@@ -102,19 +98,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
 
   attr :target, :map, required: true
   attr :source_id, :string, required: true
-  attr :expanded_route, :any, default: nil
-  attr :expanded_route_key, :any, default: nil
+  attr :expanded_routes, :map, default: %{}
 
   defp target_row(assigns) do
     nopath = assigns.target.status == :nopath
     key = {assigns.source_id, assigns.target.stop_id}
-    expanded = assigns.expanded_route_key == key
+    expanded_route = Map.get(assigns.expanded_routes, key)
+    expanded = expanded_route != nil
     route_region_id = "route-#{assigns.source_id}-#{assigns.target.stop_id}"
 
     assigns =
       assigns
       |> assign(:nopath, nopath)
       |> assign(:expanded, expanded)
+      |> assign(:expanded_route, expanded_route)
       |> assign(:key, key)
       |> assign(:route_region_id, route_region_id)
 
@@ -248,7 +245,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         <tr class="border-b border-gray-200">
           <th class="text-left py-2 pr-2 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-8">#</th>
           <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-24">Mode</th>
-          <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Stop ID</th>
+          <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Stop name</th>
           <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Instruction</th>
           <th class="text-right py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-16">Time</th>
           <th class="text-right py-2 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-14">Dist</th>
@@ -268,7 +265,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
               <td class="py-2.5 pr-3">
                 <span class={"text-sm font-medium #{mode_color(item.mode)}"}>{item.mode || "—"}</span>
               </td>
-              <td class="py-2.5 pr-3 text-gray-600 font-mono text-xs truncate max-w-[240px]" title={item.stop_id}>{item.stop_id}</td>
+              <td class="py-2.5 pr-3 text-gray-600 text-xs truncate max-w-[240px]" title={item.stop_name}>{item.stop_name || item.stop_id}</td>
               <td class="py-2.5 pr-3 text-gray-700">{item.instruction || "—"}</td>
               <td class="py-2.5 pr-3 text-right tabular-nums text-gray-900">
                 <%= if item.time != nil do %>

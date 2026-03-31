@@ -77,10 +77,10 @@ defmodule GtfsPlanner.Gtfs.TraversalCalculatorTest do
                TraversalCalculator.calculate(pathway, nil)
     end
 
-    test "elevator uses board slack plus explicit traversal_time when present" do
+    test "elevator uses explicit traversal_time without board slack when present" do
       pathway = %Pathway{pathway_mode: 5, traversal_time: 18}
 
-      assert %{calculation_method: :elevator_traversal_time, time_seconds: 108.0} =
+      assert %{calculation_method: :elevator_traversal_time, time_seconds: 18.0} =
                TraversalCalculator.calculate(pathway, 99)
     end
   end
