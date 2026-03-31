@@ -242,5 +242,6 @@ body:has(#diagram-page[data-immersive="true"]) {
     border-radius: 0 !important;
     border-left: none !important;
     border-right: none !important;
+    background-color: transparent !important;
   }
 }
