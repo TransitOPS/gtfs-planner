@@ -41,14 +41,15 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecks do
   @spec validate(map(), [map()]) :: [map()]
   def validate(station, child_stops) do
     all_stops = [station | child_stops]
+    station_id = station.stop_id
 
     [
       title_case_check(all_stops),
       jargon_check(all_stops),
-      node_prefix_check(child_stops),
-      boarding_prefix_check(child_stops),
-      entrance_prefix_check(child_stops),
-      prefix_type_mismatch_check(child_stops),
+      node_prefix_check(child_stops, station_id),
+      boarding_prefix_check(child_stops, station_id),
+      entrance_prefix_check(child_stops, station_id),
+      prefix_type_mismatch_check(child_stops, station_id),
       test_placeholder_check(all_stops),
       direction_mismatch_check(all_stops),
       duplicate_id_tokens_check(all_stops),
@@ -119,11 +120,11 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecks do
     |> String.trim()
   end
 
-  defp node_prefix_check(child_stops) do
+  defp node_prefix_check(child_stops, station_id) do
     flagged =
       child_stops
       |> Enum.filter(&(&1.location_type == 3))
-      |> Enum.reject(&String.starts_with?(&1.stop_id, "node_"))
+      |> Enum.reject(&has_type_prefix?(&1.stop_id, "node_", station_id))
       |> Enum.map(& &1.stop_id)
 
     Helpers.item(
@@ -136,11 +137,11 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecks do
     )
   end
 
-  defp boarding_prefix_check(child_stops) do
+  defp boarding_prefix_check(child_stops, station_id) do
     flagged =
       child_stops
       |> Enum.filter(&(&1.location_type == 4))
-      |> Enum.reject(&String.starts_with?(&1.stop_id, "boarding_"))
+      |> Enum.reject(&has_type_prefix?(&1.stop_id, "boarding_", station_id))
       |> Enum.map(& &1.stop_id)
 
     Helpers.item(
@@ -153,11 +154,11 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecks do
     )
   end
 
-  defp entrance_prefix_check(child_stops) do
+  defp entrance_prefix_check(child_stops, station_id) do
     flagged =
       child_stops
       |> Enum.filter(&(&1.location_type == 2))
-      |> Enum.reject(&String.starts_with?(&1.stop_id, "entrance_"))
+      |> Enum.reject(&has_type_prefix?(&1.stop_id, "entrance_", station_id))
       |> Enum.map(& &1.stop_id)
 
     Helpers.item(
@@ -170,13 +171,14 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecks do
     )
   end
 
-  defp prefix_type_mismatch_check(child_stops) do
+  defp prefix_type_mismatch_check(child_stops, station_id) do
     flagged =
       child_stops
       |> Enum.flat_map(fn stop ->
         @prefix_type_map
         |> Enum.filter(fn {prefix, expected_type} ->
-          String.starts_with?(stop.stop_id, prefix) and stop.location_type != expected_type
+          has_type_prefix?(stop.stop_id, prefix, station_id) and
+            stop.location_type != expected_type
         end)
         |> Enum.map(fn {prefix, expected_type} ->
           %{
@@ -194,6 +196,11 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecks do
       length(flagged),
       flagged
     )
+  end
+
+  defp has_type_prefix?(stop_id, prefix, station_id) do
+    String.starts_with?(stop_id, prefix) or
+      String.starts_with?(stop_id, station_id <> "_" <> prefix)
   end
 
   defp test_placeholder_check(stops) do
