@@ -96,6 +96,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
           :for={target <- @group.targets}
           target={target}
           source_id={@group.source.stop_id}
+          source_name={@group.source.name}
           expanded_routes={@expanded_routes}
         />
       </div>
@@ -105,6 +106,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
 
   attr :target, :map, required: true
   attr :source_id, :string, required: true
+  attr :source_name, :string, required: true
   attr :expanded_routes, :map, default: %{}
 
   defp target_row(assigns) do
@@ -133,7 +135,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         aria-controls={@route_region_id}
       >
         <div class="flex-1 min-w-0">
-          <p class="text-sm font-medium text-gray-900">{@target.name}</p>
+          <p class="text-sm font-medium text-gray-900">{@source_name} → {@target.name}</p>
         </div>
 
         <div class="flex items-center gap-6 shrink-0 ml-4">
@@ -179,17 +181,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         <div id={@route_region_id} role="region" class="border-t border-gray-200 bg-gray-50">
           <div class="p-5 border-b border-gray-200">
             <div class="flex items-start justify-between mb-4">
-              <div>
-                <div class="flex items-center gap-3 mb-2">
-                  <div>
-                    <p class="text-base font-semibold text-gray-900">{@expanded_route.target.name}</p>
-                    <p class="text-xs text-gray-500 font-mono mt-0.5">{@expanded_route.target.stop_id} · {@expanded_route.target.meta}</p>
-                  </div>
-                </div>
-              </div>
-              <div class="flex items-center gap-2">
-                <.route_badge status={@expanded_route.status} />
-              </div>
+              <p class="text-xs text-gray-500 font-mono">{@expanded_route.target.stop_id} · {@expanded_route.target.meta}</p>
+              <.route_badge status={@expanded_route.status} />
             </div>
 
             <div :for={w <- @expanded_route.warnings} class="mb-4">
