@@ -248,7 +248,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         <tr class="border-b border-gray-200">
           <th class="text-left py-2 pr-2 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-8">#</th>
           <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-24">Mode</th>
-          <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Stop ID</th>
+          <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Stop name</th>
           <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Instruction</th>
           <th class="text-right py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-16">Time</th>
           <th class="text-right py-2 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-14">Dist</th>
@@ -268,7 +268,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
               <td class="py-2.5 pr-3">
                 <span class={"text-sm font-medium #{mode_color(item.mode)}"}>{item.mode || "—"}</span>
               </td>
-              <td class="py-2.5 pr-3 text-gray-600 font-mono text-xs truncate max-w-[240px]" title={item.stop_id}>{item.stop_id}</td>
+              <td class="py-2.5 pr-3 text-gray-600 text-xs truncate max-w-[240px]" title={item.stop_name}>{item.stop_name || item.stop_id}</td>
               <td class="py-2.5 pr-3 text-gray-700">{item.instruction || "—"}</td>
               <td class="py-2.5 pr-3 text-right tabular-nums text-gray-900">
                 <%= if item.time != nil do %>

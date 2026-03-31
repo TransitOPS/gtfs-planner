@@ -626,6 +626,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
         mode: mode,
         mode_int: mode_int,
         stop_id: hop.stop_id,
+        stop_name: hop.stop_name,
         instruction: instruction,
         time: hop.time_seconds,
         dist: dist,

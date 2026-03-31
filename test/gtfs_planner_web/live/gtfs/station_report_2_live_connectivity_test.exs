@@ -319,7 +319,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       # Step table should be visible with semantic table markup
       assert html =~ "<thead>"
       assert html =~ "Mode"
-      assert html =~ "Stop ID"
+      assert html =~ "Stop name"
       assert html =~ "Instruction"
     end
 
