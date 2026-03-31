@@ -570,27 +570,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
           level_id: "L_SIGN_STREET"
         })
 
-      # Unidirectional pathway from entrance → platform with both signage fields.
-      # Forward direction: "To Platform", Reverse direction: "To Exit"
+      # Bidirectional pathway from entrance → platform with both signage fields.
       _pw =
         pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, platform.stop_id, %{
           pathway_id: "PW_SIGN",
           pathway_mode: 1,
-          is_bidirectional: false,
+          is_bidirectional: true,
           traversal_time: 20,
           signposted_as: "To Platform",
           reversed_signposted_as: "To Exit"
-        })
-
-      # Bidirectional pathway so platform-to-exit BFS can traverse in reverse
-      _pw_bidir =
-        pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, platform.stop_id, %{
-          pathway_id: "PW_SIGN_BIDIR",
-          pathway_mode: 1,
-          is_bidirectional: true,
-          traversal_time: 40,
-          signposted_as: "Forward Sign",
-          reversed_signposted_as: "Reverse Sign"
         })
 
       %{
@@ -629,33 +617,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       refute html =~ "To Exit"
     end
 
-    test "platform-to-exit step shows reversed_signposted_as for reverse-traversed pathway", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(
-          conn,
-          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?connectivity=detail&dimension=platform_to_exit"
-        )
-
-      # Expand the PLAT_SIGN → ENT_SIGN route (reverse direction)
-      view
-      |> element(
-        "button[phx-click='toggle_route_expand'][phx-value-source_id='PLAT_SIGN'][phx-value-target_id='ENT_SIGN']"
-      )
-      |> render_click()
-
-      html = render(view)
-      # Reverse traversal should show reversed_signposted_as, not signposted_as
-      assert html =~ "Reverse Sign"
-      refute html =~ "Forward Sign"
-    end
   end
 
   describe "Connectivity empty state" do

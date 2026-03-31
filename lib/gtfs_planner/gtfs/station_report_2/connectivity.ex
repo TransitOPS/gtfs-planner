@@ -835,12 +835,18 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
     pathway.from_stop_id == to_stop_id and pathway.to_stop_id == from_stop_id
   end
 
-  defp effective_signposted_as(%{traversed_reverse?: true} = hop) do
+  @doc """
+  Returns the appropriate signage text for a hop based on traversal direction.
+
+  When a pathway is traversed in reverse, prefers `reversed_signposted_as`
+  with a fallback to `signposted_as`. Forward traversals always use `signposted_as`.
+  """
+  def effective_signposted_as(%{traversed_reverse?: true} = hop) do
     normalize_signposted_as(hop.reversed_signposted_as) ||
       normalize_signposted_as(hop.signposted_as)
   end
 
-  defp effective_signposted_as(hop) do
+  def effective_signposted_as(hop) do
     normalize_signposted_as(hop.signposted_as)
   end
 
