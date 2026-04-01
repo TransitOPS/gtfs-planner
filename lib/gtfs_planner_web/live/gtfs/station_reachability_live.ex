@@ -316,7 +316,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
         <% end %>
 
         <%= if @validation_result do %>
-          <section id="station-reachability-summary" class="card bg-base-100 shadow-sm">
+          <section id="station-reachability-summary" class="card bg-base-100 shadow-sm overflow-hidden">
             <header class="border-b border-base-content/20 px-4 py-3">
               <h2 class="text-base font-semibold">Validation Summary</h2>
             </header>
@@ -382,6 +382,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
                 </table>
               </div>
             </div>
+
+            <.link
+              :if={@validation_run_id}
+              id="station-reachability-open-results"
+              navigate={
+                ~p"/gtfs/#{@current_gtfs_version.id}/station-reachability/#{@validation_run_id}?stop_id=#{@stop_id}"
+              }
+              class="block w-full border-t border-base-200 px-4 py-3 text-center text-[0.9625rem] font-medium text-base-content transition-colors duration-150 hover:bg-base-200"
+            >
+              Open Full Reachability Results
+            </.link>
           </section>
         <% end %>
 
