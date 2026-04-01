@@ -353,7 +353,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
                 <table class="table table-sm">
                   <thead>
                     <tr>
-                      <th>Test Case</th>
+                      <th>Test Case ID</th>
+                      <th>Description</th>
                       <th>Status</th>
                       <th>Issue</th>
                       <th>Duration (s)</th>
@@ -365,7 +366,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
                       :for={row <- @pathways_case_results}
                       id={"station-pathways-case-row-#{row.order_index}"}
                     >
-                      <td class="font-mono text-xs">{row.walkability_test_id}</td>
+                      <td
+                        id={"station-pathways-case-id-#{row.order_index}"}
+                        class="font-mono text-xs"
+                      >
+                        {row.walkability_test_id}
+                      </td>
+                      <td
+                        id={"station-pathways-case-description-#{row.order_index}"}
+                        class="text-xs"
+                      >
+                        {pathways_case_description(row)}
+                      </td>
                       <td>
                         <span class={[
                           "badge badge-sm",
@@ -1097,6 +1109,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
       _other -> ["All criteria passed"]
     end
   end
+
+  defp pathways_case_description(%{walkability_test: walkability_test})
+       when is_struct(walkability_test) do
+    if present_text?(walkability_test.description), do: walkability_test.description, else: "—"
+  end
+
+  defp pathways_case_description(_row), do: "—"
 
   defp case_status_badge_class("pass"), do: "badge-success"
   defp case_status_badge_class("warning"), do: "badge-warning"

@@ -413,7 +413,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                   <table class="table table-sm">
                     <thead>
                       <tr>
-                        <th>Test Case</th>
+                        <th>Test Case ID</th>
+                        <th>Description</th>
                         <th>Status</th>
                         <th>Issue</th>
                         <th>Duration (s)</th>
@@ -433,7 +434,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                         class="border-t-2 border-base-content/15"
                       >
                         <tr id={"pathways-case-row-#{row.order_index}"} class="bg-base-100">
-                          <td class="font-mono text-xs">{row.walkability_test_id}</td>
+                          <td id={"pathways-case-id-#{row.order_index}"} class="font-mono text-xs">
+                            {row.walkability_test_id}
+                          </td>
+                          <td id={"pathways-case-description-#{row.order_index}"} class="text-xs">
+                            {pathways_case_description(row)}
+                          </td>
                           <td>
                             <span class={[
                               "badge badge-sm",
@@ -456,7 +462,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                         </tr>
 
                         <tr id={"pathways-case-criteria-row-#{row.order_index}"} class="bg-base-100">
-                          <td colspan="9" class="p-0 border-t border-base-content/10">
+                          <td colspan="10" class="p-0 border-t border-base-content/10">
                             <details
                               id={"pathways-case-criteria-details-#{row.order_index}"}
                               class="border-t border-base-300"
@@ -529,7 +535,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                         </tr>
 
                         <tr id={"pathways-case-itinerary-row-#{row.order_index}"} class="bg-base-100">
-                          <td colspan="9" class="p-0 border-t border-base-content/10">
+                          <td colspan="10" class="p-0 border-t border-base-content/10">
                             <details
                               id={"pathways-case-itinerary-details-#{row.order_index}"}
                               class="border-t border-base-300"
@@ -1318,6 +1324,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     |> pathways_walkability_test_stop_id()
     |> normalize_text()
   end
+
+  defp pathways_case_description(%{walkability_test: walkability_test})
+       when is_struct(walkability_test) do
+    case walkability_test.description do
+      description when is_binary(description) and description != "" -> description
+      _ -> "—"
+    end
+  end
+
+  defp pathways_case_description(_row), do: "—"
 
   defp pathways_walkability_test_address(%{walkability_test: walkability_test})
        when is_struct(walkability_test) do

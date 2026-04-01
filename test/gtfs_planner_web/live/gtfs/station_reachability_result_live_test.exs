@@ -97,7 +97,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
           organization_id: organization.id,
           gtfs_version_id: version.id,
           stop_id: station.stop_id,
-          address: "123 Station Plaza"
+          address: "123 Station Plaza",
+          description: "Street entrance to platform"
         })
 
       {:ok, run} =
@@ -128,6 +129,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
       assert has_element?(view, "#pathways-criteria-comparison-overview")
       assert has_element?(view, "#pathways-case-results")
       assert has_element?(view, "#pathways-case-row-0")
+      assert has_element?(view, "#pathways-case-id-0", walkability_test.id)
+      assert has_element?(view, "#pathways-case-description-0", "Street entrance to platform")
       assert has_element?(view, "#pathways-case-criteria-details-0")
       assert has_element?(view, "#pathways-case-itinerary-details-0")
     end

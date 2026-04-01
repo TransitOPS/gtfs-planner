@@ -683,7 +683,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.stop_id,
-          address: "123 Station Plaza"
+          address: "123 Station Plaza",
+          description: "Hotel lobby to main platform"
         })
 
       {:ok, view, _html} =
@@ -726,6 +727,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert has_element?(view, "#station-trip-overview", "Failed")
       assert has_element?(view, "#station-pathways-case-results")
       assert has_element?(view, "#station-pathways-case-row-0")
+      assert has_element?(view, "#station-pathways-case-id-0", walkability_test.id)
+      assert has_element?(view, "#station-pathways-case-description-0", "Hotel lobby to main platform")
 
       refute has_element?(view, "#reachability-summary-total")
       refute has_element?(view, "#reachability-summary-pass-rate")
@@ -923,7 +926,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.stop_id,
-          address: "1 Valid Station Plaza"
+          address: "1 Valid Station Plaza",
+          description: "Main entrance to platform A"
         })
 
       invalid_test_case =
@@ -980,6 +984,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       _ = render(view)
 
       assert has_element?(view, "#station-pathways-case-row-0")
+      assert has_element?(view, "#station-pathways-case-id-0", valid_test_case.id)
+      assert has_element?(view, "#station-pathways-case-description-0", "Main entrance to platform A")
       refute has_element?(view, "#station-pathways-case-row-1")
 
       refute has_element?(view, "#station-reachability-coverage")
