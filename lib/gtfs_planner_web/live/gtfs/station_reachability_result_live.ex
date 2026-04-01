@@ -2,6 +2,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   use GtfsPlannerWeb, :live_view
   alias GtfsPlannerWeb.Gtfs.ExportLive
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.PathwaysCaseSummary
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -1221,22 +1222,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   defp case_status_badge_class(_), do: "badge-ghost"
 
   defp pathways_case_display_status(row) do
-    mismatch_map = pathways_mismatch_map(row.details_json)
-
-    traversable_failed? =
-      Map.has_key?(mismatch_map, "expected_traversable")
-
-    other_criteria_failed? =
-      mismatch_map
-      |> Map.drop(["expected_traversable"])
-      |> map_has_entries?()
-
-    cond do
-      row.failure_category == "query_failure" -> "failed"
-      traversable_failed? -> "failed"
-      other_criteria_failed? -> "warning"
-      true -> "pass"
-    end
+    PathwaysCaseSummary.case_display_status(row)
   end
 
   defp pathways_case_issues(row) do
@@ -1309,9 +1295,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     |> String.replace("_", " ")
     |> String.capitalize()
   end
-
-  defp map_has_entries?(map) when is_map(map), do: map_size(map) > 0
-  defp map_has_entries?(_map), do: false
 
   defp pathways_case_origin(row) do
     row
@@ -1521,18 +1504,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   defp pathways_criterion_with_status?(_criterion, _status_to_match), do: false
 
   defp pathways_trip_overview(pathways_case_results) when is_list(pathways_case_results) do
-    status_totals =
-      Enum.reduce(pathways_case_results, %{pass: 0, warning: 0, failed: 0}, fn row, acc ->
-        increment_pathways_trip_status(acc, pathways_case_display_status(row))
-      end)
-
-    total_tests = length(pathways_case_results)
+    shared_overview = PathwaysCaseSummary.trip_overview(pathways_case_results)
 
     %{
-      total_tests: total_tests,
-      pass_count: status_totals.pass,
-      warning_count: status_totals.warning,
-      fail_count: status_totals.failed,
+      total_tests: shared_overview.total_tests,
+      pass_count: shared_overview.pass_count,
+      warning_count: shared_overview.warning_count,
+      fail_count: shared_overview.fail_count,
       duration_seconds:
         pathways_numeric_availability_stats(pathways_case_results, :duration_seconds),
       distance_meters:
@@ -1550,11 +1528,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       distance_meters: pathways_empty_numeric_availability_stats()
     }
   end
-
-  defp increment_pathways_trip_status(acc, "pass"), do: Map.update!(acc, :pass, &(&1 + 1))
-  defp increment_pathways_trip_status(acc, "warning"), do: Map.update!(acc, :warning, &(&1 + 1))
-  defp increment_pathways_trip_status(acc, "failed"), do: Map.update!(acc, :failed, &(&1 + 1))
-  defp increment_pathways_trip_status(acc, _status), do: acc
 
   defp pathways_numeric_availability_stats(pathways_case_results, field) do
     values =

@@ -11,6 +11,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   alias GtfsPlanner.Otp.Lifecycle
   alias GtfsPlanner.Otp.Runtime
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.PathwaysCaseSummary
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.ExportLive
   alias LiveSelect.Component, as: LiveSelectComponent
@@ -325,25 +326,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
               <section id="station-trip-overview" class="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <div class="rounded border border-base-200 px-3 py-2">
                   <div class="text-xs uppercase tracking-wide text-base-content/70">Test cases</div>
-                  <div class="text-base font-semibold text-base-content">
+                  <div id="station-trip-overview-total-tests-value" class="text-base font-semibold text-base-content">
                     {@validation_result.trip_overview.total_tests}
                   </div>
                 </div>
                 <div class="rounded border border-base-200 px-3 py-2">
                   <div class="text-xs uppercase tracking-wide text-base-content/70">Passed</div>
-                  <div class="text-base font-semibold text-success">
+                  <div id="station-trip-overview-pass-count-value" class="text-base font-semibold text-success">
                     {@validation_result.trip_overview.pass_count}
                   </div>
                 </div>
                 <div class="rounded border border-base-200 px-3 py-2">
                   <div class="text-xs uppercase tracking-wide text-base-content/70">Warnings</div>
-                  <div class="text-base font-semibold text-warning">
+                  <div
+                    id="station-trip-overview-warning-count-value"
+                    class="text-base font-semibold text-warning"
+                  >
                     {@validation_result.trip_overview.warning_count}
                   </div>
                 </div>
                 <div class="rounded border border-base-200 px-3 py-2">
                   <div class="text-xs uppercase tracking-wide text-base-content/70">Failed</div>
-                  <div class="text-base font-semibold text-error">
+                  <div id="station-trip-overview-fail-count-value" class="text-base font-semibold text-error">
                     {@validation_result.trip_overview.fail_count}
                   </div>
                 </div>
@@ -1070,36 +1074,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   end
 
   defp pathways_trip_overview(pathways_case_results) when is_list(pathways_case_results) do
-    Enum.reduce(
-      pathways_case_results,
-      %{total_tests: 0, pass_count: 0, warning_count: 0, fail_count: 0},
-      fn row, acc ->
-        status = pathways_case_display_status(row)
-
-        acc
-        |> Map.update!(:total_tests, &(&1 + 1))
-        |> increment_pathways_trip_status(status)
-      end
-    )
+    PathwaysCaseSummary.trip_overview(pathways_case_results)
   end
 
   defp pathways_trip_overview(_pathways_case_results),
     do: %{total_tests: 0, pass_count: 0, warning_count: 0, fail_count: 0}
 
-  defp increment_pathways_trip_status(acc, "pass"), do: Map.update!(acc, :pass_count, &(&1 + 1))
-
-  defp increment_pathways_trip_status(acc, "warning"),
-    do: Map.update!(acc, :warning_count, &(&1 + 1))
-
-  defp increment_pathways_trip_status(acc, "failed"), do: Map.update!(acc, :fail_count, &(&1 + 1))
-  defp increment_pathways_trip_status(acc, _status), do: acc
-
   defp pathways_case_display_status(row) do
-    cond do
-      row.failure_category == "query_failure" -> "failed"
-      row.failure_category == "scoring_failure" -> "warning"
-      true -> "pass"
-    end
+    PathwaysCaseSummary.case_display_status(row)
   end
 
   defp pathways_case_issues(row) do
