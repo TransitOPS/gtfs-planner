@@ -208,58 +208,71 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
           <%!-- Status Badge --%>
           <div class="mt-6">
-            <div class={["badge badge-lg", status_badge_class(@run.status)]}>
-              {String.upcase(@run.status)}
+            <div class="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5">
+              <span class={["badge badge-sm", status_badge_class(@run.status)]}>
+                {String.upcase(@run.status)}
+              </span>
+              <span class="text-xs font-medium uppercase tracking-wide text-gray-500">
+                Run status
+              </span>
             </div>
           </div>
 
           <%= cond do %>
             <% @run.status == "failed" -> %>
               <%!-- Failed State --%>
-              <section class="mt-6 rounded-xl border border-error/40 bg-base-100" role="alert">
-                <div class="flex items-start gap-3 border-b border-error/20 px-4 py-3">
-                  <.icon name="hero-exclamation-triangle" class="mt-0.5 h-5 w-5 shrink-0 text-error" />
+              <section class="mt-6 rounded-lg border border-red-300 bg-white" role="alert">
+                <div class="flex items-start gap-3 border-b border-red-200 px-5 py-4">
+                  <.icon
+                    name="hero-exclamation-triangle"
+                    class="mt-0.5 h-5 w-5 shrink-0 text-red-600"
+                  />
                   <div class="min-w-0 flex-1">
                     <%= if @pathways_failure do %>
-                      <h3 class="text-base font-semibold leading-6" id="pathways-failure-title">
+                      <h3
+                        class="text-base font-semibold leading-6 text-gray-900"
+                        id="pathways-failure-title"
+                      >
                         {@pathways_failure.title}
                       </h3>
                       <p
-                        class="mt-1 text-sm leading-5 text-base-content/85"
+                        class="mt-1 text-sm leading-5 text-gray-700"
                         id="pathways-failure-summary"
                       >
                         {@pathways_failure.summary}
                       </p>
                       <p
-                        class="mt-2 text-sm leading-5 text-base-content/80"
+                        class="mt-2 text-sm leading-5 text-gray-700"
                         id="pathways-failure-status-message"
                       >
                         {@pathways_failure_message}
                       </p>
                     <% else %>
-                      <h3 class="text-base font-semibold leading-6">Validation Failed</h3>
-                      <p class="mt-1 text-sm leading-5 text-base-content/85">
+                      <h3 class="text-base font-semibold leading-6 text-gray-900">
+                        Validation Failed
+                      </h3>
+                      <p class="mt-1 text-sm leading-5 text-gray-700">
                         {failure_summary(@run, @pathways_preflight_issues)}
                       </p>
                     <% end %>
                   </div>
                 </div>
 
-                <div class="space-y-4 px-4 py-4">
+                <div class="space-y-4 px-5 py-4">
                   <%= if @pathways_failure && @pathways_failure.blocking_issues != [] do %>
                     <section id="pathways-failure-blocking-issues" class="space-y-2">
-                      <h4 class="text-xs font-semibold uppercase tracking-wide text-error">
+                      <h4 class="text-xs font-semibold uppercase tracking-wide text-red-700">
                         Blocking issues
                       </h4>
                       <ul class="space-y-2 text-sm">
                         <li
                           :for={issue <- @pathways_failure.blocking_issues}
-                          class="border-l-2 border-error/60 pl-3"
+                          class="border-l-2 border-red-300 pl-3"
                         >
-                          <p class="leading-5 text-base-content">{issue.message}</p>
+                          <p class="leading-5 text-gray-800">{issue.message}</p>
                           <p
                             :if={issue.context_summary}
-                            class="mt-1 font-mono text-xs leading-5 text-base-content/70"
+                            class="mt-1 font-mono text-xs leading-5 text-gray-500"
                           >
                             {issue.context_summary}
                           </p>
@@ -271,12 +284,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                   <%= if @pathways_failure do %>
                     <section
                       id="pathways-failure-checks"
-                      class="space-y-2 border-t border-base-300 pt-3"
+                      class="space-y-2 border-t border-gray-200 pt-3"
                     >
-                      <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
+                      <h4 class="text-xs font-semibold uppercase tracking-wide text-gray-500">
                         Recommended checks
                       </h4>
-                      <ul class="list-disc space-y-1 pl-5 text-base-content/85 text-sm">
+                      <ul class="list-disc space-y-1 pl-5 text-gray-700 text-sm">
                         <li :for={check <- @pathways_failure.checks}>{check}</li>
                       </ul>
                     </section>
@@ -286,18 +299,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                     <section id="pathways-preflight-issues" class="space-y-4">
                       <%= if @pathways_preflight_issues.blocking_errors != [] do %>
                         <section id="pathways-preflight-blocking-errors" class="space-y-2">
-                          <h4 class="text-xs font-semibold uppercase tracking-wide text-error">
+                          <h4 class="text-xs font-semibold uppercase tracking-wide text-red-700">
                             Blocking errors
                           </h4>
                           <ul class="space-y-2 text-sm">
                             <li
                               :for={issue <- @pathways_preflight_issues.blocking_errors}
-                              class="border-l-2 border-error/60 pl-3"
+                              class="border-l-2 border-red-300 pl-3"
                             >
-                              <p class="leading-5 text-base-content">{issue.message}</p>
+                              <p class="leading-5 text-gray-800">{issue.message}</p>
                               <p
                                 :if={issue_context_text = preflight_issue_context(issue)}
-                                class="mt-1 font-mono text-xs leading-5 text-base-content/70"
+                                class="mt-1 font-mono text-xs leading-5 text-gray-500"
                               >
                                 {issue_context_text}
                               </p>
@@ -309,20 +322,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                       <%= if @pathways_preflight_issues.warnings != [] do %>
                         <section
                           id="pathways-preflight-warnings"
-                          class="space-y-2 border-t border-base-300 pt-3"
+                          class="space-y-2 border-t border-gray-200 pt-3"
                         >
-                          <h4 class="text-xs font-semibold uppercase tracking-wide text-warning">
+                          <h4 class="text-xs font-semibold uppercase tracking-wide text-yellow-700">
                             Warnings
                           </h4>
                           <ul class="space-y-2 text-sm">
                             <li
                               :for={issue <- @pathways_preflight_issues.warnings}
-                              class="border-l-2 border-warning/60 pl-3"
+                              class="border-l-2 border-yellow-300 pl-3"
                             >
-                              <p class="leading-5 text-base-content">{issue.message}</p>
+                              <p class="leading-5 text-gray-800">{issue.message}</p>
                               <p
                                 :if={issue_context_text = preflight_issue_context(issue)}
-                                class="mt-1 font-mono text-xs leading-5 text-base-content/70"
+                                class="mt-1 font-mono text-xs leading-5 text-gray-500"
                               >
                                 {issue_context_text}
                               </p>
@@ -336,19 +349,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                   <%= if @pathways_failure_diagnostics != [] do %>
                     <section
                       id="pathways-failure-diagnostics"
-                      class="space-y-2 border-t border-base-300 pt-3"
+                      class="space-y-2 border-t border-gray-200 pt-3"
                     >
-                      <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
+                      <h4 class="text-xs font-semibold uppercase tracking-wide text-gray-500">
                         Technical diagnostics
                       </h4>
-                      <dl class="divide-y divide-base-300 text-sm text-base-content/85">
+                      <dl class="divide-y divide-gray-200 text-sm text-gray-700">
                         <div
                           :for={detail <- @pathways_failure_diagnostics}
                           class="grid grid-cols-1 gap-1 py-2 sm:grid-cols-[12rem,1fr] sm:gap-3"
                         >
-                          <dt class="font-medium text-base-content/80">{detail.label}:</dt>
+                          <dt class="font-medium text-gray-600">{detail.label}:</dt>
                           <%= if detail.label == "Build log excerpt" do %>
-                            <dd class="rounded border border-base-300 bg-base-200 p-2 font-mono text-xs whitespace-pre-wrap break-words">
+                            <dd class="rounded border border-gray-300 bg-gray-50 p-2 font-mono text-xs whitespace-pre-wrap break-words">
                               {detail.value}
                             </dd>
                           <% else %>
@@ -362,15 +375,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                   <%= if @pathways_failure do %>
                     <section
                       id="otp-data-requirements-summary"
-                      class="rounded-lg border border-base-300 bg-base-100 p-4"
+                      class="rounded-lg border border-gray-300 bg-gray-50 p-4"
                     >
-                      <h3 class="text-sm font-semibold text-base-content">
+                      <h3 class="text-sm font-semibold text-gray-900">
                         OTP data requirements (quick checks)
                       </h3>
-                      <p class="mt-1 text-xs text-base-content/70">
+                      <p class="mt-1 text-xs text-gray-600">
                         Fix these common blockers before rerunning pathways validation.
                       </p>
-                      <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-base-content/85">
+                      <ul class="mt-3 list-disc space-y-1 pl-5 text-sm text-gray-700">
                         <li :for={item <- otp_data_requirements_summary()}>{item}</li>
                       </ul>
                     </section>
@@ -379,10 +392,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
               </section>
             <% @run.status in ["started", "running"] -> %>
               <%!-- Loading State --%>
-              <div class="flex items-center justify-center min-h-[400px] mt-6">
+              <div class="mt-6 rounded-lg border border-gray-300 bg-white px-6 py-20">
                 <div class="text-center">
-                  <div class="loading loading-spinner loading-lg"></div>
-                  <p class="mt-4 text-base-content/60">
+                  <div class="loading loading-spinner loading-lg text-teal-700"></div>
+                  <p class="mt-4 text-gray-600">
                     <%= if @run.status == "started" do %>
                       Validation starting...
                     <% else %>
@@ -405,25 +418,45 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
               <section
                 id="pathways-case-results"
-                class="mt-8 rounded-xl border border-base-content/20 bg-base-100"
+                class="mt-8 rounded-lg border border-gray-400 bg-white overflow-hidden"
               >
-                <div class="px-4 py-3 border-b border-base-content/15">
-                  <h3 class="text-sm font-semibold">Per-Test Results</h3>
+                <div class="px-5 py-3 border-b border-gray-300">
+                  <h3 class="text-sm font-semibold text-gray-900">Per-Test Results</h3>
                 </div>
                 <div class="overflow-x-auto">
-                  <table class="table table-sm">
+                  <table class="w-full text-sm" style="border-collapse: collapse;">
                     <thead>
-                      <tr>
-                        <th>Test Case ID</th>
-                        <th>Description</th>
-                        <th>Status</th>
-                        <th>Issue</th>
-                        <th>Duration (s)</th>
-                        <th>Distance (m)</th>
-                        <th>Origin</th>
-                        <th>Destination</th>
-                        <th>Start Time</th>
-                        <th>End Time</th>
+                      <tr class="border-b border-gray-200 bg-gray-50">
+                        <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Test Case ID
+                        </th>
+                        <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Description
+                        </th>
+                        <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Status
+                        </th>
+                        <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Issue
+                        </th>
+                        <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Duration (s)
+                        </th>
+                        <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Distance (m)
+                        </th>
+                        <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Origin
+                        </th>
+                        <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Destination
+                        </th>
+                        <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Start Time
+                        </th>
+                        <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          End Time
+                        </th>
                       </tr>
                     </thead>
                     <%= for row <- @pathways_case_results do %>
@@ -432,16 +465,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
                       <tbody
                         id={"pathways-case-group-#{row.order_index}"}
-                        class="border-t-2 border-base-content/15"
+                        class="border-t border-gray-200"
                       >
-                        <tr id={"pathways-case-row-#{row.order_index}"} class="bg-base-100">
-                          <td id={"pathways-case-id-#{row.order_index}"} class="font-mono text-xs">
+                        <tr id={"pathways-case-row-#{row.order_index}"} class="bg-white align-top">
+                          <td
+                            id={"pathways-case-id-#{row.order_index}"}
+                            class="px-3 py-2 font-mono text-xs text-gray-700"
+                          >
                             {row.walkability_test_id}
                           </td>
-                          <td id={"pathways-case-description-#{row.order_index}"} class="text-xs">
+                          <td
+                            id={"pathways-case-description-#{row.order_index}"}
+                            class="px-3 py-2 text-xs text-gray-700"
+                          >
                             {pathways_case_description(row)}
                           </td>
-                          <td>
+                          <td class="px-3 py-2">
                             <span class={[
                               "badge badge-sm",
                               case_status_badge_class(pathways_case_display_status(row))
@@ -449,26 +488,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                               {String.upcase(to_string(pathways_case_display_status(row)))}
                             </span>
                           </td>
-                          <td>
-                            <ol class="list-decimal list-inside text-xs leading-5 space-y-0.5 marker:text-base-content/60">
+                          <td class="px-3 py-2">
+                            <ol class="list-decimal list-inside text-xs leading-5 space-y-0.5 marker:text-gray-400 text-gray-700">
                               <li :for={issue <- pathways_case_issues(row)}>{issue}</li>
                             </ol>
                           </td>
-                          <td>{row.duration_seconds || "-"}</td>
-                          <td>{format_pathways_distance(row.distance_meters)}</td>
-                          <td>{pathways_case_origin(row)}</td>
-                          <td>{pathways_case_destination(row)}</td>
-                          <td>{format_pathways_time(row.itinerary_start_time)}</td>
-                          <td>{format_pathways_time(row.itinerary_end_time)}</td>
+                          <td class="px-3 py-2 font-mono tabular-nums text-gray-700">
+                            {row.duration_seconds || "-"}
+                          </td>
+                          <td class="px-3 py-2 font-mono tabular-nums text-gray-700">
+                            {format_pathways_distance(row.distance_meters)}
+                          </td>
+                          <td class="px-3 py-2 text-gray-700">{pathways_case_origin(row)}</td>
+                          <td class="px-3 py-2 text-gray-700">{pathways_case_destination(row)}</td>
+                          <td class="px-3 py-2 font-mono tabular-nums text-gray-700">
+                            {format_pathways_time(row.itinerary_start_time)}
+                          </td>
+                          <td class="px-3 py-2 font-mono tabular-nums text-gray-700">
+                            {format_pathways_time(row.itinerary_end_time)}
+                          </td>
                         </tr>
 
-                        <tr id={"pathways-case-criteria-row-#{row.order_index}"} class="bg-base-100">
-                          <td colspan="10" class="p-0 border-t border-base-content/10">
+                        <tr id={"pathways-case-criteria-row-#{row.order_index}"} class="bg-white">
+                          <td colspan="10" class="p-0 border-t border-gray-200">
                             <details
                               id={"pathways-case-criteria-details-#{row.order_index}"}
-                              class="border-t border-base-300"
+                              class="border-t border-gray-200"
                             >
-                              <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-base-content/80">
+                              <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50">
                                 Criteria checks
                               </summary>
 
@@ -480,7 +527,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                                   <%= if criteria_checks == [] do %>
                                     <p
                                       id={"pathways-case-criteria-empty-#{row.order_index}"}
-                                      class="text-xs text-base-content/70"
+                                      class="text-xs text-gray-500"
                                     >
                                       No expected criteria configured.
                                     </p>
@@ -488,31 +535,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                                     <div class="overflow-x-auto">
                                       <table
                                         id={"pathways-case-criteria-table-#{row.order_index}"}
-                                        class="table table-xs"
+                                        class="w-full text-xs"
+                                        style="border-collapse: collapse;"
                                       >
                                         <thead>
-                                          <tr>
-                                            <th>Criterion</th>
-                                            <th>Expected</th>
-                                            <th>Actual</th>
-                                            <th>Status</th>
+                                          <tr class="border-b border-gray-200 bg-gray-50">
+                                            <th class="px-2.5 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                                              Criterion
+                                            </th>
+                                            <th class="px-2.5 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                                              Expected
+                                            </th>
+                                            <th class="px-2.5 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                                              Actual
+                                            </th>
+                                            <th class="px-2.5 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                                              Status
+                                            </th>
                                           </tr>
                                         </thead>
-                                        <tbody>
+                                        <tbody class="divide-y divide-gray-200">
                                           <tr
                                             :for={check <- criteria_checks}
                                             id={
                                               "pathways-case-criteria-check-#{row.order_index}-#{check.kind}"
                                             }
                                           >
-                                            <td>{check.label}</td>
-                                            <td class="font-mono">
+                                            <td class="px-2.5 py-2 text-gray-700">{check.label}</td>
+                                            <td class="px-2.5 py-2 font-mono text-gray-700">
                                               {format_pathways_criteria_value(check.expected)}
                                             </td>
-                                            <td class="font-mono">
+                                            <td class="px-2.5 py-2 font-mono text-gray-700">
                                               {format_pathways_criteria_value(check.actual)}
                                             </td>
-                                            <td>
+                                            <td class="px-2.5 py-2">
                                               <span class={[
                                                 "inline-flex items-center gap-1 font-semibold",
                                                 pathways_criteria_status_class(check.status)
@@ -535,13 +591,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                           </td>
                         </tr>
 
-                        <tr id={"pathways-case-itinerary-row-#{row.order_index}"} class="bg-base-100">
-                          <td colspan="10" class="p-0 border-t border-base-content/10">
+                        <tr id={"pathways-case-itinerary-row-#{row.order_index}"} class="bg-white">
+                          <td colspan="10" class="p-0 border-t border-gray-200">
                             <details
                               id={"pathways-case-itinerary-details-#{row.order_index}"}
-                              class="border-t border-base-300"
+                              class="border-t border-gray-200"
                             >
-                              <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-base-content/80">
+                              <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50">
                                 Step-by-step itinerary
                               </summary>
 
@@ -549,7 +605,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                                 <%= if pathways_empty_itinerary?(itinerary_step_rows) do %>
                                   <p
                                     id={"pathways-case-itinerary-empty-#{row.order_index}"}
-                                    class="text-xs text-base-content/70"
+                                    class="text-xs text-gray-500"
                                   >
                                     {pathways_empty_itinerary_text()}
                                   </p>
@@ -557,31 +613,52 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                                   <div class="overflow-x-auto">
                                     <table
                                       id={"pathways-case-itinerary-table-#{row.order_index}"}
-                                      class="table table-xs"
+                                      class="w-full text-xs"
+                                      style="border-collapse: collapse;"
                                     >
                                       <thead>
-                                        <tr>
-                                          <th>Step</th>
-                                          <th>Leg Mode</th>
-                                          <th>Street</th>
-                                          <th>Relative</th>
-                                          <th>Absolute</th>
-                                          <th>Distance (m)</th>
+                                        <tr class="border-b border-gray-200 bg-gray-50">
+                                          <th class="px-2.5 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                                            Step
+                                          </th>
+                                          <th class="px-2.5 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                                            Leg Mode
+                                          </th>
+                                          <th class="px-2.5 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                                            Street
+                                          </th>
+                                          <th class="px-2.5 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                                            Relative
+                                          </th>
+                                          <th class="px-2.5 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                                            Absolute
+                                          </th>
+                                          <th class="px-2.5 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                                            Distance (m)
+                                          </th>
                                         </tr>
                                       </thead>
-                                      <tbody>
+                                      <tbody class="divide-y divide-gray-200">
                                         <tr
                                           :for={step <- itinerary_step_rows}
                                           id={
                                             "pathways-case-itinerary-step-#{row.order_index}-#{step.leg_index}-#{step.step_index}"
                                           }
                                         >
-                                          <td>{step.step_index}</td>
-                                          <td>{step.mode}</td>
-                                          <td>{step.street_name}</td>
-                                          <td>{step.relative_direction}</td>
-                                          <td>{step.absolute_direction}</td>
-                                          <td>{format_pathways_distance(step.distance_meters)}</td>
+                                          <td class="px-2.5 py-2 text-gray-700">{step.step_index}</td>
+                                          <td class="px-2.5 py-2 text-gray-700">{step.mode}</td>
+                                          <td class="px-2.5 py-2 text-gray-700">
+                                            {step.street_name}
+                                          </td>
+                                          <td class="px-2.5 py-2 text-gray-700">
+                                            {step.relative_direction}
+                                          </td>
+                                          <td class="px-2.5 py-2 text-gray-700">
+                                            {step.absolute_direction}
+                                          </td>
+                                          <td class="px-2.5 py-2 font-mono tabular-nums text-gray-700">
+                                            {format_pathways_distance(step.distance_meters)}
+                                          </td>
                                         </tr>
                                       </tbody>
                                     </table>
@@ -600,7 +677,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
               <%!-- Completed State with Results --%>
               <%!-- Summary Stats --%>
               <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
-                <div class="stats bg-base-100 border border-base-300">
+                <div class="rounded-lg border border-gray-300 bg-white px-4 py-4">
                   <div class="stat">
                     <div class="stat-figure text-error">
                       <svg
@@ -624,7 +701,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                   </div>
                 </div>
 
-                <div class="stats bg-base-100 border border-base-300">
+                <div class="rounded-lg border border-gray-300 bg-white px-4 py-4">
                   <div class="stat">
                     <div class="stat-figure text-warning">
                       <svg
@@ -648,7 +725,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                   </div>
                 </div>
 
-                <div class="stats bg-base-100 border border-base-300">
+                <div class="rounded-lg border border-gray-300 bg-white px-4 py-4">
                   <div class="stat">
                     <div class="stat-figure text-info">
                       <svg
@@ -677,7 +754,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
               <div class="mt-8 space-y-3">
                 <%= for notice_group <- sorted_notices(@run.result_json["notices"] || []) do %>
                   <div class={[
-                    "collapse collapse-arrow bg-base-100 border-l-4",
+                    "collapse collapse-arrow bg-white border border-gray-300 border-l-4",
                     severity_border_class(notice_group["severity"])
                   ]}>
                     <input
@@ -696,9 +773,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                         </div>
                         <span class="font-mono text-sm font-medium">{notice_group["code"]}</span>
                       </div>
-                      <div class="mt-1 text-sm text-base-content/70 flex items-center gap-2 flex-wrap">
+                      <div class="mt-1 text-sm text-gray-600 flex items-center gap-2 flex-wrap">
                         <%= if filename = extract_filename(notice_group) do %>
-                          <span class="font-medium text-base-content">{filename}</span>
+                          <span class="font-medium text-gray-900">{filename}</span>
                           <span>·</span>
                         <% end %>
                         <span>{format_count(get_total_notices(notice_group))} occurrences</span>
@@ -736,21 +813,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                 <% end %>
 
                 <%= if Enum.empty?(@run.result_json["notices"] || []) do %>
-                  <div class="text-center py-12 bg-base-100 rounded-lg border border-base-300">
+                  <div class="text-center py-12 bg-white rounded-lg border border-gray-300">
                     <div class="text-success text-lg font-medium">
                       No validation issues found!
                     </div>
-                    <p class="text-base-content/60 mt-2">Your GTFS data passed all checks.</p>
+                    <p class="text-gray-600 mt-2">Your GTFS data passed all checks.</p>
                   </div>
                 <% end %>
               </div>
             <% true -> %>
               <%!-- Fallback State --%>
-              <div class="hero min-h-[400px] bg-base-200 rounded-lg mt-6">
+              <div class="hero min-h-[400px] bg-gray-100 rounded-lg mt-6 border border-gray-300">
                 <div class="hero-content text-center">
                   <div class="max-w-md">
-                    <h1 class="text-3xl font-bold">Validation Results</h1>
-                    <p class="py-6">Results not yet available.</p>
+                    <h1 class="text-3xl font-bold text-gray-900">Validation Results</h1>
+                    <p class="py-6 text-gray-600">Results not yet available.</p>
                   </div>
                 </div>
               </div>
@@ -759,21 +836,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       </div>
       <div class="drawer-side">
         <label for="validation-history-drawer" class="drawer-overlay"></label>
-        <div class="menu p-4 w-96 min-h-full bg-base-200">
-          <h2 class="text-xl font-bold mb-4">Validation History</h2>
+        <div class="menu p-4 w-96 min-h-full bg-gray-100 border-l border-gray-300">
+          <h2 class="text-xl font-bold text-gray-900 mb-4">Validation History</h2>
           <div id="validation-runs-list" phx-update="stream" class="space-y-2">
             <div
               :for={{dom_id, run} <- @streams.validation_runs}
               id={dom_id}
-              class="card bg-base-100 shadow-sm"
+              class="rounded-lg border border-gray-300 bg-white"
             >
-              <div class="card-body p-4">
+              <div class="p-4">
                 <.link
                   navigate={~p"/gtfs/#{@current_gtfs_version.id}/station-reachability/#{run.id}"}
-                  class="block hover:bg-base-200 -m-4 p-4 rounded-lg transition-colors"
+                  class="block hover:bg-gray-50 -m-4 p-4 rounded-lg transition-colors"
                 >
                   <div class="flex items-center justify-between mb-2">
-                    <div class="text-sm text-base-content/60">
+                    <div class="text-sm text-gray-600">
                       {Calendar.strftime(run.started_at, "%Y-%m-%d %H:%M:%S")}
                     </div>
                     <div class={["badge badge-sm", status_badge_class(run.status)]}>
@@ -911,27 +988,41 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     ~H"""
     <section
       id="pathways-criteria-comparison-overview"
-      class="mt-8 rounded-xl border border-base-content/20 bg-base-100"
+      class="mt-8 rounded-lg border border-gray-400 bg-white overflow-hidden"
     >
-      <div class="px-4 py-3 border-b border-base-content/15">
-        <h3 class="text-sm font-semibold">Criteria Comparison Overview</h3>
+      <div class="px-5 py-3 border-b border-gray-300">
+        <h3 class="text-sm font-semibold text-gray-900">Criteria Comparison Overview</h3>
       </div>
       <div class="overflow-x-auto">
-        <table class="table table-sm">
-          <thead class="text-xs uppercase tracking-wide text-base-content/60">
+        <table class="w-full text-sm" style="border-collapse: collapse;">
+          <thead>
             <tr>
-              <th>Criterion</th>
-              <th>Configured</th>
-              <th>Evaluated</th>
-              <th>Pass</th>
-              <th>Fail</th>
-              <th>N/A</th>
-              <th>Pass Rate</th>
+              <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                Criterion
+              </th>
+              <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                Configured
+              </th>
+              <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                Evaluated
+              </th>
+              <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                Pass
+              </th>
+              <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                Fail
+              </th>
+              <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                N/A
+              </th>
+              <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                Pass Rate
+              </th>
             </tr>
           </thead>
-          <tbody>
+          <tbody class="divide-y divide-gray-200">
             <tr :if={@criteria_overview_rows == []} id="pathways-criteria-comparison-empty">
-              <td colspan="7" class="text-sm text-base-content/70">
+              <td colspan="7" class="px-3 py-3 text-sm text-gray-600">
                 No criteria checks available.
               </td>
             </tr>
@@ -943,6 +1034,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
               <th
                 scope="row"
                 id={"pathways-criteria-comparison-label-#{pathways_criteria_overview_kind(criterion)}"}
+                class="px-3 py-2 text-left text-gray-700"
               >
                 {Map.get(criterion, :label)}
               </th>
@@ -950,7 +1042,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                 id={
                   "pathways-criteria-comparison-configured-#{pathways_criteria_overview_kind(criterion)}"
                 }
-                class="font-mono tabular-nums"
+                class="px-3 py-2 font-mono tabular-nums text-gray-700"
               >
                 {format_pathways_overview_count(Map.get(criterion, :configured_count, 0))}
               </td>
@@ -958,19 +1050,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                 id={
                   "pathways-criteria-comparison-evaluated-#{pathways_criteria_overview_kind(criterion)}"
                 }
-                class="font-mono tabular-nums"
+                class="px-3 py-2 font-mono tabular-nums text-gray-700"
               >
                 {format_pathways_overview_count(Map.get(criterion, :evaluated_count, 0))}
               </td>
               <td
                 id={"pathways-criteria-comparison-pass-#{pathways_criteria_overview_kind(criterion)}"}
-                class="font-mono tabular-nums text-success"
+                class="px-3 py-2 font-mono tabular-nums text-green-700"
               >
                 {format_pathways_overview_count(Map.get(criterion, :pass_count, 0))}
               </td>
               <td
                 id={"pathways-criteria-comparison-fail-#{pathways_criteria_overview_kind(criterion)}"}
-                class="font-mono tabular-nums text-error"
+                class="px-3 py-2 font-mono tabular-nums text-red-700"
               >
                 {format_pathways_overview_count(Map.get(criterion, :fail_count, 0))}
               </td>
@@ -978,13 +1070,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                 id={
                   "pathways-criteria-comparison-not-evaluated-#{pathways_criteria_overview_kind(criterion)}"
                 }
-                class="font-mono tabular-nums"
+                class="px-3 py-2 font-mono tabular-nums text-gray-700"
               >
                 {format_pathways_overview_count(Map.get(criterion, :not_evaluated_count, 0))}
               </td>
               <td
                 id={"pathways-criteria-comparison-pass-rate-#{pathways_criteria_overview_kind(criterion)}"}
-                class="font-mono tabular-nums"
+                class="px-3 py-2 font-mono tabular-nums text-gray-700"
               >
                 {format_pathways_overview_percentage(Map.get(criterion, :pass_rate, 0.0))}%
               </td>
@@ -1002,22 +1094,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     ~H"""
     <section
       id="pathways-trip-visualization-overview"
-      class="mt-8 rounded-xl border border-base-content/20 bg-base-100"
+      class="mt-8 rounded-lg border border-gray-400 bg-white overflow-hidden"
     >
-      <div class="px-4 py-3 border-b border-base-content/15">
-        <h3 class="text-sm font-semibold">Trip Reachability Summary</h3>
+      <div class="px-5 py-3 border-b border-gray-300">
+        <h3 class="text-sm font-semibold text-gray-900">Trip Reachability Summary</h3>
       </div>
 
-      <div class="p-4">
+      <div class="p-5">
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3" id="pathways-trip-visualization-metrics">
           <div
             id="pathways-trip-overview-total-tests"
-            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
+            class="rounded-md border border-gray-300 bg-gray-50 px-4 py-3"
           >
-            <div class="text-xs uppercase tracking-wide text-base-content/60">Total Tests</div>
+            <div class="text-xs uppercase tracking-wide text-gray-500">Total Tests</div>
             <div
               id="pathways-trip-overview-total-tests-value"
-              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-base-content"
+              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-gray-900"
             >
               {format_pathways_overview_count(Map.get(@trip_overview, :total_tests, 0))}
             </div>
@@ -1025,12 +1117,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
           <div
             id="pathways-trip-overview-pass-count"
-            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
+            class="rounded-md border border-gray-300 bg-gray-50 px-4 py-3"
           >
-            <div class="text-xs uppercase tracking-wide text-base-content/60">Passed</div>
+            <div class="text-xs uppercase tracking-wide text-gray-500">Passed</div>
             <div
               id="pathways-trip-overview-pass-count-value"
-              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-success"
+              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-green-700"
             >
               {format_pathways_overview_count(Map.get(@trip_overview, :pass_count, 0))}
             </div>
@@ -1038,12 +1130,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
           <div
             id="pathways-trip-overview-warning-count"
-            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
+            class="rounded-md border border-gray-300 bg-gray-50 px-4 py-3"
           >
-            <div class="text-xs uppercase tracking-wide text-base-content/60">Warnings</div>
+            <div class="text-xs uppercase tracking-wide text-gray-500">Warnings</div>
             <div
               id="pathways-trip-overview-warning-count-value"
-              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-warning"
+              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-yellow-700"
             >
               {format_pathways_overview_count(Map.get(@trip_overview, :warning_count, 0))}
             </div>
@@ -1051,12 +1143,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
           <div
             id="pathways-trip-overview-fail-count"
-            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
+            class="rounded-md border border-gray-300 bg-gray-50 px-4 py-3"
           >
-            <div class="text-xs uppercase tracking-wide text-base-content/60">Failed</div>
+            <div class="text-xs uppercase tracking-wide text-gray-500">Failed</div>
             <div
               id="pathways-trip-overview-fail-count-value"
-              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-error"
+              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-red-700"
             >
               {format_pathways_overview_count(Map.get(@trip_overview, :fail_count, 0))}
             </div>
@@ -1067,75 +1159,116 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
         <% distance_stats = Map.get(@trip_overview, :distance_meters, %{}) %>
 
         <div
-          class="overflow-x-auto border border-base-content/15 bg-base-100 mt-4"
+          class="overflow-x-auto rounded-md border border-gray-300 mt-4"
           id="pathways-trip-visualization-comparison"
         >
-          <table class="table table-sm">
-            <thead class="text-xs uppercase tracking-wide text-base-content/60">
+          <table class="w-full text-sm" style="border-collapse: collapse;">
+            <thead>
               <tr>
-                <th>Metric</th>
-                <th>Available</th>
-                <th>Unavailable</th>
-                <th>Availability</th>
-                <th>Min</th>
-                <th>Max</th>
-                <th>Avg</th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                  Metric
+                </th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                  Available
+                </th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                  Unavailable
+                </th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                  Availability
+                </th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                  Min
+                </th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                  Max
+                </th>
+                <th class="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                  Avg
+                </th>
               </tr>
             </thead>
-            <tbody>
+            <tbody class="divide-y divide-gray-200">
               <tr id="pathways-trip-visualization-row-duration-seconds">
-                <th scope="row">Duration (s)</th>
-                <td id="pathways-trip-overview-duration-available" class="font-mono tabular-nums">
+                <th scope="row" class="px-3 py-2 text-left text-gray-700">Duration (s)</th>
+                <td
+                  id="pathways-trip-overview-duration-available"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
+                >
                   {format_pathways_overview_count(Map.get(duration_stats, :available_count, 0))}
                 </td>
-                <td id="pathways-trip-overview-duration-unavailable" class="font-mono tabular-nums">
+                <td
+                  id="pathways-trip-overview-duration-unavailable"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
+                >
                   {format_pathways_overview_count(Map.get(duration_stats, :unavailable_count, 0))}
                 </td>
                 <td
                   id="pathways-trip-overview-duration-availability-rate"
-                  class="font-mono tabular-nums"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
                 >
                   {format_pathways_overview_percentage(
                     Map.get(duration_stats, :availability_rate, 0.0)
                   )}%
                 </td>
-                <td id="pathways-trip-overview-duration-min" class="font-mono tabular-nums">
+                <td
+                  id="pathways-trip-overview-duration-min"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
+                >
                   {format_pathways_criteria_value(Map.get(duration_stats, :min))}
                 </td>
-                <td id="pathways-trip-overview-duration-max" class="font-mono tabular-nums">
+                <td
+                  id="pathways-trip-overview-duration-max"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
+                >
                   {format_pathways_criteria_value(Map.get(duration_stats, :max))}
                 </td>
-                <td id="pathways-trip-overview-duration-average" class="font-mono tabular-nums">
+                <td
+                  id="pathways-trip-overview-duration-average"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
+                >
                   {format_pathways_criteria_value(Map.get(duration_stats, :average))}
                 </td>
               </tr>
 
               <tr id="pathways-trip-visualization-row-distance-meters">
-                <th scope="row">Distance (m)</th>
-                <td id="pathways-trip-overview-distance-available" class="font-mono tabular-nums">
+                <th scope="row" class="px-3 py-2 text-left text-gray-700">Distance (m)</th>
+                <td
+                  id="pathways-trip-overview-distance-available"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
+                >
                   {format_pathways_overview_count(Map.get(distance_stats, :available_count, 0))}
                 </td>
                 <td
                   id="pathways-trip-overview-distance-unavailable"
-                  class="font-mono tabular-nums"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
                 >
                   {format_pathways_overview_count(Map.get(distance_stats, :unavailable_count, 0))}
                 </td>
                 <td
                   id="pathways-trip-overview-distance-availability-rate"
-                  class="font-mono tabular-nums"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
                 >
                   {format_pathways_overview_percentage(
                     Map.get(distance_stats, :availability_rate, 0.0)
                   )}%
                 </td>
-                <td id="pathways-trip-overview-distance-min" class="font-mono tabular-nums">
+                <td
+                  id="pathways-trip-overview-distance-min"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
+                >
                   {format_pathways_criteria_value(Map.get(distance_stats, :min))}
                 </td>
-                <td id="pathways-trip-overview-distance-max" class="font-mono tabular-nums">
+                <td
+                  id="pathways-trip-overview-distance-max"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
+                >
                   {format_pathways_criteria_value(Map.get(distance_stats, :max))}
                 </td>
-                <td id="pathways-trip-overview-distance-average" class="font-mono tabular-nums">
+                <td
+                  id="pathways-trip-overview-distance-average"
+                  class="px-3 py-2 font-mono tabular-nums text-gray-700"
+                >
                   {format_pathways_criteria_value(Map.get(distance_stats, :average))}
                 </td>
               </tr>
@@ -1148,10 +1281,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
           id="pathways-trip-visualization-strips"
         >
           <div
-            class="rounded-lg border border-base-content/15 bg-base-100 p-3"
+            class="rounded-md border border-gray-300 bg-gray-50 p-3"
             id="pathways-trip-availability-strip-duration"
           >
-            <div class="text-xs font-semibold mb-2">Duration data coverage</div>
+            <div class="text-xs font-semibold mb-2 text-gray-700">Duration data coverage</div>
             <progress
               id="pathways-trip-overview-duration-coverage-progress"
               class="progress progress-info w-full"
@@ -1161,17 +1294,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
             </progress>
             <div
               id="pathways-trip-overview-duration-coverage-value"
-              class="text-xs mt-1 font-mono tabular-nums text-base-content/80"
+              class="text-xs mt-1 font-mono tabular-nums text-gray-600"
             >
               {format_pathways_overview_percentage(Map.get(duration_stats, :availability_rate, 0.0))}%
             </div>
           </div>
 
           <div
-            class="rounded-lg border border-base-content/15 bg-base-100 p-3"
+            class="rounded-md border border-gray-300 bg-gray-50 p-3"
             id="pathways-trip-availability-strip-distance"
           >
-            <div class="text-xs font-semibold mb-2">Distance data coverage</div>
+            <div class="text-xs font-semibold mb-2 text-gray-700">Distance data coverage</div>
             <progress
               id="pathways-trip-overview-distance-coverage-progress"
               class="progress progress-success w-full"
@@ -1181,7 +1314,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
             </progress>
             <div
               id="pathways-trip-overview-distance-coverage-value"
-              class="text-xs mt-1 font-mono tabular-nums text-base-content/80"
+              class="text-xs mt-1 font-mono tabular-nums text-gray-600"
             >
               {format_pathways_overview_percentage(Map.get(distance_stats, :availability_rate, 0.0))}%
             </div>
@@ -1208,7 +1341,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   defp severity_border_class("error"), do: "border-error"
   defp severity_border_class("warning"), do: "border-warning"
   defp severity_border_class("info"), do: "border-info"
-  defp severity_border_class(_), do: "border-base-300"
+  defp severity_border_class(_), do: "border-gray-300"
 
   defp status_badge_class("started"), do: "badge-neutral"
   defp status_badge_class("running"), do: "badge-info"
@@ -1773,7 +1906,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
   defp pathways_criteria_status_class(:pass), do: "text-success"
   defp pathways_criteria_status_class(:fail), do: "text-error"
-  defp pathways_criteria_status_class(:not_evaluated), do: "text-base-content/70"
+  defp pathways_criteria_status_class(:not_evaluated), do: "text-gray-500"
 
   defp pathways_empty_itinerary?(rows) when is_list(rows), do: rows == []
   defp pathways_empty_itinerary?(_rows), do: true
