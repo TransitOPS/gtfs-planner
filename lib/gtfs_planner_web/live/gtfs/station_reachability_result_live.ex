@@ -208,14 +208,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
           <%!-- Status Badge --%>
           <div class="mt-6">
-            <div class="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5">
-              <span class={["badge badge-sm", status_badge_class(@run.status)]}>
-                {String.upcase(@run.status)}
-              </span>
-              <span class="text-xs font-medium uppercase tracking-wide text-gray-500">
-                Run status
-              </span>
-            </div>
+            <span class={["badge badge-sm origin-left scale-[1.3]", status_badge_class(@run.status)]}>
+              {String.upcase(@run.status)}
+            </span>
           </div>
 
           <%= cond do %>
@@ -465,22 +460,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
                       <tbody
                         id={"pathways-case-group-#{row.order_index}"}
-                        class="border-t border-gray-200"
+                        class="border-t-4 border-gray-100"
                       >
                         <tr id={"pathways-case-row-#{row.order_index}"} class="bg-white align-top">
                           <td
                             id={"pathways-case-id-#{row.order_index}"}
-                            class="px-3 py-2 font-mono text-xs text-gray-700"
+                            class="px-3 py-3 font-mono text-xs text-gray-700"
                           >
                             {row.walkability_test_id}
                           </td>
                           <td
                             id={"pathways-case-description-#{row.order_index}"}
-                            class="px-3 py-2 text-xs text-gray-700"
+                            class="px-3 py-3 text-xs leading-5 text-gray-700"
                           >
                             {pathways_case_description(row)}
                           </td>
-                          <td class="px-3 py-2">
+                          <td class="px-3 py-3">
                             <span class={[
                               "badge badge-sm",
                               case_status_badge_class(pathways_case_display_status(row))
@@ -488,38 +483,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                               {String.upcase(to_string(pathways_case_display_status(row)))}
                             </span>
                           </td>
-                          <td class="px-3 py-2">
-                            <ol class="list-decimal list-inside text-xs leading-5 space-y-0.5 marker:text-gray-400 text-gray-700">
+                          <td class="px-3 py-3 align-top">
+                            <ol class="list-decimal list-inside text-xs leading-5 space-y-1 marker:text-gray-400 text-gray-700">
                               <li :for={issue <- pathways_case_issues(row)}>{issue}</li>
                             </ol>
                           </td>
-                          <td class="px-3 py-2 font-mono tabular-nums text-gray-700">
+                          <td class="px-3 py-3 font-mono tabular-nums text-gray-700">
                             {row.duration_seconds || "-"}
                           </td>
-                          <td class="px-3 py-2 font-mono tabular-nums text-gray-700">
+                          <td class="px-3 py-3 font-mono tabular-nums text-gray-700">
                             {format_pathways_distance(row.distance_meters)}
                           </td>
-                          <td class="px-3 py-2 text-gray-700">{pathways_case_origin(row)}</td>
-                          <td class="px-3 py-2 text-gray-700">{pathways_case_destination(row)}</td>
-                          <td class="px-3 py-2 font-mono tabular-nums text-gray-700">
+                          <td class="px-3 py-3 text-gray-700">{pathways_case_origin(row)}</td>
+                          <td class="px-3 py-3 text-gray-700">{pathways_case_destination(row)}</td>
+                          <td class="px-3 py-3 font-mono tabular-nums text-gray-700">
                             {format_pathways_time(row.itinerary_start_time)}
                           </td>
-                          <td class="px-3 py-2 font-mono tabular-nums text-gray-700">
+                          <td class="px-3 py-3 font-mono tabular-nums text-gray-700">
                             {format_pathways_time(row.itinerary_end_time)}
                           </td>
                         </tr>
 
                         <tr id={"pathways-case-criteria-row-#{row.order_index}"} class="bg-white">
-                          <td colspan="10" class="p-0 border-t border-gray-200">
+                          <td colspan="10" class="p-0 border-t border-gray-200 bg-gray-50/35">
                             <details
                               id={"pathways-case-criteria-details-#{row.order_index}"}
                               class="border-t border-gray-200"
                             >
-                              <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50">
+                              <summary class="cursor-pointer px-3 py-2.5 text-xs font-semibold text-gray-600 hover:bg-gray-50">
                                 Criteria checks
                               </summary>
 
-                              <div class="px-3 pb-3">
+                              <div class="px-3 pb-3.5">
                                 <% criteria_checks =
                                   Map.get(pathways_case_criteria_checks, row.order_index, []) %>
 
@@ -592,16 +587,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                         </tr>
 
                         <tr id={"pathways-case-itinerary-row-#{row.order_index}"} class="bg-white">
-                          <td colspan="10" class="p-0 border-t border-gray-200">
+                          <td colspan="10" class="p-0 border-t border-gray-200 bg-gray-50/35">
                             <details
                               id={"pathways-case-itinerary-details-#{row.order_index}"}
                               class="border-t border-gray-200"
                             >
-                              <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50">
+                              <summary class="cursor-pointer px-3 py-2.5 text-xs font-semibold text-gray-600 hover:bg-gray-50">
                                 Step-by-step itinerary
                               </summary>
 
-                              <div class="px-3 pb-3">
+                              <div class="px-3 pb-3.5">
                                 <%= if pathways_empty_itinerary?(itinerary_step_rows) do %>
                                   <p
                                     id={"pathways-case-itinerary-empty-#{row.order_index}"}

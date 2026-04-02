@@ -165,7 +165,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
       </:sub_header>
 
       <section id="station-reachability" class="space-y-6">
-        <header class="flex flex-col gap-4 rounded-lg border border-gray-400 bg-white px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+        <header class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h2 class="text-xl font-semibold text-gray-900">Reachability</h2>
             <p class="text-sm text-gray-600">
