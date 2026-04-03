@@ -97,7 +97,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
           organization_id: organization.id,
           gtfs_version_id: version.id,
           stop_id: station.stop_id,
-          address: "123 Station Plaza"
+          address: "123 Station Plaza",
+          description: "Street entrance to platform"
         })
 
       {:ok, run} =
@@ -128,8 +129,62 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
       assert has_element?(view, "#pathways-criteria-comparison-overview")
       assert has_element?(view, "#pathways-case-results")
       assert has_element?(view, "#pathways-case-row-0")
+      assert has_element?(view, "#pathways-case-id-0", walkability_test.id)
+      assert has_element?(view, "#pathways-case-description-0", "Street entrance to platform")
       assert has_element?(view, "#pathways-case-criteria-details-0")
       assert has_element?(view, "#pathways-case-itinerary-details-0")
+    end
+
+    test "completed summary treats traversability mismatch as failed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version,
+      station: station
+    } do
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          stop_id: station.stop_id,
+          address: "789 Result Plaza",
+          description: "Result traversability mismatch",
+          expected_traversable: true
+        })
+
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "station_reachability")
+
+      run_result = %{
+        suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},
+        selected_test_case_ids: [walkability_test.id],
+        summary: %{total: 1, passed: 0, failed: 1, query_failure: 0, scoring_failure: 1},
+        cases: [
+          %{
+            test_case_id: walkability_test.id,
+            status: :failed,
+            failure_category: :scoring_failure,
+            route_output: %{route_exists: false, duration_seconds: 120.0, distance_meters: 95.0},
+            details: %{
+              mismatches: [
+                %{kind: :expected_traversable, expected: true, actual: false}
+              ]
+            }
+          }
+        ]
+      }
+
+      {:ok, run} = Validations.mark_pathways_completed(run, run_result, 20)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/station-reachability/#{run.id}")
+
+      assert has_element?(view, "#pathways-trip-overview-total-tests-value", "1")
+      assert has_element?(view, "#pathways-trip-overview-pass-count-value", "0")
+      assert has_element?(view, "#pathways-trip-overview-warning-count-value", "0")
+      assert has_element?(view, "#pathways-trip-overview-fail-count-value", "1")
+      assert has_element?(view, "#pathways-case-row-0", "FAILED")
+      refute has_element?(view, "#pathways-case-row-0", "WARNING")
     end
 
     test "redirects non-station runs to shared validation result page", %{
