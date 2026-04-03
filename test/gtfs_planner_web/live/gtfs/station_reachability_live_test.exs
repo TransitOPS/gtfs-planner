@@ -683,7 +683,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.stop_id,
-          address: "123 Station Plaza"
+          address: "123 Station Plaza",
+          description: "Hotel lobby to main platform"
         })
 
       {:ok, view, _html} =
@@ -726,10 +727,74 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert has_element?(view, "#station-trip-overview", "Failed")
       assert has_element?(view, "#station-pathways-case-results")
       assert has_element?(view, "#station-pathways-case-row-0")
+      assert has_element?(view, "#station-pathways-case-id-0", walkability_test.id)
+      assert has_element?(view, "#station-pathways-case-description-0", "Hotel lobby to main platform")
 
       refute has_element?(view, "#reachability-summary-total")
       refute has_element?(view, "#reachability-summary-pass-rate")
       refute has_element?(view, "#station-reachability-top-failures")
+    end
+
+    test "summary marks traversability mismatch as failed (not warning)", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      walkability_test =
+        walkability_test_fixture(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.stop_id,
+          address: "456 Traversability Plaza",
+          description: "Traversability mismatch case",
+          expected_traversable: true
+        })
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      assert view
+             |> element("#run-station-reachability")
+             |> render_click()
+
+      assert_receive {:station_reachability_runner_started, run_id}
+
+      run = Repo.get!(ValidationRun, run_id)
+
+      run_result = %{
+        suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},
+        selected_test_case_ids: [walkability_test.id],
+        summary: %{total: 1, passed: 0, failed: 1, query_failure: 0, scoring_failure: 1},
+        cases: [
+          %{
+            test_case_id: walkability_test.id,
+            status: :failed,
+            failure_category: :scoring_failure,
+            route_output: %{route_exists: false, duration_seconds: 120.0, distance_meters: 90.0},
+            details: %{
+              mismatches: [
+                %{kind: :expected_traversable, expected: true, actual: false}
+              ]
+            }
+          }
+        ]
+      }
+
+      assert {:ok, _completed_run} = Validations.mark_pathways_completed(run, run_result, 15)
+
+      send(view.pid, {:poll_pathways_trip_test_status, run.id})
+      _ = render(view)
+
+      assert has_element?(view, "#station-trip-overview-total-tests-value", "1")
+      assert has_element?(view, "#station-trip-overview-pass-count-value", "0")
+      assert has_element?(view, "#station-trip-overview-warning-count-value", "0")
+      assert has_element?(view, "#station-trip-overview-fail-count-value", "1")
+      assert has_element?(view, "#station-pathways-case-row-0", "FAILED")
+      refute has_element?(view, "#station-pathways-case-row-0", "WARNING")
     end
 
     test "station reachability success triggers runtime cleanup", %{
@@ -923,7 +988,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.stop_id,
-          address: "1 Valid Station Plaza"
+          address: "1 Valid Station Plaza",
+          description: "Main entrance to platform A"
         })
 
       invalid_test_case =
@@ -980,6 +1046,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       _ = render(view)
 
       assert has_element?(view, "#station-pathways-case-row-0")
+      assert has_element?(view, "#station-pathways-case-id-0", valid_test_case.id)
+      assert has_element?(view, "#station-pathways-case-description-0", "Main entrance to platform A")
       refute has_element?(view, "#station-pathways-case-row-1")
 
       refute has_element?(view, "#station-reachability-coverage")
