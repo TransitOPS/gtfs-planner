@@ -511,7 +511,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                               class="border-t border-gray-200"
                             >
                               <summary class="cursor-pointer px-3 py-2.5 text-xs font-semibold text-gray-600 hover:bg-gray-50">
-                                Criteria checks
+                                Criteria Check
                               </summary>
 
                               <div class="px-3 pb-3.5">
@@ -593,7 +593,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
                               class="border-t border-gray-200"
                             >
                               <summary class="cursor-pointer px-3 py-2.5 text-xs font-semibold text-gray-600 hover:bg-gray-50">
-                                Step-by-step itinerary
+                                Step-by-Step Itinerary
                               </summary>
 
                               <div class="px-3 pb-3.5">
