@@ -3065,10 +3065,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp ensure_stop_in_station_scope(socket, stop) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
-    platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
+    platform_stop_ids = socket.assigns[:platform_stop_ids] || MapSet.new()
 
     if stop_belongs_to_station?(stop, station.stop_id, platform_stop_ids) do
       :ok
