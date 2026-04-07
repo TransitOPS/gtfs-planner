@@ -100,7 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
-  def handle_params(%{"stop_id" => stop_id} = _params, _uri, socket) do
+  def handle_params(%{"stop_id" => stop_id} = params, _uri, socket) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
@@ -147,10 +147,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:walkability_mode, :create)
           |> assign(:editing_walkability_test, nil)
 
-        socket = load_level_data(socket, active_level)
+        socket =
+          socket
+          |> load_level_data(active_level)
+          |> maybe_open_child_stop_from_params(params)
 
         {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_info(:clear_edit_child_stop_param, socket) do
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station_stop_id = socket.assigns.station.stop_id
+    {:noreply, push_patch(socket, to: "/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
   end
 
   defp load_level_data(socket, nil) do
@@ -2998,6 +3008,45 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:reposition_mode, false)
     |> assign(:reposition_search, "")
     |> assign(:reposition_stops, [])
+  end
+
+  defp maybe_open_child_stop_from_params(socket, %{"edit_child_stop_id" => id} = _params) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+    platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
+
+    with {:ok, uuid} <- Ecto.UUID.cast(id),
+         %Stop{} = stop <- Gtfs.get_stop(uuid),
+         true <- stop.organization_id == organization_id,
+         true <- stop.gtfs_version_id == gtfs_version_id,
+         true <- stop_belongs_to_station?(stop, station.stop_id, platform_stop_ids),
+         {:ok, pending_xy} <- stop_diagram_point(stop),
+         %{} = level <- Enum.find(socket.assigns.levels, &(&1.level_id == stop.level_id)) do
+      if connected?(socket), do: send(self(), :clear_edit_child_stop_param)
+
+      socket
+      |> switch_active_level_if_needed(level)
+      |> open_edit_sidebar(stop, pending_xy)
+    else
+      _ -> socket
+    end
+  end
+
+  defp maybe_open_child_stop_from_params(socket, _params), do: socket
+
+  defp switch_active_level_if_needed(socket, level) do
+    if level.id == socket.assigns.active_level.id do
+      socket
+    else
+      socket
+      |> disable_measurement()
+      |> assign(:active_level, level)
+      |> assign(:pending_xy, nil)
+      |> assign(:diagram_error, nil)
+      |> reset_reposition_state()
+      |> load_level_data(level)
+    end
   end
 
   defp open_edit_sidebar(socket, stop, pending_xy) do

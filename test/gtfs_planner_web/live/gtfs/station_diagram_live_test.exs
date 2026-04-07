@@ -1325,6 +1325,102 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - edit_child_stop_id URL intent" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_INTENT",
+          stop_name: "Intent Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_INTENT",
+          level_name: "Level Intent",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "mounting with valid edit_child_stop_id opens the edit drawer and clears the param", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "INTENT_CHILD",
+          stop_name: "Intent Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 60.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      base_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
+
+      {:ok, view, _html} =
+        live(conn, "#{base_path}?edit_child_stop_id=#{child_stop.id}", on_error: :warn)
+
+      html = render(view)
+      assert html =~ "Intent Child"
+      assert html =~ ~r/value=\"INTENT_CHILD\"/
+      assert html =~ ~r/value=\"Intent Child\"/
+
+      assert_patch(view, base_path)
+    end
+
+    test "mounting with unknown edit_child_stop_id leaves drawer closed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      base_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
+
+      {:ok, view, _html} =
+        live(conn, "#{base_path}?edit_child_stop_id=#{Ecto.UUID.generate()}", on_error: :warn)
+
+      html = render(view)
+      refute html =~ ~r/value=\"INTENT_CHILD\"/
+    end
+  end
+
   describe "StationDiagramLive - remove from diagram" do
     setup do
       organization = organization_fixture()
