@@ -169,14 +169,26 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                 </div>
                 <ul class="divide-y divide-base-300">
                   <%= for stop <- stops do %>
-                    <li class="px-4 py-3 flex justify-between">
+                    <li id={"child-stop-row-#{stop.id}"} class="px-4 py-3 flex justify-between">
                       <div>
                         <span class="font-medium">{stop.stop_name || stop.stop_id}</span>
                         <span class="text-sm text-base-content/60 ml-2">{stop.stop_id}</span>
                       </div>
-                      <span class="badge badge-outline">
-                        {Stop.location_type_label(stop.location_type)}
-                      </span>
+                      <div class="flex items-center gap-3">
+                        <%= if level_name == "No Level" do %>
+                          <.link
+                            navigate={
+                              "/gtfs/#{@current_gtfs_version.id}/stops/#{@stop.stop_id}/diagram?edit_child_stop_id=#{stop.id}"
+                            }
+                            class="link link-primary text-sm"
+                          >
+                            Edit in Diagram
+                          </.link>
+                        <% end %>
+                        <span class="badge badge-outline">
+                          {Stop.location_type_label(stop.location_type)}
+                        </span>
+                      </div>
                     </li>
                   <% end %>
                 </ul>
