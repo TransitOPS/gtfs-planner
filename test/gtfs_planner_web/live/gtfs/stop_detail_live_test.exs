@@ -61,6 +61,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       gtfs_version: gtfs_version,
       station: station
     } do
+      # ORPHAN_LEVEL is a level_id with no matching Level row, so the
+      # stop's preloaded :level association is nil → groups under "No Level".
       no_level_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
           stop_id: "CHILD_NO_LEVEL",

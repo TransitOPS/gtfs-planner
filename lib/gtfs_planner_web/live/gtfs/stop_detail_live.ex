@@ -38,11 +38,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, stop.id)
         pathways = Gtfs.list_pathways_for_station(organization_id, gtfs_version_id, stop.id)
 
-        # Group child stops by level
+        # Group child stops by level. nil key means "No Level".
         child_stops_by_level =
           Enum.group_by(child_stops, fn s ->
             case s.level do
-              nil -> "No Level"
+              nil -> nil
               level -> level.level_name || level.level_id
             end
           end)
@@ -164,7 +164,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
             <%= for {level_name, stops} <- @child_stops_by_level do %>
               <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden">
                 <div class="bg-base-200 px-4 py-2 font-medium flex justify-between">
-                  <span>{level_name}</span>
+                  <span>{level_name || "No Level"}</span>
                   <span class="badge badge-ghost">{length(stops)}</span>
                 </div>
                 <ul class="divide-y divide-base-300">
@@ -175,7 +175,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                         <span class="text-sm text-base-content/60 ml-2">{stop.stop_id}</span>
                       </div>
                       <div class="flex items-center gap-3">
-                        <%= if level_name == "No Level" do %>
+                        <%= if is_nil(level_name) do %>
                           <.link
                             navigate={
                               "/gtfs/#{@current_gtfs_version.id}/stops/#{@stop.stop_id}/diagram?edit_child_stop_id=#{stop.id}"

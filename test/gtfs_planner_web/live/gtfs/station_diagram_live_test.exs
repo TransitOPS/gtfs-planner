@@ -1477,6 +1477,120 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute html =~ ~r/value=\"OTHER_INTENT_CHILD\"/
       assert has_element?(view, "#flash-error", "Stop does not belong to this station")
     end
+
+    test "mounting with edit_child_stop_id on a non-default level switches active level and survives the patch",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      level_two =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_INTENT_2",
+          level_name: "Level Intent Two",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_two.id
+        })
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "INTENT_CHILD_L2",
+          stop_name: "Intent Child L2",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_two.level_id,
+          diagram_coordinate: %{"x" => 80.0, "y" => 90.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      base_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
+
+      {:ok, view, _html} =
+        live(conn, "#{base_path}?edit_child_stop_id=#{child_stop.id}", on_error: :warn)
+
+      html = render(view)
+      assert html =~ ~r/value=\"INTENT_CHILD_L2\"/
+      assert html =~ ~r/value=\"Intent Child L2\"/
+
+      assert_patch(view, base_path)
+
+      # The patch must NOT snap active_level back to the default level.
+      # `level` is the default (level_index 0.0); `level_two` is where the stop lives.
+      _ = level
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.active_level.id == level_two.id
+    end
+
+    test "mounting with edit_child_stop_id for a stop with no diagram coordinate shows missing-coordinate flash",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "INTENT_CHILD_NOCOORD",
+          stop_name: "Intent Child NoCoord",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      base_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
+
+      {:ok, view, _html} =
+        live(conn, "#{base_path}?edit_child_stop_id=#{child_stop.id}", on_error: :warn)
+
+      html = render(view)
+      refute html =~ ~r/value=\"INTENT_CHILD_NOCOORD\"/
+      assert has_element?(view, "#flash-error", "Stop has no diagram coordinate")
+    end
+
+    test "mounting with edit_child_stop_id for a stop on an unknown level shows unknown-level flash",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station
+         } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "INTENT_CHILD_BAD_LEVEL",
+          stop_name: "Intent Child Bad Level",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L_NOT_ON_STATION",
+          diagram_coordinate: %{"x" => 5.0, "y" => 6.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      base_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
+
+      {:ok, view, _html} =
+        live(conn, "#{base_path}?edit_child_stop_id=#{child_stop.id}", on_error: :warn)
+
+      html = render(view)
+      refute html =~ ~r/value=\"INTENT_CHILD_BAD_LEVEL\"/
+      assert has_element?(view, "#flash-error", "Stop is not assigned to a known station level")
+    end
   end
 
   describe "StationDiagramLive - remove from diagram" do

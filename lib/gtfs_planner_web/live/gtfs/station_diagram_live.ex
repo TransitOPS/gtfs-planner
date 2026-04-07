@@ -101,6 +101,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_params(%{"stop_id" => stop_id} = params, _uri, socket) do
+    if same_station_already_loaded?(socket, stop_id) do
+      {:noreply, maybe_open_child_stop_from_params(socket, params)}
+    else
+      load_station_and_levels(socket, stop_id, params)
+    end
+  end
+
+  defp same_station_already_loaded?(socket, stop_id) do
+    case socket.assigns do
+      %{station: %{stop_id: ^stop_id}, active_level: %{}} -> true
+      _ -> false
+    end
+  end
+
+  defp load_station_and_levels(socket, stop_id, params) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
