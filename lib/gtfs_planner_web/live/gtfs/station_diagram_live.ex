@@ -3011,29 +3011,77 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp maybe_open_child_stop_from_params(socket, %{"edit_child_stop_id" => id} = _params) do
+    case resolve_child_stop_intent(socket, id) do
+      {:ok, stop, pending_xy, level} ->
+        if connected?(socket), do: send(self(), :clear_edit_child_stop_param)
+
+        socket
+        |> switch_active_level_if_needed(level)
+        |> open_edit_sidebar(stop, pending_xy)
+
+      {:error, reason} ->
+        put_flash(socket, :error, child_stop_intent_error_message(reason))
+    end
+  end
+
+  defp maybe_open_child_stop_from_params(socket, _params), do: socket
+
+  defp resolve_child_stop_intent(socket, id) do
+    with {:ok, stop} <- fetch_intent_stop(socket, id),
+         :ok <- ensure_stop_in_station_scope(socket, stop),
+         {:ok, pending_xy} <- fetch_intent_diagram_point(stop),
+         {:ok, level} <- fetch_intent_level(socket, stop) do
+      {:ok, stop, pending_xy, level}
+    end
+  end
+
+  defp fetch_intent_stop(socket, id) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    with {:ok, uuid} <- Ecto.UUID.cast(id),
+         %Stop{} = stop <- Gtfs.get_stop(uuid),
+         true <- stop.organization_id == organization_id,
+         true <- stop.gtfs_version_id == gtfs_version_id do
+      {:ok, stop}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp ensure_stop_in_station_scope(socket, stop) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
     platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
 
-    with {:ok, uuid} <- Ecto.UUID.cast(id),
-         %Stop{} = stop <- Gtfs.get_stop(uuid),
-         true <- stop.organization_id == organization_id,
-         true <- stop.gtfs_version_id == gtfs_version_id,
-         true <- stop_belongs_to_station?(stop, station.stop_id, platform_stop_ids),
-         {:ok, pending_xy} <- stop_diagram_point(stop),
-         %{} = level <- Enum.find(socket.assigns.levels, &(&1.level_id == stop.level_id)) do
-      if connected?(socket), do: send(self(), :clear_edit_child_stop_param)
-
-      socket
-      |> switch_active_level_if_needed(level)
-      |> open_edit_sidebar(stop, pending_xy)
+    if stop_belongs_to_station?(stop, station.stop_id, platform_stop_ids) do
+      :ok
     else
-      _ -> socket
+      {:error, :out_of_scope}
     end
   end
 
-  defp maybe_open_child_stop_from_params(socket, _params), do: socket
+  defp fetch_intent_diagram_point(stop) do
+    case stop_diagram_point(stop) do
+      {:ok, pending_xy} -> {:ok, pending_xy}
+      :error -> {:error, :missing_coordinate}
+    end
+  end
+
+  defp fetch_intent_level(socket, stop) do
+    case Enum.find(socket.assigns.levels, &(&1.level_id == stop.level_id)) do
+      nil -> {:error, :unknown_level}
+      level -> {:ok, level}
+    end
+  end
+
+  defp child_stop_intent_error_message(:not_found), do: "Stop not found"
+  defp child_stop_intent_error_message(:out_of_scope), do: "Stop does not belong to this station"
+  defp child_stop_intent_error_message(:missing_coordinate), do: "Stop has no diagram coordinate"
+
+  defp child_stop_intent_error_message(:unknown_level),
+    do: "Stop is not assigned to a known station level"
 
   defp switch_active_level_if_needed(socket, level) do
     if level.id == socket.assigns.active_level.id do

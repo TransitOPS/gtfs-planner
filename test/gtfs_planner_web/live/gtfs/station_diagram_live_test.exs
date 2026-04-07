@@ -1402,7 +1402,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert_patch(view, base_path)
     end
 
-    test "mounting with unknown edit_child_stop_id leaves drawer closed", %{
+    test "mounting with unknown edit_child_stop_id leaves drawer closed and shows not-found flash",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      base_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
+
+      {:ok, view, _html} =
+        live(conn, "#{base_path}?edit_child_stop_id=#{Ecto.UUID.generate()}", on_error: :warn)
+
+      html = render(view)
+      refute html =~ ~r/value=\"INTENT_CHILD\"/
+      assert has_element?(view, "#flash-error", "Stop not found")
+    end
+
+    test "mounting with malformed edit_child_stop_id shows not-found flash", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -1414,10 +1434,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       base_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
 
       {:ok, view, _html} =
-        live(conn, "#{base_path}?edit_child_stop_id=#{Ecto.UUID.generate()}", on_error: :warn)
+        live(conn, "#{base_path}?edit_child_stop_id=not-a-uuid", on_error: :warn)
 
       html = render(view)
       refute html =~ ~r/value=\"INTENT_CHILD\"/
+      assert has_element?(view, "#flash-error", "Stop not found")
+    end
+
+    test "mounting with edit_child_stop_id from another station shows scope flash", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      other_station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_INTENT_STATION",
+          stop_name: "Other Intent Station",
+          location_type: 1
+        })
+
+      other_child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_INTENT_CHILD",
+          stop_name: "Other Intent Child",
+          location_type: 0,
+          parent_station: other_station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 24.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      base_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
+
+      {:ok, view, _html} =
+        live(conn, "#{base_path}?edit_child_stop_id=#{other_child.id}", on_error: :warn)
+
+      html = render(view)
+      refute html =~ ~r/value=\"OTHER_INTENT_CHILD\"/
+      assert has_element?(view, "#flash-error", "Stop does not belong to this station")
     end
   end
 
