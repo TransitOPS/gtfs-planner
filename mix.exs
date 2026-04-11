@@ -76,7 +76,8 @@ defmodule GtfsPlanner.MixProject do
       {:ex_cldr_plugs, "~> 1.3"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:live_select, "~> 1.4"},
-      {:dotenv_parser, "~> 2.0"}
+      {:dotenv_parser, "~> 2.0"},
+      {:joken, "~> 2.6"}
     ]
   end
 

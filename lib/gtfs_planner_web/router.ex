@@ -134,10 +134,26 @@ defmodule GtfsPlannerWeb.Router do
     end
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", GtfsPlannerWeb do
-  #   pipe_through :api
-  # end
+  # ── Companion App API ──
+
+  pipeline :api_jwt do
+    plug :accepts, ["json"]
+    plug GtfsPlannerWeb.Plugs.VerifyJWT
+  end
+
+  # Public API routes (no JWT required)
+  scope "/api/v1", GtfsPlannerWeb.Api.V1 do
+    pipe_through :api
+
+    post "/auth/login", AuthController, :login
+  end
+
+  # Protected API routes (JWT required)
+  scope "/api/v1", GtfsPlannerWeb.Api.V1 do
+    pipe_through :api_jwt
+
+    post "/auth/refresh", AuthController, :refresh
+  end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
   if Application.compile_env(:gtfs_planner, :dev_routes) do
