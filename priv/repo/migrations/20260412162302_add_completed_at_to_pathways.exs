@@ -3,7 +3,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddCompletedAtToPathways do
 
   def change do
     alter table(:pathways) do
-      add :completed_at, :utc_datetime_usec
+      add :field_completed_at, :utc_datetime_usec
     end
   end
 end
