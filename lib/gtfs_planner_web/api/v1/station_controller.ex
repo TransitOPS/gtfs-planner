@@ -123,9 +123,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       min_width: pathway.min_width,
       signposted_as: pathway.signposted_as,
       reversed_signposted_as: pathway.reversed_signposted_as,
-      notes: pathway.notes,
-      field_complete: pathway.field_complete,
-      completed_at: pathway.completed_at
+      field_notes: pathway.field_notes,
+      field_completed_at: pathway.field_completed_at
     }
   end
 end

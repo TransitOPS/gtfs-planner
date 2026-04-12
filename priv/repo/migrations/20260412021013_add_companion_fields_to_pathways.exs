@@ -3,8 +3,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddCompanionFieldsToPathways do
 
   def change do
     alter table(:pathways) do
-      add :notes, :text
-      add :field_complete, :boolean, default: false, null: false
+      add :field_notes, :text
     end
   end
 end
