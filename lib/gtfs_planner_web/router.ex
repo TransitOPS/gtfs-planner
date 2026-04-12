@@ -136,14 +136,27 @@ defmodule GtfsPlannerWeb.Router do
 
   # ── Companion App API ──
 
+  pipeline :api_cors do
+    plug :accepts, ["json"]
+    plug GtfsPlannerWeb.Plugs.CORS
+  end
+
   pipeline :api_jwt do
     plug :accepts, ["json"]
+    plug GtfsPlannerWeb.Plugs.CORS
     plug GtfsPlannerWeb.Plugs.VerifyJWT
+  end
+
+  # CORS preflight (must be before JWT-protected routes)
+  scope "/api/v1" do
+    pipe_through :api_cors
+
+    options "/*path", GtfsPlannerWeb.Api.V1.FallbackController, :preflight
   end
 
   # Public API routes (no JWT required)
   scope "/api/v1", GtfsPlannerWeb.Api.V1 do
-    pipe_through :api
+    pipe_through :api_cors
 
     post "/auth/login", AuthController, :login
   end
