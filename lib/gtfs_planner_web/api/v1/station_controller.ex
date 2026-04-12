@@ -81,7 +81,11 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     end
   end
 
-  defp serialize_level(level) do
+  defp serialize_level(%{level: level}) do
+    serialize_level(level)
+  end
+
+  defp serialize_level(%{id: _} = level) do
     %{
       id: level.id,
       level_id: level.level_id,

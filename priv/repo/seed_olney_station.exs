@@ -44,10 +44,15 @@ defmodule SeedParser do
     |> String.replace("\\t", "\t")
     |> String.replace("\\n", "\n")
     |> String.replace("\\\"", "\"")
+    |> String.replace("\\", "")
     |> String.trim()
     |> String.split("\n")
     |> Enum.reject(&(&1 == ""))
-    |> Enum.map(&String.split(&1, "\t"))
+    |> Enum.map(fn line ->
+      line
+      |> String.split("\t")
+      |> Enum.map(&String.trim/1)
+    end)
   end
 end
 
