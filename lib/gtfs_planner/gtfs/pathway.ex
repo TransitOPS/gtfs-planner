@@ -46,6 +46,8 @@ defmodule GtfsPlanner.Gtfs.Pathway do
     field :min_width, :decimal
     field :signposted_as, :string
     field :reversed_signposted_as, :string
+    field :notes, :string
+    field :field_complete, :boolean, default: false
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
       foreign_key: :organization_id
@@ -89,6 +91,8 @@ defmodule GtfsPlanner.Gtfs.Pathway do
       :min_width,
       :signposted_as,
       :reversed_signposted_as,
+      :notes,
+      :field_complete,
       :organization_id,
       :gtfs_version_id,
       :from_stop_id,
