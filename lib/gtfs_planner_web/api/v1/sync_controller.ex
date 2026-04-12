@@ -4,7 +4,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Pathway
 
-  @editable_fields ~w(traversal_time stair_count min_width signposted_as reversed_signposted_as notes field_complete)a
+  @editable_fields ~w(traversal_time stair_count min_width signposted_as reversed_signposted_as notes field_complete completed_at)a
 
   @doc "POST /api/v1/versions/:version_id/stations/:station_id/sync"
   def create(conn, %{"version_id" => _version_id, "station_id" => _station_id, "pathways" => pathway_updates}) do

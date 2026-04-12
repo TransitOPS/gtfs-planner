@@ -124,7 +124,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       signposted_as: pathway.signposted_as,
       reversed_signposted_as: pathway.reversed_signposted_as,
       notes: pathway.notes,
-      field_complete: pathway.field_complete
+      field_complete: pathway.field_complete,
+      completed_at: pathway.completed_at
     }
   end
 end

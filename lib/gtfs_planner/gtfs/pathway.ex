@@ -48,6 +48,7 @@ defmodule GtfsPlanner.Gtfs.Pathway do
     field :reversed_signposted_as, :string
     field :notes, :string
     field :field_complete, :boolean, default: false
+    field :completed_at, :utc_datetime_usec
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
       foreign_key: :organization_id
@@ -93,6 +94,7 @@ defmodule GtfsPlanner.Gtfs.Pathway do
       :reversed_signposted_as,
       :notes,
       :field_complete,
+      :completed_at,
       :organization_id,
       :gtfs_version_id,
       :from_stop_id,
