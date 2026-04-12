@@ -153,6 +153,11 @@ defmodule GtfsPlannerWeb.Router do
     pipe_through :api_jwt
 
     post "/auth/refresh", AuthController, :refresh
+
+    get "/versions", VersionController, :index
+    get "/versions/:version_id/stations", StationController, :index
+    get "/versions/:version_id/stations/:id/bundle", StationController, :bundle
+    post "/versions/:version_id/stations/:station_id/sync", SyncController, :create
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
