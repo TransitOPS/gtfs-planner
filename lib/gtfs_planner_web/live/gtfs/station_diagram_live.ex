@@ -2446,7 +2446,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           level_index: parse_int(params["level_index"])
         }
 
-        case Gtfs.update_level(level, level_attrs) do
+        case Gtfs.update_level_with_cascade(level, level_attrs) do
           {:ok, updated_level} ->
             levels_data =
               Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
@@ -2458,7 +2458,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> assign(:levels, levels)
              |> assign(:active_level, updated_level)
              |> assign(:show_level_modal, nil)
-             |> assign(:level_form, to_form(%{}))}
+             |> assign(:level_form, to_form(%{}))
+             |> load_level_data(updated_level)}
 
           {:error, changeset} ->
             {:noreply, assign(socket, :level_form, to_form(changeset))}
