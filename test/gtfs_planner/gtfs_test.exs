@@ -275,15 +275,55 @@ defmodule GtfsPlanner.GtfsTest do
       assert refreshed.level_id == "L1"
     end
 
+    test "does not cascade to translations in a different gtfs_version", %{
+      organization: org,
+      level: level
+    } do
+      other_version = gtfs_version_fixture(org.id)
+
+      other_translation =
+        Repo.insert!(%GtfsPlanner.Gtfs.Translation{
+          organization_id: org.id,
+          gtfs_version_id: other_version.id,
+          table_name: "levels",
+          field_name: "level_name",
+          language: "es",
+          translation: "Nivel en otra versión",
+          record_id: level.level_id
+        })
+
+      assert {:ok, _updated} =
+               Gtfs.update_level_with_cascade(level, %{level_id: "renamed-level"})
+
+      refreshed = Repo.get!(GtfsPlanner.Gtfs.Translation, other_translation.id)
+      assert refreshed.record_id == "L1"
+    end
+
     test "returns changeset error and does not cascade on validation failure", %{
+      organization: org,
+      gtfs_version: version,
       level: level,
       child: child
     } do
+      translation =
+        Repo.insert!(%GtfsPlanner.Gtfs.Translation{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          table_name: "levels",
+          field_name: "level_name",
+          language: "es",
+          translation: "Nivel 1",
+          record_id: level.level_id
+        })
+
       assert {:error, %Ecto.Changeset{}} =
-               Gtfs.update_level_with_cascade(level, %{level_id: nil})
+               Gtfs.update_level_with_cascade(level, %{level_id: ""})
 
       refreshed_child = Repo.get!(GtfsPlanner.Gtfs.Stop, child.id)
       assert refreshed_child.level_id == "L1"
+
+      refreshed_translation = Repo.get!(GtfsPlanner.Gtfs.Translation, translation.id)
+      assert refreshed_translation.record_id == "L1"
     end
   end
 
