@@ -181,6 +181,109 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "update_level_with_cascade/2" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      level = level_fixture(organization.id, gtfs_version.id, %{level_id: "original-level"})
+
+      child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "child-stop",
+          stop_name: "Child Stop",
+          location_type: 0,
+          level_id: level.level_id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        level: level,
+        child: child
+      }
+    end
+
+    test "delegates to update_level when level_id unchanged", %{level: level} do
+      assert {:ok, updated} =
+               Gtfs.update_level_with_cascade(level, %{
+                 level_id: level.level_id,
+                 level_name: "New Name"
+               })
+
+      assert updated.level_name == "New Name"
+      assert updated.level_id == level.level_id
+    end
+
+    test "cascades level_id rename to Stop.level_id", %{level: level, child: child} do
+      assert {:ok, updated} =
+               Gtfs.update_level_with_cascade(level, %{level_id: "renamed-level"})
+
+      assert updated.level_id == "renamed-level"
+
+      refreshed_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child.id)
+      assert refreshed_stop.level_id == "renamed-level"
+    end
+
+    test "cascades level_id rename to Translation.record_id", %{
+      organization: org,
+      gtfs_version: version,
+      level: level
+    } do
+      translation =
+        Repo.insert!(%GtfsPlanner.Gtfs.Translation{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          table_name: "levels",
+          field_name: "level_name",
+          language: "en",
+          translation: "Ground Floor",
+          record_id: level.level_id
+        })
+
+      assert {:ok, updated} =
+               Gtfs.update_level_with_cascade(level, %{level_id: "renamed-level"})
+
+      assert updated.level_id == "renamed-level"
+
+      refreshed_translation = Repo.get!(GtfsPlanner.Gtfs.Translation, translation.id)
+      assert refreshed_translation.record_id == "renamed-level"
+    end
+
+    test "does not cascade to stops in a different gtfs_version", %{
+      organization: org,
+      gtfs_version: version,
+      level: level
+    } do
+      other_version = gtfs_version_fixture(org.id)
+
+      other_stop =
+        stop_fixture(org.id, other_version.id, %{
+          stop_id: "other-version-stop",
+          stop_name: "Other Version Stop",
+          location_type: 0,
+          level_id: level.level_id
+        })
+
+      assert {:ok, _updated} =
+               Gtfs.update_level_with_cascade(level, %{level_id: "renamed-level"})
+
+      refreshed_other = Repo.get!(GtfsPlanner.Gtfs.Stop, other_stop.id)
+      assert refreshed_other.level_id == level.level_id
+    end
+
+    test "returns changeset error and does not cascade on validation failure", %{
+      level: level,
+      child: child
+    } do
+      assert {:error, %Ecto.Changeset{}} =
+               Gtfs.update_level_with_cascade(level, %{level_id: nil})
+
+      refreshed_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child.id)
+      assert refreshed_stop.level_id == level.level_id
+    end
+  end
+
   describe "stops" do
     setup do
       organization = organization_fixture()
