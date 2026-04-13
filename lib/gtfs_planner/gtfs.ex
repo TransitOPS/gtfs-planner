@@ -329,6 +329,52 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Updates a level, cascading level_id changes to all referencing entities
+  within the same organization and GTFS version.
+
+  When level_id is unchanged, delegates to update_level/2.
+  """
+  def update_level_with_cascade(%Level{} = level, attrs) do
+    new_level_id = attrs[:level_id] || attrs["level_id"]
+
+    if new_level_id == level.level_id or is_nil(new_level_id) do
+      update_level(level, attrs)
+    else
+      mapping = %{level.level_id => new_level_id}
+      now = DateTime.utc_now()
+
+      multi =
+        Ecto.Multi.new()
+        |> Ecto.Multi.run(:update_level, fn _repo, _changes ->
+          level
+          |> Level.changeset(attrs)
+          |> Repo.update()
+        end)
+        |> Ecto.Multi.run(:cascade_references, fn repo, _changes ->
+          {:ok,
+           update_level_id_references(
+             repo,
+             mapping,
+             level.organization_id,
+             level.gtfs_version_id,
+             now
+           )}
+        end)
+
+      case Repo.transaction(multi) do
+        {:ok, %{update_level: updated_level}} ->
+          broadcast({:ok, updated_level}, [:levels, :updated])
+
+        {:error, :update_level, changeset, _changes} ->
+          {:error, changeset}
+
+        {:error, _step, reason, _changes} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @doc """
   Deletes a stop_level association.
   """
   def delete_stop_level(%StopLevel{} = stop_level) do
@@ -2801,6 +2847,27 @@ defmodule GtfsPlanner.Gtfs do
       }
       |> with_total_stop_id_reference_counts()
     end
+  end
+
+  defp update_level_id_references(repo, mapping, organization_id, gtfs_version_id, now) do
+    stops =
+      update_stop_field_values(repo, :level_id, mapping, organization_id, gtfs_version_id, now)
+
+    translations =
+      mapping
+      |> Enum.reduce(0, fn {old_id, new_id}, count ->
+        {updated_count, _} =
+          from(t in Translation,
+            where:
+              t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+                t.table_name == "levels" and t.record_id == ^old_id
+          )
+          |> repo.update_all(set: [record_id: new_id, updated_at: now])
+
+        count + updated_count
+      end)
+
+    %{stops: stops, translations: translations}
   end
 
   defp update_stop_id_references(repo, mapping, organization_id, gtfs_version_id, now) do
