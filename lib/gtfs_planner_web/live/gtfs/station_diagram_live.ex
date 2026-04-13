@@ -2461,8 +2461,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> assign(:level_form, to_form(%{}))
              |> load_level_data(updated_level)}
 
-          {:error, changeset} ->
+          {:error, %Ecto.Changeset{} = changeset} ->
             {:noreply, assign(socket, :level_form, to_form(changeset))}
+
+          {:error, _reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to update level")}
         end
 
       _ ->
