@@ -16,6 +16,7 @@ defmodule GtfsPlanner.Accounts.UserToken do
   @rand_size 32
 
   @session_validity_in_days 60
+  @api_session_validity_in_days 60
 
   schema "users_tokens" do
     field :token, :binary
@@ -39,6 +40,24 @@ defmodule GtfsPlanner.Accounts.UserToken do
 
     {Base.url_encode64(token, padding: false),
      %GtfsPlanner.Accounts.UserToken{token: hashed_token, context: "session", user_id: user.id}}
+  end
+
+  @doc """
+  Builds a token and token struct for API session authentication.
+
+  Works identically to `build_session_token/1` but uses the `"api_session"` context,
+  enabling independent lifecycle management for API tokens.
+  """
+  def build_api_session_token(user) do
+    token = :crypto.strong_rand_bytes(@rand_size)
+    hashed_token = :crypto.hash(:sha256, token)
+
+    {Base.url_encode64(token, padding: false),
+     %GtfsPlanner.Accounts.UserToken{
+       token: hashed_token,
+       context: "api_session",
+       user_id: user.id
+     }}
   end
 
   @doc """
@@ -88,6 +107,27 @@ defmodule GtfsPlanner.Accounts.UserToken do
   end
 
   @doc """
+  Verifies an API session token and returns a query to fetch user.
+
+  Returns `:error` if the token is invalid or expired.
+  Returns `{:ok, query}` if the token is valid.
+  """
+  def verify_api_session_token_query(token) when is_binary(token) do
+    with {:ok, decoded_token} <- Base.url_decode64(token, padding: false),
+         hashed_token = :crypto.hash(:sha256, decoded_token) do
+      query =
+        from token_record in by_token_and_context_query(hashed_token, "api_session"),
+          where: token_record.inserted_at > ago(@api_session_validity_in_days, "day"),
+          join: user in assoc(token_record, :user),
+          select: user
+
+      {:ok, query}
+    else
+      _ -> :error
+    end
+  end
+
+  @doc """
   Verifies an email token and returns a query to fetch user.
 
   Returns `:error` if the token is invalid.
@@ -125,6 +165,7 @@ defmodule GtfsPlanner.Accounts.UserToken do
     end
   end
 
+  defp days_for_context("api_session"), do: @api_session_validity_in_days
   defp days_for_context("invite"), do: 7
   defp days_for_context("reset_password"), do: 1
   defp days_for_context("confirm"), do: 7

@@ -65,7 +65,10 @@ defmodule GtfsPlannerWeb.Router do
 
     delete "/users/log_out", UserSessionController, :delete
     get "/station-data-resolution-prototype", StationResolutionPrototypeController, :index
-    get "/station-data-resolution-prototype/station-resolution-v2.css", StationResolutionPrototypeController, :stylesheet
+
+    get "/station-data-resolution-prototype/station-resolution-v2.css",
+        StationResolutionPrototypeController,
+        :stylesheet
 
     live_session :require_authenticated_user,
       on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do
@@ -134,10 +137,42 @@ defmodule GtfsPlannerWeb.Router do
     end
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", GtfsPlannerWeb do
-  #   pipe_through :api
-  # end
+  # -- Companion API pipelines --------------------------------------------------
+
+  pipeline :api_cors do
+    plug :accepts, ["json"]
+    plug GtfsPlannerWeb.Plugs.CORS
+  end
+
+  pipeline :api_session do
+    plug :accepts, ["json"]
+    plug GtfsPlannerWeb.Plugs.CORS
+    plug GtfsPlannerWeb.Plugs.VerifyApiSession
+    plug GtfsPlannerWeb.Plugs.AssignApiOrganization
+  end
+
+  # -- Companion API routes ----------------------------------------------------
+
+  # CORS preflight — must be before authenticated routes
+  scope "/api/v1" do
+    pipe_through :api_cors
+
+    options "/*path", GtfsPlannerWeb.Api.V1.FallbackController, :preflight
+  end
+
+  # Public API routes (no auth required)
+  scope "/api/v1", GtfsPlannerWeb.Api.V1 do
+    pipe_through :api_cors
+
+    post "/auth/login", AuthController, :login
+  end
+
+  # Protected API routes (auth required)
+  scope "/api/v1", GtfsPlannerWeb.Api.V1 do
+    pipe_through :api_session
+
+    delete "/auth/session", AuthController, :logout
+  end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
   if Application.compile_env(:gtfs_planner, :dev_routes) do

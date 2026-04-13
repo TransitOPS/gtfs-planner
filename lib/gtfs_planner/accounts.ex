@@ -291,8 +291,54 @@ defmodule GtfsPlanner.Accounts do
   """
   def delete_user_sessions(user_id) do
     user = get_user!(user_id)
-    Repo.delete_all(UserToken.user_and_contexts_query(user, ["session"]))
+    Repo.delete_all(UserToken.user_and_contexts_query(user, ["session", "api_session"]))
     :ok
+  end
+
+  ## API Session
+
+  @doc """
+  Generates an API session token.
+  """
+  def generate_api_session_token(%User{} = user) do
+    {token, user_token} = UserToken.build_api_session_token(user)
+    Repo.insert!(user_token)
+    token
+  end
+
+  @doc """
+  Gets the user with the given API session token.
+  """
+  def get_user_by_api_session_token(token) do
+    case UserToken.verify_api_session_token_query(token) do
+      {:ok, query} ->
+        Repo.one(query)
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
+  Deletes a single API session token by its encoded value.
+  """
+  def delete_api_session_token(token) do
+    case Base.url_decode64(token, padding: false) do
+      {:ok, decoded} ->
+        hashed_token = :crypto.hash(:sha256, decoded)
+        Repo.delete_all(UserToken.token_and_context_query(hashed_token, "api_session"))
+        :ok
+
+      :error ->
+        :ok
+    end
+  end
+
+  @doc """
+  Deletes all API session tokens for a user.
+  """
+  def delete_api_session_tokens(%User{} = user) do
+    Repo.delete_all(UserToken.user_and_contexts_query(user, ["api_session"]))
   end
 
   ## Confirmation
@@ -599,7 +645,7 @@ defmodule GtfsPlanner.Accounts do
   """
   def list_user_org_memberships(user_id) do
     UserOrgMembership
-    |> where([m], m.user_id == ^user_id)
+    |> where([m], m.user_id == ^user_id and is_nil(m.deactivated_at))
     |> Repo.all()
   end
 
