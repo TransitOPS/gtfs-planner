@@ -57,6 +57,9 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
             nil ->
               conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Station not found."}})
 
+            station when station.organization_id != org_id ->
+              conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Station not found."}})
+
             station ->
               child_stops = Gtfs.list_child_stops_for_parent(org_id, version_id, station.id)
               levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)

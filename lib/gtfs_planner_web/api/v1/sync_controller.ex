@@ -8,13 +8,15 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
 
   @doc "POST /api/v1/versions/:version_id/stations/:station_id/sync"
   def create(conn, %{"version_id" => _version_id, "station_id" => _station_id, "pathways" => pathway_updates}) do
+    org_id = conn.assigns[:current_organization_id]
+
     results =
       Enum.reduce(pathway_updates, %{synced: 0, errors: []}, fn update, acc ->
         pathway_id = update["id"]
 
-        case Repo.get(Pathway, pathway_id) do
+        case Repo.get_by(Pathway, id: pathway_id, organization_id: org_id) do
           nil ->
-            %{acc | errors: [%{id: pathway_id, code: "not_found", message: "Pathway no longer exists."} | acc.errors]}
+            %{acc | errors: [%{id: pathway_id, code: "not_found", message: "Pathway not found."} | acc.errors]}
 
           pathway ->
             attrs =
