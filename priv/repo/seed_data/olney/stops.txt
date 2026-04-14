@@ -1,0 +1,88 @@
+stop_id,stop_name,stop_desc,stop_lat,stop_lon,location_type,parent_station,wheelchair_boarding,platform_code,level_id
+32095,Olney Transportation Center,,40.038747,-75.144114,1,,1,,
+32095_boarding_northbound_express_platform_01,Northbound Express Platform 1,,,,4,32095_platform_general_nolvl_01,1,,32095_PLATFORM
+32095_boarding_northbound_express_platform_level_02,Northbound Express Platform 2,,,,4,32095_platform_general_nolvl_01,1,,32095_PLATFORM
+32095_boarding_northbound_express_platform_level_03,Northbound Express Platform 3,,,,4,32095_platform_general_nolvl_01,1,,32095_PLATFORM
+32095_boarding_northbound_express_platform_level_04,Northbound Express Platform 4,,,,4,32095_platform_general_nolvl_01,1,,32095_PLATFORM
+32095_boarding_northbound_local_platform_level_01,Northbound Local Platform 1,,,,4,32095_platform_general_nolvl_03,1,,32095_PLATFORM
+32095_boarding_northbound_local_platform_level_02,Northbound Local Platform 2,,,,4,32095_platform_general_nolvl_03,1,,32095_PLATFORM
+32095_boarding_northbound_local_platform_level_03,Northbound Local Platform 3,,,,4,32095_platform_general_nolvl_03,1,,32095_PLATFORM
+32095_boarding_northbound_local_platform_level_04,Northbound Local Platform 4,,,,4,32095_platform_general_nolvl_03,1,,32095_PLATFORM
+32095_boarding_southbound_express_platform_level_01,Southbound Express Platform 1,,,,4,32095_platform_general_nolvl_04,1,,32095_PLATFORM
+32095_boarding_southbound_express_platform_level_02,Southbound Express Platform 2,,,,4,32095_platform_general_nolvl_04,1,,32095_PLATFORM
+32095_boarding_southbound_express_platform_level_03,Southbound Express Platform 3,,,,4,32095_platform_general_nolvl_04,1,,32095_PLATFORM
+32095_boarding_southbound_express_platform_level_04,Southbound Express Platform 4,,,,4,32095_platform_general_nolvl_04,1,,32095_PLATFORM
+32095_boarding_southbound_local_platform_level_01,Southbound Local Platform 1,,,,4,32095_platform_general_nolvl_02,1,,32095_PLATFORM
+32095_boarding_southbound_local_platform_level_02,Southbound Local Platform 2,,,,4,32095_platform_general_nolvl_02,1,,32095_PLATFORM
+32095_boarding_southbound_local_platform_level_03,Southbound Local Platform 3,,,,4,32095_platform_general_nolvl_02,1,,32095_PLATFORM
+32095_boarding_southbound_local_platform_level_04,Southbound Local Platform 4,,,,4,32095_platform_general_nolvl_02,1,,32095_PLATFORM
+32095_entrance_a_busway_01,Olney Transportation Center Entrance A,,40.038938,-75.144465,2,32095,1,,32095_BUSWAY
+32095_entrance_stairs_d_busway_01,Olney Transportation Center Entrance D,,40.038509,-75.144555,2,32095,2,,32095_BUSWAY
+32095_entrance_stairs_e_busway_01,Olney Transportation Center Entrance E - Olney Av,,40.038984,-75.145111,2,32095,2,,32095_BUSWAY
+32095_entrance_stairs_e_busway_02,Olney Transportation Center Entrance E - Broad St,,40.038840,-75.144966,2,32095,2,,32095_BUSWAY
+32095_entrance_stairs_f_busway_01,Olney Transportation Center Entrance F,,40.039343,-75.144790,2,32095,2,,32095_BUSWAY
+32095_entrance_stairs_g_busway_01,Olney Transportation Center Entrance G - Olney Av,,40.039080,-75.144286,2,32095,2,,32095_BUSWAY
+32095_entrance_stairs_g_busway_02,Olney Transportation Center Entrance G - Broad St,,40.039219,-75.144444,2,32095,2,,32095_BUSWAY
+32095_node_a_stairs_mezzanine_01,Stair A - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_b_stairs_mezzanine_01,Stair B - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_busway_entrance_busway_01,Busway Entrance,,,,3,32095,1,,32095_BUSWAY
+32095_node_central_boarding_busway_01,Busway Central,,,,3,32095,1,,32095_BUSWAY
+32095_node_c_stairs_mezzanine_01,Stair C - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_d_stairs_mezzanine_01,Stair D - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_east_mezzanine_01,Mezzanine East - Unpaid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_elevator_a_busway_01,Elevator A - Street Level,,,,3,32095,1,,32095_BUSWAY
+32095_node_elevator_to_street_mezzanine_01,Elevator Near Exit - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_escalator_a_busway_01,Escalator - Street Level,,,,3,32095,1,,32095_BUSWAY
+32095_node_escalator_to_street_mezzanine_01,Escalator A - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_e_stairs_mezzanine_01,Stair E Landing - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_e_stairs_mezzanine_02,Stair E - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_exit_a_mezzanine_01,Exit Stairs A,,,,3,32095,1,,32095_MEZZANINE
+32095_node_exit_gate_mezzanine_01,Exit Gate Northeast - Paid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_exit_gate_mezzanine_02,Exit Gate Southeast - Paid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_exit_gate_mezzanine_03,Exit Gate Northwest - Paid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_exit_gate_mezzanine_04,Exit Gate Northeast - Unpaid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_exit_gate_mezzanine_05,Exit Gate Northwest - Unpaid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_exit_gate_mezzanine_06,Exit Gate Southeast - Unpaid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_fare_gate_mezzanine_01,Fare Gates - Unpaid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_fare_gate_mezzanine_02,Fare Gate South - Paid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_fare_gate_mezzanine_03,Fare Gate North - Paid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_f_stairs_mezzanine_01,Stair F - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_g_stairs_mezzanine_01,Stair G - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_g_stairs_mezzanine_02,Stair G Landing - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_northbound_elevator_mezzanine_02,Elevator Northbound - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_northbound_elevator_platform_level_01,Elevator Northbound - Platform,,,,3,32095,1,,32095_PLATFORM
+32095_node_northbound_escalator_platform_level_01,Escalator - Platform,,,,3,32095,1,,32095_PLATFORM
+32095_node_northbound_stairs_mezzanine_01,Entrance Northbound Stair Landing 1 - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_northbound_stairs_mezzanine_02,Entrance Northbound Stair Landing 3 - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_northbound_stairs_mezzanine_03,Entrance Northbound Stair Landing 2 - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_northbound_stairs_platform_01,Exit Northbound Stair Landing 1 - Platform,,,,3,32095,1,,32095_PLATFORM
+32095_node_north_mezzanine_01,Mezzanine North - Paid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_northwest_boarding_busway_01,Busway Northwest,,,,3,32095,1,,32095_BUSWAY
+32095_node_south_boarding_busway_01,Busway South,,,,3,32095,1,,32095_BUSWAY
+32095_node_southbound_elevator_mezzanine_01,Elevator Southbound - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_southbound_elevator_platform_01,Elevator Southbound - Platform,,,,3,32095,1,,32095_PLATFORM
+32095_node_southbound_escalator_mezzanine_01,Escalator - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_southbound_stairs_mezzanine_01,Entrance Southbound Stair Landing 2 - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_southbound_stairs_mezzanine_02,Entrance Southbound Stair Landing 3 - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_southbound_stairs_mezzanine_03,Entrance Southbound Stair Landing 1 - Mezzanine,,,,3,32095,1,,32095_MEZZANINE
+32095_node_southbound_stairs_platform_01,Exit Southbound Stair Landing 2 - Platform,,,,3,32095,1,,32095_PLATFORM
+32095_node_south_mezzanine_01,Mezzanine South - Paid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_node_stairs_a_busway_01,Stair A - Street Level,,,,3,32095,1,,32095_BUSWAY
+32095_node_stairs_b_busway_01,Stair B - Street Level,,,,3,32095,1,,32095_BUSWAY
+32095_node_stairs_c_busway_01,Stair C - Street Level,,,,3,32095,1,,32095_BUSWAY
+32095_node_stairs_platform_level_02,Exit Northbound Stair Landing 3 - Platform,,,,3,32095,1,,32095_PLATFORM
+32095_node_stairs_platform_level_03,Exit Northbound Stair Landing 2 - Platform,,,,3,32095,1,,32095_PLATFORM
+32095_node_stairs_platform_level_05,Exit Southbound Stair Landing 1 - Platform,,,,3,32095,1,,32095_PLATFORM
+32095_node_stairs_platform_level_06,Exit Southbound Stair Landing 3 - Platform,,,,3,32095,1,,32095_PLATFORM
+32095_node_west_mezzanine_01,Mezzanine West - Unpaid Area,,,,3,32095,1,,32095_MEZZANINE
+32095_platform_general_nolvl_01,Olney Transit Center,N BROAD ST & W OLNEY AVE,40.039039,-75.144678,0,32095,1,,
+32095_platform_general_nolvl_02,Olney Transit Center,0 W OLNEY AVE & N BROAD ST,40.039075,-75.144808,0,32095,1,,
+32095_platform_general_nolvl_03,Olney Transit Center,0 N BROAD ST & W OLNEY AVE,40.039039,-75.144655,0,32095,1,,
+32095_platform_general_nolvl_04,Olney Transit Center,W OLNEY AVE & N BROAD ST,40.039066,-75.144749,0,32095,1,,
+32627,Olney Transit Center - Rt 51,SEPTA SEPTA & N BROAD ST,40.038681,-75.144361,0,32095,1,,32095_BUSWAY
+32628,Olney Transit Center - Rt 55,,40.038859,-75.144301,0,32095,1,,32095_BUSWAY
+32629,Olney Transit Center - Rt 18,,40.038591,-75.143935,0,32095,1,,32095_BUSWAY
+32630,Olney Transit Center - Rt 6,,40.038752,-75.144207,0,32095,1,,32095_BUSWAY
+32631,Olney Transit Center - Rts 22 80,W OLNEY AVE & N BROAD ST,40.038760,-75.143828,0,32095,1,,32095_BUSWAY
+32636,Olney Av & Broad St - MBFS,W OLNEY AVE & N BROAD ST,40.038823,-75.143852,0,32095,1,,32095_BUSWAY
+373,Olney Av & Broad St - FS,W OLNEY AVE & N PARK AVE,40.038877,-75.144159,0,32095,1,,32095_BUSWAY

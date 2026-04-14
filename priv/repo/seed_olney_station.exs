@@ -1,287 +1,417 @@
-# Seed Olney Transportation Center station data scraped from dev environment.
+# Seed Olney Transportation Center station from the bundled GTFS export.
 #
-# Prerequisites: run create_admin_user.exs first to create the org and user.
+# Reads the canonical Olney delivery from `priv/repo/seed_data/olney/` —
+# stops.txt, pathways.txt, levels.txt, the pathways extensions manifest, and
+# the three diagram PNGs — and produces a fully populated station with
+# diagrams, stop coordinates, and every applicable pathway field. The PNG
+# bytes are loaded via `GtfsPlanner.Gtfs.Extensions.Import.import_extensions/5`,
+# which writes them to the configured uploads dir under
+# `diagrams/<org_id>/32095/` and upserts the `stop_levels` table with the
+# scale calibration from the manifest.
+#
+# The bundled data is pre-filtered to only Olney-related stops + the canonical
+# 3-level structure (BUSWAY / MEZZANINE / PLATFORM) that matches the March 16
+# delivery to Noah. To refresh from a new Pathways Studio export, replace the
+# files under priv/repo/seed_data/olney/ with the new export's contents,
+# applying the same filtering and any level_id remap needed to keep the
+# canonical naming.
+#
+# Idempotent: re-runs upsert and skip duplicate rows.
+#
+# Prerequisites:
 #
 #     mix run priv/repo/create_admin_user.exs
-#     mix run priv/repo/seed_olney_station.exs
 #
-# Data sourced from: https://dev.gtfs-planner.transitops.tech
-# Station: Olney Transportation Center (stop 32095)
-# GTFS Version: GTFS Bus (faef3382-c3e2-46e0-b75e-1f23731dd05c)
+# Run:
+#
+#     mix run priv/repo/seed_olney_station.exs
 
 alias GtfsPlanner.{Repo, Gtfs, Versions, Organizations}
-alias GtfsPlanner.Gtfs.{Level, Pathway}
+alias GtfsPlanner.Gtfs.{Level, Pathway, Stop}
+alias GtfsPlanner.Gtfs.Extensions
 
-# ── Configuration ──────────────────────────────────────────
+# ── Configuration ──────────────────────────────────────────────────────────
 
-data_dir = Path.join(File.cwd!(), ".scratch/olney-data")
+data_dir = Path.join(__DIR__, "seed_data/olney")
 
-level_config = [
-  %{name: "busway", level_id: "busway", level_name: "Busway", level_index: -1.0},
-  %{name: "mezzanine", level_id: "mezzanine", level_name: "Mezzanine", level_index: 0.0},
-  %{name: "platform", level_id: "platform", level_name: "Platform", level_index: 1.0}
-]
-
-# Pathway mode labels → GTFS pathway_mode integers
-mode_map = %{
-  "Walkway" => 1,
-  "Stairs" => 2,
-  "Moving Sidewalk" => 3,
-  "Escalator" => 4,
-  "Elevator" => 5,
-  "Fare Gate" => 6,
-  "Exit Gate" => 7
-}
-
-# ── Helpers ────────────────────────────────────────────────
-
-defmodule SeedParser do
-  @doc "Parse a TSV file where tabs, newlines, and quotes are backslash-escaped."
-  def parse_tsv(path) do
-    path
-    |> File.read!()
-    |> String.replace("\\t", "\t")
-    |> String.replace("\\n", "\n")
-    |> String.replace("\\\"", "\"")
-    |> String.replace("\\", "")
-    |> String.trim()
-    |> String.split("\n")
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.map(fn line ->
-      line
-      |> String.split("\t")
-      |> Enum.map(&String.trim/1)
-    end)
-  end
+unless File.dir?(data_dir) do
+  IO.puts("ERROR: bundled seed data not found at #{Path.relative_to_cwd(data_dir)}")
+  System.halt(1)
 end
 
-# ── Get or create org ──────────────────────────────────────
+station_stop_id = "32095"
+
+# ── Tiny CSV parser (RFC-4180-ish) ──────────────────────────────────────────
+#
+# Handles quoted fields with embedded commas and "" escape sequences. Does
+# not handle embedded newlines inside quoted fields — the GTFS files we read
+# here do not contain those.
+
+defmodule SeedCsv do
+  def parse_file(path) do
+    path
+    |> File.read!()
+    |> String.replace("\r\n", "\n")
+    |> String.split("\n", trim: false)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(&parse_line/1)
+    |> rows_to_maps()
+  end
+
+  defp rows_to_maps([header_row | data_rows]) do
+    Enum.map(data_rows, fn fields ->
+      header_row
+      |> Enum.zip(fields ++ List.duplicate("", max(0, length(header_row) - length(fields))))
+      |> Enum.into(%{})
+    end)
+  end
+
+  defp rows_to_maps([]), do: []
+
+  defp parse_line(line), do: parse_line(line, [], "", false)
+
+  defp parse_line("", acc, current, _in_quotes), do: Enum.reverse([current | acc])
+
+  defp parse_line("\"\"" <> rest, acc, current, true),
+    do: parse_line(rest, acc, current <> "\"", true)
+
+  defp parse_line("\"" <> rest, acc, current, false),
+    do: parse_line(rest, acc, current, true)
+
+  defp parse_line("\"" <> rest, acc, current, true),
+    do: parse_line(rest, acc, current, false)
+
+  defp parse_line("," <> rest, acc, current, false),
+    do: parse_line(rest, [current | acc], "", false)
+
+  defp parse_line(<<ch::utf8, rest::binary>>, acc, current, in_quotes),
+    do: parse_line(rest, acc, current <> <<ch::utf8>>, in_quotes)
+end
+
+# ── Coercion helpers ───────────────────────────────────────────────────────
+
+blank_to_nil = fn
+  nil -> nil
+  "" -> nil
+  v -> v
+end
+
+parse_int = fn
+  nil ->
+    nil
+
+  "" ->
+    nil
+
+  v ->
+    case Integer.parse(v) do
+      {n, ""} -> n
+      _ -> nil
+    end
+end
+
+parse_decimal = fn
+  nil ->
+    nil
+
+  "" ->
+    nil
+
+  v ->
+    case Decimal.parse(v) do
+      {d, ""} -> d
+      _ -> nil
+    end
+end
+
+parse_bool = fn
+  "1" -> true
+  "0" -> false
+  "true" -> true
+  "false" -> false
+  _ -> nil
+end
+
+# ── Org + version ──────────────────────────────────────────────────────────
 
 org =
   case Organizations.get_organization_by_alias("pathwaysstudio") do
     nil ->
-      IO.puts("ERROR: Organization not found. Run create_admin_user.exs first.")
+      IO.puts("ERROR: Organization 'pathwaysstudio' not found. Run create_admin_user.exs first.")
       System.halt(1)
 
     org ->
       org
   end
 
-IO.puts("Using organization: #{org.name} (#{org.id})")
+IO.puts("Org: #{org.name} (#{org.id})")
 
-# ── Get or create GTFS version ─────────────────────────────
+version_name = "Olney Seed"
 
 version =
-  case Versions.list_gtfs_versions(org.id) |> Enum.find(&(&1.name == "Olney Seed")) do
+  case Enum.find(Versions.list_gtfs_versions(org.id), &(&1.name == version_name)) do
     nil ->
-      {:ok, v} = Versions.create_gtfs_version(org.id, %{name: "Olney Seed"})
+      {:ok, v} = Versions.create_gtfs_version(org.id, %{name: version_name})
       v
 
     existing ->
       existing
   end
 
-IO.puts("Using GTFS version: #{version.name} (#{version.id})")
+IO.puts("Version: #{version.name} (#{version.id})")
 
-# ── Create station (parent stop) ──────────────────────────
+# ── Parent station ──────────────────────────────────────────────────────────
 
-station_attrs = %{
-  stop_id: "32095",
-  stop_name: "Olney Transportation Center",
+stops_path = Path.join(data_dir, "stops.txt")
+all_stop_rows = SeedCsv.parse_file(stops_path)
+
+parent_row =
+  Enum.find(all_stop_rows, fn r ->
+    r["stop_id"] == station_stop_id and r["location_type"] == "1"
+  end)
+
+unless parent_row do
+  IO.puts("ERROR: parent station #{station_stop_id} not found in stops.txt")
+  System.halt(1)
+end
+
+parent_attrs = %{
+  stop_id: parent_row["stop_id"],
+  stop_name: parent_row["stop_name"],
+  stop_desc: blank_to_nil.(parent_row["stop_desc"]),
+  stop_lat: parse_decimal.(parent_row["stop_lat"]),
+  stop_lon: parse_decimal.(parent_row["stop_lon"]),
   location_type: 1,
+  wheelchair_boarding: parse_int.(parent_row["wheelchair_boarding"]),
   organization_id: org.id,
   gtfs_version_id: version.id
 }
 
 station =
-  case Gtfs.get_stop_by_stop_id(org.id, version.id, "32095") do
+  case Gtfs.get_stop_by_stop_id(org.id, version.id, station_stop_id) do
     nil ->
-      {:ok, s} = Gtfs.create_stop(station_attrs)
+      {:ok, s} =
+        %Stop{}
+        |> Stop.import_changeset(parent_attrs)
+        |> Repo.insert()
+
       s
 
     existing ->
-      existing
+      {:ok, s} =
+        existing
+        |> Stop.import_changeset(parent_attrs)
+        |> Repo.update()
+
+      s
   end
 
 IO.puts("Station: #{station.stop_name} (#{station.id})")
 
-# ── Create levels ──────────────────────────────────────────
+# ── Levels ──────────────────────────────────────────────────────────────────
 
-levels =
-  for cfg <- level_config, into: %{} do
-    level =
-      case Repo.get_by(Level,
-             organization_id: org.id,
-             gtfs_version_id: version.id,
-             level_id: cfg.level_id
-           ) do
-        nil ->
-          {:ok, l} =
-            Gtfs.create_level(%{
-              level_id: cfg.level_id,
-              level_name: cfg.level_name,
-              level_index: cfg.level_index,
-              organization_id: org.id,
-              gtfs_version_id: version.id
-            })
+IO.puts("\nUpserting levels...")
 
-          l
+level_rows = SeedCsv.parse_file(Path.join(data_dir, "levels.txt"))
 
-        existing ->
-          existing
-      end
+for row <- level_rows do
+  attrs = %{
+    level_id: row["level_id"],
+    level_name: row["level_name"],
+    level_index:
+      case Float.parse(row["level_index"] || "") do
+        {f, _} -> f
+        _ -> 0.0
+      end,
+    organization_id: org.id,
+    gtfs_version_id: version.id
+  }
 
-    IO.puts("  Level: #{level.level_name} (#{level.id})")
-    {cfg.name, level}
+  case Repo.get_by(Level,
+         organization_id: org.id,
+         gtfs_version_id: version.id,
+         level_id: row["level_id"]
+       ) do
+    nil ->
+      {:ok, _} = Gtfs.create_level(attrs)
+      IO.puts("  + #{row["level_id"]} (#{row["level_name"]})")
+
+    existing ->
+      {:ok, _} =
+        existing
+        |> Level.changeset(attrs)
+        |> Repo.update()
+
+      IO.puts("  ~ #{row["level_id"]} (refreshed)")
+  end
+end
+
+# ── Child stops ────────────────────────────────────────────────────────────
+#
+# All non-parent rows in the bundled stops.txt belong to Olney (the bundle
+# was pre-filtered when it was copied into the repo).
+
+child_rows = Enum.reject(all_stop_rows, fn r -> r["stop_id"] == station_stop_id end)
+
+IO.puts("\nUpserting #{length(child_rows)} child stops...")
+
+upsert_stop = fn row ->
+  attrs = %{
+    stop_id: row["stop_id"],
+    stop_name: blank_to_nil.(row["stop_name"]),
+    stop_desc: blank_to_nil.(row["stop_desc"]),
+    stop_lat: parse_decimal.(row["stop_lat"]),
+    stop_lon: parse_decimal.(row["stop_lon"]),
+    location_type: parse_int.(row["location_type"]) || 0,
+    wheelchair_boarding: parse_int.(row["wheelchair_boarding"]),
+    platform_code: blank_to_nil.(row["platform_code"]),
+    parent_station: blank_to_nil.(row["parent_station"]),
+    level_id: blank_to_nil.(row["level_id"]),
+    organization_id: org.id,
+    gtfs_version_id: version.id
+  }
+
+  case Gtfs.get_stop_by_stop_id(org.id, version.id, row["stop_id"]) do
+    nil ->
+      %Stop{}
+      |> Stop.import_changeset(attrs)
+      |> Repo.insert()
+
+    existing ->
+      existing
+      |> Stop.import_changeset(attrs)
+      |> Repo.update()
+  end
+end
+
+stop_results = Enum.map(child_rows, upsert_stop)
+
+stop_failures =
+  Enum.filter(stop_results, fn
+    {:ok, _} -> false
+    {:error, _} -> true
+  end)
+
+IO.puts(
+  "Stops upserted: #{length(stop_results) - length(stop_failures)} ok, #{length(stop_failures)} errors"
+)
+
+if stop_failures != [] do
+  Enum.each(Enum.take(stop_failures, 5), fn {:error, cs} ->
+    IO.puts("  stop error: #{inspect(cs.errors)}")
+  end)
+end
+
+# ── Pathways ────────────────────────────────────────────────────────────────
+
+IO.puts("\nUpserting pathways...")
+
+pathway_rows = SeedCsv.parse_file(Path.join(data_dir, "pathways.txt"))
+
+upsert_pathway = fn row ->
+  attrs = %{
+    pathway_id: row["pathway_id"],
+    from_stop_id: row["from_stop_id"],
+    to_stop_id: row["to_stop_id"],
+    pathway_mode: parse_int.(row["pathway_mode"]),
+    is_bidirectional: parse_bool.(row["is_bidirectional"]) || false,
+    length: parse_decimal.(row["length"]),
+    traversal_time: parse_int.(row["traversal_time"]),
+    stair_count: parse_int.(row["stair_count"]),
+    max_slope: parse_decimal.(row["max_slope"]),
+    min_width: parse_decimal.(row["min_width"]),
+    signposted_as: blank_to_nil.(row["signposted_as"]),
+    reversed_signposted_as: blank_to_nil.(row["reversed_signposted_as"]),
+    organization_id: org.id,
+    gtfs_version_id: version.id
+  }
+
+  case Repo.get_by(Pathway,
+         organization_id: org.id,
+         gtfs_version_id: version.id,
+         pathway_id: row["pathway_id"]
+       ) do
+    nil ->
+      %Pathway{}
+      |> Pathway.changeset(attrs)
+      |> Repo.insert()
+
+    existing ->
+      existing
+      |> Pathway.changeset(attrs)
+      |> Repo.update()
+  end
+end
+
+pathway_results = Enum.map(pathway_rows, upsert_pathway)
+
+pathway_failures =
+  Enum.filter(pathway_results, fn
+    {:ok, _} -> false
+    {:error, _} -> true
+  end)
+
+IO.puts(
+  "Pathways upserted: #{length(pathway_results) - length(pathway_failures)} ok, #{length(pathway_failures)} errors"
+)
+
+if pathway_failures != [] do
+  Enum.each(Enum.take(pathway_failures, 5), fn {:error, cs} ->
+    IO.puts("  pathway error: #{inspect(cs.errors)}")
+  end)
+end
+
+# ── Extensions: stop diagram coordinates + stop_levels + diagram PNGs ─────
+
+IO.puts("\nLoading manifest + diagrams...")
+
+manifest_path = Path.join(data_dir, "_pathways_extensions.json")
+manifest_json = File.read!(manifest_path)
+{:ok, raw_manifest} = Jason.decode(manifest_json)
+
+diagram_images = Map.get(raw_manifest, "diagram_images", [])
+
+image_files_by_zip_path =
+  for entry <- diagram_images, into: %{} do
+    abs_path = Path.join(data_dir, entry["zip_path"])
+
+    unless File.exists?(abs_path) do
+      IO.puts("ERROR: diagram PNG not found: #{Path.relative_to_cwd(abs_path)}")
+      System.halt(1)
+    end
+
+    {entry["zip_path"], File.read!(abs_path)}
   end
 
-# ── Create stops ───────────────────────────────────────────
+IO.puts("Loaded #{map_size(image_files_by_zip_path)} diagram PNG file(s)")
 
-IO.puts("\nCreating stops...")
+case Extensions.Import.import_extensions(
+       org.id,
+       version.id,
+       manifest_json,
+       image_files_by_zip_path
+     ) do
+  {:ok, counts} ->
+    IO.puts("  Extensions import OK: #{inspect(counts)}")
 
-stop_uuid_map =
-  for cfg <- level_config, reduce: %{} do
-    acc ->
-      file = Path.join(data_dir, "stops_#{cfg.name}_full.tsv")
+  {:error, reason} ->
+    IO.puts("  Extensions import FAILED: #{inspect(reason)}")
+    System.halt(1)
+end
 
-      if File.exists?(file) do
-        rows = SeedParser.parse_tsv(file)
+# ── Summary ────────────────────────────────────────────────────────────────
 
-        for [server_uuid, stop_id, name, x_str, y_str | _rest] <- rows, into: acc do
-          # Determine location_type from stop_id pattern
-          location_type =
-            cond do
-              String.contains?(stop_id, "entrance") -> 2
-              String.contains?(stop_id, "boarding") -> 4
-              String.contains?(stop_id, "node") -> 3
-              # Bus stops with numeric stop_ids
-              String.match?(stop_id, ~r/^\d+$/) -> 0
-              true -> 3
-            end
-
-          x = case Float.parse(x_str) do
-            {v, _} -> v
-            _ -> nil
-          end
-
-          y = case Float.parse(y_str) do
-            {v, _} -> v
-            _ -> nil
-          end
-
-          stop =
-            case Gtfs.get_stop_by_stop_id(org.id, version.id, stop_id) do
-              nil ->
-                {:ok, s} =
-                  Gtfs.create_stop(%{
-                    stop_id: stop_id,
-                    stop_name: name,
-                    location_type: location_type,
-                    level_id: cfg.level_id,
-                    parent_station: "32095",
-                    organization_id: org.id,
-                    gtfs_version_id: version.id,
-                    diagram_coordinate:
-                      if x && y do
-                        %{"x" => x, "y" => y}
-                      else
-                        nil
-                      end
-                  })
-
-                s
-
-              existing ->
-                existing
-            end
-
-          {server_uuid, stop}
-        end
-      else
-        IO.puts("  WARNING: #{file} not found, skipping")
-        acc
-      end
-  end
-
-IO.puts("Created #{map_size(stop_uuid_map)} stops")
-
-# Build a lookup from server UUID to local stop_id (GTFS string)
-uuid_to_stop_id =
-  stop_uuid_map
-  |> Enum.into(%{}, fn {uuid, stop} -> {uuid, stop.stop_id} end)
-
-# ── Create pathways ────────────────────────────────────────
-
-IO.puts("\nCreating pathways...")
-
-pathway_count =
-  for cfg <- level_config, reduce: 0 do
-    count ->
-      file = Path.join(data_dir, "pathways_#{cfg.name}_full.tsv")
-
-      if File.exists?(file) do
-        rows = SeedParser.parse_tsv(file)
-
-        created =
-          for [_pw_uuid, from_uuid, to_uuid, mode_label | _rest] <- rows, reduce: 0 do
-            n ->
-              from_stop_id = Map.get(uuid_to_stop_id, from_uuid)
-              to_stop_id = Map.get(uuid_to_stop_id, to_uuid)
-              pathway_mode = Map.get(mode_map, mode_label, 1)
-
-              if from_stop_id && to_stop_id do
-                pw_id = "pw_#{from_stop_id}_#{to_stop_id}"
-
-                case Repo.get_by(Pathway,
-                       organization_id: org.id,
-                       gtfs_version_id: version.id,
-                       pathway_id: pw_id
-                     ) do
-                  nil ->
-                    {:ok, _} =
-                      Gtfs.create_pathway(%{
-                        pathway_id: pw_id,
-                        pathway_mode: pathway_mode,
-                        is_bidirectional: true,
-                        from_stop_id: from_stop_id,
-                        to_stop_id: to_stop_id,
-                        organization_id: org.id,
-                        gtfs_version_id: version.id
-                      })
-
-                    n + 1
-
-                  _existing ->
-                    n
-                end
-              else
-                IO.puts("  WARNING: Could not resolve stops for pathway #{from_uuid} -> #{to_uuid}")
-                n
-              end
-          end
-
-        count + created
-      else
-        IO.puts("  WARNING: #{file} not found, skipping")
-        count
-      end
-  end
-
-IO.puts("Created #{pathway_count} pathways")
-
-# ── Summary ────────────────────────────────────────────────
-
+total_levels = Gtfs.list_levels_for_station(org.id, version.id, station.id) |> length()
 total_stops = Gtfs.list_child_stops_for_parent(org.id, version.id, station.id) |> length()
 total_pathways = Gtfs.list_pathways_for_station(org.id, version.id, station.id) |> length()
-total_levels = Gtfs.list_levels_for_station(org.id, version.id, station.id) |> length()
 
 IO.puts("""
 
 ✓ Olney Transportation Center seed complete
-  Organization: #{org.name}
-  GTFS Version: #{version.name}
-  Station: #{station.stop_name} (#{station.stop_id})
-  Levels: #{total_levels}
-  Stops: #{total_stops}
-  Pathways: #{total_pathways}
+  Organization:  #{org.name}
+  GTFS Version:  #{version.name}
+  Station:       #{station.stop_name} (#{station.stop_id})
+  Levels:        #{total_levels}
+  Child stops:   #{total_stops}
+  Pathways:      #{total_pathways}
 """)

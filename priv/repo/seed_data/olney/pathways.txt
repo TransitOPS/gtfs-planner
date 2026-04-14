@@ -1,0 +1,115 @@
+pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional,length,traversal_time,stair_count,max_slope,min_width,signposted_as,reversed_signposted_as
+pw_00e53ae062fd54d2,32095_entrance_a_busway_01,32095_node_elevator_a_busway_01,1,1,6.93,,,,,Olney Transit Center | Elevator,
+pw_00f2a87c1013bdd0,32095_node_g_stairs_mezzanine_01,32095_node_g_stairs_mezzanine_02,2,1,4.87,,9,,,,
+pw_024b55456e9a0487,32095_entrance_stairs_e_busway_01,32095_node_e_stairs_mezzanine_01,2,1,,,19,,,"B1, B2, B3 Northbound & Southbound",
+pw_04809be46d6b0bf2,32095_node_g_stairs_mezzanine_01,32095_node_exit_gate_mezzanine_04,1,1,17.58,,,,,,"Exit G Broad Street & Olney Av NE | Buses | 26, 18 West"
+pw_08bfe737e938cf63,32095_node_northbound_stairs_mezzanine_02,32095_node_stairs_platform_level_02,2,1,,,19,,,,
+pw_09e5a7d69d658857,32095_node_exit_gate_mezzanine_04,32095_node_east_mezzanine_01,1,1,26.32,,,,,,
+pw_0ffc47bb3bd7d9ca,32095_node_c_stairs_mezzanine_01,32095_node_east_mezzanine_01,1,1,19.70,,,,,,"Exit C | Buses | 18 Express, L"
+pw_101770347b92c6d9,32095_node_south_mezzanine_01,32095_node_southbound_stairs_mezzanine_03,1,1,14.38,,,,,"Southbound, B1 NRG Station, B2 Walnut Locust, B3 8th-Market",
+pw_11238f7e2cf53296,32095_boarding_northbound_local_platform_level_02,32095_boarding_northbound_local_platform_level_01,1,1,52.55,,,,,,
+pw_167ddb1a45a3879c,32095_node_northwest_boarding_busway_01,373,1,1,4.18,,,,,,
+pw_170ce353546361f4,32095_node_southbound_stairs_mezzanine_01,32095_node_southbound_stairs_platform_01,2,1,,,25,,,,
+pw_179f02399323af74,32095_node_south_mezzanine_01,32095_node_southbound_escalator_mezzanine_01,1,1,7.34,,,,,"B1, B2, B3 Northbound Fern Rock Transit Center",
+pw_17ac6a5a64d3d803,32095_node_escalator_to_street_mezzanine_01,32095_node_exit_a_mezzanine_01,1,1,2.01,,,,,,
+pw_1df685a4566a05b0,32095_node_southbound_escalator_mezzanine_01,32095_node_exit_gate_mezzanine_02,1,1,4.04,,,,,"Exit Broad Street | Buses | 18, 16 North",
+pw_1fb12c9269a6bf29,32095_node_northbound_elevator_platform_level_01,32095_boarding_northbound_local_platform_level_04,1,1,9.14,,,,,B1 Northbound Fern Rock Transit Center,Elevator | Exit to Street | Buses
+pw_221853e84f621f54,32095_node_northwest_boarding_busway_01,32636,1,1,21.58,,,,,Bus | 26 Frankford Transportation Center,
+pw_23d088f667eb6f56,32095_node_fare_gate_mezzanine_03,32095_node_north_mezzanine_01,1,1,14.52,,,,,,
+pw_249f9e52e31e09a0,32095_node_north_mezzanine_01,32095_node_southbound_stairs_mezzanine_02,1,1,13.85,,,,,"Southbound, B1 NRG Station, B2 Walnut Locust, B3 8th-Market",
+pw_25289aaf3629b5aa,32095_node_stairs_platform_level_02,32095_boarding_northbound_local_platform_level_02,1,1,9.68,,,,,B1 Northbound Fern Rock Transit Center,Exit to Street | Buses
+pw_25c3465569ee914b,32636,32631,1,1,6.39,,,,,"Bus | 80 Express Horsham, 22 Willow Grove & Warminster",Bus | 26 Frankford Transportation Center
+pw_2658849d9a4e577c,32095_boarding_southbound_express_platform_level_04,32095_boarding_southbound_express_platform_level_03,1,1,50.86,,,,,,
+pw_2d3187e86a7be53e,32095_node_exit_a_mezzanine_01,32095_node_east_mezzanine_01,1,1,5.31,,,,,,"Exit A Broad Street & Olney Ave SE | Buses | 6, 18 Express, 22, 55, 80, L"
+pw_304b076359aefd72,32095_boarding_southbound_local_platform_level_01,32095_boarding_southbound_express_platform_level_03,1,1,3.69,,,,,"Southbound B2 Walnut-Locust, B3 8th-Market",B1 Southbound NRG Station
+pw_3137c85a05639f20,32095_node_southbound_stairs_platform_01,32095_boarding_southbound_express_platform_level_04,1,1,3.29,,,,,"Southbound B2 Walnut-Locust, B3 8th-Market",Exit to Street | Buses
+pw_315949c1700a03d4,32095_node_stairs_platform_level_06,32095_boarding_southbound_express_platform_level_03,1,1,22.29,,,,,"Southbound B2 Walnut-Locust, B3 8th-Market",Exit to Street | Buses
+pw_32041541400924e1,32095_node_south_mezzanine_01,32095_node_northbound_stairs_mezzanine_01,1,1,14.56,,,,,"B1, B2, B3 Northbound Fern Rock Transit Center",
+pw_33e393bf8d66b66a,32095_node_northwest_boarding_busway_01,32628,1,1,3.33,,,,,Bus | 55 Wilson Grove & Doyleston,
+pw_399698feb0691e71,32095_entrance_a_busway_01,32095_node_escalator_a_busway_01,1,1,4.17,,,,,,
+pw_3a27f47046a3d4af,32095_node_fare_gate_mezzanine_02,32095_node_southbound_elevator_mezzanine_01,1,1,10.64,,,,,"Southbound B1, B2, B3 | Elevator",
+pw_3c9a987470fbf13f,32095_node_southbound_elevator_mezzanine_01,32095_node_southbound_elevator_platform_01,5,1,,36,,,0.92,"Southbound NRG Station, B1, Walnut Locust, B2, 8th-Market, B3",
+pw_3ea847f1b2823381,32095_node_stairs_platform_level_03,32095_boarding_northbound_local_platform_level_01,1,1,5.75,,,,,B1 Northbound Fern Rock Transit Center,Exit to Street | Buses
+pw_464726d40c1221a1,32095_node_northbound_elevator_mezzanine_02,32095_node_northbound_elevator_platform_level_01,5,1,,36,,,0.92,"B1, B2, B3, Northbound Fern Rock Transit Center",Elevator | Exit to Street | Buses
+pw_465f519d8af38a7c,32095_node_south_boarding_busway_01,32627,1,1,13.06,,,,,Bus | Erdenheim and the Plymouth Meeting Mall,
+pw_49a49bc4eaf3ca36,32095_boarding_northbound_express_platform_level_03,32095_boarding_northbound_local_platform_level_03,1,1,3.90,,,,,B1 Northbound Fern Rock Transit Center,"B2, B3 Northbound Fern Rock Transit Center"
+pw_49f5bb6cb937488c,32095_node_exit_gate_mezzanine_01,32095_node_exit_gate_mezzanine_04,7,0,3.62,,,,0.92,Exit,
+pw_4afd34fc88f5ffb0,32095_boarding_northbound_local_platform_level_01,32095_boarding_northbound_local_platform_level_04,1,1,21.31,,,,,,
+pw_5005a043212c5550,32095_node_fare_gate_mezzanine_02,32095_node_northbound_elevator_mezzanine_02,1,1,12.53,,,,,"Northbound B1, B2, B3 | Elevator",
+pw_5016991be177cbe4,32095_node_southbound_elevator_platform_01,32095_boarding_southbound_local_platform_level_04,1,1,7.58,,,,,B1 Southbound NRG Station,Elevator | Exit to Street | Buses
+pw_50e1c438c01f45ac,32095_node_stairs_b_busway_01,32630,1,1,10.77,,,,,Bus | 6 Cheltenham-Ogontz,
+pw_540e98394abaad78,32095_node_southbound_stairs_mezzanine_03,32095_node_stairs_platform_level_05,2,1,,,25,,,"Southbound NRG Station, B1, Walnut Locust, B2, 8th-Market, B3",
+pw_54852fa0043bec95,32095_boarding_southbound_local_platform_level_01,32095_boarding_southbound_local_platform_level_03,1,1,49.75,,,,,,
+pw_5834756e5490d9d2,32095_node_fare_gate_mezzanine_03,32095_node_northbound_stairs_mezzanine_03,1,1,4.89,,,,,"B1, B2, B3 Northbound Fern Rock Transit Center",
+pw_5e33888e8d176aaf,32095_node_stairs_platform_level_03,32095_boarding_northbound_express_platform_level_04,1,1,7.16,,,,,"B2, B3 Northbound Fern Rock Transit Center",Exit to Street | Buses
+pw_5fa313af6f3456f7,32095_boarding_northbound_express_platform_01,32095_boarding_northbound_local_platform_level_02,1,1,4.49,,,,,B1 Northbound Fern Rock Transit Center,"B2, B3 Northbound Fern Rock Transit Center"
+pw_601b541af1044f3a,32095_node_a_stairs_mezzanine_01,32095_node_exit_a_mezzanine_01,1,1,2.98,,,,,,
+pw_61f64616313cd305,32095_node_busway_entrance_busway_01,32095_node_central_boarding_busway_01,1,1,13.05,,,,,,
+pw_626694bc3f8f4d6c,32095_boarding_southbound_express_platform_level_01,32095_boarding_southbound_local_platform_level_04,1,1,6.55,,,,,B1 Southbound NRG Station,"Southbound B2 Walnut-Locust, B3 8th-Market"
+pw_63c94fe918b63750,32095_node_fare_gate_mezzanine_02,32095_node_south_mezzanine_01,1,1,13.97,,,,,,
+pw_652947639717ce34,32095_entrance_stairs_d_busway_01,32095_node_d_stairs_mezzanine_01,2,1,,,22,,,"B1, B2, B3 Northbound & Southbound","Exit D Broad Street | Buses | 18, 16 North "
+pw_6c72636202de0e45,32095_node_east_mezzanine_01,32095_node_fare_gate_mezzanine_01,1,1,15.90,,,,,"B1, B2, B3 Northbound & Southbound","Elevator | Exit Broad St & Olney Av SE | Buses | 6, 8, 16, 18, 22, 26, 55, 80, L"
+pw_72db6ebf19a48fcb,32095_entrance_stairs_e_busway_02,32095_node_e_stairs_mezzanine_01,2,1,,,21,,,"B1, B2, B3 Northbound & Southbound",
+pw_773d9513738972c8,32095_node_stairs_c_busway_01,32095_node_c_stairs_mezzanine_01,2,1,,,23,,,"B1, B2, B3 Northbound & Southbound",
+pw_7760cd90565ea321,32095_node_south_boarding_busway_01,32095_node_stairs_c_busway_01,1,1,6.18,,,,,,
+pw_799c7d7a25e268c8,32095_node_fare_gate_mezzanine_03,32095_node_southbound_stairs_mezzanine_01,1,1,4.07,,,,,"Southbound, B1 NRG Station, B2 Walnut Locust, B3 8th-Market",
+pw_7bcea1a4221d783f,32095_node_north_mezzanine_01,32095_node_exit_gate_mezzanine_01,1,1,9.43,,,,,,
+pw_7d2254b05afeec50,32095_node_northbound_elevator_platform_level_01,32095_boarding_northbound_express_platform_level_02,1,1,4.30,,,,,"B2, B3 Northbound Fern Rock Transit Center",Elevator | Exit to Street | Buses
+pw_7fe4148295f5d1b0,32095_node_central_boarding_busway_01,32095_node_stairs_c_busway_01,1,1,13.23,,,,,,
+pw_81b480529da04ca8,32095_entrance_stairs_g_busway_02,32095_node_g_stairs_mezzanine_02,2,1,,,18,,,"B1, B2, B3 Northbound & Southbound",
+pw_8451d6f5573e0acb,32095_entrance_a_busway_01,32636,1,1,29.68,,,,,Bus | 26 Frankford Transportation Center,
+pw_86b0c69caf5dbc90,32095_boarding_northbound_local_platform_level_04,32095_node_northbound_escalator_platform_level_01,1,1,4.41,,,,,Exit to Street | Buses,
+pw_8e7ce1d6fae67ee2,32095_node_stairs_platform_level_06,32095_boarding_southbound_local_platform_level_01,1,1,22.08,,,,,B1 Southbound NRG Station,Exit to Street | Buses
+pw_9053369f05b4acda,32095_node_southbound_stairs_platform_01,32095_boarding_southbound_local_platform_level_03,1,1,2.92,,,,,B1 Southbound NRG Station,Exit to Street | Buses
+pw_92b135f84b2b800c,32095_node_stairs_platform_level_05,32095_boarding_southbound_local_platform_level_02,1,1,43.37,,,,,B1 Southbound NRG Station,Exit to Street | Buses
+pw_97062e14de351b61,32095_entrance_stairs_f_busway_01,32095_node_f_stairs_mezzanine_01,2,1,,,31,,,"B1, B2, B3 Northbound & Southbound",
+pw_994dc6b87bf6e3d6,32095_node_b_stairs_mezzanine_01,32095_node_east_mezzanine_01,1,1,29.05,,,,,,Exit B | Buses | 6
+pw_a553456e4692d733,32095_node_northbound_stairs_mezzanine_01,32095_node_northbound_stairs_platform_01,2,1,,,25,,,,
+pw_a661bc53d0e8c838,32095_node_exit_gate_mezzanine_03,32095_node_exit_gate_mezzanine_05,7,0,1.84,,,,0.92,Exit,
+pw_a68b8061fef98221,32095_node_east_mezzanine_01,32095_node_d_stairs_mezzanine_01,1,1,26.80,,,,,,"B1, B2, B3 Northbound & Southbound"
+pw_a77b3911bfd4ded2,32095_boarding_southbound_express_platform_level_02,32095_boarding_southbound_local_platform_level_02,1,1,3.83,,,,,B1 Southbound NRG Station,"Southbound B2 Walnut-Locust, B3 8th-Market"
+pw_ab038b6c52d074f7,32095_node_e_stairs_mezzanine_01,32095_node_e_stairs_mezzanine_02,2,1,9.00,,9,,,,"Exit E Broad St & Olney Av SW | Buses | 8, 16 South, 18, 26 East"
+pw_ab2e8281ca317818,32095_boarding_southbound_express_platform_level_01,32095_boarding_southbound_express_platform_level_02,1,1,54.26,,,,,,
+pw_ae3f7d8de7e1b8d3,32095_node_stairs_platform_level_05,32095_boarding_southbound_express_platform_level_02,1,1,43.27,,,,,"Southbound B2 Walnut-Locust, B3 8th-Market",Exit to Street | Buses
+pw_b0dacd0ef9f0bf79,32095_node_elevator_to_street_mezzanine_01,32095_node_exit_a_mezzanine_01,1,1,7.62,,,,,,
+pw_b272f3b92f75e480,32095_node_exit_gate_mezzanine_05,32095_node_west_mezzanine_01,1,1,21.18,,,,,,
+pw_b5c594eb6dd0508e,32095_node_fare_gate_mezzanine_01,32095_node_fare_gate_mezzanine_03,6,0,11.58,,,,0.92,"B1, B2, B3 Northbound & Southbound",
+pw_b5e99169d70880f0,32095_boarding_northbound_express_platform_level_04,32095_boarding_northbound_express_platform_level_02,1,1,27.75,,,,,,
+pw_bc963946a6cd0b02,32095_node_south_boarding_busway_01,32629,1,1,16.48,,,,,"Bus | 18 Express to Cedarbrook Plaza, Weekend PM Services Only",
+pw_bdfbb4f4d9c73a24,32095_node_exit_gate_mezzanine_06,32095_node_d_stairs_mezzanine_01,1,1,9.09,,,,,,
+pw_bf5b0bb229bcdc8c,32095_node_north_mezzanine_01,32095_node_exit_gate_mezzanine_03,1,1,8.07,,,,,,
+pw_c11060b75cc266d1,32095_node_west_mezzanine_01,32095_node_fare_gate_mezzanine_01,1,1,13.06,,,,,"B1, B2, B3 Northbound & Southbound","Exit Broad St & Olney SW | Buses | 8, 16 South - 18, 26 East"
+pw_c2d1ab58e10a90c1,32095_boarding_southbound_local_platform_level_03,32095_boarding_southbound_express_platform_level_04,1,1,5.40,,,,,"Southbound B2 Walnut-Locust, B3 8th-Market",B1 Southbound NRG Station
+pw_c35aa7ecc080ce7a,32095_node_northbound_escalator_platform_level_01,32095_node_southbound_escalator_mezzanine_01,4,0,,44,,,0.58,Exit to Street | Buses,
+pw_c6382b0f0fbd4ef7,32095_boarding_northbound_local_platform_level_04,32095_boarding_northbound_local_platform_level_03,1,1,57.86,,,,,,
+pw_cb139bae12132e7e,32095_node_west_mezzanine_01,32095_node_e_stairs_mezzanine_02,1,1,7.05,,,,,"Exit E Broad St & Olney Av SW | Buses | 8, 16 South, 18, 26 East",
+pw_cd1897f3620cf0e3,32095_node_busway_entrance_busway_01,32095_node_northwest_boarding_busway_01,1,1,3.69,,,,,,
+pw_d03af6250b6cdc8f,32095_node_fare_gate_mezzanine_02,32095_node_fare_gate_mezzanine_01,7,0,8.37,,,,0.92,,
+pw_d062b607dac37d7b,32095_node_stairs_b_busway_01,32095_node_b_stairs_mezzanine_01,2,1,,,22,,,"B1, B2, B3 Northbound & Southbound",
+pw_d1b737fca3fedd12,32095_node_stairs_platform_level_02,32095_boarding_northbound_express_platform_01,1,1,10.47,,,,,"B2, B3 Northbound Fern Rock Transit Center",Exit to Street | Buses
+pw_d342c5fb26d0543a,32095_boarding_northbound_express_platform_level_02,32095_boarding_northbound_express_platform_level_03,1,1,63.34,,,,,,
+pw_d352fac152c3e16c,32095_boarding_southbound_local_platform_level_02,32095_boarding_southbound_local_platform_level_04,1,1,59.73,,,,,,
+pw_d5f2da702b5899f1,32095_node_f_stairs_mezzanine_01,32095_node_exit_gate_mezzanine_05,1,1,11.98,,,,,,Exit F Broad Street & Olney Av NW
+pw_d92a2ae9b83dfd84,32095_node_fare_gate_mezzanine_01,32095_node_fare_gate_mezzanine_02,6,0,8.37,,,,0.92,"B1, B2, B3 Northbound & Southbound",
+pw_db73a7c38bf1a97b,32095_entrance_a_busway_01,32095_node_stairs_a_busway_01,1,1,3.15,,,,,"B1, B2, B3 Northbound & Southbound",
+pw_dbd59ca3d1f4f128,32095_node_northbound_stairs_platform_01,32095_boarding_northbound_express_platform_level_03,1,1,43.09,,,,,"B2, B3 Northbound Fern Rock Transit Center",Exit to Street | Buses
+pw_ddc5c0e9683023c0,32095_node_north_mezzanine_01,32095_node_northbound_stairs_mezzanine_02,1,1,14.29,,,,,"B1, B2, B3 Northbound Fern Rock Transit Center",
+pw_df5fa19c02c763df,32095_node_northwest_boarding_busway_01,32631,1,1,20.00,,,,,"Bus | 80 Express Horsham, 22 Willow Grove & Warminster",
+pw_e05636126e4ed23b,32095_boarding_southbound_local_platform_level_04,32095_boarding_southbound_local_platform_level_03,1,1,35.32,,,,,,
+pw_e0e9d833902f72a6,32095_boarding_southbound_express_platform_level_04,32095_boarding_southbound_express_platform_level_01,1,1,39.71,,,,,,
+pw_e219d4b66f121921,32095_entrance_stairs_g_busway_01,32095_node_g_stairs_mezzanine_02,2,1,,,15,,,"B1, B2, B3 Northbound & Southbound",
+pw_e22a13027604202f,32095_node_elevator_a_busway_01,32095_node_elevator_to_street_mezzanine_01,5,1,,36,,,0.93,,
+pw_e540bd11d7ef2181,32095_node_south_mezzanine_01,32095_node_exit_gate_mezzanine_02,1,1,10.61,,,,,"Exit Broad Street | Buses | 18, 16 North",
+pw_e77a4d12d15b5ef7,32095_node_central_boarding_busway_01,32630,1,1,1.86,,,,,Bus | 6 Cheltenham-Ogontz,
+pw_e93a2867004b99b0,32095_node_southbound_elevator_platform_01,32095_boarding_southbound_express_platform_level_01,1,1,13.06,,,,,"Southbound B2 Walnut-Locust, B3 8th-Market",Exit to Street | Buses
+pw_eb37146ac04c6841,32095_node_escalator_to_street_mezzanine_01,32095_node_escalator_a_busway_01,4,0,,20,,,0.58,,
+pw_ec0db4075e463199,32095_boarding_northbound_express_platform_01,32095_boarding_northbound_express_platform_level_04,1,1,41.27,,,,,,
+pw_f4932e7d2978d767,32095_node_fare_gate_mezzanine_03,32095_node_fare_gate_mezzanine_01,7,0,11.58,,,,0.92,,
+pw_f4ccf6a03d6b575a,32095_entrance_a_busway_01,32095_node_busway_entrance_busway_01,1,1,8.65,,,,,,
+pw_f8a5a50fa8782e2c,32095_entrance_a_busway_01,373,1,1,10.97,,,,,Bus | 18 Fox Chase,
+pw_faeb92e016cf33dc,32095_boarding_northbound_express_platform_level_02,32095_boarding_northbound_local_platform_level_04,1,1,7.21,,,,,B1 Northbound Fern Rock Transit Center,"B2, B3 Northbound Fern Rock Transit Center"
+pw_fba5d1b77b647df6,32095_node_stairs_a_busway_01,32095_node_a_stairs_mezzanine_01,2,1,,,25,,,,
+pw_fc87511b76bc3555,32095_node_southbound_stairs_mezzanine_02,32095_node_stairs_platform_level_06,2,1,,,19,,,,
+pw_fda6dbcf21896e1b,32095_node_exit_gate_mezzanine_02,32095_node_exit_gate_mezzanine_06,7,0,2.40,,,,0.92,Exit,
+pw_fddc72ba1324d567,32095_node_northbound_stairs_mezzanine_03,32095_node_stairs_platform_level_03,2,1,,,25,,,,
+pw_ffca72edef934903,32095_node_northbound_stairs_platform_01,32095_boarding_northbound_local_platform_level_03,1,1,43.00,,,,,B1 Northbound Fern Rock Transit Center,Exit to Street | Buses

@@ -1,0 +1,645 @@
+{
+  "version": 1,
+  "stop_levels": [
+    {
+      "stop_id": "32095",
+      "scale_meters_per_unit": "1.60210511",
+      "level_id": "32095_BUSWAY",
+      "diagram_filename": "lvl_ec75da6f-bc15-4c78-8c3d-925b1e66920e_5985.png",
+      "scale_distance_meters": "3.0200",
+      "scale_point_a": {
+        "x": 51.98,
+        "y": 50.49
+      },
+      "scale_point_b": {
+        "x": 53.45,
+        "y": 49.31
+      }
+    },
+    {
+      "stop_id": "32095",
+      "scale_meters_per_unit": "1.26562500",
+      "level_id": "32095_MEZZANINE",
+      "diagram_filename": "lvl_da368462-79dd-4f16-b7ff-469f729e190c_4.png",
+      "scale_distance_meters": "0.8100",
+      "scale_point_a": {
+        "x": 33.2,
+        "y": 30.18
+      },
+      "scale_point_b": {
+        "x": 33.2,
+        "y": 30.82
+      }
+    },
+    {
+      "stop_id": "32095",
+      "scale_meters_per_unit": "1.63620362",
+      "level_id": "32095_PLATFORM",
+      "diagram_filename": "lvl_76614ca9-6630-4c80-8c3e-a0dc2511c9d8_98.png",
+      "scale_distance_meters": "2.3400",
+      "scale_point_a": {
+        "x": 47.5,
+        "y": 7.64
+      },
+      "scale_point_b": {
+        "x": 47.48,
+        "y": 9.07
+      }
+    }
+  ],
+  "diagram_images": [
+    {
+      "filename": "lvl_ec75da6f-bc15-4c78-8c3d-925b1e66920e_5985.png",
+      "station_stop_id": "32095",
+      "zip_path": "_pathways_extensions/diagrams/32095/lvl_ec75da6f-bc15-4c78-8c3d-925b1e66920e_5985.png"
+    },
+    {
+      "filename": "lvl_da368462-79dd-4f16-b7ff-469f729e190c_4.png",
+      "station_stop_id": "32095",
+      "zip_path": "_pathways_extensions/diagrams/32095/lvl_da368462-79dd-4f16-b7ff-469f729e190c_4.png"
+    },
+    {
+      "filename": "lvl_76614ca9-6630-4c80-8c3e-a0dc2511c9d8_98.png",
+      "station_stop_id": "32095",
+      "zip_path": "_pathways_extensions/diagrams/32095/lvl_76614ca9-6630-4c80-8c3e-a0dc2511c9d8_98.png"
+    }
+  ],
+  "exported_at": "2026-04-14T15:51:27.939716Z",
+  "route_active_flags": [],
+  "stop_diagram_coordinates": [
+    {
+      "stop_id": "32095_boarding_northbound_express_platform_01",
+      "diagram_coordinate": {
+        "x": 86.23,
+        "y": 14.54
+      }
+    },
+    {
+      "stop_id": "32095_boarding_northbound_express_platform_level_02",
+      "diagram_coordinate": {
+        "x": 44.05,
+        "y": 14.64
+      }
+    },
+    {
+      "stop_id": "32095_boarding_northbound_express_platform_level_03",
+      "diagram_coordinate": {
+        "x": 5.34,
+        "y": 14.96
+      }
+    },
+    {
+      "stop_id": "32095_boarding_northbound_express_platform_level_04",
+      "diagram_coordinate": {
+        "x": 61.01,
+        "y": 14.75
+      }
+    },
+    {
+      "stop_id": "32095_boarding_northbound_local_platform_level_01",
+      "diagram_coordinate": {
+        "x": 53.78,
+        "y": 17.85
+      }
+    },
+    {
+      "stop_id": "32095_boarding_northbound_local_platform_level_02",
+      "diagram_coordinate": {
+        "x": 85.89,
+        "y": 17.26
+      }
+    },
+    {
+      "stop_id": "32095_boarding_northbound_local_platform_level_03",
+      "diagram_coordinate": {
+        "x": 5.4,
+        "y": 17.34
+      }
+    },
+    {
+      "stop_id": "32095_boarding_northbound_local_platform_level_04",
+      "diagram_coordinate": {
+        "x": 40.76,
+        "y": 17.57
+      }
+    },
+    {
+      "stop_id": "32095_boarding_southbound_express_platform_level_01",
+      "diagram_coordinate": {
+        "x": 38.33,
+        "y": 9.86
+      }
+    },
+    {
+      "stop_id": "32095_boarding_southbound_express_platform_level_02",
+      "diagram_coordinate": {
+        "x": 5.17,
+        "y": 9.51
+      }
+    },
+    {
+      "stop_id": "32095_boarding_southbound_express_platform_level_03",
+      "diagram_coordinate": {
+        "x": 93.68,
+        "y": 9.57
+      }
+    },
+    {
+      "stop_id": "32095_boarding_southbound_express_platform_level_04",
+      "diagram_coordinate": {
+        "x": 62.6,
+        "y": 9.94
+      }
+    },
+    {
+      "stop_id": "32095_boarding_southbound_local_platform_level_01",
+      "diagram_coordinate": {
+        "x": 93.58,
+        "y": 7.32
+      }
+    },
+    {
+      "stop_id": "32095_boarding_southbound_local_platform_level_02",
+      "diagram_coordinate": {
+        "x": 5.11,
+        "y": 7.17
+      }
+    },
+    {
+      "stop_id": "32095_boarding_southbound_local_platform_level_03",
+      "diagram_coordinate": {
+        "x": 63.18,
+        "y": 6.69
+      }
+    },
+    {
+      "stop_id": "32095_boarding_southbound_local_platform_level_04",
+      "diagram_coordinate": {
+        "x": 41.61,
+        "y": 7.57
+      }
+    },
+    {
+      "stop_id": "32095_entrance_a_busway_01",
+      "diagram_coordinate": {
+        "x": 56.11,
+        "y": 49.94
+      }
+    },
+    {
+      "stop_id": "32095_entrance_stairs_d_busway_01",
+      "diagram_coordinate": {
+        "x": 19.3,
+        "y": 46.03
+      }
+    },
+    {
+      "stop_id": "32095_entrance_stairs_e_busway_01",
+      "diagram_coordinate": {
+        "x": 52.73,
+        "y": 8.46
+      }
+    },
+    {
+      "stop_id": "32095_entrance_stairs_e_busway_02",
+      "diagram_coordinate": {
+        "x": 44.98,
+        "y": 16.98
+      }
+    },
+    {
+      "stop_id": "32095_entrance_stairs_f_busway_01",
+      "diagram_coordinate": {
+        "x": 81.57,
+        "y": 23.19
+      }
+    },
+    {
+      "stop_id": "32095_entrance_stairs_g_busway_01",
+      "diagram_coordinate": {
+        "x": 68.99,
+        "y": 57.04
+      }
+    },
+    {
+      "stop_id": "32095_entrance_stairs_g_busway_02",
+      "diagram_coordinate": {
+        "x": 77.68,
+        "y": 49.83
+      }
+    },
+    {
+      "stop_id": "32095_node_a_stairs_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 43.85,
+        "y": 46.97
+      }
+    },
+    {
+      "stop_id": "32095_node_b_stairs_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 37.7,
+        "y": 65.83
+      }
+    },
+    {
+      "stop_id": "32095_node_busway_entrance_busway_01",
+      "diagram_coordinate": {
+        "x": 50.3,
+        "y": 54.56
+      }
+    },
+    {
+      "stop_id": "32095_node_central_boarding_busway_01",
+      "diagram_coordinate": {
+        "x": 44.69,
+        "y": 58.51
+      }
+    },
+    {
+      "stop_id": "32095_node_c_stairs_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 31.35,
+        "y": 56.56
+      }
+    },
+    {
+      "stop_id": "32095_node_d_stairs_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 18.0,
+        "y": 46.83
+      }
+    },
+    {
+      "stop_id": "32095_node_east_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 38.81,
+        "y": 42.9
+      }
+    },
+    {
+      "stop_id": "32095_node_elevator_a_busway_01",
+      "diagram_coordinate": {
+        "x": 50.37,
+        "y": 52.32
+      }
+    },
+    {
+      "stop_id": "32095_node_elevator_to_street_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 42.85,
+        "y": 51.79
+      }
+    },
+    {
+      "stop_id": "32095_node_escalator_a_busway_01",
+      "diagram_coordinate": {
+        "x": 52.08,
+        "y": 52.03
+      }
+    },
+    {
+      "stop_id": "32095_node_escalator_to_street_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 41.35,
+        "y": 47.4
+      }
+    },
+    {
+      "stop_id": "32095_node_e_stairs_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 44.32,
+        "y": 9.58
+      }
+    },
+    {
+      "stop_id": "32095_node_e_stairs_mezzanine_02",
+      "diagram_coordinate": {
+        "x": 46.29,
+        "y": 16.41
+      }
+    },
+    {
+      "stop_id": "32095_node_exit_a_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 41.77,
+        "y": 45.87
+      }
+    },
+    {
+      "stop_id": "32095_node_exit_gate_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 59.51,
+        "y": 37.83
+      }
+    },
+    {
+      "stop_id": "32095_node_exit_gate_mezzanine_02",
+      "diagram_coordinate": {
+        "x": 25.52,
+        "y": 40.03
+      }
+    },
+    {
+      "stop_id": "32095_node_exit_gate_mezzanine_03",
+      "diagram_coordinate": {
+        "x": 55.94,
+        "y": 24.11
+      }
+    },
+    {
+      "stop_id": "32095_node_exit_gate_mezzanine_04",
+      "diagram_coordinate": {
+        "x": 59.49,
+        "y": 40.69
+      }
+    },
+    {
+      "stop_id": "32095_node_exit_gate_mezzanine_05",
+      "diagram_coordinate": {
+        "x": 55.96,
+        "y": 22.33
+      }
+    },
+    {
+      "stop_id": "32095_node_exit_gate_mezzanine_06",
+      "diagram_coordinate": {
+        "x": 25.61,
+        "y": 41.84
+      }
+    },
+    {
+      "stop_id": "32095_node_fare_gate_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 39.03,
+        "y": 30.34
+      }
+    },
+    {
+      "stop_id": "32095_node_fare_gate_mezzanine_02",
+      "diagram_coordinate": {
+        "x": 32.42,
+        "y": 30.23
+      }
+    },
+    {
+      "stop_id": "32095_node_fare_gate_mezzanine_03",
+      "diagram_coordinate": {
+        "x": 48.15,
+        "y": 31.09
+      }
+    },
+    {
+      "stop_id": "32095_node_f_stairs_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 68.71,
+        "y": 22.1
+      }
+    },
+    {
+      "stop_id": "32095_node_g_stairs_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 67.82,
+        "y": 51.81
+      }
+    },
+    {
+      "stop_id": "32095_node_g_stairs_mezzanine_02",
+      "diagram_coordinate": {
+        "x": 70.4,
+        "y": 54.66
+      }
+    },
+    {
+      "stop_id": "32095_node_northbound_elevator_mezzanine_02",
+      "diagram_coordinate": {
+        "x": 25.32,
+        "y": 37.13
+      }
+    },
+    {
+      "stop_id": "32095_node_northbound_elevator_platform_level_01",
+      "diagram_coordinate": {
+        "x": 46.17,
+        "y": 16.19
+      }
+    },
+    {
+      "stop_id": "32095_node_northbound_escalator_platform_level_01",
+      "diagram_coordinate": {
+        "x": 38.37,
+        "y": 16.33
+      }
+    },
+    {
+      "stop_id": "32095_node_northbound_stairs_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 11.41,
+        "y": 37.02
+      }
+    },
+    {
+      "stop_id": "32095_node_northbound_stairs_mezzanine_02",
+      "diagram_coordinate": {
+        "x": 68.76,
+        "y": 36.98
+      }
+    },
+    {
+      "stop_id": "32095_node_northbound_stairs_mezzanine_03",
+      "diagram_coordinate": {
+        "x": 47.98,
+        "y": 34.95
+      }
+    },
+    {
+      "stop_id": "32095_node_northbound_stairs_platform_01",
+      "diagram_coordinate": {
+        "x": 31.65,
+        "y": 16.14
+      }
+    },
+    {
+      "stop_id": "32095_node_north_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 59.6,
+        "y": 30.38
+      }
+    },
+    {
+      "stop_id": "32095_node_northwest_boarding_busway_01",
+      "diagram_coordinate": {
+        "x": 52.96,
+        "y": 56.3
+      }
+    },
+    {
+      "stop_id": "32095_node_south_boarding_busway_01",
+      "diagram_coordinate": {
+        "x": 36.02,
+        "y": 67.21
+      }
+    },
+    {
+      "stop_id": "32095_node_southbound_elevator_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 25.14,
+        "y": 26.02
+      }
+    },
+    {
+      "stop_id": "32095_node_southbound_elevator_platform_01",
+      "diagram_coordinate": {
+        "x": 46.17,
+        "y": 8.37
+      }
+    },
+    {
+      "stop_id": "32095_node_southbound_escalator_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 20.89,
+        "y": 37.15
+      }
+    },
+    {
+      "stop_id": "32095_node_southbound_stairs_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 47.87,
+        "y": 27.89
+      }
+    },
+    {
+      "stop_id": "32095_node_southbound_stairs_mezzanine_02",
+      "diagram_coordinate": {
+        "x": 69.69,
+        "y": 26.15
+      }
+    },
+    {
+      "stop_id": "32095_node_southbound_stairs_mezzanine_03",
+      "diagram_coordinate": {
+        "x": 11.3,
+        "y": 26.25
+      }
+    },
+    {
+      "stop_id": "32095_node_southbound_stairs_platform_01",
+      "diagram_coordinate": {
+        "x": 63.83,
+        "y": 8.35
+      }
+    },
+    {
+      "stop_id": "32095_node_south_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 21.44,
+        "y": 31.38
+      }
+    },
+    {
+      "stop_id": "32095_node_stairs_a_busway_01",
+      "diagram_coordinate": {
+        "x": 52.88,
+        "y": 50.22
+      }
+    },
+    {
+      "stop_id": "32095_node_stairs_b_busway_01",
+      "diagram_coordinate": {
+        "x": 43.95,
+        "y": 68.39
+      }
+    },
+    {
+      "stop_id": "32095_node_stairs_c_busway_01",
+      "diagram_coordinate": {
+        "x": 36.85,
+        "y": 63.44
+      }
+    },
+    {
+      "stop_id": "32095_node_stairs_platform_level_02",
+      "diagram_coordinate": {
+        "x": 80.06,
+        "y": 16.24
+      }
+    },
+    {
+      "stop_id": "32095_node_stairs_platform_level_03",
+      "diagram_coordinate": {
+        "x": 56.88,
+        "y": 16.2
+      }
+    },
+    {
+      "stop_id": "32095_node_stairs_platform_level_05",
+      "diagram_coordinate": {
+        "x": 31.59,
+        "y": 8.29
+      }
+    },
+    {
+      "stop_id": "32095_node_stairs_platform_level_06",
+      "diagram_coordinate": {
+        "x": 80.12,
+        "y": 8.27
+      }
+    },
+    {
+      "stop_id": "32095_node_west_mezzanine_01",
+      "diagram_coordinate": {
+        "x": 42.76,
+        "y": 20.72
+      }
+    },
+    {
+      "stop_id": "32627",
+      "diagram_coordinate": {
+        "x": 36.02,
+        "y": 59.06
+      }
+    },
+    {
+      "stop_id": "32628",
+      "diagram_coordinate": {
+        "x": 50.92,
+        "y": 58.29
+      }
+    },
+    {
+      "stop_id": "32629",
+      "diagram_coordinate": {
+        "x": 33.41,
+        "y": 77.16
+      }
+    },
+    {
+      "stop_id": "32630",
+      "diagram_coordinate": {
+        "x": 43.17,
+        "y": 61.71
+      }
+    },
+    {
+      "stop_id": "32631",
+      "diagram_coordinate": {
+        "x": 49.89,
+        "y": 68.72
+      }
+    },
+    {
+      "stop_id": "32636",
+      "diagram_coordinate": {
+        "x": 53.74,
+        "y": 69.75
+      }
+    },
+    {
+      "stop_id": "373",
+      "diagram_coordinate": {
+        "x": 55.16,
+        "y": 59.01
+      }
+    }
+  ]
+}
