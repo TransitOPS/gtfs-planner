@@ -320,6 +320,73 @@ defmodule GtfsPlanner.AccountsTest do
     end
   end
 
+  describe "generate_api_session_token/1" do
+    setup do
+      %{user: user_fixture()}
+    end
+
+    test "generates a non-empty token string", %{user: user} do
+      token = Accounts.generate_api_session_token(user)
+      assert is_binary(token)
+      assert token != ""
+    end
+
+    test "creates a users_tokens row with context api_session", %{user: user} do
+      _token = Accounts.generate_api_session_token(user)
+      assert Repo.get_by(UserToken, user_id: user.id, context: "api_session")
+    end
+  end
+
+  describe "get_user_by_api_session_token/1" do
+    setup do
+      user = user_fixture()
+      token = Accounts.generate_api_session_token(user)
+      %{user: user, token: token}
+    end
+
+    test "returns user for valid token", %{user: user, token: token} do
+      assert found_user = Accounts.get_user_by_api_session_token(token)
+      assert found_user.id == user.id
+    end
+
+    test "returns nil for invalid token" do
+      refute Accounts.get_user_by_api_session_token("invalid-token")
+    end
+
+    test "returns nil for a valid web session token (context isolation)" do
+      user = user_fixture()
+      web_token = Accounts.generate_user_session_token(user)
+      refute Accounts.get_user_by_api_session_token(web_token)
+    end
+
+    test "returns nil for expired token", %{token: token} do
+      {1, nil} =
+        Repo.update_all(
+          from(t in UserToken, where: t.context == "api_session"),
+          set: [inserted_at: ~N[2020-01-01 00:00:00]]
+        )
+
+      refute Accounts.get_user_by_api_session_token(token)
+    end
+  end
+
+  describe "delete_api_session_tokens/1" do
+    test "deletes only api_session tokens, leaves session tokens intact" do
+      user = user_fixture()
+      _web_token = Accounts.generate_user_session_token(user)
+      _api_token = Accounts.generate_api_session_token(user)
+
+      assert Repo.get_by(UserToken, user_id: user.id, context: "session")
+      assert Repo.get_by(UserToken, user_id: user.id, context: "api_session")
+
+      {deleted_count, nil} = Accounts.delete_api_session_tokens(user)
+      assert deleted_count == 1
+
+      assert Repo.get_by(UserToken, user_id: user.id, context: "session")
+      refute Repo.get_by(UserToken, user_id: user.id, context: "api_session")
+    end
+  end
+
   describe "deliver_user_confirmation_instructions/2" do
     setup do
       %{user: user_fixture()}
@@ -630,6 +697,36 @@ defmodule GtfsPlanner.AccountsTest do
       user = user_fixture()
       memberships = Accounts.list_user_org_memberships(user.id)
       assert memberships == []
+    end
+
+    test "excludes deactivated memberships" do
+      user = user_fixture()
+      org1 = organization_fixture()
+      org2 = organization_fixture()
+
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: org1.id,
+          roles: ["pathways_studio_admin"]
+        })
+
+      {:ok, deactivated} =
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: org2.id,
+          roles: ["pathways_studio_editor"]
+        })
+
+      deactivated
+      |> Ecto.Changeset.change(%{
+        deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      })
+      |> Repo.update!()
+
+      memberships = Accounts.list_user_org_memberships(user.id)
+      assert length(memberships) == 1
+      assert hd(memberships).organization_id == org1.id
     end
   end
 
