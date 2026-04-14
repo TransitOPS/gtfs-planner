@@ -175,7 +175,7 @@ defmodule GtfsPlannerWeb.Router do
 
     get "/versions", VersionController, :index
     get "/versions/:version_id/stations", StationController, :index
-    get "/versions/:version_id/stations/:id/bundle", StationController, :bundle
+    get "/versions/:version_id/stations/:station_id/bundle", StationController, :bundle
     post "/versions/:version_id/stations/:station_id/sync", SyncController, :create
   end
 

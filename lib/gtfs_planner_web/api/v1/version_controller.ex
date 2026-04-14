@@ -14,7 +14,7 @@ defmodule GtfsPlannerWeb.Api.V1.VersionController do
           %{
             id: v.id,
             name: v.name,
-            created_at: v.inserted_at
+            created_at: DateTime.to_iso8601(v.inserted_at)
           }
         end)
     })

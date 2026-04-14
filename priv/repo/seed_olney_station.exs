@@ -10,8 +10,7 @@
 # GTFS Version: GTFS Bus (faef3382-c3e2-46e0-b75e-1f23731dd05c)
 
 alias GtfsPlanner.{Repo, Gtfs, Versions, Organizations}
-alias GtfsPlanner.Gtfs.{Stop, Level, Pathway}
-alias GtfsPlanner.Versions.GtfsVersion
+alias GtfsPlanner.Gtfs.{Level, Pathway}
 
 # ── Configuration ──────────────────────────────────────────
 
@@ -37,7 +36,7 @@ mode_map = %{
 # ── Helpers ────────────────────────────────────────────────
 
 defmodule SeedParser do
-  @doc "Parse a TSV file with backslash-escaped tabs from chrome-devtools-axi"
+  @doc "Parse a TSV file where tabs, newlines, and quotes are backslash-escaped."
   def parse_tsv(path) do
     path
     |> File.read!()

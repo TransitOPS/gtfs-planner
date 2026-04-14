@@ -8,79 +8,77 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
   def index(conn, %{"version_id" => version_id}) do
     org_id = conn.assigns[:current_organization_id]
 
-    # Verify version belongs to org
-    case Versions.get_gtfs_version(version_id) do
+    with {:ok, _} <- Ecto.UUID.cast(version_id),
+         %{} = version <- Versions.get_gtfs_version(version_id),
+         true <- version.organization_id == org_id do
+      stations = Gtfs.list_stations(org_id, version_id)
+
+      data =
+        Enum.map(stations, fn station ->
+          child_stops = Gtfs.list_child_stops_for_parent(org_id, version_id, station.id)
+          levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
+          pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
+
+          %{
+            id: station.id,
+            stop_id: station.stop_id,
+            stop_name: station.stop_name,
+            child_stop_count: length(child_stops),
+            pathway_count: length(pathways),
+            level_count: length(levels)
+          }
+        end)
+
+      json(conn, %{data: data})
+    else
+      :error ->
+        conn |> put_status(400) |> json(%{error: %{code: "bad_request", message: "Invalid version ID."}})
+
       nil ->
         conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Version not found."}})
 
-      version ->
-        if version.organization_id != org_id do
-          conn |> put_status(403) |> json(%{error: %{code: "forbidden", message: "Access denied."}})
-        else
-          stations = Gtfs.list_stations(org_id, version_id)
-
-          data =
-            Enum.map(stations, fn station ->
-              child_stops = Gtfs.list_child_stops_for_parent(org_id, version_id, station.id)
-              levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
-              pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
-
-              %{
-                id: station.id,
-                stop_id: station.stop_id,
-                stop_name: station.stop_name,
-                child_stop_count: length(child_stops),
-                pathway_count: length(pathways),
-                level_count: length(levels)
-              }
-            end)
-
-          json(conn, %{data: data})
-        end
+      false ->
+        conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Version not found."}})
     end
   end
 
-  @doc "GET /api/v1/versions/:version_id/stations/:id/bundle — full station data bundle."
-  def bundle(conn, %{"version_id" => version_id, "id" => station_id}) do
+  @doc "GET /api/v1/versions/:version_id/stations/:station_id/bundle — full station data bundle."
+  def bundle(conn, %{"version_id" => version_id, "station_id" => station_id}) do
     org_id = conn.assigns[:current_organization_id]
 
-    # Verify version belongs to org
-    case Versions.get_gtfs_version(version_id) do
+    with {:ok, _} <- Ecto.UUID.cast(version_id),
+         {:ok, _} <- Ecto.UUID.cast(station_id),
+         %{} = version <- Versions.get_gtfs_version(version_id),
+         true <- version.organization_id == org_id,
+         %{} = station <- Gtfs.get_stop(station_id),
+         true <- station.organization_id == org_id do
+      child_stops = Gtfs.list_child_stops_for_parent(org_id, version_id, station.id)
+      levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
+      pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
+
+      json(conn, %{
+        data: %{
+          station: %{
+            id: station.id,
+            stop_id: station.stop_id,
+            stop_name: station.stop_name
+          },
+          levels: Enum.map(levels, &serialize_level/1),
+          stops: Enum.map(child_stops, &serialize_stop/1),
+          pathways: Enum.map(pathways, &serialize_pathway/1),
+          diagrams: [],
+          downloaded_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        }
+      })
+    else
+      :error ->
+        conn |> put_status(400) |> json(%{error: %{code: "bad_request", message: "Invalid ID format."}})
+
       nil ->
-        conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Version not found."}})
+        conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Not found."}})
 
-      version ->
-        if version.organization_id != org_id do
-          conn |> put_status(403) |> json(%{error: %{code: "forbidden", message: "Access denied."}})
-        else
-          case Gtfs.get_stop(station_id) do
-            nil ->
-              conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Station not found."}})
-
-            station when station.organization_id != org_id ->
-              conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Station not found."}})
-
-            station ->
-              child_stops = Gtfs.list_child_stops_for_parent(org_id, version_id, station.id)
-              levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
-              pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
-
-              json(conn, %{
-                data: %{
-                  station: %{
-                    id: station.id,
-                    stop_id: station.stop_id,
-                    stop_name: station.stop_name
-                  },
-                  levels: Enum.map(levels, &serialize_level/1),
-                  stops: Enum.map(child_stops, &serialize_stop/1),
-                  pathways: Enum.map(pathways, &serialize_pathway/1),
-                  diagrams: [],
-                  downloaded_at: DateTime.utc_now()
-                }
-              })
-          end
-        end
+      false ->
+        conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Not found."}})
     end
   end
 

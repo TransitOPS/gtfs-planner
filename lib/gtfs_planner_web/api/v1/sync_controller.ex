@@ -12,34 +12,40 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
 
     results =
       Enum.reduce(pathway_updates, %{synced: 0, errors: []}, fn update, acc ->
-        pathway_id = update["id"]
+        raw_id = update["id"]
 
-        case Repo.get_by(Pathway, id: pathway_id, organization_id: org_id) do
-          nil ->
-            %{acc | errors: [%{id: pathway_id, code: "not_found", message: "Pathway not found."} | acc.errors]}
+        case Ecto.UUID.cast(raw_id) do
+          {:ok, pathway_id} ->
+            case Repo.get_by(Pathway, id: pathway_id, organization_id: org_id) do
+              nil ->
+                %{acc | errors: [%{id: raw_id, code: "not_found", message: "Pathway not found."} | acc.errors]}
 
-          pathway ->
-            attrs =
-              update
-              |> Map.take(Enum.map(@editable_fields, &Atom.to_string/1))
-              |> Map.new(fn {k, v} -> {String.to_existing_atom(k), v} end)
+              pathway ->
+                attrs =
+                  update
+                  |> Map.take(Enum.map(@editable_fields, &Atom.to_string/1))
+                  |> Map.new(fn {k, v} -> {String.to_existing_atom(k), v} end)
 
-            changeset = Pathway.changeset(pathway, attrs)
+                changeset = Pathway.changeset(pathway, attrs)
 
-            case Repo.update(changeset) do
-              {:ok, _} ->
-                %{acc | synced: acc.synced + 1}
+                case Repo.update(changeset) do
+                  {:ok, _} ->
+                    %{acc | synced: acc.synced + 1}
 
-              {:error, _changeset} ->
-                %{acc | errors: [%{id: pathway_id, code: "validation_error", message: "Failed to update pathway."} | acc.errors]}
+                  {:error, _changeset} ->
+                    %{acc | errors: [%{id: raw_id, code: "validation_error", message: "Failed to update pathway."} | acc.errors]}
+                end
             end
+
+          :error ->
+            %{acc | errors: [%{id: raw_id, code: "invalid_id", message: "Pathway id must be a valid UUID."} | acc.errors]}
         end
       end)
 
     response = %{
       data: %{
         synced_count: results.synced,
-        synced_at: DateTime.utc_now()
+        synced_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
       }
     }
 
