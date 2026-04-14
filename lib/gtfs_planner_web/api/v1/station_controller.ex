@@ -51,7 +51,9 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
          %{} = version <- Versions.get_gtfs_version(version_id),
          true <- version.organization_id == org_id,
          %{} = station <- Gtfs.get_stop(station_id),
-         true <- station.organization_id == org_id do
+         true <- station.organization_id == org_id,
+         true <- station.gtfs_version_id == version_id,
+         true <- is_nil(station.parent_station) do
       child_stops = Gtfs.list_child_stops_for_parent(org_id, version_id, station.id)
       levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
       pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
