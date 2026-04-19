@@ -4,7 +4,7 @@ resource "aws_s3_bucket" "default" {
     prevent_destroy = true
   }
   # checkov:skip=CKV_AWS_18:TODO skipping logging for now
-  # checkov:skip=CKV_AWS_144:don't nee cross-region replication 
+  # checkov:skip=CKV_AWS_144:don't nee cross-region replication
   # checkov:skip=CKV2_AWS_62:don't need notifications
 }
 
@@ -36,20 +36,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "default" {
     filter {}
     abort_incomplete_multipart_upload {
       days_after_initiation = 1
-    }
-  }
-  rule {
-    id     = "expire-old-versions"
-    status = "Enabled"
-    filter {
-      prefix = "infra/"
-    }
-    expiration {
-      days = 30
-    }
-
-    noncurrent_version_expiration {
-      noncurrent_days = 30
     }
   }
 }
