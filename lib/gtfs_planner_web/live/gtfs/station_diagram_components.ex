@@ -1232,23 +1232,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               stroke="transparent"
               stroke-width="0"
               data-stop-hit-target="true"
-              data-location-type={stop.location_type}
-              data-center-x={cx}
-              data-center-y={cy}
-              class="cursor-pointer"
-              phx-click="stop_clicked"
-              phx-value-id={stop.id}
-            />
-            <rect
-              x={cx - 0.9}
-              y={cy - 0.9}
-              width="1.8"
-              height="1.8"
-              fill="transparent"
-              stroke="transparent"
-              stroke-width="0"
-              data-stop-tooltip-hit="true"
               data-tooltip-trigger="true"
+              data-location-type={stop.location_type}
               data-center-x={cx}
               data-center-y={cy}
               class="cursor-pointer"

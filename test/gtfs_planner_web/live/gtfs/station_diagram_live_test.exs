@@ -911,6 +911,42 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#diagram-legend-panel.hidden")
     end
 
+    test "stop renders a single hit-target rect that also triggers the tooltip", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_UNIFIED_HIT",
+          stop_name: "Child Unified Hit",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 22.0, "y" => 32.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # Single hit rect carries both click wiring and tooltip trigger.
+      assert has_element?(
+               view,
+               "#child_stops-#{child_stop.id} rect[data-stop-hit-target][data-tooltip-trigger][phx-click='stop_clicked']"
+             )
+
+      # The separate oversized tooltip-hit rect is gone.
+      refute has_element?(view, "[data-stop-tooltip-hit]")
+    end
+
     test "view mode stop dot click opens edit drawer", %{
       conn: conn,
       user: user,

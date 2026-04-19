@@ -269,7 +269,7 @@ const DiagramCanvasHook = {
       return;
     }
 
-    const hitTarget = e.target.closest("[data-stop-hit-target], [data-stop-tooltip-hit]");
+    const hitTarget = e.target.closest("[data-stop-hit-target]");
     if (!hitTarget || !this.overlay.contains(hitTarget)) {
       this.debugDrag("pointer down ignored: not on stop hit target", { type: e.type });
       return;
@@ -669,7 +669,7 @@ const DiagramCanvasHook = {
     this.viewBox = { x: 0, y: 0, w: 100, h: 100 };
     this.scale = 1;
     this.minScale = 0.5;
-    this.maxScale = 5;
+    this.maxScale = 10;
     this.isPanning = false;
     this.panStart = { x: 0, y: 0 };
     this._canvasKey = svg.getAttribute("data-canvas-key");
@@ -1160,21 +1160,6 @@ const DiagramCanvasHook = {
       hitTarget.setAttribute("y", `${clampedTop}`);
       hitTarget.setAttribute("width", `${clampedRight - clampedLeft}`);
       hitTarget.setAttribute("height", `${clampedBottom - clampedTop}`);
-    });
-
-    overlay.querySelectorAll("[data-stop-tooltip-hit]").forEach((hitTarget) => {
-      const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
-      const cy = parseFloat(hitTarget.getAttribute("data-center-y"));
-
-      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
-        return;
-      }
-
-      const size = 1.8 / scale;
-      hitTarget.setAttribute("x", `${cx - size / 2}`);
-      hitTarget.setAttribute("y", `${cy - size / 2}`);
-      hitTarget.setAttribute("width", `${size}`);
-      hitTarget.setAttribute("height", `${size}`);
     });
 
     overlay.querySelectorAll("[data-stop-marker]").forEach((marker) => {
