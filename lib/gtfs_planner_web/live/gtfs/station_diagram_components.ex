@@ -1637,6 +1637,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     ~H"""
     <path
+      class={[
+        "pointer-events-none",
+        @editable? && "transition-colors group-hover:fill-[#FF4500]"
+      ]}
       d={@d}
       fill={@fill}
       data-tooltip-trigger={if @editable?, do: "true"}
@@ -1672,6 +1676,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     ~H"""
     <path
+      class={[
+        "pointer-events-none",
+        @editable? && "transition-colors group-hover:fill-[#FF4500]"
+      ]}
       d={@d}
       fill={@fill}
       data-tooltip-trigger={if @editable?, do: "true"}
