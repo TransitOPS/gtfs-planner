@@ -1643,7 +1643,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       ]}
       d={@d}
       fill={@fill}
-      data-tooltip-trigger={if @editable?, do: "true"}
       data-cross-level-badge-stairs="true"
       data-center-x={@center_x}
       data-center-y={@center_y}
@@ -1682,7 +1681,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       ]}
       d={@d}
       fill={@fill}
-      data-tooltip-trigger={if @editable?, do: "true"}
       data-cross-level-badge-elevator="true"
       data-center-x={@center_x}
       data-center-y={@center_y}
