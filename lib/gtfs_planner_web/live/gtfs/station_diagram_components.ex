@@ -1561,7 +1561,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <% mode_label = Pathway.mode_label(badge.pathway_mode) %>
         <g
           id={"cross-level-badge-#{badge.pathway_id}"}
-          class="pointer-events-auto cursor-pointer"
+          class="group pointer-events-auto cursor-pointer"
           data-cross-level-pathway-badge="true"
           data-pathway-id={badge.pathway_id}
           data-tooltip={if @editable?, do: cross_level_badge_tooltip(mode_label)}
@@ -1572,17 +1572,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           phx-value-id={if @editable?, do: badge.pathway_id}
         >
           <rect
-            x={cx + badge_offset_x - 0.65}
-            y={cy - 0.65}
-            width="1.3"
-            height="1.3"
-            fill="transparent"
-            stroke="transparent"
-            stroke-width="0"
-            data-cross-level-badge-hit-target="true"
-          />
-          <rect
-            :if={@editable?}
             x={cx + badge_offset_x - 0.45}
             y={cy - 0.45}
             width="0.9"
@@ -1590,7 +1579,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             fill="transparent"
             stroke="transparent"
             stroke-width="0"
-            data-cross-level-badge-tooltip-hit="true"
+            data-cross-level-badge-hit="true"
+            data-base-size="0.9"
             data-tooltip-trigger="true"
             data-center-x={cx}
             data-center-y={cy}
@@ -1647,9 +1637,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     ~H"""
     <path
+      class={[
+        "pointer-events-none",
+        @editable? && "transition-colors group-hover:fill-[#FF4500]"
+      ]}
       d={@d}
       fill={@fill}
-      data-tooltip-trigger={if @editable?, do: "true"}
       data-cross-level-badge-stairs="true"
       data-center-x={@center_x}
       data-center-y={@center_y}
@@ -1682,9 +1675,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     ~H"""
     <path
+      class={[
+        "pointer-events-none",
+        @editable? && "transition-colors group-hover:fill-[#FF4500]"
+      ]}
       d={@d}
       fill={@fill}
-      data-tooltip-trigger={if @editable?, do: "true"}
       data-cross-level-badge-elevator="true"
       data-center-x={@center_x}
       data-center-y={@center_y}

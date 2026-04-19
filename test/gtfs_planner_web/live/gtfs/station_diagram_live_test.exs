@@ -3687,7 +3687,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
              )
     end
 
-    test "connect mode cross-level badges omit edit attributes and tooltip trigger targets", %{
+    test "connect mode cross-level badges render hit rect without edit affordances", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -3759,14 +3759,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[data-tooltip]")
       refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[tabindex='0']")
 
-      refute has_element?(
+      # Unified hit rect is still rendered in connect mode — only the edit
+      # affordances above are gated on view mode.
+      assert has_element?(
                view,
-               "#cross-level-badge-#{cross_level_pathway.id} [data-cross-level-badge-tooltip-hit]"
+               "#cross-level-badge-#{cross_level_pathway.id} rect[data-cross-level-badge-hit='true'][data-base-size='0.9']"
              )
 
+      # Icon paths must not carry the edit-mode hover color.
       refute has_element?(
                view,
-               "#cross-level-badge-#{cross_level_pathway.id} [data-tooltip-trigger='true']"
+               ~s|#cross-level-badge-#{cross_level_pathway.id} path.group-hover\\:fill-\\[\\#FF4500\\]|
              )
     end
 
@@ -3867,12 +3870,152 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#cross-level-badge-#{cross_level_pathway.id} [data-cross-level-badge-tooltip-hit]"
+               "#cross-level-badge-#{cross_level_pathway.id} rect[data-cross-level-badge-hit='true'][data-base-size='0.9']"
              )
 
       assert has_element?(
                view,
                "#cross-level-badge-#{cross_level_pathway.id} [data-tooltip-trigger='true']"
+             )
+    end
+
+    test "cross-level badge renders a unified hit rect with group hover classes in view mode", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      %{
+        badge_pathway: badge_pathway,
+        line_pathway: _line_pathway
+      } = setup_badge_and_line_fixtures(organization, gtfs_version, station, level)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # AC #1: badge <g> has exactly one unified hit rect
+      assert has_element?(
+               view,
+               "g#cross-level-badge-#{badge_pathway.id} rect[data-cross-level-badge-hit='true'][data-base-size='0.9']"
+             )
+
+      # AC #2/#3: legacy hit attributes are gone everywhere
+      refute has_element?(view, "[data-cross-level-badge-hit-target]")
+      refute has_element?(view, "[data-cross-level-badge-tooltip-hit]")
+
+      # AC #4: badge <g> carries the `group` class so descendants can resolve group-hover
+      assert has_element?(view, "g#cross-level-badge-#{badge_pathway.id}.group")
+
+      # AC #5: icon path carries pointer-events-none and the #FF4500 group-hover fill
+      assert has_element?(
+               view,
+               ~s|g#cross-level-badge-#{badge_pathway.id} path.group-hover\\:fill-\\[\\#FF4500\\].pointer-events-none|
+             )
+    end
+
+    test "clicking the cross-level badge <g> opens the pathway drawer for the badge's pathway",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      %{
+        badge_pathway: badge_pathway,
+        line_pathway: line_pathway
+      } = setup_badge_and_line_fixtures(organization, gtfs_version, station, level)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("g#cross-level-badge-#{badge_pathway.id}")
+      |> render_click()
+
+      # Drawer opens for the badge's pathway (AC #7)
+      assert has_element?(
+               view,
+               "#pathway-form input[name='pathway_id'][value='#{badge_pathway.pathway_id}']"
+             )
+
+      # And not for the line pathway
+      refute has_element?(
+               view,
+               "#pathway-form input[name='pathway_id'][value='#{line_pathway.pathway_id}']"
+             )
+    end
+
+    test "clicking the same-level pathway <g> opens the pathway drawer for the line pathway",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      %{
+        badge_pathway: badge_pathway,
+        line_pathway: line_pathway
+      } = setup_badge_and_line_fixtures(organization, gtfs_version, station, level)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#pathways-#{line_pathway.id}")
+      |> render_click()
+
+      # Drawer opens for the line pathway (AC #8)
+      assert has_element?(
+               view,
+               "#pathway-form input[name='pathway_id'][value='#{line_pathway.pathway_id}']"
+             )
+
+      # And not for the badge pathway
+      refute has_element?(
+               view,
+               "#pathway-form input[name='pathway_id'][value='#{badge_pathway.pathway_id}']"
+             )
+    end
+
+    test "add mode disables badge click and removes hover classes (mode gating)", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      %{
+        badge_pathway: badge_pathway,
+        line_pathway: _line_pathway
+      } = setup_badge_and_line_fixtures(organization, gtfs_version, station, level)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      # Badge is still rendered, but click affordance is gone (AC #12)
+      assert has_element?(view, "g#cross-level-badge-#{badge_pathway.id}")
+      refute has_element?(view, "g#cross-level-badge-#{badge_pathway.id}[phx-click]")
+
+      refute has_element?(
+               view,
+               ~s|g#cross-level-badge-#{badge_pathway.id} path.group-hover\\:fill-\\[\\#FF4500\\]|
              )
     end
 
@@ -6895,6 +7038,92 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert File.exists?(stored_path)
       refute has_element?(view, "span.text-error", "Invalid diagram upload path")
     end
+  end
+
+  defp setup_badge_and_line_fixtures(organization, gtfs_version, station, level) do
+    level_2 =
+      level_fixture(organization.id, gtfs_version.id, %{
+        level_id: "CLICK_PRECEDENCE_L2",
+        level_name: "Click Precedence Level 2",
+        level_index: 1.0
+      })
+
+    {:ok, _stop_level_2} =
+      Gtfs.create_stop_level(%{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        stop_id: station.id,
+        level_id: level_2.id,
+        diagram_filename: "click-precedence-level-2.png"
+      })
+
+    # The badged stop on the active level (L1).
+    badged_stop =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "CLICK_PRECEDENCE_BADGED",
+        stop_name: "Click Precedence Badged",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 20.0, "y" => 20.0}
+      })
+
+    # Off-level stop so the pathway renders as a cross-level badge.
+    level_2_stop =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "CLICK_PRECEDENCE_L2_STOP",
+        stop_name: "Click Precedence L2",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level_2.level_id,
+        diagram_coordinate: %{"x" => 60.0, "y" => 60.0}
+      })
+
+    # Two additional stops on the active level connected by a same-level pathway
+    # that runs *near* the badged stop. The badge hit rect spans x ∈ [20.9, 21.8]
+    # and y ∈ [19.55, 20.45]. The line at y = 18.5 passes underneath that rect
+    # without overlapping it — this is the reported adjacency scenario. Under
+    # the old 1.3 × 1.3 rect (y ∈ [19.35, 20.65]) the line's stroke-width-2 hit
+    # band would have grazed the badge; under the new 0.9 × 0.9 rect it does not.
+    line_from =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "CLICK_PRECEDENCE_LINE_FROM",
+        stop_name: "Click Precedence Line From",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 15.0, "y" => 18.5}
+      })
+
+    line_to =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "CLICK_PRECEDENCE_LINE_TO",
+        stop_name: "Click Precedence Line To",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 30.0, "y" => 18.5}
+      })
+
+    badge_pathway =
+      pathway_fixture(
+        organization.id,
+        gtfs_version.id,
+        badged_stop.stop_id,
+        level_2_stop.stop_id,
+        %{pathway_mode: 5, is_bidirectional: true}
+      )
+
+    line_pathway =
+      pathway_fixture(
+        organization.id,
+        gtfs_version.id,
+        line_from.stop_id,
+        line_to.stop_id,
+        %{pathway_mode: 1, is_bidirectional: true}
+      )
+
+    %{badge_pathway: badge_pathway, line_pathway: line_pathway}
   end
 
   defp upload_diagram(view, filename, content, form_selector \\ "#diagram-upload-form-sub-nav") do
