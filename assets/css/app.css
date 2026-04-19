@@ -150,15 +150,14 @@ body {
 }
 
 #diagram-page #main-content {
-  transition: max-height 300ms ease-out, padding 300ms ease-out;
-  max-height: 5000px;
-  overflow: hidden;
+  transition: padding 300ms ease-out;
 }
 
 #diagram-page[data-immersive="true"] #main-content {
   max-height: 0;
   padding: 0;
   margin: 0;
+  overflow: hidden;
 }
 
 body:has(#diagram-page[data-immersive="true"]) {
