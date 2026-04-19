@@ -82,6 +82,14 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-center-y="20"
               data-badge-offset-x="1.1"
             ></path>
+            <rect
+              id="cross-level-stairs-hit"
+              data-cross-level-badge-hit="true"
+              data-base-size="0.9"
+              data-center-x="10"
+              data-center-y="20"
+              data-badge-offset-x="1.1"
+            ></rect>
             <path
               id="cross-level-elevator"
               data-cross-level-badge-elevator="true"
@@ -89,6 +97,14 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-center-y="20"
               data-badge-offset-x="1.1"
             ></path>
+            <rect
+              id="cross-level-elevator-hit"
+              data-cross-level-badge-hit="true"
+              data-base-size="0.9"
+              data-center-x="10"
+              data-center-y="20"
+              data-badge-offset-x="1.1"
+            ></rect>
           </g>
           <g id="pathways-svg">
             <g
@@ -593,6 +609,76 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(
       document.querySelector("#ruler-endpoint-a").getAttribute("stroke-width"),
     ).toBe("0.1015625");
+  });
+
+  it("rescales cross-level badge hit rects using data-base-size at iconScale 2", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    hook.scale = 2;
+    hook.scaleOverlayElements();
+
+    const stairsHit = document.querySelector("#cross-level-stairs-hit");
+    const elevatorHit = document.querySelector("#cross-level-elevator-hit");
+
+    expect(stairsHit.getAttribute("width")).toBe("0.45");
+    expect(stairsHit.getAttribute("height")).toBe("0.45");
+    expect(elevatorHit.getAttribute("width")).toBe("0.45");
+    expect(elevatorHit.getAttribute("height")).toBe("0.45");
+  });
+
+  it("rescales cross-level badge hit rects to base size at iconScale 1", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    hook.scale = 1;
+    hook.scaleOverlayElements();
+
+    const stairsHit = document.querySelector("#cross-level-stairs-hit");
+    const elevatorHit = document.querySelector("#cross-level-elevator-hit");
+
+    expect(stairsHit.getAttribute("width")).toBe("0.9");
+    expect(stairsHit.getAttribute("height")).toBe("0.9");
+    expect(elevatorHit.getAttribute("width")).toBe("0.9");
+    expect(elevatorHit.getAttribute("height")).toBe("0.9");
+  });
+
+  it("defaults cross-level badge hit rect base size to 0.9 when data-base-size is missing", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    const stairsHit = document.querySelector("#cross-level-stairs-hit");
+    stairsHit.removeAttribute("data-base-size");
+
+    hook.scale = 1;
+    hook.scaleOverlayElements();
+
+    expect(stairsHit.getAttribute("width")).toBe("0.9");
+    expect(stairsHit.getAttribute("height")).toBe("0.9");
+  });
+
+  it("leaves cross-level badge hit rect unchanged when data-center-x is not a number", () => {
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    const stairsHit = document.querySelector("#cross-level-stairs-hit");
+    stairsHit.setAttribute("data-center-x", "not-a-number");
+    stairsHit.setAttribute("width", "1.23");
+    stairsHit.setAttribute("height", "4.56");
+
+    hook.scale = 2;
+
+    expect(() => hook.scaleOverlayElements()).not.toThrow();
+    expect(stairsHit.getAttribute("width")).toBe("1.23");
+    expect(stairsHit.getAttribute("height")).toBe("4.56");
   });
 
   it("shows and hides tooltip on hover for stop and pathway targets", () => {
