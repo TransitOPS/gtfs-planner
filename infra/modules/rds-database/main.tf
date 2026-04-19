@@ -2,53 +2,57 @@ locals {
   master_username = "root"
 }
 
+data "aws_rds_engine_version" "this" {
+  engine       = "aurora-postgresql"
+  version      = var.postgres_version
+  default_only = true
+  latest       = true
+}
+
 module "rds" {
-  source = "git::https://github.com/terraform-aws-modules/terraform-aws-rds?ref=578c95b19abf30b9b1068dd54025ac8e6df3212f"
+  source = "git::https://github.com/terraform-aws-modules/terraform-aws-rds-aurora?ref=2c3946c8191278ad974bbb077da5e03986e24f4d"
 
-  identifier                      = var.name
-  parameter_group_use_name_prefix = false
-  option_group_use_name_prefix    = false
+  name = var.name
 
-  engine                   = "postgres"
-  engine_version           = var.postgres_version
+  engine                   = data.aws_rds_engine_version.this.engine
+  engine_version           = data.aws_rds_engine_version.this.version
   engine_lifecycle_support = "open-source-rds-extended-support-disabled"
 
-  family               = "postgres${var.postgres_version}"
-  major_engine_version = var.postgres_version
+  database_name   = var.database_name
+  master_username = local.master_username
 
-  db_name  = var.name
-  username = local.master_username
-
+  vpc_id               = data.aws_db_subnet_group.this.vpc_id
   db_subnet_group_name = var.subnet_group_name
-  multi_az             = var.multi_az
 
-  instance_class = var.instance_class
-
-  allocated_storage = var.allocated_storage
-  storage_type      = var.storage_type
-  iops              = var.iops
+  storage_encrypted       = true
+  backup_retention_period = 30
 
   iam_database_authentication_enabled = true
-  vpc_security_group_ids              = [aws_security_group.this.id]
+  security_group_name                 = "database-${var.name}-sg"
+  security_group_ingress_rules = {
+    from_external = {
+      referenced_security_group_id = aws_security_group.external.id
+    }
+  }
 
   create_cloudwatch_log_group            = true
   cloudwatch_log_group_retention_in_days = 30
   enabled_cloudwatch_logs_exports        = ["iam-db-auth-error"]
 
+  cluster_instance_class = "db.serverless"
+  serverlessv2_scaling_configuration = {
+    min_capacity             = var.min_capacity
+    max_capacity             = var.max_capacity
+    seconds_until_auto_pause = 300
+  }
+
+  instances = {
+    writer = {}
+  }
+
   apply_immediately   = var.is_temporary
   skip_final_snapshot = var.is_temporary
   deletion_protection = !var.is_temporary
-}
-
-resource "aws_security_group" "this" {
-  name        = "database-${var.name}-sg"
-  description = "Security group containing the RDS database for ${var.name}"
-  vpc_id      = data.aws_db_subnet_group.this.vpc_id
-
-  tags = {
-    Name = "database-${var.name}-sg"
-  }
-  # checkov:skip=CKV2_AWS_5:it's connected to the database, but through a module
 }
 
 resource "aws_security_group" "external" {
@@ -64,17 +68,6 @@ resource "aws_security_group" "external" {
     create_before_destroy = true
   }
 }
-
-resource "aws_vpc_security_group_ingress_rule" "from_external" {
-  security_group_id = aws_security_group.this.id
-  description       = "Provide incoming access to the RDS database"
-
-  referenced_security_group_id = aws_security_group.external.id
-  ip_protocol                  = "tcp"
-  from_port                    = module.rds.db_instance_port
-  to_port                      = module.rds.db_instance_port
-}
-
 data "aws_db_subnet_group" "this" {
   name = var.subnet_group_name
 }

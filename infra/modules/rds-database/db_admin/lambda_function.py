@@ -53,7 +53,8 @@ def lambda_handler(event, context):
             port=db_port,
             database=db_name,
             ssl_context=True,
-            timeout=2,
+            # Aurora Serverless can take up to 15s to scale up from 0
+            timeout=20,
         )
 
         [db_version] = con.run("SELECT version();")
