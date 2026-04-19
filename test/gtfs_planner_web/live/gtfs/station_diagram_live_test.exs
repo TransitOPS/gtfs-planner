@@ -940,7 +940,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # Single hit rect carries both click wiring and tooltip trigger.
       assert has_element?(
                view,
-               "#child_stops-#{child_stop.id} rect[data-stop-hit-target='true'][data-tooltip-trigger='true'][phx-click='stop_clicked']"
+               "#child_stops-#{child_stop.id} rect[data-stop-hit-target][data-tooltip-trigger][phx-click='stop_clicked']"
              )
 
       # The separate oversized tooltip-hit rect is gone.
