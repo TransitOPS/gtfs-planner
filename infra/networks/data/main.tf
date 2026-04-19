@@ -1,5 +1,6 @@
 locals {
   network_config = module.config.networks[var.name]
+  account_config = module.config.accounts[local.network_config.account_name]
   tags           = merge(module.config.default_tags, { Network = var.name })
 }
 
@@ -70,16 +71,16 @@ data "aws_subnets" "public" {
 }
 
 data "aws_route53_zone" "this" {
-  name = "${local.network_config.hosted_zone}."
-  tags = local.tags
+  name = "${local.account_config.hosted_zone}."
+  tags = module.config.default_tags
 }
 
 data "aws_acm_certificate" "this" {
-  for_each = local.network_config.certificates
+  for_each = local.account_config.certificates
 
   domain   = each.key
   statuses = ["ISSUED"]
   types    = ["AMAZON_ISSUED"]
-  tags     = local.tags
+  tags     = module.config.default_tags
 }
 
