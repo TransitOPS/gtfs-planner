@@ -3687,7 +3687,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
              )
     end
 
-    test "connect mode cross-level badges omit edit attributes and tooltip trigger targets", %{
+    test "connect mode cross-level badges render hit rect without edit affordances", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -3759,14 +3759,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[data-tooltip]")
       refute has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[tabindex='0']")
 
-      refute has_element?(
+      # Unified hit rect is still rendered in connect mode — only the edit
+      # affordances above are gated on view mode.
+      assert has_element?(
                view,
-               "#cross-level-badge-#{cross_level_pathway.id} [data-cross-level-badge-tooltip-hit]"
+               "#cross-level-badge-#{cross_level_pathway.id} rect[data-cross-level-badge-hit='true'][data-base-size='0.9']"
              )
 
+      # Icon paths must not carry the edit-mode hover color.
       refute has_element?(
                view,
-               "#cross-level-badge-#{cross_level_pathway.id} [data-cross-level-badge-hit-target]"
+               ~s|#cross-level-badge-#{cross_level_pathway.id} path.group-hover\\:fill-\\[\\#FF4500\\]|
              )
     end
 
@@ -7076,7 +7079,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         diagram_coordinate: %{"x" => 60.0, "y" => 60.0}
       })
 
-    # Two additional stops on the active level connected by a same-level pathway.
+    # Two additional stops on the active level connected by a same-level pathway
+    # that runs *near* the badged stop. The badge hit rect spans x ∈ [20.9, 21.8]
+    # and y ∈ [19.55, 20.45]. The line at y = 18.5 passes underneath that rect
+    # without overlapping it — this is the reported adjacency scenario. Under
+    # the old 1.3 × 1.3 rect (y ∈ [19.35, 20.65]) the line's stroke-width-2 hit
+    # band would have grazed the badge; under the new 0.9 × 0.9 rect it does not.
     line_from =
       stop_fixture(organization.id, gtfs_version.id, %{
         stop_id: "CLICK_PRECEDENCE_LINE_FROM",
@@ -7084,7 +7092,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         location_type: 0,
         parent_station: station.stop_id,
         level_id: level.level_id,
-        diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+        diagram_coordinate: %{"x" => 15.0, "y" => 18.5}
       })
 
     line_to =
@@ -7094,7 +7102,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         location_type: 0,
         parent_station: station.stop_id,
         level_id: level.level_id,
-        diagram_coordinate: %{"x" => 55.0, "y" => 40.0}
+        diagram_coordinate: %{"x" => 30.0, "y" => 18.5}
       })
 
     badge_pathway =
