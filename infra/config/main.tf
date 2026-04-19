@@ -17,10 +17,14 @@ locals {
   accounts = {
     dev = {
       registry = {
-        enable = false
+        enable = true
       }
       cluster = {
-        use_spot = true
+        use_spot = false
+      }
+      hosted_zone = "gtfs-planner.transitops.tech"
+      certificates = {
+        "gtfs-planner.transitops.tech" = {}
       }
     }
   }

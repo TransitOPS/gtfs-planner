@@ -36,14 +36,6 @@ module "vpc" {
   use_native_nat          = local.network_config.use_native_nat
 }
 
-module "domain" {
-  source = "../modules/domain"
-
-  vpc_id       = module.vpc.vpc_id
-  hosted_zone  = local.network_config.hosted_zone
-  certificates = local.network_config.certificates
-}
-
 module "config" {
   source = "../config"
 }

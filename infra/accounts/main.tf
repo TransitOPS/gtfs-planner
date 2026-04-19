@@ -5,6 +5,7 @@ locals {
   tfbackend_file         = file("${path.module}/${var.name}.s3.tfbackend")
   tfbackend              = provider::terraform::decode_tfvars(local.tfbackend_file)
   tofu_state_bucket_name = local.tfbackend["bucket"]
+  account_config         = module.config.accounts[var.name]
 }
 
 terraform {
@@ -51,7 +52,7 @@ module "cluster" {
   source = "../modules/ecs-cluster"
 
   name     = module.config.project_name
-  use_spot = try(module.config.accounts[var.name].cluster.use_spot, false)
+  use_spot = try(local.account_config.cluster.use_spot, false)
 }
 
 module "github_oidc" {
@@ -93,6 +94,13 @@ module "github_oidc" {
     "ssm:GetParameter*",
     "ssm:ListTagsForResource",
   ]
+}
+
+module "domain" {
+  source = "../modules/domain"
+
+  hosted_zone  = local.account_config.hosted_zone
+  certificates = local.account_config.certificates
 }
 
 module "config" {
