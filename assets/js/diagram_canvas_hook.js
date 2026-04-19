@@ -1342,17 +1342,18 @@ const DiagramCanvasHook = {
       );
     });
 
-    overlay.querySelectorAll("[data-cross-level-badge-tooltip-hit]").forEach((hitTarget) => {
+    overlay.querySelectorAll("[data-cross-level-badge-hit]").forEach((hitTarget) => {
       const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
       const cy = parseFloat(hitTarget.getAttribute("data-center-y"));
       const offsetX = parseFloat(hitTarget.getAttribute("data-badge-offset-x"));
+      const base = parseFloat(hitTarget.getAttribute("data-base-size") ?? "0.9");
 
-      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(offsetX)) {
+      if (![cx, cy, offsetX, base].every(Number.isFinite)) {
         return;
       }
 
       const iconCx = cx + offsetX / iconScale;
-      const size = 0.9 / iconScale;
+      const size = base / iconScale;
 
       hitTarget.setAttribute("x", `${iconCx - size / 2}`);
       hitTarget.setAttribute("y", `${cy - size / 2}`);
