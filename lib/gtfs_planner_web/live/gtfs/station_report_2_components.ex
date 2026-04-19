@@ -42,6 +42,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       id: "report2-pathway-field-completeness",
       label: "Pathway Field Completeness",
       desc: "Fill rates for optional pathway fields like traversal time, stair count, and slope."
+    },
+    %{
+      id: "report2-accessibility",
+      label: "Accessibility",
+      desc: "Wheelchair boarding and accessible pathway coverage."
     }
   ]
 
