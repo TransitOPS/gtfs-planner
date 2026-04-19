@@ -39,7 +39,7 @@ locals {
     prod = {
       account_name            = "aws"
       availability_zone_count = 2
-      enable_nat_gateway      = false #true
+      enable_nat_gateway      = true
       use_native_nat          = true
     }
   }
@@ -67,6 +67,15 @@ locals {
       domain           = "dev.gtfs-planner.transitops.tech"
       geoapify_api_key = data.env_var.geoapify_api_key.value
       is_temporary     = true
+    }
+    prod = {
+      network_name     = "prod"
+      database_name    = "prod"
+      type             = "aws"
+      geoapify_api_key = data.env_var.geoapify_api_key.value
+      certificate      = "gtfs-planner.transitops.tech"
+      domain           = "gtfs-planner.transitops.tech"
+      is_temporary     = false
     }
   }
 }

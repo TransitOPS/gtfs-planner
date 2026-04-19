@@ -14,6 +14,7 @@ module "service" {
   db_username       = module.database_data.db_username
   hosted_zone_id    = module.network_data.hosted_zone_id
   domain            = local.env_config.domain
+  geoapify_api_key  = local.env_config.geoapify_api_key
   certificate_arn   = module.network_data.certificate_arns[local.env_config.certificate]
   desired_count     = var.desired_count
   is_temporary      = try(local.env_config.is_temporary, false)

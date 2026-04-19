@@ -1,3 +1,6 @@
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
 resource "aws_ecs_service" "this" {
   name            = var.name
   cluster         = var.cluster_arn
