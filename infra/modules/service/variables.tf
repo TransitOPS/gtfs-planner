@@ -71,3 +71,7 @@ variable "is_temporary" {
   description = "Whether to treat this service as expendable"
   default     = false
 }
+variable "geoapify_api_key" {
+  type      = string
+  sensitive = true
+}

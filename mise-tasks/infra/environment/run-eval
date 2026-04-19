@@ -22,13 +22,14 @@ read -r -d "" container_overrides <<EOT
 }
 EOT
 
-set -euo pipefail
+set -xeuo pipefail
 
 environment="${usage_environment_name?}"
 source mise-tasks/infra/account-information "$environment"
 
 if [[ -z "$host" ]]; then
-  network_configuration=$(tofu -chdir=infra/environments output -var "name=$environment" -json task_network_configuration)
+  tofu -chdir=infra/environments init -input=false -reconfigure -backend-config="${environment}.s3.tfbackend" > /dev/null
+  network_configuration=$(tofu -chdir=infra/environments output -json task_network_configuration)
 
   output=$(aws ecs run-task --cluster "$project_name" --task-definition "$project_name"-"$environment" --network-configuration "$network_configuration" --capacity-provider-strategy "capacityProvider=FARGATE_SPOT,base=1" --overrides "$container_overrides" --started-by="${USER}@$(hostname)")
 

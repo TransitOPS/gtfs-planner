@@ -3,13 +3,15 @@ locals {
   container_name = "app"
   container_port = 4000
   environment = {
-    PHX_SERVER              = true
-    PHX_HOST                = var.domain
-    PORT                    = local.container_port
-    DATABASE_URL            = "ecto://${var.db_username}@${var.db_host}:${var.db_port}/${var.db_name}"
-    DATABASE_USE_IAM        = true
-    OTP_JAR_PATH            = "/opt/otp/otp.jar"
-    OTP_OSM_PATH            = "/opt/otp/data/philadelphia.osm.pbf"
+    PHX_SERVER       = true
+    PHX_HOST         = var.domain
+    PORT             = local.container_port
+    MAIL_DOMAIN      = var.domain
+    DATABASE_URL     = "ecto://${var.db_username}@${var.db_host}:${var.db_port}/${var.db_name}"
+    DATABASE_USE_IAM = true
+    OTP_JAR_PATH     = "/opt/otp/otp.jar"
+    OTP_OSM_PATH     = "/opt/otp/data/philadelphia.osm.pbf"
+    GEOAPIFY_API_KEY = var.geoapify_api_key
   }
 }
 
@@ -40,6 +42,13 @@ resource "aws_ecs_task_definition" "this" {
         { name = "SECRET_KEY_BASE", valueFrom = aws_ssm_parameter.secret_key_base.arn }
       ]
 
+      mountPoints = [
+        {
+          containerPath = "/app/lib/gtfs_planner-0.1.0/priv/static/uploads",
+          sourceVolume  = "uploads"
+        }
+      ]
+
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -54,9 +63,17 @@ resource "aws_ecs_task_definition" "this" {
         interval = 10
       }
     }
-
-
   ])
+
+  volume {
+    name = "uploads"
+
+    s3files_volume_configuration {
+      file_system_arn         = aws_s3files_file_system.uploads.arn
+      root_directory          = "/"
+      transit_encryption_port = local.efs_port
+    }
+  }
 
   runtime_platform {
     cpu_architecture        = "ARM64"
@@ -136,6 +153,29 @@ data "aws_iam_policy_document" "task" {
     # checkov:skip=CKV_AWS_109:need access to the DB credentials
     # checkov:skip=CKV_AWS_107:TODO limit access to the single DB
     # checkov:skip=CKV_AWS_111:TODO limit access to ??? for e-mail
+  }
+
+  statement {
+    actions = [
+      "s3files:ClientMount",
+      "s3files:ClientWrite"
+    ]
+    resources = [aws_s3files_file_system.uploads.arn]
+  }
+
+  statement {
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjecVersion"
+    ]
+    resources = ["${aws_s3_bucket.uploads.arn}/*"]
+  }
+
+  statement {
+    actions = [
+      "s3:ListBucket"
+    ]
+    resources = [aws_s3_bucket.uploads.arn]
   }
 }
 
