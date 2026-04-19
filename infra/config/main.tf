@@ -51,6 +51,11 @@ locals {
       host         = data.env_var.dev_ip.value
       is_temporary = true
     }
+    prod = {
+      network_name = "prod"
+      type         = "rds"
+      is_temporary = false
+    }
   }
 
   environments = {

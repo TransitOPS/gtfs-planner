@@ -4,10 +4,10 @@ module "database" {
   source = "../modules/rds-database"
 
   name              = var.name
-  database_name     = module.config.project_name
-  instance_class    = local.database_config.instance_class
+  database_name     = replace(module.config.project_name, "-", "")
+  min_capacity      = try(local.database_config.min_capacity, 0)
+  max_capacity      = try(local.database_config.max_capacity, 10)
   subnet_group_name = module.network_data.db_subnet_group_name
   private_subnets   = module.network_data.private_subnets
-  multi_az          = local.database_config.multi_az
-  is_temporary      = local.database_config.is_temporary
+  is_temporary      = try(local.database_config.is_temporary, false)
 }

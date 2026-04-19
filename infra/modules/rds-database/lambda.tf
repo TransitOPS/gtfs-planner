@@ -31,19 +31,21 @@ resource "archive_file" "db_admin" {
 }
 
 resource "aws_lambda_function" "db_admin" {
-  function_name                  = "db-admin-${var.name}"
-  role                           = aws_iam_role.db_admin.arn
-  architectures                  = ["arm64"]
-  runtime                        = "python${local.python_version}"
-  handler                        = "lambda_function.lambda_handler"
-  filename                       = archive_file.db_admin.output_path
-  source_code_hash               = archive_file.db_admin.output_base64sha256
-  reserved_concurrent_executions = 1
-  timeout                        = 3
+  function_name    = "db-admin-${var.name}"
+  role             = aws_iam_role.db_admin.arn
+  architectures    = ["arm64"]
+  runtime          = "python${local.python_version}"
+  handler          = "lambda_function.lambda_handler"
+  filename         = archive_file.db_admin.output_path
+  source_code_hash = archive_file.db_admin.output_base64sha256
+
+  # the database can scale to 0, but then it can take up to 15s to restore connections
+  timeout = 30
 
   # checkov:skip=CKV_AWS_116:don't need a dead letter queue since we only execute this sync
   # checkov:skip=CKV_AWS_272:not worrying about code signing
   # checkov:skip=CKV_AWS_173:environment variables are not sensitive
+  # checkov:skip=CKV_AWS_115:not running enough to worry about concurrency
 
   vpc_config {
     subnet_ids         = var.private_subnets
@@ -56,10 +58,10 @@ resource "aws_lambda_function" "db_admin" {
 
   environment {
     variables = {
-      DB_HOST         = module.rds.db_instance_address,
-      DB_PORT         = module.rds.db_instance_port,
-      DB_NAME         = module.rds.db_instance_name,
-      DB_PASSWORD_ARN = module.rds.db_instance_master_user_secret_arn,
+      DB_HOST         = module.rds.cluster_endpoint,
+      DB_PORT         = module.rds.cluster_port,
+      DB_NAME         = module.rds.cluster_database_name,
+      DB_PASSWORD_ARN = module.rds.cluster_master_user_secret[0].secret_arn
       PYTHONPATH      = local.vendor_path,
     }
   }
@@ -92,7 +94,7 @@ resource "aws_iam_role_policy" "access" {
       {
         Action   = "secretsmanager:GetSecretValue"
         Effect   = "Allow"
-        Resource = module.rds.db_instance_master_user_secret_arn
+        Resource = module.rds.cluster_master_user_secret[*].secret_arn
       },
       {
         Action   = "rds-db:connect"
@@ -153,8 +155,8 @@ resource "aws_vpc_security_group_egress_rule" "lambda_to_database" {
   security_group_id = aws_security_group.lambda.id
   description       = "Provide access to the RDS database"
 
-  referenced_security_group_id = aws_security_group.this.id
+  referenced_security_group_id = module.rds.security_group_id
   ip_protocol                  = "tcp"
-  from_port                    = module.rds.db_instance_port
-  to_port                      = module.rds.db_instance_port
+  from_port                    = module.rds.cluster_port
+  to_port                      = module.rds.cluster_port
 }
