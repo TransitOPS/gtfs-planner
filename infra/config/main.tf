@@ -32,11 +32,15 @@ locals {
   networks = {
     dev = {
       account_name            = "aws"
-      availability_zone_count = 2
+      availability_zone_count = 1
       enable_nat_gateway      = false #true
       use_native_nat          = false
-      hosted_zone             = "gtfs-planner.transitops.tech"
-      certificates            = {}
+    }
+    prod = {
+      account_name            = "aws"
+      availability_zone_count = 2
+      enable_nat_gateway      = false #true
+      use_native_nat          = true
     }
   }
 
