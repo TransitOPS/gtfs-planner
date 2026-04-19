@@ -15,7 +15,7 @@ locals {
   github_actions_role_name = "${local.project_name}-github-actions"
 
   accounts = {
-    dev = {
+    aws = {
       registry = {
         enable = true
       }
@@ -31,7 +31,7 @@ locals {
 
   networks = {
     dev = {
-      account_name            = "dev"
+      account_name            = "aws"
       availability_zone_count = 2
       enable_nat_gateway      = false #true
       use_native_nat          = false
