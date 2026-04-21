@@ -26,6 +26,8 @@ defmodule GtfsPlanner.Gtfs.Pathway do
           min_width: Decimal.t() | nil,
           signposted_as: String.t() | nil,
           reversed_signposted_as: String.t() | nil,
+          field_notes: String.t() | nil,
+          field_completed_at: DateTime.t() | nil,
           from_stop_id: String.t(),
           to_stop_id: String.t(),
           inserted_at: DateTime.t(),
@@ -46,6 +48,8 @@ defmodule GtfsPlanner.Gtfs.Pathway do
     field :min_width, :decimal
     field :signposted_as, :string
     field :reversed_signposted_as, :string
+    field :field_notes, :string
+    field :field_completed_at, :utc_datetime_usec
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
       foreign_key: :organization_id
@@ -89,6 +93,8 @@ defmodule GtfsPlanner.Gtfs.Pathway do
       :min_width,
       :signposted_as,
       :reversed_signposted_as,
+      :field_notes,
+      :field_completed_at,
       :organization_id,
       :gtfs_version_id,
       :from_stop_id,
