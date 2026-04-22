@@ -345,6 +345,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               station={@station}
               active_level={@active_level}
               active_stop_level={@active_stop_level}
+              organization_id={@current_organization.id}
             />
           <% else %>
             <div id="diagram-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
