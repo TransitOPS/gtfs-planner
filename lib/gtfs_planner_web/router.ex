@@ -70,6 +70,8 @@ defmodule GtfsPlannerWeb.Router do
         StationResolutionPrototypeController,
         :stylesheet
 
+    get "/map/tiles/:style/:z/:x/:y", MapTilesController, :show
+
     live_session :require_authenticated_user,
       on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do
       live "/", DashboardLive, :index
