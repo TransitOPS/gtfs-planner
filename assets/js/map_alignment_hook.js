@@ -85,6 +85,8 @@ const MapAlignmentHook = {
     L.tileLayer("/map/tiles/osm-bright/{z}/{x}/{y}", {
       opacity: 0.75,
       keepBuffer: 8,
+      updateWhenIdle: false,
+      updateWhenZooming: true,
       attribution: "© OpenStreetMap contributors, © Geoapify"
     }).addTo(map);
 
@@ -96,6 +98,12 @@ const MapAlignmentHook = {
       this._rafId = null;
       map.invalidateSize();
     });
+    // The immersive CSS transition runs for ~300ms after mount; invalidate
+    // once more after it settles so Leaflet's tile grid matches the final size.
+    this._postTransitionTimer = setTimeout(() => {
+      this._postTransitionTimer = null;
+      map.invalidateSize();
+    }, 400);
 
     if (typeof ResizeObserver !== "undefined") {
       this._resizeObserver = new ResizeObserver(() => map.invalidateSize());
@@ -257,6 +265,10 @@ const MapAlignmentHook = {
     if (this._rafId !== null && this._rafId !== undefined) {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
+    }
+    if (this._postTransitionTimer) {
+      clearTimeout(this._postTransitionTimer);
+      this._postTransitionTimer = null;
     }
 
     if (this.overlay) {
