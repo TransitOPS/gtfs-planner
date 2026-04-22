@@ -340,27 +340,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             levels={@levels}
             active_level={@active_level}
           />
-          <div id="diagram-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
-            <.diagram_canvas
+          <%= if @mode == :map do %>
+            <.map_canvas
               station={@station}
               active_level={@active_level}
               active_stop_level={@active_stop_level}
-              streams={@streams}
-              active_point_id={@active_point_id}
-              pending_xy={@pending_xy}
-              selected_stop_id={@selected_stop_id}
-              mode={@mode}
-              uploads={@uploads}
-              cross_level_badges_by_stop={@cross_level_badges_by_stop}
-              diagram_error={@diagram_error}
-              organization_id={@current_organization.id}
-              ruler_point_a={@ruler_point_a}
-              ruler_point_b={@ruler_point_b}
-              scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
-              scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
-              measurement_enabled={@measurement_enabled}
             />
-          </div>
+          <% else %>
+            <div id="diagram-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
+              <.diagram_canvas
+                station={@station}
+                active_level={@active_level}
+                active_stop_level={@active_stop_level}
+                streams={@streams}
+                active_point_id={@active_point_id}
+                pending_xy={@pending_xy}
+                selected_stop_id={@selected_stop_id}
+                mode={@mode}
+                uploads={@uploads}
+                cross_level_badges_by_stop={@cross_level_badges_by_stop}
+                diagram_error={@diagram_error}
+                organization_id={@current_organization.id}
+                ruler_point_a={@ruler_point_a}
+                ruler_point_b={@ruler_point_b}
+                scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
+                scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
+                measurement_enabled={@measurement_enabled}
+              />
+            </div>
+          <% end %>
         </:sub_header>
 
         <.child_stop_drawer
