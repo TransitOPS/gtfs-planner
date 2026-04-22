@@ -178,6 +178,11 @@ body {
   border: none;
 }
 
+/* Semi-transparent map layer so the floorplan shows through underneath. */
+#map-canvas .leaflet-tile-pane {
+  opacity: 0.6;
+}
+
 
 #diagram-page #main-content {
   transition: padding 300ms ease-out;

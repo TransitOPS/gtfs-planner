@@ -83,7 +83,6 @@ const MapAlignmentHook = {
     });
 
     L.tileLayer("/map/tiles/osm-bright/{z}/{x}/{y}", {
-      opacity: 0.75,
       keepBuffer: 8,
       updateWhenIdle: false,
       updateWhenZooming: true,
