@@ -66,7 +66,12 @@ defmodule GtfsPlannerWeb.MapTilesController do
   end
 
   defp req_options do
-    base = [receive_timeout: 10_000, retry: false]
+    base = [
+      receive_timeout: 10_000,
+      retry: :safe_transient,
+      max_retries: 2,
+      retry_delay: fn _n -> 100 end
+    ]
 
     case Application.get_env(:gtfs_planner, :map_tiles_req_plug) do
       nil -> base
