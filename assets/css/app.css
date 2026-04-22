@@ -178,9 +178,10 @@ body {
   border: none;
 }
 
-/* Semi-transparent map layer so the floorplan shows through underneath. */
+/* Semi-transparent map layer so the floorplan shows through underneath.
+   Leaflet sets inline opacity on the tile pane, so !important is required. */
 #map-canvas .leaflet-tile-pane {
-  opacity: 0.6;
+  opacity: 0.6 !important;
 }
 
 
