@@ -223,6 +223,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   >
                     <.icon name="hero-x-mark" class="w-4 h-4" />
                   </button>
+                <% @mode == :map -> %>
+                  <span class="text-sm text-blue-700 font-medium">
+                    Align the floorplan over real-world imagery
+                  </span>
                 <% true -> %>
                   <span class="text-sm text-blue-700"></span>
               <% end %>
