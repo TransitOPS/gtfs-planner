@@ -146,6 +146,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       >
         Connect
       </button>
+      <button
+        type="button"
+        class={[
+          "btn join-item",
+          @mode == :map && "bg-blue-600 text-white hover:bg-blue-700",
+          @mode != :map && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300",
+          !@has_diagram && "opacity-50 cursor-not-allowed"
+        ]}
+        phx-click="switch_mode"
+        phx-value-mode="map"
+        disabled={!@has_diagram}
+      >
+        Map
+      </button>
     </div>
     """
   end
