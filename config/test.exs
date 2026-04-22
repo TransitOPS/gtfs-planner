@@ -25,6 +25,10 @@ config :gtfs_planner, GtfsPlannerWeb.Endpoint,
 
 config :gtfs_planner, :geocoding_service, GtfsPlanner.GeocodingMock
 
+# Route Req HTTP calls in the map tiles controller through Req.Test so
+# tests can stub upstream tile responses.
+config :gtfs_planner, :map_tiles_req_plug, {Req.Test, GtfsPlannerWeb.MapTilesController}
+
 # In test we don't send emails
 config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Test
 

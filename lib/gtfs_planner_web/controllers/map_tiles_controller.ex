@@ -50,7 +50,7 @@ defmodule GtfsPlannerWeb.MapTilesController do
   defp fetch_tile(conn, style, z, x, y, key) do
     url = "https://maps.geoapify.com/v1/tile/#{style}/#{z}/#{x}/#{y}.png?apiKey=#{key}"
 
-    case Req.get(url, receive_timeout: 10_000) do
+    case Req.get(url, req_options()) do
       {:ok, %{status: 200, body: body}} ->
         conn
         |> put_resp_content_type("image/png")
@@ -62,6 +62,15 @@ defmodule GtfsPlannerWeb.MapTilesController do
 
       {:error, _reason} ->
         send_resp(conn, 502, "upstream network error")
+    end
+  end
+
+  defp req_options do
+    base = [receive_timeout: 10_000, retry: false]
+
+    case Application.get_env(:gtfs_planner, :map_tiles_req_plug) do
+      nil -> base
+      plug -> [{:plug, plug} | base]
     end
   end
 end
