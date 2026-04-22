@@ -298,24 +298,81 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
+  attr :organization_id, :string, required: true
   attr :station, :any, required: true
   attr :active_level, :any, default: nil
   attr :active_stop_level, :any, default: nil
 
   def map_canvas(assigns) do
+    floorplan_url =
+      diagram_image_href(assigns.organization_id, assigns.station, assigns.active_stop_level)
+
+    initial_lat = assigns.station.stop_lat || 0
+    initial_lon = assigns.station.stop_lon || 0
+
+    assigns =
+      assigns
+      |> assign(:floorplan_url, floorplan_url)
+      |> assign(:initial_lat, initial_lat)
+      |> assign(:initial_lon, initial_lon)
+
     ~H"""
-    <div
-      id="map-canvas"
-      class="relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square flex items-center justify-center"
-    >
-      <div class="text-center px-6 py-12">
-        <h2 class="text-lg font-semibold text-base-content">Map alignment</h2>
-        <p class="mt-2 text-sm text-base-content/70">
-          Level: {(@active_level && (@active_level.level_name || @active_level.level_id)) || "—"}
-        </p>
-        <p class="mt-4 text-sm text-base-content/60 max-w-md mx-auto">
-          Interactive map and floorplan overlay not yet wired up.
-        </p>
+    <div>
+      <div
+        id="map-canvas"
+        phx-hook="MapAlignment"
+        phx-update="ignore"
+        data-floorplan-url={@floorplan_url}
+        data-initial-lat={@initial_lat}
+        data-initial-lon={@initial_lon}
+        data-initial-zoom="18"
+        class="relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
+      >
+        <img
+          src={@floorplan_url}
+          alt="Level floorplan"
+          class="absolute inset-0 w-full h-full object-contain"
+          style="z-index: 0;"
+        />
+        <div
+          id="map-alignment-overlay"
+          class="absolute inset-0"
+          style="z-index: 1; transform: translate(0px, 0px) rotate(0deg) scale(1); transform-origin: center;"
+        >
+          <div id="map-alignment-leaflet" class="w-full h-full"></div>
+          <div
+            id="map-alignment-rotate-handle"
+            class="absolute top-2 right-2 w-5 h-5 bg-blue-600 rounded-full cursor-grab"
+          >
+          </div>
+          <div
+            id="map-alignment-scale-handle"
+            class="absolute bottom-2 right-2 w-5 h-5 bg-blue-600 rounded-full cursor-grab"
+          >
+          </div>
+        </div>
+      </div>
+      <div class="mt-2 flex gap-2 items-center">
+        <input
+          id="map-alignment-lat-input"
+          type="number"
+          step="any"
+          class="input input-sm input-bordered"
+          placeholder="Lat"
+        />
+        <input
+          id="map-alignment-lon-input"
+          type="number"
+          step="any"
+          class="input input-sm input-bordered"
+          placeholder="Lon"
+        />
+        <button id="map-alignment-apply-center" type="button" class="btn btn-sm">
+          Set center
+        </button>
+        <button id="map-alignment-reset" type="button" class="btn btn-sm btn-ghost">
+          Reset
+        </button>
       </div>
     </div>
     """
