@@ -8529,5 +8529,129 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "[id^='diagram-canvas-']")
       refute has_element?(view, "#map-canvas")
     end
+
+    test "map canvas renders the floorplan image", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(view, "#map-canvas img[src]")
+    end
+
+    test "map canvas renders the leaflet overlay container with hook wiring", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(view, "#map-canvas[phx-hook='MapAlignment'][phx-update='ignore']")
+      assert has_element?(view, "#map-alignment-overlay #map-alignment-leaflet")
+    end
+
+    test "map canvas exposes initial view data attributes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, station} =
+        Gtfs.update_stop(station, %{
+          stop_lat: Decimal.new("42.3601"),
+          stop_lon: Decimal.new("-71.0589")
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      html = render(view)
+
+      assert [_, lat] = Regex.run(~r/id="map-canvas"[^>]*data-initial-lat="([^"]+)"/, html)
+      assert [_, lon] = Regex.run(~r/id="map-canvas"[^>]*data-initial-lon="([^"]+)"/, html)
+      assert [_, zoom] = Regex.run(~r/id="map-canvas"[^>]*data-initial-zoom="([^"]+)"/, html)
+
+      assert lat == to_string(station.stop_lat)
+      assert lon == to_string(station.stop_lon)
+      assert zoom == "18"
+    end
+
+    test "map canvas falls back to 0,0 when station lat/lon are nil", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, station} =
+        Gtfs.update_stop(station, %{stop_lat: nil, stop_lon: nil})
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      html = render(view)
+
+      assert [_, lat] = Regex.run(~r/id="map-canvas"[^>]*data-initial-lat="([^"]+)"/, html)
+      assert [_, lon] = Regex.run(~r/id="map-canvas"[^>]*data-initial-lon="([^"]+)"/, html)
+
+      assert lat == "0"
+      assert lon == "0"
+    end
+
+    test "map canvas renders the control strip elements", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(view, "#map-alignment-lat-input")
+      assert has_element?(view, "#map-alignment-lon-input")
+      assert has_element?(view, "#map-alignment-apply-center")
+      assert has_element?(view, "#map-alignment-reset")
+      assert has_element?(view, "#map-alignment-rotate-handle")
+      assert has_element?(view, "#map-alignment-scale-handle")
+    end
   end
 end
