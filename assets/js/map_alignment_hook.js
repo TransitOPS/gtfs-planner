@@ -82,6 +82,7 @@ const MapAlignmentHook = {
 
     L.tileLayer("/map/tiles/osm-bright/{z}/{x}/{y}", {
       opacity: 0.75,
+      keepBuffer: 20,
       attribution: "© OpenStreetMap contributors, © Geoapify"
     }).addTo(map);
 
@@ -93,6 +94,11 @@ const MapAlignmentHook = {
       this._rafId = null;
       map.invalidateSize();
     });
+
+    if (typeof ResizeObserver !== "undefined") {
+      this._resizeObserver = new ResizeObserver(() => map.invalidateSize());
+      this._resizeObserver.observe(leafletEl);
+    }
 
     this._applyTransform();
 
@@ -274,6 +280,11 @@ const MapAlignmentHook = {
       this.resetBtn.removeEventListener("click", this._onReset);
     }
 
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
+    }
+
     if (this.leafletMap) {
       this.leafletMap.remove();
       this.leafletMap = null;
@@ -284,7 +295,7 @@ const MapAlignmentHook = {
     if (!this.overlay) return;
     const {tx, ty, rotation, scale} = this.transform;
     this.overlay.style.transform =
-      `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`;
+      `translate3d(${tx}px, ${ty}px, 0) rotate(${rotation}deg) scale(${scale})`;
   }
 };
 
