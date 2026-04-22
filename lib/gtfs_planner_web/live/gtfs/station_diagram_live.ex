@@ -2680,6 +2680,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp parse_mode("view"), do: {:ok, :view}
   defp parse_mode("add"), do: {:ok, :add}
   defp parse_mode("connect"), do: {:ok, :connect}
+  defp parse_mode("map"), do: {:ok, :map}
   defp parse_mode(_), do: :error
 
   defp parse_svg_coordinate(value) do
