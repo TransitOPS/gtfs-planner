@@ -73,6 +73,12 @@ const MapAlignmentHook = {
 
     this.transform = {...IDENTITY_TRANSFORM};
 
+    leafletEl.style.position = "absolute";
+    leafletEl.style.left = "-100%";
+    leafletEl.style.top = "-100%";
+    leafletEl.style.width = "300%";
+    leafletEl.style.height = "300%";
+
     const map = L.map(leafletEl, {
       center: [initialLat, initialLon],
       zoom: initialZoom,
@@ -82,7 +88,7 @@ const MapAlignmentHook = {
 
     L.tileLayer("/map/tiles/osm-bright/{z}/{x}/{y}", {
       opacity: 0.75,
-      keepBuffer: 20,
+      keepBuffer: 8,
       attribution: "© OpenStreetMap contributors, © Geoapify"
     }).addTo(map);
 
@@ -102,14 +108,11 @@ const MapAlignmentHook = {
 
     this._applyTransform();
 
-    // --- Translate: pointerdown on overlay (outside handles and outside leaflet) ---
+    // --- Translate: pointerdown anywhere on overlay; Leaflet's own dragging is disabled ---
     this._translateState = null;
     this._onOverlayPointerDown = (e) => {
       if (e.button !== undefined && e.button !== 0) return;
-      const target = e.target;
-      if (rotateHandle && rotateHandle.contains(target)) return;
-      if (scaleHandle && scaleHandle.contains(target)) return;
-      if (leafletEl && leafletEl.contains(target)) return;
+      if (e.target.closest(".leaflet-control-container")) return;
 
       this._translateState = {
         startX: e.clientX,
@@ -122,6 +125,7 @@ const MapAlignmentHook = {
         try { overlay.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
       }
       e.preventDefault();
+      e.stopPropagation();
     };
     this._onOverlayPointerMove = (e) => {
       if (!this._translateState) return;
@@ -139,7 +143,7 @@ const MapAlignmentHook = {
       this._translateState = null;
     };
 
-    overlay.addEventListener("pointerdown", this._onOverlayPointerDown);
+    overlay.addEventListener("pointerdown", this._onOverlayPointerDown, true);
     overlay.addEventListener("pointermove", this._onOverlayPointerMove);
     overlay.addEventListener("pointerup", this._onOverlayPointerUp);
     overlay.addEventListener("pointercancel", this._onOverlayPointerUp);
@@ -253,7 +257,7 @@ const MapAlignmentHook = {
     }
 
     if (this.overlay) {
-      this.overlay.removeEventListener("pointerdown", this._onOverlayPointerDown);
+      this.overlay.removeEventListener("pointerdown", this._onOverlayPointerDown, true);
       this.overlay.removeEventListener("pointermove", this._onOverlayPointerMove);
       this.overlay.removeEventListener("pointerup", this._onOverlayPointerUp);
       this.overlay.removeEventListener("pointercancel", this._onOverlayPointerUp);
