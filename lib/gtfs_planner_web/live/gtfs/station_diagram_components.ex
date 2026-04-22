@@ -325,27 +325,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-floorplan-url={@floorplan_url}
         data-initial-lat={@initial_lat}
         data-initial-lon={@initial_lon}
-        data-initial-zoom="18"
+        data-initial-zoom="19"
         class="relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
       >
-        <img
-          src={@floorplan_url}
-          alt="Level floorplan"
-          class="absolute inset-0 w-full h-full object-contain"
-          style="z-index: 0;"
-        />
+        <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
         <div
           id="map-alignment-overlay"
           class="absolute inset-0 cursor-move"
           style="z-index: 1; transform-origin: center;"
         >
-          <div id="map-alignment-leaflet" class="w-full h-full"></div>
+          <img
+            src={@floorplan_url}
+            alt="Level floorplan"
+            class="absolute inset-0 w-full h-full object-contain pointer-events-none"
+          />
         </div>
         <button
           id="map-alignment-rotate-handle"
           type="button"
-          title="Drag to rotate the map overlay"
-          aria-label="Rotate overlay"
+          title="Drag to rotate the floorplan"
+          aria-label="Rotate floorplan"
           class="absolute top-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
           style="z-index: 2;"
         >
@@ -354,8 +353,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <button
           id="map-alignment-scale-handle"
           type="button"
-          title="Drag to resize the map overlay"
-          aria-label="Resize overlay"
+          title="Drag to resize the floorplan"
+          aria-label="Resize floorplan"
           class="absolute bottom-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
           style="z-index: 2;"
         >
@@ -363,7 +362,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </button>
       </div>
       <p class="mt-2 text-xs text-base-content/70">
-        Drag the map to translate. Use the handles to rotate and resize. The floorplan stays fixed.
+        Drag the floorplan to translate. Use the handles to rotate and resize. The map stays fixed.
       </p>
       <div class="mt-2 flex gap-3 items-end flex-wrap">
         <div class="flex flex-col">
@@ -374,6 +373,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             id="map-alignment-lat-input"
             type="number"
             step="any"
+            value={@initial_lat}
             class="input input-sm input-bordered"
           />
         </div>
@@ -385,12 +385,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             id="map-alignment-lon-input"
             type="number"
             step="any"
+            value={@initial_lon}
             class="input input-sm input-bordered"
           />
         </div>
         <div class="flex flex-col">
           <label for="map-alignment-opacity" class="text-xs text-base-content/70">
-            Map opacity
+            Floorplan opacity
           </label>
           <input
             id="map-alignment-opacity"

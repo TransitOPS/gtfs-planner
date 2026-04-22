@@ -1,25 +1,28 @@
 /**
  * MapAlignmentHook
  *
- * Owns the Map tab's alignment workspace: a Leaflet map rendered over the
- * station floorplan, wrapped in a CSS-transformable overlay the operator can
- * translate, rotate, and scale. State is purely client-side; no persistence.
+ * Owns the Map tab's alignment workspace. The map is the fixed reference
+ * frame (north-up, no zoom/pan/rotate by the user). The floorplan sits on
+ * top inside a CSS-transformable wrapper that the operator can translate,
+ * rotate, and scale to match real-world building geometry below.
+ * State is purely client-side; no persistence.
  *
  * Required data-* attrs on the hook root element:
  *   data-floorplan-url       URL of the level's floorplan image
- *   data-initial-lat         decimal latitude for the initial Leaflet view
- *   data-initial-lon         decimal longitude for the initial Leaflet view
- *   data-initial-zoom        integer zoom level for the initial Leaflet view
+ *   data-initial-lat         decimal latitude for the initial map view
+ *   data-initial-lon         decimal longitude for the initial map view
+ *   data-initial-zoom        integer zoom level for the initial map view
  *
- * DOM IDs the hook interacts with (all children of the hook root):
- *   #map-alignment-leaflet       Leaflet map container
- *   #map-alignment-overlay       transformable wrapper (parent of the Leaflet container)
+ * DOM IDs the hook interacts with:
+ *   #map-alignment-leaflet       Leaflet map container (base layer, fixed)
+ *   #map-alignment-overlay       transformable wrapper containing the floorplan
  *   #map-alignment-rotate-handle rotation grab target
  *   #map-alignment-scale-handle  scale grab target
- *   #map-alignment-lat-input     lat input for setView
- *   #map-alignment-lon-input     lon input for setView
- *   #map-alignment-apply-center  button that reads lat/lon inputs and calls map.setView
- *   #map-alignment-reset         button that resets the transform to identity
+ *   #map-alignment-lat-input     lat input for map.setView
+ *   #map-alignment-lon-input     lon input for map.setView
+ *   #map-alignment-apply-center  button that recenters the map on lat/lon
+ *   #map-alignment-reset         button that resets the floorplan transform
+ *   #map-alignment-opacity       range input controlling floorplan opacity
  */
 
 const SCALE_MIN = 0.25;
@@ -47,19 +50,14 @@ const MapAlignmentHook = {
     }
 
     const root = this.el;
-    const floorplanUrl = root.dataset.floorplanUrl;
     const initialLat = parseFloat(root.dataset.initialLat);
     const initialLon = parseFloat(root.dataset.initialLon);
     const initialZoom = parseInt(root.dataset.initialZoom, 10);
-
-    this.floorplanUrl = floorplanUrl;
 
     const overlay = root.querySelector("#map-alignment-overlay");
     const leafletEl = root.querySelector("#map-alignment-leaflet");
     const rotateHandle = root.querySelector("#map-alignment-rotate-handle");
     const scaleHandle = root.querySelector("#map-alignment-scale-handle");
-    // Control strip lives outside #map-canvas (siblings in the component root),
-    // so resolve them from the document rather than the hook root.
     const latInput = document.getElementById("map-alignment-lat-input");
     const lonInput = document.getElementById("map-alignment-lon-input");
     const applyCenterBtn = document.getElementById("map-alignment-apply-center");
@@ -76,7 +74,7 @@ const MapAlignmentHook = {
     this.resetBtn = resetBtn;
     this.opacitySlider = opacitySlider;
 
-    leafletEl.style.opacity = opacitySlider ? opacitySlider.value : "0.6";
+    overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.6";
 
     this.transform = {...IDENTITY_TRANSFORM};
 
@@ -84,12 +82,17 @@ const MapAlignmentHook = {
       center: [initialLat, initialLon],
       zoom: initialZoom,
       attributionControl: true,
-      zoomControl: true
+      zoomControl: false,
+      scrollWheelZoom: false,
+      doubleClickZoom: false,
+      touchZoom: false,
+      keyboard: false,
+      dragging: false,
+      boxZoom: false
     });
 
-    // Esri World Imagery serves free aerial tiles with no API key and
-    // standard z/y/x layout (note: y before x). Goes direct from the browser
-    // since there's no credential to hide server-side.
+    // Esri World Imagery: free aerial tiles, no API key. URL uses z/y/x
+    // (note: y before x). Goes direct from the browser — no credential to hide.
     L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       {
@@ -101,8 +104,8 @@ const MapAlignmentHook = {
       }
     ).addTo(map);
 
-    // Transparent reference layer with roads and road names designed to
-    // overlay on World_Imagery.
+    // Transparent reference layer with roads and road names tuned to overlay
+    // on World_Imagery.
     L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
       {
@@ -113,8 +116,6 @@ const MapAlignmentHook = {
         attribution: "Roads © Esri"
       }
     ).addTo(map);
-
-    map.dragging.disable();
 
     this.leafletMap = map;
 
@@ -138,16 +139,17 @@ const MapAlignmentHook = {
 
     this._applyTransform();
 
-    // --- Translate: pan Leaflet by pointer delta. Leaflet always loads tiles
-    //     around its current center, so translation never leaves empty tiles. ---
+    // --- Translate: drag the floorplan overlay. CSS translate is safe here
+    //     because the overlay is a single <img>, not a Leaflet tile grid. ---
     this._translateState = null;
     this._onOverlayPointerDown = (e) => {
       if (e.button !== undefined && e.button !== 0) return;
-      if (e.target.closest(".leaflet-control-container")) return;
 
       this._translateState = {
-        lastX: e.clientX,
-        lastY: e.clientY,
+        startX: e.clientX,
+        startY: e.clientY,
+        baseTx: this.transform.tx,
+        baseTy: this.transform.ty,
         pointerId: e.pointerId
       };
       if (overlay.setPointerCapture && e.pointerId !== undefined) {
@@ -158,19 +160,11 @@ const MapAlignmentHook = {
     };
     this._onOverlayPointerMove = (e) => {
       if (!this._translateState) return;
-      const dx = e.clientX - this._translateState.lastX;
-      const dy = e.clientY - this._translateState.lastY;
-      this._translateState.lastX = e.clientX;
-      this._translateState.lastY = e.clientY;
-
-      const r = this.transform.rotation * Math.PI / 180;
-      const s = this.transform.scale || 1;
-      const cos = Math.cos(r);
-      const sin = Math.sin(r);
-      // Inverse-rotate viewport delta into map-pixel space, then divide by scale.
-      const mapDx = (dx * cos + dy * sin) / s;
-      const mapDy = (-dx * sin + dy * cos) / s;
-      this.leafletMap.panBy([-mapDx, -mapDy], { animate: false });
+      const dx = e.clientX - this._translateState.startX;
+      const dy = e.clientY - this._translateState.startY;
+      this.transform.tx = this._translateState.baseTx + dx;
+      this.transform.ty = this._translateState.baseTy + dy;
+      this._applyTransform();
     };
     this._onOverlayPointerUp = (e) => {
       if (!this._translateState) return;
@@ -180,7 +174,7 @@ const MapAlignmentHook = {
       this._translateState = null;
     };
 
-    overlay.addEventListener("pointerdown", this._onOverlayPointerDown, true);
+    overlay.addEventListener("pointerdown", this._onOverlayPointerDown);
     overlay.addEventListener("pointermove", this._onOverlayPointerMove);
     overlay.addEventListener("pointerup", this._onOverlayPointerUp);
     overlay.addEventListener("pointercancel", this._onOverlayPointerUp);
@@ -270,26 +264,27 @@ const MapAlignmentHook = {
     scaleHandle.addEventListener("pointerup", this._onScalePointerUp);
     scaleHandle.addEventListener("pointercancel", this._onScalePointerUp);
 
-    // --- Apply center ---
+    // --- Apply center: recenter the base map on the typed lat/lon ---
     this._onApplyCenter = () => {
       const lat = parseFloat(latInput.value);
       const lon = parseFloat(lonInput.value);
       if (Number.isNaN(lat) || Number.isNaN(lon)) return;
       this.leafletMap.setView([lat, lon]);
+      this._fetchBuildings(lat, lon);
     };
     applyCenterBtn.addEventListener("click", this._onApplyCenter);
 
-    // --- Reset ---
+    // --- Reset: floorplan back to identity transform ---
     this._onReset = () => {
       this.transform = {...IDENTITY_TRANSFORM};
       this._applyTransform();
     };
     resetBtn.addEventListener("click", this._onReset);
 
-    // --- Opacity slider ---
+    // --- Opacity slider: controls floorplan overlay opacity ---
     if (opacitySlider) {
       this._onOpacityInput = (e) => {
-        this.leafletEl.style.opacity = e.target.value;
+        this.overlay.style.opacity = e.target.value;
       };
       opacitySlider.addEventListener("input", this._onOpacityInput);
     }
@@ -306,7 +301,7 @@ const MapAlignmentHook = {
     }
 
     if (this.overlay) {
-      this.overlay.removeEventListener("pointerdown", this._onOverlayPointerDown, true);
+      this.overlay.removeEventListener("pointerdown", this._onOverlayPointerDown);
       this.overlay.removeEventListener("pointermove", this._onOverlayPointerMove);
       this.overlay.removeEventListener("pointerup", this._onOverlayPointerUp);
       this.overlay.removeEventListener("pointercancel", this._onOverlayPointerUp);
@@ -349,15 +344,24 @@ const MapAlignmentHook = {
 
   _applyTransform() {
     if (!this.overlay) return;
-    const {rotation, scale} = this.transform;
-    if (rotation === 0 && scale === 1) {
+    const {tx, ty, rotation, scale} = this.transform;
+    if (tx === 0 && ty === 0 && rotation === 0 && scale === 1) {
       this.overlay.style.transform = "none";
     } else {
-      this.overlay.style.transform = `rotate(${rotation}deg) scale(${scale})`;
+      this.overlay.style.transform =
+        `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`;
     }
   },
 
   _fetchBuildings(lat, lon) {
+    const L = window.L;
+    if (!L) return;
+
+    if (this._buildingsLayer && this.leafletMap) {
+      this.leafletMap.removeLayer(this._buildingsLayer);
+      this._buildingsLayer = null;
+    }
+
     const url = `/map/buildings?lat=${lat}&lon=${lon}&radius=500`;
     fetch(url, {credentials: "same-origin"})
       .then((res) => (res.ok ? res.json() : null))

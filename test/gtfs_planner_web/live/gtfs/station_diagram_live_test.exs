@@ -8566,7 +8566,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
       assert has_element?(view, "#map-canvas[phx-hook='MapAlignment'][phx-update='ignore']")
-      assert has_element?(view, "#map-alignment-overlay #map-alignment-leaflet")
+      assert has_element?(view, "#map-canvas #map-alignment-leaflet")
+      assert has_element?(view, "#map-alignment-overlay img[alt='Level floorplan']")
     end
 
     test "map canvas exposes initial view data attributes", %{
@@ -8599,7 +8600,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert lat == to_string(station.stop_lat)
       assert lon == to_string(station.stop_lon)
-      assert zoom == "18"
+      assert zoom == "19"
     end
 
     test "map canvas falls back to 0,0 when station lat/lon are nil", %{
