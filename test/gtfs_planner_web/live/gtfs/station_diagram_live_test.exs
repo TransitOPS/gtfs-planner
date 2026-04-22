@@ -8336,4 +8336,198 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#flash-error")
     end
   end
+
+  describe "StationDiagramLive - map mode" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MAP_STATION",
+          stop_name: "Map Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "map_level",
+          level_name: "Map Level",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        stop_level: stop_level
+      }
+    end
+
+    test "mode_toggle renders a Map button", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "button[phx-value-mode='map']", "Map")
+    end
+
+    test "Map button is disabled when no diagram file exists", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "button[phx-value-mode='map'][disabled]")
+    end
+
+    test "switch_mode to map swaps to the map canvas", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(view, "#map-canvas")
+      refute has_element?(view, "[id^='diagram-canvas-']")
+    end
+
+    test "action strip shows map-mode hint", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(
+               view,
+               "#diagram-action-strip",
+               "Align the floorplan over real-world imagery"
+             )
+    end
+
+    test "canvas_click in map mode is a no-op", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "canvas_click", %{"x" => 50, "y" => 50})
+
+      assert has_element?(view, "button[phx-value-mode='map'].bg-blue-600")
+    end
+
+    test "stop_clicked in map mode is a no-op", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MAP_CHILD_1",
+          stop_name: "Map Child 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 25.0, "y" => 35.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "stop_clicked", %{"id" => child_stop.id})
+
+      assert has_element?(view, "#map-canvas")
+    end
+
+    test "switching from map back to view restores the diagram canvas", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "switch_mode", %{"mode" => "view"})
+
+      assert has_element?(view, "[id^='diagram-canvas-']")
+      refute has_element?(view, "#map-canvas")
+    end
+  end
 end
