@@ -87,7 +87,7 @@ const MapAlignmentHook = {
       zoomControl: true
     });
 
-    L.tileLayer("/map/tiles/osm-bright/{z}/{x}/{y}", {
+    L.tileLayer("/map/tiles/satellite/{z}/{x}/{y}", {
       keepBuffer: 8,
       updateWhenIdle: false,
       updateWhenZooming: true,
@@ -97,6 +97,8 @@ const MapAlignmentHook = {
     map.dragging.disable();
 
     this.leafletMap = map;
+
+    this._fetchBuildings(initialLat, initialLon);
 
     this._rafId = requestAnimationFrame(() => {
       this._rafId = null;
@@ -333,6 +335,19 @@ const MapAlignmentHook = {
     } else {
       this.overlay.style.transform = `rotate(${rotation}deg) scale(${scale})`;
     }
+  },
+
+  _fetchBuildings(lat, lon) {
+    const url = `/map/buildings?lat=${lat}&lon=${lon}&radius=500`;
+    fetch(url, {credentials: "same-origin"})
+      .then((res) => (res.ok ? res.json() : null))
+      .then((geojson) => {
+        if (!geojson || !this.leafletMap) return;
+        this._buildingsLayer = L.geoJSON(geojson, {
+          style: {color: "#2563eb", weight: 2, fill: false, interactive: false}
+        }).addTo(this.leafletMap);
+      })
+      .catch(() => { /* silent: buildings overlay is optional */ });
   }
 };
 

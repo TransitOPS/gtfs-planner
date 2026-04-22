@@ -71,6 +71,7 @@ defmodule GtfsPlannerWeb.Router do
         :stylesheet
 
     get "/map/tiles/:style/:z/:x/:y", MapTilesController, :show
+    get "/map/buildings", MapBuildingsController, :index
 
     live_session :require_authenticated_user,
       on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do

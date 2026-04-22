@@ -29,6 +29,11 @@ config :gtfs_planner, :geocoding_service, GtfsPlanner.GeocodingMock
 # tests can stub upstream tile responses.
 config :gtfs_planner, :map_tiles_req_plug, {Req.Test, GtfsPlannerWeb.MapTilesController}
 
+# Stub Overpass upstream for the buildings controller in tests.
+config :gtfs_planner,
+       :map_buildings_req_plug,
+       {Req.Test, GtfsPlannerWeb.MapBuildingsController}
+
 # In test we don't send emails
 config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Test
 
