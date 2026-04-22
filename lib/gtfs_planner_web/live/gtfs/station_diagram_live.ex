@@ -306,7 +306,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div id="diagram-page" data-immersive={if @mode in [:add, :connect], do: "true"}>
+    <div id="diagram-page" data-immersive={if @mode in [:add, :connect, :map], do: "true"}>
       <Layouts.app
         flash={@flash}
         current_user={@current_user}
