@@ -6,11 +6,11 @@ module "docker_service" {
   name         = var.name
   image_tag    = coalesce(local.image_tag, "hello-world:nanoserver")
 
-  host        = local.env_config.host
-  db_host     = module.database_data.db_host
-  db_port     = module.database_data.db_port
-  db_name     = module.database_data.db_name
-  db_username = module.database_data.db_username
+  host             = local.env_config.host
+  db_host          = module.database_data.db_host
+  db_port          = module.database_data.db_port
+  db_name          = module.database_data.db_name
+  db_username      = module.database_data.db_username
   domain           = local.env_config.domain
   geoapify_api_key = local.env_config.geoapify_api_key
 }
