@@ -388,6 +388,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             class="input input-sm input-bordered"
           />
         </div>
+        <div class="flex flex-col">
+          <label for="map-alignment-opacity" class="text-xs text-base-content/70">
+            Map opacity
+          </label>
+          <input
+            id="map-alignment-opacity"
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value="0.6"
+            class="range range-xs w-40"
+          />
+        </div>
         <button id="map-alignment-apply-center" type="button" class="btn btn-sm">
           Center map
         </button>

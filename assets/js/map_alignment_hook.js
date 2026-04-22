@@ -64,14 +64,19 @@ const MapAlignmentHook = {
     const lonInput = document.getElementById("map-alignment-lon-input");
     const applyCenterBtn = document.getElementById("map-alignment-apply-center");
     const resetBtn = document.getElementById("map-alignment-reset");
+    const opacitySlider = document.getElementById("map-alignment-opacity");
 
     this.overlay = overlay;
+    this.leafletEl = leafletEl;
     this.rotateHandle = rotateHandle;
     this.scaleHandle = scaleHandle;
     this.latInput = latInput;
     this.lonInput = lonInput;
     this.applyCenterBtn = applyCenterBtn;
     this.resetBtn = resetBtn;
+    this.opacitySlider = opacitySlider;
+
+    leafletEl.style.opacity = opacitySlider ? opacitySlider.value : "0.6";
 
     this.transform = {...IDENTITY_TRANSFORM};
 
@@ -258,6 +263,14 @@ const MapAlignmentHook = {
       this._applyTransform();
     };
     resetBtn.addEventListener("click", this._onReset);
+
+    // --- Opacity slider ---
+    if (opacitySlider) {
+      this._onOpacityInput = (e) => {
+        this.leafletEl.style.opacity = e.target.value;
+      };
+      opacitySlider.addEventListener("input", this._onOpacityInput);
+    }
   },
 
   destroyed() {
@@ -296,6 +309,9 @@ const MapAlignmentHook = {
     }
     if (this.resetBtn && this._onReset) {
       this.resetBtn.removeEventListener("click", this._onReset);
+    }
+    if (this.opacitySlider && this._onOpacityInput) {
+      this.opacitySlider.removeEventListener("input", this._onOpacityInput);
     }
 
     if (this._resizeObserver) {
