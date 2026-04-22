@@ -19,8 +19,6 @@
 
 // Include phoenix_html to handle method=PUT/DELETE in forms and buttons.
 import "phoenix_html"
-// Vendor CSS (esbuild emits a separate app.css bundle for these).
-import "../vendor/leaflet.css"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"

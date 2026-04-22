@@ -2,6 +2,7 @@
    https://tailwindcss.com/docs/configuration */
 
 @import "tailwindcss" source(none);
+@import "../vendor/leaflet.css";
 @source "../css";
 @source "../js";
 @source "../../lib/gtfs_planner_web";
