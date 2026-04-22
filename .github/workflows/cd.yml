@@ -16,6 +16,7 @@ on:
         type: choice
         options:
           - dev
+          - prod
       version:
         required: true
         default: "main"
