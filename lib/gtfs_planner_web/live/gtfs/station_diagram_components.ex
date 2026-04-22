@@ -336,42 +336,61 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         />
         <div
           id="map-alignment-overlay"
-          class="absolute inset-0"
+          class="absolute inset-0 cursor-move"
           style="z-index: 1; transform: translate(0px, 0px) rotate(0deg) scale(1); transform-origin: center;"
         >
           <div id="map-alignment-leaflet" class="w-full h-full"></div>
-          <div
+          <button
             id="map-alignment-rotate-handle"
-            class="absolute top-2 right-2 w-5 h-5 bg-blue-600 rounded-full cursor-grab"
+            type="button"
+            title="Drag to rotate the map overlay"
+            aria-label="Rotate overlay"
+            class="absolute top-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
           >
-          </div>
-          <div
+            <.icon name="hero-arrow-path" class="w-4 h-4" />
+          </button>
+          <button
             id="map-alignment-scale-handle"
-            class="absolute bottom-2 right-2 w-5 h-5 bg-blue-600 rounded-full cursor-grab"
+            type="button"
+            title="Drag to resize the map overlay"
+            aria-label="Resize overlay"
+            class="absolute bottom-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
           >
-          </div>
+            <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
+          </button>
         </div>
       </div>
-      <div class="mt-2 flex gap-2 items-center">
-        <input
-          id="map-alignment-lat-input"
-          type="number"
-          step="any"
-          class="input input-sm input-bordered"
-          placeholder="Lat"
-        />
-        <input
-          id="map-alignment-lon-input"
-          type="number"
-          step="any"
-          class="input input-sm input-bordered"
-          placeholder="Lon"
-        />
+      <p class="mt-2 text-xs text-base-content/70">
+        Drag the map to translate. Use the handles to rotate and resize. The floorplan stays fixed.
+      </p>
+      <div class="mt-2 flex gap-3 items-end flex-wrap">
+        <div class="flex flex-col">
+          <label for="map-alignment-lat-input" class="text-xs text-base-content/70">
+            Latitude
+          </label>
+          <input
+            id="map-alignment-lat-input"
+            type="number"
+            step="any"
+            class="input input-sm input-bordered"
+          />
+        </div>
+        <div class="flex flex-col">
+          <label for="map-alignment-lon-input" class="text-xs text-base-content/70">
+            Longitude
+          </label>
+          <input
+            id="map-alignment-lon-input"
+            type="number"
+            step="any"
+            class="input input-sm input-bordered"
+          />
+        </div>
         <button id="map-alignment-apply-center" type="button" class="btn btn-sm">
-          Set center
+          Center map
         </button>
         <button id="map-alignment-reset" type="button" class="btn btn-sm btn-ghost">
-          Reset
+          Reset alignment
         </button>
       </div>
     </div>

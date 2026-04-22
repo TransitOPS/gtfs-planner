@@ -81,7 +81,7 @@ const MapAlignmentHook = {
     });
 
     L.tileLayer("/map/tiles/osm-bright/{z}/{x}/{y}", {
-      opacity: 0.55,
+      opacity: 0.75,
       attribution: "© OpenStreetMap contributors, © Geoapify"
     }).addTo(map);
 

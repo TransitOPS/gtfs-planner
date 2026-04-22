@@ -341,12 +341,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             active_level={@active_level}
           />
           <%= if @mode == :map do %>
-            <.map_canvas
-              station={@station}
-              active_level={@active_level}
-              active_stop_level={@active_stop_level}
-              organization_id={@current_organization.id}
-            />
+            <div class="w-full px-4 sm:px-6 lg:px-8 py-4">
+              <.map_canvas
+                station={@station}
+                active_level={@active_level}
+                active_stop_level={@active_stop_level}
+                organization_id={@current_organization.id}
+              />
+            </div>
           <% else %>
             <div id="diagram-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
               <.diagram_canvas
