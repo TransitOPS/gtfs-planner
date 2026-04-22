@@ -280,6 +280,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
+  attr :station, :any, required: true
+  attr :active_level, :any, default: nil
+  attr :active_stop_level, :any, default: nil
+
+  def map_canvas(assigns) do
+    ~H"""
+    <div
+      id="map-canvas"
+      class="relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square flex items-center justify-center"
+    >
+      <div class="text-center px-6 py-12">
+        <h2 class="text-lg font-semibold text-base-content">Map alignment</h2>
+        <p class="mt-2 text-sm text-base-content/70">
+          Level: {(@active_level && (@active_level.level_name || @active_level.level_id)) || "—"}
+        </p>
+        <p class="mt-4 text-sm text-base-content/60 max-w-md mx-auto">
+          Interactive map and floorplan overlay not yet wired up.
+        </p>
+      </div>
+    </div>
+    """
+  end
+
   # ============================================================================
   # Diagram Canvas
   # ============================================================================
