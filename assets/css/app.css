@@ -177,6 +177,14 @@ body {
   border: none;
 }
 
+/* Close sub-pixel gaps between adjacent Leaflet tiles that appear when any
+   CSS transform is applied to an ancestor. Oversizing each tile by ~1px
+   produces a sliver of overlap that hides the seam. */
+#map-canvas .leaflet-tile {
+  width: 257px !important;
+  height: 257px !important;
+}
+
 #diagram-page #main-content {
   transition: padding 300ms ease-out;
 }
