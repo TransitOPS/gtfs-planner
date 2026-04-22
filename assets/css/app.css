@@ -177,13 +177,6 @@ body {
   border: none;
 }
 
-/* Promote the Leaflet tile pane to its own compositing layer so sub-pixel
-   positioning stays consistent when an ancestor has a CSS transform. */
-#map-canvas .leaflet-tile-pane,
-#map-canvas .leaflet-tile {
-  will-change: transform;
-  backface-visibility: hidden;
-}
 
 #diagram-page #main-content {
   transition: padding 300ms ease-out;

@@ -313,7 +313,11 @@ const MapAlignmentHook = {
   _applyTransform() {
     if (!this.overlay) return;
     const {rotation, scale} = this.transform;
-    this.overlay.style.transform = `rotate(${rotation}deg) scale(${scale})`;
+    if (rotation === 0 && scale === 1) {
+      this.overlay.style.transform = "none";
+    } else {
+      this.overlay.style.transform = `rotate(${rotation}deg) scale(${scale})`;
+    }
   }
 };
 
