@@ -58,10 +58,12 @@ const MapAlignmentHook = {
     const leafletEl = root.querySelector("#map-alignment-leaflet");
     const rotateHandle = root.querySelector("#map-alignment-rotate-handle");
     const scaleHandle = root.querySelector("#map-alignment-scale-handle");
-    const latInput = root.querySelector("#map-alignment-lat-input");
-    const lonInput = root.querySelector("#map-alignment-lon-input");
-    const applyCenterBtn = root.querySelector("#map-alignment-apply-center");
-    const resetBtn = root.querySelector("#map-alignment-reset");
+    // Control strip lives outside #map-canvas (siblings in the component root),
+    // so resolve them from the document rather than the hook root.
+    const latInput = document.getElementById("map-alignment-lat-input");
+    const lonInput = document.getElementById("map-alignment-lon-input");
+    const applyCenterBtn = document.getElementById("map-alignment-apply-center");
+    const resetBtn = document.getElementById("map-alignment-reset");
 
     this.overlay = overlay;
     this.rotateHandle = rotateHandle;
