@@ -88,8 +88,8 @@ const MapAlignmentHook = {
     });
 
     // Esri World Imagery serves free aerial tiles with no API key and
-     // standard z/y/x layout (note: y before x). Goes direct from the browser
-     // since there's no credential to hide server-side.
+    // standard z/y/x layout (note: y before x). Goes direct from the browser
+    // since there's no credential to hide server-side.
     L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       {
@@ -98,6 +98,19 @@ const MapAlignmentHook = {
         updateWhenIdle: false,
         updateWhenZooming: true,
         attribution: "Imagery © Esri, Maxar, Earthstar Geographics"
+      }
+    ).addTo(map);
+
+    // Transparent reference layer with roads and road names designed to
+    // overlay on World_Imagery.
+    L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
+      {
+        keepBuffer: 8,
+        maxZoom: 19,
+        updateWhenIdle: false,
+        updateWhenZooming: true,
+        attribution: "Roads © Esri"
       }
     ).addTo(map);
 
