@@ -73,12 +73,6 @@ const MapAlignmentHook = {
 
     this.transform = {...IDENTITY_TRANSFORM};
 
-    leafletEl.style.position = "absolute";
-    leafletEl.style.left = "-100%";
-    leafletEl.style.top = "-100%";
-    leafletEl.style.width = "300%";
-    leafletEl.style.height = "300%";
-
     const map = L.map(leafletEl, {
       center: [initialLat, initialLon],
       zoom: initialZoom,
@@ -108,17 +102,16 @@ const MapAlignmentHook = {
 
     this._applyTransform();
 
-    // --- Translate: pointerdown anywhere on overlay; Leaflet's own dragging is disabled ---
+    // --- Translate: pan Leaflet by pointer delta. Leaflet always loads tiles
+    //     around its current center, so translation never leaves empty tiles. ---
     this._translateState = null;
     this._onOverlayPointerDown = (e) => {
       if (e.button !== undefined && e.button !== 0) return;
       if (e.target.closest(".leaflet-control-container")) return;
 
       this._translateState = {
-        startX: e.clientX,
-        startY: e.clientY,
-        baseTx: this.transform.tx,
-        baseTy: this.transform.ty,
+        lastX: e.clientX,
+        lastY: e.clientY,
         pointerId: e.pointerId
       };
       if (overlay.setPointerCapture && e.pointerId !== undefined) {
@@ -129,11 +122,19 @@ const MapAlignmentHook = {
     };
     this._onOverlayPointerMove = (e) => {
       if (!this._translateState) return;
-      const dx = e.clientX - this._translateState.startX;
-      const dy = e.clientY - this._translateState.startY;
-      this.transform.tx = this._translateState.baseTx + dx;
-      this.transform.ty = this._translateState.baseTy + dy;
-      this._applyTransform();
+      const dx = e.clientX - this._translateState.lastX;
+      const dy = e.clientY - this._translateState.lastY;
+      this._translateState.lastX = e.clientX;
+      this._translateState.lastY = e.clientY;
+
+      const r = this.transform.rotation * Math.PI / 180;
+      const s = this.transform.scale || 1;
+      const cos = Math.cos(r);
+      const sin = Math.sin(r);
+      // Inverse-rotate viewport delta into map-pixel space, then divide by scale.
+      const mapDx = (dx * cos + dy * sin) / s;
+      const mapDy = (-dx * sin + dy * cos) / s;
+      this.leafletMap.panBy([-mapDx, -mapDy], { animate: false });
     };
     this._onOverlayPointerUp = (e) => {
       if (!this._translateState) return;
@@ -297,9 +298,8 @@ const MapAlignmentHook = {
 
   _applyTransform() {
     if (!this.overlay) return;
-    const {tx, ty, rotation, scale} = this.transform;
-    this.overlay.style.transform =
-      `translate3d(${tx}px, ${ty}px, 0) rotate(${rotation}deg) scale(${scale})`;
+    const {rotation, scale} = this.transform;
+    this.overlay.style.transform = `rotate(${rotation}deg) scale(${scale})`;
   }
 };
 

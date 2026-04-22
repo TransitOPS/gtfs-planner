@@ -337,7 +337,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <div
           id="map-alignment-overlay"
           class="absolute inset-0 cursor-move"
-          style="z-index: 1; transform: translate(0px, 0px) rotate(0deg) scale(1); transform-origin: center;"
+          style="z-index: 1; transform: rotate(0deg) scale(1); transform-origin: center;"
         >
           <div id="map-alignment-leaflet" class="w-full h-full"></div>
         </div>
