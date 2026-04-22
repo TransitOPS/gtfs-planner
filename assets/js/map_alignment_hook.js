@@ -87,12 +87,19 @@ const MapAlignmentHook = {
       zoomControl: true
     });
 
-    L.tileLayer("/map/tiles/satellite/{z}/{x}/{y}", {
-      keepBuffer: 8,
-      updateWhenIdle: false,
-      updateWhenZooming: true,
-      attribution: "© OpenStreetMap contributors, © Geoapify"
-    }).addTo(map);
+    // Esri World Imagery serves free aerial tiles with no API key and
+     // standard z/y/x layout (note: y before x). Goes direct from the browser
+     // since there's no credential to hide server-side.
+    L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      {
+        keepBuffer: 8,
+        maxZoom: 19,
+        updateWhenIdle: false,
+        updateWhenZooming: true,
+        attribution: "Imagery © Esri, Maxar, Earthstar Geographics"
+      }
+    ).addTo(map);
 
     map.dragging.disable();
 
