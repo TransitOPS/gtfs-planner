@@ -340,25 +340,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           style="z-index: 1; transform: translate(0px, 0px) rotate(0deg) scale(1); transform-origin: center;"
         >
           <div id="map-alignment-leaflet" class="w-full h-full"></div>
-          <button
-            id="map-alignment-rotate-handle"
-            type="button"
-            title="Drag to rotate the map overlay"
-            aria-label="Rotate overlay"
-            class="absolute top-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
-          >
-            <.icon name="hero-arrow-path" class="w-4 h-4" />
-          </button>
-          <button
-            id="map-alignment-scale-handle"
-            type="button"
-            title="Drag to resize the map overlay"
-            aria-label="Resize overlay"
-            class="absolute bottom-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
-          >
-            <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
-          </button>
         </div>
+        <button
+          id="map-alignment-rotate-handle"
+          type="button"
+          title="Drag to rotate the map overlay"
+          aria-label="Rotate overlay"
+          class="absolute top-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
+          style="z-index: 2;"
+        >
+          <.icon name="hero-arrow-path" class="w-4 h-4" />
+        </button>
+        <button
+          id="map-alignment-scale-handle"
+          type="button"
+          title="Drag to resize the map overlay"
+          aria-label="Resize overlay"
+          class="absolute bottom-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
+          style="z-index: 2;"
+        >
+          <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
+        </button>
       </div>
       <p class="mt-2 text-xs text-base-content/70">
         Drag the map to translate. Use the handles to rotate and resize. The floorplan stays fixed.
