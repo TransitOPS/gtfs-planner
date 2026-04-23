@@ -418,7 +418,13 @@ const MapAlignmentHook = {
     }
 
     if (this.leafletMap) {
-      this.leafletMap.remove();
+      // If LiveView has already re-mounted another hook on the same container,
+      // Leaflet's `remove()` will throw because the container's _leaflet_id
+      // now belongs to the new instance. Swallow — there's nothing to tear
+      // down that the new instance doesn't already own.
+      try {
+        this.leafletMap.remove();
+      } catch (_) { /* container reused by newer instance */ }
       this.leafletMap = null;
     }
   },
