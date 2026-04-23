@@ -2990,4 +2990,143 @@ defmodule GtfsPlanner.GtfsTest do
                Gtfs.infer_level_alignment(stop_level, 1000, 800)
     end
   end
+
+  describe "save_inferred_level_alignment/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_SAVE_INFER",
+          location_type: 1
+        })
+
+      active_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_SAVE_INFER_ACTIVE",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: active_level.id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        active_level: active_level,
+        stop_level: stop_level
+      }
+    end
+
+    test "persists inferred alignment fields and broadcasts [:stop_levels, :updated]", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      _stop_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_INFER_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 40.0, y: 60.0},
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0100")
+        })
+
+      _stop_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_INFER_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 60.0, y: 40.0},
+          stop_lat: Decimal.new("40.7200"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+
+      assert {:ok, %GtfsPlanner.Gtfs.StopLevel{} = updated, result} =
+               Gtfs.save_inferred_level_alignment(stop_level, 1000, 800)
+
+      assert %{
+               inferred_alignment: _,
+               anchors_used: _,
+               excluded_anchors: _
+             } = result
+
+      assert is_float(updated.floorplan_center_lat)
+      assert is_float(updated.floorplan_center_lon)
+      assert is_float(updated.floorplan_scale_mpp)
+      assert is_float(updated.floorplan_rotation_deg)
+
+      persisted = GtfsPlanner.Repo.get(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      assert persisted.floorplan_center_lat == updated.floorplan_center_lat
+      assert persisted.floorplan_center_lon == updated.floorplan_center_lon
+      assert persisted.floorplan_scale_mpp == updated.floorplan_scale_mpp
+      assert persisted.floorplan_rotation_deg == updated.floorplan_rotation_deg
+
+      assert_receive {[:stop_levels, :updated], %GtfsPlanner.Gtfs.StopLevel{} = payload}, 500
+      assert payload.id == updated.id
+    end
+
+    test "returns {:error, :insufficient_anchors} and performs no write or broadcast", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      _only =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_INFER_SINGLE",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50.0, y: 50.0},
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+
+      assert {:error, :insufficient_anchors} =
+               Gtfs.save_inferred_level_alignment(stop_level, 1000, 800)
+
+      persisted = GtfsPlanner.Repo.get(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      assert is_nil(persisted.floorplan_center_lat)
+      assert is_nil(persisted.floorplan_center_lon)
+      assert is_nil(persisted.floorplan_scale_mpp)
+      assert is_nil(persisted.floorplan_rotation_deg)
+
+      refute_receive {[:stop_levels, :updated], _}, 100
+    end
+
+    test "returns {:error, :invalid_input} for non-positive image dimensions with no write", %{
+      stop_level: stop_level
+    } do
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+
+      assert {:error, :invalid_input} =
+               Gtfs.save_inferred_level_alignment(stop_level, 0, 800)
+
+      persisted = GtfsPlanner.Repo.get(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      assert is_nil(persisted.floorplan_center_lat)
+      assert is_nil(persisted.floorplan_center_lon)
+      assert is_nil(persisted.floorplan_scale_mpp)
+      assert is_nil(persisted.floorplan_rotation_deg)
+
+      refute_receive {[:stop_levels, :updated], _}, 100
+    end
+  end
 end

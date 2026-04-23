@@ -621,6 +621,45 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
+  @doc """
+  Infers and persists floorplan alignment for `stop_level`.
+
+  Calls `infer_level_alignment/3` and, on success, writes the inferred
+  `floorplan_*` fields via `StopLevel.alignment_changeset/2`. Emits a
+  `[:stop_levels, :updated]` broadcast only on successful update.
+  """
+  @spec save_inferred_level_alignment(StopLevel.t(), pos_integer(), pos_integer()) ::
+          {:ok, StopLevel.t(), map()}
+          | {:error,
+             :alignment_prerequisites_missing
+             | :insufficient_anchors
+             | :degenerate_geometry
+             | :high_residual
+             | :invalid_input
+             | :not_found
+             | Ecto.Changeset.t()}
+  def save_inferred_level_alignment(%StopLevel{} = stop_level, image_w, image_h) do
+    with {:ok, %{inferred_alignment: inferred} = result} <-
+           infer_level_alignment(stop_level, image_w, image_h),
+         {:ok, updated} <- persist_inferred_alignment(stop_level, inferred) do
+      broadcast({:ok, updated}, [:stop_levels, :updated])
+      {:ok, updated, result}
+    end
+  end
+
+  def save_inferred_level_alignment(nil, _image_w, _image_h), do: {:error, :not_found}
+
+  defp persist_inferred_alignment(%StopLevel{} = stop_level, inferred) do
+    stop_level
+    |> StopLevel.alignment_changeset(%{
+      floorplan_center_lat: inferred.center_lat,
+      floorplan_center_lon: inferred.center_lon,
+      floorplan_scale_mpp: inferred.scale_mpp,
+      floorplan_rotation_deg: inferred.rotation_deg
+    })
+    |> Repo.update()
+  end
+
   defp direct_candidates_for(%StopLevel{} = stop_level) do
     stop_level.stop_id
     |> list_child_stops_for_level(stop_level.level_id)
