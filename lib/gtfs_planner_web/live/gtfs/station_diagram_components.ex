@@ -434,6 +434,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
 
           <div class="ml-auto flex items-end gap-2">
+            <span class={[
+              "self-center text-xs font-medium",
+              if(@has_alignment?,
+                do: "text-green-700",
+                else: "text-base-content/50"
+              )
+            ]}>
+              {if @has_alignment?, do: "Saved", else: "Not saved"}
+            </span>
             <button id="map-alignment-reset" type="button" class="btn btn-sm btn-ghost">
               Reset
             </button>

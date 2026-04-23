@@ -74,6 +74,12 @@ const MapAlignmentHook = {
     // Optional saved alignment. All four attrs must be present and parse to
     // finite numbers; otherwise treat as absent and fall back to identity.
     const savedAlignment = readSavedAlignment(root);
+    console.info(
+      savedAlignment
+        ? "MapAlignment: mounted with saved alignment"
+        : "MapAlignment: mounted with no saved alignment",
+      savedAlignment || {}
+    );
 
     const overlay = root.querySelector("#map-alignment-overlay");
     const leafletEl = root.querySelector("#map-alignment-leaflet");
@@ -483,12 +489,18 @@ const MapAlignmentHook = {
 
   _restoreAlignment(savedAlignment, img) {
     const map = this.leafletMap;
-    if (!map || !img || !img.naturalWidth || !img.naturalHeight) return;
+    if (!map || !img || !img.naturalWidth || !img.naturalHeight) {
+      console.warn("MapAlignment: restore skipped, map or image not ready");
+      return;
+    }
 
     const canvasRect = this.el.getBoundingClientRect();
     const canvasW = canvasRect.width;
     const canvasH = canvasRect.height;
-    if (!(canvasW > 0) || !(canvasH > 0)) return;
+    if (!(canvasW > 0) || !(canvasH > 0)) {
+      console.warn("MapAlignment: restore skipped, canvas has zero size", {canvasW, canvasH});
+      return;
+    }
 
     const cx = canvasW / 2;
     const cy = canvasH / 2;
@@ -504,6 +516,16 @@ const MapAlignmentHook = {
 
     const renderedPxPerImagePxNeeded = metersPerCanvasPx / savedAlignment.scaleMpp;
     const scale = renderedPxPerImagePxNeeded / (containWidth / img.naturalWidth);
+
+    console.info("MapAlignment: restored", {
+      savedAlignment,
+      canvasW,
+      canvasH,
+      metersPerCanvasPx,
+      containWidth,
+      imageNaturalWidth: img.naturalWidth,
+      computedScale: scale
+    });
 
     this.transform = {
       tx: 0,
