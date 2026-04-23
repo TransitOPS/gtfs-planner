@@ -1630,6 +1630,49 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
+  @impl true
+  def handle_event("infer_alignment", _params, socket) do
+    stop_level = socket.assigns.active_stop_level
+    image_w = socket.assigns.floorplan_image_w
+    image_h = socket.assigns.floorplan_image_h
+
+    if is_nil(stop_level) or is_nil(image_w) or is_nil(image_h) do
+      {:noreply,
+       put_flash(socket, :error, "Infer alignment requires an active level and floorplan image")}
+    else
+      case Gtfs.save_inferred_level_alignment(stop_level, image_w, image_h) do
+        {:ok, updated, %{inferred_alignment: %{anchor_count: n, rmse_meters: rmse}}} ->
+          rmse_str = :erlang.float_to_binary(rmse, decimals: 2)
+
+          {:noreply,
+           socket
+           |> assign(:active_stop_level, updated)
+           |> put_flash(:info, "Inferred alignment from #{n} anchors (RMSE: #{rmse_str} m)")}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, infer_alignment_error_message(reason))}
+      end
+    end
+  end
+
+  defp infer_alignment_error_message(:insufficient_anchors),
+    do: "Not enough anchor stops to infer alignment"
+
+  defp infer_alignment_error_message(:degenerate_geometry),
+    do: "Anchor stops are too close together to infer alignment"
+
+  defp infer_alignment_error_message(:high_residual),
+    do: "Inferred alignment residual exceeds tolerance"
+
+  defp infer_alignment_error_message(:invalid_input),
+    do: "Invalid floorplan image dimensions"
+
+  defp infer_alignment_error_message(:alignment_prerequisites_missing),
+    do: "Active level is missing required alignment data"
+
+  defp infer_alignment_error_message(:not_found), do: "Active level not found"
+  defp infer_alignment_error_message(%Ecto.Changeset{}), do: "Could not save inferred alignment"
+
   defp coerce_positive_integer(value) when is_integer(value) and value > 0, do: {:ok, value}
 
   defp coerce_positive_integer(value) when is_float(value) and value > 0 do
