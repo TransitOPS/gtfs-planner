@@ -92,6 +92,7 @@ const MapAlignmentHook = {
     const opacitySlider = document.getElementById("map-alignment-opacity");
     const saveBtn = document.getElementById("map-alignment-save");
     const clearBtn = document.getElementById("map-alignment-clear");
+    const applyBtn = document.getElementById("map-alignment-apply");
 
     this.overlay = overlay;
     this.leafletEl = leafletEl;
@@ -104,6 +105,7 @@ const MapAlignmentHook = {
     this.opacitySlider = opacitySlider;
     this.saveBtn = saveBtn;
     this.clearBtn = clearBtn;
+    this.applyBtn = applyBtn;
 
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.6";
 
@@ -353,6 +355,35 @@ const MapAlignmentHook = {
       };
       clearBtn.addEventListener("click", this._onClear);
     }
+
+    // --- Apply: push image natural size once, and forward apply clicks ---
+    this._sentNaturalSize = false;
+    const img = overlay ? overlay.querySelector("img") : null;
+    this._naturalSizeImg = img;
+    const pushNaturalSize = () => {
+      if (this._sentNaturalSize) return;
+      if (!img || !img.naturalWidth || !img.naturalHeight) return;
+      this._sentNaturalSize = true;
+      this.pushEvent("set_image_natural_size", {
+        w: img.naturalWidth,
+        h: img.naturalHeight
+      });
+    };
+    if (img) {
+      if (img.complete && img.naturalWidth > 0) {
+        pushNaturalSize();
+      } else {
+        this._onImgNaturalLoad = pushNaturalSize;
+        img.addEventListener("load", this._onImgNaturalLoad);
+      }
+    }
+
+    if (applyBtn) {
+      this._onApply = () => {
+        this.pushEvent("apply_alignment", {});
+      };
+      applyBtn.addEventListener("click", this._onApply);
+    }
   },
 
   destroyed() {
@@ -410,6 +441,14 @@ const MapAlignmentHook = {
     }
     if (this.clearBtn && this._onClear) {
       this.clearBtn.removeEventListener("click", this._onClear);
+    }
+    if (this.applyBtn && this._onApply) {
+      this.applyBtn.removeEventListener("click", this._onApply);
+    }
+    if (this._naturalSizeImg && this._onImgNaturalLoad) {
+      this._naturalSizeImg.removeEventListener("load", this._onImgNaturalLoad);
+      this._onImgNaturalLoad = null;
+      this._naturalSizeImg = null;
     }
 
     if (this._resizeObserver) {

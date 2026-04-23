@@ -476,7 +476,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               id="map-alignment-apply"
               type="button"
               class="btn btn-sm btn-primary"
-              phx-click="apply_alignment"
               disabled={@apply_disabled?}
             >
               Apply to child stops
