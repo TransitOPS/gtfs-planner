@@ -2354,4 +2354,90 @@ defmodule GtfsPlanner.GtfsTest do
       assert Decimal.equal?(Gtfs.get_pathway!(pathway.id).length, Decimal.new("10.00"))
     end
   end
+
+  describe "stop level floorplan alignment" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_ALIGN",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_ALIGN",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{stop_level: stop_level}
+    end
+
+    test "update_stop_level_alignment/2 persists valid alignment", %{stop_level: stop_level} do
+      attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.0060,
+        floorplan_scale_mpp: 0.25,
+        floorplan_rotation_deg: 12.5
+      }
+
+      assert {:ok, updated} = Gtfs.update_stop_level_alignment(stop_level, attrs)
+      assert updated.floorplan_center_lat == 40.7128
+      assert updated.floorplan_center_lon == -74.0060
+      assert updated.floorplan_scale_mpp == 0.25
+      assert updated.floorplan_rotation_deg == 12.5
+    end
+
+    test "update_stop_level_alignment/2 rejects out-of-range lat", %{stop_level: stop_level} do
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Gtfs.update_stop_level_alignment(stop_level, %{
+                 floorplan_center_lat: 95.0,
+                 floorplan_center_lon: -74.0,
+                 floorplan_scale_mpp: 0.25,
+                 floorplan_rotation_deg: 0.0
+               })
+
+      assert "must be less than or equal to 90" in errors_on(changeset).floorplan_center_lat
+    end
+
+    test "clear_stop_level_alignment/1 nulls all four fields", %{stop_level: stop_level} do
+      {:ok, aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 12.5
+        })
+
+      assert {:ok, cleared} = Gtfs.clear_stop_level_alignment(aligned)
+      assert is_nil(cleared.floorplan_center_lat)
+      assert is_nil(cleared.floorplan_center_lon)
+      assert is_nil(cleared.floorplan_scale_mpp)
+      assert is_nil(cleared.floorplan_rotation_deg)
+    end
+
+    test "update_stop_level_alignment/2 broadcasts update event", %{stop_level: stop_level} do
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+
+      attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.0060,
+        floorplan_scale_mpp: 0.25,
+        floorplan_rotation_deg: 0.0
+      }
+
+      assert {:ok, updated} = Gtfs.update_stop_level_alignment(stop_level, attrs)
+      assert_receive {[:stop_levels, :updated], ^updated}
+    end
+  end
 end

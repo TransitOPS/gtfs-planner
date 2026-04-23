@@ -409,6 +409,28 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Updates a stop_level's floorplan alignment.
+  """
+  def update_stop_level_alignment(%StopLevel{} = stop_level, attrs) do
+    stop_level
+    |> StopLevel.alignment_changeset(attrs)
+    |> Repo.update()
+    |> broadcast([:stop_levels, :updated])
+  end
+
+  @doc """
+  Clears a stop_level's floorplan alignment.
+  """
+  def clear_stop_level_alignment(%StopLevel{} = stop_level) do
+    update_stop_level_alignment(stop_level, %{
+      floorplan_center_lat: nil,
+      floorplan_center_lon: nil,
+      floorplan_scale_mpp: nil,
+      floorplan_rotation_deg: nil
+    })
+  end
+
+  @doc """
   Recalculates pathway lengths for same-level pathways on a station level.
 
   Returns `{:ok, count}` where count is the number of pathways whose lengths were updated.
