@@ -508,6 +508,68 @@ defmodule GtfsPlanner.Gtfs do
   defp validate_positive_image_dims(_, _), do: {:error, :invalid_image_dims}
 
   @doc """
+  Applies the saved floorplan alignment to persist `stop_lat`/`stop_lon` on every
+  eligible child stop of `stop_level`.
+
+  Derives coordinates via `derive_child_stop_coords/3`, then updates all derived
+  stops atomically in a single `Repo.transaction`. Each successful update emits a
+  `[:stops, :updated]` broadcast. A single failed changeset rolls back every write
+  in the call.
+
+  Returns `{:ok, count}` with the number of updated stops, `{:ok, 0}` when no
+  eligible stops exist, or `{:error, reason}` on derivation or persistence failure.
+  """
+  @spec apply_alignment_to_child_stops(StopLevel.t(), pos_integer(), pos_integer()) ::
+          {:ok, non_neg_integer()}
+          | {:error, :alignment_missing | :invalid_image_dims | {:transform, atom()} | term()}
+  def apply_alignment_to_child_stops(%StopLevel{} = stop_level, image_w, image_h) do
+    with {:ok, derived} <- derive_child_stop_coords(stop_level, image_w, image_h) do
+      persist_derived_coords(derived)
+    end
+  end
+
+  defp persist_derived_coords([]), do: {:ok, 0}
+
+  defp persist_derived_coords(derived) when is_list(derived) do
+    transaction_result =
+      Repo.transaction(fn ->
+        Enum.map(derived, fn entry ->
+          case update_derived_stop_coords(entry) do
+            {:ok, updated_stop} -> updated_stop
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+      end)
+
+    case transaction_result do
+      {:ok, updated_stops} ->
+        Enum.each(updated_stops, fn stop ->
+          broadcast({:ok, stop}, [:stops, :updated])
+        end)
+
+        {:ok, length(updated_stops)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp update_derived_stop_coords(%{stop_id: stop_id, lat: lat, lon: lon}) do
+    case Repo.get(Stop, stop_id) do
+      nil ->
+        {:error, :stop_not_found}
+
+      %Stop{} = stop ->
+        stop
+        |> Stop.changeset(%{
+          stop_lat: Decimal.from_float(lat),
+          stop_lon: Decimal.from_float(lon)
+        })
+        |> Repo.update()
+    end
+  end
+
+  @doc """
   Recalculates pathway lengths for same-level pathways on a station level.
 
   Returns `{:ok, count}` where count is the number of pathways whose lengths were updated.
