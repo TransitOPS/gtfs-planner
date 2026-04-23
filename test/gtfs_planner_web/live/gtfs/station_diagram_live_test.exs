@@ -8430,7 +8430,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
-      assert has_element?(view, "#map-canvas")
+      assert has_element?(view, ".map-canvas")
       refute has_element?(view, "[id^='diagram-canvas-']")
     end
 
@@ -8506,7 +8506,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "stop_clicked", %{"id" => child_stop.id})
 
-      assert has_element?(view, "#map-canvas")
+      assert has_element?(view, ".map-canvas")
     end
 
     test "switching from map back to view restores the diagram canvas", %{
@@ -8527,7 +8527,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "view"})
 
       assert has_element?(view, "[id^='diagram-canvas-']")
-      refute has_element?(view, "#map-canvas")
+      refute has_element?(view, ".map-canvas")
     end
 
     test "map canvas renders the floorplan image", %{
@@ -8546,7 +8546,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
-      assert has_element?(view, "#map-canvas img[src]")
+      assert has_element?(view, ".map-canvas img[src]")
     end
 
     test "map canvas renders the leaflet overlay container with hook wiring", %{
@@ -8565,8 +8565,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
-      assert has_element?(view, "#map-canvas[phx-hook='MapAlignment'][phx-update='ignore']")
-      assert has_element?(view, "#map-canvas #map-alignment-leaflet")
+      assert has_element?(view, ".map-canvas[phx-hook='MapAlignment'][phx-update='ignore']")
+      assert has_element?(view, ".map-canvas #map-alignment-leaflet")
       assert has_element?(view, "#map-alignment-overlay img[alt='Level floorplan']")
     end
 
@@ -8594,9 +8594,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       html = render(view)
 
-      assert [_, lat] = Regex.run(~r/id="map-canvas"[^>]*data-initial-lat="([^"]+)"/, html)
-      assert [_, lon] = Regex.run(~r/id="map-canvas"[^>]*data-initial-lon="([^"]+)"/, html)
-      assert [_, zoom] = Regex.run(~r/id="map-canvas"[^>]*data-initial-zoom="([^"]+)"/, html)
+      assert [_, lat] = Regex.run(~r/id="map-canvas[^"]*"[^>]*data-initial-lat="([^"]+)"/, html)
+      assert [_, lon] = Regex.run(~r/id="map-canvas[^"]*"[^>]*data-initial-lon="([^"]+)"/, html)
+      assert [_, zoom] = Regex.run(~r/id="map-canvas[^"]*"[^>]*data-initial-zoom="([^"]+)"/, html)
 
       assert lat == to_string(station.stop_lat)
       assert lon == to_string(station.stop_lon)
@@ -8624,8 +8624,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       html = render(view)
 
-      assert [_, lat] = Regex.run(~r/id="map-canvas"[^>]*data-initial-lat="([^"]+)"/, html)
-      assert [_, lon] = Regex.run(~r/id="map-canvas"[^>]*data-initial-lon="([^"]+)"/, html)
+      assert [_, lat] = Regex.run(~r/id="map-canvas[^"]*"[^>]*data-initial-lat="([^"]+)"/, html)
+      assert [_, lon] = Regex.run(~r/id="map-canvas[^"]*"[^>]*data-initial-lon="([^"]+)"/, html)
 
       assert lat == "0"
       assert lon == "0"
@@ -8784,16 +8784,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       html = render(view)
 
       assert [_, lat] =
-               Regex.run(~r/id="map-canvas"[^>]*data-align-center-lat="([^"]+)"/, html)
+               Regex.run(~r/id="map-canvas[^"]*"[^>]*data-align-center-lat="([^"]+)"/, html)
 
       assert [_, lon] =
-               Regex.run(~r/id="map-canvas"[^>]*data-align-center-lon="([^"]+)"/, html)
+               Regex.run(~r/id="map-canvas[^"]*"[^>]*data-align-center-lon="([^"]+)"/, html)
 
       assert [_, mpp] =
-               Regex.run(~r/id="map-canvas"[^>]*data-align-scale-mpp="([^"]+)"/, html)
+               Regex.run(~r/id="map-canvas[^"]*"[^>]*data-align-scale-mpp="([^"]+)"/, html)
 
       assert [_, rot] =
-               Regex.run(~r/id="map-canvas"[^>]*data-align-rotation-deg="([^"]+)"/, html)
+               Regex.run(~r/id="map-canvas[^"]*"[^>]*data-align-rotation-deg="([^"]+)"/, html)
 
       assert String.to_float(lat) == 40.7128
       assert String.to_float(lon) == -74.0060
@@ -8819,7 +8819,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       html = render(view)
 
-      [_, opening_tag] = Regex.run(~r/(<div[^>]*id="map-canvas"[^>]*>)/, html)
+      [_, opening_tag] = Regex.run(~r/(<div[^>]*id="map-canvas[^"]*"[^>]*>)/, html)
 
       refute opening_tag =~ "data-align-center-lat"
       refute opening_tag =~ "data-align-center-lon"

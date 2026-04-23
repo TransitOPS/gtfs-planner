@@ -320,17 +320,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         not is_nil(assigns.align_scale_mpp) and
         not is_nil(assigns.align_rotation_deg)
 
+    # Tie the hook root's DOM id to the active stop_level so switching levels
+    # remounts the hook with the new level's floorplan and alignment attrs.
+    canvas_id =
+      case assigns.active_stop_level do
+        %{id: id} -> "map-canvas-#{id}"
+        _ -> "map-canvas"
+      end
+
     assigns =
       assigns
       |> assign(:floorplan_url, floorplan_url)
       |> assign(:initial_lat, initial_lat)
       |> assign(:initial_lon, initial_lon)
       |> assign(:has_alignment?, has_alignment?)
+      |> assign(:canvas_id, canvas_id)
 
     ~H"""
     <div>
       <div
-        id="map-canvas"
+        id={@canvas_id}
+        class="map-canvas relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
         phx-hook="MapAlignment"
         phx-update="ignore"
         data-floorplan-url={@floorplan_url}
@@ -341,7 +351,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-align-center-lon={if @has_alignment?, do: @align_center_lon}
         data-align-scale-mpp={if @has_alignment?, do: @align_scale_mpp}
         data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
-        class="relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
       >
         <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
         <div
