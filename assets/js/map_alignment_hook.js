@@ -63,6 +63,8 @@ const MapAlignmentHook = {
     const applyCenterBtn = document.getElementById("map-alignment-apply-center");
     const resetBtn = document.getElementById("map-alignment-reset");
     const opacitySlider = document.getElementById("map-alignment-opacity");
+    const saveBtn = document.getElementById("map-alignment-save");
+    const clearBtn = document.getElementById("map-alignment-clear");
 
     this.overlay = overlay;
     this.leafletEl = leafletEl;
@@ -73,6 +75,8 @@ const MapAlignmentHook = {
     this.applyCenterBtn = applyCenterBtn;
     this.resetBtn = resetBtn;
     this.opacitySlider = opacitySlider;
+    this.saveBtn = saveBtn;
+    this.clearBtn = clearBtn;
 
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.6";
 
@@ -288,6 +292,24 @@ const MapAlignmentHook = {
       };
       opacitySlider.addEventListener("input", this._onOpacityInput);
     }
+
+    // --- Save: compute canonical alignment and push to server ---
+    if (saveBtn) {
+      this._onSave = () => {
+        const payload = this._computeAlignment();
+        if (!payload) return;
+        this.pushEvent("save_alignment", payload);
+      };
+      saveBtn.addEventListener("click", this._onSave);
+    }
+
+    // --- Clear: ask server to drop saved alignment ---
+    if (clearBtn) {
+      this._onClear = () => {
+        this.pushEvent("clear_alignment", {});
+      };
+      clearBtn.addEventListener("click", this._onClear);
+    }
   },
 
   destroyed() {
@@ -330,6 +352,12 @@ const MapAlignmentHook = {
     if (this.opacitySlider && this._onOpacityInput) {
       this.opacitySlider.removeEventListener("input", this._onOpacityInput);
     }
+    if (this.saveBtn && this._onSave) {
+      this.saveBtn.removeEventListener("click", this._onSave);
+    }
+    if (this.clearBtn && this._onClear) {
+      this.clearBtn.removeEventListener("click", this._onClear);
+    }
 
     if (this._resizeObserver) {
       this._resizeObserver.disconnect();
@@ -340,6 +368,54 @@ const MapAlignmentHook = {
       this.leafletMap.remove();
       this.leafletMap = null;
     }
+  },
+
+  _computeAlignment() {
+    const overlay = this.overlay;
+    const map = this.leafletMap;
+    if (!overlay || !map) return null;
+
+    const img = overlay.querySelector("img");
+    if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) {
+      console.warn("MapAlignmentHook: floorplan image not loaded; skipping save");
+      return null;
+    }
+
+    // #map-canvas bounds are the same as the Leaflet container's; overlay is
+    // inset-0, so the overlay's untransformed center coincides with the
+    // canvas center in container coords.
+    const canvasRect = this.el.getBoundingClientRect();
+    const canvasW = canvasRect.width;
+    const canvasH = canvasRect.height;
+
+    const {tx, ty, scale} = this.transform;
+    // translate(tx, ty) rotate(r) scale(s) around transform-origin: center
+    // Rotation and scale are pinned to the overlay center, so they leave the
+    // center fixed. Only translate moves it.
+    const cx = canvasW / 2 + tx;
+    const cy = canvasH / 2 + ty;
+
+    const centerLatLng = map.containerPointToLatLng([cx, cy]);
+
+    // Meters per canvas pixel at the overlay center.
+    const p0 = map.containerPointToLatLng([cx, cy]);
+    const p1 = map.containerPointToLatLng([cx + 1, cy]);
+    const metersPerCanvasPx = map.distance(p0, p1);
+
+    // object-contain rendered width of the image inside the overlay.
+    const imgAspect = img.naturalWidth / img.naturalHeight;
+    const canvasAspect = canvasW / canvasH;
+    const containWidth =
+      canvasAspect > imgAspect ? canvasH * imgAspect : canvasW;
+    const renderedPxPerImagePx = (containWidth / img.naturalWidth) * scale;
+    const scaleMpp = metersPerCanvasPx / renderedPxPerImagePx;
+
+    return {
+      center_lat: centerLatLng.lat,
+      center_lon: centerLatLng.lng,
+      scale_mpp: scaleMpp,
+      rotation_deg: this.transform.rotation
+    };
   },
 
   _applyTransform() {
