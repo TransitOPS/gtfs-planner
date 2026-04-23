@@ -8654,5 +8654,197 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#map-alignment-rotate-handle")
       assert has_element?(view, "#map-alignment-scale-handle")
     end
+
+    test "save_alignment persists the four fields on the active stop_level", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      render_hook(view, "save_alignment", %{
+        "center_lat" => 40.7128,
+        "center_lon" => -74.0060,
+        "scale_mpp" => 0.35,
+        "rotation_deg" => 15.5
+      })
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+
+      assert_in_delta reloaded.floorplan_center_lat, 40.7128, 1.0e-6
+      assert_in_delta reloaded.floorplan_center_lon, -74.0060, 1.0e-6
+      assert_in_delta reloaded.floorplan_scale_mpp, 0.35, 1.0e-6
+      assert_in_delta reloaded.floorplan_rotation_deg, 15.5, 1.0e-6
+    end
+
+    test "save_alignment rejects out-of-range lat and does not mutate the DB", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      html =
+        render_hook(view, "save_alignment", %{
+          "center_lat" => 200,
+          "center_lon" => 0,
+          "scale_mpp" => 0.5,
+          "rotation_deg" => 0
+        })
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+
+      assert reloaded.floorplan_center_lat == nil
+      assert reloaded.floorplan_center_lon == nil
+      assert reloaded.floorplan_scale_mpp == nil
+      assert reloaded.floorplan_rotation_deg == nil
+
+      assert html =~ "Could not save alignment"
+    end
+
+    test "clear_alignment nulls all four fields", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      {:ok, stop_level} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.35,
+          floorplan_rotation_deg: 15.5
+        })
+
+      assert stop_level.floorplan_center_lat == 40.7128
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "clear_alignment", %{})
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+
+      assert reloaded.floorplan_center_lat == nil
+      assert reloaded.floorplan_center_lon == nil
+      assert reloaded.floorplan_scale_mpp == nil
+      assert reloaded.floorplan_rotation_deg == nil
+    end
+
+    test "map canvas renders data-align-* attributes when alignment is set", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      {:ok, _stop_level} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.35,
+          floorplan_rotation_deg: 15.5
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      html = render(view)
+
+      assert [_, lat] =
+               Regex.run(~r/id="map-canvas"[^>]*data-align-center-lat="([^"]+)"/, html)
+
+      assert [_, lon] =
+               Regex.run(~r/id="map-canvas"[^>]*data-align-center-lon="([^"]+)"/, html)
+
+      assert [_, mpp] =
+               Regex.run(~r/id="map-canvas"[^>]*data-align-scale-mpp="([^"]+)"/, html)
+
+      assert [_, rot] =
+               Regex.run(~r/id="map-canvas"[^>]*data-align-rotation-deg="([^"]+)"/, html)
+
+      assert String.to_float(lat) == 40.7128
+      assert String.to_float(lon) == -74.0060
+      assert String.to_float(mpp) == 0.35
+      assert String.to_float(rot) == 15.5
+    end
+
+    test "map canvas omits data-align-* attributes when alignment is partial or nil", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      html = render(view)
+
+      [_, opening_tag] = Regex.run(~r/(<div[^>]*id="map-canvas"[^>]*>)/, html)
+
+      refute opening_tag =~ "data-align-center-lat"
+      refute opening_tag =~ "data-align-center-lon"
+      refute opening_tag =~ "data-align-scale-mpp"
+      refute opening_tag =~ "data-align-rotation-deg"
+    end
+
+    test "save and clear buttons are present in map mode", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(view, "#map-alignment-save")
+      assert has_element?(view, "#map-alignment-clear")
+    end
   end
 end
