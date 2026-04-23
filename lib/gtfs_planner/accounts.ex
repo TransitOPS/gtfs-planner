@@ -650,6 +650,15 @@ defmodule GtfsPlanner.Accounts do
   end
 
   @doc """
+  Lists all organization memberships for a user, including deactivated memberships.
+  """
+  def list_user_org_memberships_including_deactivated(user_id) do
+    UserOrgMembership
+    |> where([m], m.user_id == ^user_id)
+    |> Repo.all()
+  end
+
+  @doc """
   Gets a user organization membership by user ID and organization ID.
 
   ## Examples
