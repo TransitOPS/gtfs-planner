@@ -2440,4 +2440,164 @@ defmodule GtfsPlanner.GtfsTest do
       assert_receive {[:stop_levels, :updated], ^updated}
     end
   end
+
+  describe "derive_child_stop_coords/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_DERIVE",
+          location_type: 1
+        })
+
+      active_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_DERIVE_ACTIVE",
+          level_index: 0.0
+        })
+
+      other_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_DERIVE_OTHER",
+          level_index: 1.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: active_level.id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        active_level: active_level,
+        other_level: other_level,
+        stop_level: stop_level
+      }
+    end
+
+    test "returns {:error, :alignment_missing} when alignment is incomplete", %{
+      stop_level: stop_level
+    } do
+      assert {:error, :alignment_missing} = Gtfs.derive_child_stop_coords(stop_level, 1000, 800)
+
+      {:ok, partial} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      partial = %{partial | floorplan_rotation_deg: nil}
+
+      assert {:error, :alignment_missing} = Gtfs.derive_child_stop_coords(partial, 1000, 800)
+    end
+
+    test "ignores stops with nil or non-normalizable diagram_coordinate", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      {:ok, aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      stop_with_coord =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_WITH_COORD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50}
+        })
+
+      _stop_nil_coord =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_NIL_COORD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id
+        })
+
+      _stop_bad_coord =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_BAD_COORD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{foo: "bar"}
+        })
+
+      assert {:ok, entries} = Gtfs.derive_child_stop_coords(aligned, 1000, 800)
+      assert [entry] = entries
+      assert entry.stop_id == stop_with_coord.id
+      assert_in_delta entry.lat, 40.7128, 1.0e-9
+      assert_in_delta entry.lon, -74.0060, 1.0e-9
+    end
+
+    test "returns one entry per eligible child stop on the active level", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      other_level: other_level,
+      stop_level: stop_level
+    } do
+      {:ok, aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      on_level_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_ON_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50}
+        })
+
+      on_level_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_ON_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 60, y: 40}
+        })
+
+      _off_level =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_OFF",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: other_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50}
+        })
+
+      assert {:ok, entries} = Gtfs.derive_child_stop_coords(aligned, 1000, 800)
+
+      returned_ids = Enum.map(entries, & &1.stop_id) |> Enum.sort()
+      expected_ids = Enum.sort([on_level_a.id, on_level_b.id])
+
+      assert returned_ids == expected_ids
+      assert length(entries) == 2
+    end
+  end
 end

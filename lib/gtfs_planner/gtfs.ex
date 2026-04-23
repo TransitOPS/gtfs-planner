@@ -20,6 +20,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.FeedInfo
+  alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Location
@@ -429,6 +430,82 @@ defmodule GtfsPlanner.Gtfs do
       floorplan_rotation_deg: nil
     })
   end
+
+  @doc """
+  Derives geographic coordinates for eligible child stops of a station level
+  using its saved floorplan alignment.
+
+  Eligible stops are those attached (directly or transitively) to the parent
+  station, pinned to the active level, and having a `diagram_coordinate` that
+  normalizes via `Coordinates.normalize_point/1`.
+
+  Returns `{:ok, entries}` where each entry is a map with `:stop_id`,
+  `:stop_name`, `:lat`, and `:lon`. Returns `{:error, :alignment_missing}` when
+  any of the four alignment fields on the stop level are nil,
+  `{:error, :invalid_image_dims}` when image dimensions are not positive
+  integers, or `{:error, {:transform, reason}}` when the coordinate transform
+  rejects an input.
+
+  ## Examples
+
+      iex> derive_child_stop_coords(stop_level, 1024, 768)
+      {:ok, [%{stop_id: "...", stop_name: "Platform 1", lat: 40.7128, lon: -74.0060}]}
+  """
+  @spec derive_child_stop_coords(StopLevel.t(), pos_integer(), pos_integer()) ::
+          {:ok, [%{stop_id: Ecto.UUID.t(), stop_name: String.t() | nil, lat: float(), lon: float()}]}
+          | {:error, :alignment_missing | :invalid_image_dims | {:transform, atom()}}
+  def derive_child_stop_coords(%StopLevel{} = stop_level, image_w, image_h) do
+    with {:ok, alignment} <- extract_alignment(stop_level),
+         :ok <- validate_positive_image_dims(image_w, image_h) do
+      stop_level.stop_id
+      |> list_child_stops_for_level(stop_level.level_id)
+      |> Enum.filter(& &1.on_active_level)
+      |> Enum.reduce_while({:ok, []}, fn stop, {:ok, acc} ->
+        case Coordinates.normalize_point(stop.diagram_coordinate) do
+          nil ->
+            {:cont, {:ok, acc}}
+
+          %{x: x, y: y} ->
+            case FloorplanTransform.svg_to_lat_lon(alignment, image_w, image_h, %{x: x, y: y}) do
+              {:ok, {lat, lon}} ->
+                entry = %{stop_id: stop.id, stop_name: stop.stop_name, lat: lat, lon: lon}
+                {:cont, {:ok, [entry | acc]}}
+
+              {:error, reason} ->
+                {:halt, {:error, {:transform, reason}}}
+            end
+        end
+      end)
+      |> case do
+        {:ok, entries} -> {:ok, Enum.reverse(entries)}
+        {:error, _} = error -> error
+      end
+    end
+  end
+
+  defp extract_alignment(%StopLevel{
+         floorplan_center_lat: lat,
+         floorplan_center_lon: lon,
+         floorplan_scale_mpp: scale,
+         floorplan_rotation_deg: rotation
+       })
+       when is_number(lat) and is_number(lon) and is_number(scale) and is_number(rotation) do
+    {:ok,
+     %{
+       center_lat: lat,
+       center_lon: lon,
+       scale_mpp: scale,
+       rotation_deg: rotation
+     }}
+  end
+
+  defp extract_alignment(%StopLevel{}), do: {:error, :alignment_missing}
+
+  defp validate_positive_image_dims(w, h)
+       when is_integer(w) and is_integer(h) and w > 0 and h > 0,
+       do: :ok
+
+  defp validate_positive_image_dims(_, _), do: {:error, :invalid_image_dims}
 
   @doc """
   Recalculates pathway lengths for same-level pathways on a station level.
