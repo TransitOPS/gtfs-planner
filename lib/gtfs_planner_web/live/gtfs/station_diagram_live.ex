@@ -1523,6 +1523,62 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event(
+        "save_alignment",
+        %{
+          "center_lat" => lat,
+          "center_lon" => lon,
+          "scale_mpp" => mpp,
+          "rotation_deg" => rot
+        },
+        socket
+      ) do
+    case socket.assigns.active_stop_level do
+      %StopLevel{} = stop_level ->
+        attrs = %{
+          floorplan_center_lat: lat,
+          floorplan_center_lon: lon,
+          floorplan_scale_mpp: mpp,
+          floorplan_rotation_deg: rot
+        }
+
+        case Gtfs.update_stop_level_alignment(stop_level, attrs) do
+          {:ok, updated} ->
+            {:noreply,
+             socket
+             |> assign(:active_stop_level, updated)
+             |> put_flash(:info, "Alignment saved")}
+
+          {:error, %Ecto.Changeset{}} ->
+            {:noreply, put_flash(socket, :error, "Could not save alignment")}
+        end
+
+      _ ->
+        {:noreply, put_flash(socket, :error, "No level selected")}
+    end
+  end
+
+  @impl true
+  def handle_event("clear_alignment", _params, socket) do
+    case socket.assigns.active_stop_level do
+      %StopLevel{} = stop_level ->
+        case Gtfs.clear_stop_level_alignment(stop_level) do
+          {:ok, updated} ->
+            {:noreply,
+             socket
+             |> assign(:active_stop_level, updated)
+             |> put_flash(:info, "Alignment cleared")}
+
+          {:error, %Ecto.Changeset{}} ->
+            {:noreply, put_flash(socket, :error, "Could not clear alignment")}
+        end
+
+      _ ->
+        {:noreply, put_flash(socket, :error, "No level selected")}
+    end
+  end
+
+  @impl true
   def handle_event("scale_line_click", _params, socket) do
     stop_level = socket.assigns.active_stop_level
 
