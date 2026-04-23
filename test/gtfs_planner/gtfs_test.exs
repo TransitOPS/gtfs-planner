@@ -1777,6 +1777,77 @@ defmodule GtfsPlanner.GtfsTest do
 
       assert length(stations) == 2
     end
+
+    test "empty-string location_type opt is a passthrough", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      stop_fixture(org.id, version.id, %{stop_id: "S1", parent_station: nil, location_type: 1})
+      stop_fixture(org.id, version.id, %{stop_id: "S2", parent_station: nil, location_type: 0})
+
+      stations = Gtfs.list_stations(org.id, version.id, location_type: "")
+
+      assert length(stations) == 2
+    end
+
+    test "returns only location_type=0 rows when filtered to 0", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      _station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "STATION1",
+          parent_station: nil,
+          location_type: 1
+        })
+
+      bus_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BUS1",
+          parent_station: nil,
+          location_type: 0
+        })
+
+      stops = Gtfs.list_stations(org.id, version.id, location_type: 0)
+
+      assert length(stops) == 1
+      assert hd(stops).id == bus_stop.id
+      assert hd(stops).location_type == 0
+    end
+
+    test "excludes child stops even when location_type filter matches", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "STATION1",
+          parent_station: nil,
+          location_type: 1
+        })
+
+      top_level_platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_TOP",
+          parent_station: nil,
+          location_type: 0
+        })
+
+      level = level_fixture(org.id, version.id, %{level_id: "L1", level_index: 0.0})
+
+      _child_platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_CHILD",
+          parent_station: station.stop_id,
+          location_type: 0,
+          level_id: level.level_id
+        })
+
+      stops = Gtfs.list_stations(org.id, version.id, location_type: 0)
+
+      assert length(stops) == 1
+      assert hd(stops).id == top_level_platform.id
+    end
   end
 
   describe "count_stations/3 location_type filtering" do

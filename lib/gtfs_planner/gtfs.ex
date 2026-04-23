@@ -52,7 +52,7 @@ defmodule GtfsPlanner.Gtfs do
           sort_dir: :asc | :desc | nil,
           page: pos_integer() | nil,
           per_page: pos_integer() | nil,
-          location_type: 0 | 1 | 2 | 3 | 4 | nil
+          location_type: 0 | 1 | 2 | 3 | 4 | String.t() | nil
         ]
 
   @doc """
@@ -2351,7 +2351,7 @@ defmodule GtfsPlanner.Gtfs do
   defp maybe_filter_location_type(query, nil), do: query
   defp maybe_filter_location_type(query, ""), do: query
 
-  defp maybe_filter_location_type(query, location_type) when is_integer(location_type) do
+  defp maybe_filter_location_type(query, location_type) do
     where(query, [s], s.location_type == ^location_type)
   end
 
