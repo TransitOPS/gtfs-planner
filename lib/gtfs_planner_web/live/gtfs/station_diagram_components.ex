@@ -473,6 +473,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               Save alignment
             </button>
             <button
+              id="map-alignment-infer"
+              type="button"
+              class="btn btn-sm btn-primary"
+              phx-click="infer_alignment"
+              disabled={
+                is_nil(@active_stop_level) or is_nil(@image_natural_width) or
+                  is_nil(@image_natural_height)
+              }
+            >
+              Infer alignment
+            </button>
+            <button
               id="map-alignment-apply"
               type="button"
               class="btn btn-sm btn-primary"

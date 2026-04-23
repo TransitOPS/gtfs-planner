@@ -8926,6 +8926,69 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#map-alignment-apply[disabled]")
     end
 
+    test "infer button is present in map mode with phx-click=infer_alignment", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
+
+      assert has_element?(view, "#map-alignment-infer")
+      assert has_element?(view, ~s(#map-alignment-infer[phx-click="infer_alignment"]))
+      assert render(view) =~ "Infer alignment"
+    end
+
+    test "infer button is disabled when image dims are missing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(view, "#map-alignment-infer")
+      assert has_element?(view, "#map-alignment-infer[disabled]")
+    end
+
+    test "infer button is enabled after image dims are pushed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "set_image_natural_size", %{"w" => 1000, "h" => 800})
+
+      assert has_element?(view, "#map-alignment-infer")
+      refute has_element?(view, "#map-alignment-infer[disabled]")
+    end
+
     test "set_image_natural_size with valid integers updates the image dimension assigns", %{
       conn: conn,
       user: user,
