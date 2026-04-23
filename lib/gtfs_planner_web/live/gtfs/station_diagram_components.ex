@@ -385,6 +385,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         >
           <.icon name="hero-arrow-path" class="w-4 h-4" />
         </button>
+        <div
+          id="map-alignment-pins"
+          class="absolute inset-0 pointer-events-none"
+          style="z-index: 3;"
+        >
+        </div>
         <button
           id="map-alignment-scale-handle"
           type="button"

@@ -164,7 +164,13 @@ const MapAlignmentHook = {
 
     this.leafletMap = map;
 
-    this._stopsLayer = L.featureGroup().addTo(map);
+    this._pinsRoot = root.querySelector("#map-alignment-pins");
+    this._childStops = [];
+    this._onMapViewChanged = () => this._positionPins();
+    map.on("move", this._onMapViewChanged);
+    map.on("zoom", this._onMapViewChanged);
+    map.on("viewreset", this._onMapViewChanged);
+    map.on("resize", this._onMapViewChanged);
     this.handleEvent("set_child_stops", (payload) => this._renderChildStops(payload));
     this.pushEvent("map_ready", {});
 
@@ -460,10 +466,18 @@ const MapAlignmentHook = {
       this._resizeObserver = null;
     }
 
-    if (this._stopsLayer && this.leafletMap) {
-      try { this.leafletMap.removeLayer(this._stopsLayer); } catch (_) {}
+    if (this.leafletMap && this._onMapViewChanged) {
+      try {
+        this.leafletMap.off("move", this._onMapViewChanged);
+        this.leafletMap.off("zoom", this._onMapViewChanged);
+        this.leafletMap.off("viewreset", this._onMapViewChanged);
+        this.leafletMap.off("resize", this._onMapViewChanged);
+      } catch (_) {}
     }
-    this._stopsLayer = null;
+    this._onMapViewChanged = null;
+    if (this._pinsRoot) this._pinsRoot.innerHTML = "";
+    this._pinsRoot = null;
+    this._childStops = null;
 
     if (this.leafletMap) {
       // If LiveView has already re-mounted another hook on the same container,
@@ -676,23 +690,44 @@ const MapAlignmentHook = {
   },
 
   _renderChildStops({stops}) {
-    const L = window.L;
-    if (!L || !this._stopsLayer) return;
+    if (!this._pinsRoot) return;
 
-    this._stopsLayer.clearLayers();
+    this._childStops = (stops || []).filter(
+      (s) => Number.isFinite(s.lat) && Number.isFinite(s.lon)
+    );
 
-    (stops || []).forEach((s) => {
-      if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) return;
-      const marker = L.circleMarker([s.lat, s.lon], {
-        radius: 5,
-        weight: 1,
-        color: "#111",
-        fillColor: "#fff",
-        fillOpacity: 1,
-        interactive: true
-      });
-      marker.bindTooltip(stopTooltipLabel(s), {direction: "top", offset: [0, -6]});
-      marker.addTo(this._stopsLayer);
+    this._pinsRoot.innerHTML = "";
+    this._childStops.forEach((s) => {
+      const pin = document.createElement("div");
+      pin.className =
+        "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
+      pin.style.width = "10px";
+      pin.style.height = "10px";
+
+      const dot = document.createElement("div");
+      dot.className = "w-full h-full rounded-full bg-white border border-black";
+      pin.appendChild(dot);
+
+      const tip = document.createElement("div");
+      tip.className =
+        "absolute left-1/2 bottom-full mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 text-white text-xs px-1.5 py-0.5 opacity-0 group-hover:opacity-100 pointer-events-none";
+      tip.textContent = stopTooltipLabel(s);
+      pin.appendChild(tip);
+
+      this._pinsRoot.appendChild(pin);
+      s._el = pin;
+    });
+
+    this._positionPins();
+  },
+
+  _positionPins() {
+    if (!this._pinsRoot || !this.leafletMap || !this._childStops) return;
+    this._childStops.forEach((s) => {
+      if (!s._el) return;
+      const pt = this.leafletMap.latLngToContainerPoint([s.lat, s.lon]);
+      s._el.style.left = `${pt.x}px`;
+      s._el.style.top = `${pt.y}px`;
     });
   }
 };
