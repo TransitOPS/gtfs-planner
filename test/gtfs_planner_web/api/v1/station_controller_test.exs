@@ -407,5 +407,53 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
 
       assert %{"error" => %{"code" => "bad_request"}} = json_response(conn, 400)
     end
+
+    test "returns 404 for location_type=0 stop even when parent_station is nil", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+
+      bus_stop =
+        stop_fixture(org.id, version.id, %{location_type: 0, parent_station: nil})
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{bus_stop.id}/bundle")
+
+      assert %{"error" => %{"code" => "not_found"}} = json_response(conn, 404)
+    end
+
+    test "returns 200 with expected shape for location_type=1 station", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, level: level, pathway: pathway} = build_station_data(org.id, version.id)
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => data} = json_response(conn, 200)
+
+      assert data["station"]["id"] == station.id
+      assert data["station"]["stop_id"] == station.stop_id
+      assert data["station"]["stop_name"] == station.stop_name
+
+      assert length(data["levels"]) == 1
+      assert hd(data["levels"])["id"] == level.id
+
+      assert length(data["stops"]) == 2
+
+      assert length(data["pathways"]) == 1
+      assert hd(data["pathways"])["id"] == pathway.id
+
+      assert is_binary(data["downloaded_at"])
+    end
   end
 end
