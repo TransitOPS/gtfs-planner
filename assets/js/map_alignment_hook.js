@@ -453,6 +453,21 @@ const MapAlignmentHook = {
     const renderedPxPerImagePx = (containWidth / img.naturalWidth) * scale;
     const scaleMpp = metersPerCanvasPx / renderedPxPerImagePx;
 
+    console.info("MapAlignment: computed save payload", {
+      canvasW,
+      canvasH,
+      tx,
+      ty,
+      userScale: scale,
+      metersPerCanvasPx,
+      containWidth,
+      imageNaturalWidth: img.naturalWidth,
+      renderedPxPerImagePx,
+      scaleMpp,
+      mapZoom: map.getZoom(),
+      mapCenter: map.getCenter()
+    });
+
     return {
       center_lat: centerLatLng.lat,
       center_lon: centerLatLng.lng,
