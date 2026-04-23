@@ -355,14 +355,14 @@ const MapAlignmentHook = {
       clearTimeout(this._postTransitionTimer);
       this._postTransitionTimer = null;
     }
-    if (this._restoreRafId !== null && this._restoreRafId !== undefined) {
-      cancelAnimationFrame(this._restoreRafId);
-      this._restoreRafId = null;
-    }
     if (this._onRestoreImgLoad && this.overlay) {
       const img = this.overlay.querySelector("img");
       if (img) img.removeEventListener("load", this._onRestoreImgLoad);
       this._onRestoreImgLoad = null;
+    }
+    if (this._restoreObserver) {
+      this._restoreObserver.disconnect();
+      this._restoreObserver = null;
     }
 
     if (this.overlay) {
@@ -467,23 +467,37 @@ const MapAlignmentHook = {
     const img = overlay.querySelector("img");
     if (!img) return;
 
-    const runAfterRaf = () => {
-      // Defer to rAF so Leaflet's initial invalidateSize() has run.
-      this._restoreRafId = requestAnimationFrame(() => {
-        this._restoreRafId = null;
-        this._restoreAlignment(savedAlignment, img);
-      });
-    };
-
-    if (img.complete && img.naturalWidth > 0) {
-      runAfterRaf();
-    } else {
-      this._onRestoreImgLoad = () => {
+    const cleanup = () => {
+      if (this._restoreObserver) {
+        this._restoreObserver.disconnect();
+        this._restoreObserver = null;
+      }
+      if (this._onRestoreImgLoad) {
         img.removeEventListener("load", this._onRestoreImgLoad);
         this._onRestoreImgLoad = null;
-        runAfterRaf();
-      };
-      img.addEventListener("load", this._onRestoreImgLoad);
+      }
+    };
+
+    const tryRestore = () => {
+      const rect = this.el.getBoundingClientRect();
+      const imgReady = img.complete && img.naturalWidth > 0;
+      if (rect.width > 0 && rect.height > 0 && imgReady) {
+        this._restoreAlignment(savedAlignment, img);
+        cleanup();
+        return true;
+      }
+      return false;
+    };
+
+    if (tryRestore()) return;
+
+    // Canvas and/or image not ready yet. Retry when either resizes or image loads.
+    this._onRestoreImgLoad = tryRestore;
+    img.addEventListener("load", this._onRestoreImgLoad);
+
+    if (typeof ResizeObserver !== "undefined") {
+      this._restoreObserver = new ResizeObserver(tryRestore);
+      this._restoreObserver.observe(this.el);
     }
   },
 
