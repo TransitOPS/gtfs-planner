@@ -306,6 +306,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :align_center_lon, :any, default: nil
   attr :align_scale_mpp, :any, default: nil
   attr :align_rotation_deg, :any, default: nil
+  attr :image_natural_width, :any, default: nil
+  attr :image_natural_height, :any, default: nil
 
   def map_canvas(assigns) do
     floorplan_url =
@@ -319,6 +321,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         not is_nil(assigns.align_center_lon) and
         not is_nil(assigns.align_scale_mpp) and
         not is_nil(assigns.align_rotation_deg)
+
+    has_image_dims? =
+      positive_integer?(assigns.image_natural_width) and
+        positive_integer?(assigns.image_natural_height)
+
+    apply_disabled? = not (has_alignment? and has_image_dims?)
 
     # Tie the hook root's DOM id to the active stop_level so switching levels
     # remounts the hook with the new level's floorplan and alignment attrs.
@@ -334,6 +342,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:initial_lat, initial_lat)
       |> assign(:initial_lon, initial_lon)
       |> assign(:has_alignment?, has_alignment?)
+      |> assign(:apply_disabled?, apply_disabled?)
       |> assign(:canvas_id, canvas_id)
 
     ~H"""
@@ -351,6 +360,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-align-center-lon={if @has_alignment?, do: @align_center_lon}
         data-align-scale-mpp={if @has_alignment?, do: @align_scale_mpp}
         data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
+        data-image-natural-width={@image_natural_width}
+        data-image-natural-height={@image_natural_height}
       >
         <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
         <div
@@ -461,12 +472,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <button id="map-alignment-save" type="button" class="btn btn-sm btn-primary">
               Save alignment
             </button>
+            <button
+              id="map-alignment-apply"
+              type="button"
+              class="btn btn-sm btn-primary"
+              phx-click="apply_alignment"
+              disabled={@apply_disabled?}
+            >
+              Apply to child stops
+            </button>
           </div>
         </div>
       </div>
     </div>
     """
   end
+
+  defp positive_integer?(value) when is_integer(value) and value > 0, do: true
+  defp positive_integer?(_), do: false
 
   # ============================================================================
   # Diagram Canvas

@@ -353,6 +353,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 align_center_lon={@active_stop_level && @active_stop_level.floorplan_center_lon}
                 align_scale_mpp={@active_stop_level && @active_stop_level.floorplan_scale_mpp}
                 align_rotation_deg={@active_stop_level && @active_stop_level.floorplan_rotation_deg}
+                image_natural_width={@floorplan_image_w}
+                image_natural_height={@floorplan_image_h}
               />
             </div>
           <% else %>

@@ -8847,6 +8847,85 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#map-alignment-clear")
     end
 
+    test "apply button is disabled when no alignment saved", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
+
+      assert has_element?(view, "#map-alignment-apply")
+      assert has_element?(view, "#map-alignment-apply[disabled]")
+    end
+
+    test "apply button is disabled when alignment saved but image dims not reported", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      {:ok, _aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.35,
+          floorplan_rotation_deg: 0.0
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(view, "#map-alignment-apply[disabled]")
+    end
+
+    test "apply button is enabled when alignment saved and image dims present", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      {:ok, _aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.35,
+          floorplan_rotation_deg: 0.0
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
+
+      assert has_element?(view, "#map-alignment-apply")
+      refute has_element?(view, "#map-alignment-apply[disabled]")
+    end
+
     test "set_image_natural_size with valid integers updates the image dimension assigns", %{
       conn: conn,
       user: user,
