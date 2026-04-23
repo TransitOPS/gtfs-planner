@@ -1711,6 +1711,127 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "list_stations/3 location_type filtering" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "returns only location_type=1 rows when filtered", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "STATION1",
+          stop_name: "Main Station",
+          parent_station: nil,
+          location_type: 1
+        })
+
+      _bus_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BUS1",
+          stop_name: "Bus Stop",
+          parent_station: nil,
+          location_type: 0
+        })
+
+      stations = Gtfs.list_stations(org.id, version.id, location_type: 1)
+
+      assert length(stations) == 1
+      assert hd(stations).id == station.id
+      assert hd(stations).location_type == 1
+    end
+
+    test "unfiltered call returns both location_type=0 and location_type=1 top-level rows", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      _station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "STATION1",
+          parent_station: nil,
+          location_type: 1
+        })
+
+      _bus_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "BUS1",
+          parent_station: nil,
+          location_type: 0
+        })
+
+      stations = Gtfs.list_stations(org.id, version.id)
+
+      assert length(stations) == 2
+      assert Enum.all?(stations, fn s -> is_nil(s.parent_station) end)
+    end
+
+    test "nil location_type opt is a passthrough", %{organization: org, gtfs_version: version} do
+      stop_fixture(org.id, version.id, %{stop_id: "S1", parent_station: nil, location_type: 1})
+      stop_fixture(org.id, version.id, %{stop_id: "S2", parent_station: nil, location_type: 0})
+
+      stations = Gtfs.list_stations(org.id, version.id, location_type: nil)
+
+      assert length(stations) == 2
+    end
+  end
+
+  describe "count_stations/3 location_type filtering" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "returns only station count when filtered to location_type=1", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      stop_fixture(org.id, version.id, %{
+        stop_id: "STATION1",
+        parent_station: nil,
+        location_type: 1
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "BUS1",
+        parent_station: nil,
+        location_type: 0
+      })
+
+      assert Gtfs.count_stations(org.id, version.id, location_type: 1) == 1
+    end
+
+    test "unfiltered count includes both location_type=0 and location_type=1 top-level rows", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      stop_fixture(org.id, version.id, %{
+        stop_id: "STATION1",
+        parent_station: nil,
+        location_type: 1
+      })
+
+      stop_fixture(org.id, version.id, %{
+        stop_id: "BUS1",
+        parent_station: nil,
+        location_type: 0
+      })
+
+      assert Gtfs.count_stations(org.id, version.id) == 2
+    end
+
+    test "nil location_type opt is a passthrough", %{organization: org, gtfs_version: version} do
+      stop_fixture(org.id, version.id, %{stop_id: "S1", parent_station: nil, location_type: 1})
+      stop_fixture(org.id, version.id, %{stop_id: "S2", parent_station: nil, location_type: 0})
+
+      assert Gtfs.count_stations(org.id, version.id, location_type: nil) == 2
+    end
+  end
+
   describe "list_pathways_for_station/3" do
     setup do
       organization = organization_fixture()
