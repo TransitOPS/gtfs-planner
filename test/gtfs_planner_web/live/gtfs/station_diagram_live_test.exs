@@ -8846,5 +8846,207 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#map-alignment-save")
       assert has_element?(view, "#map-alignment-clear")
     end
+
+    test "set_image_natural_size with valid integers updates the image dimension assigns", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.floorplan_image_w == 1024
+      assert assigns.floorplan_image_h == 768
+    end
+
+    test "set_image_natural_size coerces float payloads to positive integers", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "set_image_natural_size", %{"w" => 1024.7, "h" => 768.4})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.floorplan_image_w == 1024
+      assert assigns.floorplan_image_h == 768
+    end
+
+    test "set_image_natural_size ignores non-positive payloads", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "set_image_natural_size", %{"w" => 0, "h" => -5})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.floorplan_image_w == nil
+      assert assigns.floorplan_image_h == nil
+    end
+
+    test "apply_alignment with valid alignment and image dims persists stop lat/lon and flashes count",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level,
+           stop_level: stop_level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      {:ok, _aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.35,
+          floorplan_rotation_deg: 0.0
+        })
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "APPLY_CHILD_1",
+          stop_name: "Apply Child 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
+
+      html = render_hook(view, "apply_alignment", %{})
+
+      assert html =~ "Applied alignment to 1 stops"
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
+      refute is_nil(reloaded.stop_lat)
+      refute is_nil(reloaded.stop_lon)
+    end
+
+    test "apply_alignment without alignment shows error flash and makes no writes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NO_ALIGN_CHILD",
+          stop_name: "No Align Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+        })
+
+      original_lat = child_stop.stop_lat
+      original_lon = child_stop.stop_lon
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
+
+      html = render_hook(view, "apply_alignment", %{})
+
+      assert html =~ "Save alignment before applying"
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
+      assert reloaded.stop_lat == original_lat
+      assert reloaded.stop_lon == original_lon
+    end
+
+    test "apply_alignment without image dimensions shows error flash and makes no writes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      {:ok, _aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.35,
+          floorplan_rotation_deg: 0.0
+        })
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NO_DIMS_CHILD",
+          stop_name: "No Dims Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+        })
+
+      original_lat = child_stop.stop_lat
+      original_lon = child_stop.stop_lon
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      html = render_hook(view, "apply_alignment", %{})
+
+      assert html =~ "Floorplan image not ready"
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
+      assert reloaded.stop_lat == original_lat
+      assert reloaded.stop_lon == original_lon
+    end
   end
 end
