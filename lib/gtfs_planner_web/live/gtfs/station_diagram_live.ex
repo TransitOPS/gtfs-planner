@@ -347,6 +347,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 active_level={@active_level}
                 active_stop_level={@active_stop_level}
                 organization_id={@current_organization.id}
+                align_center_lat={@active_stop_level && @active_stop_level.floorplan_center_lat}
+                align_center_lon={@active_stop_level && @active_stop_level.floorplan_center_lon}
+                align_scale_mpp={@active_stop_level && @active_stop_level.floorplan_scale_mpp}
+                align_rotation_deg={@active_stop_level && @active_stop_level.floorplan_rotation_deg}
               />
             </div>
           <% else %>
