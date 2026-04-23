@@ -34,9 +34,43 @@ defmodule GtfsPlanner.Gtfs.AlignmentInference do
           | :high_residual
           | :invalid_input
 
+  @type direct_candidate :: %{
+          stop_id: String.t(),
+          svg_x: number() | nil,
+          svg_y: number() | nil,
+          lat: number() | nil,
+          lon: number() | nil
+        }
+
+  @type cross_level_candidate :: %{
+          stop_id: String.t(),
+          pathway_id: String.t(),
+          pathway_mode: integer(),
+          level_index_delta: number(),
+          svg_x: number() | nil,
+          svg_y: number() | nil,
+          lat: number() | nil,
+          lon: number() | nil
+        }
+
+  @type exclusion_reason ::
+          :nil_coordinate
+          | :nil_latlon
+          | :non_elevator_mode
+          | :shadowed_by_direct
+          | :lost_tie_break
+
+  @type exclusion :: %{
+          stop_id: String.t(),
+          reason: exclusion_reason(),
+          source: :direct | :cross_level,
+          pathway_id: String.t() | nil
+        }
+
   @max_rmse_meters 2.0
   @meters_per_degree_lat 111_111.0
   @degenerate_epsilon 1.0e-6
+  @elevator_mode 5
 
   @spec infer_alignment([anchor()], pos_integer(), pos_integer()) ::
           {:ok, inferred_alignment()} | {:error, error_reason()}
@@ -48,6 +82,111 @@ defmodule GtfsPlanner.Gtfs.AlignmentInference do
          :ok <- check_residual(solution) do
       {:ok, to_alignment(solution)}
     end
+  end
+
+  @spec select_anchors([direct_candidate()], [cross_level_candidate()]) ::
+          {[anchor()], [exclusion()]}
+  def select_anchors(direct_candidates, cross_level_candidates)
+      when is_list(direct_candidates) and is_list(cross_level_candidates) do
+    {direct_anchors, direct_exclusions} = classify_direct(direct_candidates)
+    direct_ids = MapSet.new(direct_anchors, & &1.stop_id)
+
+    {cross_kept, cross_exclusions} =
+      classify_cross_level(cross_level_candidates, direct_ids)
+
+    {cross_winners, tie_break_exclusions} = resolve_cross_level_ties(cross_kept)
+
+    anchors =
+      (direct_anchors ++ cross_winners)
+      |> Enum.sort_by(& &1.stop_id)
+
+    exclusions =
+      (direct_exclusions ++ cross_exclusions ++ tie_break_exclusions)
+      |> Enum.sort_by(&{&1.stop_id, &1.reason})
+
+    {anchors, exclusions}
+  end
+
+  defp classify_direct(candidates) do
+    Enum.reduce(candidates, {[], []}, fn cand, {anchors, excls} ->
+      case direct_outcome(cand) do
+        {:ok, anchor} -> {[anchor | anchors], excls}
+        {:excluded, reason} -> {anchors, [direct_exclusion(cand, reason) | excls]}
+      end
+    end)
+    |> then(fn {a, e} -> {Enum.reverse(a), Enum.reverse(e)} end)
+  end
+
+  defp direct_outcome(%{svg_x: sx, svg_y: sy, lat: lat, lon: lon, stop_id: stop_id}) do
+    cond do
+      not (is_number(sx) and is_number(sy)) ->
+        {:excluded, :nil_coordinate}
+
+      not (is_number(lat) and is_number(lon)) ->
+        {:excluded, :nil_latlon}
+
+      true ->
+        {:ok,
+         %{
+           stop_id: stop_id,
+           source: :direct,
+           svg_x: sx * 1.0,
+           svg_y: sy * 1.0,
+           lat: lat * 1.0,
+           lon: lon * 1.0
+         }}
+    end
+  end
+
+  defp direct_exclusion(%{stop_id: stop_id}, reason) do
+    %{stop_id: stop_id, reason: reason, source: :direct, pathway_id: nil}
+  end
+
+  defp classify_cross_level(candidates, direct_ids) do
+    Enum.reduce(candidates, {[], []}, fn cand, {kept, excls} ->
+      case cross_level_outcome(cand, direct_ids) do
+        :keep -> {[cand | kept], excls}
+        {:excluded, reason} -> {kept, [cross_exclusion(cand, reason) | excls]}
+      end
+    end)
+    |> then(fn {k, e} -> {Enum.reverse(k), Enum.reverse(e)} end)
+  end
+
+  defp cross_level_outcome(cand, direct_ids) do
+    %{pathway_mode: mode, svg_x: sx, svg_y: sy, lat: lat, lon: lon, stop_id: stop_id} = cand
+
+    cond do
+      mode != @elevator_mode -> {:excluded, :non_elevator_mode}
+      not (is_number(sx) and is_number(sy)) -> {:excluded, :nil_coordinate}
+      not (is_number(lat) and is_number(lon)) -> {:excluded, :nil_latlon}
+      MapSet.member?(direct_ids, stop_id) -> {:excluded, :shadowed_by_direct}
+      true -> :keep
+    end
+  end
+
+  defp cross_exclusion(%{stop_id: stop_id, pathway_id: pathway_id}, reason) do
+    %{stop_id: stop_id, reason: reason, source: :cross_level, pathway_id: pathway_id}
+  end
+
+  defp resolve_cross_level_ties(candidates) do
+    candidates
+    |> Enum.group_by(& &1.stop_id)
+    |> Enum.reduce({[], []}, fn {_stop_id, group}, {winners, losers} ->
+      sorted = Enum.sort_by(group, &{abs(&1.level_index_delta), &1.pathway_id})
+      [winner | rest] = sorted
+      {[to_cross_anchor(winner) | winners], Enum.map(rest, &cross_exclusion(&1, :lost_tie_break)) ++ losers}
+    end)
+  end
+
+  defp to_cross_anchor(cand) do
+    %{
+      stop_id: cand.stop_id,
+      source: :cross_level,
+      svg_x: cand.svg_x * 1.0,
+      svg_y: cand.svg_y * 1.0,
+      lat: cand.lat * 1.0,
+      lon: cand.lon * 1.0
+    }
   end
 
   defp validate_dims(w, h) when is_integer(w) and is_integer(h) and w > 0 and h > 0, do: :ok
