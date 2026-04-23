@@ -112,6 +112,15 @@ const MapAlignmentHook = {
     const mapCenterLat = savedAlignment ? savedAlignment.centerLat : initialLat;
     const mapCenterLon = savedAlignment ? savedAlignment.centerLon : initialLon;
 
+    // If LiveView reused a container that already had Leaflet initialized
+    // (e.g., the previous hook's destroyed() did not run before re-mount),
+    // Leaflet will throw "Map container is already initialized." Reset the
+    // internal flag and clear any child DOM before creating a new map.
+    if (leafletEl._leaflet_id) {
+      leafletEl._leaflet_id = undefined;
+      leafletEl.innerHTML = "";
+    }
+
     const map = L.map(leafletEl, {
       center: [mapCenterLat, mapCenterLon],
       zoom: initialZoom,
@@ -347,6 +356,7 @@ const MapAlignmentHook = {
   },
 
   destroyed() {
+    console.info("MapAlignment: destroyed", {id: this.el && this.el.id});
     if (this._rafId !== null && this._rafId !== undefined) {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
