@@ -482,7 +482,14 @@ const MapAlignmentHook = {
     const img = overlay.querySelector("img");
     if (!img) return;
 
+    const STABLE_MS = 250;
+    let settleTimer = null;
+
     const cleanup = () => {
+      if (settleTimer) {
+        clearTimeout(settleTimer);
+        settleTimer = null;
+      }
       if (this._restoreObserver) {
         this._restoreObserver.disconnect();
         this._restoreObserver = null;
@@ -493,25 +500,32 @@ const MapAlignmentHook = {
       }
     };
 
-    const tryRestore = () => {
+    // Run restore once canvas size has been stable for STABLE_MS.
+    // During the immersive CSS transition the canvas grows over ~300ms; running
+    // mid-animation produces a scale tuned to a smaller canvas.
+    const scheduleRestore = () => {
       const rect = this.el.getBoundingClientRect();
       const imgReady = img.complete && img.naturalWidth > 0;
-      if (rect.width > 0 && rect.height > 0 && imgReady) {
+      if (!imgReady || !(rect.width > 0) || !(rect.height > 0)) return;
+
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        settleTimer = null;
         this._restoreAlignment(savedAlignment, img);
         cleanup();
-        return true;
-      }
-      return false;
+      }, STABLE_MS);
     };
 
-    if (tryRestore()) return;
+    // Try immediately.
+    scheduleRestore();
 
-    // Canvas and/or image not ready yet. Retry when either resizes or image loads.
-    this._onRestoreImgLoad = tryRestore;
+    // Re-try (resetting the settle timer) on every canvas resize and on image
+    // load, so the final "stable" measurement wins.
+    this._onRestoreImgLoad = scheduleRestore;
     img.addEventListener("load", this._onRestoreImgLoad);
 
     if (typeof ResizeObserver !== "undefined") {
-      this._restoreObserver = new ResizeObserver(tryRestore);
+      this._restoreObserver = new ResizeObserver(scheduleRestore);
       this._restoreObserver.observe(this.el);
     }
   },
