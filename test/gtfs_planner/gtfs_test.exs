@@ -2813,4 +2813,181 @@ defmodule GtfsPlanner.GtfsTest do
       assert Enum.sort([id_one, id_two]) == expected_ids
     end
   end
+
+  describe "infer_level_alignment/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_INFER",
+          location_type: 1
+        })
+
+      active_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_INFER_ACTIVE",
+          level_index: 0.0
+        })
+
+      other_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_INFER_OTHER",
+          level_index: 1.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: active_level.id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        active_level: active_level,
+        other_level: other_level,
+        stop_level: stop_level
+      }
+    end
+
+    test "returns {:error, :invalid_input} when image dimensions are not positive",
+         %{stop_level: stop_level} do
+      assert {:error, :invalid_input} = Gtfs.infer_level_alignment(stop_level, 0, 800)
+    end
+
+    test "returns {:error, :alignment_prerequisites_missing} when stop_level has no level_id" do
+      stop_level = %GtfsPlanner.Gtfs.StopLevel{level_id: nil}
+      assert {:error, :alignment_prerequisites_missing} =
+               Gtfs.infer_level_alignment(stop_level, 1000, 800)
+    end
+
+    test "succeeds with two direct anchors from child stops on the target level", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      _stop_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_DIRECT_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 40.0, y: 60.0},
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0100")
+        })
+
+      _stop_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_DIRECT_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 60.0, y: 40.0},
+          stop_lat: Decimal.new("40.7200"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      assert {:ok, result} = Gtfs.infer_level_alignment(stop_level, 1000, 800)
+
+      assert %{
+               inferred_alignment: %{anchor_count: 2} = inferred,
+               anchors_used: anchors,
+               excluded_anchors: []
+             } = result
+
+      assert is_float(inferred.center_lat)
+      assert is_float(inferred.center_lon)
+      assert is_float(inferred.scale_mpp)
+      assert is_float(inferred.rotation_deg)
+      assert length(anchors) == 2
+      assert Enum.all?(anchors, &(&1.source == :direct))
+    end
+
+    test "succeeds with one direct and one cross-level elevator anchor", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      other_level: other_level,
+      stop_level: stop_level
+    } do
+      _direct_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_MIX_DIRECT",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 40.0, y: 60.0},
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0100")
+        })
+
+      target_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_MIX_TARGET",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 60.0, y: 40.0},
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
+      partner_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_MIX_PARTNER",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: other_level.level_id,
+          stop_lat: Decimal.new("40.7200"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      _elevator =
+        pathway_fixture(org.id, version.id, target_stop.stop_id, partner_stop.stop_id, %{
+          pathway_id: "INFER_MIX_ELEVATOR",
+          pathway_mode: 5
+        })
+
+      assert {:ok, result} = Gtfs.infer_level_alignment(stop_level, 1000, 800)
+
+      assert %{
+               inferred_alignment: %{anchor_count: 2},
+               anchors_used: anchors
+             } = result
+
+      sources = anchors |> Enum.map(& &1.source) |> Enum.sort()
+      assert sources == [:cross_level, :direct]
+    end
+
+    test "returns {:error, :insufficient_anchors} when only one usable anchor exists", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      _only =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_SINGLE",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50.0, y: 50.0},
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      assert {:error, :insufficient_anchors} =
+               Gtfs.infer_level_alignment(stop_level, 1000, 800)
+    end
+  end
 end

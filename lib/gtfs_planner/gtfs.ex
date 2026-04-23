@@ -6,6 +6,7 @@ defmodule GtfsPlanner.Gtfs do
   import Ecto.Query, warn: false
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.AlignmentInference
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.Attribution
   alias GtfsPlanner.Gtfs.BookingRule
@@ -568,6 +569,176 @@ defmodule GtfsPlanner.Gtfs do
         |> Repo.update()
     end
   end
+
+  @doc """
+  Infers floorplan alignment for `stop_level` from anchored child stops and
+  eligible cross-level elevator pathways.
+
+  Returns the inferred alignment plus lists of anchors used and candidates that
+  were excluded with reasons. Does not persist any data.
+  """
+  @spec infer_level_alignment(StopLevel.t(), pos_integer(), pos_integer()) ::
+          {:ok,
+           %{
+             inferred_alignment: map(),
+             anchors_used: [map()],
+             excluded_anchors: [map()]
+           }}
+          | {:error,
+             :alignment_prerequisites_missing
+             | :insufficient_anchors
+             | :degenerate_geometry
+             | :high_residual
+             | :invalid_input
+             | :not_found}
+  def infer_level_alignment(nil, _image_w, _image_h), do: {:error, :not_found}
+
+  def infer_level_alignment(%StopLevel{level_id: nil}, _image_w, _image_h),
+    do: {:error, :alignment_prerequisites_missing}
+
+  def infer_level_alignment(%StopLevel{} = stop_level, image_w, image_h) do
+    with :ok <- validate_positive_image_dims(image_w, image_h) do
+      direct = direct_candidates_for(stop_level)
+      cross = cross_level_candidates_for(stop_level)
+
+      {anchors, exclusions} = AlignmentInference.select_anchors(direct, cross)
+
+      case AlignmentInference.infer_alignment(anchors, image_w, image_h) do
+        {:ok, inferred} ->
+          {:ok,
+           %{
+             inferred_alignment: inferred,
+             anchors_used: anchors,
+             excluded_anchors: exclusions
+           }}
+
+        {:error, _} = error ->
+          error
+      end
+    else
+      {:error, :invalid_image_dims} -> {:error, :invalid_input}
+      other -> other
+    end
+  end
+
+  defp direct_candidates_for(%StopLevel{} = stop_level) do
+    stop_level.stop_id
+    |> list_child_stops_for_level(stop_level.level_id)
+    |> Enum.filter(& &1.on_active_level)
+    |> Enum.map(fn stop ->
+      {sx, sy} = svg_xy_from_coordinate(stop.diagram_coordinate)
+
+      %{
+        stop_id: stop.id,
+        svg_x: sx,
+        svg_y: sy,
+        lat: decimal_to_float(stop.stop_lat),
+        lon: decimal_to_float(stop.stop_lon)
+      }
+    end)
+  end
+
+  defp cross_level_candidates_for(%StopLevel{} = stop_level) do
+    pathways =
+      list_pathways_for_level(
+        stop_level.organization_id,
+        stop_level.gtfs_version_id,
+        stop_level.level_id,
+        stop_level.stop_id
+      )
+      |> Enum.filter(& &1.is_cross_level)
+
+    target_level = Repo.get!(Level, stop_level.level_id)
+    partner_level_indexes = load_partner_level_indexes(pathways, stop_level, target_level)
+
+    pathways
+    |> Enum.map(fn pathway ->
+      case cross_level_endpoints(pathway) do
+        {target_stop, partner_stop} ->
+          partner_index = Map.get(partner_level_indexes, partner_stop.level_id)
+          delta = level_index_delta(target_level.level_index, partner_index)
+          build_cross_level_candidate(pathway, target_stop, partner_stop, delta)
+
+        nil ->
+          nil
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp cross_level_endpoints(%{from_on_active_level: true, to_on_active_level: false} = p),
+    do: {p.from_stop, p.to_stop}
+
+  defp cross_level_endpoints(%{from_on_active_level: false, to_on_active_level: true} = p),
+    do: {p.to_stop, p.from_stop}
+
+  defp cross_level_endpoints(_), do: nil
+
+  defp build_cross_level_candidate(_pathway, _target_stop, %Stop{parent_station: nil}, _delta),
+    do: nil
+
+  defp build_cross_level_candidate(_pathway, _target_stop, %Stop{parent_station: ""}, _delta),
+    do: nil
+
+  defp build_cross_level_candidate(_pathway, _target_stop, _partner_stop, nil), do: nil
+
+  defp build_cross_level_candidate(pathway, target_stop, partner_stop, delta) do
+    {sx, sy} = svg_xy_from_coordinate(target_stop.diagram_coordinate)
+
+    %{
+      stop_id: target_stop.id,
+      pathway_id: pathway.id,
+      pathway_mode: pathway.pathway_mode,
+      level_index_delta: delta,
+      svg_x: sx,
+      svg_y: sy,
+      lat: decimal_to_float(partner_stop.stop_lat),
+      lon: decimal_to_float(partner_stop.stop_lon)
+    }
+  end
+
+  defp load_partner_level_indexes(pathways, stop_level, target_level) do
+    partner_level_ids =
+      pathways
+      |> Enum.flat_map(fn pathway ->
+        case cross_level_endpoints(pathway) do
+          {_target, partner} -> [partner.level_id]
+          nil -> []
+        end
+      end)
+      |> Enum.reject(&(is_nil(&1) or &1 == target_level.level_id))
+      |> Enum.uniq()
+
+    case partner_level_ids do
+      [] ->
+        %{}
+
+      ids ->
+        from(l in Level,
+          where:
+            l.organization_id == ^stop_level.organization_id and
+              l.gtfs_version_id == ^stop_level.gtfs_version_id and
+              l.level_id in ^ids,
+          select: {l.level_id, l.level_index}
+        )
+        |> Repo.all()
+        |> Map.new()
+    end
+  end
+
+  defp level_index_delta(_target_index, nil), do: nil
+  defp level_index_delta(target_index, partner_index), do: abs(partner_index - target_index)
+
+  defp svg_xy_from_coordinate(coord) do
+    case Coordinates.normalize_point(coord) do
+      %{x: x, y: y} -> {x, y}
+      nil -> {nil, nil}
+    end
+  end
+
+  defp decimal_to_float(%Decimal{} = d), do: Decimal.to_float(d)
+  defp decimal_to_float(n) when is_number(n), do: n * 1.0
+  defp decimal_to_float(_), do: nil
 
   @doc """
   Recalculates pathway lengths for same-level pathways on a station level.
