@@ -376,60 +376,75 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
         </button>
       </div>
-      <p class="mt-2 text-xs text-base-content/70">
-        Drag the floorplan to translate. Use the handles to rotate and resize. The map stays fixed.
-      </p>
-      <div class="mt-2 flex gap-3 items-end flex-wrap">
-        <div class="flex flex-col">
-          <label for="map-alignment-lat-input" class="text-xs text-base-content/70">
-            Latitude
-          </label>
-          <input
-            id="map-alignment-lat-input"
-            type="number"
-            step="any"
-            value={@initial_lat}
-            class="input input-sm input-bordered"
-          />
+      <div class="px-4 sm:px-6 lg:px-8 pt-3 pb-4">
+        <p class="text-xs text-base-content/70">
+          Drag to move the floorplan. Use handles to rotate and resize.
+        </p>
+        <div class="mt-3 flex flex-wrap items-end gap-x-8 gap-y-4">
+          <fieldset class="flex items-end gap-2">
+            <legend class="sr-only">Map center</legend>
+            <div class="flex flex-col gap-1">
+              <label
+                for="map-alignment-lat-input"
+                class="text-xs font-medium text-base-content/80"
+              >
+                Latitude
+              </label>
+              <input
+                id="map-alignment-lat-input"
+                type="number"
+                step="any"
+                value={@initial_lat}
+                class="input input-sm input-bordered w-32"
+              />
+            </div>
+            <div class="flex flex-col gap-1">
+              <label
+                for="map-alignment-lon-input"
+                class="text-xs font-medium text-base-content/80"
+              >
+                Longitude
+              </label>
+              <input
+                id="map-alignment-lon-input"
+                type="number"
+                step="any"
+                value={@initial_lon}
+                class="input input-sm input-bordered w-32"
+              />
+            </div>
+            <button id="map-alignment-apply-center" type="button" class="btn btn-sm">
+              Center map
+            </button>
+          </fieldset>
+
+          <div class="flex flex-col gap-1">
+            <label for="map-alignment-opacity" class="text-xs font-medium text-base-content/80">
+              Floorplan opacity
+            </label>
+            <input
+              id="map-alignment-opacity"
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value="0.6"
+              class="range range-xs w-40"
+            />
+          </div>
+
+          <div class="ml-auto flex items-end gap-2">
+            <button id="map-alignment-reset" type="button" class="btn btn-sm btn-ghost">
+              Reset
+            </button>
+            <button id="map-alignment-clear" type="button" class="btn btn-sm btn-ghost">
+              Clear saved
+            </button>
+            <button id="map-alignment-save" type="button" class="btn btn-sm btn-primary">
+              Save alignment
+            </button>
+          </div>
         </div>
-        <div class="flex flex-col">
-          <label for="map-alignment-lon-input" class="text-xs text-base-content/70">
-            Longitude
-          </label>
-          <input
-            id="map-alignment-lon-input"
-            type="number"
-            step="any"
-            value={@initial_lon}
-            class="input input-sm input-bordered"
-          />
-        </div>
-        <div class="flex flex-col">
-          <label for="map-alignment-opacity" class="text-xs text-base-content/70">
-            Floorplan opacity
-          </label>
-          <input
-            id="map-alignment-opacity"
-            type="range"
-            min="0"
-            max="1"
-            step="0.05"
-            value="0.6"
-            class="range range-xs w-40"
-          />
-        </div>
-        <button id="map-alignment-apply-center" type="button" class="btn btn-sm">
-          Center map
-        </button>
-        <button id="map-alignment-reset" type="button" class="btn btn-sm btn-ghost">
-          Reset alignment
-        </button>
-        <button id="map-alignment-save" type="button" class="btn btn-sm btn-primary">
-          Save alignment
-        </button>
-        <button id="map-alignment-clear" type="button" class="btn btn-sm btn-ghost">
-          Clear saved alignment
-        </button>
       </div>
     </div>
     """
