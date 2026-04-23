@@ -4,14 +4,26 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Versions
 
+  @default_page 1
+  @default_per_page 25
+  @max_per_page 100
+
   @doc "GET /api/v1/versions/:version_id/stations — list stations with counts."
-  def index(conn, %{"version_id" => version_id}) do
+  def index(conn, %{"version_id" => version_id} = params) do
     org_id = conn.assigns[:current_organization_id]
 
     with {:ok, _} <- Ecto.UUID.cast(version_id),
          %{} = version <- Versions.get_gtfs_version(version_id),
          true <- version.organization_id == org_id do
-      stations = Gtfs.list_stations(org_id, version_id)
+      search = params["search"]
+      page = parse_page(params)
+      per_page = parse_per_page(params)
+
+      list_opts = [search: search, page: page, per_page: per_page, location_type: 1]
+      count_opts = [search: search, location_type: 1]
+
+      stations = Gtfs.list_stations(org_id, version_id, list_opts)
+      total = Gtfs.count_stations(org_id, version_id, count_opts)
 
       data =
         Enum.map(stations, fn station ->
@@ -29,7 +41,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
           }
         end)
 
-      json(conn, %{data: data})
+      json(conn, %{data: data, meta: %{total: total, page: page, per_page: per_page}})
     else
       :error ->
         conn |> put_status(400) |> json(%{error: %{code: "bad_request", message: "Invalid version ID."}})
@@ -53,6 +65,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
          %{} = station <- Gtfs.get_stop(station_id),
          true <- station.organization_id == org_id,
          true <- station.gtfs_version_id == version_id,
+         true <- station.location_type == 1,
          true <- is_nil(station.parent_station) do
       child_stops = Gtfs.list_child_stops_for_parent(org_id, version_id, station.id)
       levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
@@ -109,6 +122,35 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       platform_code: stop.platform_code,
       diagram_coordinate: stop.diagram_coordinate
     }
+  end
+
+  defp parse_page(params) do
+    case params["page"] do
+      val when is_binary(val) ->
+        case Integer.parse(val) do
+          {n, ""} when n >= 1 -> n
+          {n, ""} when n < 1 -> @default_page
+          _ -> @default_page
+        end
+
+      _ ->
+        @default_page
+    end
+  end
+
+  defp parse_per_page(params) do
+    case params["per_page"] do
+      val when is_binary(val) ->
+        case Integer.parse(val) do
+          {n, ""} when n < 1 -> @default_per_page
+          {n, ""} when n > @max_per_page -> @max_per_page
+          {n, ""} -> n
+          _ -> @default_per_page
+        end
+
+      _ ->
+        @default_per_page
+    end
   end
 
   defp serialize_pathway(pathway) do

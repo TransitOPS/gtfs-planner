@@ -43,6 +43,18 @@ defmodule GtfsPlanner.Gtfs do
 
   require Logger
 
+  @type list_stations_opts :: [
+          route_id: String.t() | nil,
+          direction_id: integer() | nil,
+          wheelchair_boarding: integer() | String.t() | nil,
+          search: String.t() | nil,
+          sort_by: atom() | nil,
+          sort_dir: :asc | :desc | nil,
+          page: pos_integer() | nil,
+          per_page: pos_integer() | nil,
+          location_type: 0 | 1 | 2 | 3 | 4 | String.t() | nil
+        ]
+
   @doc """
   Returns the list of routes for an organization and GTFS version.
 
@@ -638,6 +650,7 @@ defmodule GtfsPlanner.Gtfs do
         s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
           is_nil(s.parent_station)
     )
+    |> maybe_filter_location_type(opts[:location_type])
     |> maybe_filter_route(opts[:route_id], organization_id, gtfs_version_id)
     |> maybe_filter_direction(opts[:direction_id], organization_id, gtfs_version_id)
     |> maybe_filter_wheelchair(opts[:wheelchair_boarding])
@@ -663,6 +676,7 @@ defmodule GtfsPlanner.Gtfs do
         s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
           is_nil(s.parent_station)
     )
+    |> maybe_filter_location_type(opts[:location_type])
     |> maybe_filter_route(opts[:route_id], organization_id, gtfs_version_id)
     |> maybe_filter_direction(opts[:direction_id], organization_id, gtfs_version_id)
     |> maybe_filter_wheelchair(opts[:wheelchair_boarding])
@@ -2332,6 +2346,13 @@ defmodule GtfsPlanner.Gtfs do
 
   defp maybe_filter_wheelchair(query, wheelchair_boarding) do
     where(query, [s], s.wheelchair_boarding == ^wheelchair_boarding)
+  end
+
+  defp maybe_filter_location_type(query, nil), do: query
+  defp maybe_filter_location_type(query, ""), do: query
+
+  defp maybe_filter_location_type(query, location_type) do
+    where(query, [s], s.location_type == ^location_type)
   end
 
   defp maybe_filter_route(query, nil, _organization_id, _gtfs_version_id), do: query

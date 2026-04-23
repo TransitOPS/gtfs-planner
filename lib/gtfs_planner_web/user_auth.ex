@@ -74,7 +74,7 @@ defmodule GtfsPlannerWeb.UserAuth do
   or nil if the user has no memberships or is an administrator.
   """
   def fetch_user_organization(user) do
-    case Accounts.list_user_org_memberships(user.id) do
+    case Accounts.list_user_org_memberships_including_deactivated(user.id) do
       [] ->
         nil
 

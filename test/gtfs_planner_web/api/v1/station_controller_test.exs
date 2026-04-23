@@ -121,6 +121,160 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
 
       assert %{"error" => %{"code" => "bad_request"}} = json_response(conn, 400)
     end
+
+    test "default list returns only location_type=1 rows and meta.total reflects filtered count",
+         %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+
+      for _ <- 1..3 do
+        stop_fixture(org.id, version.id, %{location_type: 1, parent_station: nil})
+      end
+
+      for _ <- 1..2 do
+        stop_fixture(org.id, version.id, %{location_type: 0, parent_station: nil})
+      end
+
+      conn = conn |> authed_conn(user) |> get("/api/v1/versions/#{version.id}/stations")
+
+      assert %{"data" => data, "meta" => meta} = json_response(conn, 200)
+      assert length(data) == 3
+      assert meta["total"] == 3
+      assert meta["page"] == 1
+      assert meta["per_page"] == 25
+    end
+
+    test "page=2&per_page=2 returns correct slice and meta", %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+
+      for _ <- 1..5 do
+        stop_fixture(org.id, version.id, %{location_type: 1, parent_station: nil})
+      end
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations?page=2&per_page=2")
+
+      assert %{"data" => data, "meta" => meta} = json_response(conn, 200)
+      assert length(data) == 2
+      assert meta["total"] == 5
+      assert meta["page"] == 2
+      assert meta["per_page"] == 2
+    end
+
+    test "per_page=1000 clamps to 100", %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+      stop_fixture(org.id, version.id, %{location_type: 1, parent_station: nil})
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations?per_page=1000")
+
+      assert %{"meta" => meta} = json_response(conn, 200)
+      assert meta["per_page"] == 100
+    end
+
+    test "per_page=0 defaults to 25", %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+      stop_fixture(org.id, version.id, %{location_type: 1, parent_station: nil})
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations?per_page=0")
+
+      assert %{"meta" => meta} = json_response(conn, 200)
+      assert meta["per_page"] == 25
+    end
+
+    test "per_page=abc defaults to 25", %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+      stop_fixture(org.id, version.id, %{location_type: 1, parent_station: nil})
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations?per_page=abc")
+
+      assert %{"meta" => meta} = json_response(conn, 200)
+      assert meta["per_page"] == 25
+    end
+
+    test "page=-5 clamps to 1", %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+      stop_fixture(org.id, version.id, %{location_type: 1, parent_station: nil})
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations?page=-5")
+
+      assert %{"meta" => meta} = json_response(conn, 200)
+      assert meta["page"] == 1
+    end
+
+    test "page=abc defaults to 1", %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+      stop_fixture(org.id, version.id, %{location_type: 1, parent_station: nil})
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations?page=abc")
+
+      assert %{"meta" => meta} = json_response(conn, 200)
+      assert meta["page"] == 1
+    end
+
+    test "search filters by stop_name substring", %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+
+      match =
+        stop_fixture(org.id, version.id, %{
+          location_type: 1,
+          parent_station: nil,
+          stop_name: "Penn Station"
+        })
+
+      _other =
+        stop_fixture(org.id, version.id, %{
+          location_type: 1,
+          parent_station: nil,
+          stop_name: "Grand Central"
+        })
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations?search=Penn")
+
+      assert %{"data" => data, "meta" => meta} = json_response(conn, 200)
+      assert length(data) == 1
+      assert hd(data)["id"] == match.id
+      assert meta["total"] == 1
+    end
+
+    test "mixed location_type=0 + location_type=1 data returns only stations", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+
+      station =
+        stop_fixture(org.id, version.id, %{location_type: 1, parent_station: nil})
+
+      _bus_stop =
+        stop_fixture(org.id, version.id, %{location_type: 0, parent_station: nil})
+
+      conn = conn |> authed_conn(user) |> get("/api/v1/versions/#{version.id}/stations")
+
+      assert %{"data" => data, "meta" => meta} = json_response(conn, 200)
+      assert length(data) == 1
+      assert hd(data)["id"] == station.id
+      assert meta["total"] == 1
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -252,6 +406,54 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         |> get("/api/v1/versions/not-a-uuid/stations/#{Ecto.UUID.generate()}/bundle")
 
       assert %{"error" => %{"code" => "bad_request"}} = json_response(conn, 400)
+    end
+
+    test "returns 404 for location_type=0 stop even when parent_station is nil", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+
+      bus_stop =
+        stop_fixture(org.id, version.id, %{location_type: 0, parent_station: nil})
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{bus_stop.id}/bundle")
+
+      assert %{"error" => %{"code" => "not_found"}} = json_response(conn, 404)
+    end
+
+    test "returns 200 with expected shape for location_type=1 station", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, level: level, pathway: pathway} = build_station_data(org.id, version.id)
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => data} = json_response(conn, 200)
+
+      assert data["station"]["id"] == station.id
+      assert data["station"]["stop_id"] == station.stop_id
+      assert data["station"]["stop_name"] == station.stop_name
+
+      assert length(data["levels"]) == 1
+      assert hd(data["levels"])["id"] == level.id
+
+      assert length(data["stops"]) == 2
+
+      assert length(data["pathways"]) == 1
+      assert hd(data["pathways"])["id"] == pathway.id
+
+      assert is_binary(data["downloaded_at"])
     end
   end
 end

@@ -135,8 +135,6 @@ defmodule GtfsPlanner.Gtfs.StationReport.GpsChecksTest do
     end
   end
 
-  defp stop(stop_id, location_type), do: stop(stop_id, location_type, [])
-
   defp stop(stop_id, location_type, attrs) do
     attrs = Map.new(attrs)
 

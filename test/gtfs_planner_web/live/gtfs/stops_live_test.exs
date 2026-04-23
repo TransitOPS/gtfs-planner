@@ -66,6 +66,34 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
                live(conn, "/gtfs/#{other_version.id}/stops")
     end
 
+    test "renders both top-level stations and top-level stops by default", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "STATION_A",
+        stop_name: "Top Level Station",
+        location_type: 1,
+        parent_station: nil
+      })
+
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "STOP_B",
+        stop_name: "Top Level Stop",
+        location_type: 0,
+        parent_station: nil
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert html =~ "STATION_A"
+      assert html =~ "STOP_B"
+    end
+
     test "paginates stations", %{
       conn: conn,
       user: user,
