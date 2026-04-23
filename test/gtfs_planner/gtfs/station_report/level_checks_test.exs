@@ -91,7 +91,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.LevelChecksTest do
     end
   end
 
-  defp stop(stop_id, location_type, attrs \\ []) do
+  defp stop(stop_id, location_type, attrs) do
     attrs = Map.new(attrs)
 
     %Stop{

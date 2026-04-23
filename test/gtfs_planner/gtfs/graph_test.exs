@@ -13,7 +13,7 @@ defmodule GtfsPlanner.Gtfs.GraphTest do
     }
   end
 
-  defp stop(stop_id, opts \\ []) do
+  defp stop(stop_id, opts) do
     %{
       stop_id: stop_id,
       stop_name: Keyword.get(opts, :stop_name, stop_id),
