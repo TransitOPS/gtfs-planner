@@ -302,6 +302,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :station, :any, required: true
   attr :active_level, :any, default: nil
   attr :active_stop_level, :any, default: nil
+  attr :align_center_lat, :any, default: nil
+  attr :align_center_lon, :any, default: nil
+  attr :align_scale_mpp, :any, default: nil
+  attr :align_rotation_deg, :any, default: nil
 
   def map_canvas(assigns) do
     floorplan_url =
@@ -310,11 +314,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     initial_lat = assigns.station.stop_lat || 0
     initial_lon = assigns.station.stop_lon || 0
 
+    has_alignment? =
+      not is_nil(assigns.align_center_lat) and
+        not is_nil(assigns.align_center_lon) and
+        not is_nil(assigns.align_scale_mpp) and
+        not is_nil(assigns.align_rotation_deg)
+
     assigns =
       assigns
       |> assign(:floorplan_url, floorplan_url)
       |> assign(:initial_lat, initial_lat)
       |> assign(:initial_lon, initial_lon)
+      |> assign(:has_alignment?, has_alignment?)
 
     ~H"""
     <div>
@@ -326,6 +337,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-initial-lat={@initial_lat}
         data-initial-lon={@initial_lon}
         data-initial-zoom="19"
+        data-align-center-lat={if @has_alignment?, do: @align_center_lat}
+        data-align-center-lon={if @has_alignment?, do: @align_center_lon}
+        data-align-scale-mpp={if @has_alignment?, do: @align_scale_mpp}
+        data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
         class="relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
       >
         <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
@@ -408,6 +423,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </button>
         <button id="map-alignment-reset" type="button" class="btn btn-sm btn-ghost">
           Reset alignment
+        </button>
+        <button id="map-alignment-save" type="button" class="btn btn-sm btn-primary">
+          Save alignment
+        </button>
+        <button id="map-alignment-clear" type="button" class="btn btn-sm btn-ghost">
+          Clear saved alignment
         </button>
       </div>
     </div>
