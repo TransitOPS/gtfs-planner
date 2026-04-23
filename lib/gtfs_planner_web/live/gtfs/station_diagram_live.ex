@@ -244,7 +244,43 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:platform_options, platforms_for_station)
     |> assign(:platform_stop_ids, platform_stop_ids)
     |> assign(:pathway_pair_counts, pathway_pair_counts)
+    |> push_child_stop_markers()
   end
+
+  defp push_child_stop_markers(socket) do
+    if socket.assigns[:mode] == :map do
+      push_event(socket, "set_child_stops", %{stops: child_stop_markers(socket)})
+    else
+      socket
+    end
+  end
+
+  defp child_stop_markers(socket) do
+    socket.assigns
+    |> Map.get(:child_stops_list, [])
+    |> Enum.map(&child_stop_marker/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp child_stop_marker(stop) do
+    case {marker_float(stop.stop_lat), marker_float(stop.stop_lon)} do
+      {lat, lon} when is_float(lat) and is_float(lon) ->
+        %{
+          stop_id: stop.stop_id,
+          stop_name: stop.stop_name,
+          platform_code: stop.platform_code,
+          lat: lat,
+          lon: lon
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp marker_float(%Decimal{} = d), do: Decimal.to_float(d)
+  defp marker_float(n) when is_number(n), do: n * 1.0
+  defp marker_float(_), do: nil
 
   defp station_platform_options(all_child_stops, station_stop_id) do
     all_child_stops
@@ -1602,6 +1638,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("set_image_natural_size", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("map_ready", _params, socket) do
+    {:noreply, push_child_stop_markers(socket)}
+  end
 
   @impl true
   def handle_event("apply_alignment", _params, socket) do

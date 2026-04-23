@@ -9292,5 +9292,93 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert reloaded.floorplan_scale_mpp == before.floorplan_scale_mpp
       assert reloaded.floorplan_rotation_deg == before.floorplan_rotation_deg
     end
+
+    test "map_ready pushes set_child_stops with markers for geo-coded child stops", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      _with_geo =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MARKER_GEO",
+          stop_name: "Geo Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          platform_code: "A",
+          stop_lat: Decimal.new("40.7128"),
+          stop_lon: Decimal.new("-74.0060")
+        })
+
+      _without_geo =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MARKER_NO_GEO",
+          stop_name: "No Geo",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "map_ready", %{})
+
+      assert_push_event(view, "set_child_stops", %{stops: stops})
+
+      assert [
+               %{
+                 stop_id: "MARKER_GEO",
+                 stop_name: "Geo Platform",
+                 platform_code: "A",
+                 lat: 40.7128,
+                 lon: -74.006
+               }
+             ] = stops
+    end
+
+    test "map_ready returns empty stops payload when no child stops have lat/lon", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      _without_geo =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MARKER_EMPTY",
+          stop_name: "No Geo",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "map_ready", %{})
+
+      assert_push_event(view, "set_child_stops", %{stops: []})
+    end
   end
 end

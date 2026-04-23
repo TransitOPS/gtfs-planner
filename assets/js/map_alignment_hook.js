@@ -164,6 +164,10 @@ const MapAlignmentHook = {
 
     this.leafletMap = map;
 
+    this._stopsLayer = L.featureGroup().addTo(map);
+    this.handleEvent("set_child_stops", (payload) => this._renderChildStops(payload));
+    this.pushEvent("map_ready", {});
+
     this._fetchBuildings(mapCenterLat, mapCenterLon);
 
     if (savedAlignment) {
@@ -456,6 +460,11 @@ const MapAlignmentHook = {
       this._resizeObserver = null;
     }
 
+    if (this._stopsLayer && this.leafletMap) {
+      try { this.leafletMap.removeLayer(this._stopsLayer); } catch (_) {}
+    }
+    this._stopsLayer = null;
+
     if (this.leafletMap) {
       // If LiveView has already re-mounted another hook on the same container,
       // Leaflet's `remove()` will throw because the container's _leaflet_id
@@ -664,7 +673,42 @@ const MapAlignmentHook = {
         }).addTo(this.leafletMap);
       })
       .catch(() => { /* silent: buildings overlay is optional */ });
+  },
+
+  _renderChildStops({stops}) {
+    const L = window.L;
+    if (!L || !this._stopsLayer) return;
+
+    this._stopsLayer.clearLayers();
+
+    (stops || []).forEach((s) => {
+      if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) return;
+      const marker = L.circleMarker([s.lat, s.lon], {
+        radius: 5,
+        weight: 1,
+        color: "#111",
+        fillColor: "#fff",
+        fillOpacity: 1,
+        interactive: true
+      });
+      marker.bindTooltip(stopTooltipLabel(s), {direction: "top", offset: [0, -6]});
+      marker.addTo(this._stopsLayer);
+    });
   }
 };
+
+function stopTooltipLabel(s) {
+  const name = s.stop_name || s.stop_id || "";
+  const platform = s.platform_code ? ` · Plat ${s.platform_code}` : "";
+  return escapeHtml(name + platform);
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
 export default MapAlignmentHook;
