@@ -33,6 +33,23 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+function readSavedAlignment(root) {
+  const centerLat = parseFloat(root.dataset.alignCenterLat);
+  const centerLon = parseFloat(root.dataset.alignCenterLon);
+  const scaleMpp = parseFloat(root.dataset.alignScaleMpp);
+  const rotationDeg = parseFloat(root.dataset.alignRotationDeg);
+  if (
+    !Number.isFinite(centerLat) ||
+    !Number.isFinite(centerLon) ||
+    !Number.isFinite(scaleMpp) ||
+    !Number.isFinite(rotationDeg) ||
+    scaleMpp <= 0
+  ) {
+    return null;
+  }
+  return {centerLat, centerLon, scaleMpp, rotationDeg};
+}
+
 function overlayCenter(overlay) {
   const rect = overlay.getBoundingClientRect();
   return {
@@ -53,6 +70,10 @@ const MapAlignmentHook = {
     const initialLat = parseFloat(root.dataset.initialLat);
     const initialLon = parseFloat(root.dataset.initialLon);
     const initialZoom = parseInt(root.dataset.initialZoom, 10);
+
+    // Optional saved alignment. All four attrs must be present and parse to
+    // finite numbers; otherwise treat as absent and fall back to identity.
+    const savedAlignment = readSavedAlignment(root);
 
     const overlay = root.querySelector("#map-alignment-overlay");
     const leafletEl = root.querySelector("#map-alignment-leaflet");
@@ -82,8 +103,11 @@ const MapAlignmentHook = {
 
     this.transform = {...IDENTITY_TRANSFORM};
 
+    const mapCenterLat = savedAlignment ? savedAlignment.centerLat : initialLat;
+    const mapCenterLon = savedAlignment ? savedAlignment.centerLon : initialLon;
+
     const map = L.map(leafletEl, {
-      center: [initialLat, initialLon],
+      center: [mapCenterLat, mapCenterLon],
       zoom: initialZoom,
       attributionControl: true,
       zoomControl: false,
@@ -123,7 +147,11 @@ const MapAlignmentHook = {
 
     this.leafletMap = map;
 
-    this._fetchBuildings(initialLat, initialLon);
+    this._fetchBuildings(mapCenterLat, mapCenterLon);
+
+    if (savedAlignment) {
+      this._scheduleAlignmentRestore(savedAlignment);
+    }
 
     this._rafId = requestAnimationFrame(() => {
       this._rafId = null;
@@ -321,6 +349,15 @@ const MapAlignmentHook = {
       clearTimeout(this._postTransitionTimer);
       this._postTransitionTimer = null;
     }
+    if (this._restoreRafId !== null && this._restoreRafId !== undefined) {
+      cancelAnimationFrame(this._restoreRafId);
+      this._restoreRafId = null;
+    }
+    if (this._onRestoreImgLoad && this.overlay) {
+      const img = this.overlay.querySelector("img");
+      if (img) img.removeEventListener("load", this._onRestoreImgLoad);
+      this._onRestoreImgLoad = null;
+    }
 
     if (this.overlay) {
       this.overlay.removeEventListener("pointerdown", this._onOverlayPointerDown);
@@ -416,6 +453,65 @@ const MapAlignmentHook = {
       scale_mpp: scaleMpp,
       rotation_deg: this.transform.rotation
     };
+  },
+
+  _scheduleAlignmentRestore(savedAlignment) {
+    const overlay = this.overlay;
+    if (!overlay) return;
+    const img = overlay.querySelector("img");
+    if (!img) return;
+
+    const runAfterRaf = () => {
+      // Defer to rAF so Leaflet's initial invalidateSize() has run.
+      this._restoreRafId = requestAnimationFrame(() => {
+        this._restoreRafId = null;
+        this._restoreAlignment(savedAlignment, img);
+      });
+    };
+
+    if (img.complete && img.naturalWidth > 0) {
+      runAfterRaf();
+    } else {
+      this._onRestoreImgLoad = () => {
+        img.removeEventListener("load", this._onRestoreImgLoad);
+        this._onRestoreImgLoad = null;
+        runAfterRaf();
+      };
+      img.addEventListener("load", this._onRestoreImgLoad);
+    }
+  },
+
+  _restoreAlignment(savedAlignment, img) {
+    const map = this.leafletMap;
+    if (!map || !img || !img.naturalWidth || !img.naturalHeight) return;
+
+    const canvasRect = this.el.getBoundingClientRect();
+    const canvasW = canvasRect.width;
+    const canvasH = canvasRect.height;
+    if (!(canvasW > 0) || !(canvasH > 0)) return;
+
+    const cx = canvasW / 2;
+    const cy = canvasH / 2;
+    const p0 = map.containerPointToLatLng([cx, cy]);
+    const p1 = map.containerPointToLatLng([cx + 1, cy]);
+    const metersPerCanvasPx = map.distance(p0, p1);
+
+    const imgAspect = img.naturalWidth / img.naturalHeight;
+    const canvasAspect = canvasW / canvasH;
+    const containWidth =
+      canvasAspect > imgAspect ? canvasH * imgAspect : canvasW;
+    if (!(containWidth > 0)) return;
+
+    const renderedPxPerImagePxNeeded = metersPerCanvasPx / savedAlignment.scaleMpp;
+    const scale = renderedPxPerImagePxNeeded / (containWidth / img.naturalWidth);
+
+    this.transform = {
+      tx: 0,
+      ty: 0,
+      rotation: savedAlignment.rotationDeg,
+      scale: scale
+    };
+    this._applyTransform();
   },
 
   _applyTransform() {
