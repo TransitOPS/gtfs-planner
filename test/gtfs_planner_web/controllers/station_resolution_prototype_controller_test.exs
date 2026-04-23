@@ -32,7 +32,8 @@ defmodule GtfsPlannerWeb.StationResolutionPrototypeControllerTest do
       user = user_fixture()
       conn = conn |> log_in_user(user) |> get(@endpoint_path)
 
-      assert conn.resp_body =~ ~s(<link rel="stylesheet" href="#{@stylesheet_path}">)
+      assert conn.resp_body =~
+               ~r/<link\s+rel="stylesheet"\s+href="#{Regex.escape(@stylesheet_path)}"\s*\/>/
     end
 
     test "redirects unauthenticated user to login", %{conn: conn} do
