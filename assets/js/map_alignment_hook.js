@@ -145,7 +145,8 @@ const MapAlignmentHook = {
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       {
         keepBuffer: 8,
-        maxZoom: 19,
+        maxNativeZoom: 19,
+        maxZoom: 22,
         updateWhenIdle: false,
         updateWhenZooming: true,
         attribution: "Imagery © Esri, Maxar, Earthstar Geographics"
@@ -158,7 +159,8 @@ const MapAlignmentHook = {
       "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
       {
         keepBuffer: 8,
-        maxZoom: 19,
+        maxNativeZoom: 19,
+        maxZoom: 22,
         updateWhenIdle: false,
         updateWhenZooming: true,
         attribution: "Roads © Esri"
