@@ -51,8 +51,11 @@ defmodule GtfsPlanner.Otp.RuntimeCleanupTest do
       default_scope = %{runtime_scope: "default", gtfs_input_sha256: "hash-default"}
       station_scope = %{runtime_scope: "station_reachability", gtfs_input_sha256: "hash-station"}
 
-      default_graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id, default_scope)
-      station_graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id, station_scope)
+      default_graph_path =
+        GraphPath.graph_obj_path(organization.id, gtfs_version.id, default_scope)
+
+      station_graph_path =
+        GraphPath.graph_obj_path(organization.id, gtfs_version.id, station_scope)
 
       zip_path = ArtifactPath.artifact_zip_path(organization.id, gtfs_version.id)
 

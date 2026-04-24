@@ -215,7 +215,10 @@ defmodule GtfsPlanner.GtfsTest do
 
     test "delegates to update_level when level_id unchanged", %{level: level} do
       assert {:ok, updated} =
-               Gtfs.update_level_with_cascade(level, %{level_id: level.level_id, level_name: "New Name"})
+               Gtfs.update_level_with_cascade(level, %{
+                 level_id: level.level_id,
+                 level_name: "New Name"
+               })
 
       assert updated.level_name == "New Name"
       assert updated.level_id == level.level_id

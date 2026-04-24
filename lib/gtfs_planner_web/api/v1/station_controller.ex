@@ -44,13 +44,19 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       json(conn, %{data: data, meta: %{total: total, page: page, per_page: per_page}})
     else
       :error ->
-        conn |> put_status(400) |> json(%{error: %{code: "bad_request", message: "Invalid version ID."}})
+        conn
+        |> put_status(400)
+        |> json(%{error: %{code: "bad_request", message: "Invalid version ID."}})
 
       nil ->
-        conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Version not found."}})
+        conn
+        |> put_status(404)
+        |> json(%{error: %{code: "not_found", message: "Version not found."}})
 
       false ->
-        conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Version not found."}})
+        conn
+        |> put_status(404)
+        |> json(%{error: %{code: "not_found", message: "Version not found."}})
     end
   end
 
@@ -87,7 +93,9 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       })
     else
       :error ->
-        conn |> put_status(400) |> json(%{error: %{code: "bad_request", message: "Invalid ID format."}})
+        conn
+        |> put_status(400)
+        |> json(%{error: %{code: "bad_request", message: "Invalid ID format."}})
 
       nil ->
         conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Not found."}})

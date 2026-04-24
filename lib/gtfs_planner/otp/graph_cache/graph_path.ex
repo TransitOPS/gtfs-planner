@@ -27,10 +27,17 @@ defmodule GtfsPlanner.Otp.GraphPath do
   end
 
   @spec workspace_dir(Ecto.UUID.t(), Ecto.UUID.t(), scope_key()) :: String.t()
-  def workspace_dir(organization_id, gtfs_version_id, %{runtime_scope: runtime_scope, gtfs_input_sha256: gtfs_input_sha256})
+  def workspace_dir(organization_id, gtfs_version_id, %{
+        runtime_scope: runtime_scope,
+        gtfs_input_sha256: gtfs_input_sha256
+      })
       when is_binary(runtime_scope) and runtime_scope != "" and is_binary(gtfs_input_sha256) and
              gtfs_input_sha256 != "" do
-    Path.join([workspace_root_dir(organization_id, gtfs_version_id), runtime_scope, gtfs_input_sha256])
+    Path.join([
+      workspace_root_dir(organization_id, gtfs_version_id),
+      runtime_scope,
+      gtfs_input_sha256
+    ])
   end
 
   @spec data_dir(Ecto.UUID.t(), Ecto.UUID.t()) :: String.t()

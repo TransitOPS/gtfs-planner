@@ -10,13 +10,44 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   alias GtfsPlanner.Gtfs.{Pathway, Stop}
 
   @toc_sections [
-    %{id: "report2-station-inventory", label: "Station Inventory", desc: "Node counts by location type, edge counts by pathway mode, directionality, and levels."},
-    %{id: "report2-data-quality", label: "Data Quality", desc: "Structural checks for orphaned nodes, duplicate IDs, missing parents, and required children."},
-    %{id: "report2-gps-checks", label: "GPS", desc: "Coordinate presence, longitude sign consistency, entrance distance, and clustering."},
-    %{id: "report2-naming-conventions", label: "Naming & ID Conventions", desc: "Title case, ID prefix conventions, prefix/type alignment, and auto-generated name detection."},
-    %{id: "report2-reachability-connectivity", label: "Reachability & Connectivity", desc: "Pathway connectivity between entrances, platforms, and exits."},
-    %{id: "report2-pathway-field-completeness", label: "Pathway Field Completeness", desc: "Fill rates for optional pathway fields like traversal time, stair count, and slope."},
-    %{id: "report2-accessibility", label: "Accessibility", desc: "Wheelchair boarding and accessible pathway coverage."}
+    %{
+      id: "report2-station-inventory",
+      label: "Station Inventory",
+      desc:
+        "Node counts by location type, edge counts by pathway mode, directionality, and levels."
+    },
+    %{
+      id: "report2-data-quality",
+      label: "Data Quality",
+      desc:
+        "Structural checks for orphaned nodes, duplicate IDs, missing parents, and required children."
+    },
+    %{
+      id: "report2-gps-checks",
+      label: "GPS",
+      desc: "Coordinate presence, longitude sign consistency, entrance distance, and clustering."
+    },
+    %{
+      id: "report2-naming-conventions",
+      label: "Naming & ID Conventions",
+      desc:
+        "Title case, ID prefix conventions, prefix/type alignment, and auto-generated name detection."
+    },
+    %{
+      id: "report2-reachability-connectivity",
+      label: "Reachability & Connectivity",
+      desc: "Pathway connectivity between entrances, platforms, and exits."
+    },
+    %{
+      id: "report2-pathway-field-completeness",
+      label: "Pathway Field Completeness",
+      desc: "Fill rates for optional pathway fields like traversal time, stair count, and slope."
+    },
+    %{
+      id: "report2-accessibility",
+      label: "Accessibility",
+      desc: "Wheelchair boarding and accessible pathway coverage."
+    }
   ]
 
   attr :station_name, :string, required: true
@@ -31,14 +62,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       <div class="flex items-start justify-between gap-4">
         <div>
           <h1 class="text-2xl font-bold text-gray-900 mb-1">{@station_name}</h1>
-          <p class="text-sm text-gray-500 mb-4">Station structure, data quality, and connectivity checks</p>
+          <p class="text-sm text-gray-500 mb-4">
+            Station structure, data quality, and connectivity checks
+          </p>
         </div>
         {render_slot(@inner_block)}
       </div>
       <ol class="space-y-2">
         <li :for={section <- @sections}>
-          <a href={"##{section.id}"} class="text-sm font-semibold text-teal-600 hover:text-teal-700 hover:underline">{section.label}</a>
-          <span class="text-sm text-gray-500"> — {section.desc}</span>
+          <a
+            href={"##{section.id}"}
+            class="text-sm font-semibold text-teal-600 hover:text-teal-700 hover:underline"
+          >
+            {section.label}
+          </a>
+          <span class="text-sm text-gray-500"> —  {section.desc}</span>
         </li>
       </ol>
     </nav>
@@ -59,7 +97,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       <div class="mb-6">
         <div class="bg-white border border-gray-400 rounded-lg shadow-sm overflow-hidden">
           <div class="bg-gray-50 border-b border-gray-400 px-5 py-3">
-            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Node inventory by location type</h2>
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              Node inventory by location type
+            </h2>
           </div>
           <div class="p-5">
             <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
@@ -73,7 +113,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       <div class="mb-6">
         <div class="bg-white border border-gray-400 rounded-lg shadow-sm overflow-hidden">
           <div class="bg-gray-50 border-b border-gray-400 px-5 py-3">
-            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Edge inventory by pathway mode</h2>
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              Edge inventory by pathway mode
+            </h2>
           </div>
           <div class="p-5">
             <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -87,7 +129,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       <div class="mb-6">
         <div class="bg-white border border-gray-400 rounded-lg shadow-sm overflow-hidden">
           <div class="bg-gray-50 border-b border-gray-400 px-5 py-3">
-            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Pathway directionality</h2>
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              Pathway directionality
+            </h2>
           </div>
           <div class="p-5">
             <div class="grid grid-cols-2 gap-4" style="max-width: 400px;">
@@ -102,16 +146,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       <div class="mb-6">
         <div class="bg-white border border-gray-400 rounded-lg shadow-sm overflow-hidden">
           <div class="bg-gray-50 border-b border-gray-400 px-5 py-3">
-            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Level count, names, and indices</h2>
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              Level count, names, and indices
+            </h2>
           </div>
           <div class="overflow-x-auto">
             <table class="w-full text-sm text-left">
               <thead>
                 <tr class="border-b border-gray-200">
-                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Level</th>
-                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Name</th>
-                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Index</th>
-                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Nodes</th>
+                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                    Level
+                  </th>
+                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                    Name
+                  </th>
+                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">
+                    Index
+                  </th>
+                  <th class="px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">
+                    Nodes
+                  </th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-200">
@@ -198,7 +252,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     end
   end
 
-
   attr :items, :list, required: true
 
   def data_quality_section(assigns) do
@@ -242,19 +295,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <section id="report2-naming-conventions">
       <div class="flex items-baseline justify-between mt-8 mb-3 px-1">
-        <h2 class="text-xl font-semibold text-gray-900" style="line-height: 1.375;">Naming &amp; ID Conventions</h2>
+        <h2 class="text-xl font-semibold text-gray-900" style="line-height: 1.375;">
+          Naming &amp; ID Conventions
+        </h2>
         <span class="text-xs text-gray-500">{@fail_count} of {length(@checks)} checks failed</span>
       </div>
       <div class="bg-white border border-gray-400 rounded-lg shadow-card overflow-hidden">
-
         <table class="w-full text-sm" style="border-collapse: collapse;">
           <thead>
             <tr class="border-b border-gray-200">
               <th class="w-8 py-2.5 px-4 bg-gray-50"></th>
-              <th class="text-left py-2.5 pr-4 text-[13px] font-medium text-gray-500 bg-gray-50">Check</th>
-              <th class="text-left py-2.5 pr-4 text-[13px] font-medium text-gray-500 bg-gray-50">Rule</th>
-              <th class="text-center py-2.5 px-4 text-[13px] font-medium text-gray-500 bg-gray-50 w-24">Result</th>
-              <th class="text-right py-2.5 px-4 text-[13px] font-medium text-gray-500 bg-gray-50 w-20" style="font-variant-numeric: tabular-nums;">Issues</th>
+              <th class="text-left py-2.5 pr-4 text-[13px] font-medium text-gray-500 bg-gray-50">
+                Check
+              </th>
+              <th class="text-left py-2.5 pr-4 text-[13px] font-medium text-gray-500 bg-gray-50">
+                Rule
+              </th>
+              <th class="text-center py-2.5 px-4 text-[13px] font-medium text-gray-500 bg-gray-50 w-24">
+                Result
+              </th>
+              <th
+                class="text-right py-2.5 px-4 text-[13px] font-medium text-gray-500 bg-gray-50 w-20"
+                style="font-variant-numeric: tabular-nums;"
+              >
+                Issues
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -274,14 +339,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <tr class="border-b border-gray-200 last:border-b-0">
       <td class="py-3 px-4 text-center">
-        <svg class="inline-block text-green-600" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg
+          class="inline-block text-green-600"
+          width="16"
+          height="16"
+          viewBox="0 0 16 16"
+          fill="none"
+        >
+          <path
+            d="M3.5 8.5L6.5 11.5L12.5 4.5"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
       </td>
       <td class="py-3 pr-4 font-medium text-gray-900">{@check.label}</td>
       <td class="py-3 pr-4 text-gray-600"><.naming_rule_text rule={@check.rule} id={@check.id} /></td>
       <td class="py-3 px-4 text-center">
-        <span class="inline-flex items-center px-2 text-xs font-semibold tracking-wider uppercase rounded bg-green-100 text-[#166534]" style="padding-top: 2px; padding-bottom: 2px;">PASS</span>
+        <span
+          class="inline-flex items-center px-2 text-xs font-semibold tracking-wider uppercase rounded bg-green-100 text-[#166534]"
+          style="padding-top: 2px; padding-bottom: 2px;"
+        >
+          PASS
+        </span>
       </td>
-      <td class="py-3 px-4 text-right text-gray-400" style="font-variant-numeric: tabular-nums;">0</td>
+      <td class="py-3 px-4 text-right text-gray-400" style="font-variant-numeric: tabular-nums;">
+        0
+      </td>
     </tr>
     """
   end
@@ -291,16 +377,45 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     <tr>
       <td colspan="5">
         <details class="group">
-          <summary class="grid cursor-pointer hover:bg-gray-50 border-b border-gray-200" style="grid-template-columns: 2rem 1fr 1fr 6rem 5rem; display: grid; list-style: none;">
+          <summary
+            class="grid cursor-pointer hover:bg-gray-50 border-b border-gray-200"
+            style="grid-template-columns: 2rem 1fr 1fr 6rem 5rem; display: grid; list-style: none;"
+          >
             <span class="py-3 px-4 text-center flex items-center justify-center">
-              <svg class="text-gray-400 transition-transform duration-150 group-open:rotate-180" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg
+                class="text-gray-400 transition-transform duration-150 group-open:rotate-180"
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                fill="none"
+              >
+                <path
+                  d="M4 6l4 4 4-4"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
             </span>
             <span class="py-3 pr-4 font-medium text-gray-900 flex items-center">{@check.label}</span>
-            <span class="py-3 pr-4 text-gray-600 flex items-center"><.naming_rule_text rule={@check.rule} id={@check.id} /></span>
-            <span class="py-3 px-4 flex items-center justify-center">
-              <span class="inline-flex items-center px-2 text-xs font-semibold tracking-wider uppercase rounded bg-red-100 text-[#991b1b]" style="padding-top: 2px; padding-bottom: 2px;">FAIL</span>
+            <span class="py-3 pr-4 text-gray-600 flex items-center">
+              <.naming_rule_text rule={@check.rule} id={@check.id} />
             </span>
-            <span class="py-3 px-4 flex items-center justify-end text-gray-700" style="font-variant-numeric: tabular-nums;">{@check.issue_count}</span>
+            <span class="py-3 px-4 flex items-center justify-center">
+              <span
+                class="inline-flex items-center px-2 text-xs font-semibold tracking-wider uppercase rounded bg-red-100 text-[#991b1b]"
+                style="padding-top: 2px; padding-bottom: 2px;"
+              >
+                FAIL
+              </span>
+            </span>
+            <span
+              class="py-3 px-4 flex items-center justify-end text-gray-700"
+              style="font-variant-numeric: tabular-nums;"
+            >
+              {@check.issue_count}
+            </span>
           </summary>
           <div class="border-b border-gray-200">
             <.naming_violation_panel check={@check} />
@@ -318,7 +433,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
       <p class="text-sm text-gray-700 mb-3">The following stop names do not use title case:</p>
       <div class="space-y-2">
-        <div :for={detail <- @check.details} class="flex items-start gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+        <div
+          :for={detail <- @check.details}
+          class="flex items-start gap-3 bg-white rounded border border-gray-200 px-3 py-2.5"
+        >
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 flex-wrap">
               <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
@@ -335,9 +453,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp naming_violation_panel(%{check: %{id: "naming_node_prefix"}} = assigns) do
     ~H"""
     <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
-      <p class="text-sm text-gray-700 mb-3">The following generic nodes do not use the <code class="bg-white px-1 rounded border border-gray-200 text-gray-700">node_</code> prefix:</p>
+      <p class="text-sm text-gray-700 mb-3">
+        The following generic nodes do not use the
+        <code class="bg-white px-1 rounded border border-gray-200 text-gray-700">node_</code>
+        prefix:
+      </p>
       <div class="space-y-2">
-        <div :for={detail <- @check.details} class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+        <div
+          :for={detail <- @check.details}
+          class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5"
+        >
           <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
         </div>
       </div>
@@ -348,9 +473,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp naming_violation_panel(%{check: %{id: "naming_boarding_prefix"}} = assigns) do
     ~H"""
     <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
-      <p class="text-sm text-gray-700 mb-3">The following boarding areas do not use the <code class="bg-white px-1 rounded border border-gray-200 text-gray-700">boarding_</code> prefix:</p>
+      <p class="text-sm text-gray-700 mb-3">
+        The following boarding areas do not use the
+        <code class="bg-white px-1 rounded border border-gray-200 text-gray-700">boarding_</code>
+        prefix:
+      </p>
       <div class="space-y-2">
-        <div :for={detail <- @check.details} class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+        <div
+          :for={detail <- @check.details}
+          class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5"
+        >
           <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
         </div>
       </div>
@@ -361,9 +493,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp naming_violation_panel(%{check: %{id: "naming_entrance_prefix"}} = assigns) do
     ~H"""
     <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
-      <p class="text-sm text-gray-700 mb-3">The following entrances/exits do not use the <code class="bg-white px-1 rounded border border-gray-200 text-gray-700">entrance_</code> prefix:</p>
+      <p class="text-sm text-gray-700 mb-3">
+        The following entrances/exits do not use the
+        <code class="bg-white px-1 rounded border border-gray-200 text-gray-700">entrance_</code>
+        prefix:
+      </p>
       <div class="space-y-2">
-        <div :for={detail <- @check.details} class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+        <div
+          :for={detail <- @check.details}
+          class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5"
+        >
           <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
         </div>
       </div>
@@ -374,22 +513,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp naming_violation_panel(%{check: %{id: "naming_prefix_type_mismatch"}} = assigns) do
     ~H"""
     <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
-      <p class="text-sm text-gray-700 mb-3">The following stops have a prefix that does not match their location type:</p>
+      <p class="text-sm text-gray-700 mb-3">
+        The following stops have a prefix that does not match their location type:
+      </p>
       <div class="bg-amber-50 border border-amber-200 rounded px-3 py-2.5 mb-3">
         <p class="text-sm text-[#92400e]">
           <span class="font-semibold">Expected prefixes by type:</span>
-          entrance/exit &rarr; <code class="text-[13px]">entrance_</code>&ensp;&middot;&ensp;boarding area &rarr; <code class="text-[13px]">boarding_</code>&ensp;&middot;&ensp;generic node &rarr; <code class="text-[13px]">node_</code>
+          entrance/exit &rarr; <code class="text-[13px]">entrance_</code>&ensp;&middot;&ensp;boarding area &rarr; <code class="text-[13px]">boarding_</code>&ensp;&middot;&ensp;generic node &rarr;
+          <code class="text-[13px]">node_</code>
         </p>
       </div>
       <div class="space-y-2">
-        <div :for={detail <- @check.details} class="flex items-start gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+        <div
+          :for={detail <- @check.details}
+          class="flex items-start gap-3 bg-white rounded border border-gray-200 px-3 py-2.5"
+        >
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 flex-wrap">
               <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
               <span :if={detail.location_type} class="text-gray-400">&mdash;</span>
-              <span :if={detail.location_type} class="text-sm text-gray-600">location type {detail.location_type} ({Stop.location_type_label(detail.location_type)})</span>
+              <span :if={detail.location_type} class="text-sm text-gray-600">
+                location type {detail.location_type} ({Stop.location_type_label(detail.location_type)})
+              </span>
             </div>
-            <p :if={detail.expected_prefix} class="text-xs text-gray-500 mt-1">Expected prefix: <code class="text-[12px]">{detail.expected_prefix}</code></p>
+            <p :if={detail.expected_prefix} class="text-xs text-gray-500 mt-1">
+              Expected prefix: <code class="text-[12px]">{detail.expected_prefix}</code>
+            </p>
           </div>
         </div>
       </div>
@@ -400,9 +549,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp naming_violation_panel(%{check: %{id: "naming_autogenerated_name"}} = assigns) do
     ~H"""
     <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
-      <p class="text-sm text-gray-700 mb-3">The following stop names appear auto-generated or are not human-readable:</p>
+      <p class="text-sm text-gray-700 mb-3">
+        The following stop names appear auto-generated or are not human-readable:
+      </p>
       <div class="space-y-2">
-        <div :for={detail <- @check.details} class="flex items-start gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+        <div
+          :for={detail <- @check.details}
+          class="flex items-start gap-3 bg-white rounded border border-gray-200 px-3 py-2.5"
+        >
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 flex-wrap">
               <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
@@ -420,7 +574,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <div class="bg-red-50 px-5 py-4 ml-8 mr-4 mb-4 mt-1 rounded-md border border-red-200">
       <div class="space-y-2">
-        <div :for={detail <- @check.details} class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5">
+        <div
+          :for={detail <- @check.details}
+          class="flex items-center gap-3 bg-white rounded border border-gray-200 px-3 py-2.5"
+        >
           <code class="text-[13px] text-gray-900">{detail.stop_id}</code>
         </div>
       </div>
@@ -447,7 +604,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <section id="report2-reachability-connectivity">
       <div class="flex items-baseline justify-between mt-8 mb-3 px-1">
-        <h2 class="text-xl font-semibold text-gray-900" style="line-height: 1.375;">Reachability &amp; Connectivity</h2>
+        <h2 class="text-xl font-semibold text-gray-900" style="line-height: 1.375;">
+          Reachability &amp; Connectivity
+        </h2>
       </div>
       <%= if @connectivity_summaries do %>
         <div class="flex flex-col gap-6">
@@ -478,7 +637,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp connectivity_dimension_section(assigns) do
     stats = assigns.summary.stats
-    stats_text = "#{stats.connected_pairs}/#{stats.total_pairs} pairs connected · #{stats.source_count} sources · #{stats.target_count} targets"
+
+    stats_text =
+      "#{stats.connected_pairs}/#{stats.total_pairs} pairs connected · #{stats.source_count} sources · #{stats.target_count} targets"
 
     route_detail_by_source =
       Map.new(assigns.route_detail_groups, fn group -> {group.source.stop_id, group} end)
@@ -499,7 +660,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       |> assign(:all_expanded, all_expanded)
 
     ~H"""
-    <div id={"connectivity-#{@dimension}"} class="bg-white border border-gray-400 rounded-lg overflow-hidden shadow-card">
+    <div
+      id={"connectivity-#{@dimension}"}
+      class="bg-white border border-gray-400 rounded-lg overflow-hidden shadow-card"
+    >
       <div class="p-6">
         <div class="flex items-start justify-between gap-4 mb-1">
           <h2 class="text-lg font-semibold text-gray-900">{@summary.title}</h2>
@@ -514,9 +678,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
               {if @all_expanded, do: "Hide all routes", else: "Show all routes"}
               <svg
                 class={"w-3.5 h-3.5 transition-transform duration-150 #{if @all_expanded, do: "rotate-180", else: ""}"}
-                fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2.5"
               >
-                <path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
             </button>
           </div>
@@ -527,10 +694,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         <table class="w-full text-sm" style="border-collapse: collapse;">
           <thead>
             <tr class="border-b border-gray-200">
-              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">{@summary.source_label}</th>
-              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Reachable</th>
-              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Unreachable</th>
-              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Status</th>
+              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">
+                {@summary.source_label}
+              </th>
+              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">
+                Reachable
+              </th>
+              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">
+                Unreachable
+              </th>
+              <th class="text-left pb-2.5 pt-1 pr-4 text-[11px] font-medium text-gray-500 uppercase tracking-wider">
+                Status
+              </th>
               <th class="w-8 pb-2.5 pt-1"></th>
             </tr>
           </thead>
@@ -548,8 +723,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
                 phx-value-source_stop_id={row.source_stop_id}
               >
                 <td class="py-3 pr-4 font-medium text-gray-900">{row.source_name}</td>
-                <td class="py-3 pr-4 text-gray-700">{if row.reachable != [], do: Enum.join(row.reachable, ", "), else: "—"}</td>
-                <td class="py-3 pr-4 text-gray-700">{if row.unreachable != [], do: Enum.join(row.unreachable, ", "), else: "—"}</td>
+                <td class="py-3 pr-4 text-gray-700">
+                  {if row.reachable != [], do: Enum.join(row.reachable, ", "), else: "—"}
+                </td>
+                <td class="py-3 pr-4 text-gray-700">
+                  {if row.unreachable != [], do: Enum.join(row.unreachable, ", "), else: "—"}
+                </td>
                 <td class="py-3 pr-4"><.reachability_status status={row.status} /></td>
                 <td class="py-3">
                   <svg
@@ -560,7 +739,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
                     class={"shrink-0 transition-transform duration-150 #{if row_expanded, do: "rotate-180", else: ""}"}
                     aria-hidden="true"
                   >
-                    <path d="M4 6L8 10L12 6" stroke="#9ca3af" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path
+                      d="M4 6L8 10L12 6"
+                      stroke="#9ca3af"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
                   </svg>
                 </td>
               </tr>
@@ -570,7 +755,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
                   <tr>
                     <td colspan="5" class="p-0">
                       <div class="bg-gray-50 border-t border-gray-200 px-4 py-4">
-                        <.source_group_card group={group} dimension={@dimension} expanded_routes={@expanded_routes} />
+                        <.source_group_card
+                          group={group}
+                          dimension={@dimension}
+                          expanded_routes={@expanded_routes}
+                        />
                       </div>
                     </td>
                   </tr>
@@ -592,7 +781,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <span class="inline-flex items-center gap-1.5" aria-label="Fully reachable">
       <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-        <path d="M4 9.5L7.5 13L14 5" stroke="#059669" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path
+          d="M4 9.5L7.5 13L14 5"
+          stroke="#059669"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
       </svg>
     </span>
     """
@@ -602,8 +797,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <span class="inline-flex items-center gap-1.5" aria-label="Partially reachable">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M8 1.5L14.5 13.5H1.5L8 1.5Z" stroke="#ca8a04" stroke-width="1.4" stroke-linejoin="round"/>
-        <text x="8" y="12" text-anchor="middle" font-size="8" font-weight="700" fill="#ca8a04">!</text>
+        <path
+          d="M8 1.5L14.5 13.5H1.5L8 1.5Z"
+          stroke="#ca8a04"
+          stroke-width="1.4"
+          stroke-linejoin="round"
+        />
+        <text x="8" y="12" text-anchor="middle" font-size="8" font-weight="700" fill="#ca8a04">
+          !
+        </text>
       </svg>
       <span class="text-sm text-yellow-600 font-medium">Partial</span>
     </span>
@@ -614,7 +816,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <span class="inline-flex items-center gap-1.5" aria-label="Not reachable">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M4 4L12 12M12 4L4 12" stroke="#dc2626" stroke-width="1.8" stroke-linecap="round"/>
+        <path d="M4 4L12 12M12 4L4 12" stroke="#dc2626" stroke-width="1.8" stroke-linecap="round" />
       </svg>
       <span class="text-sm text-red-600 font-medium">No reachability</span>
     </span>
@@ -728,7 +930,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp field_completeness_badge(%{status: :pass} = assigns) do
     ~H"""
-    <span class="inline-flex items-center px-2 text-xs font-semibold rounded bg-green-100 text-green-800 shrink-0" style="padding-top: 2px; padding-bottom: 2px;">
+    <span
+      class="inline-flex items-center px-2 text-xs font-semibold rounded bg-green-100 text-green-800 shrink-0"
+      style="padding-top: 2px; padding-bottom: 2px;"
+    >
       Pass
     </span>
     """
@@ -736,7 +941,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp field_completeness_badge(%{status: :warn} = assigns) do
     ~H"""
-    <span class="inline-flex items-center px-2 text-xs font-semibold rounded bg-yellow-100 text-yellow-800 shrink-0" style="padding-top: 2px; padding-bottom: 2px;">
+    <span
+      class="inline-flex items-center px-2 text-xs font-semibold rounded bg-yellow-100 text-yellow-800 shrink-0"
+      style="padding-top: 2px; padding-bottom: 2px;"
+    >
       Warn
     </span>
     """
@@ -744,7 +952,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp field_completeness_badge(%{status: :fail} = assigns) do
     ~H"""
-    <span class="inline-flex items-center px-2 text-xs font-semibold rounded bg-red-100 text-red-800 shrink-0" style="padding-top: 2px; padding-bottom: 2px;">
+    <span
+      class="inline-flex items-center px-2 text-xs font-semibold rounded bg-red-100 text-red-800 shrink-0"
+      style="padding-top: 2px; padding-bottom: 2px;"
+    >
       Fail
     </span>
     """
@@ -772,10 +983,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         <.status_badge status={@item.status} />
         <div class="flex-1 min-w-0">
           <div class="flex items-baseline justify-between gap-4">
-            <p class="text-sm font-medium text-gray-900"><%= @item.label %></p>
+            <p class="text-sm font-medium text-gray-900">{@item.label}</p>
             <.check_value item={@item} />
           </div>
-          <p class="text-xs text-gray-500 mt-0.5"><%= @item.description %></p>
+          <p class="text-xs text-gray-500 mt-0.5">{@item.description}</p>
           <.check_details :if={@item.detail_layout != nil} item={@item} />
         </div>
       </div>
@@ -788,8 +999,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp status_badge(%{status: :fail} = assigns) do
     ~H"""
     <span class="inline-flex items-center justify-center gap-1.5 w-[76px] shrink-0 px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider bg-red-100 text-red-800">
-      <span class="w-1.5 h-1.5 rounded-full bg-red-600 shrink-0"></span>
-      Fail
+      <span class="w-1.5 h-1.5 rounded-full bg-red-600 shrink-0"></span> Fail
     </span>
     """
   end
@@ -797,8 +1007,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp status_badge(%{status: :pass} = assigns) do
     ~H"""
     <span class="inline-flex items-center justify-center gap-1.5 w-[76px] shrink-0 px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider bg-green-100 text-green-800">
-      <span class="w-1.5 h-1.5 rounded-full bg-green-600 shrink-0"></span>
-      Pass
+      <span class="w-1.5 h-1.5 rounded-full bg-green-600 shrink-0"></span> Pass
     </span>
     """
   end
@@ -806,8 +1015,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp status_badge(%{status: :warn} = assigns) do
     ~H"""
     <span class="inline-flex items-center justify-center gap-1.5 w-[76px] shrink-0 px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider bg-yellow-100 text-yellow-800">
-      <span class="w-1.5 h-1.5 rounded-full bg-yellow-600 shrink-0"></span>
-      Warning
+      <span class="w-1.5 h-1.5 rounded-full bg-yellow-600 shrink-0"></span> Warning
     </span>
     """
   end
@@ -830,15 +1038,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
        when status in [:pass, :info] and (value == 0 or value == nil) do
     ~H"""
     <span class="text-sm text-gray-500 shrink-0" style="font-variant-numeric: tabular-nums;">
-      <%= @item.value %>
+      {@item.value}
     </span>
     """
   end
 
   defp check_value(%{item: %{value_format: :count}} = assigns) do
     ~H"""
-    <span class="text-sm text-gray-900 font-medium shrink-0" style="font-variant-numeric: tabular-nums;">
-      <%= @item.value %>
+    <span
+      class="text-sm text-gray-900 font-medium shrink-0"
+      style="font-variant-numeric: tabular-nums;"
+    >
+      {@item.value}
     </span>
     """
   end
@@ -859,19 +1070,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     assigns = assign(assigns, :text_class, text_class_for_status(assigns.item.status))
 
     ~H"""
-    <span class={"text-sm font-medium shrink-0 #{@text_class}"}><%= @item.value %></span>
+    <span class={"text-sm font-medium shrink-0 #{@text_class}"}>{@item.value}</span>
     """
   end
 
-  defp check_value(%{item: %{value_format: :compound, id: "entrance_to_platform_connectivity"}} = assigns) do
+  defp check_value(
+         %{item: %{value_format: :compound, id: "entrance_to_platform_connectivity"}} = assigns
+       ) do
     ~H"""
     <div class="flex items-center gap-2 shrink-0">
-      <span :if={@item.value.unreachable > 0} class="text-xs text-red-700 font-medium" style="font-variant-numeric: tabular-nums;">
-        <%= @item.value.unreachable %> unreachable
+      <span
+        :if={@item.value.unreachable > 0}
+        class="text-xs text-red-700 font-medium"
+        style="font-variant-numeric: tabular-nums;"
+      >
+        {@item.value.unreachable} unreachable
       </span>
       <span :if={@item.value.unreachable > 0} class="text-xs text-gray-500">&middot;</span>
       <span class="text-xs text-gray-500" style="font-variant-numeric: tabular-nums;">
-        <%= @item.value.reachable %> reachable
+        {@item.value.reachable} reachable
       </span>
     </div>
     """
@@ -880,12 +1097,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   defp check_value(%{item: %{value_format: :compound, id: "platform_interconnection"}} = assigns) do
     ~H"""
     <div class="flex items-center gap-2 shrink-0">
-      <span :if={@item.value.disconnected > 0} class="text-xs text-red-700 font-medium" style="font-variant-numeric: tabular-nums;">
-        <%= @item.value.disconnected %> disconnected
+      <span
+        :if={@item.value.disconnected > 0}
+        class="text-xs text-red-700 font-medium"
+        style="font-variant-numeric: tabular-nums;"
+      >
+        {@item.value.disconnected} disconnected
       </span>
       <span :if={@item.value.disconnected > 0} class="text-xs text-gray-500">&middot;</span>
       <span class="text-xs text-gray-500" style="font-variant-numeric: tabular-nums;">
-        <%= @item.value.connected %> connected
+        {@item.value.connected} connected
       </span>
     </div>
     """
@@ -910,12 +1131,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
         </thead>
         <tbody class="divide-y divide-gray-100">
           <tr :for={row <- @item.details}>
-            <td class="px-3 py-2 text-sm text-gray-700"><%= row.type_label %></td>
-            <td class={"px-3 py-2 text-sm text-right #{if row.present > 0, do: "text-gray-900 font-medium", else: "text-gray-500"}"} style="font-variant-numeric: tabular-nums;">
-              <%= row.present %>
+            <td class="px-3 py-2 text-sm text-gray-700">{row.type_label}</td>
+            <td
+              class={"px-3 py-2 text-sm text-right #{if row.present > 0, do: "text-gray-900 font-medium", else: "text-gray-500"}"}
+              style="font-variant-numeric: tabular-nums;"
+            >
+              {row.present}
             </td>
-            <td class={"px-3 py-2 text-sm text-right #{if row.missing > 0, do: "text-gray-900 font-medium", else: "text-gray-500"}"} style="font-variant-numeric: tabular-nums;">
-              <%= row.missing %>
+            <td
+              class={"px-3 py-2 text-sm text-right #{if row.missing > 0, do: "text-gray-900 font-medium", else: "text-gray-500"}"}
+              style="font-variant-numeric: tabular-nums;"
+            >
+              {row.missing}
             </td>
           </tr>
         </tbody>
@@ -929,8 +1156,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <details class="group mt-2.5">
       <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
-        <svg class="w-3 h-3 transition-transform duration-150 group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
-        <%= @item.detail_label %>
+        <svg
+          class="w-3 h-3 transition-transform duration-150 group-open:rotate-90"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          stroke-width="2.5"
+        >
+          <path d="M9 5l7 7-7 7" />
+        </svg>
+        {@item.detail_label}
       </summary>
       <div class="mt-2 grid grid-cols-1 gap-0.5">
         <.stop_name_link :for={entry <- @item.details} stop_id={entry.id} name={entry.name} />
@@ -944,8 +1179,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <details class="group mt-2.5">
       <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
-        <svg class="w-3 h-3 transition-transform duration-150 group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
-        <%= @item.detail_label %>
+        <svg
+          class="w-3 h-3 transition-transform duration-150 group-open:rotate-90"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          stroke-width="2.5"
+        >
+          <path d="M9 5l7 7-7 7" />
+        </svg>
+        {@item.detail_label}
       </summary>
       <div class="mt-2 grid grid-cols-1 gap-1">
         <div :for={entry <- @item.details} class="flex items-center gap-2">
@@ -957,18 +1200,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     """
   end
 
-  defp check_details(%{item: %{detail_layout: :stop_ids_with_reasons, details: details}} = assigns)
+  defp check_details(
+         %{item: %{detail_layout: :stop_ids_with_reasons, details: details}} = assigns
+       )
        when is_list(details) and details != [] do
     ~H"""
     <details class="group mt-2.5">
       <summary class="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 cursor-pointer">
-        <svg class="w-3 h-3 transition-transform duration-150 group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
-        <%= @item.detail_label %>
+        <svg
+          class="w-3 h-3 transition-transform duration-150 group-open:rotate-90"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          stroke-width="2.5"
+        >
+          <path d="M9 5l7 7-7 7" />
+        </svg>
+        {@item.detail_label}
       </summary>
       <div class="mt-2 grid grid-cols-1 gap-1.5">
         <div :for={entry <- @item.details} class="flex items-baseline gap-3">
           <.stop_name_link stop_id={entry.id} name={entry.name} class="shrink-0" />
-          <span class="text-xs text-gray-500"><%= entry.reason %></span>
+          <span class="text-xs text-gray-500">{entry.reason}</span>
         </div>
       </div>
     </details>
@@ -993,7 +1246,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       title={@stop_id}
       class={"text-left text-xs text-teal-600 hover:text-teal-700 cursor-pointer #{@class}"}
     >
-      <%= @name %>
+      {@name}
     </button>
     """
   end

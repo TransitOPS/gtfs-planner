@@ -31,7 +31,9 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "invalid entity_type returns error" do
-      changeset = ChangeLog.changeset(%ChangeLog{}, Map.put(@valid_attrs, :entity_type, "invalid"))
+      changeset =
+        ChangeLog.changeset(%ChangeLog{}, Map.put(@valid_attrs, :entity_type, "invalid"))
+
       refute changeset.valid?
       assert has_error?(changeset, :entity_type, "is invalid")
     end
@@ -129,11 +131,12 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "stop updated inserts row with snapshot and changed_fields", %{ctx: ctx} do
-      stop = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
-        stop_id: "stop_one",
-        stop_name: "Old Name",
-        stop_desc: "Old Desc"
-      })
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_one",
+          stop_name: "Old Name",
+          stop_desc: "Old Desc"
+        })
 
       attrs = %{stop_name: "New Name", stop_desc: "Old Desc"}
 
@@ -151,10 +154,11 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "stop deleted inserts row with snapshot", %{ctx: ctx} do
-      stop = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
-        stop_id: "stop_del",
-        stop_name: "Delete Me"
-      })
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_del",
+          stop_name: "Delete Me"
+        })
 
       assert :ok = Gtfs.record_change(ctx, :stop, stop, "deleted", %{})
 
@@ -170,12 +174,19 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       from_stop = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{stop_id: "from_s"})
       to_stop = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{stop_id: "to_s"})
 
-      pw = pathway_fixture(ctx.organization_id, ctx.gtfs_version_id, from_stop.stop_id, to_stop.stop_id, %{
-        pathway_id: "pw_one",
-        pathway_mode: 1,
-        is_bidirectional: true,
-        traversal_time: 60
-      })
+      pw =
+        pathway_fixture(
+          ctx.organization_id,
+          ctx.gtfs_version_id,
+          from_stop.stop_id,
+          to_stop.stop_id,
+          %{
+            pathway_id: "pw_one",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            traversal_time: 60
+          }
+        )
 
       attrs = %{traversal_time: 120, is_bidirectional: false}
 
@@ -192,11 +203,12 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "level updated records correct level fields", %{ctx: ctx} do
-      level = level_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
-        level_id: "L_test",
-        level_name: "Ground Floor",
-        level_index: 0.0
-      })
+      level =
+        level_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          level_id: "L_test",
+          level_name: "Ground Floor",
+          level_index: 0.0
+        })
 
       attrs = %{level_name: "First Floor", level_index: 0.5}
 
@@ -208,15 +220,21 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert log.entity_external_id == "L_test"
       assert log.snapshot["level_name"] == "Ground Floor"
       assert log.snapshot["level_index"] == 0.0
-      assert log.changed_fields["level_name"] == %{"from" => "Ground Floor", "to" => "First Floor"}
+
+      assert log.changed_fields["level_name"] == %{
+               "from" => "Ground Floor",
+               "to" => "First Floor"
+             }
+
       assert log.changed_fields["level_index"] == %{"from" => 0.0, "to" => 0.5}
     end
 
     test "changed_fields is empty map when no fields change", %{ctx: ctx} do
-      stop = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
-        stop_id: "stop_same",
-        stop_name: "Same Name"
-      })
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_same",
+          stop_name: "Same Name"
+        })
 
       attrs = %{stop_name: "Same Name"}
 
@@ -262,7 +280,11 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert logs == []
     end
 
-    test "does not return entries for different entity_type", %{org: org, version: version, ctx: ctx} do
+    test "does not return entries for different entity_type", %{
+      org: org,
+      version: version,
+      ctx: ctx
+    } do
       stop = stop_fixture(org.id, version.id, %{stop_id: "stop_typed"})
       level = level_fixture(org.id, version.id, %{level_id: "L_typed"})
 
@@ -296,14 +318,19 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "restores stop fields from snapshot and inserts rolled_back entry", %{ctx: ctx} do
-      stop = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
-        stop_id: "stop_rb",
-        stop_name: "Original",
-        stop_desc: "Original desc",
-        location_type: 0
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_rb",
+          stop_name: "Original",
+          stop_desc: "Original desc",
+          location_type: 0
+        })
+
+      Gtfs.record_change(ctx, :stop, stop, "updated", %{
+        stop_name: "Changed",
+        stop_desc: "New desc"
       })
 
-      Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed", stop_desc: "New desc"})
       log = Repo.one!(ChangeLog)
 
       {:ok, restored} = Gtfs.rollback_entity(log)
@@ -321,17 +348,19 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       from_s = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{stop_id: "from_pw_rb"})
       to_s = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{stop_id: "to_pw_rb"})
 
-      pw = pathway_fixture(ctx.organization_id, ctx.gtfs_version_id, from_s.stop_id, to_s.stop_id, %{
-        pathway_id: "pw_rb",
-        pathway_mode: 1,
-        traversal_time: 60,
-        signposted_as: "To Platform"
-      })
+      pw =
+        pathway_fixture(ctx.organization_id, ctx.gtfs_version_id, from_s.stop_id, to_s.stop_id, %{
+          pathway_id: "pw_rb",
+          pathway_mode: 1,
+          traversal_time: 60,
+          signposted_as: "To Platform"
+        })
 
       Gtfs.record_change(ctx, :pathway, pw, "updated", %{
         signposted_as: "To Exit",
         traversal_time: 90
       })
+
       log = Repo.one!(ChangeLog)
 
       {:ok, restored} = Gtfs.rollback_entity(log)
@@ -341,13 +370,18 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "restores level fields from snapshot", %{ctx: ctx} do
-      level = level_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
-        level_id: "L_rb",
-        level_name: "Original Level",
-        level_index: 1.0
+      level =
+        level_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          level_id: "L_rb",
+          level_name: "Original Level",
+          level_index: 1.0
+        })
+
+      Gtfs.record_change(ctx, :level, level, "updated", %{
+        level_name: "Changed Level",
+        level_index: 2.0
       })
 
-      Gtfs.record_change(ctx, :level, level, "updated", %{level_name: "Changed Level", level_index: 2.0})
       log = Repo.one!(ChangeLog)
 
       {:ok, restored} = Gtfs.rollback_entity(log)
@@ -365,10 +399,12 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "rejects deleted action", %{ctx: ctx} do
-      stop = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
-        stop_id: "stop_del_rb",
-        stop_name: "Deleted Stop"
-      })
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_del_rb",
+          stop_name: "Deleted Stop"
+        })
+
       Gtfs.record_change(ctx, :stop, stop, "deleted", %{})
       log = Repo.one!(ChangeLog)
 
@@ -376,10 +412,12 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "returns entity_not_found for non-existent entity", %{ctx: ctx} do
-      stop = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
-        stop_id: "stop_gone",
-        stop_name: "Will Be Deleted"
-      })
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_gone",
+          stop_name: "Will Be Deleted"
+        })
+
       Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
       log = Repo.one!(ChangeLog)
       Gtfs.delete_stop(stop)
@@ -388,10 +426,11 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "does not change identity fields on rollback", %{ctx: ctx} do
-      stop = stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
-        stop_id: "stop_identity",
-        stop_name: "Original"
-      })
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_identity",
+          stop_name: "Original"
+        })
 
       original_stop_id = stop.stop_id
 

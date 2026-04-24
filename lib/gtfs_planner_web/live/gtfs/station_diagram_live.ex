@@ -175,7 +175,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_info(:clear_edit_child_stop_param, socket) do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
-    {:noreply, push_patch(socket, to: "/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
+
+    {:noreply,
+     push_patch(socket, to: "/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
   end
 
   defp load_level_data(socket, nil) do

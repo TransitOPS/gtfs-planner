@@ -27,11 +27,11 @@ defmodule GtfsPlanner.Repo.Migrations.CreateChangeLogs do
     end
 
     create index(:change_logs, [
-      :organization_id,
-      :gtfs_version_id,
-      :station_stop_id,
-      :inserted_at
-    ])
+             :organization_id,
+             :gtfs_version_id,
+             :station_stop_id,
+             :inserted_at
+           ])
 
     create index(:change_logs, [:entity_type, :entity_id, :inserted_at])
   end

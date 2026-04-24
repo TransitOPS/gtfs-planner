@@ -108,6 +108,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
     test "does not modify read-only fields (pathway_mode, from_stop_id, to_stop_id)",
          %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)
+
       %{station: station, pathway: pathway, child1: child1, child2: child2} =
         build_station_with_pathway(org.id, version.id)
 
@@ -160,7 +161,12 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         })
 
       other_pathway =
-        pathway_fixture(other_org.id, other_version.id, other_child1.stop_id, other_child2.stop_id)
+        pathway_fixture(
+          other_org.id,
+          other_version.id,
+          other_child1.stop_id,
+          other_child2.stop_id
+        )
 
       payload = %{
         "pathways" => [
@@ -219,6 +225,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
     test "partial failure: some pathways succeed, some fail",
          %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)
+
       %{station: station, pathway: good_pathway} =
         build_station_with_pathway(org.id, version.id)
 

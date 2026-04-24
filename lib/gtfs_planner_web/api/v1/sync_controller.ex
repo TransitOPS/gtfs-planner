@@ -7,7 +7,11 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
   @editable_fields ~w(traversal_time stair_count min_width signposted_as reversed_signposted_as field_notes field_completed_at)a
 
   @doc "POST /api/v1/versions/:version_id/stations/:station_id/sync"
-  def create(conn, %{"version_id" => _version_id, "station_id" => _station_id, "pathways" => pathway_updates}) do
+  def create(conn, %{
+        "version_id" => _version_id,
+        "station_id" => _station_id,
+        "pathways" => pathway_updates
+      }) do
     org_id = conn.assigns[:current_organization_id]
 
     results =
@@ -18,7 +22,12 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
           {:ok, pathway_id} ->
             case Repo.get_by(Pathway, id: pathway_id, organization_id: org_id) do
               nil ->
-                %{acc | errors: [%{id: raw_id, code: "not_found", message: "Pathway not found."} | acc.errors]}
+                %{
+                  acc
+                  | errors: [
+                      %{id: raw_id, code: "not_found", message: "Pathway not found."} | acc.errors
+                    ]
+                }
 
               pathway ->
                 attrs =
@@ -33,12 +42,28 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
                     %{acc | synced: acc.synced + 1}
 
                   {:error, _changeset} ->
-                    %{acc | errors: [%{id: raw_id, code: "validation_error", message: "Failed to update pathway."} | acc.errors]}
+                    %{
+                      acc
+                      | errors: [
+                          %{
+                            id: raw_id,
+                            code: "validation_error",
+                            message: "Failed to update pathway."
+                          }
+                          | acc.errors
+                        ]
+                    }
                 end
             end
 
           :error ->
-            %{acc | errors: [%{id: raw_id, code: "invalid_id", message: "Pathway id must be a valid UUID."} | acc.errors]}
+            %{
+              acc
+              | errors: [
+                  %{id: raw_id, code: "invalid_id", message: "Pathway id must be a valid UUID."}
+                  | acc.errors
+                ]
+            }
         end
       end)
 

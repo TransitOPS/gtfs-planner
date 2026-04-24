@@ -519,12 +519,16 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
     assert_receive {:phase, %{phase: :done, reused: false}}
   end
 
-  test "get_or_build_graph/3 does not cross-reuse cache between different custom gtfs_zip_path inputs", %{
-    organization: organization,
-    gtfs_version: gtfs_version
-  } do
+  test "get_or_build_graph/3 does not cross-reuse cache between different custom gtfs_zip_path inputs",
+       %{
+         organization: organization,
+         gtfs_version: gtfs_version
+       } do
     source_dir =
-      Path.join(System.tmp_dir!(), "graph-custom-zip-isolation-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "graph-custom-zip-isolation-#{System.unique_integer([:positive])}"
+      )
 
     custom_zip_path_a = Path.join(source_dir, "custom-a.zip")
     custom_zip_path_b = Path.join(source_dir, "custom-b.zip")
@@ -641,8 +645,13 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
     scope_key = GraphMaterializer.derive_scope_key(:default, gtfs_input_sha256)
 
     expected_data_dir = GraphPath.data_dir(organization.id, gtfs_version.id, scope_key)
-    expected_staged_gtfs = GraphPath.staged_gtfs_zip_path(organization.id, gtfs_version.id, scope_key)
-    expected_staged_osm = GraphPath.staged_osm_path(organization.id, gtfs_version.id, scope_key, osm_path)
+
+    expected_staged_gtfs =
+      GraphPath.staged_gtfs_zip_path(organization.id, gtfs_version.id, scope_key)
+
+    expected_staged_osm =
+      GraphPath.staged_osm_path(organization.id, gtfs_version.id, scope_key, osm_path)
+
     expected_graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id, scope_key)
 
     build_result = %{
@@ -684,7 +693,10 @@ defmodule GtfsPlanner.Otp.GraphMaterializerTest do
     gtfs_version: gtfs_version
   } do
     source_dir =
-      Path.join(System.tmp_dir!(), "graph-manifest-input-sha-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "graph-manifest-input-sha-#{System.unique_integer([:positive])}"
+      )
 
     custom_zip_path = Path.join(source_dir, "custom.zip")
 

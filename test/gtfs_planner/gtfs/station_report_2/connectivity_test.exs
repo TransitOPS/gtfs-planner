@@ -80,16 +80,33 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
         ],
         pathways: [
           # ENT_1 reaches both platforms (unidirectional — no reverse path)
-          make_pathway(%{pathway_id: "PW_1", from_stop_id: "ENT_1", to_stop_id: "PLAT_1", is_bidirectional: false}),
-          make_pathway(%{pathway_id: "PW_2", from_stop_id: "ENT_1", to_stop_id: "PLAT_2", is_bidirectional: false}),
+          make_pathway(%{
+            pathway_id: "PW_1",
+            from_stop_id: "ENT_1",
+            to_stop_id: "PLAT_1",
+            is_bidirectional: false
+          }),
+          make_pathway(%{
+            pathway_id: "PW_2",
+            from_stop_id: "ENT_1",
+            to_stop_id: "PLAT_2",
+            is_bidirectional: false
+          }),
           # ENT_2 can only reach PLAT_1 (unidirectional)
-          make_pathway(%{pathway_id: "PW_3", from_stop_id: "ENT_2", to_stop_id: "PLAT_1", is_bidirectional: false})
+          make_pathway(%{
+            pathway_id: "PW_3",
+            from_stop_id: "ENT_2",
+            to_stop_id: "PLAT_1",
+            is_bidirectional: false
+          })
         ],
         levels: []
       }
 
       summaries = Connectivity.build_summaries(snapshot)
-      ent2_row = Enum.find(summaries.entrance_to_platform.summary_rows, &(&1.source_stop_id == "ENT_2"))
+
+      ent2_row =
+        Enum.find(summaries.entrance_to_platform.summary_rows, &(&1.source_stop_id == "ENT_2"))
 
       assert ent2_row.status == :partial
       assert summaries.entrance_to_platform.status == :warning
@@ -109,7 +126,9 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
       }
 
       summaries = Connectivity.build_summaries(snapshot)
-      ent2_row = Enum.find(summaries.entrance_to_platform.summary_rows, &(&1.source_stop_id == "ENT_2"))
+
+      ent2_row =
+        Enum.find(summaries.entrance_to_platform.summary_rows, &(&1.source_stop_id == "ENT_2"))
 
       assert ent2_row.status == :none
       assert summaries.entrance_to_platform.status == :fail
@@ -149,7 +168,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
         child_stops: [
           make_stop(%{stop_id: "ENT_1", stop_name: "Entrance", location_type: 2}),
           make_stop(%{stop_id: "PLAT_1", stop_name: "Platform", location_type: 0}),
-          make_stop(%{stop_id: "BA_1", stop_name: "Boarding Area", location_type: 4, parent_station: "PLAT_1"})
+          make_stop(%{
+            stop_id: "BA_1",
+            stop_name: "Boarding Area",
+            location_type: 4,
+            parent_station: "PLAT_1"
+          })
         ],
         pathways: [
           make_pathway(%{pathway_id: "PW_1", from_stop_id: "ENT_1", to_stop_id: "BA_1"})
@@ -177,7 +201,10 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
       }
 
       summaries = Connectivity.build_summaries(snapshot)
-      plat3_row = Enum.find(summaries.platform_to_platform.summary_rows, &(&1.source_stop_id == "PLAT_3"))
+
+      plat3_row =
+        Enum.find(summaries.platform_to_platform.summary_rows, &(&1.source_stop_id == "PLAT_3"))
+
       assert plat3_row.status == :none
     end
   end
@@ -191,8 +218,18 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
           make_stop(%{stop_id: "PLAT_1", stop_name: "Platform", location_type: 0, level_id: "L1"})
         ],
         pathways: [
-          make_pathway(%{pathway_id: "PW_1", from_stop_id: "ENT_1", to_stop_id: "NODE_1", traversal_time: 15}),
-          make_pathway(%{pathway_id: "PW_2", from_stop_id: "NODE_1", to_stop_id: "PLAT_1", traversal_time: 20})
+          make_pathway(%{
+            pathway_id: "PW_1",
+            from_stop_id: "ENT_1",
+            to_stop_id: "NODE_1",
+            traversal_time: 15
+          }),
+          make_pathway(%{
+            pathway_id: "PW_2",
+            from_stop_id: "NODE_1",
+            to_stop_id: "PLAT_1",
+            traversal_time: 20
+          })
         ],
         levels: [make_level(%{level_id: "L1", level_name: "Street", level_index: 0.0})]
       }
@@ -281,17 +318,51 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
       snapshot = %{
         child_stops: [
           make_stop(%{stop_id: "ENT_1", stop_name: "Entrance", location_type: 2, level_id: "L1"}),
-          make_stop(%{stop_id: "NODE_S", stop_name: "Stairs Node", location_type: 3, level_id: "L2"}),
-          make_stop(%{stop_id: "NODE_E", stop_name: "Elevator Node", location_type: 3, level_id: "L2"}),
+          make_stop(%{
+            stop_id: "NODE_S",
+            stop_name: "Stairs Node",
+            location_type: 3,
+            level_id: "L2"
+          }),
+          make_stop(%{
+            stop_id: "NODE_E",
+            stop_name: "Elevator Node",
+            location_type: 3,
+            level_id: "L2"
+          }),
           make_stop(%{stop_id: "PLAT_1", stop_name: "Platform", location_type: 0, level_id: "L2"})
         ],
         pathways: [
           # Stairs route: ENT_1 -> NODE_S -> PLAT_1 (shorter, general shortest path)
-          make_pathway(%{pathway_id: "PW_S1", from_stop_id: "ENT_1", to_stop_id: "NODE_S", pathway_mode: 2, traversal_time: 10}),
-          make_pathway(%{pathway_id: "PW_S2", from_stop_id: "NODE_S", to_stop_id: "PLAT_1", pathway_mode: 1, traversal_time: 10}),
+          make_pathway(%{
+            pathway_id: "PW_S1",
+            from_stop_id: "ENT_1",
+            to_stop_id: "NODE_S",
+            pathway_mode: 2,
+            traversal_time: 10
+          }),
+          make_pathway(%{
+            pathway_id: "PW_S2",
+            from_stop_id: "NODE_S",
+            to_stop_id: "PLAT_1",
+            pathway_mode: 1,
+            traversal_time: 10
+          }),
           # Elevator route: ENT_1 -> NODE_E -> PLAT_1 (longer, but step-free)
-          make_pathway(%{pathway_id: "PW_E1", from_stop_id: "ENT_1", to_stop_id: "NODE_E", pathway_mode: 5, traversal_time: 30}),
-          make_pathway(%{pathway_id: "PW_E2", from_stop_id: "NODE_E", to_stop_id: "PLAT_1", pathway_mode: 1, traversal_time: 30})
+          make_pathway(%{
+            pathway_id: "PW_E1",
+            from_stop_id: "ENT_1",
+            to_stop_id: "NODE_E",
+            pathway_mode: 5,
+            traversal_time: 30
+          }),
+          make_pathway(%{
+            pathway_id: "PW_E2",
+            from_stop_id: "NODE_E",
+            to_stop_id: "PLAT_1",
+            pathway_mode: 1,
+            traversal_time: 30
+          })
         ],
         levels: [
           make_level(%{level_id: "L1", level_name: "Street", level_index: 0.0}),
@@ -314,7 +385,13 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
         ],
         pathways: [
           # Only stairs (not step-free)
-          make_pathway(%{pathway_id: "PW_1", from_stop_id: "ENT_1", to_stop_id: "PLAT_1", pathway_mode: 2, traversal_time: 20})
+          make_pathway(%{
+            pathway_id: "PW_1",
+            from_stop_id: "ENT_1",
+            to_stop_id: "PLAT_1",
+            pathway_mode: 2,
+            traversal_time: 20
+          })
         ],
         levels: [
           make_level(%{level_id: "L1", level_name: "Street", level_index: 0.0}),
@@ -335,7 +412,13 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
           make_stop(%{stop_id: "PLAT_1", stop_name: "Platform", location_type: 0, level_id: "L1"})
         ],
         pathways: [
-          make_pathway(%{pathway_id: "PW_1", from_stop_id: "ENT_1", to_stop_id: "PLAT_1", pathway_mode: 1, traversal_time: 15})
+          make_pathway(%{
+            pathway_id: "PW_1",
+            from_stop_id: "ENT_1",
+            to_stop_id: "PLAT_1",
+            pathway_mode: 1,
+            traversal_time: 15
+          })
         ],
         levels: [
           make_level(%{level_id: "L1", level_name: "Street", level_index: 0.0})
@@ -358,8 +441,18 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
           make_stop(%{stop_id: "PLAT_1", stop_name: "Platform", location_type: 0, level_id: "L1"})
         ],
         pathways: [
-          make_pathway(%{pathway_id: "PW_1", from_stop_id: "ENT_1", to_stop_id: "NODE_1", traversal_time: 15}),
-          make_pathway(%{pathway_id: "PW_2", from_stop_id: "NODE_1", to_stop_id: "PLAT_1", traversal_time: 20})
+          make_pathway(%{
+            pathway_id: "PW_1",
+            from_stop_id: "ENT_1",
+            to_stop_id: "NODE_1",
+            traversal_time: 15
+          }),
+          make_pathway(%{
+            pathway_id: "PW_2",
+            from_stop_id: "NODE_1",
+            to_stop_id: "PLAT_1",
+            traversal_time: 20
+          })
         ],
         levels: [make_level(%{level_id: "L1", level_name: "Street", level_index: 0.0})]
       }

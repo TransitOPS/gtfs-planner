@@ -116,12 +116,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
         "report2-accessibility"
       ]
 
-      positions = Enum.map(section_ids, fn id ->
-        case :binary.match(html, id) do
-          {pos, _len} -> pos
-          :nomatch -> flunk("Section #{id} not found in HTML")
-        end
-      end)
+      positions =
+        Enum.map(section_ids, fn id ->
+          case :binary.match(html, id) do
+            {pos, _len} -> pos
+            :nomatch -> flunk("Section #{id} not found in HTML")
+          end
+        end)
 
       assert positions == Enum.sort(positions),
              "Sections are not in the expected order"

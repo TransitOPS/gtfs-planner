@@ -255,8 +255,21 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQualityTest do
     end
 
     test "wheelchair_inferrable: stairs-only connected stop suggests 2" do
-      platform = make_stop(%{stop_id: "PLAT_1", location_type: 0, parent_station: "STATION_1", wheelchair_boarding: nil})
-      entrance = make_stop(%{stop_id: "ENT_1", location_type: 2, parent_station: "STATION_1", wheelchair_boarding: nil})
+      platform =
+        make_stop(%{
+          stop_id: "PLAT_1",
+          location_type: 0,
+          parent_station: "STATION_1",
+          wheelchair_boarding: nil
+        })
+
+      entrance =
+        make_stop(%{
+          stop_id: "ENT_1",
+          location_type: 2,
+          parent_station: "STATION_1",
+          wheelchair_boarding: nil
+        })
 
       # pathway_mode 2 = stairs
       pw =

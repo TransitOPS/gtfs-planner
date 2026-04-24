@@ -93,9 +93,19 @@ defmodule GtfsPlanner.Gtfs.StationReport2.PathwayFieldCompletenessTest do
 
     test "warn status when some pathways have field present" do
       pathways = [
-        make_pathway(%{pathway_id: "PW_1", pathway_mode: 5, min_width: Decimal.new("1.2"), traversal_time: 30}),
+        make_pathway(%{
+          pathway_id: "PW_1",
+          pathway_mode: 5,
+          min_width: Decimal.new("1.2"),
+          traversal_time: 30
+        }),
         make_pathway(%{pathway_id: "PW_2", pathway_mode: 5, min_width: nil, traversal_time: 30}),
-        make_pathway(%{pathway_id: "PW_3", pathway_mode: 5, min_width: Decimal.new("1.5"), traversal_time: nil})
+        make_pathway(%{
+          pathway_id: "PW_3",
+          pathway_mode: 5,
+          min_width: Decimal.new("1.5"),
+          traversal_time: nil
+        })
       ]
 
       [group] = PathwayFieldCompleteness.build(%{pathways: pathways})

@@ -33,13 +33,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
             class="inline-flex items-center gap-1.5 text-sm font-medium text-teal-600 hover:text-teal-700 transition-colors duration-[15ms] cursor-pointer"
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M10 3L5 8L10 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path
+                d="M10 3L5 8L10 13"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
             </svg>
             Summary
           </button>
           <span class="text-gray-300">|</span>
           <div>
-            <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-widest">Connectivity — Route Detail</p>
+            <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-widest">
+              Connectivity — Route Detail
+            </p>
           </div>
         </div>
       </div>
@@ -88,7 +96,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
           </div>
           <p class="text-xs text-gray-500 font-mono mt-1 ml-[18px]">{@group.source.stop_id}</p>
         </div>
-        <span class="text-[11px] font-medium text-gray-500 uppercase tracking-wider mt-0.5">{@dimension_label}</span>
+        <span class="text-[11px] font-medium text-gray-500 uppercase tracking-wider mt-0.5">
+          {@dimension_label}
+        </span>
       </div>
 
       <div>
@@ -172,7 +182,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
             class={"shrink-0 transition-transform duration-150 #{if @expanded, do: "rotate-180", else: ""}"}
             aria-hidden="true"
           >
-            <path d="M4.5 6.75L9 11.25L13.5 6.75" stroke="#6a7282" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path
+              d="M4.5 6.75L9 11.25L13.5 6.75"
+              stroke="#6a7282"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
         </div>
       </button>
@@ -181,7 +197,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         <div id={@route_region_id} role="region" class="border-t border-gray-200 bg-gray-50">
           <div class="p-5 border-b border-gray-200">
             <div class="flex items-start justify-between mb-4">
-              <p class="text-xs text-gray-500 font-mono">{@expanded_route.target.stop_id} · {@expanded_route.target.meta}</p>
+              <p class="text-xs text-gray-500 font-mono">
+                {@expanded_route.target.stop_id} · {@expanded_route.target.meta}
+              </p>
               <.route_badge status={@expanded_route.status} />
             </div>
 
@@ -192,21 +210,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
             <div class="flex items-baseline gap-8 text-sm">
               <div>
                 <span class="text-gray-500">Total time </span>
-                <span class="font-semibold text-gray-900">{format_number(@expanded_route.time)}s</span>
+                <span class="font-semibold text-gray-900">
+                  {format_number(@expanded_route.time)}s
+                </span>
               </div>
               <div>
                 <span class="text-gray-500">Distance </span>
-                <span class="font-semibold text-gray-900">{format_number(@expanded_route.distance)}m</span>
+                <span class="font-semibold text-gray-900">
+                  {format_number(@expanded_route.distance)}m
+                </span>
               </div>
               <div>
                 <span class="text-gray-500">Level changes </span>
                 <span class="font-semibold text-gray-900">{@expanded_route.levels}</span>
-                <span :if={@expanded_route.level_path} class="text-gray-500 ml-1">({@expanded_route.level_path})</span>
+                <span :if={@expanded_route.level_path} class="text-gray-500 ml-1">
+                  ({@expanded_route.level_path})
+                </span>
               </div>
               <div>
                 <span class="text-gray-500">Accessible </span>
-                <span class="font-semibold text-gray-900">{if @expanded_route.accessible, do: "Yes", else: "No"}</span>
-                <span :if={@expanded_route.accessible_note} class="text-gray-500 ml-1">— {@expanded_route.accessible_note}</span>
+                <span class="font-semibold text-gray-900">
+                  {if @expanded_route.accessible, do: "Yes", else: "No"}
+                </span>
+                <span :if={@expanded_route.accessible_note} class="text-gray-500 ml-1">
+                  — {@expanded_route.accessible_note}
+                </span>
               </div>
             </div>
           </div>
@@ -221,9 +249,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         <div id={@route_region_id} role="region" class="border-t border-gray-200 bg-gray-50 px-5 py-6">
           <div class="flex items-center gap-3 text-sm text-gray-600">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M4 4L12 12M12 4L4 12" stroke="#dc2626" stroke-width="1.8" stroke-linecap="round"/>
+              <path
+                d="M4 4L12 12M12 4L4 12"
+                stroke="#dc2626"
+                stroke-width="1.8"
+                stroke-linecap="round"
+              />
             </svg>
-            <p>No directed path exists between these stops. Check that pathway records connect all intermediate nodes.</p>
+            <p>
+              No directed path exists between these stops. Check that pathway records connect all intermediate nodes.
+            </p>
           </div>
         </div>
       <% end %>
@@ -243,19 +278,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     <table class="w-full text-sm" style="border-collapse: collapse;">
       <thead>
         <tr class="border-b border-gray-200">
-          <th class="text-left py-2 pr-2 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-8">#</th>
-          <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-24">Mode</th>
-          <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Stop name</th>
-          <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider">Instruction</th>
-          <th class="text-right py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-16">Time</th>
-          <th class="text-right py-2 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-14">Dist</th>
+          <th class="text-left py-2 pr-2 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-8">
+            #
+          </th>
+          <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-24">
+            Mode
+          </th>
+          <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider">
+            Stop name
+          </th>
+          <th class="text-left py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider">
+            Instruction
+          </th>
+          <th class="text-right py-2 pr-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-16">
+            Time
+          </th>
+          <th class="text-right py-2 text-[11px] font-medium text-gray-500 uppercase tracking-wider w-14">
+            Dist
+          </th>
         </tr>
       </thead>
       <tbody>
         <%= for item <- @grouped do %>
           <%= if item.type == :level do %>
             <tr>
-              <td colspan="6" class="pt-4 pb-1.5 text-[11px] font-bold text-gray-900 uppercase tracking-wider">
+              <td
+                colspan="6"
+                class="pt-4 pb-1.5 text-[11px] font-bold text-gray-900 uppercase tracking-wider"
+              >
                 {item.name} ({format_level_index(item.index)})
               </td>
             </tr>
@@ -265,13 +315,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
               <td class="py-2.5 pr-3">
                 <span class={"text-sm font-medium #{mode_color(item.mode)}"}>{item.mode || "—"}</span>
               </td>
-              <td class="py-2.5 pr-3 text-gray-600 text-xs truncate max-w-[240px]" title={item.stop_name}>{item.stop_name || item.stop_id}</td>
+              <td
+                class="py-2.5 pr-3 text-gray-600 text-xs truncate max-w-[240px]"
+                title={item.stop_name}
+              >
+                {item.stop_name || item.stop_id}
+              </td>
               <td class="py-2.5 pr-3 text-gray-700">{item.instruction || "—"}</td>
               <td class="py-2.5 pr-3 text-right tabular-nums text-gray-900">
                 <%= if item.time != nil do %>
                   <span class="inline-flex items-center gap-1">
-                    <span class={if item.time_warning, do: "text-amber-600 font-semibold", else: ""}>{format_number(item.time)}s</span>
-                    <span :if={item.time_warning} class="text-amber-500" aria-label="Time warning">⚠</span>
+                    <span class={if item.time_warning, do: "text-amber-600 font-semibold", else: ""}>
+                      {format_number(item.time)}s
+                    </span>
+                    <span :if={item.time_warning} class="text-amber-500" aria-label="Time warning">
+                      ⚠
+                    </span>
                   </span>
                 <% else %>
                   —
@@ -336,7 +395,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     ~H"""
     <div class="bg-white border border-gray-400 rounded-lg p-10 text-center shadow-card">
       <div class="w-12 h-12 mx-auto mb-4 rounded-full bg-gray-100 flex items-center justify-center">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="#99a1af" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path
+            d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+            stroke="#99a1af"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
       </div>
       <h3 class="text-base font-semibold text-gray-900 mb-1">{@title}</h3>
       <p class="text-sm text-gray-600 max-w-md mx-auto">{@description}</p>
@@ -391,10 +458,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   defp format_number(n), do: to_string(n)
 
   defp format_level_index(nil), do: ""
+
   defp format_level_index(index) when is_number(index) do
     val = index / 1.0
     formatted = :erlang.float_to_binary(abs(val), decimals: 1)
     if val < 0, do: "−" <> formatted, else: formatted
   end
+
   defp format_level_index(index), do: to_string(index)
 end
