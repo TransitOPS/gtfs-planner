@@ -10,6 +10,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   import GtfsPlannerWeb.Gtfs.StationDiagramComponents
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.Stop
@@ -90,6 +91,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:naming_error, nil)
      |> assign(:naming_status, nil)
      |> assign(:naming_excluded_ids, MapSet.new())
+     |> assign(:audit_ctx, nil)
+     |> assign(:history_open_for, nil)
+     |> assign(:history_entries, [])
+     |> assign(:rollback_preview, nil)
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg .svg),
        max_file_size: 10_000_000,
@@ -162,6 +167,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:walkability_mode, :create)
           |> assign(:editing_walkability_test, nil)
 
+        socket = assign(socket, :audit_ctx, build_audit_ctx(socket))
+
         socket =
           socket
           |> load_level_data(active_level)
@@ -169,6 +176,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         {:noreply, socket}
     end
+  end
+
+  defp build_audit_ctx(socket) do
+    %{
+      current_organization: %{id: organization_id},
+      current_gtfs_version: %{id: gtfs_version_id},
+      current_user: %{id: actor_id, email: actor_email},
+      station: %{stop_id: station_stop_id}
+    } = socket.assigns
+
+    %AuditContext{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id,
+      station_stop_id: station_stop_id,
+      actor_id: actor_id,
+      actor_email: actor_email
+    }
   end
 
   @impl true
