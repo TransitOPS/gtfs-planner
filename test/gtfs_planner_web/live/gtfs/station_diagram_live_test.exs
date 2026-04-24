@@ -9882,4 +9882,184 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
     end
   end
+
+  describe "StationDiagramComponents - change_log_list/1" do
+    alias GtfsPlannerWeb.Gtfs.StationDiagramComponents
+
+    defp build_log(attrs) do
+      defaults = %{
+        id: Ecto.UUID.generate(),
+        action: "updated",
+        actor_email: "editor@example.com",
+        inserted_at: ~U[2026-04-24 12:30:00.000000Z],
+        changed_fields: %{"stop_name" => %{"from" => "Old", "to" => "New"}},
+        snapshot: %{"stop_name" => "Old"}
+      }
+
+      struct(GtfsPlanner.Gtfs.ChangeLog, Map.merge(defaults, attrs))
+    end
+
+    test "empty entries renders earlier-history-unavailable copy" do
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(id="history-stop")
+      assert html =~ "Earlier history is not available for imported entities."
+    end
+
+    test "non-empty list renders action, actor, timestamp" do
+      entry = build_log(%{action: "updated"})
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(id="history-stop")
+      assert html =~ "updated"
+      assert html =~ "editor@example.com"
+      assert html =~ "2026-04-24 12:30"
+    end
+
+    test "updated entry with snapshot renders Revert change button" do
+      entry = build_log(%{action: "updated"})
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ "Revert change"
+      assert html =~ ~s(phx-click="preview_rollback_change_log")
+      assert html =~ ~s(phx-value-log-id="#{entry.id}")
+    end
+
+    test "rolled_back entry with snapshot renders Revert change button" do
+      entry = build_log(%{action: "rolled_back"})
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "pathway",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(id="history-pathway")
+      assert html =~ "Revert change"
+    end
+
+    test "created entry does not render Revert change button" do
+      entry = build_log(%{action: "created", snapshot: nil, changed_fields: nil})
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ "created"
+      refute html =~ "Revert change"
+    end
+
+    test "deleted entry does not render Revert change button" do
+      entry = build_log(%{action: "deleted"})
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ "deleted"
+      refute html =~ "Revert change"
+    end
+
+    test "renders rollback_preview when it matches a listed entry for the entity type" do
+      entry = build_log(%{action: "updated"})
+
+      preview = %{
+        log: entry,
+        entity_type: "stop",
+        entity_id: Ecto.UUID.generate(),
+        field_changes: [%{field: "stop_name", current: "New", restored: "Old"}]
+      }
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: preview
+        )
+
+      assert html =~ ~s(id="rollback-preview")
+      assert html =~ ~s(id="rollback-preview-cancel")
+      assert html =~ ~s(id="rollback-preview-confirm")
+    end
+
+    test "does not render rollback_preview when it does not match any listed entry" do
+      entry = build_log(%{action: "updated"})
+
+      other_log = build_log(%{id: Ecto.UUID.generate()})
+
+      preview = %{
+        log: other_log,
+        entity_type: "stop",
+        entity_id: Ecto.UUID.generate(),
+        field_changes: []
+      }
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: preview
+        )
+
+      refute html =~ ~s(id="rollback-preview")
+    end
+  end
+
+  describe "StationDiagramComponents - rollback_preview/1" do
+    alias GtfsPlannerWeb.Gtfs.StationDiagramComponents
+
+    test "lists each field change and renders cancel and confirm buttons" do
+      log = %GtfsPlanner.Gtfs.ChangeLog{id: Ecto.UUID.generate()}
+
+      preview = %{
+        log: log,
+        entity_type: "stop",
+        entity_id: Ecto.UUID.generate(),
+        field_changes: [
+          %{field: "stop_name", current: "Blue Line", restored: "Red Line"},
+          %{field: "location_type", current: 0, restored: 1}
+        ]
+      }
+
+      html =
+        render_component(&StationDiagramComponents.rollback_preview/1, rollback_preview: preview)
+
+      assert html =~ "Revert these changes?"
+      assert html =~ "stop_name"
+      assert html =~ "Blue Line"
+      assert html =~ "Red Line"
+      assert html =~ "location_type"
+
+      assert html =~ ~s(id="rollback-preview-cancel")
+      assert html =~ ~s(phx-click="cancel_rollback_preview")
+
+      assert html =~ ~s(id="rollback-preview-confirm")
+      assert html =~ ~s(phx-click="confirm_rollback_change_log")
+      assert html =~ ~s(phx-value-log-id="#{log.id}")
+    end
+  end
 end

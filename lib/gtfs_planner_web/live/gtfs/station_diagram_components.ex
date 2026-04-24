@@ -4298,4 +4298,157 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp present_text?(value) when is_binary(value), do: String.trim(value) != ""
   defp present_text?(_), do: false
+
+  # ============================================================================
+  # Change history
+  # ============================================================================
+
+  @change_value_max_chars 60
+
+  attr :entries, :list, required: true
+  attr :entity_type, :string, required: true
+  attr :rollback_preview, :map, default: nil
+
+  def change_log_list(assigns) do
+    ~H"""
+    <div id={"history-#{@entity_type}"} class="space-y-3">
+      <%= if @entries == [] do %>
+        <p class="text-sm text-base-content/70">
+          Earlier history is not available for imported entities.
+        </p>
+      <% else %>
+        <ul class="divide-y divide-base-300">
+          <li :for={entry <- @entries} id={"history-entry-#{entry.id}"} class="py-2 space-y-1">
+            <div class="flex items-baseline justify-between gap-2">
+              <div class="flex items-baseline gap-2 text-sm">
+                <span class="font-medium">{entry.action}</span>
+                <span class="text-base-content/70">{entry.actor_email}</span>
+              </div>
+              <span class="text-xs tabular-nums text-base-content/70">
+                {format_timestamp(entry.inserted_at)}
+              </span>
+            </div>
+
+            <.change_diff entry={entry} />
+
+            <div :if={rollback_eligible?(entry)}>
+              <button
+                type="button"
+                class="btn btn-xs btn-ghost"
+                phx-click="preview_rollback_change_log"
+                phx-value-log-id={entry.id}
+              >
+                Revert change
+              </button>
+            </div>
+          </li>
+        </ul>
+
+        <div :if={preview_matches_list?(@rollback_preview, @entity_type, @entries)}>
+          <.rollback_preview rollback_preview={@rollback_preview} />
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
+  attr :entry, :map, required: true
+
+  def change_diff(assigns) do
+    assigns = assign(assigns, :rows, diff_rows(assigns.entry))
+
+    ~H"""
+    <ul :if={@rows != []} class="space-y-0.5 text-xs text-base-content/80">
+      <li :for={row <- @rows} class="font-mono leading-tight">
+        <span class="font-medium">{row.field}:</span>
+        <span>{row.from}</span>
+        <span aria-hidden="true">→</span>
+        <span>{row.to}</span>
+      </li>
+    </ul>
+    """
+  end
+
+  attr :rollback_preview, :map, required: true
+
+  def rollback_preview(assigns) do
+    ~H"""
+    <div id="rollback-preview" class="border border-base-300 p-3 space-y-2">
+      <p class="text-sm font-medium">Revert these changes?</p>
+
+      <ul class="space-y-0.5 text-xs text-base-content/80">
+        <li :for={row <- @rollback_preview.field_changes} class="font-mono leading-tight">
+          <span class="font-medium">{row.field}:</span>
+          <span>{truncate_value(row.current)}</span>
+          <span aria-hidden="true">→</span>
+          <span>{truncate_value(row.restored)}</span>
+        </li>
+      </ul>
+
+      <div class="flex gap-2">
+        <button
+          id="rollback-preview-cancel"
+          type="button"
+          class="btn btn-xs btn-ghost"
+          phx-click="cancel_rollback_preview"
+        >
+          Cancel
+        </button>
+        <button
+          id="rollback-preview-confirm"
+          type="button"
+          class="btn btn-xs btn-primary"
+          phx-click="confirm_rollback_change_log"
+          phx-value-log-id={@rollback_preview.log.id}
+        >
+          Confirm revert
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  defp rollback_eligible?(%{action: action, snapshot: snapshot})
+       when action in ["updated", "rolled_back"] and not is_nil(snapshot),
+       do: true
+
+  defp rollback_eligible?(_), do: false
+
+  defp preview_matches_list?(nil, _entity_type, _entries), do: false
+
+  defp preview_matches_list?(
+         %{entity_type: entity_type, log: %{id: log_id}},
+         entity_type,
+         entries
+       ) do
+    Enum.any?(entries, fn entry -> entry.id == log_id end)
+  end
+
+  defp preview_matches_list?(_preview, _entity_type, _entries), do: false
+
+  defp diff_rows(%{changed_fields: fields}) when is_map(fields) and map_size(fields) > 0 do
+    fields
+    |> Enum.map(fn {field, change} ->
+      %{
+        field: to_string(field),
+        from: truncate_value(Map.get(change, "from") || Map.get(change, :from)),
+        to: truncate_value(Map.get(change, "to") || Map.get(change, :to))
+      }
+    end)
+    |> Enum.sort_by(& &1.field)
+  end
+
+  defp diff_rows(_entry), do: []
+
+  defp truncate_value(nil), do: "—"
+  defp truncate_value(value) when is_binary(value), do: truncate_string(value)
+  defp truncate_value(value), do: value |> inspect() |> truncate_string()
+
+  defp truncate_string(str) do
+    if String.length(str) > @change_value_max_chars do
+      String.slice(str, 0, @change_value_max_chars) <> "…"
+    else
+      str
+    end
+  end
 end
