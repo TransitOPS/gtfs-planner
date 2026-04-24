@@ -9883,6 +9883,462 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - rollback confirmation errors" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_STATION",
+          stop_name: "Rollback Error Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "ROLLBACK_ERR_L1",
+          level_name: "Rollback Error Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "rollback_err.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    defp install_preview(view, preview) do
+      :sys.replace_state(view.pid, fn state ->
+        assigns = Map.put(state.socket.assigns, :rollback_preview, preview)
+        socket = Map.put(state.socket, :assigns, assigns)
+        Map.put(state, :socket, socket)
+      end)
+    end
+
+    test "confirm_rollback_change_log surfaces :cannot_rollback_create_or_delete and leaves DB unchanged",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_CREATED",
+          stop_name: "Created Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "created", %{stop_id: stop.stop_id})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      preview = %{
+        log: log,
+        entity_type: "stop",
+        entity_id: stop.id,
+        field_changes: []
+      }
+
+      install_preview(view, preview)
+
+      import Ecto.Query
+
+      before_stop = Gtfs.get_stop!(stop.id)
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "This type of change cannot be reverted."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == before_stop.stop_name
+      assert after_stop.level_id == before_stop.level_id
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+
+    test "confirm_rollback_change_log surfaces :entity_not_found when entity deleted",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_GONE",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 11.0, "y" => 21.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      preview = %{
+        log: log,
+        entity_type: "stop",
+        entity_id: stop.id,
+        field_changes: [
+          %{field: "stop_name", current: "Original Name", restored: "Original Name"}
+        ]
+      }
+
+      install_preview(view, preview)
+
+      # Delete the entity out from under the preview.
+      {:ok, _} = Repo.delete(Gtfs.get_stop!(stop.id))
+
+      import Ecto.Query
+
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "The target entity no longer exists."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      assert Gtfs.get_stop(stop.id) == nil
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+
+    test "confirm_rollback_change_log surfaces :rollback_log_failed and rolls back the entity update",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_LOGFAIL",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 22.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # Tamper the preview's log so insert_rollback_log/3 fails validate_required.
+      tampered_log = %{log | organization_id: nil}
+
+      preview = %{
+        log: tampered_log,
+        entity_type: "stop",
+        entity_id: stop.id,
+        field_changes: [
+          %{field: "stop_name", current: "Changed Name", restored: "Original Name"}
+        ]
+      }
+
+      install_preview(view, preview)
+
+      import Ecto.Query
+
+      before_stop = Gtfs.get_stop!(stop.id)
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => tampered_log.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "Unable to record the revert."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      # Transaction should have rolled back the entity update.
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == before_stop.stop_name
+      assert after_stop.stop_name == "Changed Name"
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+
+    test "confirm_rollback_change_log surfaces :missing_rollback_snapshot for an updated log without snapshot",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_NOSNAP_U",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 13.0, "y" => 23.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      log_without_snapshot = %{log | snapshot: nil}
+
+      preview = %{
+        log: log_without_snapshot,
+        entity_type: "stop",
+        entity_id: stop.id,
+        field_changes: []
+      }
+
+      install_preview(view, preview)
+
+      import Ecto.Query
+
+      before_stop = Gtfs.get_stop!(stop.id)
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log_without_snapshot.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "This change has no snapshot and cannot be reverted."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == before_stop.stop_name
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+
+    test "confirm_rollback_change_log surfaces :missing_rollback_snapshot for a rolled_back log without snapshot",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_NOSNAP_R",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 14.0, "y" => 24.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      rolled_back_log = %{log | action: "rolled_back", snapshot: nil}
+
+      preview = %{
+        log: rolled_back_log,
+        entity_type: "stop",
+        entity_id: stop.id,
+        field_changes: []
+      }
+
+      install_preview(view, preview)
+
+      import Ecto.Query
+
+      before_stop = Gtfs.get_stop!(stop.id)
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => rolled_back_log.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "This change has no snapshot and cannot be reverted."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == before_stop.stop_name
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+  end
+
   describe "StationDiagramComponents - change_log_list/1" do
     alias GtfsPlannerWeb.Gtfs.StationDiagramComponents
 
