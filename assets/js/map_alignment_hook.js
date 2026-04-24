@@ -126,6 +126,7 @@ const MapAlignmentHook = {
     const map = L.map(leafletEl, {
       center: [mapCenterLat, mapCenterLon],
       zoom: initialZoom,
+      minZoom: initialZoom,
       attributionControl: true,
       zoomControl: false,
       scrollWheelZoom: false,
