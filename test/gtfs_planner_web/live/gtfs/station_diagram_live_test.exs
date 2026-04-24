@@ -9104,4 +9104,281 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert logs == []
     end
   end
+
+  describe "StationDiagramLive - history tab events" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_STATION",
+          stop_name: "History Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "HIST_L1",
+          level_name: "History Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "history.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    defp history_audit_ctx(organization, gtfs_version, station, user) do
+      %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+    end
+
+    test "show_history loads stop entries newest-first", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_STOP_1",
+          stop_name: "Hist Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "First Edit"})
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Second Edit"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == {"stop", stop.id}
+
+      entries = state.socket.assigns.history_entries
+      assert length(entries) == 2
+
+      [first, second] = entries
+      assert DateTime.compare(first.inserted_at, second.inserted_at) in [:gt, :eq]
+      assert first.changed_fields["stop_name"]["to"] == "Second Edit"
+      assert second.changed_fields["stop_name"]["to"] == "First Edit"
+    end
+
+    test "show_history loads pathway entries", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_PW_A",
+          stop_name: "A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 5.0, "y" => 5.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_PW_B",
+          stop_name: "B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      pathway = pathway_fixture(organization.id, gtfs_version.id, stop_a.id, stop_b.id)
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :pathway, pathway, "updated", %{length: 50.0})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{
+        "entity-type" => "pathway",
+        "entity-id" => pathway.id
+      })
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == {"pathway", pathway.id}
+      assert [%{entity_type: "pathway"}] = state.socket.assigns.history_entries
+    end
+
+    test "show_history loads level entries", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :level, level, "updated", %{level_name: "Renamed"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "level", "entity-id" => level.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == {"level", level.id}
+      assert [%{entity_type: "level"}] = state.socket.assigns.history_entries
+    end
+
+    test "switching history tabs clears rollback preview", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_CLEAR",
+          stop_name: "Hist Clear",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 11.0, "y" => 21.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      :sys.replace_state(view.pid, fn state ->
+        assigns = Map.put(state.socket.assigns, :rollback_preview, %{sentinel: true})
+        socket = Map.put(state.socket, :assigns, assigns)
+        Map.put(state, :socket, socket)
+      end)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+    end
+
+    test "invalid entity-type shows flash error and does not query", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      before_atom_count = :erlang.system_info(:atom_count)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      result =
+        render_hook(view, "show_history", %{
+          "entity-type" => "definitely_not_a_real_entity_type_xyz",
+          "entity-id" => Ecto.UUID.generate()
+        })
+
+      assert result =~ "invalid entity type"
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == nil
+      assert state.socket.assigns.history_entries == []
+
+      after_atom_count = :erlang.system_info(:atom_count)
+      assert after_atom_count - before_atom_count < 20
+    end
+
+    test "hide_history resets history and preview state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_HIDE",
+          stop_name: "Hist Hide",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 22.0}
+        })
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == {"stop", stop.id}
+      assert length(state.socket.assigns.history_entries) == 1
+
+      render_hook(view, "hide_history", %{})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == nil
+      assert state.socket.assigns.history_entries == []
+      assert state.socket.assigns.rollback_preview == nil
+    end
+  end
 end

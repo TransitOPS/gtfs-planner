@@ -2603,6 +2603,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
+  @impl true
+  def handle_event("show_history", %{"entity-type" => type, "entity-id" => id}, socket)
+      when type in ["stop", "pathway", "level"] and is_binary(id) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    entries = Gtfs.list_change_logs_for_entity(organization_id, gtfs_version_id, type, id)
+
+    {:noreply,
+     socket
+     |> assign(:history_open_for, {type, id})
+     |> assign(:history_entries, entries)
+     |> assign(:rollback_preview, nil)}
+  end
+
+  def handle_event("show_history", _params, socket) do
+    {:noreply, put_flash(socket, :error, "Unable to load history: invalid entity type")}
+  end
+
+  @impl true
+  def handle_event("hide_history", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:history_open_for, nil)
+     |> assign(:history_entries, [])
+     |> assign(:rollback_preview, nil)}
+  end
+
   # ============================================================================
   # Private Helpers
   # ============================================================================
