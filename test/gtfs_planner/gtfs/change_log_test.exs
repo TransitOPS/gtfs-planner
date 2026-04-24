@@ -469,6 +469,82 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert {:error, :cannot_rollback_create_or_delete} = Gtfs.rollback_entity(log, ctx)
     end
 
+    test "rejects updated log with nil snapshot without mutating entity", %{ctx: ctx} do
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_nil_upd",
+          stop_name: "Untouched"
+        })
+
+      {:ok, log} =
+        Repo.insert(%ChangeLog{
+          organization_id: ctx.organization_id,
+          gtfs_version_id: ctx.gtfs_version_id,
+          station_stop_id: ctx.station_stop_id,
+          entity_type: "stop",
+          entity_id: stop.id,
+          entity_external_id: stop.stop_id,
+          action: "updated",
+          snapshot: nil,
+          changed_fields: nil,
+          actor_id: ctx.actor_id,
+          actor_email: ctx.actor_email
+        })
+
+      assert {:error, :missing_rollback_snapshot} = Gtfs.rollback_entity(log, ctx)
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+      assert reloaded.stop_name == "Untouched"
+      assert Repo.all(from cl in ChangeLog, where: cl.action == "rolled_back") == []
+    end
+
+    test "rejects rolled_back log with nil snapshot without mutating entity", %{ctx: ctx} do
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_nil_rb",
+          stop_name: "Untouched"
+        })
+
+      {:ok, prior_log} =
+        Repo.insert(%ChangeLog{
+          organization_id: ctx.organization_id,
+          gtfs_version_id: ctx.gtfs_version_id,
+          station_stop_id: ctx.station_stop_id,
+          entity_type: "stop",
+          entity_id: stop.id,
+          entity_external_id: stop.stop_id,
+          action: "updated",
+          snapshot: %{"stop_name" => "Prior"},
+          changed_fields: %{"stop_name" => %{"from" => "Untouched", "to" => "Prior"}},
+          actor_id: ctx.actor_id,
+          actor_email: ctx.actor_email
+        })
+
+      {:ok, log} =
+        Repo.insert(%ChangeLog{
+          organization_id: ctx.organization_id,
+          gtfs_version_id: ctx.gtfs_version_id,
+          station_stop_id: ctx.station_stop_id,
+          entity_type: "stop",
+          entity_id: stop.id,
+          entity_external_id: stop.stop_id,
+          action: "rolled_back",
+          snapshot: nil,
+          changed_fields: nil,
+          rolled_back_to_log_id: prior_log.id,
+          actor_id: ctx.actor_id,
+          actor_email: ctx.actor_email
+        })
+
+      assert {:error, :missing_rollback_snapshot} = Gtfs.rollback_entity(log, ctx)
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+      assert reloaded.stop_name == "Untouched"
+
+      assert Repo.all(from cl in ChangeLog, where: cl.action == "rolled_back" and cl.id != ^log.id) ==
+               []
+    end
+
     test "returns entity_not_found for non-existent entity", %{ctx: ctx} do
       stop =
         stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{

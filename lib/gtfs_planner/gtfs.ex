@@ -3201,6 +3201,11 @@ defmodule GtfsPlanner.Gtfs do
     {:error, :cannot_rollback_create_or_delete}
   end
 
+  def rollback_entity(%ChangeLog{action: action, snapshot: nil}, _ctx)
+      when action in ["updated", "rolled_back"] do
+    {:error, :missing_rollback_snapshot}
+  end
+
   def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
     entity_module = entity_module_for(log.entity_type)
 
