@@ -8916,4 +8916,192 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert snapshot["signposted_as"] == "Doomed"
     end
   end
+
+  describe "StationDiagramLive - level audit recording" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "LV_AUDIT_STATION",
+          stop_name: "Level Audit Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "LV_AUDIT_L1",
+          level_name: "Level Audit 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "creating a new level records a created change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_click(element(view, "button[phx-click='open_add_level']"))
+      render_click(element(view, "input[phx-value-mode='new']"))
+
+      view
+      |> form("#level-form", %{
+        "level_id" => "LV_AUDIT_NEW",
+        "level_name" => "Level Audit New",
+        "level_index" => "2"
+      })
+      |> render_submit()
+
+      created =
+        Gtfs.list_all_levels(organization.id, gtfs_version.id)
+        |> Enum.find(&(&1.level_id == "LV_AUDIT_NEW"))
+
+      assert created
+
+      import Ecto.Query
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "level" and
+                cl.entity_external_id == "LV_AUDIT_NEW"
+          )
+        )
+
+      assert [%{action: "created", entity_external_id: "LV_AUDIT_NEW", actor_id: actor_id}] = logs
+      assert actor_id == user.id
+    end
+
+    test "editing a level records an updated change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_click(element(view, "button[phx-click='open_edit_level']"))
+
+      view
+      |> form("#level-form", %{
+        "level_id" => level.level_id,
+        "level_name" => "Level Audit 1 Renamed",
+        "level_index" => "0"
+      })
+      |> render_submit()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "level",
+          level.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "level_name")
+    end
+
+    test "adding an existing level to a station does not create a level change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      other_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "LV_AUDIT_L2",
+          level_name: "Level Audit 2",
+          level_index: 1.0
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_click(element(view, "button[phx-click='open_add_level']"))
+
+      view
+      |> form("#level-form", %{"existing_level_id" => other_level.id})
+      |> render_submit()
+
+      import Ecto.Query
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "level"
+          )
+        )
+
+      assert logs == []
+    end
+
+    test "removing a level from a station does not create a level change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "remove_level_from_station", %{"id" => level.id})
+
+      import Ecto.Query
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "level"
+          )
+        )
+
+      assert logs == []
+    end
+  end
 end

@@ -2520,6 +2520,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
           case Gtfs.create_level(level_attrs) do
             {:ok, new_level} ->
+              Gtfs.record_change(
+                socket.assigns.audit_ctx,
+                :level,
+                nil,
+                "created",
+                level_attrs
+              )
+
               # Create the association
               {:ok, _stop_level} =
                 Gtfs.create_stop_level(%{
@@ -2552,6 +2560,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
       :edit ->
         level = socket.assigns.active_level
+        pre_mutation_level = level
 
         level_attrs = %{
           level_id: params["level_id"],
@@ -2561,6 +2570,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         case Gtfs.update_level_with_cascade(level, level_attrs) do
           {:ok, updated_level} ->
+            Gtfs.record_change(
+              socket.assigns.audit_ctx,
+              :level,
+              pre_mutation_level,
+              "updated",
+              level_attrs
+            )
+
             levels_data =
               Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
 
