@@ -2546,4 +2546,779 @@ defmodule GtfsPlanner.GtfsTest do
       assert Decimal.equal?(Gtfs.get_pathway!(pathway.id).length, Decimal.new("10.00"))
     end
   end
+
+  describe "stop level floorplan alignment" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_ALIGN",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_ALIGN",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{stop_level: stop_level}
+    end
+
+    test "update_stop_level_alignment/2 persists valid alignment", %{stop_level: stop_level} do
+      attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.0060,
+        floorplan_scale_mpp: 0.25,
+        floorplan_rotation_deg: 12.5
+      }
+
+      assert {:ok, updated} = Gtfs.update_stop_level_alignment(stop_level, attrs)
+      assert updated.floorplan_center_lat == 40.7128
+      assert updated.floorplan_center_lon == -74.0060
+      assert updated.floorplan_scale_mpp == 0.25
+      assert updated.floorplan_rotation_deg == 12.5
+    end
+
+    test "update_stop_level_alignment/2 rejects out-of-range lat", %{stop_level: stop_level} do
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Gtfs.update_stop_level_alignment(stop_level, %{
+                 floorplan_center_lat: 95.0,
+                 floorplan_center_lon: -74.0,
+                 floorplan_scale_mpp: 0.25,
+                 floorplan_rotation_deg: 0.0
+               })
+
+      assert "must be less than or equal to 90" in errors_on(changeset).floorplan_center_lat
+    end
+
+    test "clear_stop_level_alignment/1 nulls all four fields", %{stop_level: stop_level} do
+      {:ok, aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 12.5
+        })
+
+      assert {:ok, cleared} = Gtfs.clear_stop_level_alignment(aligned)
+      assert is_nil(cleared.floorplan_center_lat)
+      assert is_nil(cleared.floorplan_center_lon)
+      assert is_nil(cleared.floorplan_scale_mpp)
+      assert is_nil(cleared.floorplan_rotation_deg)
+    end
+
+    test "update_stop_level_alignment/2 broadcasts update event", %{stop_level: stop_level} do
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+
+      attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.0060,
+        floorplan_scale_mpp: 0.25,
+        floorplan_rotation_deg: 0.0
+      }
+
+      assert {:ok, updated} = Gtfs.update_stop_level_alignment(stop_level, attrs)
+      assert_receive {[:stop_levels, :updated], ^updated}
+    end
+  end
+
+  describe "derive_child_stop_coords/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_DERIVE",
+          location_type: 1
+        })
+
+      active_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_DERIVE_ACTIVE",
+          level_index: 0.0
+        })
+
+      other_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_DERIVE_OTHER",
+          level_index: 1.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: active_level.id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        active_level: active_level,
+        other_level: other_level,
+        stop_level: stop_level
+      }
+    end
+
+    test "returns {:error, :alignment_missing} when alignment is incomplete", %{
+      stop_level: stop_level
+    } do
+      assert {:error, :alignment_missing} = Gtfs.derive_child_stop_coords(stop_level, 1000, 800)
+
+      {:ok, partial} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      partial = %{partial | floorplan_rotation_deg: nil}
+
+      assert {:error, :alignment_missing} = Gtfs.derive_child_stop_coords(partial, 1000, 800)
+    end
+
+    test "ignores stops with nil or non-normalizable diagram_coordinate", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      {:ok, aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      stop_with_coord =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_WITH_COORD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50}
+        })
+
+      _stop_nil_coord =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_NIL_COORD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id
+        })
+
+      _stop_bad_coord =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_BAD_COORD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{foo: "bar"}
+        })
+
+      assert {:ok, entries} = Gtfs.derive_child_stop_coords(aligned, 1000, 800)
+      assert [entry] = entries
+      assert entry.stop_id == stop_with_coord.id
+      assert_in_delta entry.lat, 40.7128, 1.0e-9
+      assert_in_delta entry.lon, -74.0060, 1.0e-9
+    end
+
+    test "returns one entry per eligible child stop on the active level", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      other_level: other_level,
+      stop_level: stop_level
+    } do
+      {:ok, aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      on_level_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_ON_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50}
+        })
+
+      on_level_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_ON_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 60, y: 40}
+        })
+
+      _off_level =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "PLATFORM_OFF",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: other_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50}
+        })
+
+      assert {:ok, entries} = Gtfs.derive_child_stop_coords(aligned, 1000, 800)
+
+      returned_ids = Enum.map(entries, & &1.stop_id) |> Enum.sort()
+      expected_ids = Enum.sort([on_level_a.id, on_level_b.id])
+
+      assert returned_ids == expected_ids
+      assert length(entries) == 2
+    end
+  end
+
+  describe "apply_alignment_to_child_stops/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_APPLY",
+          location_type: 1
+        })
+
+      active_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_APPLY_ACTIVE",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: active_level.id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        active_level: active_level,
+        stop_level: stop_level
+      }
+    end
+
+    test "persists derived lat/lon for every eligible child stop", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      {:ok, aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      stop_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "APPLY_PLATFORM_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      stop_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "APPLY_PLATFORM_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 60, y: 40},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      assert {:ok, 2} = Gtfs.apply_alignment_to_child_stops(aligned, 1000, 800)
+
+      reloaded_a = Repo.get!(GtfsPlanner.Gtfs.Stop, stop_a.id)
+      reloaded_b = Repo.get!(GtfsPlanner.Gtfs.Stop, stop_b.id)
+
+      # Center of diagram (50,50) maps exactly to center_lat/center_lon.
+      assert_in_delta Decimal.to_float(reloaded_a.stop_lat), 40.7128, 1.0e-9
+      assert_in_delta Decimal.to_float(reloaded_a.stop_lon), -74.0060, 1.0e-9
+
+      # Stop B is off-center so its persisted values differ from the sentinels.
+      refute Decimal.equal?(reloaded_b.stop_lat, Decimal.new("1.0"))
+      refute Decimal.equal?(reloaded_b.stop_lon, Decimal.new("2.0"))
+    end
+
+    test "returns {:ok, 0} when no eligible child stops exist", %{stop_level: stop_level} do
+      {:ok, aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      assert {:ok, 0} = Gtfs.apply_alignment_to_child_stops(aligned, 1000, 800)
+    end
+
+    test "bubbles derivation errors unchanged", %{stop_level: stop_level} do
+      assert {:error, :alignment_missing} =
+               Gtfs.apply_alignment_to_child_stops(stop_level, 1000, 800)
+
+      {:ok, aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      assert {:error, :invalid_image_dims} =
+               Gtfs.apply_alignment_to_child_stops(aligned, 0, 800)
+    end
+
+    test "rolls back all writes when any stop update fails validation", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      # Alignment near the north pole with a large scale so one stop's derived
+      # lat exceeds 90 and triggers the changeset validate_number check.
+      {:ok, aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 89.9,
+          floorplan_center_lon: 0.0,
+          floorplan_scale_mpp: 30.0,
+          floorplan_rotation_deg: 0.0
+        })
+
+      # Valid: center of diagram maps to center_lat/center_lon. Seed with a
+      # distinct sentinel lat/lon so we can assert rollback left them unchanged.
+      good_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "APPLY_GOOD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      # Invalid: y far above 50 pushes derived lat past 90.
+      bad_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "APPLY_BAD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50, y: 0},
+          stop_lat: Decimal.new("3.0"),
+          stop_lon: Decimal.new("4.0")
+        })
+
+      assert {:error, %Ecto.Changeset{}} =
+               Gtfs.apply_alignment_to_child_stops(aligned, 1000, 800)
+
+      # Neither stop was persisted: both retain their pre-apply sentinel values.
+      reloaded_good = Repo.get!(GtfsPlanner.Gtfs.Stop, good_stop.id)
+      reloaded_bad = Repo.get!(GtfsPlanner.Gtfs.Stop, bad_stop.id)
+
+      assert Decimal.equal?(reloaded_good.stop_lat, Decimal.new("1.0"))
+      assert Decimal.equal?(reloaded_good.stop_lon, Decimal.new("2.0"))
+      assert Decimal.equal?(reloaded_bad.stop_lat, Decimal.new("3.0"))
+      assert Decimal.equal?(reloaded_bad.stop_lon, Decimal.new("4.0"))
+    end
+
+    test "broadcasts [:stops, :updated] for each updated stop", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      {:ok, aligned} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.0060,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      stop_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "APPLY_BROADCAST_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50}
+        })
+
+      stop_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "APPLY_BROADCAST_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 60, y: 40}
+        })
+
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      assert {:ok, 2} = Gtfs.apply_alignment_to_child_stops(aligned, 1000, 800)
+
+      expected_ids = Enum.sort([stop_a.id, stop_b.id])
+
+      assert_receive {[:stops, :updated], %GtfsPlanner.Gtfs.Stop{id: id_one}}
+      assert_receive {[:stops, :updated], %GtfsPlanner.Gtfs.Stop{id: id_two}}
+      assert Enum.sort([id_one, id_two]) == expected_ids
+    end
+  end
+
+  describe "infer_level_alignment/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_INFER",
+          location_type: 1
+        })
+
+      active_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_INFER_ACTIVE",
+          level_index: 0.0
+        })
+
+      other_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_INFER_OTHER",
+          level_index: 1.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: active_level.id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        active_level: active_level,
+        other_level: other_level,
+        stop_level: stop_level
+      }
+    end
+
+    test "returns {:error, :invalid_input} when image dimensions are not positive",
+         %{stop_level: stop_level} do
+      assert {:error, :invalid_input} = Gtfs.infer_level_alignment(stop_level, 0, 800)
+    end
+
+    test "returns {:error, :alignment_prerequisites_missing} when stop_level has no level_id" do
+      stop_level = %GtfsPlanner.Gtfs.StopLevel{level_id: nil}
+      assert {:error, :alignment_prerequisites_missing} =
+               Gtfs.infer_level_alignment(stop_level, 1000, 800)
+    end
+
+    test "succeeds with two direct anchors from child stops on the target level", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      _stop_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_DIRECT_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 40.0, y: 60.0},
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0100")
+        })
+
+      _stop_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_DIRECT_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 60.0, y: 40.0},
+          stop_lat: Decimal.new("40.7200"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      assert {:ok, result} = Gtfs.infer_level_alignment(stop_level, 1000, 800)
+
+      assert %{
+               inferred_alignment: %{anchor_count: 2} = inferred,
+               anchors_used: anchors,
+               excluded_anchors: []
+             } = result
+
+      assert is_float(inferred.center_lat)
+      assert is_float(inferred.center_lon)
+      assert is_float(inferred.scale_mpp)
+      assert is_float(inferred.rotation_deg)
+      assert length(anchors) == 2
+      assert Enum.all?(anchors, &(&1.source == :direct))
+    end
+
+    test "succeeds with one direct and one cross-level elevator anchor", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      other_level: other_level,
+      stop_level: stop_level
+    } do
+      _direct_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_MIX_DIRECT",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 40.0, y: 60.0},
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0100")
+        })
+
+      target_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_MIX_TARGET",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 60.0, y: 40.0},
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
+      partner_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_MIX_PARTNER",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: other_level.level_id,
+          stop_lat: Decimal.new("40.7200"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      _elevator =
+        pathway_fixture(org.id, version.id, target_stop.stop_id, partner_stop.stop_id, %{
+          pathway_id: "INFER_MIX_ELEVATOR",
+          pathway_mode: 5
+        })
+
+      assert {:ok, result} = Gtfs.infer_level_alignment(stop_level, 1000, 800)
+
+      assert %{
+               inferred_alignment: %{anchor_count: 2},
+               anchors_used: anchors
+             } = result
+
+      sources = anchors |> Enum.map(& &1.source) |> Enum.sort()
+      assert sources == [:cross_level, :direct]
+    end
+
+    test "returns {:error, :insufficient_anchors} when only one usable anchor exists", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      _only =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_SINGLE",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50.0, y: 50.0},
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      assert {:error, :insufficient_anchors} =
+               Gtfs.infer_level_alignment(stop_level, 1000, 800)
+    end
+  end
+
+  describe "save_inferred_level_alignment/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_SAVE_INFER",
+          location_type: 1
+        })
+
+      active_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_SAVE_INFER_ACTIVE",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: active_level.id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        active_level: active_level,
+        stop_level: stop_level
+      }
+    end
+
+    test "persists inferred alignment fields and broadcasts [:stop_levels, :updated]", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      _stop_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_INFER_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 40.0, y: 60.0},
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0100")
+        })
+
+      _stop_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_INFER_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 60.0, y: 40.0},
+          stop_lat: Decimal.new("40.7200"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+
+      assert {:ok, %GtfsPlanner.Gtfs.StopLevel{} = updated, result} =
+               Gtfs.save_inferred_level_alignment(stop_level, 1000, 800)
+
+      assert %{
+               inferred_alignment: _,
+               anchors_used: _,
+               excluded_anchors: _
+             } = result
+
+      assert is_float(updated.floorplan_center_lat)
+      assert is_float(updated.floorplan_center_lon)
+      assert is_float(updated.floorplan_scale_mpp)
+      assert is_float(updated.floorplan_rotation_deg)
+
+      persisted = GtfsPlanner.Repo.get(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      assert persisted.floorplan_center_lat == updated.floorplan_center_lat
+      assert persisted.floorplan_center_lon == updated.floorplan_center_lon
+      assert persisted.floorplan_scale_mpp == updated.floorplan_scale_mpp
+      assert persisted.floorplan_rotation_deg == updated.floorplan_rotation_deg
+
+      assert_receive {[:stop_levels, :updated], %GtfsPlanner.Gtfs.StopLevel{} = payload}, 500
+      assert payload.id == updated.id
+    end
+
+    test "returns {:error, :insufficient_anchors} and performs no write or broadcast", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      stop_level: stop_level
+    } do
+      _only =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_INFER_SINGLE",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50.0, y: 50.0},
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+
+      assert {:error, :insufficient_anchors} =
+               Gtfs.save_inferred_level_alignment(stop_level, 1000, 800)
+
+      persisted = GtfsPlanner.Repo.get(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      assert is_nil(persisted.floorplan_center_lat)
+      assert is_nil(persisted.floorplan_center_lon)
+      assert is_nil(persisted.floorplan_scale_mpp)
+      assert is_nil(persisted.floorplan_rotation_deg)
+
+      refute_receive {[:stop_levels, :updated], _}, 100
+    end
+
+    test "returns {:error, :invalid_input} for non-positive image dimensions with no write", %{
+      stop_level: stop_level
+    } do
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+
+      assert {:error, :invalid_input} =
+               Gtfs.save_inferred_level_alignment(stop_level, 0, 800)
+
+      persisted = GtfsPlanner.Repo.get(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      assert is_nil(persisted.floorplan_center_lat)
+      assert is_nil(persisted.floorplan_center_lon)
+      assert is_nil(persisted.floorplan_scale_mpp)
+      assert is_nil(persisted.floorplan_rotation_deg)
+
+      refute_receive {[:stop_levels, :updated], _}, 100
+    end
+  end
 end

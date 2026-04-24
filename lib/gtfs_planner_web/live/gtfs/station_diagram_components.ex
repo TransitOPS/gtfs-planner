@@ -146,6 +146,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       >
         Connect
       </button>
+      <button
+        type="button"
+        class={[
+          "btn join-item",
+          @mode == :map && "bg-blue-600 text-white hover:bg-blue-700",
+          @mode != :map && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300",
+          !@has_diagram && "opacity-50 cursor-not-allowed"
+        ]}
+        phx-click="switch_mode"
+        phx-value-mode="map"
+        disabled={!@has_diagram}
+      >
+        Map
+      </button>
     </div>
     """
   end
@@ -209,6 +223,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   >
                     <.icon name="hero-x-mark" class="w-4 h-4" />
                   </button>
+                <% @mode == :map -> %>
+                  <span class="text-sm text-blue-700 font-medium">
+                    Align the floorplan over real-world imagery
+                  </span>
                 <% true -> %>
                   <span class="text-sm text-blue-700"></span>
               <% end %>
@@ -279,6 +297,232 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <% end %>
     """
   end
+
+  attr :organization_id, :string, required: true
+  attr :station, :any, required: true
+  attr :active_level, :any, default: nil
+  attr :active_stop_level, :any, default: nil
+  attr :align_center_lat, :any, default: nil
+  attr :align_center_lon, :any, default: nil
+  attr :align_scale_mpp, :any, default: nil
+  attr :align_rotation_deg, :any, default: nil
+  attr :image_natural_width, :any, default: nil
+  attr :image_natural_height, :any, default: nil
+
+  def map_canvas(assigns) do
+    floorplan_url =
+      diagram_image_href(assigns.organization_id, assigns.station, assigns.active_stop_level)
+
+    initial_lat = assigns.station.stop_lat || 0
+    initial_lon = assigns.station.stop_lon || 0
+
+    has_alignment? =
+      not is_nil(assigns.align_center_lat) and
+        not is_nil(assigns.align_center_lon) and
+        not is_nil(assigns.align_scale_mpp) and
+        not is_nil(assigns.align_rotation_deg)
+
+    has_image_dims? =
+      positive_integer?(assigns.image_natural_width) and
+        positive_integer?(assigns.image_natural_height)
+
+    apply_disabled? = not (has_alignment? and has_image_dims?)
+
+    # Tie the hook root's DOM id to the active stop_level so switching levels
+    # remounts the hook with the new level's floorplan and alignment attrs.
+    canvas_id =
+      case assigns.active_stop_level do
+        %{id: id} -> "map-canvas-#{id}"
+        _ -> "map-canvas"
+      end
+
+    assigns =
+      assigns
+      |> assign(:floorplan_url, floorplan_url)
+      |> assign(:initial_lat, initial_lat)
+      |> assign(:initial_lon, initial_lon)
+      |> assign(:has_alignment?, has_alignment?)
+      |> assign(:apply_disabled?, apply_disabled?)
+      |> assign(:canvas_id, canvas_id)
+
+    ~H"""
+    <div>
+      <div
+        id={@canvas_id}
+        class="map-canvas relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
+        phx-hook="MapAlignment"
+        phx-update="ignore"
+        data-floorplan-url={@floorplan_url}
+        data-initial-lat={@initial_lat}
+        data-initial-lon={@initial_lon}
+        data-initial-zoom="19"
+        data-align-center-lat={if @has_alignment?, do: @align_center_lat}
+        data-align-center-lon={if @has_alignment?, do: @align_center_lon}
+        data-align-scale-mpp={if @has_alignment?, do: @align_scale_mpp}
+        data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
+        data-image-natural-width={@image_natural_width}
+        data-image-natural-height={@image_natural_height}
+      >
+        <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
+        <div
+          id="map-alignment-overlay"
+          class="absolute inset-0 cursor-move"
+          style="z-index: 1; transform-origin: center;"
+        >
+          <img
+            src={@floorplan_url}
+            alt="Level floorplan"
+            class="absolute inset-0 w-full h-full object-contain pointer-events-none"
+          />
+        </div>
+        <button
+          id="map-alignment-rotate-handle"
+          type="button"
+          title="Drag to rotate the floorplan"
+          aria-label="Rotate floorplan"
+          class="absolute top-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
+          style="z-index: 2;"
+        >
+          <.icon name="hero-arrow-path" class="w-4 h-4" />
+        </button>
+        <div
+          id="map-alignment-pins"
+          class="absolute inset-0 pointer-events-none"
+          style="z-index: 3;"
+        >
+        </div>
+        <button
+          id="map-alignment-scale-handle"
+          type="button"
+          title="Drag to resize the floorplan"
+          aria-label="Resize floorplan"
+          class="absolute bottom-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
+          style="z-index: 2;"
+        >
+          <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
+        </button>
+      </div>
+      <div class="px-4 sm:px-6 lg:px-8 pt-3 pb-4">
+        <p class="text-xs text-base-content/70">
+          Drag to move the floorplan. Use handles to rotate and resize.
+        </p>
+        <div class="mt-3 flex flex-wrap items-end gap-x-8 gap-y-4">
+          <fieldset class="flex items-end gap-2">
+            <legend class="sr-only">Map center</legend>
+            <div class="flex flex-col gap-1">
+              <label
+                for="map-alignment-lat-input"
+                class="text-xs font-medium text-base-content/80"
+              >
+                Latitude
+              </label>
+              <input
+                id="map-alignment-lat-input"
+                type="number"
+                step="any"
+                value={@initial_lat}
+                class="input input-sm input-bordered w-32"
+              />
+            </div>
+            <div class="flex flex-col gap-1">
+              <label
+                for="map-alignment-lon-input"
+                class="text-xs font-medium text-base-content/80"
+              >
+                Longitude
+              </label>
+              <input
+                id="map-alignment-lon-input"
+                type="number"
+                step="any"
+                value={@initial_lon}
+                class="input input-sm input-bordered w-32"
+              />
+            </div>
+            <button id="map-alignment-apply-center" type="button" class="btn btn-sm">
+              Center map
+            </button>
+          </fieldset>
+
+          <div class="flex flex-col gap-1">
+            <label for="map-alignment-opacity" class="text-xs font-medium text-base-content/80">
+              Floorplan opacity
+            </label>
+            <input
+              id="map-alignment-opacity"
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value="0.6"
+              class="range range-xs w-40"
+            />
+          </div>
+
+          <div class="flex flex-col gap-1">
+            <label for="map-alignment-zoom" class="text-xs font-medium text-base-content/80">
+              Map zoom
+            </label>
+            <input
+              id="map-alignment-zoom"
+              type="range"
+              min="19"
+              max="22"
+              step="0.5"
+              value="19"
+              class="range range-xs w-40"
+              phx-update="ignore"
+            />
+          </div>
+
+          <div class="ml-auto flex items-end gap-2">
+            <span class={[
+              "self-center text-xs font-medium",
+              if(@has_alignment?,
+                do: "text-green-700",
+                else: "text-base-content/50"
+              )
+            ]}>
+              {if @has_alignment?, do: "Saved", else: "Not saved"}
+            </span>
+            <button id="map-alignment-reset" type="button" class="btn btn-sm btn-ghost">
+              Reset
+            </button>
+            <button id="map-alignment-clear" type="button" class="btn btn-sm btn-ghost">
+              Clear saved
+            </button>
+            <button id="map-alignment-save" type="button" class="btn btn-sm btn-primary">
+              Save alignment
+            </button>
+            <button
+              id="map-alignment-infer"
+              type="button"
+              class="btn btn-sm btn-primary"
+              phx-click="infer_alignment"
+              disabled={
+                is_nil(@active_stop_level) or is_nil(@image_natural_width) or
+                  is_nil(@image_natural_height)
+              }
+            >
+              Infer alignment
+            </button>
+            <button
+              id="map-alignment-apply"
+              type="button"
+              class="btn btn-sm btn-primary"
+              disabled={@apply_disabled?}
+            >
+              Apply to child stops
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp positive_integer?(value) when is_integer(value) and value > 0, do: true
+  defp positive_integer?(_), do: false
 
   # ============================================================================
   # Diagram Canvas
