@@ -9592,4 +9592,294 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert state.socket.assigns.rollback_preview == nil
     end
   end
+
+  describe "StationDiagramLive - rollback confirmation events" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_STATION",
+          stop_name: "Confirm Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "CONFIRM_L1",
+          level_name: "Confirm Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "confirm.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    defp confirm_audit_ctx(organization, gtfs_version, station, user) do
+      %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+    end
+
+    test "confirm_rollback_change_log restores a stop update and refreshes history", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_STOP_1",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      restored = Gtfs.get_stop!(stop.id)
+      assert restored.stop_name == "Original Name"
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      assert [%{action: "rolled_back"} | _] = state.socket.assigns.history_entries
+    end
+
+    test "confirm_rollback_change_log restores a pathway update and refreshes history", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_PW_A",
+          stop_name: "A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 5.0, "y" => 5.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_PW_B",
+          stop_name: "B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.id, stop_b.id, %{
+          traversal_time: 30
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :pathway, pathway, "updated", %{traversal_time: 99})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "pathway", pathway.id)
+
+      {:ok, _updated} = Gtfs.update_pathway(pathway, %{traversal_time: 99})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      restored = Gtfs.get_pathway!(pathway.id)
+      assert restored.traversal_time == 30
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+      assert [%{action: "rolled_back"} | _] = state.socket.assigns.history_entries
+    end
+
+    test "confirm_rollback_change_log restores a level update and refreshes history", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :level, level, "updated", %{level_name: "Renamed Level"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "level", level.id)
+
+      {:ok, _updated} = Gtfs.update_level(level, %{level_name: "Renamed Level"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      restored = Gtfs.get_level!(level.id)
+      assert restored.level_name == "Confirm Level"
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+      assert [%{action: "rolled_back"} | _] = state.socket.assigns.history_entries
+    end
+
+    test "confirm_rollback_change_log rejects mismatched log id without mutation", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_STALE",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      before_preview = :sys.get_state(view.pid).socket.assigns.rollback_preview
+      assert before_preview != nil
+
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      result =
+        render_hook(view, "confirm_rollback_change_log", %{
+          "log-id" => Ecto.UUID.generate()
+        })
+
+      assert result =~ "already been reverted" or result =~ "stale"
+
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == "Changed Name"
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == before_preview
+    end
+
+    test "confirm_rollback_change_log with no active preview rejects without mutation", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_NIL",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert result =~ "already been reverted" or result =~ "stale"
+
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == "Changed Name"
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+    end
+  end
 end

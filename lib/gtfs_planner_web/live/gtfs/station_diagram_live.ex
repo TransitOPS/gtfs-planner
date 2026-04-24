@@ -2662,9 +2662,131 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply, assign(socket, :rollback_preview, nil)}
   end
 
+  @impl true
+  def handle_event("confirm_rollback_change_log", %{"log-id" => log_id}, socket)
+      when is_binary(log_id) do
+    preview = socket.assigns.rollback_preview
+
+    cond do
+      is_nil(preview) or preview.log.id != log_id ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "This change has already been reverted or the preview is stale."
+         )}
+
+      true ->
+        case Gtfs.rollback_entity(preview.log, socket.assigns.audit_ctx) do
+          {:ok, entity} ->
+            {:noreply,
+             socket
+             |> apply_rollback_entity_refresh(preview.entity_type, entity)
+             |> refresh_history_entries(preview.entity_type, preview.entity_id)
+             |> assign(:rollback_preview, nil)
+             |> put_flash(:info, "Change reverted.")}
+
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> assign(:rollback_preview, nil)
+             |> put_flash(:error, rollback_error_message(reason))}
+        end
+    end
+  end
+
+  def handle_event("confirm_rollback_change_log", _params, socket) do
+    {:noreply, put_flash(socket, :error, "Unable to revert change: invalid parameters")}
+  end
+
   # ============================================================================
   # Private Helpers
   # ============================================================================
+
+  defp apply_rollback_entity_refresh(socket, "stop", %Gtfs.Stop{} = stop) do
+    socket = stream_insert(socket, :child_stops, stop)
+
+    socket =
+      if socket.assigns.selected_stop_id == stop.id do
+        open_edit_sidebar(socket, stop, socket.assigns.pending_xy)
+      else
+        socket
+      end
+
+    refresh_lists(socket)
+  end
+
+  defp apply_rollback_entity_refresh(socket, "pathway", %Gtfs.Pathway{} = pathway) do
+    refreshed_socket = refresh_lists(socket)
+
+    case refreshed_socket.assigns.editing_pathway do
+      %{id: id} when id == pathway.id ->
+        reloaded = Gtfs.get_pathway_with_stops!(pathway.id)
+
+        pathway_pair =
+          pair_siblings_for(
+            %{from_stop_id: reloaded.from_stop_id, to_stop_id: reloaded.to_stop_id},
+            refreshed_socket.assigns.pathways_list
+          )
+
+        refreshed_socket
+        |> assign(:editing_pathway, reloaded)
+        |> assign(:editing_pathway_pair, pathway_pair)
+        |> assign(:pathway_form, to_form(pathway_form_params(reloaded)))
+        |> assign(:pathway_form_dirty, false)
+
+      _ ->
+        refreshed_socket
+    end
+  end
+
+  defp apply_rollback_entity_refresh(socket, "level", %Gtfs.Level{} = level) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    levels_data = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+    levels = Enum.map(levels_data, & &1.level)
+
+    socket = assign(socket, :levels, levels)
+
+    socket =
+      case socket.assigns.active_level do
+        %{id: id} when id == level.id ->
+          socket
+          |> assign(:active_level, level)
+          |> load_level_data(level)
+
+        _ ->
+          socket
+      end
+
+    socket
+  end
+
+  defp refresh_history_entries(socket, entity_type, entity_id) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    entries =
+      Gtfs.list_change_logs_for_entity(organization_id, gtfs_version_id, entity_type, entity_id)
+
+    assign(socket, :history_entries, entries)
+  end
+
+  defp rollback_error_message(:cannot_rollback_create_or_delete),
+    do: "This type of change cannot be reverted."
+
+  defp rollback_error_message(:entity_not_found),
+    do: "The target entity no longer exists."
+
+  defp rollback_error_message(:rollback_log_failed),
+    do: "Unable to record the revert. Please try again."
+
+  defp rollback_error_message(:missing_rollback_snapshot),
+    do: "This change has no snapshot and cannot be reverted."
+
+  defp rollback_error_message(_), do: "Unable to revert change."
 
   @spec rollback_preview_for(GtfsPlanner.Gtfs.ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
   defp rollback_preview_for(log) do
