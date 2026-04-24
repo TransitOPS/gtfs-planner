@@ -133,7 +133,9 @@ const MapAlignmentHook = {
       touchZoom: false,
       keyboard: false,
       dragging: false,
-      boxZoom: false
+      boxZoom: false,
+      zoomAnimation: false,
+      zoomSnap: 0.5
     });
 
     // Esri World Imagery: free aerial tiles, no API key. URL uses z/y/x
@@ -173,6 +175,9 @@ const MapAlignmentHook = {
     map.on("resize", this._onMapViewChanged);
     this.handleEvent("set_child_stops", (payload) => this._renderChildStops(payload));
     this.pushEvent("map_ready", {});
+
+    this._onCanvasWheel = (e) => this._handleCanvasWheel(e);
+    this.el.addEventListener("wheel", this._onCanvasWheel, {passive: false});
 
     this._fetchBuildings(mapCenterLat, mapCenterLon);
 
@@ -466,6 +471,11 @@ const MapAlignmentHook = {
       this._resizeObserver = null;
     }
 
+    if (this._onCanvasWheel) {
+      this.el.removeEventListener("wheel", this._onCanvasWheel);
+      this._onCanvasWheel = null;
+    }
+
     if (this.leafletMap && this._onMapViewChanged) {
       try {
         this.leafletMap.off("move", this._onMapViewChanged);
@@ -690,11 +700,21 @@ const MapAlignmentHook = {
   },
 
   _renderChildStops({stops}) {
-    if (!this._pinsRoot) return;
+    const received = (stops || []).length;
+    if (!this._pinsRoot) {
+      console.warn("MapAlignment: set_child_stops received but no #map-alignment-pins root", {received});
+      return;
+    }
 
     this._childStops = (stops || []).filter(
       (s) => Number.isFinite(s.lat) && Number.isFinite(s.lon)
     );
+
+    console.info("MapAlignment: rendering child-stop pins", {
+      received,
+      rendered: this._childStops.length,
+      sample: this._childStops[0] || null
+    });
 
     this._pinsRoot.innerHTML = "";
     this._childStops.forEach((s) => {
@@ -729,6 +749,68 @@ const MapAlignmentHook = {
       s._el.style.left = `${pt.x}px`;
       s._el.style.top = `${pt.y}px`;
     });
+  },
+
+  _handleCanvasWheel(e) {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const map = this.leafletMap;
+    if (!map) return;
+
+    e.preventDefault();
+
+    const step = e.deltaY > 0 ? -0.5 : 0.5;
+    const currentZoom = map.getZoom();
+    const newZoom = Math.min(
+      map.getMaxZoom(),
+      Math.max(map.getMinZoom(), currentZoom + step)
+    );
+    if (newZoom === currentZoom) return;
+
+    const leafletRect = this.leafletEl.getBoundingClientRect();
+    const anchor = L.point(
+      e.clientX - leafletRect.left,
+      e.clientY - leafletRect.top
+    );
+
+    const world = this._computeAlignment();
+    map.setZoomAround(anchor, newZoom, {animate: false});
+    if (world) this._applyWorldAlignment(world);
+  },
+
+  _applyWorldAlignment(world) {
+    const map = this.leafletMap;
+    const overlay = this.overlay;
+    if (!map || !overlay) return;
+
+    const img = overlay.querySelector("img");
+    if (!img || !img.naturalWidth || !img.naturalHeight) return;
+
+    const canvasRect = this.el.getBoundingClientRect();
+    const canvasW = canvasRect.width;
+    const canvasH = canvasRect.height;
+    if (!(canvasW > 0) || !(canvasH > 0)) return;
+
+    const centerPt = map.latLngToContainerPoint([world.center_lat, world.center_lon]);
+    const tx = centerPt.x - canvasW / 2;
+    const ty = centerPt.y - canvasH / 2;
+
+    const cx = canvasW / 2 + tx;
+    const cy = canvasH / 2 + ty;
+    const p0 = map.containerPointToLatLng([cx, cy]);
+    const p1 = map.containerPointToLatLng([cx + 1, cy]);
+    const metersPerCanvasPx = map.distance(p0, p1);
+
+    const imgAspect = img.naturalWidth / img.naturalHeight;
+    const canvasAspect = canvasW / canvasH;
+    const containWidth =
+      canvasAspect > imgAspect ? canvasH * imgAspect : canvasW;
+    if (!(containWidth > 0)) return;
+
+    const renderedPxPerImagePxNeeded = metersPerCanvasPx / world.scale_mpp;
+    const scale = renderedPxPerImagePxNeeded / (containWidth / img.naturalWidth);
+
+    this.transform = {tx, ty, rotation: world.rotation_deg, scale};
+    this._applyTransform();
   }
 };
 

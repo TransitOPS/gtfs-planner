@@ -249,7 +249,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp push_child_stop_markers(socket) do
     if socket.assigns[:mode] == :map do
-      push_event(socket, "set_child_stops", %{stops: child_stop_markers(socket)})
+      markers = child_stop_markers(socket)
+      total = length(socket.assigns[:child_stops_list] || [])
+
+      require Logger
+
+      Logger.info(
+        "StationDiagram map pins: #{length(markers)} geo-coded / #{total} child stops on level"
+      )
+
+      push_event(socket, "set_child_stops", %{stops: markers})
     else
       socket
     end
