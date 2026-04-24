@@ -2631,9 +2631,90 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:rollback_preview, nil)}
   end
 
+  @impl true
+  def handle_event("preview_rollback_change_log", %{"log-id" => log_id}, socket)
+      when is_binary(log_id) do
+    case Gtfs.get_change_log(log_id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Unable to preview rollback: change log not found")}
+
+      log ->
+        case rollback_preview_for(log) do
+          {:ok, preview} ->
+            {:noreply, assign(socket, :rollback_preview, preview)}
+
+          {:error, :entity_not_found} ->
+            {:noreply,
+             put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")}
+
+          {:error, _reason} ->
+            {:noreply, put_flash(socket, :error, "Unable to preview rollback")}
+        end
+    end
+  end
+
+  def handle_event("preview_rollback_change_log", _params, socket) do
+    {:noreply, put_flash(socket, :error, "Unable to preview rollback: invalid parameters")}
+  end
+
+  @impl true
+  def handle_event("cancel_rollback_preview", _params, socket) do
+    {:noreply, assign(socket, :rollback_preview, nil)}
+  end
+
   # ============================================================================
   # Private Helpers
   # ============================================================================
+
+  @spec rollback_preview_for(GtfsPlanner.Gtfs.ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
+  defp rollback_preview_for(log) do
+    case load_current_entity(log.entity_type, log.entity_id) do
+      nil ->
+        {:error, :entity_not_found}
+
+      entity ->
+        current_snapshot =
+          log.entity_type
+          |> Gtfs.entity_snapshot(entity)
+          |> stringify_keys()
+
+        target_snapshot = stringify_keys(log.snapshot)
+        identity_fields = Gtfs.identity_fields_for(log.entity_type)
+
+        field_changes =
+          target_snapshot
+          |> Enum.reject(fn {key, _value} -> key in identity_fields end)
+          |> Enum.reduce([], fn {key, restored}, acc ->
+            current = Map.get(current_snapshot, key)
+
+            if current == restored do
+              acc
+            else
+              [%{field: key, current: current, restored: restored} | acc]
+            end
+          end)
+          |> Enum.reverse()
+
+        {:ok,
+         %{
+           log: log,
+           entity_type: log.entity_type,
+           entity_id: log.entity_id,
+           field_changes: field_changes
+         }}
+    end
+  end
+
+  defp load_current_entity("stop", id), do: Gtfs.get_stop(id)
+  defp load_current_entity("pathway", id), do: Gtfs.get_pathway(id)
+  defp load_current_entity("level", id), do: Gtfs.get_level(id)
+  defp load_current_entity(_, _), do: nil
+
+  defp stringify_keys(nil), do: %{}
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn {k, v} -> {to_string(k), v} end)
+  end
 
   defp handle_stop_selection(id, socket) do
     case socket.assigns.active_point_id do

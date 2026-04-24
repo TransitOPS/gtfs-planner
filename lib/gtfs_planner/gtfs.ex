@@ -1565,6 +1565,11 @@ defmodule GtfsPlanner.Gtfs do
   def get_pathway!(id), do: Repo.get!(Pathway, id)
 
   @doc """
+  Gets a single pathway, returning `nil` if it does not exist.
+  """
+  def get_pathway(id), do: Repo.get(Pathway, id)
+
+  @doc """
   Gets a single pathway by its GTFS pathway_id within an org+version scope.
 
   Returns `nil` if no matching pathway exists.
@@ -3186,6 +3191,28 @@ defmodule GtfsPlanner.Gtfs do
   def get_change_log!(id), do: Repo.get!(ChangeLog, id)
 
   @doc """
+  Gets a single change log entry, returning `nil` if it does not exist.
+  """
+  def get_change_log(id), do: Repo.get(ChangeLog, id)
+
+  @doc """
+  Returns the list of identity field names (as strings) for an entity type.
+
+  Identity fields are preserved across rollback and excluded from rollback diffs.
+  """
+  def identity_fields_for("stop"), do: ~w(stop_id)
+  def identity_fields_for("pathway"), do: ~w(pathway_id from_stop_id to_stop_id)
+  def identity_fields_for("level"), do: ~w(level_id)
+
+  @doc """
+  Builds a normalized snapshot map for a stop, pathway, or level entity.
+
+  Used by rollback preview to compare a current entity against a stored snapshot
+  with equivalent value normalization (e.g. Decimal → string).
+  """
+  def entity_snapshot(entity_type, entity), do: build_snapshot(entity_type, entity)
+
+  @doc """
   Rolls back a stop, pathway, or level to the state captured in a change log entry.
 
   Only works for "updated" entries. Produces a new "rolled_back" change log entry
@@ -3334,10 +3361,6 @@ defmodule GtfsPlanner.Gtfs do
   defp entity_module_for("level"), do: Level
 
   # -- Diff and rollback helpers --
-
-  defp identity_fields_for("stop"), do: ~w(stop_id)
-  defp identity_fields_for("pathway"), do: ~w(pathway_id from_stop_id to_stop_id)
-  defp identity_fields_for("level"), do: ~w(level_id)
 
   defp build_changed_fields(action, snapshot, attrs)
        when action == "updated" and not is_nil(snapshot) do
