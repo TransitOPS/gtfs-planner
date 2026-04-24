@@ -583,7 +583,9 @@ const MapAlignmentHook = {
     const containWidth =
       canvasAspect > imgAspect ? canvasH * imgAspect : canvasW;
     const renderedPxPerImagePx = (containWidth / img.naturalWidth) * scale;
-    const scaleMpp = metersPerCanvasPx / renderedPxPerImagePx;
+    // scale_mpp = meters per natural image pixel.
+    //   (m / canvas_px) × (canvas_px / natural_px) = m / natural_px
+    const scaleMpp = metersPerCanvasPx * renderedPxPerImagePx;
 
     console.info("MapAlignment: computed save payload", {
       canvasW,
@@ -689,7 +691,8 @@ const MapAlignmentHook = {
       canvasAspect > imgAspect ? canvasH * imgAspect : canvasW;
     if (!(containWidth > 0)) return;
 
-    const renderedPxPerImagePxNeeded = metersPerCanvasPx / savedAlignment.scaleMpp;
+    // Inverse of _computeAlignment: R = s_nat / (m / canvas_px).
+    const renderedPxPerImagePxNeeded = savedAlignment.scaleMpp / metersPerCanvasPx;
     const scale = renderedPxPerImagePxNeeded / (containWidth / img.naturalWidth);
 
     console.info("MapAlignment: restored", {
@@ -793,42 +796,6 @@ const MapAlignmentHook = {
       s._el.style.left = `${pt.x}px`;
       s._el.style.top = `${pt.y}px`;
     });
-  },
-
-  _applyWorldAlignment(world) {
-    const map = this.leafletMap;
-    const overlay = this.overlay;
-    if (!map || !overlay) return;
-
-    const img = overlay.querySelector("img");
-    if (!img || !img.naturalWidth || !img.naturalHeight) return;
-
-    const canvasRect = this.el.getBoundingClientRect();
-    const canvasW = canvasRect.width;
-    const canvasH = canvasRect.height;
-    if (!(canvasW > 0) || !(canvasH > 0)) return;
-
-    const centerPt = map.latLngToContainerPoint([world.center_lat, world.center_lon]);
-    const tx = centerPt.x - canvasW / 2;
-    const ty = centerPt.y - canvasH / 2;
-
-    const cx = canvasW / 2 + tx;
-    const cy = canvasH / 2 + ty;
-    const p0 = map.containerPointToLatLng([cx, cy]);
-    const p1 = map.containerPointToLatLng([cx + 1, cy]);
-    const metersPerCanvasPx = map.distance(p0, p1);
-
-    const imgAspect = img.naturalWidth / img.naturalHeight;
-    const canvasAspect = canvasW / canvasH;
-    const containWidth =
-      canvasAspect > imgAspect ? canvasH * imgAspect : canvasW;
-    if (!(containWidth > 0)) return;
-
-    const renderedPxPerImagePxNeeded = metersPerCanvasPx / world.scale_mpp;
-    const scale = renderedPxPerImagePxNeeded / (containWidth / img.naturalWidth);
-
-    this.transform = {tx, ty, rotation: world.rotation_deg, scale};
-    this._applyTransform();
   }
 };
 
