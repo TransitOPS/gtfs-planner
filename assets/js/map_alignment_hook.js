@@ -759,7 +759,7 @@ const MapAlignmentHook = {
 
     e.preventDefault();
 
-    const step = e.deltaY > 0 ? -0.5 : 0.5;
+    const step = e.deltaY > 0 ? 0.5 : -0.5;
     const currentZoom = map.getZoom();
     const newZoom = Math.min(
       map.getMaxZoom(),
