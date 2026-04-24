@@ -459,6 +459,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             />
           </div>
 
+          <div class="flex flex-col gap-1">
+            <label for="map-alignment-zoom" class="text-xs font-medium text-base-content/80">
+              Map zoom
+            </label>
+            <input
+              id="map-alignment-zoom"
+              type="range"
+              min="19"
+              max="22"
+              step="0.5"
+              value="19"
+              class="range range-xs w-40"
+              phx-update="ignore"
+            />
+          </div>
+
           <div class="ml-auto flex items-end gap-2">
             <span class={[
               "self-center text-xs font-medium",

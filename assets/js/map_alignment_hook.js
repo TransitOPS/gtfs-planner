@@ -90,6 +90,7 @@ const MapAlignmentHook = {
     const applyCenterBtn = document.getElementById("map-alignment-apply-center");
     const resetBtn = document.getElementById("map-alignment-reset");
     const opacitySlider = document.getElementById("map-alignment-opacity");
+    const zoomSlider = document.getElementById("map-alignment-zoom");
     const saveBtn = document.getElementById("map-alignment-save");
     const clearBtn = document.getElementById("map-alignment-clear");
     const applyBtn = document.getElementById("map-alignment-apply");
@@ -103,6 +104,7 @@ const MapAlignmentHook = {
     this.applyCenterBtn = applyCenterBtn;
     this.resetBtn = resetBtn;
     this.opacitySlider = opacitySlider;
+    this.zoomSlider = zoomSlider;
     this.saveBtn = saveBtn;
     this.clearBtn = clearBtn;
     this.applyBtn = applyBtn;
@@ -179,8 +181,42 @@ const MapAlignmentHook = {
     this.handleEvent("set_child_stops", (payload) => this._renderChildStops(payload));
     this.pushEvent("map_ready", {});
 
-    this._onCanvasWheel = (e) => this._handleCanvasWheel(e);
-    this.el.addEventListener("wheel", this._onCanvasWheel, {passive: false});
+    if (zoomSlider) {
+      zoomSlider.min = String(map.getMinZoom());
+      zoomSlider.max = String(map.getMaxZoom());
+      zoomSlider.value = String(map.getZoom());
+
+      this._onZoomSliderInput = (e) => {
+        const target = parseFloat(e.target.value);
+        if (!Number.isFinite(target)) return;
+        const current = map.getZoom();
+        if (target === current) return;
+
+        // Pin the floorplan to the map through the zoom: keep its center at
+        // the same world lat/lon, and scale by 2^Δzoom so it tracks the tiles.
+        const canvasRect = this.el.getBoundingClientRect();
+        const canvasW = canvasRect.width;
+        const canvasH = canvasRect.height;
+        const oldCx = canvasW / 2 + this.transform.tx;
+        const oldCy = canvasH / 2 + this.transform.ty;
+        const worldCenter = map.containerPointToLatLng([oldCx, oldCy]);
+        const scaleFactor = Math.pow(2, target - current);
+
+        map.setZoom(target, {animate: false});
+
+        const newCenterPt = map.latLngToContainerPoint(worldCenter);
+        this.transform.tx = newCenterPt.x - canvasW / 2;
+        this.transform.ty = newCenterPt.y - canvasH / 2;
+        this.transform.scale = this.transform.scale * scaleFactor;
+        this._applyTransform();
+      };
+      zoomSlider.addEventListener("input", this._onZoomSliderInput);
+
+      this._onZoomEnd = () => {
+        zoomSlider.value = String(map.getZoom());
+      };
+      map.on("zoomend", this._onZoomEnd);
+    }
 
     this._fetchBuildings(mapCenterLat, mapCenterLon);
 
@@ -474,10 +510,15 @@ const MapAlignmentHook = {
       this._resizeObserver = null;
     }
 
-    if (this._onCanvasWheel) {
-      this.el.removeEventListener("wheel", this._onCanvasWheel);
-      this._onCanvasWheel = null;
+    if (this.zoomSlider && this._onZoomSliderInput) {
+      this.zoomSlider.removeEventListener("input", this._onZoomSliderInput);
+      this._onZoomSliderInput = null;
     }
+
+    if (this.leafletMap && this._onZoomEnd) {
+      try { this.leafletMap.off("zoomend", this._onZoomEnd); } catch (_) {}
+    }
+    this._onZoomEnd = null;
 
     if (this.leafletMap && this._onMapViewChanged) {
       try {
@@ -752,32 +793,6 @@ const MapAlignmentHook = {
       s._el.style.left = `${pt.x}px`;
       s._el.style.top = `${pt.y}px`;
     });
-  },
-
-  _handleCanvasWheel(e) {
-    if (!(e.ctrlKey || e.metaKey)) return;
-    const map = this.leafletMap;
-    if (!map) return;
-
-    e.preventDefault();
-
-    const step = e.deltaY > 0 ? 0.5 : -0.5;
-    const currentZoom = map.getZoom();
-    const newZoom = Math.min(
-      map.getMaxZoom(),
-      Math.max(map.getMinZoom(), currentZoom + step)
-    );
-    if (newZoom === currentZoom) return;
-
-    const leafletRect = this.leafletEl.getBoundingClientRect();
-    const anchor = L.point(
-      e.clientX - leafletRect.left,
-      e.clientY - leafletRect.top
-    );
-
-    const world = this._computeAlignment();
-    map.setZoomAround(anchor, newZoom, {animate: false});
-    if (world) this._applyWorldAlignment(world);
   },
 
   _applyWorldAlignment(world) {
