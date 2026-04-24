@@ -9,6 +9,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Attribution
+  alias GtfsPlanner.Gtfs.BookingRule
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.CalendarDate
@@ -3192,7 +3193,8 @@ defmodule GtfsPlanner.Gtfs do
 
   Returns `{:ok, entity}` or `{:error, reason}`.
   """
-  @spec rollback_entity(ChangeLog.t()) :: {:ok, Stop.t() | Pathway.t() | Level.t()} | {:error, atom()}
+  @spec rollback_entity(ChangeLog.t()) ::
+          {:ok, Stop.t() | Pathway.t() | Level.t()} | {:error, atom()}
   def rollback_entity(%ChangeLog{action: action}) when action in ["created", "deleted"] do
     {:error, :cannot_rollback_create_or_delete}
   end
@@ -3296,9 +3298,16 @@ defmodule GtfsPlanner.Gtfs do
 
   # -- Diff and rollback helpers --
 
-  @identity_fields_for_rollback ["stop_id", "pathway_id", "level_id", "from_stop_id", "to_stop_id"]
+  @identity_fields_for_rollback [
+    "stop_id",
+    "pathway_id",
+    "level_id",
+    "from_stop_id",
+    "to_stop_id"
+  ]
 
-  defp build_changed_fields(action, snapshot, attrs) when action == "updated" and not is_nil(snapshot) do
+  defp build_changed_fields(action, snapshot, attrs)
+       when action == "updated" and not is_nil(snapshot) do
     snapshot_str_keys = stringify_map_keys(snapshot)
 
     attrs
@@ -3380,8 +3389,11 @@ defmodule GtfsPlanner.Gtfs do
     })
     |> Repo.insert()
     |> then(fn
-      {:ok, _log} -> :ok
-      {:error, changeset} -> Logger.error("Failed to insert rollback change_log: #{inspect(changeset.errors)}")
+      {:ok, _log} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.error("Failed to insert rollback change_log: #{inspect(changeset.errors)}")
     end)
   end
 end
