@@ -3217,7 +3217,7 @@ defmodule GtfsPlanner.Gtfs do
             update_entity_without_broadcast(entity, update_attrs)
           end)
           |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
-            insert_rollback_log(log, audit_ctx)
+            insert_rollback_log(log, audit_ctx, entity)
           end)
 
         case Repo.transaction(multi) do
@@ -3264,6 +3264,9 @@ defmodule GtfsPlanner.Gtfs do
   defp build_snapshot(:stop, %Stop{} = stop), do: snapshot_stop(stop)
   defp build_snapshot(:pathway, %Pathway{} = pw), do: snapshot_pathway(pw)
   defp build_snapshot(:level, %Level{} = level), do: snapshot_level(level)
+  defp build_snapshot("stop", %Stop{} = stop), do: snapshot_stop(stop)
+  defp build_snapshot("pathway", %Pathway{} = pw), do: snapshot_pathway(pw)
+  defp build_snapshot("level", %Level{} = level), do: snapshot_level(level)
   defp build_snapshot(_, _), do: nil
 
   defp snapshot_stop(stop) do
@@ -3408,7 +3411,7 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
-  defp insert_rollback_log(%ChangeLog{} = log, %AuditContext{} = ctx) do
+  defp insert_rollback_log(%ChangeLog{} = log, %AuditContext{} = ctx, current_entity) do
     %ChangeLog{}
     |> ChangeLog.changeset(%{
       entity_type: log.entity_type,
@@ -3417,7 +3420,7 @@ defmodule GtfsPlanner.Gtfs do
       station_stop_id: log.station_stop_id,
       actor_id: ctx.actor_id,
       actor_email: ctx.actor_email,
-      snapshot: nil,
+      snapshot: build_snapshot(log.entity_type, current_entity),
       changed_fields: nil,
       action: "rolled_back",
       rolled_back_to_log_id: log.id,

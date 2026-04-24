@@ -587,6 +587,36 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       {:ok, restored} = Gtfs.rollback_entity(tampered_log, ctx)
       assert restored.stop_id == original_stop_id
     end
+
+    test "rolled_back log row stores snapshot of pre-rollback entity state", %{ctx: ctx} do
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_reverse",
+          stop_name: "Original",
+          stop_desc: "Original desc"
+        })
+
+      Gtfs.record_change(ctx, :stop, stop, "updated", %{
+        stop_name: "Updated",
+        stop_desc: "Updated desc"
+      })
+
+      {:ok, _updated_stop} =
+        Gtfs.update_stop(stop, %{stop_name: "Updated", stop_desc: "Updated desc"})
+
+      update_log = Repo.one!(from cl in ChangeLog, where: cl.action == "updated")
+
+      {:ok, _reverted} = Gtfs.rollback_entity(update_log, ctx)
+
+      rollback_log = Repo.one!(from cl in ChangeLog, where: cl.action == "rolled_back")
+      assert rollback_log.snapshot["stop_name"] == "Updated"
+      assert rollback_log.snapshot["stop_desc"] == "Updated desc"
+
+      {:ok, re_restored} = Gtfs.rollback_entity(rollback_log, ctx)
+      assert re_restored.stop_name == "Updated"
+      assert re_restored.stop_desc == "Updated desc"
+      assert re_restored.stop_id == "stop_reverse"
+    end
   end
 
   describe "get_change_log!/1" do
