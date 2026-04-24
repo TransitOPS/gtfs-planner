@@ -7,9 +7,10 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Area
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Attribution
-  alias GtfsPlanner.Gtfs.BookingRule
   alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.FareAttribute
@@ -3113,5 +3114,274 @@ defmodule GtfsPlanner.Gtfs do
 
   defp broadcast({:error, reason}, _event_topic) do
     {:error, reason}
+  end
+
+  # ============================================================================
+  # Change Log / Audit
+  # ============================================================================
+
+  @doc """
+  Records a change log entry for a mutation.
+
+  `entity_or_nil` is the entity before the mutation (nil for creates).
+  `action` is "created", "updated", or "deleted".
+  `attrs` is the attribute map being applied (used to compute changed_fields for "updated").
+
+  Returns `:ok` — failures are logged to Logger and the mutation proceeds normally.
+  """
+  @spec record_change(AuditContext.t(), atom(), struct() | nil, String.t(), map()) :: :ok
+  def record_change(%AuditContext{} = ctx, entity_type, entity_or_nil, action, attrs \\ %{}) do
+    snapshot = build_snapshot(entity_type, entity_or_nil)
+    changed_fields = build_changed_fields(action, snapshot, attrs)
+
+    entity_external_id = entity_external_id_for(entity_type, entity_or_nil, attrs)
+    entity_id = entity_id_for(entity_or_nil)
+
+    %ChangeLog{}
+    |> ChangeLog.changeset(%{
+      entity_type: Atom.to_string(entity_type),
+      entity_id: entity_id,
+      entity_external_id: entity_external_id,
+      station_stop_id: ctx.station_stop_id,
+      actor_id: ctx.actor_id,
+      actor_email: ctx.actor_email,
+      snapshot: snapshot,
+      changed_fields: changed_fields,
+      action: action,
+      organization_id: ctx.organization_id,
+      gtfs_version_id: ctx.gtfs_version_id
+    })
+    |> Repo.insert()
+    |> then(fn
+      {:ok, _log} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.error("Failed to insert change_log: #{inspect(changeset.errors)}")
+        :ok
+    end)
+  end
+
+  @doc """
+  Returns change log entries for a specific entity, most recent first.
+  """
+  def list_change_logs_for_entity(organization_id, gtfs_version_id, entity_type, entity_id) do
+    from(cl in ChangeLog,
+      where:
+        cl.organization_id == ^organization_id and
+          cl.gtfs_version_id == ^gtfs_version_id and
+          cl.entity_type == ^entity_type and
+          cl.entity_id == ^entity_id,
+      order_by: [desc: cl.inserted_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a single change log entry.
+
+  Raises `Ecto.NoResultsError` if the entry does not exist.
+  """
+  def get_change_log!(id), do: Repo.get!(ChangeLog, id)
+
+  @doc """
+  Rolls back a stop, pathway, or level to the state captured in a change log entry.
+
+  Only works for "updated" entries. Produces a new "rolled_back" change log entry.
+  Identity fields (stop_id, pathway_id, level_id, from_stop_id, to_stop_id) are preserved.
+
+  Returns `{:ok, entity}` or `{:error, reason}`.
+  """
+  @spec rollback_entity(ChangeLog.t()) :: {:ok, Stop.t() | Pathway.t() | Level.t()} | {:error, atom()}
+  def rollback_entity(%ChangeLog{action: action}) when action in ["created", "deleted"] do
+    {:error, :cannot_rollback_create_or_delete}
+  end
+
+  def rollback_entity(%ChangeLog{} = log) do
+    entity_module = entity_module_for(log.entity_type)
+
+    case Repo.get(entity_module, log.entity_id) do
+      nil ->
+        {:error, :entity_not_found}
+
+      entity ->
+        update_attrs = snapshot_to_update_attrs(log.snapshot)
+
+        result =
+          case log.entity_type do
+            "stop" -> update_stop(entity, update_attrs)
+            "pathway" -> update_pathway(entity, update_attrs)
+            "level" -> update_level(entity, update_attrs)
+          end
+
+        case result do
+          {:ok, updated_entity} ->
+            record_rollback(log)
+            {:ok, updated_entity}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  # -- Snapshot helpers --
+
+  defp build_snapshot(_entity_type, nil), do: nil
+
+  defp build_snapshot(:stop, %Stop{} = stop), do: snapshot_stop(stop)
+  defp build_snapshot(:pathway, %Pathway{} = pw), do: snapshot_pathway(pw)
+  defp build_snapshot(:level, %Level{} = level), do: snapshot_level(level)
+  defp build_snapshot(_, _), do: nil
+
+  defp snapshot_stop(stop) do
+    %{
+      stop_name: stop.stop_name,
+      stop_desc: stop.stop_desc,
+      stop_lat: jsonify(stop.stop_lat),
+      stop_lon: jsonify(stop.stop_lon),
+      location_type: stop.location_type,
+      wheelchair_boarding: stop.wheelchair_boarding,
+      platform_code: stop.platform_code,
+      diagram_coordinate: stop.diagram_coordinate,
+      parent_station: stop.parent_station,
+      level_id: stop.level_id
+    }
+  end
+
+  defp snapshot_pathway(pw) do
+    %{
+      pathway_mode: pw.pathway_mode,
+      is_bidirectional: pw.is_bidirectional,
+      traversal_time: pw.traversal_time,
+      length: jsonify(pw.length),
+      stair_count: pw.stair_count,
+      max_slope: jsonify(pw.max_slope),
+      min_width: jsonify(pw.min_width),
+      signposted_as: pw.signposted_as,
+      reversed_signposted_as: pw.reversed_signposted_as,
+      field_notes: pw.field_notes,
+      field_completed_at: jsonify(pw.field_completed_at)
+    }
+  end
+
+  defp snapshot_level(level) do
+    %{level_name: level.level_name, level_index: level.level_index}
+  end
+
+  # -- Entity identity helpers --
+
+  defp entity_id_for(nil), do: Ecto.UUID.generate()
+  defp entity_id_for(%{id: id}), do: id
+
+  defp entity_external_id_for(_entity_type, nil, attrs) do
+    cond do
+      attrs[:stop_id] -> attrs[:stop_id]
+      attrs["stop_id"] -> attrs["stop_id"]
+      attrs[:pathway_id] -> attrs[:pathway_id]
+      attrs["pathway_id"] -> attrs["pathway_id"]
+      attrs[:level_id] -> attrs[:level_id]
+      attrs["level_id"] -> attrs["level_id"]
+      true -> nil
+    end
+  end
+
+  defp entity_external_id_for(:stop, %Stop{} = stop, _attrs), do: stop.stop_id
+  defp entity_external_id_for(:pathway, %Pathway{} = pw, _attrs), do: pw.pathway_id
+  defp entity_external_id_for(:level, %Level{} = level, _attrs), do: level.level_id
+
+  defp entity_module_for("stop"), do: Stop
+  defp entity_module_for("pathway"), do: Pathway
+  defp entity_module_for("level"), do: Level
+
+  # -- Diff and rollback helpers --
+
+  @identity_fields_for_rollback ["stop_id", "pathway_id", "level_id", "from_stop_id", "to_stop_id"]
+
+  defp build_changed_fields(action, snapshot, attrs) when action == "updated" and not is_nil(snapshot) do
+    snapshot_str_keys = stringify_map_keys(snapshot)
+
+    attrs
+    |> stringify_map_keys()
+    |> Enum.reduce(%{}, fn {field, new_value}, acc ->
+      current_value = Map.get(snapshot_str_keys, field)
+
+      if same_value?(current_value, new_value) do
+        acc
+      else
+        Map.put(acc, field, %{
+          "from" => normalize_value(current_value),
+          "to" => normalize_value(new_value)
+        })
+      end
+    end)
+  end
+
+  defp build_changed_fields(_action, _snapshot, _attrs), do: nil
+
+  defp same_value?(a, b), do: normalize_value(a) == normalize_value(b)
+
+  defp normalize_value(nil), do: nil
+  defp normalize_value(%Decimal{} = d), do: Decimal.to_string(d)
+
+  defp normalize_value(%DateTime{} = dt) do
+    dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+  end
+
+  defp normalize_value(%NaiveDateTime{} = ndt) do
+    ndt |> NaiveDateTime.truncate(:second) |> NaiveDateTime.to_iso8601()
+  end
+
+  defp normalize_value(value) when is_binary(value), do: value
+  defp normalize_value(value) when is_number(value), do: value
+  defp normalize_value(value) when is_boolean(value), do: value
+  defp normalize_value(value) when is_map(value), do: value
+  defp normalize_value(value) when is_list(value), do: value
+
+  defp normalize_value(%_{} = struct), do: inspect(struct)
+
+  defp stringify_map_keys(map) when is_map(map) do
+    Map.new(map, fn {k, v} -> {to_string(k), v} end)
+  end
+
+  defp jsonify(nil), do: nil
+  defp jsonify(value), do: normalize_value(value)
+
+  defp snapshot_to_update_attrs(nil), do: %{}
+
+  defp snapshot_to_update_attrs(snapshot) when is_map(snapshot) do
+    snapshot
+    |> Enum.reduce(%{}, fn {key, value}, acc ->
+      key_str = to_string(key)
+
+      if key_str in @identity_fields_for_rollback do
+        acc
+      else
+        Map.put(acc, String.to_existing_atom(key_str), value)
+      end
+    end)
+  end
+
+  defp record_rollback(%ChangeLog{} = log) do
+    %ChangeLog{}
+    |> ChangeLog.changeset(%{
+      entity_type: log.entity_type,
+      entity_id: log.entity_id,
+      entity_external_id: log.entity_external_id,
+      station_stop_id: log.station_stop_id,
+      actor_id: log.actor_id,
+      actor_email: log.actor_email,
+      snapshot: nil,
+      changed_fields: nil,
+      action: "rolled_back",
+      rolled_back_to_log_id: log.id,
+      organization_id: log.organization_id,
+      gtfs_version_id: log.gtfs_version_id
+    })
+    |> Repo.insert()
+    |> then(fn
+      {:ok, _log} -> :ok
+      {:error, changeset} -> Logger.error("Failed to insert rollback change_log: #{inspect(changeset.errors)}")
+    end)
   end
 end
