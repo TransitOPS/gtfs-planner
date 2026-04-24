@@ -1290,8 +1290,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
 
       true ->
+        pre_mutation_pathway = pathway
+
         case Gtfs.delete_pathway(pathway) do
           {:ok, _deleted_pathway} ->
+            Gtfs.record_change(
+              socket.assigns.audit_ctx,
+              :pathway,
+              pre_mutation_pathway,
+              "deleted",
+              %{}
+            )
+
             refreshed_socket = refresh_lists(socket)
 
             remaining_siblings =
@@ -1420,6 +1430,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
           case Gtfs.create_pathway(attrs) do
             {:ok, pathway} ->
+              Gtfs.record_change(
+                socket.assigns.audit_ctx,
+                :pathway,
+                nil,
+                "created",
+                attrs
+              )
+
               loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
               refreshed_socket = refresh_lists(socket)
 
@@ -2113,8 +2131,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pathway_form, to_form(params))}
 
       true ->
+        pre_mutation_pathway = pathway
+
         case Gtfs.update_pathway(pathway, attrs) do
           {:ok, updated_pathway} ->
+            Gtfs.record_change(
+              socket.assigns.audit_ctx,
+              :pathway,
+              pre_mutation_pathway,
+              "updated",
+              attrs
+            )
+
             refreshed_socket = refresh_lists(socket)
 
             pathway_pair =
@@ -2226,8 +2254,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           min_width: parse_optional_decimal(form[:min_width] && form[:min_width].value)
         }
 
+        pre_mutation_pathway = pathway
+
         case Gtfs.update_pathway(pathway, flip_attrs) do
           {:ok, updated_pathway} ->
+            Gtfs.record_change(
+              socket.assigns.audit_ctx,
+              :pathway,
+              pre_mutation_pathway,
+              "updated",
+              flip_attrs
+            )
+
             refreshed_socket = refresh_lists(socket)
             reloaded = Gtfs.get_pathway_with_stops!(updated_pathway.id)
 
@@ -3054,6 +3092,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
       case Gtfs.create_pathway(attrs) do
         {:ok, pathway} ->
+          Gtfs.record_change(
+            socket.assigns.audit_ctx,
+            :pathway,
+            nil,
+            "created",
+            attrs
+          )
+
           loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
           refreshed_socket = refresh_lists(socket)
           pathway_pair = pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)

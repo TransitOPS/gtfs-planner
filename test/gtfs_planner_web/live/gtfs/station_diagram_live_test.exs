@@ -8622,4 +8622,298 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert snapshot["stop_name"] == "Audit Delete"
     end
   end
+
+  describe "StationDiagramLive - pathway audit recording" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PW_AUDIT_STATION",
+          stop_name: "Pathway Audit Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PW_AUDIT_L1",
+          level_name: "Pathway Audit Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "pw-audit-level.png"
+        })
+
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PW_AUDIT_STOP_A",
+          stop_name: "Pathway Audit Stop A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PW_AUDIT_STOP_B",
+          stop_name: "Pathway Audit Stop B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 10.0}
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_a: stop_a,
+        stop_b: stop_b
+      }
+    end
+
+    test "creating a first pathway records a created change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "create_pathway", %{
+        "from_stop_id" => stop_a.id,
+        "to_stop_id" => stop_b.id
+      })
+
+      [pathway] =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+
+      import Ecto.Query
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "pathway" and
+                cl.entity_external_id == ^pathway.pathway_id
+          )
+        )
+
+      assert [
+               %{
+                 action: "created",
+                 entity_external_id: ext_id,
+                 actor_id: actor_id
+               }
+             ] = logs
+
+      assert ext_id == pathway.pathway_id
+      assert actor_id == user.id
+    end
+
+    test "adding a second pathway records a created change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      first =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{first.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> element("#add-second-pathway-btn")
+      |> render_click()
+
+      pair =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn pathway ->
+          MapSet.new([pathway.from_stop_id, pathway.to_stop_id]) ==
+            MapSet.new([stop_a.stop_id, stop_b.stop_id])
+        end)
+
+      assert length(pair) == 2
+
+      second = Enum.find(pair, &(&1.id != first.id))
+
+      import Ecto.Query
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "pathway" and
+                cl.entity_external_id == ^second.pathway_id
+          )
+        )
+
+      assert [%{action: "created", entity_external_id: ext_id}] = logs
+      assert ext_id == second.pathway_id
+    end
+
+    test "editing a pathway form records an updated change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "Original"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> form("#pathway-form", %{
+        "pathway_mode" => "1",
+        "is_bidirectional" => "true",
+        "traversal_time" => "99",
+        "length" => "",
+        "min_width" => "",
+        "signposted_as" => "Renamed",
+        "reversed_signposted_as" => ""
+      })
+      |> render_submit()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "pathway",
+          pathway.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "signposted_as")
+    end
+
+    test "flipping a pathway records an updated change log with from/to stop changes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: false,
+          signposted_as: "Forward",
+          reversed_signposted_as: "Reverse"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='flip_pathway']")
+      |> render_click()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "pathway",
+          pathway.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "from_stop_id")
+      assert Map.has_key?(changed_fields, "to_stop_id")
+    end
+
+    test "deleting a pathway records a deleted change log with snapshot", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "Doomed"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='delete_pathway']")
+      |> render_click()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "pathway",
+          pathway.id
+        )
+
+      assert [%{action: "deleted", snapshot: snapshot, entity_external_id: ext_id}] = logs
+      assert ext_id == pathway.pathway_id
+      assert snapshot["signposted_as"] == "Doomed"
+    end
+  end
 end
