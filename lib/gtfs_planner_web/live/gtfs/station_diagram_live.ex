@@ -694,8 +694,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           level_id: active_level.level_id
         }
 
+        pre_mutation_stop = stop
+
         case Gtfs.update_stop(stop, attrs) do
           {:ok, _updated_stop} ->
+            Gtfs.record_change(
+              socket.assigns.audit_ctx,
+              :stop,
+              pre_mutation_stop,
+              "updated",
+              attrs
+            )
+
             {:noreply,
              socket
              |> refresh_lists()
@@ -808,10 +818,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              socket.assigns.platform_stop_ids
            ) do
       attrs = %{diagram_coordinate: %{"x" => parsed_x, "y" => parsed_y}}
+      pre_mutation_stop = stop
 
       case Gtfs.update_stop(stop, attrs) do
         {:ok, updated_stop} ->
           Logger.debug("drag_end persisted", stop_id: id, x: parsed_x, y: parsed_y)
+
+          Gtfs.record_change(
+            socket.assigns.audit_ctx,
+            :stop,
+            pre_mutation_stop,
+            "updated",
+            attrs
+          )
 
           {:noreply,
            socket
@@ -1078,6 +1097,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       nil ->
         case Gtfs.create_stop(stop_attrs) do
           {:ok, stop} ->
+            Gtfs.record_change(
+              socket.assigns.audit_ctx,
+              :stop,
+              nil,
+              "created",
+              stop_attrs
+            )
+
             {:noreply,
              socket
              |> stream_insert(:child_stops, stop)
@@ -1109,7 +1136,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:ok, stop_attrs}
           end
 
-        result =
+        pre_mutation_stop = stop
+
+        {result, applied_attrs} =
           case stop_attrs_result do
             {:error, msg} ->
               changeset =
@@ -1118,18 +1147,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 |> Ecto.Changeset.add_error(:stop_id, msg)
                 |> Map.put(:action, :validate)
 
-              {:error, changeset}
+              {{:error, changeset}, stop_attrs}
 
             {:ok, resolved_attrs} ->
-              if resolved_attrs.stop_id != stop.stop_id do
-                Gtfs.update_stop_with_cascade(stop, resolved_attrs)
-              else
-                Gtfs.update_stop(stop, resolved_attrs)
-              end
+              update_result =
+                if resolved_attrs.stop_id != stop.stop_id do
+                  Gtfs.update_stop_with_cascade(stop, resolved_attrs)
+                else
+                  Gtfs.update_stop(stop, resolved_attrs)
+                end
+
+              {update_result, resolved_attrs}
           end
 
         case result do
           {:ok, updated_stop} ->
+            Gtfs.record_change(
+              socket.assigns.audit_ctx,
+              :stop,
+              pre_mutation_stop,
+              "updated",
+              applied_attrs
+            )
+
             {:noreply,
              socket
              |> stream_insert(:child_stops, updated_stop)
@@ -1177,9 +1217,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     org_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
+    pre_mutation_stop = Gtfs.get_stop(stop_id)
 
     case Gtfs.delete_child_stop(org_id, version_id, station_stop_id, stop_id) do
       {:ok, _deleted_stop} ->
+        Gtfs.record_change(
+          socket.assigns.audit_ctx,
+          :stop,
+          pre_mutation_stop,
+          "deleted",
+          %{}
+        )
+
         {:noreply,
          socket
          |> refresh_lists()

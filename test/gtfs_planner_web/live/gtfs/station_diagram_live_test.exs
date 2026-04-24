@@ -8336,4 +8336,290 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#flash-error")
     end
   end
+
+  describe "StationDiagramLive - child stop audit recording" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_STATION",
+          stop_name: "Audit Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "AUDIT_L1",
+          level_name: "Audit Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "audit-level.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "creating a child stop records a created change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "AUDIT_CREATE_1",
+        "stop_name" => "Audit Create 1",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_submit()
+
+      created =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> Enum.find(&(&1.stop_id == "AUDIT_CREATE_1"))
+
+      assert created
+
+      import Ecto.Query
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "stop" and
+                cl.entity_external_id == "AUDIT_CREATE_1"
+          )
+        )
+
+      assert [%{action: "created", entity_external_id: "AUDIT_CREATE_1", actor_id: actor_id}] =
+               logs
+
+      assert actor_id == user.id
+    end
+
+    test "editing child stop details records an updated change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_EDIT_1",
+          stop_name: "Audit Edit 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 25.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => child_stop.stop_id,
+        "stop_name" => "Audit Edit 1 Renamed",
+        "location_type" => Integer.to_string(child_stop.location_type),
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "platform_code" => ""
+      })
+      |> render_submit()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "stop",
+          child_stop.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "stop_name")
+    end
+
+    test "repositioning a stop records an updated change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_REPOSITION",
+          stop_name: "Audit Reposition",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "70", "y" => "80"})
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      view
+      |> element("#positioned-stop-row-#{child_stop.id} button[phx-click='reposition_stop']")
+      |> render_click()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "stop",
+          child_stop.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "diagram_coordinate")
+    end
+
+    test "dragging a stop to a new coordinate records an updated change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_DRAG",
+          stop_name: "Audit Drag",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 25.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{
+        "id" => to_string(child_stop.id),
+        "x" => "44.2",
+        "y" => "55.8"
+      })
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "stop",
+          child_stop.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "diagram_coordinate")
+    end
+
+    test "deleting a child stop records a deleted change log with snapshot", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_DELETE",
+          stop_name: "Audit Delete",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 25.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='delete_child_stop'][phx-value-id='#{child_stop.id}']")
+      |> render_click()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "stop",
+          child_stop.id
+        )
+
+      assert [%{action: "deleted", snapshot: snapshot, entity_external_id: ext_id}] = logs
+      assert ext_id == "AUDIT_DELETE"
+      assert snapshot["stop_name"] == "Audit Delete"
+    end
+  end
 end
