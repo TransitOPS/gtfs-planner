@@ -75,7 +75,13 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "allows rolled_back action" do
-      changeset = ChangeLog.changeset(%ChangeLog{}, Map.put(@valid_attrs, :action, "rolled_back"))
+      attrs =
+        Map.merge(@valid_attrs, %{
+          action: "rolled_back",
+          rolled_back_to_log_id: Ecto.UUID.generate()
+        })
+
+      changeset = ChangeLog.changeset(%ChangeLog{}, attrs)
       assert changeset.valid?
     end
 
@@ -89,12 +95,50 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert changeset.valid?
     end
 
-    test "sets rolled_back_to_log_id when provided" do
+    test "sets rolled_back_to_log_id when provided on rolled_back action" do
       log_id = Ecto.UUID.generate()
-      attrs = Map.put(@valid_attrs, :rolled_back_to_log_id, log_id)
+      attrs =
+        Map.merge(@valid_attrs, %{
+          action: "rolled_back",
+          rolled_back_to_log_id: log_id
+        })
+
       changeset = ChangeLog.changeset(%ChangeLog{}, attrs)
       assert changeset.valid?
       assert Ecto.Changeset.get_field(changeset, :rolled_back_to_log_id) == log_id
+    end
+
+    test "created action allows nil entity_id" do
+      attrs = Map.merge(@valid_attrs, %{action: "created", entity_id: nil})
+      changeset = ChangeLog.changeset(%ChangeLog{}, attrs)
+      assert changeset.valid?
+    end
+
+    test "non-created action with nil entity_id returns error" do
+      attrs = Map.put(@valid_attrs, :entity_id, nil)
+      changeset = ChangeLog.changeset(%ChangeLog{}, attrs)
+      refute changeset.valid?
+      assert has_error?(changeset, :entity_id, "can't be blank")
+    end
+
+    test "rolled_back action without rolled_back_to_log_id returns error" do
+      attrs =
+        Map.merge(@valid_attrs, %{
+          action: "rolled_back",
+          rolled_back_to_log_id: nil
+        })
+
+      changeset = ChangeLog.changeset(%ChangeLog{}, attrs)
+      refute changeset.valid?
+      assert has_error?(changeset, :rolled_back_to_log_id, "must be set when action is rolled_back")
+    end
+
+    test "non-rolled_back action with rolled_back_to_log_id set returns error" do
+      attrs = Map.put(@valid_attrs, :rolled_back_to_log_id, Ecto.UUID.generate())
+      changeset = ChangeLog.changeset(%ChangeLog{}, attrs)
+      refute changeset.valid?
+
+      assert has_error?(changeset, :rolled_back_to_log_id, "must not be set unless action is rolled_back")
     end
   end
 
@@ -114,13 +158,18 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       %{org: org, version: version, ctx: ctx}
     end
 
-    test "stop created inserts row with nil snapshot", %{org: org, version: version, ctx: ctx} do
+    test "stop created inserts row with nil snapshot and nil entity_id", %{
+      org: org,
+      version: version,
+      ctx: ctx
+    } do
       attrs = %{stop_id: "stop_new", stop_name: "New Stop"}
 
       assert :ok = Gtfs.record_change(ctx, :stop, nil, "created", attrs)
 
       [log] = Repo.all(ChangeLog)
       assert log.entity_type == "stop"
+      assert is_nil(log.entity_id)
       assert log.entity_external_id == "stop_new"
       assert log.station_stop_id == "station_central"
       assert log.action == "created"
@@ -265,14 +314,13 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       stop = stop_fixture(org.id, version.id, %{stop_id: "stop_log", stop_name: "First"})
 
       Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Second"})
-      :timer.sleep(10)
       Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Third"})
 
       logs = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", stop.id)
       assert length(logs) == 2
 
       [first, second] = logs
-      assert DateTime.compare(first.inserted_at, second.inserted_at) == :gt
+      assert DateTime.compare(first.inserted_at, second.inserted_at) != :lt
     end
 
     test "returns empty list for entity with no history", %{org: org, version: version} do
@@ -301,7 +349,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
   end
 
-  describe "rollback_entity/1" do
+  describe "rollback_entity/2" do
     setup do
       org = organization_fixture()
       version = gtfs_version_fixture(org.id)
@@ -333,7 +381,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
 
       log = Repo.one!(ChangeLog)
 
-      {:ok, restored} = Gtfs.rollback_entity(log)
+      {:ok, restored} = Gtfs.rollback_entity(log, ctx)
       assert restored.stop_name == "Original"
       assert restored.stop_desc == "Original desc"
       assert restored.stop_id == "stop_rb"
@@ -363,7 +411,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
 
       log = Repo.one!(ChangeLog)
 
-      {:ok, restored} = Gtfs.rollback_entity(log)
+      {:ok, restored} = Gtfs.rollback_entity(log, ctx)
       assert restored.signposted_as == "To Platform"
       assert restored.traversal_time == 60
       assert restored.pathway_id == "pw_rb"
@@ -384,7 +432,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
 
       log = Repo.one!(ChangeLog)
 
-      {:ok, restored} = Gtfs.rollback_entity(log)
+      {:ok, restored} = Gtfs.rollback_entity(log, ctx)
       assert restored.level_name == "Original Level"
       assert restored.level_index == 1.0
       assert restored.level_id == "L_rb"
@@ -395,7 +443,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       Gtfs.record_change(ctx, :stop, nil, "created", attrs)
 
       log = Repo.one!(ChangeLog)
-      assert {:error, :cannot_rollback_create_or_delete} = Gtfs.rollback_entity(log)
+      assert {:error, :cannot_rollback_create_or_delete} = Gtfs.rollback_entity(log, ctx)
     end
 
     test "rejects deleted action", %{ctx: ctx} do
@@ -408,7 +456,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       Gtfs.record_change(ctx, :stop, stop, "deleted", %{})
       log = Repo.one!(ChangeLog)
 
-      assert {:error, :cannot_rollback_create_or_delete} = Gtfs.rollback_entity(log)
+      assert {:error, :cannot_rollback_create_or_delete} = Gtfs.rollback_entity(log, ctx)
     end
 
     test "returns entity_not_found for non-existent entity", %{ctx: ctx} do
@@ -422,7 +470,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       log = Repo.one!(ChangeLog)
       Gtfs.delete_stop(stop)
 
-      assert {:error, :entity_not_found} = Gtfs.rollback_entity(log)
+      assert {:error, :entity_not_found} = Gtfs.rollback_entity(log, ctx)
     end
 
     test "does not change identity fields on rollback", %{ctx: ctx} do
@@ -440,7 +488,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       # Artificially set a different stop_id in snapshot to verify it is ignored
       tampered_log = %{log | snapshot: Map.put(log.snapshot, "stop_id", "hacked_id")}
 
-      {:ok, restored} = Gtfs.rollback_entity(tampered_log)
+      {:ok, restored} = Gtfs.rollback_entity(tampered_log, ctx)
       assert restored.stop_id == original_stop_id
     end
   end

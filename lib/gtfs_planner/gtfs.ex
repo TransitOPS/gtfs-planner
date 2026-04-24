@@ -3188,18 +3188,20 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Rolls back a stop, pathway, or level to the state captured in a change log entry.
 
-  Only works for "updated" entries. Produces a new "rolled_back" change log entry.
-  Identity fields (stop_id, pathway_id, level_id, from_stop_id, to_stop_id) are preserved.
+  Only works for "updated" entries. Produces a new "rolled_back" change log entry
+  attributed to `audit_ctx`. Identity fields (stop_id, pathway_id, level_id,
+  from_stop_id, to_stop_id) are preserved.
 
   Returns `{:ok, entity}` or `{:error, reason}`.
   """
-  @spec rollback_entity(ChangeLog.t()) ::
+  @spec rollback_entity(ChangeLog.t(), AuditContext.t()) ::
           {:ok, Stop.t() | Pathway.t() | Level.t()} | {:error, atom()}
-  def rollback_entity(%ChangeLog{action: action}) when action in ["created", "deleted"] do
+  def rollback_entity(%ChangeLog{action: action}, _ctx)
+      when action in ["created", "deleted"] do
     {:error, :cannot_rollback_create_or_delete}
   end
 
-  def rollback_entity(%ChangeLog{} = log) do
+  def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
     entity_module = entity_module_for(log.entity_type)
 
     case Repo.get(entity_module, log.entity_id) do
@@ -3209,20 +3211,29 @@ defmodule GtfsPlanner.Gtfs do
       entity ->
         update_attrs = snapshot_to_update_attrs(log.snapshot)
 
-        result =
-          case log.entity_type do
-            "stop" -> update_stop(entity, update_attrs)
-            "pathway" -> update_pathway(entity, update_attrs)
-            "level" -> update_level(entity, update_attrs)
-          end
+        multi =
+          Ecto.Multi.new()
+          |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
+            case log.entity_type do
+              "stop" -> update_stop(entity, update_attrs)
+              "pathway" -> update_pathway(entity, update_attrs)
+              "level" -> update_level(entity, update_attrs)
+            end
+          end)
+          |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
+            insert_rollback_log(log, audit_ctx)
+          end)
 
-        case result do
-          {:ok, updated_entity} ->
-            record_rollback(log)
+        case Repo.transaction(multi) do
+          {:ok, %{update_entity: updated_entity}} ->
             {:ok, updated_entity}
 
-          {:error, reason} ->
+          {:error, :update_entity, reason, _changes} ->
             {:error, reason}
+
+          {:error, :rollback_log, reason, _changes} ->
+            Logger.error("Failed to insert rollback change_log: #{inspect(reason)}")
+            {:error, :rollback_log_failed}
         end
     end
   end
@@ -3245,7 +3256,6 @@ defmodule GtfsPlanner.Gtfs do
       location_type: stop.location_type,
       wheelchair_boarding: stop.wheelchair_boarding,
       platform_code: stop.platform_code,
-      diagram_coordinate: stop.diagram_coordinate,
       parent_station: stop.parent_station,
       level_id: stop.level_id
     }
@@ -3273,7 +3283,7 @@ defmodule GtfsPlanner.Gtfs do
 
   # -- Entity identity helpers --
 
-  defp entity_id_for(nil), do: Ecto.UUID.generate()
+  defp entity_id_for(nil), do: nil
   defp entity_id_for(%{id: id}), do: id
 
   defp entity_external_id_for(_entity_type, nil, attrs) do
@@ -3344,10 +3354,9 @@ defmodule GtfsPlanner.Gtfs do
   defp normalize_value(value) when is_binary(value), do: value
   defp normalize_value(value) when is_number(value), do: value
   defp normalize_value(value) when is_boolean(value), do: value
+  defp normalize_value(%_{} = struct), do: inspect(struct)
   defp normalize_value(value) when is_map(value), do: value
   defp normalize_value(value) when is_list(value), do: value
-
-  defp normalize_value(%_{} = struct), do: inspect(struct)
 
   defp stringify_map_keys(map) when is_map(map) do
     Map.new(map, fn {k, v} -> {to_string(k), v} end)
@@ -3366,20 +3375,31 @@ defmodule GtfsPlanner.Gtfs do
       if key_str in @identity_fields_for_rollback do
         acc
       else
-        Map.put(acc, String.to_existing_atom(key_str), value)
+        case safe_string_to_existing_atom(key_str) do
+          {:ok, atom_key} -> Map.put(acc, atom_key, value)
+          :error -> acc
+        end
       end
     end)
   end
 
-  defp record_rollback(%ChangeLog{} = log) do
+  defp safe_string_to_existing_atom(str) do
+    try do
+      {:ok, String.to_existing_atom(str)}
+    rescue
+      ArgumentError -> :error
+    end
+  end
+
+  defp insert_rollback_log(%ChangeLog{} = log, %AuditContext{} = ctx) do
     %ChangeLog{}
     |> ChangeLog.changeset(%{
       entity_type: log.entity_type,
       entity_id: log.entity_id,
       entity_external_id: log.entity_external_id,
       station_stop_id: log.station_stop_id,
-      actor_id: log.actor_id,
-      actor_email: log.actor_email,
+      actor_id: ctx.actor_id,
+      actor_email: ctx.actor_email,
       snapshot: nil,
       changed_fields: nil,
       action: "rolled_back",
@@ -3388,12 +3408,5 @@ defmodule GtfsPlanner.Gtfs do
       gtfs_version_id: log.gtfs_version_id
     })
     |> Repo.insert()
-    |> then(fn
-      {:ok, _log} ->
-        :ok
-
-      {:error, changeset} ->
-        Logger.error("Failed to insert rollback change_log: #{inspect(changeset.errors)}")
-    end)
   end
 end

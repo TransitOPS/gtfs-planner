@@ -15,7 +15,8 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
     field :snapshot, :map
     field :changed_fields, :map
     field :action, :string
-    field :rolled_back_to_log_id, :binary_id
+    belongs_to :rolled_back_to_log, GtfsPlanner.Gtfs.ChangeLog,
+      foreign_key: :rolled_back_to_log_id, type: :binary_id
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
@@ -41,7 +42,6 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
     ])
     |> validate_required([
       :entity_type,
-      :entity_id,
       :entity_external_id,
       :station_stop_id,
       :actor_id,
@@ -50,7 +50,36 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
       :organization_id,
       :gtfs_version_id
     ])
+    |> validate_entity_id()
     |> validate_inclusion(:entity_type, ["stop", "pathway", "level"])
     |> validate_inclusion(:action, ["created", "updated", "deleted", "rolled_back"])
+    |> validate_rollback_reference()
+  end
+
+  defp validate_entity_id(changeset) do
+    action = get_field(changeset, :action)
+    entity_id = get_field(changeset, :entity_id)
+
+    if action != "created" and is_nil(entity_id) do
+      add_error(changeset, :entity_id, "can't be blank")
+    else
+      changeset
+    end
+  end
+
+  defp validate_rollback_reference(changeset) do
+    action = get_field(changeset, :action)
+    rolled_back_to_log_id = get_field(changeset, :rolled_back_to_log_id)
+
+    cond do
+      action == "rolled_back" and is_nil(rolled_back_to_log_id) ->
+        add_error(changeset, :rolled_back_to_log_id, "must be set when action is rolled_back")
+
+      action != "rolled_back" and not is_nil(rolled_back_to_log_id) ->
+        add_error(changeset, :rolled_back_to_log_id, "must not be set unless action is rolled_back")
+
+      true ->
+        changeset
+    end
   end
 end
