@@ -97,6 +97,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
 
     test "sets rolled_back_to_log_id when provided on rolled_back action" do
       log_id = Ecto.UUID.generate()
+
       attrs =
         Map.merge(@valid_attrs, %{
           action: "rolled_back",
@@ -130,7 +131,12 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
 
       changeset = ChangeLog.changeset(%ChangeLog{}, attrs)
       refute changeset.valid?
-      assert has_error?(changeset, :rolled_back_to_log_id, "must be set when action is rolled_back")
+
+      assert has_error?(
+               changeset,
+               :rolled_back_to_log_id,
+               "must be set when action is rolled_back"
+             )
     end
 
     test "non-rolled_back action with rolled_back_to_log_id set returns error" do
@@ -138,7 +144,11 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       changeset = ChangeLog.changeset(%ChangeLog{}, attrs)
       refute changeset.valid?
 
-      assert has_error?(changeset, :rolled_back_to_log_id, "must not be set unless action is rolled_back")
+      assert has_error?(
+               changeset,
+               :rolled_back_to_log_id,
+               "must not be set unless action is rolled_back"
+             )
     end
   end
 
@@ -471,6 +481,51 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       Gtfs.delete_stop(stop)
 
       assert {:error, :entity_not_found} = Gtfs.rollback_entity(log, ctx)
+    end
+
+    test "rolling back a stop update restores level_id", %{ctx: ctx} do
+      level_a =
+        level_fixture(ctx.organization_id, ctx.gtfs_version_id, %{level_id: "L_stop_a"})
+
+      level_b =
+        level_fixture(ctx.organization_id, ctx.gtfs_version_id, %{level_id: "L_stop_b"})
+
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_level_rb",
+          stop_name: "Platform",
+          level_id: level_a.level_id
+        })
+
+      Gtfs.record_change(ctx, :stop, stop, "updated", %{level_id: level_b.level_id})
+
+      {:ok, _moved} = Gtfs.update_stop(stop, %{level_id: level_b.level_id})
+
+      log = Repo.one!(from cl in ChangeLog, where: cl.action == "updated")
+
+      {:ok, restored} = Gtfs.rollback_entity(log, ctx)
+      assert restored.level_id == level_a.level_id
+      assert restored.stop_id == "stop_level_rb"
+    end
+
+    test "rolling back a level update does not attempt to change level_id", %{ctx: ctx} do
+      level =
+        level_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          level_id: "L_identity",
+          level_name: "Ground",
+          level_index: 0.0
+        })
+
+      original_level_id = level.level_id
+
+      Gtfs.record_change(ctx, :level, level, "updated", %{level_name: "Changed"})
+      log = Repo.one!(ChangeLog)
+
+      tampered_log = %{log | snapshot: Map.put(log.snapshot, "level_id", "hacked_level")}
+
+      {:ok, restored} = Gtfs.rollback_entity(tampered_log, ctx)
+      assert restored.level_id == original_level_id
+      assert restored.level_name == "Ground"
     end
 
     test "does not change identity fields on rollback", %{ctx: ctx} do

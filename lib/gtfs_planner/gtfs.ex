@@ -3209,7 +3209,7 @@ defmodule GtfsPlanner.Gtfs do
         {:error, :entity_not_found}
 
       entity ->
-        update_attrs = snapshot_to_update_attrs(log.snapshot)
+        update_attrs = snapshot_to_update_attrs(log.entity_type, log.snapshot)
 
         multi =
           Ecto.Multi.new()
@@ -3308,13 +3308,9 @@ defmodule GtfsPlanner.Gtfs do
 
   # -- Diff and rollback helpers --
 
-  @identity_fields_for_rollback [
-    "stop_id",
-    "pathway_id",
-    "level_id",
-    "from_stop_id",
-    "to_stop_id"
-  ]
+  defp identity_fields_for("stop"), do: ~w(stop_id)
+  defp identity_fields_for("pathway"), do: ~w(pathway_id from_stop_id to_stop_id)
+  defp identity_fields_for("level"), do: ~w(level_id)
 
   defp build_changed_fields(action, snapshot, attrs)
        when action == "updated" and not is_nil(snapshot) do
@@ -3365,14 +3361,16 @@ defmodule GtfsPlanner.Gtfs do
   defp jsonify(nil), do: nil
   defp jsonify(value), do: normalize_value(value)
 
-  defp snapshot_to_update_attrs(nil), do: %{}
+  defp snapshot_to_update_attrs(_entity_type, nil), do: %{}
 
-  defp snapshot_to_update_attrs(snapshot) when is_map(snapshot) do
+  defp snapshot_to_update_attrs(entity_type, snapshot) when is_map(snapshot) do
+    identity_fields = identity_fields_for(entity_type)
+
     snapshot
     |> Enum.reduce(%{}, fn {key, value}, acc ->
       key_str = to_string(key)
 
-      if key_str in @identity_fields_for_rollback do
+      if key_str in identity_fields do
         acc
       else
         case safe_string_to_existing_atom(key_str) do
