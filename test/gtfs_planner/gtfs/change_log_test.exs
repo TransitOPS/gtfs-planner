@@ -528,6 +528,47 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert restored.level_name == "Ground"
     end
 
+    test "does not broadcast or mutate entity when rollback log insertion fails", %{ctx: ctx} do
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_nobcast",
+          stop_name: "Original",
+          stop_desc: "Original desc"
+        })
+
+      Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
+      log = Repo.one!(ChangeLog)
+
+      tampered_log = %{log | organization_id: nil}
+
+      assert {:error, :rollback_log_failed} = Gtfs.rollback_entity(tampered_log, ctx)
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+      assert reloaded.stop_name == "Original"
+      assert reloaded.stop_desc == "Original desc"
+
+      refute_receive {[:stops, :updated], _}
+    end
+
+    test "broadcasts entity update after successful rollback", %{ctx: ctx} do
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_bcast",
+          stop_name: "Original"
+        })
+
+      Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
+      log = Repo.one!(ChangeLog)
+
+      {:ok, restored} = Gtfs.rollback_entity(log, ctx)
+
+      assert_receive {[:stops, :updated], ^restored}
+    end
+
     test "does not change identity fields on rollback", %{ctx: ctx} do
       stop =
         stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{

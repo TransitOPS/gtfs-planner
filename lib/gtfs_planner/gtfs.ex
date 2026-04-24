@@ -3214,11 +3214,7 @@ defmodule GtfsPlanner.Gtfs do
         multi =
           Ecto.Multi.new()
           |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
-            case log.entity_type do
-              "stop" -> update_stop(entity, update_attrs)
-              "pathway" -> update_pathway(entity, update_attrs)
-              "level" -> update_level(entity, update_attrs)
-            end
+            update_entity_without_broadcast(entity, update_attrs)
           end)
           |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
             insert_rollback_log(log, audit_ctx)
@@ -3226,6 +3222,7 @@ defmodule GtfsPlanner.Gtfs do
 
         case Repo.transaction(multi) do
           {:ok, %{update_entity: updated_entity}} ->
+            broadcast({:ok, updated_entity}, broadcast_topic_for(updated_entity))
             {:ok, updated_entity}
 
           {:error, :update_entity, reason, _changes} ->
@@ -3237,6 +3234,28 @@ defmodule GtfsPlanner.Gtfs do
         end
     end
   end
+
+  defp update_entity_without_broadcast(%Stop{} = stop, attrs) do
+    stop
+    |> Stop.changeset(attrs)
+    |> Repo.update()
+  end
+
+  defp update_entity_without_broadcast(%Pathway{} = pathway, attrs) do
+    pathway
+    |> Pathway.changeset(attrs)
+    |> Repo.update()
+  end
+
+  defp update_entity_without_broadcast(%Level{} = level, attrs) do
+    level
+    |> Level.changeset(attrs)
+    |> Repo.update()
+  end
+
+  defp broadcast_topic_for(%Stop{}), do: [:stops, :updated]
+  defp broadcast_topic_for(%Pathway{}), do: [:pathways, :updated]
+  defp broadcast_topic_for(%Level{}), do: [:levels, :updated]
 
   # -- Snapshot helpers --
 
