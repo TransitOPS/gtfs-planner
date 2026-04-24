@@ -402,6 +402,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           reposition_mode={@reposition_mode}
           reposition_search={@reposition_search}
           reposition_stops={@reposition_stops}
+          history_open_for={@history_open_for}
+          history_entries={@history_entries}
+          rollback_preview={@rollback_preview}
         />
 
         <.pathway_drawer
@@ -413,6 +416,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pathway_form_dirty={@pathway_form_dirty}
           has_scale={scale_configured?(@active_stop_level)}
           pathway_error={@pathway_error}
+          history_open_for={@history_open_for}
+          history_entries={@history_entries}
+          rollback_preview={@rollback_preview}
         />
 
         <.ruler_drawer
@@ -427,6 +433,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           level_mode={@level_mode}
           editing_level_uuid={if @show_level_modal == :edit && @active_level, do: @active_level.id}
           level_shared={@level_shared}
+          history_open_for={@history_open_for}
+          history_entries={@history_entries}
+          rollback_preview={@rollback_preview}
         />
 
         <.walkability_test_drawer
