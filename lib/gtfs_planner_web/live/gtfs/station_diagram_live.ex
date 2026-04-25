@@ -2643,29 +2643,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply, put_flash(socket, :error, "Unable to preview rollback: change log not found")}
 
       log ->
-        if rollback_log_in_current_scope?(socket, log) and
-             entity_belongs_to_current_station?(socket, log.entity_type, log.entity_id) do
-          case rollback_preview_for(log) do
-            {:ok, preview} ->
-              {:noreply, assign(socket, :rollback_preview, preview)}
-
-            {:error, :entity_not_found} ->
-              {:noreply,
-               put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")}
-
-            {:error, :already_matches_current} ->
-              {:noreply,
-               socket
-               |> assign(:rollback_preview, nil)
-               |> put_flash(:error, rollback_error_message(:already_matches_current))}
-
-            {:error, _reason} ->
-              {:noreply, put_flash(socket, :error, "Unable to preview rollback")}
-          end
-        else
-          {:noreply,
-           put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")}
-        end
+        handle_rollback_preview_request(socket, log)
     end
   end
 
@@ -2828,54 +2806,97 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @spec rollback_preview_for(GtfsPlanner.Gtfs.ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
   defp rollback_preview_for(log) do
+    with {:ok, entity} <- rollback_preview_entity(log),
+         {:ok, target_snapshot} <- Gtfs.rollback_target_snapshot(log),
+         {:ok, field_changes} <- rollback_preview_field_changes(log, entity, target_snapshot) do
+      {:ok,
+       %{
+         log: log,
+         entity_type: log.entity_type,
+         entity_id: log.entity_id,
+         field_changes: field_changes
+       }}
+    end
+  end
+
+  defp handle_rollback_preview_request(socket, log) do
+    if rollback_preview_available?(socket, log) do
+      {:noreply, assign_rollback_preview(socket, log)}
+    else
+      {:noreply, put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")}
+    end
+  end
+
+  defp rollback_preview_available?(socket, log) do
+    rollback_log_in_current_scope?(socket, log) and
+      entity_belongs_to_current_station?(socket, log.entity_type, log.entity_id)
+  end
+
+  defp assign_rollback_preview(socket, log) do
+    case rollback_preview_for(log) do
+      {:ok, preview} ->
+        assign(socket, :rollback_preview, preview)
+
+      {:error, :entity_not_found} ->
+        put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")
+
+      {:error, :already_matches_current} ->
+        socket
+        |> assign(:rollback_preview, nil)
+        |> put_flash(:error, rollback_error_message(:already_matches_current))
+
+      {:error, _reason} ->
+        put_flash(socket, :error, "Unable to preview rollback")
+    end
+  end
+
+  defp rollback_preview_entity(log) do
     case load_current_entity(log.entity_type, log.entity_id) do
-      nil ->
-        {:error, :entity_not_found}
+      nil -> {:error, :entity_not_found}
+      entity -> {:ok, entity}
+    end
+  end
 
-      entity ->
-        with {:ok, target_snapshot} <- Gtfs.rollback_target_snapshot(log) do
-          current_snapshot =
-            log.entity_type
-            |> Gtfs.entity_snapshot(entity)
-            |> stringify_keys()
+  defp rollback_preview_field_changes(log, entity, target_snapshot) do
+    current_snapshot =
+      log.entity_type
+      |> Gtfs.entity_snapshot(entity)
+      |> stringify_keys()
 
-          target_snapshot = stringify_keys(target_snapshot)
-          identity_fields = Gtfs.identity_fields_for(log.entity_type)
+    target_snapshot = stringify_keys(target_snapshot)
 
-          all_keys =
-            target_snapshot
-            |> Map.keys()
-            |> Kernel.++(Map.keys(current_snapshot))
-            |> Enum.uniq()
-            |> Enum.reject(&(&1 in identity_fields))
+    field_changes =
+      log
+      |> rollback_preview_keys(current_snapshot, target_snapshot)
+      |> Enum.reduce([], &rollback_preview_change(&1, current_snapshot, target_snapshot, &2))
+      |> Enum.reverse()
+      |> Enum.sort_by(& &1.field)
 
-          field_changes =
-            all_keys
-            |> Enum.reduce([], fn key, acc ->
-              current = Map.get(current_snapshot, key)
-              restored = Map.get(target_snapshot, key)
+    if field_changes == [] do
+      {:error, :already_matches_current}
+    else
+      {:ok, field_changes}
+    end
+  end
 
-              if current == restored do
-                acc
-              else
-                [%{field: key, current: current, restored: restored} | acc]
-              end
-            end)
-            |> Enum.reverse()
-            |> Enum.sort_by(& &1.field)
+  defp rollback_preview_keys(log, current_snapshot, target_snapshot) do
+    identity_fields = Gtfs.identity_fields_for(log.entity_type)
 
-          if field_changes == [] do
-            {:error, :already_matches_current}
-          else
-            {:ok,
-             %{
-               log: log,
-               entity_type: log.entity_type,
-               entity_id: log.entity_id,
-               field_changes: field_changes
-             }}
-          end
-        end
+    target_snapshot
+    |> Map.keys()
+    |> Kernel.++(Map.keys(current_snapshot))
+    |> Enum.uniq()
+    |> Enum.reject(&(&1 in identity_fields))
+  end
+
+  defp rollback_preview_change(key, current_snapshot, target_snapshot, acc) do
+    current = Map.get(current_snapshot, key)
+    restored = Map.get(target_snapshot, key)
+
+    if current == restored do
+      acc
+    else
+      [%{field: key, current: current, restored: restored} | acc]
     end
   end
 

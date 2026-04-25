@@ -3231,42 +3231,11 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
-    with {:ok, target_snapshot} <- rollback_target_snapshot(log) do
-      entity_module = entity_module_for(log.entity_type)
-
-      case Repo.get(entity_module, log.entity_id) do
-        nil ->
-          {:error, :entity_not_found}
-
-        entity ->
-          if rollback_would_change_entity?(log.entity_type, entity, target_snapshot) do
-            update_attrs = snapshot_to_update_attrs(log.entity_type, target_snapshot)
-
-            multi =
-              Ecto.Multi.new()
-              |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
-                update_entity_without_broadcast(entity, update_attrs)
-              end)
-              |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
-                insert_rollback_log(log, audit_ctx, entity)
-              end)
-
-            case Repo.transaction(multi) do
-              {:ok, %{update_entity: updated_entity}} ->
-                broadcast({:ok, updated_entity}, broadcast_topic_for(updated_entity))
-                {:ok, updated_entity}
-
-              {:error, :update_entity, reason, _changes} ->
-                {:error, reason}
-
-              {:error, :rollback_log, reason, _changes} ->
-                Logger.error("Failed to insert rollback change_log: #{inspect(reason)}")
-                {:error, :rollback_log_failed}
-            end
-          else
-            {:error, :already_matches_current}
-          end
-      end
+    with {:ok, target_snapshot} <- rollback_target_snapshot(log),
+         {:ok, entity} <- rollback_entity_for_log(log),
+         :ok <- ensure_rollback_changes_entity(log.entity_type, entity, target_snapshot) do
+      update_attrs = snapshot_to_update_attrs(log.entity_type, target_snapshot)
+      rollback_entity_transaction(update_attrs, log, audit_ctx, entity)
     end
   end
 
@@ -3422,6 +3391,52 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp fill_snapshot_from_changed_fields(snapshot, _changed_fields), do: snapshot
+
+  defp rollback_entity_for_log(log) do
+    case Repo.get(entity_module_for(log.entity_type), log.entity_id) do
+      nil -> {:error, :entity_not_found}
+      entity -> {:ok, entity}
+    end
+  end
+
+  defp ensure_rollback_changes_entity(entity_type, entity, target_snapshot) do
+    if rollback_would_change_entity?(entity_type, entity, target_snapshot) do
+      :ok
+    else
+      {:error, :already_matches_current}
+    end
+  end
+
+  defp rollback_entity_transaction(update_attrs, log, audit_ctx, entity) do
+    log
+    |> rollback_multi(audit_ctx, entity, update_attrs)
+    |> Repo.transaction()
+    |> handle_rollback_transaction_result()
+  end
+
+  defp rollback_multi(log, audit_ctx, entity, update_attrs) do
+    Ecto.Multi.new()
+    |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
+      update_entity_without_broadcast(entity, update_attrs)
+    end)
+    |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
+      insert_rollback_log(log, audit_ctx, entity)
+    end)
+  end
+
+  defp handle_rollback_transaction_result({:ok, %{update_entity: updated_entity}}) do
+    broadcast({:ok, updated_entity}, broadcast_topic_for(updated_entity))
+    {:ok, updated_entity}
+  end
+
+  defp handle_rollback_transaction_result({:error, :update_entity, reason, _changes}) do
+    {:error, reason}
+  end
+
+  defp handle_rollback_transaction_result({:error, :rollback_log, reason, _changes}) do
+    Logger.error("Failed to insert rollback change_log: #{inspect(reason)}")
+    {:error, :rollback_log_failed}
+  end
 
   defp rollback_would_change_entity?(entity_type, entity, target_snapshot) do
     current_snapshot =
