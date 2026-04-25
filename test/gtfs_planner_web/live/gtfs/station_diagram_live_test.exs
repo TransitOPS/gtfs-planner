@@ -10624,6 +10624,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     defp build_log(attrs) do
       defaults = %{
         id: Ecto.UUID.generate(),
+        entity_type: "stop",
         action: "updated",
         actor_email: "editor@example.com",
         inserted_at: ~U[2026-04-24 12:30:00.000000Z],
@@ -10675,6 +10676,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "Revert change"
       assert html =~ ~s(phx-click="preview_rollback_change_log")
       assert html =~ ~s(phx-value-log-id="#{entry.id}")
+    end
+
+    test "updated entry with only non-reversible fields hides Revert change button" do
+      entry =
+        build_log(%{
+          action: "updated",
+          changed_fields: %{"stop_id" => %{"from" => "OLD", "to" => "NEW"}},
+          snapshot: %{"stop_id" => "OLD"}
+        })
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ "updated"
+      refute html =~ "Revert change"
+      refute html =~ ~s(phx-click="preview_rollback_change_log")
+      refute html =~ ~s(phx-value-log-id="#{entry.id}")
     end
 
     test "reverted original entry renders status and hides its revert button" do

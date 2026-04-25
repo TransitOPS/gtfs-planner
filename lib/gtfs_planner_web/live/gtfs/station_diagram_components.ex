@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   import GtfsPlannerWeb.CoreComponents
 
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.Stop
@@ -4592,9 +4593,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
-  defp rollback_eligible?(%{action: action, snapshot: snapshot})
-       when action in ["updated", "rolled_back"] and not is_nil(snapshot),
-       do: true
+  defp rollback_eligible?(%{action: action, snapshot: snapshot} = entry)
+       when action in ["updated", "rolled_back"] and not is_nil(snapshot) do
+    Gtfs.rollback_previewable_fields(entry) != []
+  end
 
   defp rollback_eligible?(_), do: false
 
