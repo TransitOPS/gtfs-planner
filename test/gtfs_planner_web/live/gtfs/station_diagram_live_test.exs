@@ -10643,6 +10643,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert html =~ "created"
       refute html =~ "Revert change"
+      refute html =~ ~s(phx-click="preview_rollback_change_log")
+      refute html =~ ~s(phx-value-log-id="#{entry.id}")
     end
 
     test "deleted entry does not render Revert change button" do
@@ -10657,6 +10659,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert html =~ "deleted"
       refute html =~ "Revert change"
+      refute html =~ ~s(phx-click="preview_rollback_change_log")
+      refute html =~ ~s(phx-value-log-id="#{entry.id}")
     end
 
     test "renders rollback_preview when it matches a listed entry for the entity type" do
