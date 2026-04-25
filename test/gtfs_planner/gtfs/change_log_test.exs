@@ -406,6 +406,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
 
       log = %ChangeLog{
         action: "updated",
+        entity_type: "stop",
         snapshot: %{},
         changed_fields: %{
           "diagram_coordinate" => %{"from" => old_coordinate, "to" => new_coordinate}
@@ -414,6 +415,23 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
 
       assert {:ok, target_snapshot} = Gtfs.rollback_target_snapshot(log)
       assert target_snapshot["diagram_coordinate"] == old_coordinate
+    end
+
+    test "sanitizes polluted fields filled from changed_fields" do
+      log = %ChangeLog{
+        action: "updated",
+        entity_type: "stop",
+        snapshot: %{"stop_desc" => "Old desc"},
+        changed_fields: %{
+          "stop_name" => %{"from" => "Old Name", "to" => "New Name"},
+          "organization_id" => %{"from" => nil, "to" => Ecto.UUID.generate()},
+          "gtfs_version_id" => %{"from" => nil, "to" => Ecto.UUID.generate()},
+          "stop_id" => %{"from" => "old_stop", "to" => "new_stop"}
+        }
+      }
+
+      assert {:ok, target_snapshot} = Gtfs.rollback_target_snapshot(log)
+      assert target_snapshot == %{"stop_desc" => "Old desc", "stop_name" => "Old Name"}
     end
   end
 

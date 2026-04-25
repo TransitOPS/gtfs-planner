@@ -3300,11 +3300,17 @@ defmodule GtfsPlanner.Gtfs do
 
   def rollback_target_snapshot(%ChangeLog{
         action: action,
+        entity_type: entity_type,
         snapshot: snapshot,
         changed_fields: changed_fields
       })
       when action in ["updated", "rolled_back"] do
-    {:ok, fill_snapshot_from_changed_fields(snapshot, changed_fields)}
+    target_snapshot =
+      snapshot
+      |> fill_snapshot_from_changed_fields(changed_fields)
+      |> then(&sanitize_rollback_snapshot(entity_type, &1))
+
+    {:ok, target_snapshot}
   end
 
   defp update_entity_without_broadcast(%Stop{} = stop, attrs) do
