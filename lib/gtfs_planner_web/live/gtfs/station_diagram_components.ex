@@ -10,8 +10,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
-  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.Stop
   alias LiveSelect.Component
   alias Phoenix.LiveView.JS
 
@@ -24,7 +24,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   @stop_label_box_stroke 0.08
   @stop_label_max_line_chars 18
   @stop_label_max_lines 3
-  @system_noise_diff_fields MapSet.new(~w(organization_id gtfs_version_id id inserted_at updated_at))
+  @system_noise_diff_fields MapSet.new(
+                              ~w(organization_id gtfs_version_id id inserted_at updated_at)
+                            )
 
   # ============================================================================
   # Toolbar
