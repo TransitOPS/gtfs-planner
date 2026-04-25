@@ -24,6 +24,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   @stop_label_box_stroke 0.08
   @stop_label_max_line_chars 18
   @stop_label_max_lines 3
+  @system_noise_diff_fields MapSet.new(~w(organization_id gtfs_version_id id inserted_at updated_at))
 
   # ============================================================================
   # Toolbar
@@ -4639,6 +4640,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp diff_rows(%{changed_fields: fields}) when is_map(fields) and map_size(fields) > 0 do
     fields
+    |> Enum.reject(fn {field, _change} ->
+      MapSet.member?(@system_noise_diff_fields, to_string(field))
+    end)
     |> Enum.map(fn {field, change} ->
       %{
         field: to_string(field),

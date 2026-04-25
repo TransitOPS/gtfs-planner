@@ -11628,6 +11628,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "5"
       assert html =~ "nil"
     end
+
+    test "suppresses system-noise fields while preserving stop_id" do
+      entry = %GtfsPlanner.Gtfs.ChangeLog{
+        id: Ecto.UUID.generate(),
+        action: "updated",
+        actor_email: "e@x.com",
+        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
+        snapshot: %{},
+        changed_fields: %{
+          "organization_id" => %{"from" => nil, "to" => Ecto.UUID.generate()},
+          "gtfs_version_id" => %{"from" => nil, "to" => Ecto.UUID.generate()},
+          "id" => %{"from" => nil, "to" => Ecto.UUID.generate()},
+          "inserted_at" => %{"from" => nil, "to" => "2026-04-24T12:00:00Z"},
+          "updated_at" => %{"from" => nil, "to" => "2026-04-24T12:30:00Z"},
+          "stop_id" => %{"from" => "OLD", "to" => "NEW"}
+        }
+      }
+
+      html = render_component(&StationDiagramComponents.change_diff/1, entry: entry)
+
+      refute html =~ "organization_id:"
+      refute html =~ "gtfs_version_id:"
+      refute html =~ ">id:</span>"
+      refute html =~ "inserted_at:"
+      refute html =~ "updated_at:"
+      assert html =~ "stop_id:"
+    end
   end
 
   describe "StationDiagramLive - history tab toggling for pathway and level (R10)" do
