@@ -2892,13 +2892,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp rollback_preview_keys(log, current_snapshot, target_snapshot) do
-    identity_fields = Gtfs.identity_fields_for(log.entity_type)
+    previewable_fields = Gtfs.rollback_previewable_fields(log)
 
     target_snapshot
     |> Map.keys()
     |> Kernel.++(Map.keys(current_snapshot))
     |> Enum.uniq()
-    |> Enum.reject(&(&1 in identity_fields))
+    |> Enum.filter(&(&1 in previewable_fields))
   end
 
   defp rollback_preview_change(key, current_snapshot, target_snapshot, acc) do

@@ -3313,6 +3313,29 @@ defmodule GtfsPlanner.Gtfs do
     {:ok, target_snapshot}
   end
 
+  @doc """
+  Returns changed field names that can be previewed and applied by rollback.
+  """
+  @spec rollback_previewable_fields(ChangeLog.t()) :: [String.t()]
+  def rollback_previewable_fields(%ChangeLog{} = log) do
+    changed_field_names =
+      log.changed_fields
+      |> Kernel.||(%{})
+      |> Map.keys()
+      |> Enum.map(&to_string/1)
+      |> MapSet.new()
+
+    reversible_field_names =
+      log.entity_type
+      |> reversible_fields_for()
+      |> MapSet.new()
+
+    changed_field_names
+    |> MapSet.intersection(reversible_field_names)
+    |> MapSet.to_list()
+    |> Enum.sort()
+  end
+
   defp update_entity_without_broadcast(%Stop{} = stop, attrs) do
     stop
     |> Stop.changeset(attrs)
