@@ -13,6 +13,7 @@ defmodule GtfsPlanner.Repo.Migrations.CreateChangeLogs do
       add :snapshot, :map
       add :changed_fields, :map
       add :action, :string, null: false
+
       add :rolled_back_to_log_id,
           references(:change_logs, type: :binary_id, on_delete: :nilify_all)
 
@@ -28,7 +29,8 @@ defmodule GtfsPlanner.Repo.Migrations.CreateChangeLogs do
     end
 
     create constraint(:change_logs, :action_must_be_known,
-      check: "action IN ('created','updated','deleted','rolled_back')")
+             check: "action IN ('created','updated','deleted','rolled_back')"
+           )
 
     create index(:change_logs, [
              :organization_id,

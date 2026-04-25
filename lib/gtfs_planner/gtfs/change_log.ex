@@ -15,8 +15,10 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
     field :snapshot, :map
     field :changed_fields, :map
     field :action, :string
+
     belongs_to :rolled_back_to_log, GtfsPlanner.Gtfs.ChangeLog,
-      foreign_key: :rolled_back_to_log_id, type: :binary_id
+      foreign_key: :rolled_back_to_log_id,
+      type: :binary_id
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
@@ -76,7 +78,11 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
         add_error(changeset, :rolled_back_to_log_id, "must be set when action is rolled_back")
 
       action != "rolled_back" and not is_nil(rolled_back_to_log_id) ->
-        add_error(changeset, :rolled_back_to_log_id, "must not be set unless action is rolled_back")
+        add_error(
+          changeset,
+          :rolled_back_to_log_id,
+          "must not be set unless action is rolled_back"
+        )
 
       true ->
         changeset
