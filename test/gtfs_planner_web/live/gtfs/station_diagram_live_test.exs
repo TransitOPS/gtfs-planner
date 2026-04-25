@@ -9833,6 +9833,68 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert [%{action: "rolled_back"} | _] = state.socket.assigns.history_entries
     end
 
+    test "confirm_rollback_change_log reverts legacy polluted stop log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_POLLUTED_STOP",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      {:ok, changed_stop} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      {:ok, log} =
+        Repo.insert(%GtfsPlanner.Gtfs.ChangeLog{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          station_stop_id: station.stop_id,
+          entity_type: "stop",
+          entity_id: changed_stop.id,
+          entity_external_id: changed_stop.stop_id,
+          action: "updated",
+          snapshot: %{
+            "stop_name" => "Original Name",
+            "organization_id" => Ecto.UUID.generate(),
+            "gtfs_version_id" => Ecto.UUID.generate(),
+            "stop_id" => "bad_stop_id"
+          },
+          changed_fields: %{
+            "stop_name" => %{"from" => "Original Name", "to" => "Changed Name"},
+            "organization_id" => %{"from" => nil, "to" => organization.id},
+            "gtfs_version_id" => %{"from" => nil, "to" => gtfs_version.id},
+            "stop_id" => %{"from" => "bad_stop_id", "to" => changed_stop.stop_id}
+          },
+          actor_id: user.id,
+          actor_email: user.email
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert result =~ "Change reverted."
+
+      restored = Gtfs.get_stop!(stop.id)
+      assert restored.stop_name == "Original Name"
+      assert restored.organization_id == organization.id
+      assert restored.gtfs_version_id == gtfs_version.id
+      assert restored.stop_id == "CONFIRM_POLLUTED_STOP"
+    end
+
     test "confirm_rollback_change_log restores a moved child stop coordinate and refreshes rollback history",
          %{
            conn: conn,
