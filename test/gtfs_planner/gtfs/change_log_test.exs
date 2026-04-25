@@ -846,6 +846,41 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       refute_receive {[:stops, :updated], _}
     end
 
+    test "logs rollback changeset failure context", %{ctx: ctx} do
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_invalid_rollback",
+          stop_name: "Original",
+          location_type: 0
+        })
+
+      {:ok, log} =
+        Repo.insert(%ChangeLog{
+          organization_id: ctx.organization_id,
+          gtfs_version_id: ctx.gtfs_version_id,
+          station_stop_id: ctx.station_stop_id,
+          entity_type: "stop",
+          entity_id: stop.id,
+          entity_external_id: stop.stop_id,
+          action: "updated",
+          snapshot: %{"location_type" => 99},
+          changed_fields: %{"location_type" => %{"from" => 99, "to" => 0}},
+          actor_id: ctx.actor_id,
+          actor_email: ctx.actor_email
+        })
+
+      captured_log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, %Ecto.Changeset{}} = Gtfs.rollback_entity(log, ctx)
+        end)
+
+      assert captured_log =~ "change_log_id=#{log.id}"
+      assert captured_log =~ "entity_type=stop"
+      assert captured_log =~ "entity_id=#{stop.id}"
+      assert captured_log =~ "errors="
+      assert captured_log =~ "location_type"
+    end
+
     test "broadcasts entity update after successful rollback", %{ctx: ctx} do
       :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
 

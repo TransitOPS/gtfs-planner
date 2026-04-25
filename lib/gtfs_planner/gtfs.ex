@@ -3503,7 +3503,7 @@ defmodule GtfsPlanner.Gtfs do
     log
     |> rollback_multi(audit_ctx, entity, update_attrs)
     |> Repo.transaction()
-    |> handle_rollback_transaction_result()
+    |> handle_rollback_transaction_result(log)
   end
 
   defp rollback_multi(log, audit_ctx, entity, update_attrs) do
@@ -3516,16 +3516,27 @@ defmodule GtfsPlanner.Gtfs do
     end)
   end
 
-  defp handle_rollback_transaction_result({:ok, %{update_entity: updated_entity}}) do
+  defp handle_rollback_transaction_result({:ok, %{update_entity: updated_entity}}, _log) do
     broadcast({:ok, updated_entity}, broadcast_topic_for(updated_entity))
     {:ok, updated_entity}
   end
 
-  defp handle_rollback_transaction_result({:error, :update_entity, reason, _changes}) do
+  defp handle_rollback_transaction_result(
+         {:error, :update_entity, %Ecto.Changeset{} = changeset, _changes},
+         log
+       ) do
+    Logger.error(
+      "Rollback update failed change_log_id=#{log.id} entity_type=#{log.entity_type} entity_id=#{log.entity_id} errors=#{inspect(changeset.errors)}"
+    )
+
+    {:error, changeset}
+  end
+
+  defp handle_rollback_transaction_result({:error, :update_entity, reason, _changes}, _log) do
     {:error, reason}
   end
 
-  defp handle_rollback_transaction_result({:error, :rollback_log, reason, _changes}) do
+  defp handle_rollback_transaction_result({:error, :rollback_log, reason, _changes}, _log) do
     Logger.error("Failed to insert rollback change_log: #{inspect(reason)}")
     {:error, :rollback_log_failed}
   end
