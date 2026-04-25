@@ -3446,6 +3446,15 @@ defmodule GtfsPlanner.Gtfs do
 
   defp fill_snapshot_from_changed_fields(snapshot, _changed_fields), do: snapshot
 
+  @spec sanitize_rollback_snapshot(String.t(), map()) :: map()
+  defp sanitize_rollback_snapshot(entity_type, snapshot) when is_map(snapshot) do
+    reversible_fields = reversible_fields_for(entity_type)
+
+    Map.filter(snapshot, fn {key, _value} ->
+      to_string(key) in reversible_fields
+    end)
+  end
+
   defp rollback_entity_for_log(log) do
     case Repo.get(entity_module_for(log.entity_type), log.entity_id) do
       nil -> {:error, :entity_not_found}
