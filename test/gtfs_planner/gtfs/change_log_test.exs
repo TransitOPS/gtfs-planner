@@ -582,6 +582,107 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert {:error, :entity_not_found} = Gtfs.rollback_entity(log, ctx)
     end
 
+    test "rolling back a coordinate-only stop update restores diagram_coordinate", %{ctx: ctx} do
+      original_coordinate = %{"x" => 12.5, "y" => 34.0}
+      moved_coordinate = %{"x" => 90.0, "y" => 45.25}
+
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_coord_rb",
+          stop_name: "Platform",
+          diagram_coordinate: original_coordinate
+        })
+
+      Gtfs.record_change(ctx, :stop, stop, "updated", %{
+        diagram_coordinate: moved_coordinate
+      })
+
+      {:ok, _moved} = Gtfs.update_stop(stop, %{diagram_coordinate: moved_coordinate})
+
+      log = Repo.one!(from cl in ChangeLog, where: cl.action == "updated")
+
+      {:ok, restored} = Gtfs.rollback_entity(log, ctx)
+      assert restored.diagram_coordinate == original_coordinate
+      assert restored.stop_id == "stop_coord_rb"
+    end
+
+    test "rolling back a stop update restores diagram_coordinate and level_id", %{ctx: ctx} do
+      original_coordinate = %{"x" => 12.5, "y" => 34.0}
+      moved_coordinate = %{"x" => 90.0, "y" => 45.25}
+
+      level_a =
+        level_fixture(ctx.organization_id, ctx.gtfs_version_id, %{level_id: "L_coord_a"})
+
+      level_b =
+        level_fixture(ctx.organization_id, ctx.gtfs_version_id, %{level_id: "L_coord_b"})
+
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_coord_level_rb",
+          stop_name: "Platform",
+          diagram_coordinate: original_coordinate,
+          level_id: level_a.level_id
+        })
+
+      Gtfs.record_change(ctx, :stop, stop, "updated", %{
+        diagram_coordinate: moved_coordinate,
+        level_id: level_b.level_id
+      })
+
+      {:ok, _moved} =
+        Gtfs.update_stop(stop, %{
+          diagram_coordinate: moved_coordinate,
+          level_id: level_b.level_id
+        })
+
+      log = Repo.one!(from cl in ChangeLog, where: cl.action == "updated")
+
+      {:ok, restored} = Gtfs.rollback_entity(log, ctx)
+      assert restored.diagram_coordinate == original_coordinate
+      assert restored.level_id == level_a.level_id
+      assert restored.stop_id == "stop_coord_level_rb"
+    end
+
+    test "rolling back historical coordinate log restores from changed_fields fallback", %{
+      ctx: ctx
+    } do
+      original_coordinate = %{"x" => 12.5, "y" => 34.0}
+      moved_coordinate = %{"x" => 90.0, "y" => 45.25}
+
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_coord_legacy_rb",
+          stop_name: "Platform",
+          diagram_coordinate: original_coordinate
+        })
+
+      {:ok, moved_stop} = Gtfs.update_stop(stop, %{diagram_coordinate: moved_coordinate})
+
+      {:ok, log} =
+        Repo.insert(%ChangeLog{
+          organization_id: ctx.organization_id,
+          gtfs_version_id: ctx.gtfs_version_id,
+          station_stop_id: ctx.station_stop_id,
+          entity_type: "stop",
+          entity_id: moved_stop.id,
+          entity_external_id: moved_stop.stop_id,
+          action: "updated",
+          snapshot: %{"stop_name" => "Platform"},
+          changed_fields: %{
+            "diagram_coordinate" => %{
+              "from" => original_coordinate,
+              "to" => moved_coordinate
+            }
+          },
+          actor_id: ctx.actor_id,
+          actor_email: ctx.actor_email
+        })
+
+      {:ok, restored} = Gtfs.rollback_entity(log, ctx)
+      assert restored.diagram_coordinate == original_coordinate
+      assert restored.stop_name == "Platform"
+    end
+
     test "rolling back a stop update restores level_id", %{ctx: ctx} do
       level_a =
         level_fixture(ctx.organization_id, ctx.gtfs_version_id, %{level_id: "L_stop_a"})

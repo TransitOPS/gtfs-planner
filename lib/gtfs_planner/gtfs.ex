@@ -3230,47 +3230,39 @@ defmodule GtfsPlanner.Gtfs do
     {:error, :unauthorized}
   end
 
-  def rollback_entity(%ChangeLog{action: action}, _ctx)
-      when action in ["created", "deleted"] do
-    {:error, :cannot_rollback_create_or_delete}
-  end
-
-  def rollback_entity(%ChangeLog{action: action, snapshot: nil}, _ctx)
-      when action in ["updated", "rolled_back"] do
-    {:error, :missing_rollback_snapshot}
-  end
-
   def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
-    entity_module = entity_module_for(log.entity_type)
+    with {:ok, target_snapshot} <- rollback_target_snapshot(log) do
+      entity_module = entity_module_for(log.entity_type)
 
-    case Repo.get(entity_module, log.entity_id) do
-      nil ->
-        {:error, :entity_not_found}
+      case Repo.get(entity_module, log.entity_id) do
+        nil ->
+          {:error, :entity_not_found}
 
-      entity ->
-        update_attrs = snapshot_to_update_attrs(log.entity_type, log.snapshot)
+        entity ->
+          update_attrs = snapshot_to_update_attrs(log.entity_type, target_snapshot)
 
-        multi =
-          Ecto.Multi.new()
-          |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
-            update_entity_without_broadcast(entity, update_attrs)
-          end)
-          |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
-            insert_rollback_log(log, audit_ctx, entity)
-          end)
+          multi =
+            Ecto.Multi.new()
+            |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
+              update_entity_without_broadcast(entity, update_attrs)
+            end)
+            |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
+              insert_rollback_log(log, audit_ctx, entity)
+            end)
 
-        case Repo.transaction(multi) do
-          {:ok, %{update_entity: updated_entity}} ->
-            broadcast({:ok, updated_entity}, broadcast_topic_for(updated_entity))
-            {:ok, updated_entity}
+          case Repo.transaction(multi) do
+            {:ok, %{update_entity: updated_entity}} ->
+              broadcast({:ok, updated_entity}, broadcast_topic_for(updated_entity))
+              {:ok, updated_entity}
 
-          {:error, :update_entity, reason, _changes} ->
-            {:error, reason}
+            {:error, :update_entity, reason, _changes} ->
+              {:error, reason}
 
-          {:error, :rollback_log, reason, _changes} ->
-            Logger.error("Failed to insert rollback change_log: #{inspect(reason)}")
-            {:error, :rollback_log_failed}
-        end
+            {:error, :rollback_log, reason, _changes} ->
+              Logger.error("Failed to insert rollback change_log: #{inspect(reason)}")
+              {:error, :rollback_log_failed}
+          end
+      end
     end
   end
 
