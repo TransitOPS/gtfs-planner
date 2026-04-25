@@ -3203,6 +3203,7 @@ defmodule GtfsPlanner.Gtfs do
   def identity_fields_for("stop"), do: ~w(stop_id)
   def identity_fields_for("pathway"), do: ~w(pathway_id from_stop_id to_stop_id)
   def identity_fields_for("level"), do: ~w(level_id)
+  def identity_fields_for(_), do: []
 
   @doc """
   Builds a normalized snapshot map for a stop, pathway, or level entity.
@@ -3223,6 +3224,12 @@ defmodule GtfsPlanner.Gtfs do
   """
   @spec rollback_entity(ChangeLog.t(), AuditContext.t()) ::
           {:ok, Stop.t() | Pathway.t() | Level.t()} | {:error, atom()}
+  def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx)
+      when audit_ctx.organization_id != log.organization_id or
+             audit_ctx.gtfs_version_id != log.gtfs_version_id do
+    {:error, :unauthorized}
+  end
+
   def rollback_entity(%ChangeLog{action: action}, _ctx)
       when action in ["created", "deleted"] do
     {:error, :cannot_rollback_create_or_delete}

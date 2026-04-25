@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.ChangeLogTest do
   use GtfsPlanner.DataCase
 
+  import Ecto.Query
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -541,7 +542,9 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       assert reloaded.stop_name == "Untouched"
 
-      assert Repo.all(from cl in ChangeLog, where: cl.action == "rolled_back" and cl.id != ^log.id) ==
+      assert Repo.all(
+               from cl in ChangeLog, where: cl.action == "rolled_back" and cl.id != ^log.id
+             ) ==
                []
     end
 
@@ -617,7 +620,11 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
       log = Repo.one!(ChangeLog)
 
-      tampered_log = %{log | organization_id: nil}
+      # Tamper a field that is required by ChangeLog.changeset/2 but is NOT
+      # checked by the cross-org/version guard. This forces insert_rollback_log/3
+      # to fail inside the Multi instead of being rejected by the guard before
+      # the transaction starts.
+      tampered_log = %{log | entity_external_id: nil}
 
       assert {:error, :rollback_log_failed} = Gtfs.rollback_entity(tampered_log, ctx)
 
@@ -692,6 +699,80 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert re_restored.stop_name == "Updated"
       assert re_restored.stop_desc == "Updated desc"
       assert re_restored.stop_id == "stop_reverse"
+    end
+
+    test "rejects cross-org rollback with :unauthorized and does not mutate (R1)", %{ctx: ctx} do
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_xorg",
+          stop_name: "Original"
+        })
+
+      Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
+      log = Repo.one!(ChangeLog)
+
+      other_org = organization_fixture()
+      other_version = gtfs_version_fixture(other_org.id)
+
+      foreign_ctx = %AuditContext{
+        organization_id: other_org.id,
+        gtfs_version_id: other_version.id,
+        station_stop_id: ctx.station_stop_id,
+        actor_id: Ecto.UUID.generate(),
+        actor_email: "intruder@example.com"
+      }
+
+      assert Gtfs.rollback_entity(log, foreign_ctx) == {:error, :unauthorized}
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+      assert reloaded.stop_name == "Original"
+
+      assert Repo.all(from cl in ChangeLog, where: cl.action == "rolled_back") == []
+    end
+
+    test "rejects cross-version rollback with :unauthorized (R1)", %{ctx: ctx} do
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_xver",
+          stop_name: "Original"
+        })
+
+      Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
+      log = Repo.one!(ChangeLog)
+
+      other_version = gtfs_version_fixture(ctx.organization_id)
+
+      cross_version_ctx = %{ctx | gtfs_version_id: other_version.id}
+
+      assert Gtfs.rollback_entity(log, cross_version_ctx) == {:error, :unauthorized}
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+      assert reloaded.stop_name == "Original"
+    end
+
+    test "rolled_back log records actor identity from rollback ctx, not original log (R2)",
+         %{ctx: ctx} do
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_actor",
+          stop_name: "Original"
+        })
+
+      Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
+      original_log = Repo.one!(from cl in ChangeLog, where: cl.action == "updated")
+
+      reverter_id = Ecto.UUID.generate()
+      reverter_email = "reverter@example.com"
+
+      reverter_ctx = %{ctx | actor_id: reverter_id, actor_email: reverter_email}
+
+      {:ok, _restored} = Gtfs.rollback_entity(original_log, reverter_ctx)
+
+      rollback_log = Repo.one!(from cl in ChangeLog, where: cl.action == "rolled_back")
+      assert rollback_log.actor_id == reverter_id
+      assert rollback_log.actor_email == reverter_email
+      refute rollback_log.actor_id == original_log.actor_id
+      refute rollback_log.actor_email == original_log.actor_email
     end
   end
 

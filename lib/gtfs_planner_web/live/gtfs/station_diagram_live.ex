@@ -703,15 +703,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           level_id: active_level.level_id
         }
 
-        pre_mutation_stop = stop
-
         case Gtfs.update_stop(stop, attrs) do
-          {:ok, _updated_stop} ->
-            Gtfs.record_change(
+          {:ok, updated_stop} ->
+            maybe_record_change(
               socket.assigns.audit_ctx,
               :stop,
-              pre_mutation_stop,
-              "updated",
+              stop,
+              updated_stop,
               attrs
             )
 
@@ -827,33 +825,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              socket.assigns.platform_stop_ids
            ) do
       attrs = %{diagram_coordinate: %{"x" => parsed_x, "y" => parsed_y}}
-      pre_mutation_stop = stop
 
-      case Gtfs.update_stop(stop, attrs) do
-        {:ok, updated_stop} ->
-          Logger.debug("drag_end persisted", stop_id: id, x: parsed_x, y: parsed_y)
+      if coords_unchanged?(stop.diagram_coordinate, parsed_x, parsed_y) do
+        {:noreply, assign(socket, :dragging_stop_id, nil)}
+      else
+        case Gtfs.update_stop(stop, attrs) do
+          {:ok, updated_stop} ->
+            Logger.debug("drag_end persisted", stop_id: id, x: parsed_x, y: parsed_y)
 
-          Gtfs.record_change(
-            socket.assigns.audit_ctx,
-            :stop,
-            pre_mutation_stop,
-            "updated",
-            attrs
-          )
+            maybe_record_change(
+              socket.assigns.audit_ctx,
+              :stop,
+              stop,
+              updated_stop,
+              attrs
+            )
 
-          {:noreply,
-           socket
-           |> stream_insert(:child_stops, updated_stop)
-           |> assign(:dragging_stop_id, nil)
-           |> load_pathways_for_level(socket.assigns.active_level)}
+            {:noreply,
+             socket
+             |> stream_insert(:child_stops, updated_stop)
+             |> assign(:dragging_stop_id, nil)
+             |> load_pathways_for_level(socket.assigns.active_level)}
 
-        {:error, _changeset} ->
-          Logger.debug("drag_end failed to persist", stop_id: id)
+          {:error, _changeset} ->
+            Logger.debug("drag_end failed to persist", stop_id: id)
 
-          {:noreply,
-           socket
-           |> assign(:dragging_stop_id, nil)
-           |> put_flash(:error, "Failed to re-position stop")}
+            {:noreply,
+             socket
+             |> assign(:dragging_stop_id, nil)
+             |> put_flash(:error, "Failed to re-position stop")}
+        end
       end
     else
       _ ->
@@ -1145,8 +1146,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:ok, stop_attrs}
           end
 
-        pre_mutation_stop = stop
-
         {result, applied_attrs} =
           case stop_attrs_result do
             {:error, msg} ->
@@ -1174,7 +1173,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             Gtfs.record_change(
               socket.assigns.audit_ctx,
               :stop,
-              pre_mutation_stop,
+              stop,
               "updated",
               applied_attrs
             )
@@ -1226,14 +1225,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     org_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
-    pre_mutation_stop = Gtfs.get_stop(stop_id)
 
     case Gtfs.delete_child_stop(org_id, version_id, station_stop_id, stop_id) do
-      {:ok, _deleted_stop} ->
+      {:ok, deleted_stop} ->
         Gtfs.record_change(
           socket.assigns.audit_ctx,
           :stop,
-          pre_mutation_stop,
+          deleted_stop,
           "deleted",
           %{}
         )
@@ -1299,14 +1297,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
 
       true ->
-        pre_mutation_pathway = pathway
-
         case Gtfs.delete_pathway(pathway) do
           {:ok, _deleted_pathway} ->
             Gtfs.record_change(
               socket.assigns.audit_ctx,
               :pathway,
-              pre_mutation_pathway,
+              pathway,
               "deleted",
               %{}
             )
@@ -2140,15 +2136,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pathway_form, to_form(params))}
 
       true ->
-        pre_mutation_pathway = pathway
-
         case Gtfs.update_pathway(pathway, attrs) do
           {:ok, updated_pathway} ->
-            Gtfs.record_change(
+            maybe_record_change(
               socket.assigns.audit_ctx,
               :pathway,
-              pre_mutation_pathway,
-              "updated",
+              pathway,
+              updated_pathway,
               attrs
             )
 
@@ -2263,15 +2257,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           min_width: parse_optional_decimal(form[:min_width] && form[:min_width].value)
         }
 
-        pre_mutation_pathway = pathway
-
         case Gtfs.update_pathway(pathway, flip_attrs) do
           {:ok, updated_pathway} ->
-            Gtfs.record_change(
+            maybe_record_change(
               socket.assigns.audit_ctx,
               :pathway,
-              pre_mutation_pathway,
-              "updated",
+              pathway,
+              updated_pathway,
               flip_attrs
             )
 
@@ -2569,7 +2561,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
       :edit ->
         level = socket.assigns.active_level
-        pre_mutation_level = level
 
         level_attrs = %{
           level_id: params["level_id"],
@@ -2579,12 +2570,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         case Gtfs.update_level_with_cascade(level, level_attrs) do
           {:ok, updated_level} ->
-            Gtfs.record_change(
+            maybe_record_change(
               socket.assigns.audit_ctx,
               :level,
-              pre_mutation_level,
-              "updated",
-              level_attrs
+              level,
+              updated_level,
+              Gtfs.entity_snapshot(:level, updated_level)
             )
 
             levels_data =
@@ -2615,20 +2606,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("show_history", %{"entity-type" => type, "entity-id" => id}, socket)
       when type in ["stop", "pathway", "level"] and is_binary(id) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    if entity_belongs_to_current_station?(socket, type, id) do
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-    entries = Gtfs.list_change_logs_for_entity(organization_id, gtfs_version_id, type, id)
+      entries = Gtfs.list_change_logs_for_entity(organization_id, gtfs_version_id, type, id)
 
-    {:noreply,
-     socket
-     |> assign(:history_open_for, {type, id})
-     |> assign(:history_entries, entries)
-     |> assign(:rollback_preview, nil)}
+      {:noreply,
+       socket
+       |> assign(:history_open_for, {type, id})
+       |> assign(:history_entries, entries)
+       |> assign(:rollback_preview, nil)}
+    else
+      {:noreply, put_flash(socket, :error, "History not available for this entity.")}
+    end
   end
 
   def handle_event("show_history", _params, socket) do
-    {:noreply, put_flash(socket, :error, "Unable to load history: invalid entity type")}
+    {:noreply, put_flash(socket, :error, "Unable to load history: invalid request")}
   end
 
   @impl true
@@ -2648,16 +2643,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply, put_flash(socket, :error, "Unable to preview rollback: change log not found")}
 
       log ->
-        case rollback_preview_for(log) do
-          {:ok, preview} ->
-            {:noreply, assign(socket, :rollback_preview, preview)}
+        if rollback_log_in_current_scope?(socket, log) and
+             entity_belongs_to_current_station?(socket, log.entity_type, log.entity_id) do
+          case rollback_preview_for(log) do
+            {:ok, preview} ->
+              {:noreply, assign(socket, :rollback_preview, preview)}
 
-          {:error, :entity_not_found} ->
-            {:noreply,
-             put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")}
+            {:error, :entity_not_found} ->
+              {:noreply,
+               put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")}
 
-          {:error, _reason} ->
-            {:noreply, put_flash(socket, :error, "Unable to preview rollback")}
+            {:error, _reason} ->
+              {:noreply, put_flash(socket, :error, "Unable to preview rollback")}
+          end
+        else
+          {:noreply,
+           put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")}
         end
     end
   end
@@ -2672,20 +2673,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  # Editor-role authorization is enforced by the
+  # `{EnsureRole, :require_gtfs_access}` on_mount hook for this LiveView, which
+  # already requires the `:pathways_studio_editor` role. An in-handler role
+  # check would be redundant: if the user reaches this handler, they have
+  # already passed mount-time authorization.
   def handle_event("confirm_rollback_change_log", %{"log-id" => log_id}, socket)
       when is_binary(log_id) do
-    preview = socket.assigns.rollback_preview
-
-    cond do
-      is_nil(preview) or preview.log.id != log_id ->
-        {:noreply,
-         put_flash(
-           socket,
-           :error,
-           "This change has already been reverted or the preview is stale."
-         )}
-
-      true ->
+    case socket.assigns.rollback_preview do
+      %{log: %{id: ^log_id}} = preview ->
         case Gtfs.rollback_entity(preview.log, socket.assigns.audit_ctx) do
           {:ok, entity} ->
             {:noreply,
@@ -2701,6 +2697,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> assign(:rollback_preview, nil)
              |> put_flash(:error, rollback_error_message(reason))}
         end
+
+      _ ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "This change has already been reverted or the preview is stale."
+         )}
     end
   end
 
@@ -2713,16 +2717,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # ============================================================================
 
   defp apply_rollback_entity_refresh(socket, "stop", %Gtfs.Stop{} = stop) do
-    socket = stream_insert(socket, :child_stops, stop)
+    if stop.parent_station == socket.assigns.station.stop_id do
+      socket = stream_insert(socket, :child_stops, stop)
 
-    socket =
-      if socket.assigns.selected_stop_id == stop.id do
-        open_edit_sidebar(socket, stop, socket.assigns.pending_xy)
-      else
-        socket
-      end
+      socket =
+        if socket.assigns.selected_stop_id == stop.id do
+          open_edit_sidebar(socket, stop, nil)
+        else
+          socket
+        end
 
-    refresh_lists(socket)
+      refresh_lists(socket)
+    else
+      socket =
+        if socket.assigns.selected_stop_id == stop.id do
+          socket
+          |> assign(:selected_stop_id, nil)
+          |> assign(:active_point_id, nil)
+          |> assign(:pending_xy, nil)
+          |> assign(:editing_level, false)
+          |> assign(:child_stop_form, to_form(%{}))
+        else
+          socket
+        end
+
+      refresh_lists(socket)
+    end
   end
 
   defp apply_rollback_entity_refresh(socket, "pathway", %Gtfs.Pathway{} = pathway) do
@@ -2812,11 +2832,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         target_snapshot = stringify_keys(log.snapshot)
         identity_fields = Gtfs.identity_fields_for(log.entity_type)
 
-        field_changes =
+        all_keys =
           target_snapshot
-          |> Enum.reject(fn {key, _value} -> key in identity_fields end)
-          |> Enum.reduce([], fn {key, restored}, acc ->
+          |> Map.keys()
+          |> Kernel.++(Map.keys(current_snapshot))
+          |> Enum.uniq()
+          |> Enum.reject(&(&1 in identity_fields))
+
+        field_changes =
+          all_keys
+          |> Enum.reduce([], fn key, acc ->
             current = Map.get(current_snapshot, key)
+            restored = Map.get(target_snapshot, key)
 
             if current == restored do
               acc
@@ -2825,6 +2852,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             end
           end)
           |> Enum.reverse()
+          |> Enum.sort_by(& &1.field)
 
         {:ok,
          %{
@@ -2840,6 +2868,117 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp load_current_entity("pathway", id), do: Gtfs.get_pathway(id)
   defp load_current_entity("level", id), do: Gtfs.get_level(id)
   defp load_current_entity(_, _), do: nil
+
+  defp rollback_log_in_current_scope?(socket, log) do
+    log.organization_id == socket.assigns.current_organization.id and
+      log.gtfs_version_id == socket.assigns.current_gtfs_version.id and
+      log.station_stop_id == socket.assigns.station.stop_id
+  end
+
+  defp entity_belongs_to_current_station?(socket, "stop", id) when is_binary(id) do
+    case Gtfs.get_stop(id) do
+      nil ->
+        false
+
+      %Gtfs.Stop{} = stop ->
+        stop.parent_station == socket.assigns.station.stop_id or
+          MapSet.member?(socket.assigns.platform_stop_ids, stop.parent_station)
+    end
+  end
+
+  defp entity_belongs_to_current_station?(socket, "pathway", id) when is_binary(id) do
+    case Gtfs.get_pathway(id) do
+      nil ->
+        false
+
+      pathway ->
+        organization_id = socket.assigns.current_organization.id
+        gtfs_version_id = socket.assigns.current_gtfs_version.id
+        station_stop_id = socket.assigns.station.stop_id
+        platform_stop_ids = socket.assigns.platform_stop_ids
+
+        from_stop =
+          Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, pathway.from_stop_id)
+
+        to_stop =
+          Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, pathway.to_stop_id)
+
+        endpoint_matches?(from_stop, station_stop_id, platform_stop_ids) or
+          endpoint_matches?(to_stop, station_stop_id, platform_stop_ids)
+    end
+  end
+
+  defp entity_belongs_to_current_station?(socket, "level", id) when is_binary(id) do
+    Enum.any?(socket.assigns.levels, fn level -> level.id == id end)
+  end
+
+  defp entity_belongs_to_current_station?(_socket, _type, _id), do: false
+
+  defp endpoint_matches?(nil, _station_stop_id, _platform_stop_ids), do: false
+
+  defp endpoint_matches?(%Gtfs.Stop{} = stop, station_stop_id, platform_stop_ids) do
+    stop.parent_station == station_stop_id or
+      MapSet.member?(platform_stop_ids, stop.parent_station)
+  end
+
+  # Records an "updated" change log entry only if the persisted entity actually
+  # differs from the pre-mutation entity. Skips no-op writes that would otherwise
+  # produce empty diff log rows.
+  #
+  # Compares each `attrs` key against the pre-entity value rather than relying
+  # solely on snapshot equality — some tracked fields (e.g. `:diagram_coordinate`)
+  # are not part of the rollback snapshot but still represent meaningful changes.
+  defp maybe_record_change(audit_ctx, entity_type, pre_entity, post_entity, attrs)
+       when is_map(attrs) do
+    if no_op_change?(pre_entity, post_entity, attrs) do
+      :ok
+    else
+      Gtfs.record_change(audit_ctx, entity_type, pre_entity, "updated", attrs)
+    end
+  end
+
+  defp no_op_change?(_pre_entity, _post_entity, attrs) when map_size(attrs) == 0, do: true
+
+  defp no_op_change?(pre_entity, _post_entity, attrs) do
+    Enum.all?(attrs, fn {key, new_value} ->
+      pre_value = entity_field(pre_entity, key)
+      normalize_compare(pre_value) == normalize_compare(new_value)
+    end)
+  end
+
+  defp entity_field(nil, _key), do: nil
+
+  defp entity_field(entity, key) when is_atom(key) do
+    Map.get(entity, key)
+  end
+
+  defp entity_field(entity, key) when is_binary(key) do
+    case safe_to_existing_atom(key) do
+      {:ok, atom} -> Map.get(entity, atom)
+      :error -> nil
+    end
+  end
+
+  defp safe_to_existing_atom(str) do
+    {:ok, String.to_existing_atom(str)}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp normalize_compare(%Decimal{} = d), do: Decimal.to_string(d)
+  defp normalize_compare(value), do: value
+
+  defp coords_unchanged?(%{"x" => current_x, "y" => current_y}, parsed_x, parsed_y) do
+    coord_equal?(current_x, parsed_x) and coord_equal?(current_y, parsed_y)
+  end
+
+  defp coords_unchanged?(_other, _parsed_x, _parsed_y), do: false
+
+  defp coord_equal?(a, b) when is_number(a) and is_number(b), do: a == b
+
+  defp coord_equal?(a, b) do
+    to_string(a) == to_string(b)
+  end
 
   defp stringify_keys(nil), do: %{}
 

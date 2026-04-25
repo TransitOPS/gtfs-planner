@@ -1,6 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
   use GtfsPlannerWeb.ConnCase
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
@@ -8420,8 +8421,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert created
 
-      import Ecto.Query
-
       logs =
         Repo.all(
           from(cl in GtfsPlanner.Gtfs.ChangeLog,
@@ -8709,8 +8708,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       [pathway] =
         Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
 
-      import Ecto.Query
-
       logs =
         Repo.all(
           from(cl in GtfsPlanner.Gtfs.ChangeLog,
@@ -8770,8 +8767,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert length(pair) == 2
 
       second = Enum.find(pair, &(&1.id != first.id))
-
-      import Ecto.Query
 
       logs =
         Repo.all(
@@ -8988,8 +8983,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert created
 
-      import Ecto.Query
-
       logs =
         Repo.all(
           from(cl in GtfsPlanner.Gtfs.ChangeLog,
@@ -9061,8 +9054,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> form("#level-form", %{"existing_level_id" => other_level.id})
       |> render_submit()
 
-      import Ecto.Query
-
       logs =
         Repo.all(
           from(cl in GtfsPlanner.Gtfs.ChangeLog,
@@ -9088,8 +9079,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
       render_hook(view, "remove_level_from_station", %{"id" => level.id})
-
-      import Ecto.Query
 
       logs =
         Repo.all(
@@ -9232,7 +9221,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
         })
 
-      pathway = pathway_fixture(organization.id, gtfs_version.id, stop_a.id, stop_b.id)
+      pathway = pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
 
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
       :ok = Gtfs.record_change(ctx, :pathway, pathway, "updated", %{length: 50.0})
@@ -9331,7 +9320,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           "entity-id" => Ecto.UUID.generate()
         })
 
-      assert result =~ "invalid entity type"
+      assert result =~ "invalid request"
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.history_open_for == nil
@@ -9723,7 +9712,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       pathway =
-        pathway_fixture(organization.id, gtfs_version.id, stop_a.id, stop_b.id, %{
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
           traversal_time: 30
         })
 
@@ -9977,8 +9966,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       install_preview(view, preview)
 
-      import Ecto.Query
-
       before_stop = Gtfs.get_stop!(stop.id)
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
 
@@ -10060,8 +10047,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # Delete the entity out from under the preview.
       {:ok, _} = Repo.delete(Gtfs.get_stop!(stop.id))
 
-      import Ecto.Query
-
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
 
       before_rolled_back =
@@ -10128,8 +10113,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      # Tamper the preview's log so insert_rollback_log/3 fails validate_required.
-      tampered_log = %{log | organization_id: nil}
+      # Tamper a non-authorization field so insert_rollback_log/3 fails inside
+      # the transaction (validate_required on entity_external_id) without
+      # tripping the cross-org/version guard before the Multi runs.
+      tampered_log = %{log | entity_external_id: nil}
 
       preview = %{
         log: tampered_log,
@@ -10141,8 +10128,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
 
       install_preview(view, preview)
-
-      import Ecto.Query
 
       before_stop = Gtfs.get_stop!(stop.id)
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
@@ -10223,8 +10208,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       install_preview(view, preview)
 
-      import Ecto.Query
-
       before_stop = Gtfs.get_stop!(stop.id)
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
 
@@ -10301,8 +10284,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
 
       install_preview(view, preview)
-
-      import Ecto.Query
 
       before_stop = Gtfs.get_stop!(stop.id)
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
@@ -10457,9 +10438,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           rollback_preview: preview
         )
 
-      assert html =~ ~s(id="rollback-preview")
-      assert html =~ ~s(id="rollback-preview-cancel")
-      assert html =~ ~s(id="rollback-preview-confirm")
+      assert html =~ ~s(id="rollback-preview-stop")
+      assert html =~ ~s(id="rollback-preview-cancel-stop")
+      assert html =~ ~s(id="rollback-preview-confirm-stop")
     end
 
     test "does not render rollback_preview when it does not match any listed entry" do
@@ -10481,7 +10462,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           rollback_preview: preview
         )
 
-      refute html =~ ~s(id="rollback-preview")
+      refute html =~ ~s(id="rollback-preview-stop")
     end
   end
 
@@ -10502,7 +10483,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
 
       html =
-        render_component(&StationDiagramComponents.rollback_preview/1, rollback_preview: preview)
+        render_component(&StationDiagramComponents.rollback_preview/1,
+          rollback_preview: preview,
+          entity_type: "stop"
+        )
 
       assert html =~ "Revert these changes?"
       assert html =~ "stop_name"
@@ -10510,10 +10494,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "Red Line"
       assert html =~ "location_type"
 
-      assert html =~ ~s(id="rollback-preview-cancel")
+      assert html =~ ~s(id="rollback-preview-cancel-stop")
       assert html =~ ~s(phx-click="cancel_rollback_preview")
 
-      assert html =~ ~s(id="rollback-preview-confirm")
+      assert html =~ ~s(id="rollback-preview-confirm-stop")
       assert html =~ ~s(phx-click="confirm_rollback_change_log")
       assert html =~ ~s(phx-value-log-id="#{log.id}")
     end
@@ -10749,6 +10733,813 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute has_element?(view, "#level-tab-details")
       refute has_element?(view, "#level-tab-history")
+    end
+  end
+
+  describe "StationDiagramLive - cross-station show_history rejection (R3)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "XSTATION_A",
+          stop_name: "Station A",
+          location_type: 1
+        })
+
+      station_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "XSTATION_B",
+          stop_name: "Station B",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "XSTATION_L",
+          level_name: "L",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_a.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "x.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station_a: station_a,
+        station_b: station_b,
+        level: level
+      }
+    end
+
+    test "show_history for an entity in a different station is rejected", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_a: station_a,
+      station_b: station_b,
+      level: level
+    } do
+      stop_in_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "XSTATION_B_CHILD",
+          stop_name: "B Child",
+          location_type: 0,
+          parent_station: station_b.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 1.0, "y" => 1.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station_a.stop_id}/diagram", on_error: :warn)
+
+      result =
+        render_hook(view, "show_history", %{
+          "entity-type" => "stop",
+          "entity-id" => stop_in_b.id
+        })
+
+      assert result =~ "History not available for this entity."
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == nil
+      assert state.socket.assigns.history_entries == []
+    end
+  end
+
+  describe "StationDiagramLive - cross-station preview rejection (R4)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PR_STATION_A",
+          stop_name: "Preview A",
+          location_type: 1
+        })
+
+      station_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PR_STATION_B",
+          stop_name: "Preview B",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PR_L",
+          level_name: "L",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_a.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "p.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station_a: station_a,
+        station_b: station_b,
+        level: level
+      }
+    end
+
+    test "preview_rollback_change_log for a log scoped to another station is rejected", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_a: station_a,
+      station_b: station_b,
+      level: level
+    } do
+      stop_in_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PR_B_CHILD",
+          stop_name: "B Child",
+          location_type: 0,
+          parent_station: station_b.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 2.0, "y" => 2.0}
+        })
+
+      ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station_b.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      :ok = Gtfs.record_change(ctx, :stop, stop_in_b, "updated", %{stop_name: "Renamed B"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop_in_b.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station_a.stop_id}/diagram", on_error: :warn)
+
+      result = render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      assert result =~ "entity no longer exists" or result =~ "Unable to preview rollback"
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+    end
+  end
+
+  describe "StationDiagramLive - rollback preview diff completeness (R5)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIFFCOMPL_STATION",
+          stop_name: "Diff Compl",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "DIFFCOMPL_L",
+          level_name: "L",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diff.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "preview surfaces fields present on entity but absent from snapshot", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIFFCOMPL_STOP",
+          stop_name: "Original",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 5.0, "y" => 6.0},
+          wheelchair_boarding: 1
+        })
+
+      ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Renamed"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      # Drop a non-identity, non-changed field from the stored snapshot to
+      # simulate older logs missing keys the current entity now has.
+      pruned_snapshot = Map.delete(log.snapshot, "wheelchair_boarding")
+
+      log
+      |> Ecto.Changeset.change(%{snapshot: pruned_snapshot})
+      |> Repo.update!()
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      state = :sys.get_state(view.pid)
+      preview = state.socket.assigns.rollback_preview
+      assert is_map(preview)
+
+      wb_change = Enum.find(preview.field_changes, &(&1.field == "wheelchair_boarding"))
+      assert wb_change, "expected wheelchair_boarding in field_changes"
+      assert wb_change.restored == nil
+      assert wb_change.current == 1
+    end
+  end
+
+  # R6 (editor-role enforcement on confirm_rollback_change_log): the
+  # StationDiagramLive on_mount hook (`{EnsureRole, :require_gtfs_access}`)
+  # already gates the entire LiveView behind the `:pathways_studio_editor`
+  # role, so a defense-in-depth in-handler check is unreachable in practice.
+  # The redundant check was removed from production code rather than adding
+  # a test that cannot exercise the rejection path.
+
+  # R2 (rollback log actor identity): see change_log_test.exs for the unit-
+  # level coverage; no LiveView mirror is needed.
+
+  describe "StationDiagramLive - non-binary log-id fallback (R11)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "FB_STATION",
+          stop_name: "FB",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "FB_L",
+          level_name: "L",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "fb.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station
+      }
+    end
+
+    test "confirm_rollback_change_log with non-binary log-id returns fallback flash", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => 123})
+
+      assert result =~ "invalid parameters"
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+    end
+  end
+
+  describe "StationDiagramLive - no-op record_change suppression (R8)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NOOP_STATION",
+          stop_name: "Noop",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "NOOP_L",
+          level_name: "Noop Level",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "noop.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "drag_end with unchanged coordinates does not insert a change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NOOP_DRAG",
+          stop_name: "Noop Drag",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 50.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(stop.id)})
+
+      render_hook(view, "drag_end", %{
+        "id" => to_string(stop.id),
+        "x" => "40.0",
+        "y" => "50.0"
+      })
+
+      logs =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      assert logs == []
+    end
+
+    test "level edit submitting unchanged values does not insert a change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_click(element(view, "button[phx-click='open_edit_level']"))
+
+      view
+      |> form("#level-form", %{
+        "level_id" => level.level_id,
+        "level_name" => level.level_name,
+        "level_index" => Integer.to_string(trunc(level.level_index))
+      })
+      |> render_submit()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "level", level.id)
+
+      assert logs == []
+    end
+  end
+
+  describe "StationDiagramComponents - falsy-value diff rendering (R9)" do
+    alias GtfsPlannerWeb.Gtfs.StationDiagramComponents
+
+    test "renders 0 -> 1 instead of em-dash for location_type" do
+      entry = %GtfsPlanner.Gtfs.ChangeLog{
+        id: Ecto.UUID.generate(),
+        action: "updated",
+        actor_email: "e@x.com",
+        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
+        snapshot: %{"location_type" => 0},
+        changed_fields: %{"location_type" => %{"from" => 0, "to" => 1}}
+      }
+
+      html = render_component(&StationDiagramComponents.change_diff/1, entry: entry)
+
+      assert html =~ "location_type"
+      assert html =~ "0"
+      assert html =~ "1"
+      refute html =~ "—"
+    end
+
+    test "renders false -> true for wheelchair_boarding" do
+      entry = %GtfsPlanner.Gtfs.ChangeLog{
+        id: Ecto.UUID.generate(),
+        action: "updated",
+        actor_email: "e@x.com",
+        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
+        snapshot: %{"wheelchair_boarding" => false},
+        changed_fields: %{"wheelchair_boarding" => %{"from" => false, "to" => true}}
+      }
+
+      html = render_component(&StationDiagramComponents.change_diff/1, entry: entry)
+
+      assert html =~ "wheelchair_boarding"
+      assert html =~ "false"
+      assert html =~ "true"
+    end
+
+    test "renders nil -> 5 with em-dash for nil but value for 5" do
+      entry = %GtfsPlanner.Gtfs.ChangeLog{
+        id: Ecto.UUID.generate(),
+        action: "updated",
+        actor_email: "e@x.com",
+        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
+        snapshot: %{},
+        changed_fields: %{"some_int" => %{"from" => nil, "to" => 5}}
+      }
+
+      html = render_component(&StationDiagramComponents.change_diff/1, entry: entry)
+
+      assert html =~ "some_int"
+      assert html =~ "5"
+      assert html =~ "nil"
+    end
+  end
+
+  describe "StationDiagramLive - history tab toggling for pathway and level (R10)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TOG_STATION",
+          stop_name: "Tog Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "TOG_L1",
+          level_name: "Tog Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "tog.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "pathway history tab opens and details tab closes the panel", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TOG_PW_A",
+          stop_name: "A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 4.0, "y" => 4.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TOG_PW_B",
+          stop_name: "B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 8.0, "y" => 8.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view |> element("#pathways-#{pathway.id}") |> render_click()
+
+      assert has_element?(view, "#pathway-tab-details[aria-selected='true']")
+
+      view |> element("#pathway-tab-history") |> render_click()
+
+      assert has_element?(view, "#pathway-panel-history")
+      assert has_element?(view, "#pathway-tab-history[aria-selected='true']")
+
+      view |> element("#pathway-tab-details") |> render_click()
+
+      assert has_element?(view, "#pathway-tab-details[aria-selected='true']")
+    end
+
+    test "level history tab opens and details tab closes the panel", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_click(element(view, "button[phx-click='open_edit_level']"))
+
+      assert has_element?(view, "#level-tab-details[aria-selected='true']")
+
+      view |> element("#level-tab-history") |> render_click()
+
+      assert has_element?(view, "#level-panel-history")
+      assert has_element?(view, "#level-tab-history[aria-selected='true']")
+
+      view |> element("#level-tab-details") |> render_click()
+
+      assert has_element?(view, "#level-tab-details[aria-selected='true']")
+    end
+  end
+
+  describe "StationDiagramLive - rolled-back stop moved across stations (R7)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "RB_MOVE_A",
+          stop_name: "Move A",
+          location_type: 1
+        })
+
+      station_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "RB_MOVE_B",
+          stop_name: "Move B",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "RB_MOVE_L",
+          level_name: "L",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_a.id,
+          level_id: level.id
+        })
+
+      stop_level =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "rbmove.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station_a: station_a,
+        station_b: station_b,
+        level: level
+      }
+    end
+
+    test "rolling back a stop moved into station A back to station B drops it from current view",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station_a: station_a,
+           station_b: station_b,
+           level: level
+         } do
+      # Stop currently lives in station A; its prior snapshot has parent_station = B.
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "RB_MOVE_STOP",
+          stop_name: "Mover",
+          location_type: 0,
+          parent_station: station_a.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 5.0, "y" => 5.0}
+        })
+
+      ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station_a.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      # Synthesize an "updated" log whose snapshot points the stop back to station B.
+      {:ok, log} =
+        Repo.insert(%GtfsPlanner.Gtfs.ChangeLog{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          station_stop_id: station_a.stop_id,
+          entity_type: "stop",
+          entity_id: stop.id,
+          entity_external_id: stop.stop_id,
+          action: "updated",
+          snapshot: %{
+            "stop_name" => "Mover",
+            "stop_desc" => nil,
+            "stop_lat" => "0",
+            "stop_lon" => "0",
+            "location_type" => 0,
+            "wheelchair_boarding" => 0,
+            "platform_code" => nil,
+            "parent_station" => station_b.stop_id,
+            "level_id" => level.level_id
+          },
+          changed_fields: %{
+            "parent_station" => %{"from" => station_b.stop_id, "to" => station_a.stop_id}
+          },
+          actor_id: ctx.actor_id,
+          actor_email: ctx.actor_email
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station_a.stop_id}/diagram", on_error: :warn)
+
+      # Open edit drawer for the stop (so we can assert it closes).
+      view
+      |> element("#child-stop-row-#{stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert :sys.get_state(view.pid).socket.assigns.selected_stop_id == stop.id
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert result =~ "Change reverted."
+
+      reloaded = Gtfs.get_stop!(stop.id)
+      assert reloaded.parent_station == station_b.stop_id
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.selected_stop_id == nil
+      assert state.socket.assigns.rollback_preview == nil
     end
   end
 end

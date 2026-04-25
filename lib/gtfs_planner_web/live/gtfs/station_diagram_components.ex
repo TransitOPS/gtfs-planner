@@ -2149,7 +2149,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         history_active={@history_active}
       />
 
-      <div :if={!@history_active}>
+      <div
+        id="stop-panel-details"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "stop-tab-details"}
+        hidden={@history_active}
+      >
         <.reposition_stop_view
           :if={@pending_xy && @reposition_mode && @selected_stop_id == nil}
           reposition_stops={@reposition_stops}
@@ -2170,8 +2175,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         />
       </div>
 
-      <div :if={@history_active}>
+      <div
+        id="stop-panel-history"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "stop-tab-history"}
+        hidden={!@history_active}
+      >
         <.change_log_list
+          :if={@history_active}
           entries={@history_entries}
           entity_type="stop"
           rollback_preview={@rollback_preview}
@@ -2800,16 +2811,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   def pathway_drawer(assigns) do
     pathway_id = assigns.editing_pathway && Map.get(assigns.editing_pathway, :id)
-    show_history_tab = assigns.open and not is_nil(pathway_id)
+    show_history_tabs = assigns.open and not is_nil(pathway_id)
 
     history_active =
-      show_history_tab and assigns.history_open_for == {"pathway", pathway_id}
+      show_history_tabs and assigns.history_open_for == {"pathway", pathway_id}
 
     assigns =
       assigns
-      |> assign(:pathway_uuid, pathway_id)
-      |> assign(:show_history_tab, show_history_tab)
+      |> assign(:show_history_tabs, show_history_tabs)
       |> assign(:history_active, history_active)
+      |> assign(:pathway_id, pathway_id)
 
     ~H"""
     <.drawer
@@ -2879,13 +2890,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </:header_actions>
 
       <.history_tab_strip
-        :if={@show_history_tab}
+        :if={@show_history_tabs}
         entity_type="pathway"
-        entity_id={@pathway_uuid}
+        entity_id={@pathway_id}
         history_active={@history_active}
       />
 
-      <div :if={!@history_active}>
+      <div
+        id="pathway-panel-details"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "pathway-tab-details"}
+        hidden={@history_active}
+      >
         <.pathway_preview
           :if={@open and @editing_pathway}
           editing_pathway={@editing_pathway}
@@ -2903,8 +2919,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         />
       </div>
 
-      <div :if={@history_active}>
+      <div
+        id="pathway-panel-history"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "pathway-tab-history"}
+        hidden={!@history_active}
+      >
         <.change_log_list
+          :if={@history_active}
           entries={@history_entries}
           entity_type="pathway"
           rollback_preview={@rollback_preview}
@@ -3468,18 +3490,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         history_active={@history_active}
       />
 
-      <.level_form
-        :if={@show_level_modal && !@history_active}
-        level_form={@level_form}
-        show_level_modal={@show_level_modal}
-        available_levels={@available_levels}
-        level_mode={@level_mode}
-        editing_level_uuid={@editing_level_uuid}
-        level_shared={@level_shared}
-      />
+      <div
+        id="level-panel-details"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "level-tab-details"}
+        hidden={@history_active}
+      >
+        <.level_form
+          :if={@show_level_modal}
+          level_form={@level_form}
+          show_level_modal={@show_level_modal}
+          available_levels={@available_levels}
+          level_mode={@level_mode}
+          editing_level_uuid={@editing_level_uuid}
+          level_shared={@level_shared}
+        />
+      </div>
 
-      <div :if={@history_active}>
+      <div
+        id="level-panel-history"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "level-tab-history"}
+        hidden={!@history_active}
+      >
         <.change_log_list
+          :if={@history_active}
           entries={@history_entries}
           entity_type="level"
           rollback_preview={@rollback_preview}
@@ -4410,8 +4445,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         id={"#{@entity_type}-tab-details"}
         type="button"
         role="tab"
-        phx-click="hide_history"
+        phx-click={if @history_active, do: "hide_history"}
         aria-selected={if @history_active, do: "false", else: "true"}
+        aria-controls={"#{@entity_type}-panel-details"}
         class={[
           "btn btn-sm btn-ghost rounded-none border-b-2",
           if(@history_active, do: "border-transparent", else: "border-primary")
@@ -4423,10 +4459,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         id={"#{@entity_type}-tab-history"}
         type="button"
         role="tab"
-        phx-click="show_history"
+        phx-click={if @history_active, do: nil, else: "show_history"}
         phx-value-entity-type={@entity_type}
         phx-value-entity-id={@entity_id}
         aria-selected={if @history_active, do: "true", else: "false"}
+        aria-controls={"#{@entity_type}-panel-history"}
         class={[
           "btn btn-sm btn-ghost rounded-none border-b-2",
           if(@history_active, do: "border-primary", else: "border-transparent")
@@ -4478,7 +4515,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </ul>
 
         <div :if={preview_matches_list?(@rollback_preview, @entity_type, @entries)}>
-          <.rollback_preview rollback_preview={@rollback_preview} />
+          <.rollback_preview rollback_preview={@rollback_preview} entity_type={@entity_type} />
         </div>
       <% end %>
     </div>
@@ -4503,10 +4540,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   attr :rollback_preview, :map, required: true
+  attr :entity_type, :string, required: true
 
   def rollback_preview(assigns) do
     ~H"""
-    <div id="rollback-preview" class="border border-base-300 p-3 space-y-2">
+    <div id={"rollback-preview-#{@entity_type}"} class="border border-base-300 p-3 space-y-2">
       <p class="text-sm font-medium">Revert these changes?</p>
 
       <ul class="space-y-0.5 text-xs text-base-content/80">
@@ -4520,7 +4558,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
       <div class="flex gap-2">
         <button
-          id="rollback-preview-cancel"
+          id={"rollback-preview-cancel-#{@entity_type}"}
           type="button"
           class="btn btn-xs btn-ghost"
           phx-click="cancel_rollback_preview"
@@ -4528,7 +4566,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           Cancel
         </button>
         <button
-          id="rollback-preview-confirm"
+          id={"rollback-preview-confirm-#{@entity_type}"}
           type="button"
           class="btn btn-xs btn-primary"
           phx-click="confirm_rollback_change_log"
@@ -4564,14 +4602,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     |> Enum.map(fn {field, change} ->
       %{
         field: to_string(field),
-        from: truncate_value(Map.get(change, "from") || Map.get(change, :from)),
-        to: truncate_value(Map.get(change, "to") || Map.get(change, :to))
+        from: render_diff_value(change, "from", :from),
+        to: render_diff_value(change, "to", :to)
       }
     end)
     |> Enum.sort_by(& &1.field)
   end
 
   defp diff_rows(_entry), do: []
+
+  defp render_diff_value(change, string_key, atom_key) do
+    case Map.get(change, string_key, :__missing__) do
+      :__missing__ ->
+        case Map.get(change, atom_key, :__missing__) do
+          :__missing__ -> "—"
+          value -> render_present_value(value)
+        end
+
+      value ->
+        render_present_value(value)
+    end
+  end
+
+  defp render_present_value(nil), do: "nil"
+  defp render_present_value(value), do: truncate_value(value)
 
   defp truncate_value(nil), do: "—"
   defp truncate_value(value) when is_binary(value), do: truncate_string(value)
