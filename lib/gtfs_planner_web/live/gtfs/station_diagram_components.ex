@@ -4498,7 +4498,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <li :for={entry <- @entries} id={"history-entry-#{entry.id}"} class="py-2 space-y-1">
             <div class="flex items-baseline justify-between gap-2">
               <div class="flex items-baseline gap-2 text-sm">
-                <span class="font-medium">{entry.action}</span>
+                <span class="font-medium">{history_action_label(entry)}</span>
                 <span
                   :if={reverted_entry?(entry, @rollback_by_original_id)}
                   class="badge badge-neutral badge-xs"
@@ -4521,7 +4521,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 phx-click="preview_rollback_change_log"
                 phx-value-log-id={entry.id}
               >
-                Revert change
+                {rollback_button_label(entry)}
               </button>
             </div>
           </li>
@@ -4616,6 +4616,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp show_rollback_action?(entry, rollback_by_original_id) do
     rollback_eligible?(entry) and not reverted_entry?(entry, rollback_by_original_id)
   end
+
+  defp history_action_label(%{action: "rolled_back"}), do: "Reverted"
+  defp history_action_label(%{action: action}), do: action
+
+  defp rollback_button_label(%{action: "rolled_back"}), do: "Restore change"
+  defp rollback_button_label(_entry), do: "Revert change"
 
   defp preview_matches_list?(nil, _entity_type, _entries), do: false
 

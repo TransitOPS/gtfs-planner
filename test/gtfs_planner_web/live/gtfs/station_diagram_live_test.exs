@@ -10614,7 +10614,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ ~s(phx-value-log-id="#{rollback.id}")
     end
 
-    test "rolled_back entry with snapshot renders Revert change button" do
+    test "rolled_back entry renders readable label and Restore change button" do
       entry = build_log(%{action: "rolled_back"})
 
       html =
@@ -10625,7 +10625,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         )
 
       assert html =~ ~s(id="history-pathway")
-      assert html =~ "Revert change"
+      assert html =~ "Reverted"
+      refute html =~ "rolled_back"
+      assert html =~ "Restore change"
+      refute html =~ "Revert change"
     end
 
     test "created entry does not render Revert change button" do
