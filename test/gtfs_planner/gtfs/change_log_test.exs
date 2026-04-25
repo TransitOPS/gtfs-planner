@@ -410,6 +410,9 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
         stop_desc: "New desc"
       })
 
+      {:ok, _changed_stop} =
+        Gtfs.update_stop(stop, %{stop_name: "Changed", stop_desc: "New desc"})
+
       log = Repo.one!(ChangeLog)
 
       {:ok, restored} = Gtfs.rollback_entity(log, ctx)
@@ -421,6 +424,29 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert length(rollback_logs) == 1
       assert hd(rollback_logs).rolled_back_to_log_id == log.id
       assert hd(rollback_logs).entity_id == stop.id
+    end
+
+    test "rejects no-op rollback without updating entity or inserting rolled_back entry", %{
+      ctx: ctx
+    } do
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_noop_rb",
+          stop_name: "Original",
+          stop_desc: "Original desc"
+        })
+
+      Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
+      log = Repo.one!(ChangeLog)
+      before_rollback = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+
+      assert {:error, :already_matches_current} = Gtfs.rollback_entity(log, ctx)
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+      assert reloaded.stop_name == "Original"
+      assert reloaded.stop_desc == "Original desc"
+      assert reloaded.updated_at == before_rollback.updated_at
+      assert Repo.all(from cl in ChangeLog, where: cl.action == "rolled_back") == []
     end
 
     test "restores pathway fields from snapshot", %{ctx: ctx} do
@@ -439,6 +465,9 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
         signposted_as: "To Exit",
         traversal_time: 90
       })
+
+      {:ok, _changed_pathway} =
+        Gtfs.update_pathway(pw, %{signposted_as: "To Exit", traversal_time: 90})
 
       log = Repo.one!(ChangeLog)
 
@@ -460,6 +489,9 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
         level_name: "Changed Level",
         level_index: 2.0
       })
+
+      {:ok, _changed_level} =
+        Gtfs.update_level(level, %{level_name: "Changed Level", level_index: 2.0})
 
       log = Repo.one!(ChangeLog)
 
@@ -719,6 +751,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       original_level_id = level.level_id
 
       Gtfs.record_change(ctx, :level, level, "updated", %{level_name: "Changed"})
+      {:ok, _changed_level} = Gtfs.update_level(level, %{level_name: "Changed"})
       log = Repo.one!(ChangeLog)
 
       tampered_log = %{log | snapshot: Map.put(log.snapshot, "level_id", "hacked_level")}
@@ -729,8 +762,6 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "does not broadcast or mutate entity when rollback log insertion fails", %{ctx: ctx} do
-      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
-
       stop =
         stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
           stop_id: "stop_nobcast",
@@ -739,7 +770,10 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
         })
 
       Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
+      {:ok, _changed_stop} = Gtfs.update_stop(stop, %{stop_name: "Changed"})
       log = Repo.one!(ChangeLog)
+      before_rollback = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
 
       # Tamper a field that is required by ChangeLog.changeset/2 but is NOT
       # checked by the cross-org/version guard. This forces insert_rollback_log/3
@@ -750,8 +784,9 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert {:error, :rollback_log_failed} = Gtfs.rollback_entity(tampered_log, ctx)
 
       reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
-      assert reloaded.stop_name == "Original"
-      assert reloaded.stop_desc == "Original desc"
+      assert reloaded.stop_name == before_rollback.stop_name
+      assert reloaded.stop_desc == before_rollback.stop_desc
+      assert reloaded.updated_at == before_rollback.updated_at
 
       refute_receive {[:stops, :updated], _}
     end
@@ -766,6 +801,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
         })
 
       Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
+      {:ok, _changed_stop} = Gtfs.update_stop(stop, %{stop_name: "Changed"})
       log = Repo.one!(ChangeLog)
 
       {:ok, restored} = Gtfs.rollback_entity(log, ctx)
@@ -783,6 +819,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       original_stop_id = stop.stop_id
 
       Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
+      {:ok, _changed_stop} = Gtfs.update_stop(stop, %{stop_name: "Changed"})
       log = Repo.one!(ChangeLog)
 
       # Artificially set a different stop_id in snapshot to verify it is ignored
@@ -880,6 +917,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
         })
 
       Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed"})
+      {:ok, _changed_stop} = Gtfs.update_stop(stop, %{stop_name: "Changed"})
       original_log = Repo.one!(from cl in ChangeLog, where: cl.action == "updated")
 
       reverter_id = Ecto.UUID.generate()

@@ -3239,28 +3239,32 @@ defmodule GtfsPlanner.Gtfs do
           {:error, :entity_not_found}
 
         entity ->
-          update_attrs = snapshot_to_update_attrs(log.entity_type, target_snapshot)
+          if rollback_would_change_entity?(log.entity_type, entity, target_snapshot) do
+            update_attrs = snapshot_to_update_attrs(log.entity_type, target_snapshot)
 
-          multi =
-            Ecto.Multi.new()
-            |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
-              update_entity_without_broadcast(entity, update_attrs)
-            end)
-            |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
-              insert_rollback_log(log, audit_ctx, entity)
-            end)
+            multi =
+              Ecto.Multi.new()
+              |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
+                update_entity_without_broadcast(entity, update_attrs)
+              end)
+              |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
+                insert_rollback_log(log, audit_ctx, entity)
+              end)
 
-          case Repo.transaction(multi) do
-            {:ok, %{update_entity: updated_entity}} ->
-              broadcast({:ok, updated_entity}, broadcast_topic_for(updated_entity))
-              {:ok, updated_entity}
+            case Repo.transaction(multi) do
+              {:ok, %{update_entity: updated_entity}} ->
+                broadcast({:ok, updated_entity}, broadcast_topic_for(updated_entity))
+                {:ok, updated_entity}
 
-            {:error, :update_entity, reason, _changes} ->
-              {:error, reason}
+              {:error, :update_entity, reason, _changes} ->
+                {:error, reason}
 
-            {:error, :rollback_log, reason, _changes} ->
-              Logger.error("Failed to insert rollback change_log: #{inspect(reason)}")
-              {:error, :rollback_log_failed}
+              {:error, :rollback_log, reason, _changes} ->
+                Logger.error("Failed to insert rollback change_log: #{inspect(reason)}")
+                {:error, :rollback_log_failed}
+            end
+          else
+            {:error, :already_matches_current}
           end
       end
     end
@@ -3418,6 +3422,23 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp fill_snapshot_from_changed_fields(snapshot, _changed_fields), do: snapshot
+
+  defp rollback_would_change_entity?(entity_type, entity, target_snapshot) do
+    current_snapshot =
+      entity_type
+      |> entity_snapshot(entity)
+      |> stringify_map_keys()
+
+    identity_fields = identity_fields_for(entity_type)
+
+    target_snapshot
+    |> stringify_map_keys()
+    |> Map.drop(identity_fields)
+    |> Enum.any?(fn {field, target_value} ->
+      current_value = Map.get(current_snapshot, field)
+      not same_value?(current_value, target_value)
+    end)
+  end
 
   defp put_missing_snapshot_field(snapshot, field, value) do
     if snapshot_field_present?(snapshot, field) do
