@@ -3205,6 +3205,48 @@ defmodule GtfsPlanner.Gtfs do
   def identity_fields_for("level"), do: ~w(level_id)
 
   @doc """
+  Returns the list of reversible field names (as strings) for an entity type.
+  """
+  @spec reversible_fields_for(String.t() | atom()) :: [String.t()]
+  def reversible_fields_for(:stop), do: reversible_fields_for("stop")
+
+  def reversible_fields_for("stop"),
+    do:
+      ~w(
+        stop_name
+        stop_desc
+        stop_lat
+        stop_lon
+        location_type
+        wheelchair_boarding
+        platform_code
+        diagram_coordinate
+        parent_station
+        level_id
+      )
+
+  def reversible_fields_for(:pathway), do: reversible_fields_for("pathway")
+
+  def reversible_fields_for("pathway"),
+    do:
+      ~w(
+        pathway_mode
+        is_bidirectional
+        traversal_time
+        length
+        stair_count
+        max_slope
+        min_width
+        signposted_as
+        reversed_signposted_as
+        field_notes
+        field_completed_at
+      )
+
+  def reversible_fields_for(:level), do: reversible_fields_for("level")
+  def reversible_fields_for("level"), do: ~w(level_name level_index)
+
+  @doc """
   Builds a normalized snapshot map for a stop, pathway, or level entity.
 
   Used by rollback preview to compare a current entity against a stored snapshot

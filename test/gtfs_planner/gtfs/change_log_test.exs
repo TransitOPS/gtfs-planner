@@ -153,6 +153,23 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
   end
 
+  describe "reversible_fields_for/1" do
+    test "stop fields include reversible user fields and exclude identity and system fields" do
+      fields = Gtfs.reversible_fields_for(:stop)
+
+      assert "stop_name" in fields
+      refute "stop_id" in fields
+      refute "organization_id" in fields
+      refute "gtfs_version_id" in fields
+    end
+
+    test "unknown entity types fail fast" do
+      assert_raise FunctionClauseError, fn ->
+        Gtfs.reversible_fields_for("shape")
+      end
+    end
+  end
+
   describe "record_change/5" do
     setup do
       org = organization_fixture()
