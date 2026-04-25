@@ -3203,7 +3203,6 @@ defmodule GtfsPlanner.Gtfs do
   def identity_fields_for("stop"), do: ~w(stop_id)
   def identity_fields_for("pathway"), do: ~w(pathway_id from_stop_id to_stop_id)
   def identity_fields_for("level"), do: ~w(level_id)
-  def identity_fields_for(_), do: []
 
   @doc """
   Builds a normalized snapshot map for a stop, pathway, or level entity.

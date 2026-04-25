@@ -2702,30 +2702,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp apply_rollback_entity_refresh(socket, "stop", %Gtfs.Stop{} = stop) do
     if stop.parent_station == socket.assigns.station.stop_id do
-      socket = stream_insert(socket, :child_stops, stop)
-
-      socket =
-        if socket.assigns.selected_stop_id == stop.id do
-          open_edit_sidebar(socket, stop, nil)
-        else
-          socket
-        end
-
-      refresh_lists(socket)
+      refresh_current_station_stop_after_rollback(socket, stop)
     else
-      socket =
-        if socket.assigns.selected_stop_id == stop.id do
-          socket
-          |> assign(:selected_stop_id, nil)
-          |> assign(:active_point_id, nil)
-          |> assign(:pending_xy, nil)
-          |> assign(:editing_level, false)
-          |> assign(:child_stop_form, to_form(%{}))
-        else
-          socket
-        end
-
-      refresh_lists(socket)
+      refresh_external_station_stop_after_rollback(socket, stop)
     end
   end
 
@@ -2775,6 +2754,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       end
 
     socket
+  end
+
+  defp refresh_current_station_stop_after_rollback(socket, stop) do
+    socket
+    |> stream_insert(:child_stops, stop)
+    |> maybe_reopen_selected_stop_after_rollback(stop)
+    |> refresh_lists()
+  end
+
+  defp maybe_reopen_selected_stop_after_rollback(socket, stop) do
+    if socket.assigns.selected_stop_id == stop.id do
+      open_edit_sidebar(socket, stop, socket.assigns.pending_xy)
+    else
+      socket
+    end
+  end
+
+  defp refresh_external_station_stop_after_rollback(socket, stop) do
+    socket
+    |> maybe_clear_selected_stop_after_rollback(stop)
+    |> refresh_lists()
+  end
+
+  defp maybe_clear_selected_stop_after_rollback(socket, stop) do
+    if socket.assigns.selected_stop_id == stop.id do
+      socket
+      |> assign(:selected_stop_id, nil)
+      |> assign(:active_point_id, nil)
+      |> assign(:pending_xy, nil)
+      |> assign(:editing_level, false)
+      |> assign(:child_stop_form, to_form(%{}))
+    else
+      socket
+    end
   end
 
   defp refresh_history_entries(socket, entity_type, entity_id) do
@@ -2869,7 +2882,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       log
       |> rollback_preview_keys(current_snapshot, target_snapshot)
       |> Enum.reduce([], &rollback_preview_change(&1, current_snapshot, target_snapshot, &2))
-      |> Enum.reverse()
       |> Enum.sort_by(& &1.field)
 
     if field_changes == [] do
@@ -2917,7 +2929,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         false
 
       %Gtfs.Stop{} = stop ->
-        stop.parent_station == socket.assigns.station.stop_id or
+        stop.id == socket.assigns.station.id or
+          stop.stop_id == socket.assigns.station.stop_id or
+          stop.parent_station == socket.assigns.station.stop_id or
           MapSet.member?(socket.assigns.platform_stop_ids, stop.parent_station)
     end
   end

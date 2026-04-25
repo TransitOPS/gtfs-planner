@@ -9808,6 +9808,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
+      pending_xy = %{x: 77.0, y: 88.0}
+
+      :sys.replace_state(view.pid, fn state ->
+        assigns =
+          state.socket.assigns
+          |> Map.put(:selected_stop_id, stop.id)
+          |> Map.put(:pending_xy, pending_xy)
+
+        socket = Map.put(state.socket, :assigns, assigns)
+        Map.put(state, :socket, socket)
+      end)
+
       render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
 
@@ -9816,6 +9828,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.rollback_preview == nil
+      assert state.socket.assigns.selected_stop_id == stop.id
+      assert state.socket.assigns.pending_xy == pending_xy
 
       refreshed_child_stop =
         Enum.find(state.socket.assigns.child_stops_list, &(&1.id == stop.id))
@@ -11172,7 +11186,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       result = render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
 
-      assert result =~ "entity no longer exists" or result =~ "Unable to preview rollback"
+      assert result =~ "entity no longer exists"
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.rollback_preview == nil
@@ -11512,7 +11526,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "true"
     end
 
-    test "renders nil -> 5 with em-dash for nil but value for 5" do
+    test "renders nil -> 5 with nil text and value for 5" do
       entry = %GtfsPlanner.Gtfs.ChangeLog{
         id: Ecto.UUID.generate(),
         action: "updated",
