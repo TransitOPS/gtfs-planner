@@ -9568,6 +9568,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       result = render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
 
       assert result =~ "This change already matches the current state."
+      refute result =~ ~s(id="rollback-preview-stop")
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.rollback_preview == nil
