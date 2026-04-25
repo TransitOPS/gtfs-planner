@@ -2653,6 +2653,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               {:noreply,
                put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")}
 
+            {:error, :already_matches_current} ->
+              {:noreply,
+               socket
+               |> assign(:rollback_preview, nil)
+               |> put_flash(:error, rollback_error_message(:already_matches_current))}
+
             {:error, _reason} ->
               {:noreply, put_flash(socket, :error, "Unable to preview rollback")}
           end
@@ -2815,6 +2821,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp rollback_error_message(:missing_rollback_snapshot),
     do: "This change has no snapshot and cannot be reverted."
 
+  defp rollback_error_message(:already_matches_current),
+    do: "This change already matches the current state."
+
   defp rollback_error_message(_), do: "Unable to revert change."
 
   @spec rollback_preview_for(GtfsPlanner.Gtfs.ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
@@ -2824,43 +2833,49 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:error, :entity_not_found}
 
       entity ->
-        current_snapshot =
-          log.entity_type
-          |> Gtfs.entity_snapshot(entity)
-          |> stringify_keys()
+        with {:ok, target_snapshot} <- Gtfs.rollback_target_snapshot(log) do
+          current_snapshot =
+            log.entity_type
+            |> Gtfs.entity_snapshot(entity)
+            |> stringify_keys()
 
-        target_snapshot = stringify_keys(log.snapshot)
-        identity_fields = Gtfs.identity_fields_for(log.entity_type)
+          target_snapshot = stringify_keys(target_snapshot)
+          identity_fields = Gtfs.identity_fields_for(log.entity_type)
 
-        all_keys =
-          target_snapshot
-          |> Map.keys()
-          |> Kernel.++(Map.keys(current_snapshot))
-          |> Enum.uniq()
-          |> Enum.reject(&(&1 in identity_fields))
+          all_keys =
+            target_snapshot
+            |> Map.keys()
+            |> Kernel.++(Map.keys(current_snapshot))
+            |> Enum.uniq()
+            |> Enum.reject(&(&1 in identity_fields))
 
-        field_changes =
-          all_keys
-          |> Enum.reduce([], fn key, acc ->
-            current = Map.get(current_snapshot, key)
-            restored = Map.get(target_snapshot, key)
+          field_changes =
+            all_keys
+            |> Enum.reduce([], fn key, acc ->
+              current = Map.get(current_snapshot, key)
+              restored = Map.get(target_snapshot, key)
 
-            if current == restored do
-              acc
-            else
-              [%{field: key, current: current, restored: restored} | acc]
-            end
-          end)
-          |> Enum.reverse()
-          |> Enum.sort_by(& &1.field)
+              if current == restored do
+                acc
+              else
+                [%{field: key, current: current, restored: restored} | acc]
+              end
+            end)
+            |> Enum.reverse()
+            |> Enum.sort_by(& &1.field)
 
-        {:ok,
-         %{
-           log: log,
-           entity_type: log.entity_type,
-           entity_id: log.entity_id,
-           field_changes: field_changes
-         }}
+          if field_changes == [] do
+            {:error, :already_matches_current}
+          else
+            {:ok,
+             %{
+               log: log,
+               entity_type: log.entity_type,
+               entity_id: log.entity_id,
+               field_changes: field_changes
+             }}
+          end
+        end
     end
   end
 

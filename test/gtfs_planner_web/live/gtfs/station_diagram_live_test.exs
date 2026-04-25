@@ -9488,6 +9488,91 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert stop_name_change.restored == "Original Name"
     end
 
+    test "preview_rollback_change_log shows coordinate-only stop changes",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_STOP_COORD_ONLY",
+          stop_name: "Coordinate Preview",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = preview_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+          diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+        })
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} =
+        Gtfs.update_stop(stop, %{diagram_coordinate: %{"x" => 30.0, "y" => 40.0}})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      state = :sys.get_state(view.pid)
+      preview = state.socket.assigns.rollback_preview
+
+      assert %{field_changes: [%{field: "diagram_coordinate"} = coordinate_change]} = preview
+      assert coordinate_change.current == %{"x" => 30.0, "y" => 40.0}
+      assert coordinate_change.restored == %{"x" => 10.0, "y" => 20.0}
+    end
+
+    test "preview_rollback_change_log reports already-matching changes without setting preview",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_STOP_NOOP",
+          stop_name: "Already Matching",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 22.0}
+        })
+
+      ctx = preview_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Would Change"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      result = render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      assert result =~ "This change already matches the current state."
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+    end
+
     test "cancel_rollback_preview clears preview and does not mutate the database",
          %{
            conn: conn,
