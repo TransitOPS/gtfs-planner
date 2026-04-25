@@ -884,6 +884,52 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert restored.stop_id == original_stop_id
     end
 
+    test "rolling back a polluted stop log preserves system and identity fields", %{ctx: ctx} do
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_polluted",
+          stop_name: "Original"
+        })
+
+      {:ok, changed_stop} = Gtfs.update_stop(stop, %{stop_name: "Changed"})
+
+      {:ok, log} =
+        Repo.insert(%ChangeLog{
+          organization_id: ctx.organization_id,
+          gtfs_version_id: ctx.gtfs_version_id,
+          station_stop_id: ctx.station_stop_id,
+          entity_type: "stop",
+          entity_id: changed_stop.id,
+          entity_external_id: changed_stop.stop_id,
+          action: "updated",
+          snapshot: %{
+            "stop_name" => "Original",
+            "organization_id" => Ecto.UUID.generate(),
+            "gtfs_version_id" => Ecto.UUID.generate(),
+            "stop_id" => "bad_stop_id"
+          },
+          changed_fields: %{
+            "stop_name" => %{"from" => "Original", "to" => "Changed"},
+            "organization_id" => %{"from" => nil, "to" => ctx.organization_id},
+            "gtfs_version_id" => %{"from" => nil, "to" => ctx.gtfs_version_id},
+            "stop_id" => %{"from" => "bad_stop_id", "to" => changed_stop.stop_id}
+          },
+          actor_id: ctx.actor_id,
+          actor_email: ctx.actor_email
+        })
+
+      assert {:ok, restored} = Gtfs.rollback_entity(log, ctx)
+      assert restored.stop_name == "Original"
+      assert restored.organization_id == ctx.organization_id
+      assert restored.gtfs_version_id == ctx.gtfs_version_id
+      assert restored.stop_id == "stop_polluted"
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+      assert reloaded.organization_id == ctx.organization_id
+      assert reloaded.gtfs_version_id == ctx.gtfs_version_id
+      assert reloaded.stop_id == "stop_polluted"
+    end
+
     test "rolled_back log row stores snapshot of pre-rollback entity state", %{ctx: ctx} do
       stop =
         stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{

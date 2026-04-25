@@ -3575,19 +3575,14 @@ defmodule GtfsPlanner.Gtfs do
   defp snapshot_to_update_attrs(_entity_type, nil), do: %{}
 
   defp snapshot_to_update_attrs(entity_type, snapshot) when is_map(snapshot) do
-    identity_fields = identity_fields_for(entity_type)
-
     snapshot
+    |> then(&sanitize_rollback_snapshot(entity_type, &1))
     |> Enum.reduce(%{}, fn {key, value}, acc ->
       key_str = to_string(key)
 
-      if key_str in identity_fields do
-        acc
-      else
-        case safe_string_to_existing_atom(key_str) do
-          {:ok, atom_key} -> Map.put(acc, atom_key, value)
-          :error -> acc
-        end
+      case safe_string_to_existing_atom(key_str) do
+        {:ok, atom_key} -> Map.put(acc, atom_key, value)
+        :error -> acc
       end
     end)
   end
