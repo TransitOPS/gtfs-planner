@@ -195,7 +195,8 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
         stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
           stop_id: "stop_one",
           stop_name: "Old Name",
-          stop_desc: "Old Desc"
+          stop_desc: "Old Desc",
+          diagram_coordinate: %{"x" => 12.5, "y" => 34.0}
         })
 
       attrs = %{stop_name: "New Name", stop_desc: "Old Desc"}
@@ -209,6 +210,7 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       assert log.action == "updated"
       assert log.snapshot["stop_name"] == "Old Name"
       assert log.snapshot["stop_desc"] == "Old Desc"
+      assert log.snapshot["diagram_coordinate"] == %{"x" => 12.5, "y" => 34.0}
       assert log.changed_fields["stop_name"] == %{"from" => "Old Name", "to" => "New Name"}
       refute Map.has_key?(log.changed_fields, "stop_desc")
     end

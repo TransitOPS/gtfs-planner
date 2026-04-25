@@ -3317,6 +3317,7 @@ defmodule GtfsPlanner.Gtfs do
       location_type: stop.location_type,
       wheelchair_boarding: stop.wheelchair_boarding,
       platform_code: stop.platform_code,
+      diagram_coordinate: stop.diagram_coordinate,
       parent_station: stop.parent_station,
       level_id: stop.level_id
     }
