@@ -232,6 +232,26 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       refute Map.has_key?(log.changed_fields, "stop_desc")
     end
 
+    test "stop updated records only reversible changed fields", %{ctx: ctx} do
+      stop =
+        stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{
+          stop_id: "stop_filtered",
+          stop_name: "Old Name"
+        })
+
+      attrs = %{
+        stop_name: "New Name",
+        organization_id: ctx.organization_id,
+        gtfs_version_id: ctx.gtfs_version_id,
+        stop_id: "renamed_stop"
+      }
+
+      assert :ok = Gtfs.record_change(ctx, :stop, stop, "updated", attrs)
+
+      [log] = Repo.all(ChangeLog)
+      assert log.changed_fields == %{"stop_name" => %{"from" => "Old Name", "to" => "New Name"}}
+    end
+
     test "stop deleted inserts row with snapshot", %{ctx: ctx} do
       stop =
         stop_fixture(ctx.organization_id, ctx.gtfs_version_id, %{

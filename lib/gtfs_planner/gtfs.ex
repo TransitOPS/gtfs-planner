@@ -3138,7 +3138,8 @@ defmodule GtfsPlanner.Gtfs do
   @spec record_change(AuditContext.t(), atom(), struct() | nil, String.t(), map()) :: :ok
   def record_change(%AuditContext{} = ctx, entity_type, entity_or_nil, action, attrs \\ %{}) do
     snapshot = build_snapshot(entity_type, entity_or_nil)
-    changed_fields = build_changed_fields(action, snapshot, attrs)
+    changed_fields_attrs = changed_fields_attrs(action, entity_type, attrs)
+    changed_fields = build_changed_fields(action, snapshot, changed_fields_attrs)
 
     entity_external_id = entity_external_id_for(entity_type, entity_or_nil, attrs)
     entity_id = entity_id_for(entity_or_nil)
@@ -3167,6 +3168,9 @@ defmodule GtfsPlanner.Gtfs do
         :ok
     end)
   end
+
+  defp changed_fields_attrs("updated", entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
+  defp changed_fields_attrs(_action, _entity_type, attrs), do: attrs
 
   @doc """
   Returns change log entries for a specific entity, most recent first.
