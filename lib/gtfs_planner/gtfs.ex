@@ -3421,6 +3421,15 @@ defmodule GtfsPlanner.Gtfs do
 
   defp build_changed_fields(_action, _snapshot, _attrs), do: nil
 
+  @spec reversible_attrs_for(String.t() | atom(), map()) :: map()
+  defp reversible_attrs_for(entity_type, attrs) when is_map(attrs) do
+    reversible_fields = reversible_fields_for(entity_type)
+
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in reversible_fields
+    end)
+  end
+
   defp fill_snapshot_from_changed_fields(snapshot, changed_fields) when is_map(changed_fields) do
     Enum.reduce(changed_fields, snapshot, fn
       {field, %{"from" => from}}, acc ->
