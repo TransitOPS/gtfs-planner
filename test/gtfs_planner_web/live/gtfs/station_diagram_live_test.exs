@@ -9816,6 +9816,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.rollback_preview == nil
 
+      refreshed_child_stop =
+        Enum.find(state.socket.assigns.child_stops_list, &(&1.id == stop.id))
+
+      assert refreshed_child_stop
+      assert refreshed_child_stop.diagram_coordinate == original_coordinate
+
       rollback_entry =
         Enum.find(state.socket.assigns.history_entries, fn entry ->
           entry.action == "rolled_back" and entry.rolled_back_to_log_id == log.id
