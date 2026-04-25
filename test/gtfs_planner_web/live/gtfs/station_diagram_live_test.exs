@@ -9768,6 +9768,62 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert [%{action: "rolled_back"} | _] = state.socket.assigns.history_entries
     end
 
+    test "confirm_rollback_change_log restores a moved child stop coordinate and refreshes rollback history",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      original_coordinate = %{"x" => 16.0, "y" => 26.0}
+      moved_coordinate = %{"x" => 44.0, "y" => 54.0}
+
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_STOP_COORD",
+          stop_name: "Moved Child Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: original_coordinate
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+          diagram_coordinate: moved_coordinate
+        })
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{diagram_coordinate: moved_coordinate})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      restored = Gtfs.get_stop!(stop.id)
+      assert restored.diagram_coordinate == original_coordinate
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      rollback_entry =
+        Enum.find(state.socket.assigns.history_entries, fn entry ->
+          entry.action == "rolled_back" and entry.rolled_back_to_log_id == log.id
+        end)
+
+      assert rollback_entry
+    end
+
     test "confirm_rollback_change_log restores a pathway update and refreshes history", %{
       conn: conn,
       user: user,
@@ -10240,6 +10296,78 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert after_stop.stop_name == "Changed Name"
 
       assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+
+    test "confirm_rollback_change_log surfaces :already_matches_current and clears stale preview",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      original_coordinate = %{"x" => 18.0, "y" => 28.0}
+      moved_coordinate = %{"x" => 38.0, "y" => 48.0}
+
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_NOOP",
+          stop_name: "No-op Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: original_coordinate
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+          diagram_coordinate: moved_coordinate
+        })
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, moved_stop} = Gtfs.update_stop(stop, %{diagram_coordinate: moved_coordinate})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      assert :sys.get_state(view.pid).socket.assigns.rollback_preview != nil
+
+      {:ok, _restored_elsewhere} =
+        Gtfs.update_stop(moved_stop, %{diagram_coordinate: original_coordinate})
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "This change already matches the current state."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+      assert Gtfs.get_stop!(stop.id).diagram_coordinate == original_coordinate
 
       after_rolled_back =
         Repo.aggregate(
