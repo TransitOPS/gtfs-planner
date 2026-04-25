@@ -4480,6 +4480,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :rollback_preview, :map, default: nil
 
   def change_log_list(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :rollback_by_original_id,
+        rollback_by_original_id(assigns.entries)
+      )
+
     ~H"""
     <div id={"history-#{@entity_type}"} class="space-y-3">
       <%= if @entries == [] do %>
@@ -4492,6 +4499,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <div class="flex items-baseline justify-between gap-2">
               <div class="flex items-baseline gap-2 text-sm">
                 <span class="font-medium">{entry.action}</span>
+                <span
+                  :if={reverted_entry?(entry, @rollback_by_original_id)}
+                  class="badge badge-neutral badge-xs"
+                >
+                  Reverted
+                </span>
                 <span class="text-base-content/70">{entry.actor_email}</span>
               </div>
               <span class="text-xs tabular-nums text-base-content/70">
@@ -4501,7 +4514,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
             <.change_diff entry={entry} />
 
-            <div :if={rollback_eligible?(entry)}>
+            <div :if={show_rollback_action?(entry, @rollback_by_original_id)}>
               <button
                 type="button"
                 class="btn btn-xs btn-ghost"
@@ -4584,6 +4597,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
        do: true
 
   defp rollback_eligible?(_), do: false
+
+  defp rollback_by_original_id(entries) do
+    Enum.reduce(entries, %{}, fn
+      %{action: "rolled_back", rolled_back_to_log_id: original_id} = entry, acc
+      when not is_nil(original_id) ->
+        Map.put(acc, original_id, entry)
+
+      _entry, acc ->
+        acc
+    end)
+  end
+
+  defp reverted_entry?(entry, rollback_by_original_id) do
+    Map.has_key?(rollback_by_original_id, entry.id)
+  end
+
+  defp show_rollback_action?(entry, rollback_by_original_id) do
+    rollback_eligible?(entry) and not reverted_entry?(entry, rollback_by_original_id)
+  end
 
   defp preview_matches_list?(nil, _entity_type, _entries), do: false
 

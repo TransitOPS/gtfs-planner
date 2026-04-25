@@ -10592,6 +10592,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ ~s(phx-value-log-id="#{entry.id}")
     end
 
+    test "reverted original entry renders status and hides its revert button" do
+      original = build_log(%{action: "updated"})
+
+      rollback =
+        build_log(%{
+          action: "rolled_back",
+          rolled_back_to_log_id: original.id
+        })
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [original, rollback],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(id="history-entry-#{original.id}")
+      assert html =~ "Reverted"
+      refute html =~ ~s(phx-value-log-id="#{original.id}")
+      assert html =~ ~s(phx-value-log-id="#{rollback.id}")
+    end
+
     test "rolled_back entry with snapshot renders Revert change button" do
       entry = build_log(%{action: "rolled_back"})
 
