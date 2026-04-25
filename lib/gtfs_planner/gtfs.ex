@@ -3274,6 +3274,29 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
+  @doc """
+  Calculates the snapshot an entity should be restored to for a rollback.
+  """
+  @spec rollback_target_snapshot(ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
+  def rollback_target_snapshot(%ChangeLog{action: action})
+      when action in ["created", "deleted"] do
+    {:error, :cannot_rollback_create_or_delete}
+  end
+
+  def rollback_target_snapshot(%ChangeLog{action: action, snapshot: nil})
+      when action in ["updated", "rolled_back"] do
+    {:error, :missing_rollback_snapshot}
+  end
+
+  def rollback_target_snapshot(%ChangeLog{
+        action: action,
+        snapshot: snapshot,
+        changed_fields: changed_fields
+      })
+      when action in ["updated", "rolled_back"] do
+    {:ok, fill_snapshot_from_changed_fields(snapshot, changed_fields)}
+  end
+
   defp update_entity_without_broadcast(%Stop{} = stop, attrs) do
     stop
     |> Stop.changeset(attrs)
@@ -3391,6 +3414,39 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp build_changed_fields(_action, _snapshot, _attrs), do: nil
+
+  defp fill_snapshot_from_changed_fields(snapshot, changed_fields) when is_map(changed_fields) do
+    Enum.reduce(changed_fields, snapshot, fn
+      {field, %{"from" => from}}, acc ->
+        put_missing_snapshot_field(acc, field, from)
+
+      _entry, acc ->
+        acc
+    end)
+  end
+
+  defp fill_snapshot_from_changed_fields(snapshot, _changed_fields), do: snapshot
+
+  defp put_missing_snapshot_field(snapshot, field, value) do
+    if snapshot_field_present?(snapshot, field) do
+      snapshot
+    else
+      Map.put(snapshot, field, value)
+    end
+  end
+
+  defp snapshot_field_present?(snapshot, field) do
+    Map.has_key?(snapshot, field) or snapshot_has_existing_atom_key?(snapshot, field)
+  end
+
+  defp snapshot_has_existing_atom_key?(snapshot, field) when is_binary(field) do
+    case safe_string_to_existing_atom(field) do
+      {:ok, atom_key} -> Map.has_key?(snapshot, atom_key)
+      :error -> false
+    end
+  end
+
+  defp snapshot_has_existing_atom_key?(_snapshot, _field), do: false
 
   defp same_value?(a, b), do: normalize_value(a) == normalize_value(b)
 

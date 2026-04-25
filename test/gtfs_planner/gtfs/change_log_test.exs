@@ -362,6 +362,24 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
   end
 
+  describe "rollback_target_snapshot/1" do
+    test "fills missing coordinate from changed_fields without a snapshot value" do
+      old_coordinate = %{"x" => 12.5, "y" => 34.0}
+      new_coordinate = %{"x" => 90.0, "y" => 45.25}
+
+      log = %ChangeLog{
+        action: "updated",
+        snapshot: %{},
+        changed_fields: %{
+          "diagram_coordinate" => %{"from" => old_coordinate, "to" => new_coordinate}
+        }
+      }
+
+      assert {:ok, target_snapshot} = Gtfs.rollback_target_snapshot(log)
+      assert target_snapshot["diagram_coordinate"] == old_coordinate
+    end
+  end
+
   describe "rollback_entity/2" do
     setup do
       org = organization_fixture()
