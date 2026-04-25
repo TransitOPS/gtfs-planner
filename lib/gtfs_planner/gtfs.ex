@@ -3169,7 +3169,9 @@ defmodule GtfsPlanner.Gtfs do
     end)
   end
 
-  defp changed_fields_attrs("updated", entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
+  defp changed_fields_attrs("updated", entity_type, attrs),
+    do: reversible_attrs_for(entity_type, attrs)
+
   defp changed_fields_attrs(_action, _entity_type, attrs), do: attrs
 
   @doc """
@@ -3215,8 +3217,7 @@ defmodule GtfsPlanner.Gtfs do
   def reversible_fields_for(:stop), do: reversible_fields_for("stop")
 
   def reversible_fields_for("stop"),
-    do:
-      ~w(
+    do: ~w(
         stop_name
         stop_desc
         stop_lat
@@ -3232,8 +3233,7 @@ defmodule GtfsPlanner.Gtfs do
   def reversible_fields_for(:pathway), do: reversible_fields_for("pathway")
 
   def reversible_fields_for("pathway"),
-    do:
-      ~w(
+    do: ~w(
         pathway_mode
         is_bidirectional
         traversal_time
