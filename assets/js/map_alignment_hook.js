@@ -367,7 +367,19 @@ const MapAlignmentHook = {
       const lat = parseFloat(latInput.value);
       const lon = parseFloat(lonInput.value);
       if (Number.isNaN(lat) || Number.isNaN(lon)) return;
+
+      const canvasRect = this.el.getBoundingClientRect();
+      const cxBefore = canvasRect.width / 2 + this.transform.tx;
+      const cyBefore = canvasRect.height / 2 + this.transform.ty;
+      const worldCenter = this.leafletMap.containerPointToLatLng([cxBefore, cyBefore]);
+
       this.leafletMap.setView([lat, lon]);
+
+      const newPt = this.leafletMap.latLngToContainerPoint(worldCenter);
+      this.transform.tx = newPt.x - canvasRect.width / 2;
+      this.transform.ty = newPt.y - canvasRect.height / 2;
+      this._applyTransform();
+
       this._fetchBuildings(lat, lon);
     };
     applyCenterBtn.addEventListener("click", this._onApplyCenter);
