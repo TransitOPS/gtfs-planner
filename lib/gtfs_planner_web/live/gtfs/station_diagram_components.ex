@@ -326,12 +326,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         not is_nil(assigns.align_scale_mpp) and
         not is_nil(assigns.align_rotation_deg)
 
-    has_image_dims? =
-      positive_integer?(assigns.image_natural_width) and
-        positive_integer?(assigns.image_natural_height)
-
-    apply_disabled? = not (has_alignment? and has_image_dims?)
-
     # Tie the hook root's DOM id to the active stop_level so switching levels
     # remounts the hook with the new level's floorplan and alignment attrs.
     canvas_id =
@@ -346,7 +340,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:initial_lat, initial_lat)
       |> assign(:initial_lon, initial_lon)
       |> assign(:has_alignment?, has_alignment?)
-      |> assign(:apply_disabled?, apply_disabled?)
       |> assign(:canvas_id, canvas_id)
 
     ~H"""
@@ -515,9 +508,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     </div>
     """
   end
-
-  defp positive_integer?(value) when is_integer(value) and value > 0, do: true
-  defp positive_integer?(_), do: false
 
   # ============================================================================
   # Diagram Canvas
