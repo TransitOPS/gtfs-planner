@@ -13,6 +13,14 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
   @change_value_max_chars 60
 
+  if Mix.env() == :test do
+    def __test_display_name__(arg), do: display_name(arg)
+    def __test_format_date_header__(d, t), do: format_date_header(d, t)
+    def __test_format_time_short__(dt, t), do: format_time_short(dt, t)
+    def __test_group_entries_by_date__(entries), do: group_entries_by_date(entries)
+    def __test_relative_time__(dt, now), do: relative_time(dt, now)
+  end
+
   attr :entity_type, :string, required: true
   attr :entity_id, :string, required: true
   attr :history_active, :boolean, required: true
@@ -266,4 +274,72 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
   defp format_timestamp(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M")
   defp format_timestamp(_), do: "—"
+
+  if Mix.env() == :test do
+    defp display_name(nil), do: "Unknown"
+    defp display_name(""), do: "Unknown"
+
+    defp display_name(email) when is_binary(email) do
+      email
+      |> String.split("@")
+      |> List.first()
+      |> String.replace(~r/[._\-]+/, " ")
+      |> String.split(" ", trim: true)
+      |> Enum.map_join(" ", &:string.titlecase/1)
+    end
+
+    defp upcased_month_day(%Date{} = d),
+      do: d |> Calendar.strftime("%b %-d") |> String.upcase()
+
+    defp format_date_header(%Date{} = date, %Date{} = today) do
+      cond do
+        Date.compare(date, today) == :eq -> "TODAY · " <> upcased_month_day(date)
+        Date.diff(today, date) == 1 -> "YESTERDAY · " <> upcased_month_day(date)
+        true -> upcased_month_day(date)
+      end
+    end
+
+    defp format_time_short(%DateTime{} = dt, %Date{} = today) do
+      if DateTime.to_date(dt) == today do
+        Calendar.strftime(dt, "%-I:%M %p")
+      else
+        Calendar.strftime(dt, "%b %-d · %-I:%M %p")
+      end
+    end
+
+    defp group_entries_by_date(entries) do
+      entries
+      |> Enum.group_by(fn entry -> DateTime.to_date(entry.inserted_at) end)
+      |> Enum.sort_by(fn {date, _} -> date end, {:desc, Date})
+    end
+
+    defp relative_time(%DateTime{} = dt, %DateTime{} = now) do
+      seconds = DateTime.diff(now, dt, :second)
+
+      cond do
+        seconds < 60 ->
+          "just now"
+
+        seconds < 3600 ->
+          minutes = div(seconds, 60)
+          "#{minutes} #{pluralize(minutes, "minute")} ago"
+
+        DateTime.to_date(dt) == DateTime.to_date(now) ->
+          hours = div(seconds, 3600)
+          "#{hours} #{pluralize(hours, "hour")} ago"
+
+        true ->
+          days = Date.diff(DateTime.to_date(now), DateTime.to_date(dt))
+
+          cond do
+            days == 1 -> "yesterday"
+            days < 7 -> "#{days} days ago"
+            true -> Calendar.strftime(dt, "%b %-d")
+          end
+      end
+    end
+
+    defp pluralize(1, word), do: word
+    defp pluralize(_n, word), do: word <> "s"
+  end
 end
