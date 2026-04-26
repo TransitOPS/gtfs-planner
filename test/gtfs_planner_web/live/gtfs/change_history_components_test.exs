@@ -172,6 +172,44 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
     end
   end
 
+  describe "apply_field_filter/3" do
+    setup do
+      rows = [
+        %{field: "stop_lat", from: 0.0, to: 1.0},
+        %{field: "stop_lon", from: 0.0, to: 2.0},
+        %{field: "stop_name", from: "a", to: "b"},
+        %{field: "wheelchair_boarding", from: 0, to: 1}
+      ]
+
+      {:ok, rows: rows}
+    end
+
+    test "position keeps only position fields", %{rows: rows} do
+      filtered = ChangeHistoryComponents.__test_apply_field_filter__(rows, "stop", "position")
+      assert Enum.map(filtered, & &1.field) == ["stop_lat", "stop_lon"]
+    end
+
+    test "all returns rows unchanged", %{rows: rows} do
+      assert ChangeHistoryComponents.__test_apply_field_filter__(rows, "stop", "all") == rows
+    end
+
+    test "unknown filter key returns rows unchanged", %{rows: rows} do
+      assert ChangeHistoryComponents.__test_apply_field_filter__(rows, "stop", "bogus_key") ==
+               rows
+    end
+
+    test "accessibility keeps only wheelchair_boarding rows", %{rows: rows} do
+      filtered =
+        ChangeHistoryComponents.__test_apply_field_filter__(rows, "stop", "accessibility")
+
+      assert Enum.map(filtered, & &1.field) == ["wheelchair_boarding"]
+    end
+
+    test "empty input yields empty output" do
+      assert ChangeHistoryComponents.__test_apply_field_filter__([], "stop", "position") == []
+    end
+  end
+
   describe "relative_time/2" do
     test "just now for sub-minute differences" do
       now = DateTime.utc_now()

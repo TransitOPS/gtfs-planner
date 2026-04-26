@@ -21,6 +21,9 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     def __test_relative_time__(dt, now), do: relative_time(dt, now)
     def __test_field_groups__(et), do: field_groups(et)
     def __test_categorical_value__(key, value), do: categorical_value(key, value)
+
+    def __test_apply_field_filter__(rows, entity_type, filter_key),
+      do: apply_field_filter(rows, entity_type, filter_key)
   end
 
   attr :entity_type, :string, required: true
@@ -401,5 +404,15 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     defp categorical_value({"pathway", "is_bidirectional"}, true), do: {"Bidirectional", nil}
     defp categorical_value({"pathway", "is_bidirectional"}, false), do: {"One-way", nil}
     defp categorical_value(_, _), do: :passthrough
+
+    defp apply_field_filter(diff_rows, _entity_type, "all"), do: diff_rows
+
+    defp apply_field_filter(diff_rows, entity_type, filter_key) do
+      case Enum.find(field_groups(entity_type), &(&1.key == filter_key)) do
+        %{fields: :all} -> diff_rows
+        %{fields: keys} -> Enum.filter(diff_rows, &(&1.field in keys))
+        nil -> diff_rows
+      end
+    end
   end
 end
