@@ -104,6 +104,23 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
   end
 
   @impl true
+  def handle_event("save_organization", %{"organization" => org_params}, socket) do
+    case Organizations.update_organization(socket.assigns.current_organization, org_params) do
+      {:ok, organization} ->
+        socket =
+          socket
+          |> assign(:current_organization, organization)
+          |> put_flash(:info, "Organization updated successfully")
+          |> push_patch(to: ~p"/admin/users")
+
+        {:noreply, socket}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :organization_form, to_form(%{changeset | action: :validate}))}
+    end
+  end
+
+  @impl true
   def handle_event("validate_invite", %{"invite" => invite_params}, socket) do
     # Validate email format
     email = Map.get(invite_params, "email", "")

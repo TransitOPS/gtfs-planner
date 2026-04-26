@@ -225,6 +225,20 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       assert form.source.action == :validate
       assert {"can't be blank", _} = form.source.errors[:name]
     end
+
+    test "save_organization persists new name and patches to /admin/users", %{
+      conn: conn,
+      organization: organization
+    } do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      render_submit(view, "save_organization", %{"organization" => %{"name" => "Renamed Org"}})
+
+      assert_patch(view, ~p"/admin/users")
+
+      reloaded = GtfsPlanner.Organizations.get_organization!(organization.id)
+      assert reloaded.name == "Renamed Org"
+    end
   end
 
   describe "deactivation flow" do
