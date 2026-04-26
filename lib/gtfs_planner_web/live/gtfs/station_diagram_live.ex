@@ -1738,6 +1738,58 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event(
+        "save_and_apply_alignment",
+        %{
+          "center_lat" => lat,
+          "center_lon" => lon,
+          "scale_mpp" => mpp,
+          "rotation_deg" => rot
+        },
+        socket
+      ) do
+    stop_level = socket.assigns.active_stop_level
+    image_w = socket.assigns.floorplan_image_w
+    image_h = socket.assigns.floorplan_image_h
+
+    cond do
+      is_nil(stop_level) ->
+        {:noreply, put_flash(socket, :error, "No level selected")}
+
+      is_nil(image_w) or is_nil(image_h) ->
+        {:noreply,
+         put_flash(socket, :error, apply_alignment_error_message(:invalid_image_dims))}
+
+      true ->
+        attrs = %{
+          floorplan_center_lat: lat,
+          floorplan_center_lon: lon,
+          floorplan_scale_mpp: mpp,
+          floorplan_rotation_deg: rot
+        }
+
+        case Gtfs.update_stop_level_alignment(stop_level, attrs) do
+          {:ok, updated} ->
+            socket = assign(socket, :active_stop_level, updated)
+
+            case Gtfs.apply_alignment_to_child_stops(updated, image_w, image_h) do
+              {:ok, count} ->
+                {:noreply,
+                 socket
+                 |> refresh_lists()
+                 |> put_flash(:info, "Set lat/lon for #{count} child stops")}
+
+              {:error, reason} ->
+                {:noreply, put_flash(socket, :error, apply_alignment_error_message(reason))}
+            end
+
+          {:error, %Ecto.Changeset{}} ->
+            {:noreply, put_flash(socket, :error, "Could not save alignment")}
+        end
+    end
+  end
+
+  @impl true
   def handle_event("clear_alignment", _params, socket) do
     case socket.assigns.active_stop_level do
       %StopLevel{} = stop_level ->
