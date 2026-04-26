@@ -254,6 +254,23 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       assert reloaded.name == "Renamed Org"
     end
 
+    test "save_organization ignores crafted alias updates", %{
+      conn: conn,
+      organization: organization
+    } do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      render_submit(view, "save_organization", %{
+        "organization" => %{"name" => "Renamed Org", "alias" => "crafted-alias"}
+      })
+
+      assert_patch(view, ~p"/admin/users")
+
+      reloaded = GtfsPlanner.Organizations.get_organization!(organization.id)
+      assert reloaded.name == "Renamed Org"
+      assert reloaded.alias == organization.alias
+    end
+
     test "save_organization with blank name keeps drawer open and does not mutate organization",
          %{conn: conn, organization: organization} do
       {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")

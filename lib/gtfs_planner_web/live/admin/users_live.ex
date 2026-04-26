@@ -86,6 +86,8 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
     assign(socket, :invite_form, form)
   end
 
+  defp allowed_org_params(params), do: Map.take(params, ["name"])
+
   # Event handlers (Steps 11-15)
 
   @impl true
@@ -97,7 +99,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
   def handle_event("validate_organization", %{"organization" => org_params}, socket) do
     changeset =
       socket.assigns.current_organization
-      |> Organizations.change_organization(org_params)
+      |> Organizations.change_organization(allowed_org_params(org_params))
       |> Map.put(:action, :validate)
 
     {:noreply, assign(socket, :organization_form, to_form(changeset))}
@@ -105,7 +107,10 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
 
   @impl true
   def handle_event("save_organization", %{"organization" => org_params}, socket) do
-    case Organizations.update_organization(socket.assigns.current_organization, org_params) do
+    case Organizations.update_organization(
+           socket.assigns.current_organization,
+           allowed_org_params(org_params)
+         ) do
       {:ok, organization} ->
         socket =
           socket
