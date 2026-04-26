@@ -19,6 +19,8 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     def __test_format_time_short__(dt, t), do: format_time_short(dt, t)
     def __test_group_entries_by_date__(entries), do: group_entries_by_date(entries)
     def __test_relative_time__(dt, now), do: relative_time(dt, now)
+    def __test_field_groups__(et), do: field_groups(et)
+    def __test_categorical_value__(key, value), do: categorical_value(key, value)
   end
 
   attr :entity_type, :string, required: true
@@ -276,6 +278,9 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   defp format_timestamp(_), do: "—"
 
   if Mix.env() == :test do
+    alias GtfsPlanner.Gtfs.Pathway
+    alias GtfsPlanner.Gtfs.Stop
+
     defp display_name(nil), do: "Unknown"
     defp display_name(""), do: "Unknown"
 
@@ -341,5 +346,60 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
     defp pluralize(1, word), do: word
     defp pluralize(_n, word), do: word <> "s"
+
+    defp field_groups("stop") do
+      [
+        %{key: "all", label: "All fields", fields: :all},
+        %{
+          key: "position",
+          label: "Position only",
+          fields: ~w(stop_lat stop_lon position_x position_y)
+        },
+        %{key: "accessibility", label: "Accessibility only", fields: ~w(wheelchair_boarding)},
+        %{
+          key: "naming",
+          label: "Name & description",
+          fields: ~w(stop_name stop_desc tts_stop_name)
+        }
+      ]
+    end
+
+    defp field_groups("pathway") do
+      [
+        %{key: "all", label: "All fields", fields: :all},
+        %{key: "mode", label: "Mode only", fields: ~w(pathway_mode is_bidirectional)},
+        %{
+          key: "geometry",
+          label: "Geometry only",
+          fields: ~w(length traversal_time stair_count max_slope min_width)
+        },
+        %{key: "signage", label: "Signage", fields: ~w(signposted_as reversed_signposted_as)}
+      ]
+    end
+
+    defp field_groups("level") do
+      [
+        %{key: "all", label: "All fields", fields: :all},
+        %{key: "naming", label: "Name only", fields: ~w(level_name)},
+        %{key: "index", label: "Index only", fields: ~w(level_index)}
+      ]
+    end
+
+    defp categorical_value({"stop", "wheelchair_boarding"}, 0),
+      do: {"No information", "bg-base-300"}
+
+    defp categorical_value({"stop", "wheelchair_boarding"}, 1),
+      do: {"Wheelchair accessible", "bg-emerald-600"}
+
+    defp categorical_value({"stop", "wheelchair_boarding"}, 2),
+      do: {"Not accessible", "bg-rose-600"}
+
+    defp categorical_value({"stop", "location_type"}, code),
+      do: {Stop.location_type_label(code), nil}
+
+    defp categorical_value({"pathway", "pathway_mode"}, code), do: {Pathway.mode_label(code), nil}
+    defp categorical_value({"pathway", "is_bidirectional"}, true), do: {"Bidirectional", nil}
+    defp categorical_value({"pathway", "is_bidirectional"}, false), do: {"One-way", nil}
+    defp categorical_value(_, _), do: :passthrough
   end
 end

@@ -87,6 +87,91 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
     end
   end
 
+  describe "field_groups/1" do
+    test "stop groups lead with All fields and Position" do
+      [first, second | _] = ChangeHistoryComponents.__test_field_groups__("stop")
+
+      assert first.key == "all"
+      assert first.fields == :all
+      assert second.key == "position"
+    end
+
+    test "pathway groups expose mode" do
+      keys =
+        "pathway"
+        |> ChangeHistoryComponents.__test_field_groups__()
+        |> Enum.map(& &1.key)
+
+      assert "mode" in keys
+    end
+
+    test "level groups expose naming and index" do
+      keys =
+        "level"
+        |> ChangeHistoryComponents.__test_field_groups__()
+        |> Enum.map(& &1.key)
+
+      assert "naming" in keys
+      assert "index" in keys
+    end
+  end
+
+  describe "categorical_value/2" do
+    test "stop wheelchair_boarding accessible" do
+      assert ChangeHistoryComponents.__test_categorical_value__(
+               {"stop", "wheelchair_boarding"},
+               1
+             ) == {"Wheelchair accessible", "bg-emerald-600"}
+    end
+
+    test "stop wheelchair_boarding no information" do
+      assert ChangeHistoryComponents.__test_categorical_value__(
+               {"stop", "wheelchair_boarding"},
+               0
+             ) == {"No information", "bg-base-300"}
+    end
+
+    test "stop wheelchair_boarding not accessible" do
+      assert ChangeHistoryComponents.__test_categorical_value__(
+               {"stop", "wheelchair_boarding"},
+               2
+             ) == {"Not accessible", "bg-rose-600"}
+    end
+
+    test "non-categorical fields fall through to :passthrough" do
+      assert ChangeHistoryComponents.__test_categorical_value__({"stop", "stop_name"}, "x") ==
+               :passthrough
+    end
+
+    test "pathway is_bidirectional true" do
+      assert ChangeHistoryComponents.__test_categorical_value__(
+               {"pathway", "is_bidirectional"},
+               true
+             ) == {"Bidirectional", nil}
+    end
+
+    test "pathway is_bidirectional false" do
+      assert ChangeHistoryComponents.__test_categorical_value__(
+               {"pathway", "is_bidirectional"},
+               false
+             ) == {"One-way", nil}
+    end
+
+    test "stop location_type uses Stop.location_type_label/1" do
+      assert ChangeHistoryComponents.__test_categorical_value__(
+               {"stop", "location_type"},
+               1
+             ) == {"Station", nil}
+    end
+
+    test "pathway pathway_mode uses Pathway.mode_label/1" do
+      assert ChangeHistoryComponents.__test_categorical_value__(
+               {"pathway", "pathway_mode"},
+               5
+             ) == {"Elevator", nil}
+    end
+  end
+
   describe "relative_time/2" do
     test "just now for sub-minute differences" do
       now = DateTime.utc_now()
