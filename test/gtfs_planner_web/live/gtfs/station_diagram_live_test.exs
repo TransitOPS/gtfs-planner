@@ -10681,7 +10681,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
   end
 
   describe "StationDiagramComponents - change_log_list/1" do
-    alias GtfsPlannerWeb.Gtfs.StationDiagramComponents
+    alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents, as: StationDiagramComponents
 
     defp build_log(attrs) do
       defaults = %{
@@ -10878,7 +10878,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
   end
 
   describe "StationDiagramComponents - rollback_preview/1" do
-    alias GtfsPlannerWeb.Gtfs.StationDiagramComponents
+    alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents, as: StationDiagramComponents
 
     test "lists each field change and renders cancel and confirm buttons" do
       log = %GtfsPlanner.Gtfs.ChangeLog{id: Ecto.UUID.generate()}
@@ -11637,7 +11637,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
   end
 
   describe "StationDiagramComponents - falsy-value diff rendering (R9)" do
-    alias GtfsPlannerWeb.Gtfs.StationDiagramComponents
+    alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents, as: StationDiagramComponents
 
     test "renders 0 -> 1 instead of em-dash for location_type" do
       entry = %GtfsPlanner.Gtfs.ChangeLog{
