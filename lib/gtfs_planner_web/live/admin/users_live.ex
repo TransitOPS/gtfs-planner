@@ -267,6 +267,39 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
     end
   end
 
+  # Organization settings form component (Step 6)
+
+  attr :form, Phoenix.HTML.Form, required: true
+
+  defp organization_settings_form(assigns) do
+    ~H"""
+    <.simple_form
+      for={@form}
+      id="organization-settings-form"
+      phx-change="validate_organization"
+      phx-submit="save_organization"
+    >
+      <.input
+        field={@form[:name]}
+        type="text"
+        label="Organization name"
+        maxlength="255"
+        required
+      />
+
+      <:actions>
+        <div class="flex-1"></div>
+        <.link patch={~p"/admin/users"} class="btn btn-ghost">
+          Cancel
+        </.link>
+        <.button phx-disable-with="Saving..." class="btn btn-primary">
+          Save changes
+        </.button>
+      </:actions>
+    </.simple_form>
+    """
+  end
+
   # Invite form component (Step 10)
 
   attr :form, :any, required: true
@@ -440,7 +473,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
         class="max-w-3xl"
       >
         <%= if assigns[:organization_form] do %>
-          <div></div>
+          <.organization_settings_form form={@organization_form} />
         <% end %>
       </.drawer>
     </Layouts.app>
