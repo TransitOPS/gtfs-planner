@@ -26,13 +26,15 @@ import {hooks as colocatedHooks} from "phoenix-colocated/gtfs_planner"
 import topbar from "../vendor/topbar"
 import GtfsVersionHook from "./gtfs_version_hook"
 import DiagramCanvasHook from "./diagram_canvas_hook"
+import MapAlignmentHook from "./map_alignment_hook"
+import "../vendor/leaflet"
 import LiveSelect from "../vendor/live_select"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, LiveSelect: LiveSelect.LiveSelect},
+  hooks: {...colocatedHooks, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, MapAlignment: MapAlignmentHook, LiveSelect: LiveSelect.LiveSelect},
 })
 
 // Show progress bar on live navigation and form submits

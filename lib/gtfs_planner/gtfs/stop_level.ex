@@ -12,6 +12,10 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
           scale_point_b: map() | nil,
           scale_distance_meters: Decimal.t() | nil,
           scale_meters_per_unit: Decimal.t() | nil,
+          floorplan_center_lat: float() | nil,
+          floorplan_center_lon: float() | nil,
+          floorplan_scale_mpp: float() | nil,
+          floorplan_rotation_deg: float() | nil,
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
           inserted_at: DateTime.t(),
@@ -27,6 +31,10 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
     field :scale_point_b, :map
     field :scale_distance_meters, :decimal
     field :scale_meters_per_unit, :decimal
+    field :floorplan_center_lat, :float
+    field :floorplan_center_lon, :float
+    field :floorplan_scale_mpp, :float
+    field :floorplan_rotation_deg, :float
 
     belongs_to :stop, GtfsPlanner.Gtfs.Stop
     belongs_to :level, GtfsPlanner.Gtfs.Level
@@ -70,6 +78,53 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
     |> check_constraint(:scale_point_a, name: :stop_levels_scale_all_or_none_ck)
     |> check_constraint(:scale_distance_meters, name: :stop_levels_scale_positive_ck)
     |> check_constraint(:scale_point_a, name: :stop_levels_scale_points_bounds_ck)
+  end
+
+  def alignment_changeset(stop_level, attrs) do
+    stop_level
+    |> cast(attrs, [
+      :floorplan_center_lat,
+      :floorplan_center_lon,
+      :floorplan_scale_mpp,
+      :floorplan_rotation_deg
+    ])
+    |> validate_alignment_all_or_none()
+    |> validate_number(:floorplan_center_lat,
+      greater_than_or_equal_to: -90,
+      less_than_or_equal_to: 90
+    )
+    |> validate_number(:floorplan_center_lon,
+      greater_than_or_equal_to: -180,
+      less_than_or_equal_to: 180
+    )
+    |> validate_number(:floorplan_scale_mpp, greater_than: 0)
+  end
+
+  defp validate_alignment_all_or_none(changeset) do
+    fields = [
+      :floorplan_center_lat,
+      :floorplan_center_lon,
+      :floorplan_scale_mpp,
+      :floorplan_rotation_deg
+    ]
+
+    present? =
+      Enum.map(fields, fn field ->
+        case get_field(changeset, field) do
+          nil -> false
+          _value -> true
+        end
+      end)
+
+    if Enum.uniq(present?) in [[true], [false]] do
+      changeset
+    else
+      add_error(
+        changeset,
+        :floorplan_center_lat,
+        "alignment requires center lat/lon, scale, and rotation together"
+      )
+    end
   end
 
   defp validate_scale_all_or_none(changeset) do

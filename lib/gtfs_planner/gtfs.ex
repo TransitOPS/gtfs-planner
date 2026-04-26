@@ -6,6 +6,7 @@ defmodule GtfsPlanner.Gtfs do
   import Ecto.Query, warn: false
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.AlignmentInference
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Attribution
@@ -22,6 +23,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.FeedInfo
+  alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Location
@@ -421,6 +423,375 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.update()
     |> broadcast([:stop_levels, :updated])
   end
+
+  @doc """
+  Updates a stop_level's floorplan alignment.
+  """
+  def update_stop_level_alignment(%StopLevel{} = stop_level, attrs) do
+    stop_level
+    |> StopLevel.alignment_changeset(attrs)
+    |> Repo.update()
+    |> broadcast([:stop_levels, :updated])
+  end
+
+  @doc """
+  Clears a stop_level's floorplan alignment.
+  """
+  def clear_stop_level_alignment(%StopLevel{} = stop_level) do
+    update_stop_level_alignment(stop_level, %{
+      floorplan_center_lat: nil,
+      floorplan_center_lon: nil,
+      floorplan_scale_mpp: nil,
+      floorplan_rotation_deg: nil
+    })
+  end
+
+  @doc """
+  Derives geographic coordinates for eligible child stops of a station level
+  using its saved floorplan alignment.
+
+  Eligible stops are those attached (directly or transitively) to the parent
+  station, pinned to the active level, and having a `diagram_coordinate` that
+  normalizes via `Coordinates.normalize_point/1`.
+
+  Returns `{:ok, entries}` where each entry is a map with `:stop_id`,
+  `:stop_name`, `:lat`, and `:lon`. Returns `{:error, :alignment_missing}` when
+  any of the four alignment fields on the stop level are nil,
+  `{:error, :invalid_image_dims}` when image dimensions are not positive
+  integers, or `{:error, {:transform, reason}}` when the coordinate transform
+  rejects an input.
+
+  ## Examples
+
+      iex> derive_child_stop_coords(stop_level, 1024, 768)
+      {:ok, [%{stop_id: "...", stop_name: "Platform 1", lat: 40.7128, lon: -74.0060}]}
+  """
+  @spec derive_child_stop_coords(StopLevel.t(), pos_integer(), pos_integer()) ::
+          {:ok, [%{stop_id: Ecto.UUID.t(), stop_name: String.t() | nil, lat: float(), lon: float()}]}
+          | {:error, :alignment_missing | :invalid_image_dims | {:transform, atom()}}
+  def derive_child_stop_coords(%StopLevel{} = stop_level, image_w, image_h) do
+    with {:ok, alignment} <- extract_alignment(stop_level),
+         :ok <- validate_positive_image_dims(image_w, image_h) do
+      stop_level.stop_id
+      |> list_child_stops_for_level(stop_level.level_id)
+      |> Enum.filter(& &1.on_active_level)
+      |> Enum.reduce_while({:ok, []}, fn stop, {:ok, acc} ->
+        case Coordinates.normalize_point(stop.diagram_coordinate) do
+          nil ->
+            {:cont, {:ok, acc}}
+
+          %{x: x, y: y} ->
+            case FloorplanTransform.svg_to_lat_lon(alignment, image_w, image_h, %{x: x, y: y}) do
+              {:ok, {lat, lon}} ->
+                entry = %{stop_id: stop.id, stop_name: stop.stop_name, lat: lat, lon: lon}
+                {:cont, {:ok, [entry | acc]}}
+
+              {:error, reason} ->
+                {:halt, {:error, {:transform, reason}}}
+            end
+        end
+      end)
+      |> case do
+        {:ok, entries} -> {:ok, Enum.reverse(entries)}
+        {:error, _} = error -> error
+      end
+    end
+  end
+
+  defp extract_alignment(%StopLevel{
+         floorplan_center_lat: lat,
+         floorplan_center_lon: lon,
+         floorplan_scale_mpp: scale,
+         floorplan_rotation_deg: rotation
+       })
+       when is_number(lat) and is_number(lon) and is_number(scale) and is_number(rotation) do
+    {:ok,
+     %{
+       center_lat: lat,
+       center_lon: lon,
+       scale_mpp: scale,
+       rotation_deg: rotation
+     }}
+  end
+
+  defp extract_alignment(%StopLevel{}), do: {:error, :alignment_missing}
+
+  defp validate_positive_image_dims(w, h)
+       when is_integer(w) and is_integer(h) and w > 0 and h > 0,
+       do: :ok
+
+  defp validate_positive_image_dims(_, _), do: {:error, :invalid_image_dims}
+
+  @doc """
+  Applies the saved floorplan alignment to persist `stop_lat`/`stop_lon` on every
+  eligible child stop of `stop_level`.
+
+  Derives coordinates via `derive_child_stop_coords/3`, then updates all derived
+  stops atomically in a single `Repo.transaction`. Each successful update emits a
+  `[:stops, :updated]` broadcast. A single failed changeset rolls back every write
+  in the call.
+
+  Returns `{:ok, count}` with the number of updated stops, `{:ok, 0}` when no
+  eligible stops exist, or `{:error, reason}` on derivation or persistence failure.
+  """
+  @spec apply_alignment_to_child_stops(StopLevel.t(), pos_integer(), pos_integer()) ::
+          {:ok, non_neg_integer()}
+          | {:error, :alignment_missing | :invalid_image_dims | {:transform, atom()} | term()}
+  def apply_alignment_to_child_stops(%StopLevel{} = stop_level, image_w, image_h) do
+    with {:ok, derived} <- derive_child_stop_coords(stop_level, image_w, image_h) do
+      persist_derived_coords(derived)
+    end
+  end
+
+  defp persist_derived_coords([]), do: {:ok, 0}
+
+  defp persist_derived_coords(derived) when is_list(derived) do
+    transaction_result =
+      Repo.transaction(fn ->
+        Enum.map(derived, fn entry ->
+          case update_derived_stop_coords(entry) do
+            {:ok, updated_stop} -> updated_stop
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+      end)
+
+    case transaction_result do
+      {:ok, updated_stops} ->
+        Enum.each(updated_stops, fn stop ->
+          broadcast({:ok, stop}, [:stops, :updated])
+        end)
+
+        {:ok, length(updated_stops)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp update_derived_stop_coords(%{stop_id: stop_id, lat: lat, lon: lon}) do
+    case Repo.get(Stop, stop_id) do
+      nil ->
+        {:error, :stop_not_found}
+
+      %Stop{} = stop ->
+        stop
+        |> Stop.changeset(%{
+          stop_lat: Decimal.from_float(lat),
+          stop_lon: Decimal.from_float(lon)
+        })
+        |> Repo.update()
+    end
+  end
+
+  @doc """
+  Infers floorplan alignment for `stop_level` from anchored child stops and
+  eligible cross-level elevator pathways.
+
+  Returns the inferred alignment plus lists of anchors used and candidates that
+  were excluded with reasons. Does not persist any data.
+  """
+  @spec infer_level_alignment(StopLevel.t(), pos_integer(), pos_integer()) ::
+          {:ok,
+           %{
+             inferred_alignment: map(),
+             anchors_used: [map()],
+             excluded_anchors: [map()]
+           }}
+          | {:error,
+             :alignment_prerequisites_missing
+             | :insufficient_anchors
+             | :degenerate_geometry
+             | :high_residual
+             | :invalid_input
+             | :not_found}
+  def infer_level_alignment(nil, _image_w, _image_h), do: {:error, :not_found}
+
+  def infer_level_alignment(%StopLevel{level_id: nil}, _image_w, _image_h),
+    do: {:error, :alignment_prerequisites_missing}
+
+  def infer_level_alignment(%StopLevel{} = stop_level, image_w, image_h) do
+    with :ok <- validate_positive_image_dims(image_w, image_h) do
+      direct = direct_candidates_for(stop_level)
+      cross = cross_level_candidates_for(stop_level)
+
+      {anchors, exclusions} = AlignmentInference.select_anchors(direct, cross)
+
+      case AlignmentInference.infer_alignment(anchors, image_w, image_h) do
+        {:ok, inferred} ->
+          {:ok,
+           %{
+             inferred_alignment: inferred,
+             anchors_used: anchors,
+             excluded_anchors: exclusions
+           }}
+
+        {:error, _} = error ->
+          error
+      end
+    else
+      {:error, :invalid_image_dims} -> {:error, :invalid_input}
+      other -> other
+    end
+  end
+
+  @doc """
+  Infers and persists floorplan alignment for `stop_level`.
+
+  Calls `infer_level_alignment/3` and, on success, writes the inferred
+  `floorplan_*` fields via `StopLevel.alignment_changeset/2`. Emits a
+  `[:stop_levels, :updated]` broadcast only on successful update.
+  """
+  @spec save_inferred_level_alignment(StopLevel.t(), pos_integer(), pos_integer()) ::
+          {:ok, StopLevel.t(), map()}
+          | {:error,
+             :alignment_prerequisites_missing
+             | :insufficient_anchors
+             | :degenerate_geometry
+             | :high_residual
+             | :invalid_input
+             | :not_found
+             | Ecto.Changeset.t()}
+  def save_inferred_level_alignment(%StopLevel{} = stop_level, image_w, image_h) do
+    with {:ok, %{inferred_alignment: inferred} = result} <-
+           infer_level_alignment(stop_level, image_w, image_h),
+         {:ok, updated} <- persist_inferred_alignment(stop_level, inferred) do
+      broadcast({:ok, updated}, [:stop_levels, :updated])
+      {:ok, updated, result}
+    end
+  end
+
+  def save_inferred_level_alignment(nil, _image_w, _image_h), do: {:error, :not_found}
+
+  defp persist_inferred_alignment(%StopLevel{} = stop_level, inferred) do
+    stop_level
+    |> StopLevel.alignment_changeset(%{
+      floorplan_center_lat: inferred.center_lat,
+      floorplan_center_lon: inferred.center_lon,
+      floorplan_scale_mpp: inferred.scale_mpp,
+      floorplan_rotation_deg: inferred.rotation_deg
+    })
+    |> Repo.update()
+  end
+
+  defp direct_candidates_for(%StopLevel{} = stop_level) do
+    stop_level.stop_id
+    |> list_child_stops_for_level(stop_level.level_id)
+    |> Enum.filter(& &1.on_active_level)
+    |> Enum.map(fn stop ->
+      {sx, sy} = svg_xy_from_coordinate(stop.diagram_coordinate)
+
+      %{
+        stop_id: stop.id,
+        svg_x: sx,
+        svg_y: sy,
+        lat: decimal_to_float(stop.stop_lat),
+        lon: decimal_to_float(stop.stop_lon)
+      }
+    end)
+  end
+
+  defp cross_level_candidates_for(%StopLevel{} = stop_level) do
+    pathways =
+      list_pathways_for_level(
+        stop_level.organization_id,
+        stop_level.gtfs_version_id,
+        stop_level.level_id,
+        stop_level.stop_id
+      )
+      |> Enum.filter(& &1.is_cross_level)
+
+    target_level = Repo.get!(Level, stop_level.level_id)
+    partner_level_indexes = load_partner_level_indexes(pathways, stop_level, target_level)
+
+    pathways
+    |> Enum.map(fn pathway ->
+      case cross_level_endpoints(pathway) do
+        {target_stop, partner_stop} ->
+          partner_index = Map.get(partner_level_indexes, partner_stop.level_id)
+          delta = level_index_delta(target_level.level_index, partner_index)
+          build_cross_level_candidate(pathway, target_stop, partner_stop, delta)
+
+        nil ->
+          nil
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp cross_level_endpoints(%{from_on_active_level: true, to_on_active_level: false} = p),
+    do: {p.from_stop, p.to_stop}
+
+  defp cross_level_endpoints(%{from_on_active_level: false, to_on_active_level: true} = p),
+    do: {p.to_stop, p.from_stop}
+
+  defp cross_level_endpoints(_), do: nil
+
+  defp build_cross_level_candidate(_pathway, _target_stop, %Stop{parent_station: nil}, _delta),
+    do: nil
+
+  defp build_cross_level_candidate(_pathway, _target_stop, %Stop{parent_station: ""}, _delta),
+    do: nil
+
+  defp build_cross_level_candidate(_pathway, _target_stop, _partner_stop, nil), do: nil
+
+  defp build_cross_level_candidate(pathway, target_stop, partner_stop, delta) do
+    {sx, sy} = svg_xy_from_coordinate(target_stop.diagram_coordinate)
+
+    %{
+      stop_id: target_stop.id,
+      pathway_id: pathway.id,
+      pathway_mode: pathway.pathway_mode,
+      level_index_delta: delta,
+      svg_x: sx,
+      svg_y: sy,
+      lat: decimal_to_float(partner_stop.stop_lat),
+      lon: decimal_to_float(partner_stop.stop_lon)
+    }
+  end
+
+  defp load_partner_level_indexes(pathways, stop_level, target_level) do
+    partner_level_ids =
+      pathways
+      |> Enum.flat_map(fn pathway ->
+        case cross_level_endpoints(pathway) do
+          {_target, partner} -> [partner.level_id]
+          nil -> []
+        end
+      end)
+      |> Enum.reject(&(is_nil(&1) or &1 == target_level.level_id))
+      |> Enum.uniq()
+
+    case partner_level_ids do
+      [] ->
+        %{}
+
+      ids ->
+        from(l in Level,
+          where:
+            l.organization_id == ^stop_level.organization_id and
+              l.gtfs_version_id == ^stop_level.gtfs_version_id and
+              l.level_id in ^ids,
+          select: {l.level_id, l.level_index}
+        )
+        |> Repo.all()
+        |> Map.new()
+    end
+  end
+
+  defp level_index_delta(_target_index, nil), do: nil
+  defp level_index_delta(target_index, partner_index), do: abs(partner_index - target_index)
+
+  defp svg_xy_from_coordinate(coord) do
+    case Coordinates.normalize_point(coord) do
+      %{x: x, y: y} -> {x, y}
+      nil -> {nil, nil}
+    end
+  end
+
+  defp decimal_to_float(%Decimal{} = d), do: Decimal.to_float(d)
+  defp decimal_to_float(n) when is_number(n), do: n * 1.0
+  defp decimal_to_float(_), do: nil
 
   @doc """
   Recalculates pathway lengths for same-level pathways on a station level.
