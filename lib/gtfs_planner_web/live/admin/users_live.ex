@@ -472,9 +472,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
         title="Organization settings"
         class="max-w-3xl"
       >
-        <%= if assigns[:organization_form] do %>
-          <.organization_settings_form form={@organization_form} />
-        <% end %>
+        <.organization_settings_form :if={@live_action == :organization_settings} form={@organization_form} />
       </.drawer>
     </Layouts.app>
     """

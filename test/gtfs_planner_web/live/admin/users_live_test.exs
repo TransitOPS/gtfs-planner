@@ -229,22 +229,15 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       assert html =~ ~s(value="#{organization.name}")
     end
 
-    test "assigns organization_form for :organization_settings", %{conn: conn} do
+    test "validate_organization with blank name renders validation error", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
 
-      form = :sys.get_state(view.pid).socket.assigns.organization_form
-      assert %Phoenix.HTML.Form{} = form
-      assert form.source.data.__struct__ == GtfsPlanner.Organizations.Organization
-    end
+      html =
+        view
+        |> form("#organization-settings-form", organization: %{name: ""})
+        |> render_change()
 
-    test "validate_organization with blank name produces validation error", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
-
-      render_change(view, "validate_organization", %{"organization" => %{"name" => ""}})
-
-      form = :sys.get_state(view.pid).socket.assigns.organization_form
-      assert form.source.action == :validate
-      assert {"can't be blank", _} = form.source.errors[:name]
+      assert html =~ "can&#39;t be blank"
     end
 
     test "save_organization persists new name and patches to /admin/users", %{
