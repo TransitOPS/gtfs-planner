@@ -4,8 +4,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   """
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.Gtfs.StationReportDrawerComponents
   import GtfsPlannerWeb.Gtfs.StationReport2Components
-  import GtfsPlannerWeb.Gtfs.StationReportComponents, only: [entity_drawer: 1]
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
