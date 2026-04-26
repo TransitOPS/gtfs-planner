@@ -1,8 +1,8 @@
-defmodule GtfsPlanner.Gtfs.StationReport.GpsChecksTest do
+defmodule GtfsPlanner.Gtfs.StationReport2.GpsChecksTest do
   use ExUnit.Case, async: true
 
-  alias GtfsPlanner.Gtfs.StationReport.Helpers
-  alias GtfsPlanner.Gtfs.StationReport.GpsChecks
+  alias GtfsPlanner.Gtfs.StationReport2.Helpers
+  alias GtfsPlanner.Gtfs.StationReport2.GpsChecks
   alias GtfsPlanner.Gtfs.Stop
 
   describe "validate/2" do

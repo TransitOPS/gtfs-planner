@@ -1,7 +1,7 @@
-defmodule GtfsPlanner.Gtfs.StationReport.NamingChecksTest do
+defmodule GtfsPlanner.Gtfs.StationReport2.NamingChecksTest do
   use ExUnit.Case, async: true
 
-  alias GtfsPlanner.Gtfs.StationReport.NamingChecks
+  alias GtfsPlanner.Gtfs.StationReport2.NamingChecks
   alias GtfsPlanner.Gtfs.Stop
 
   describe "validate/2" do

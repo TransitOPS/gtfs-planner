@@ -71,7 +71,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       }
     end
 
-    test "renders report_2 route with all section IDs", %{
+    test "renders report route with all section IDs", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -81,7 +81,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(view, "#station-sub-nav")
       assert has_element?(view, "#station-report-2")
@@ -104,7 +104,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       section_ids = [
         "report2-station-inventory",
@@ -128,26 +128,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
              "Sections are not in the expected order"
     end
 
-    test "Reports New tab is active on report_2 route", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
-
-      assert has_element?(
-               view,
-               "#station-sub-nav a[aria-current='page']",
-               "Reports New"
-             )
-    end
-
-    test "Report tab remains active on original report route", %{
+    test "Reports tab is active on report route", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -162,8 +143,45 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert has_element?(
                view,
                "#station-sub-nav a[aria-current='page']",
-               "Report"
+               "Reports"
              )
+    end
+
+    test "station nav has one reports tab and no legacy label", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      report_href = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report"
+
+      {:ok, view, html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(
+               view,
+               "#station-sub-nav a[href='#{report_href}'][aria-current='page']",
+               "Reports"
+             )
+
+      refute html =~ "Reports New"
+      assert length(:binary.matches(html, report_href)) == 1
+    end
+
+    test "legacy report route is not defined", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn = get(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+      assert conn.status == 404
     end
 
     test "data quality section renders real check rows", %{
@@ -176,7 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Check that known check labels appear
       assert html =~ "Isolated nodes"
@@ -198,7 +216,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # GPS check labels
       assert html =~ "GPS presence by location type"
@@ -222,7 +240,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Stop-name links use phx-click="select_entity" instead of navigation hrefs
       assert has_element?(view, "[phx-click='select_entity'][phx-value-entity_type='stop']")
@@ -257,7 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # The stop-name link shows the human-readable name, not the raw ID
       assert has_element?(
@@ -283,7 +301,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       refute has_element?(view, "#report-stop-edit-form")
 
@@ -306,7 +324,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open the drawer
       view
@@ -368,7 +386,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # All 12 generic nodes plus the entrance should appear as isolated
       # Verify the last generic node renders (confirms full list is present)
@@ -387,7 +405,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open the drawer
       view
@@ -431,7 +449,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "Naming &amp; ID Conventions"
       assert html =~ "of 6 checks failed"
@@ -447,7 +465,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "Stop name title case"
       assert html =~ "Generic node ID prefix"
@@ -484,7 +502,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(view, "#report2-naming-conventions .bg-red-100", "FAIL")
     end
@@ -499,7 +517,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(view, "#report2-naming-conventions .bg-green-100", "PASS")
     end
@@ -531,7 +549,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "Expected prefix"
       assert html =~ "entrance_"
@@ -546,7 +564,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       assert {:error, {:live_redirect, %{to: to_path, flash: %{"error" => "Station not found"}}}} =
-               live(conn, "/gtfs/#{gtfs_version.id}/stops/UNKNOWN/report_2")
+               live(conn, "/gtfs/#{gtfs_version.id}/stops/UNKNOWN/report")
 
       assert to_path == "/gtfs/#{gtfs_version.id}/stops"
     end
@@ -561,7 +579,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(view, "#report2-station-inventory")
       refute has_element?(view, "#report2-station-inventory p", "Not yet implemented")
@@ -583,7 +601,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # All 5 location types present
       assert html =~ "Stop/Platform"
@@ -616,7 +634,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "L1"
       assert html =~ "Street"

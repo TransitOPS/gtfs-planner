@@ -1,4 +1,4 @@
-defmodule GtfsPlanner.Gtfs.StationReport.NamingChecks do
+defmodule GtfsPlanner.Gtfs.StationReport2.NamingChecks do
   @moduledoc """
   Naming convention checks for station report.
 
@@ -6,7 +6,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecks do
   for generic nodes and boarding areas.
   """
 
-  alias GtfsPlanner.Gtfs.StationReport.Helpers
+  alias GtfsPlanner.Gtfs.StationReport2.Helpers
 
   @test_tokens ~w[test temp placeholder dummy todo tbd delete sample]
 

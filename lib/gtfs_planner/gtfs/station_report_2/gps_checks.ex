@@ -1,4 +1,4 @@
-defmodule GtfsPlanner.Gtfs.StationReport.GpsChecks do
+defmodule GtfsPlanner.Gtfs.StationReport2.GpsChecks do
   @moduledoc """
   GPS coordinate validation checks for station report.
 
@@ -6,7 +6,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.GpsChecks do
   from station, and node clustering.
   """
 
-  alias GtfsPlanner.Gtfs.StationReport.Helpers
+  alias GtfsPlanner.Gtfs.StationReport2.Helpers
 
   @entrance_distance_threshold_m 500
   @clustering_distance_threshold_m 200

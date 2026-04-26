@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
   """
 
   alias GtfsPlanner.Gtfs.Graph
-  alias GtfsPlanner.Gtfs.StationReport.Helpers
+  alias GtfsPlanner.Gtfs.StationReport2.Helpers
 
   @spec build(%{station: map(), child_stops: [map()], pathways: [map()]}) :: [map()]
   def build(%{station: station, child_stops: child_stops, pathways: pathways}) do

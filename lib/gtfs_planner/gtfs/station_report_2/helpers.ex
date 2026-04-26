@@ -1,4 +1,4 @@
-defmodule GtfsPlanner.Gtfs.StationReport.Helpers do
+defmodule GtfsPlanner.Gtfs.StationReport2.Helpers do
   @moduledoc """
   Shared pure utilities for station report check submodules.
   """

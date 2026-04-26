@@ -5,7 +5,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Gps do
   Reuses `GpsChecks.validate/2` for 3 of 4 items, builds GPS presence table separately.
   """
 
-  alias GtfsPlanner.Gtfs.StationReport.GpsChecks
+  alias GtfsPlanner.Gtfs.StationReport2.GpsChecks
 
   @type_labels %{
     0 => "Stop / Platform",

@@ -1,7 +1,7 @@
-defmodule GtfsPlanner.Gtfs.StationReport.HelpersTest do
+defmodule GtfsPlanner.Gtfs.StationReport2.HelpersTest do
   use ExUnit.Case, async: true
 
-  alias GtfsPlanner.Gtfs.StationReport.Helpers
+  alias GtfsPlanner.Gtfs.StationReport2.Helpers
 
   describe "haversine/4" do
     test "returns ~111,195m for one equatorial degree of longitude" do
