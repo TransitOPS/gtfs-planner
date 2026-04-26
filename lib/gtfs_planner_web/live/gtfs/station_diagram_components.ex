@@ -479,45 +479,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             />
           </div>
 
-          <div class="ml-auto flex items-end gap-2">
-            <span class={[
-              "self-center text-xs font-medium",
-              if(@has_alignment?,
-                do: "text-green-700",
-                else: "text-base-content/50"
-              )
-            ]}>
-              {if @has_alignment?, do: "Saved", else: "Not saved"}
-            </span>
-            <button id="map-alignment-reset" type="button" class="btn btn-sm btn-ghost">
-              Reset
-            </button>
-            <button id="map-alignment-clear" type="button" class="btn btn-sm btn-ghost">
-              Clear saved
-            </button>
+          <div class="ml-auto flex items-center gap-3">
             <button id="map-alignment-save" type="button" class="btn btn-sm btn-primary">
               Save alignment
-            </button>
-            <button
-              id="map-alignment-infer"
-              type="button"
-              class="btn btn-sm btn-primary"
-              phx-click="infer_alignment"
-              disabled={
-                is_nil(@active_stop_level) or is_nil(@image_natural_width) or
-                  is_nil(@image_natural_height)
-              }
-            >
-              Infer alignment
             </button>
             <button
               id="map-alignment-apply"
               type="button"
               class="btn btn-sm btn-primary"
-              disabled={@apply_disabled?}
+              title="Set lat/lon for child stops from the floorplan's current position on the map"
+              disabled={is_nil(@image_natural_width) or is_nil(@image_natural_height)}
             >
-              Apply to child stops
+              Apply image position
             </button>
+            <span class="text-xs text-base-content/60">or</span>
+            <button
+              id="map-alignment-infer"
+              type="button"
+              class="btn btn-sm btn-primary"
+              phx-click="infer_alignment"
+              title="Compute alignment from child stops that already have lat/lon, then set lat/lon on the rest"
+              disabled={
+                @anchor_count < GtfsPlanner.Gtfs.AlignmentInference.anchor_minimum() or
+                  is_nil(@image_natural_width) or is_nil(@image_natural_height)
+              }
+            >
+              Infer from anchors
+            </button>
+            <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
+              {@child_stops_with_geo} of {@child_stops_total} child stops have lat/long
+            </span>
           </div>
         </div>
       </div>
