@@ -373,7 +373,7 @@ const MapAlignmentHook = {
       const cyBefore = canvasRect.height / 2 + this.transform.ty;
       const worldCenter = this.leafletMap.containerPointToLatLng([cxBefore, cyBefore]);
 
-      this.leafletMap.setView([lat, lon]);
+      this.leafletMap.setView([lat, lon], this.leafletMap.getZoom(), { animate: false });
 
       const newPt = this.leafletMap.latLngToContainerPoint(worldCenter);
       this.transform.tx = newPt.x - canvasRect.width / 2;
