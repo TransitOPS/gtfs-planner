@@ -210,6 +210,77 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
     end
   end
 
+  describe "rollback_button_variant/3" do
+    test "latest non-reverted updated entry returns :undo" do
+      entry = %{id: 1, action: "updated"}
+
+      assert ChangeHistoryComponents.__test_rollback_button_variant__(entry, %{}, true) ==
+               :undo
+    end
+
+    test "older non-reverted updated entry returns :restore" do
+      entry = %{id: 1, action: "updated"}
+
+      assert ChangeHistoryComponents.__test_rollback_button_variant__(entry, %{}, false) ==
+               :restore
+    end
+
+    test "rolled_back entry returns :reapply" do
+      entry = %{id: 1, action: "rolled_back"}
+
+      assert ChangeHistoryComponents.__test_rollback_button_variant__(entry, %{}, true) ==
+               :reapply
+    end
+
+    test "created entry returns :original" do
+      entry = %{id: 1, action: "created"}
+
+      assert ChangeHistoryComponents.__test_rollback_button_variant__(entry, %{}, true) ==
+               :original
+    end
+
+    test "entry whose id is keyed in rollback_by_original_id returns :none" do
+      entry = %{id: 7, action: "updated"}
+      rollback_map = %{7 => %{id: 99, action: "rolled_back"}}
+
+      assert ChangeHistoryComponents.__test_rollback_button_variant__(entry, rollback_map, true) ==
+               :none
+    end
+
+    test "reverted entry takes precedence over latest? = true" do
+      entry = %{id: 7, action: "updated"}
+      rollback_map = %{7 => %{id: 99, action: "rolled_back"}}
+
+      assert ChangeHistoryComponents.__test_rollback_button_variant__(entry, rollback_map, true) ==
+               :none
+    end
+  end
+
+  describe "rollback_button_label/1 (atom-arg)" do
+    test ":undo" do
+      assert ChangeHistoryComponents.__test_rollback_button_label__(:undo) == "Undo this change"
+    end
+
+    test ":restore" do
+      assert ChangeHistoryComponents.__test_rollback_button_label__(:restore) ==
+               "Restore to this state"
+    end
+
+    test ":reapply" do
+      assert ChangeHistoryComponents.__test_rollback_button_label__(:reapply) ==
+               "Re-apply this change"
+    end
+
+    test ":original" do
+      assert ChangeHistoryComponents.__test_rollback_button_label__(:original) ==
+               "Original version"
+    end
+
+    test ":none" do
+      assert ChangeHistoryComponents.__test_rollback_button_label__(:none) == nil
+    end
+  end
+
   describe "relative_time/2" do
     test "just now for sub-minute differences" do
       now = DateTime.utc_now()

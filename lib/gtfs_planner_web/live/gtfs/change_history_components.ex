@@ -24,6 +24,11 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
     def __test_apply_field_filter__(rows, entity_type, filter_key),
       do: apply_field_filter(rows, entity_type, filter_key)
+
+    def __test_rollback_button_variant__(entry, rollback_by_original_id, latest?),
+      do: rollback_button_variant(entry, rollback_by_original_id, latest?)
+
+    def __test_rollback_button_label__(variant), do: rollback_action_label(variant)
   end
 
   attr :entity_type, :string, required: true
@@ -414,5 +419,24 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         nil -> diff_rows
       end
     end
+
+    defp rollback_button_variant(%{id: id}, rollback_by_original_id, _latest?)
+         when is_map_key(rollback_by_original_id, id),
+         do: :none
+
+    defp rollback_button_variant(%{action: "rolled_back"}, _rollback_by_original_id, _latest?),
+      do: :reapply
+
+    defp rollback_button_variant(%{action: "created"}, _rollback_by_original_id, _latest?),
+      do: :original
+
+    defp rollback_button_variant(_entry, _rollback_by_original_id, true), do: :undo
+    defp rollback_button_variant(_entry, _rollback_by_original_id, false), do: :restore
+
+    defp rollback_action_label(:undo), do: "Undo this change"
+    defp rollback_action_label(:restore), do: "Restore to this state"
+    defp rollback_action_label(:reapply), do: "Re-apply this change"
+    defp rollback_action_label(:original), do: "Original version"
+    defp rollback_action_label(:none), do: nil
   end
 end
