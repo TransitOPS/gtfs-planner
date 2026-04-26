@@ -213,6 +213,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> stream(:pathways, [], reset: true)
     |> reset_ruler_state()
     |> assign(:child_stops_list, [])
+    |> assign(:child_stops_total, 0)
+    |> assign(:child_stops_with_geo, 0)
+    |> assign(:anchor_count, 0)
     |> assign(:unassigned_child_stops, [])
     |> assign(:pathways_list, [])
     |> assign(:active_stop_level, nil)
@@ -257,11 +260,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     visible_canvas_stops = Enum.filter(all_child_stops, & &1.on_active_level)
     {same_level_pathways, pathway_pair_counts} = decorate_same_level_pathways(level_pathways)
 
+    child_stops_total = length(child_stops_on_level)
+
+    child_stops_with_geo =
+      Enum.count(child_stops_on_level, fn s ->
+        not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
+      end)
+
+    anchor_count =
+      Enum.count(child_stops_on_level, fn s ->
+        not is_nil(s.diagram_coordinate) and not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
+      end)
+
     socket
     |> stream(:child_stops, visible_canvas_stops, reset: true)
     |> stream(:pathways, same_level_pathways, reset: true)
     |> reset_ruler_state()
     |> assign(:child_stops_list, child_stops_on_level)
+    |> assign(:child_stops_total, child_stops_total)
+    |> assign(:child_stops_with_geo, child_stops_with_geo)
+    |> assign(:anchor_count, anchor_count)
     |> assign(:unassigned_child_stops, unassigned_child_stops)
     |> assign(:pathways_list, level_pathways)
     |> assign(:active_stop_level, stop_level)
@@ -427,6 +445,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 align_rotation_deg={@active_stop_level && @active_stop_level.floorplan_rotation_deg}
                 image_natural_width={@floorplan_image_w}
                 image_natural_height={@floorplan_image_h}
+                child_stops_total={@child_stops_total}
+                child_stops_with_geo={@child_stops_with_geo}
+                anchor_count={@anchor_count}
               />
             </div>
           <% else %>
