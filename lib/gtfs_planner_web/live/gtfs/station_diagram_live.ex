@@ -723,7 +723,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> assign(:pending_xy, nil)
              |> assign(:selected_stop_id, nil)
              |> assign(:child_stop_form, to_form(%{}))
-             |> reset_reposition_state()}
+             |> reset_reposition_state()
+             |> maybe_refresh_history_entries("stop", updated_stop.id)}
 
           {:error, _changeset} ->
             {:noreply, put_flash(socket, :error, "Failed to re-position stop")}
@@ -849,7 +850,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              socket
              |> stream_insert(:child_stops, updated_stop)
              |> assign(:dragging_stop_id, nil)
-             |> load_pathways_for_level(socket.assigns.active_level)}
+             |> load_pathways_for_level(socket.assigns.active_level)
+             |> maybe_refresh_history_entries("stop", updated_stop.id)}
 
           {:error, _changeset} ->
             Logger.debug("drag_end failed to persist", stop_id: id)
@@ -1189,7 +1191,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> assign(:pending_xy, nil)
              |> assign(:selected_stop_id, nil)
              |> assign(:active_point_id, nil)
-             |> assign(:child_stop_form, to_form(%{}))}
+             |> assign(:child_stop_form, to_form(%{}))
+             |> maybe_refresh_history_entries("stop", updated_stop.id)}
 
           {:error, changeset} ->
             {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
@@ -2194,7 +2197,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              next_socket
              |> assign(:pathway_form_dirty, false)
-             |> assign(:pathway_error, nil)}
+             |> assign(:pathway_error, nil)
+             |> maybe_refresh_history_entries("pathway", updated_pathway.id)}
 
           {:error, changeset} ->
             {:noreply, assign(socket, :pathway_form, to_form(changeset))}
@@ -2296,7 +2300,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> assign(:active_pathway_tab, active_pathway_tab)
              |> assign(:pathway_form, to_form(pathway_form_params(reloaded)))
              |> assign(:pathway_form_dirty, false)
-             |> assign(:pathway_error, nil)}
+             |> assign(:pathway_error, nil)
+             |> maybe_refresh_history_entries("pathway", reloaded.id)}
 
           {:error, changeset} ->
             detail =
@@ -2593,7 +2598,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> assign(:active_level, updated_level)
              |> assign(:show_level_modal, nil)
              |> assign(:level_form, to_form(%{}))
-             |> load_level_data(updated_level)}
+             |> load_level_data(updated_level)
+             |> maybe_refresh_history_entries("level", updated_level.id)}
 
           {:error, %Ecto.Changeset{} = changeset} ->
             {:noreply, assign(socket, :level_form, to_form(changeset))}
@@ -2817,6 +2823,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       Gtfs.list_change_logs_for_entity(organization_id, gtfs_version_id, entity_type, entity_id)
 
     assign(socket, :history_entries, entries)
+  end
+
+  defp maybe_refresh_history_entries(socket, entity_type, entity_id) do
+    if socket.assigns.history_open_for == {entity_type, entity_id} do
+      refresh_history_entries(socket, entity_type, entity_id)
+    else
+      socket
+    end
   end
 
   defp rollback_error_message(:cannot_rollback_create_or_delete),

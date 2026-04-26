@@ -227,11 +227,18 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
                :restore
     end
 
-    test "rolled_back entry returns :reapply" do
+    test "latest rolled_back entry returns :undo (it represents the current state)" do
       entry = %{id: 1, action: "rolled_back"}
 
       assert ChangeHistoryComponents.__test_rollback_button_variant__(entry, %{}, true) ==
-               :reapply
+               :undo
+    end
+
+    test "older rolled_back entry returns :restore" do
+      entry = %{id: 1, action: "rolled_back"}
+
+      assert ChangeHistoryComponents.__test_rollback_button_variant__(entry, %{}, false) ==
+               :restore
     end
 
     test "created entry returns :original" do
@@ -241,20 +248,20 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
                :original
     end
 
-    test "entry whose id is keyed in rollback_by_original_id returns :none" do
+    test "entry whose id is keyed in rollback_by_original_id returns :reapply" do
       entry = %{id: 7, action: "updated"}
       rollback_map = %{7 => %{id: 99, action: "rolled_back"}}
 
-      assert ChangeHistoryComponents.__test_rollback_button_variant__(entry, rollback_map, true) ==
-               :none
+      assert ChangeHistoryComponents.__test_rollback_button_variant__(entry, rollback_map, false) ==
+               :reapply
     end
 
-    test "reverted entry takes precedence over latest? = true" do
+    test "reverted entry takes precedence over current? = true" do
       entry = %{id: 7, action: "updated"}
       rollback_map = %{7 => %{id: 99, action: "rolled_back"}}
 
       assert ChangeHistoryComponents.__test_rollback_button_variant__(entry, rollback_map, true) ==
-               :none
+               :reapply
     end
   end
 

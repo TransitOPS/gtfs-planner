@@ -3512,7 +3512,7 @@ defmodule GtfsPlanner.Gtfs do
       update_entity_without_broadcast(entity, update_attrs)
     end)
     |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
-      insert_rollback_log(log, audit_ctx, entity)
+      insert_rollback_log(log, audit_ctx, entity, update_attrs)
     end)
   end
 
@@ -3629,7 +3629,9 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
-  defp insert_rollback_log(%ChangeLog{} = log, %AuditContext{} = ctx, current_entity) do
+  defp insert_rollback_log(%ChangeLog{} = log, %AuditContext{} = ctx, current_entity, update_attrs) do
+    pre_rollback_snapshot = build_snapshot(log.entity_type, current_entity)
+
     %ChangeLog{}
     |> ChangeLog.changeset(%{
       entity_type: log.entity_type,
@@ -3638,13 +3640,33 @@ defmodule GtfsPlanner.Gtfs do
       station_stop_id: log.station_stop_id,
       actor_id: ctx.actor_id,
       actor_email: ctx.actor_email,
-      snapshot: build_snapshot(log.entity_type, current_entity),
-      changed_fields: nil,
+      snapshot: pre_rollback_snapshot,
+      changed_fields: rollback_changed_fields(pre_rollback_snapshot, update_attrs),
       action: "rolled_back",
       rolled_back_to_log_id: log.id,
       organization_id: log.organization_id,
       gtfs_version_id: log.gtfs_version_id
     })
     |> Repo.insert()
+  end
+
+  defp rollback_changed_fields(pre_rollback_snapshot, update_attrs) do
+    current = stringify_map_keys(pre_rollback_snapshot)
+    target = stringify_map_keys(update_attrs)
+
+    target
+    |> Enum.reduce(%{}, fn {field, target_value}, acc ->
+      current_value = Map.get(current, field)
+
+      if same_value?(current_value, target_value) do
+        acc
+      else
+        Map.put(acc, field, %{"from" => current_value, "to" => target_value})
+      end
+    end)
+    |> case do
+      empty when map_size(empty) == 0 -> nil
+      changed -> changed
+    end
   end
 end

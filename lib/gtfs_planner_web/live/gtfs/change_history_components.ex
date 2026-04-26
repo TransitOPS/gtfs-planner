@@ -45,8 +45,9 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     ~H"""
     <div
       id={"#{@entity_type}-tabs"}
-      class="flex gap-1 mb-4 border-b border-base-300"
+      class="flex gap-6 mb-4 border-b border-base-300"
       role="tablist"
+      aria-orientation="horizontal"
     >
       <button
         id={"#{@entity_type}-tab-details"}
@@ -55,9 +56,14 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         phx-click={if @history_active, do: "hide_history"}
         aria-selected={if @history_active, do: "false", else: "true"}
         aria-controls={"#{@entity_type}-panel-details"}
+        tabindex={if @history_active, do: "-1", else: "0"}
         class={[
-          "btn btn-sm btn-ghost rounded-none border-b-2",
-          if(@history_active, do: "border-transparent", else: "border-primary")
+          "py-3 text-sm bg-transparent border-0 -mb-px border-b-2",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:rounded-sm",
+          if(@history_active,
+            do: "text-base-content/60 hover:text-base-content border-transparent",
+            else: "text-base-content font-medium border-base-content"
+          )
         ]}
       >
         Details
@@ -71,9 +77,14 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         phx-value-entity-id={@entity_id}
         aria-selected={if @history_active, do: "true", else: "false"}
         aria-controls={"#{@entity_type}-panel-history"}
+        tabindex={if @history_active, do: "0", else: "-1"}
         class={[
-          "btn btn-sm btn-ghost rounded-none border-b-2",
-          if(@history_active, do: "border-primary", else: "border-transparent")
+          "py-3 text-sm bg-transparent border-0 -mb-px border-b-2",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:rounded-sm",
+          if(@history_active,
+            do: "text-base-content font-medium border-base-content",
+            else: "text-base-content/60 hover:text-base-content border-transparent"
+          )
         ]}
       >
         History
@@ -90,10 +101,19 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   def change_log_list(assigns) do
     today = Date.utc_today()
     rollback_by_original_id = rollback_by_original_id(assigns.entries)
-    grouped = group_entries_by_date(assigns.entries)
     entry_count = length(assigns.entries)
     reverted_count = map_size(rollback_by_original_id)
     last_modified_entry = List.first(assigns.entries)
+
+    visible_entries = Enum.reject(assigns.entries, &(&1.action == "rolled_back"))
+    grouped = group_entries_by_date(visible_entries)
+
+    current_state_entry_id =
+      case last_modified_entry do
+        %{action: "rolled_back"} -> nil
+        %{id: id} -> id
+        _ -> nil
+      end
 
     assigns =
       assigns
@@ -104,36 +124,46 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       |> assign(:entry_count, entry_count)
       |> assign(:reverted_count, reverted_count)
       |> assign(:last_modified_entry, last_modified_entry)
+      |> assign(:current_state_entry_id, current_state_entry_id)
       |> assign(:field_groups, field_groups(assigns.entity_type))
 
     ~H"""
-    <div id={"history-#{@entity_type}"} class="space-y-3">
+    <div id={"history-#{@entity_type}"} class="space-y-4">
       <%= if @entries == [] do %>
         <p class="text-sm text-base-content/70">
-          Earlier history is not available for imported entities.
+          No change history is available for this {entity_label(@entity_type)}.
         </p>
       <% else %>
         <div
           data-testid="history-summary"
-          class="flex items-center justify-between gap-3 text-xs text-base-content/70"
+          class="flex items-center justify-between gap-3 px-3 py-2.5 bg-base-200 border border-base-300 rounded-md"
         >
-          <div class="flex flex-col gap-0.5">
-            <span>
-              Last modified <span>{relative_time(@last_modified_entry.inserted_at, @now)}</span>
+          <div class="min-w-0">
+            <div class="text-[13px] text-base-content truncate">
+              Last modified
+              <time datetime={DateTime.to_iso8601(@last_modified_entry.inserted_at)}>
+                {relative_time(@last_modified_entry.inserted_at, @now)}
+              </time>
               by
-              <span class="font-medium text-base-content">
+              <span class="font-medium">
                 {display_name(@last_modified_entry.actor_email)}
               </span>
-            </span>
-            <span>
-              {@entry_count} {if @entry_count == 1, do: "change", else: "changes"} · {@reverted_count} reverted
-            </span>
+            </div>
+            <div class="text-xs text-base-content/70 mt-0.5">
+              {@entry_count} {if @entry_count == 1, do: "change", else: "changes"}, {@reverted_count} reverted
+            </div>
           </div>
+          <label
+            for={"history-filter-#{@entity_type}"}
+            class="sr-only"
+          >
+            Filter by field
+          </label>
           <select
             id={"history-filter-#{@entity_type}"}
             phx-change="filter_history"
             phx-value-entity-type={@entity_type}
-            class="select select-bordered select-xs"
+            class="text-xs border border-base-300 rounded-md px-2 py-1 bg-base-100 text-base-content shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
             name="key"
           >
             <option
@@ -146,89 +176,173 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
           </select>
         </div>
 
-        <div :for={{date, entries_for_date} <- @grouped} class="space-y-1.5">
-          <div
-            data-testid="history-date-header"
-            class="text-xs font-medium text-base-content/70 tracking-wide uppercase"
-          >
-            {format_date_header(date, @today)}
-          </div>
-          <ul class="divide-y divide-base-300 bg-base-100">
-            <li
-              :for={entry <- entries_for_date}
-              id={"history-entry-#{entry.id}"}
-              class="p-3 space-y-2"
+        <div :for={{date, entries_for_date} <- @grouped} class="space-y-3">
+          <div class="flex items-center gap-2">
+            <h3
+              data-testid="history-date-header"
+              class="text-xs font-medium text-base-content/70 tracking-wide uppercase m-0"
             >
-              <div class="flex items-baseline justify-between gap-2 text-sm">
-                <div class="flex items-baseline gap-2">
-                  <span class="font-medium">{display_name(entry.actor_email)}</span>
-                  <span
-                    :if={reverted_entry?(entry, @rollback_by_original_id)}
-                    class="text-xs uppercase tracking-wide text-base-content/60"
-                  >
-                    Reverted
-                  </span>
-                </div>
-                <span class="text-xs text-base-content/60 tabular-nums">
-                  {format_time_short(entry.inserted_at, @today)}
-                </span>
-              </div>
+              <time datetime={Date.to_iso8601(date)}>
+                {format_date_header(date, @today)}
+              </time>
+            </h3>
+            <div aria-hidden="true" class="flex-1 h-px bg-base-content/20"></div>
+          </div>
 
-              <% rows = apply_field_filter(diff_rows(entry), @entity_type, @history_field_filter)
+          <div class="relative pl-6">
+            <div
+              aria-hidden="true"
+              class="absolute left-[9px] top-2 bottom-2 w-0.5 bg-base-content/20"
+            >
+            </div>
+
+            <ul class="space-y-3 list-none m-0 p-0">
+              <li
+                :for={entry <- entries_for_date}
+                id={"history-entry-#{entry.id}"}
+                class="relative"
+              >
+              <% current? = entry.id == @current_state_entry_id
+              rollback_entry = Map.get(@rollback_by_original_id, entry.id)
+              reverted? = rollback_entry != nil
+
+              rows = apply_field_filter(diff_rows(entry), @entity_type, @history_field_filter)
               no_match = rows == [] and diff_rows(entry) != []
 
               variant =
-                rollback_button_variant(
-                  entry,
-                  @rollback_by_original_id,
-                  entry.id == @last_modified_entry.id
-                ) %>
+                rollback_button_variant(entry, @rollback_by_original_id, current?)
+
+              target_log_id =
+                case variant do
+                  :reapply -> rollback_entry.id
+                  :original -> nil
+                  :none -> nil
+                  _ -> entry.id
+                end %>
 
               <div
-                :if={no_match}
-                data-testid="history-entry-no-match"
-                class="text-xs text-base-content/60"
+                aria-hidden="true"
+                class={[
+                  "absolute -left-[21px] top-2 w-3.5 h-3.5 rounded-full bg-base-100 border-2",
+                  if(current?, do: "border-emerald-600", else: "border-base-content/40")
+                ]}
               >
-                No matching changes
               </div>
 
-              <%= if not no_match do %>
-                <%= if reverted_entry?(entry, @rollback_by_original_id) do %>
-                  <details id={"history-entry-fields-#{entry.id}"}>
-                    <summary class="cursor-pointer text-xs text-base-content/60">
-                      Show field changes
-                    </summary>
-                    <.change_diff entry={entry} entity_type={@entity_type} rows={rows} />
-                  </details>
-                <% else %>
-                  <.change_diff entry={entry} entity_type={@entity_type} rows={rows} />
-                <% end %>
-              <% end %>
+              <div class={[
+                "bg-base-100 border rounded-lg p-3.5",
+                if(current?,
+                  do: "border-emerald-600/40 ring-2 ring-emerald-500/30",
+                  else: "border-base-300"
+                )
+              ]}>
+                <div class="flex items-center gap-2 mb-2 flex-wrap">
+                  <div
+                    aria-hidden="true"
+                    class="w-[22px] h-[22px] rounded-full bg-base-300 text-base-content text-[10px] font-medium flex items-center justify-center shrink-0"
+                  >
+                    {display_initials(entry.actor_email)}
+                  </div>
+                  <span class="text-[13px] font-medium text-base-content">
+                    {display_name(entry.actor_email)}
+                  </span>
+                  <span
+                    :if={current?}
+                    class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-900 tracking-wide uppercase"
+                  >
+                    Current
+                  </span>
+                  <span
+                    :if={reverted?}
+                    class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-base-300 text-base-content tracking-wide uppercase"
+                  >
+                    Reverted
+                  </span>
+                  <time
+                    datetime={DateTime.to_iso8601(entry.inserted_at)}
+                    class="ml-auto text-xs text-base-content/70 tabular-nums"
+                  >
+                    {format_time_short(entry.inserted_at, @today)}
+                  </time>
+                </div>
 
-              <.rollback_preview
-                :if={preview_matches_entry?(@rollback_preview, @entity_type, entry)}
-                rollback_preview={@rollback_preview}
-                entity_type={@entity_type}
-              />
+                <div class="text-[13px] mb-2.5">
+                  <span class={if(reverted?, do: "text-base-content/70", else: "text-base-content")}>
+                    {entry_summary(entry, @entity_type)}
+                  </span>
+                </div>
 
-              <%= if variant != :none do %>
-                <button
-                  type="button"
-                  data-history-entry-action={Atom.to_string(variant)}
-                  phx-click={if variant != :original, do: "preview_rollback_change_log"}
-                  phx-value-log-id={if variant != :original, do: entry.id}
-                  aria-disabled={if variant == :original, do: "true"}
-                  disabled={variant == :original}
-                  class={[
-                    "btn btn-xs",
-                    if(variant == :original, do: "btn-ghost", else: "btn-outline")
-                  ]}
+                <div
+                  :if={no_match}
+                  data-testid="history-entry-no-match"
+                  class="text-xs text-base-content/70"
                 >
-                  {rollback_button_label(variant)}
-                </button>
-              <% end %>
-            </li>
-          </ul>
+                  No matching changes
+                </div>
+
+                <.change_diff
+                  :if={not no_match}
+                  entry={entry}
+                  entity_type={@entity_type}
+                  rows={rows}
+                />
+
+                <div
+                  :if={reverted?}
+                  class="mt-2.5 text-xs text-base-content/70 flex items-center gap-1.5"
+                >
+                  <span aria-hidden="true">↩</span>
+                  <span>
+                    Reverted by
+                    <span class="font-medium text-base-content">
+                      {display_name(rollback_entry.actor_email)}
+                    </span>
+                    at
+                    <time datetime={DateTime.to_iso8601(rollback_entry.inserted_at)}>
+                      {format_time_short(rollback_entry.inserted_at, @today)}
+                    </time>
+                  </span>
+                </div>
+
+                <.rollback_preview
+                  :if={preview_matches_entry?(@rollback_preview, @entity_type, entry) or
+                    (reverted? and
+                       preview_matches_entry?(@rollback_preview, @entity_type, rollback_entry))}
+                  rollback_preview={@rollback_preview}
+                  entity_type={@entity_type}
+                />
+
+                <%= if variant != :none do %>
+                  <div class="flex justify-end mt-2.5">
+                    <button
+                      type="button"
+                      data-history-entry-action={Atom.to_string(variant)}
+                      phx-click={if variant != :original, do: "preview_rollback_change_log"}
+                      phx-value-log-id={target_log_id}
+                      aria-disabled={if variant == :original, do: "true"}
+                      disabled={variant == :original}
+                      title={
+                        if variant == :original,
+                          do: "Cannot restore to before this #{entity_label(@entity_type)} existed"
+                      }
+                      class={[
+                        "text-xs px-2.5 py-1 rounded-md border",
+                        "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500",
+                        if(variant == :original,
+                          do:
+                            "border-base-200 text-base-content/60 bg-base-200/60 cursor-not-allowed",
+                          else: "border-base-300 text-base-content hover:bg-base-200"
+                        )
+                      ]}
+                    >
+                      {rollback_button_label(variant)}
+                    </button>
+                  </div>
+                <% end %>
+                </div>
+              </li>
+            </ul>
+          </div>
         </div>
       <% end %>
     </div>
@@ -244,21 +358,23 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       assign_new(assigns, :resolved_rows, fn -> assigns.rows || diff_rows(assigns.entry) end)
 
     ~H"""
-    <div :if={@resolved_rows != []} class="bg-base-200/60 rounded-md p-2.5">
-      <div class="grid [grid-template-columns:max-content_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-sm">
-        <%= for row <- @resolved_rows do %>
-          <div class="text-xs text-base-content/70 font-medium pt-0.5">{row.field}</div>
-          <div class="min-w-0 break-words">
-            <span class="line-through text-base-content/50">
-              <.diff_cell entity_type={@entity_type} field={row.field} value={row.from} />
-            </span>
-            <span aria-hidden="true" class="text-base-content/50 mx-1">→</span>
-            <span>
-              <.diff_cell entity_type={@entity_type} field={row.field} value={row.to} />
-            </span>
-          </div>
-        <% end %>
-      </div>
+    <div
+      :if={@resolved_rows != []}
+      class="bg-base-200 rounded-md p-2.5 grid [grid-template-columns:max-content_minmax(0,1fr)] gap-x-3 gap-y-1.5 items-baseline"
+    >
+      <%= for row <- @resolved_rows do %>
+        <div class="text-xs text-base-content/70">{row.field}</div>
+        <div class="text-xs flex items-baseline gap-1.5 flex-wrap min-w-0 break-words">
+          <span class="line-through text-base-content/70">
+            <.diff_cell entity_type={@entity_type} field={row.field} value={row.from} />
+          </span>
+          <span class="sr-only">changed to</span>
+          <span aria-hidden="true" class="text-base-content/60">→</span>
+          <span class="text-base-content">
+            <.diff_cell entity_type={@entity_type} field={row.field} value={row.to} />
+          </span>
+        </div>
+      <% end %>
     </div>
     """
   end
@@ -276,7 +392,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         {label}
       <% {label, dot_class} -> %>
         <span class="inline-flex items-center gap-1">
-          <span class={"w-1.5 h-1.5 rounded-full " <> dot_class}></span>
+          <span aria-hidden="true" class={"w-1.5 h-1.5 rounded-full " <> dot_class}></span>
           {label}
         </span>
     <% end %>
@@ -291,23 +407,37 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
   def rollback_preview(assigns) do
     ~H"""
-    <div id={"rollback-preview-#{@entity_type}"} class="border border-base-300 p-3 space-y-2">
-      <p class="text-sm font-medium">Revert these changes?</p>
+    <div
+      id={"rollback-preview-#{@entity_type}"}
+      role="region"
+      aria-live="polite"
+      aria-labelledby={"rollback-preview-heading-#{@entity_type}"}
+      class="mt-2.5 border border-amber-300 bg-amber-50 rounded-md p-3 space-y-2"
+    >
+      <p
+        id={"rollback-preview-heading-#{@entity_type}"}
+        class="text-[13px] font-medium text-amber-950"
+      >
+        Revert these changes?
+      </p>
 
-      <ul class="space-y-0.5 text-xs text-base-content/80">
-        <li :for={row <- @rollback_preview.field_changes} class="font-mono leading-tight">
-          <span class="font-medium">{row.field}:</span>
-          <span>{truncate_value(row.current)}</span>
-          <span aria-hidden="true">→</span>
-          <span>{truncate_value(row.restored)}</span>
-        </li>
-      </ul>
+      <div class="bg-base-100 border border-amber-300 rounded-md p-2.5 grid [grid-template-columns:max-content_minmax(0,1fr)] gap-x-3 gap-y-1 items-baseline">
+        <%= for row <- @rollback_preview.field_changes do %>
+          <div class="text-xs text-base-content/70">{row.field}</div>
+          <div class="text-xs flex items-baseline gap-1.5 flex-wrap min-w-0 break-words">
+            <span class="line-through text-base-content/70">{truncate_value(row.current)}</span>
+            <span class="sr-only">changed to</span>
+            <span aria-hidden="true" class="text-base-content/60">→</span>
+            <span class="text-base-content">{truncate_value(row.restored)}</span>
+          </div>
+        <% end %>
+      </div>
 
-      <div class="flex gap-2">
+      <div class="flex justify-end gap-2">
         <button
           id={"rollback-preview-cancel-#{@entity_type}"}
           type="button"
-          class="btn btn-xs btn-ghost"
+          class="text-xs px-2.5 py-1 rounded-md border border-base-300 text-base-content hover:bg-base-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
           phx-click="cancel_rollback_preview"
         >
           Cancel
@@ -315,7 +445,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         <button
           id={"rollback-preview-confirm-#{@entity_type}"}
           type="button"
-          class="btn btn-xs btn-primary"
+          class="text-xs px-2.5 py-1 rounded-md bg-amber-600 text-white hover:bg-amber-700 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-1"
           phx-click="confirm_rollback_change_log"
           phx-value-log-id={@rollback_preview.log.id}
         >
@@ -335,10 +465,6 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       _entry, acc ->
         acc
     end)
-  end
-
-  defp reverted_entry?(entry, rollback_by_original_id) do
-    Map.has_key?(rollback_by_original_id, entry.id)
   end
 
   defp diff_rows(%{changed_fields: fields}) when is_map(fields) and map_size(fields) > 0 do
@@ -434,6 +560,49 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     |> Enum.map_join(" ", &:string.titlecase/1)
   end
 
+  defp display_initials(email) do
+    email
+    |> display_name()
+    |> String.split(" ", trim: true)
+    |> case do
+      [single] -> String.slice(single, 0, 2)
+      parts -> parts |> Enum.take(2) |> Enum.map_join("", &String.first/1)
+    end
+    |> String.upcase()
+  end
+
+  defp entry_summary(entry, entity_type) do
+    label = entity_label(entity_type)
+
+    case entry.action do
+      "created" -> "Created #{label}"
+      "deleted" -> "Deleted #{label}"
+      _ -> "Edited #{label}#{field_count_suffix(entry.changed_fields)}"
+    end
+  end
+
+  defp field_count_suffix(fields) when is_map(fields) do
+    count =
+      fields
+      |> Enum.reject(fn {field, _} ->
+        MapSet.member?(@system_noise_diff_fields, to_string(field))
+      end)
+      |> length()
+
+    case count do
+      0 -> ""
+      1 -> " · 1 field changed"
+      n -> " · #{n} fields changed"
+    end
+  end
+
+  defp field_count_suffix(_), do: ""
+
+  defp entity_label("stop"), do: "stop"
+  defp entity_label("pathway"), do: "pathway"
+  defp entity_label("level"), do: "level"
+  defp entity_label(other) when is_binary(other), do: other
+
   defp upcased_month_day(%Date{} = d),
     do: d |> Calendar.strftime("%b %-d") |> String.upcase()
 
@@ -498,23 +667,20 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     end
   end
 
-  defp rollback_button_variant(%{id: id}, rollback_by_original_id, _latest?)
+  defp rollback_button_variant(%{id: id}, rollback_by_original_id, _current?)
        when is_map_key(rollback_by_original_id, id),
-       do: :none
+       do: :reapply
 
-  defp rollback_button_variant(%{action: "rolled_back"}, _rollback_by_original_id, _latest?),
-    do: :reapply
-
-  defp rollback_button_variant(%{action: "created"}, _rollback_by_original_id, _latest?),
+  defp rollback_button_variant(%{action: "created"}, _rollback_by_original_id, _current?),
     do: :original
 
-  defp rollback_button_variant(%{action: "deleted"}, _rollback_by_original_id, _latest?),
+  defp rollback_button_variant(%{action: "deleted"}, _rollback_by_original_id, _current?),
     do: :none
 
-  defp rollback_button_variant(entry, _rollback_by_original_id, latest?) do
+  defp rollback_button_variant(entry, _rollback_by_original_id, current?) do
     cond do
       not rollback_eligible?(entry) -> :none
-      latest? -> :undo
+      current? -> :undo
       true -> :restore
     end
   end

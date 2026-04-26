@@ -213,6 +213,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#child-stop-form input[name='stop_lon'][type='number']")
       assert has_element?(view, "#child-stop-form input[name='stop_lat'][min='-90'][max='90']")
       assert has_element?(view, "#child-stop-form input[name='stop_lon'][min='-180'][max='180']")
+      assert has_element?(view, "#child-stop-form input[name='stop_lat'][step='any']")
+      assert has_element?(view, "#child-stop-form input[name='stop_lon'][step='any']")
     end
 
     test "creating a child stop persists latitude and longitude", %{
@@ -242,8 +244,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         "location_type" => "3",
         "level_id" => level.level_id,
         "wheelchair_boarding" => "",
-        "stop_lat" => "40.7128",
-        "stop_lon" => "-74.0060"
+        "stop_lat" => "40.046627198009965",
+        "stop_lon" => "-73.987654321098765"
       })
       |> render_submit()
 
@@ -252,8 +254,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         |> Enum.find(&(&1.stop_name == "Child Lat Lon Create"))
 
       assert created_stop
-      assert Decimal.equal?(created_stop.stop_lat, Decimal.new("40.7128"))
-      assert Decimal.equal?(created_stop.stop_lon, Decimal.new("-74.0060"))
+      assert Decimal.equal?(created_stop.stop_lat, Decimal.new("40.046627198009965"))
+      assert Decimal.equal?(created_stop.stop_lon, Decimal.new("-73.987654321098765"))
     end
 
     test "editing child stop shows change link and toggles level selector", %{
@@ -390,14 +392,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         "location_type" => Integer.to_string(child_stop.location_type),
         "level_id" => level.level_id,
         "wheelchair_boarding" => "",
-        "stop_lat" => "40.730610",
-        "stop_lon" => "-73.935242"
+        "stop_lat" => "40.046627198009965",
+        "stop_lon" => "-73.987654321098765"
       })
       |> render_submit()
 
       updated_stop = Gtfs.get_stop!(child_stop.id)
-      assert Decimal.equal?(updated_stop.stop_lat, Decimal.new("40.730610"))
-      assert Decimal.equal?(updated_stop.stop_lon, Decimal.new("-73.935242"))
+      assert Decimal.equal?(updated_stop.stop_lat, Decimal.new("40.046627198009965"))
+      assert Decimal.equal?(updated_stop.stop_lon, Decimal.new("-73.987654321098765"))
     end
 
     test "out-of-range latitude keeps child stop form open with validation error", %{
@@ -10814,7 +10816,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       struct(GtfsPlanner.Gtfs.ChangeLog, Map.merge(defaults, attrs))
     end
 
-    test "empty entries renders earlier-history-unavailable copy" do
+    test "empty entries renders empty-state copy" do
       html =
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [],
@@ -10823,7 +10825,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         )
 
       assert html =~ ~s(id="history-stop")
-      assert html =~ "Earlier history is not available for imported entities."
+      assert html =~ "No change history is available for this stop."
     end
 
     test "non-empty list renders actor display name, timestamp, and action attribute" do
@@ -10905,7 +10907,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ ~s(phx-value-log-id="#{rollback.id}")
     end
 
-    test "rolled_back entry renders reapply button and suppresses raw action label" do
+    test "rolled_back entries are hidden from the timeline" do
       entry = build_log(%{action: "rolled_back"})
 
       html =
@@ -10916,11 +10918,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         )
 
       assert html =~ ~s(id="history-stop")
+      refute html =~ ~s(id="history-entry-#{entry.id}")
       refute html =~ "rolled_back"
-      assert html =~ ~s(data-history-entry-action="reapply")
-      assert html =~ "Re-apply this change"
-      refute html =~ ~s(data-history-entry-action="undo")
-      refute html =~ ~s(data-history-entry-action="restore")
+      refute html =~ ~s(data-history-entry-action=)
     end
 
     test "created entry renders disabled original button without rollback wiring" do
