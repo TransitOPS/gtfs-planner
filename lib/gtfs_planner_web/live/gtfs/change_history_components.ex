@@ -29,22 +29,10 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     def __test_rollback_button_variant__(entry, rollback_by_original_id, latest?),
       do: rollback_button_variant(entry, rollback_by_original_id, latest?)
 
-    def __test_rollback_button_label__(variant), do: rollback_action_label(variant)
+    def __test_rollback_button_label__(variant), do: rollback_button_label(variant)
 
     def __test_preview_matches_entry__(preview, entity_type, entry),
       do: preview_matches_entry?(preview, entity_type, entry)
-
-    def __unused_helpers__ do
-      {
-        &rollback_eligible?/1,
-        &show_rollback_action?/2,
-        &history_action_label/1,
-        &rollback_button_label/1,
-        &preview_matches_list?/3,
-        &format_timestamp/1,
-        &render_diff_value/3
-      }
-    end
   end
 
   attr :entity_type, :string, required: true
@@ -234,7 +222,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                     if(variant == :original, do: "btn-ghost", else: "btn-outline")
                   ]}
                 >
-                  {rollback_action_label(variant)}
+                  {rollback_button_label(variant)}
                 </button>
               <% end %>
             </li>
@@ -351,42 +339,6 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     Map.has_key?(rollback_by_original_id, entry.id)
   end
 
-  if Mix.env() == :test do
-    defp rollback_eligible?(%{action: action, snapshot: snapshot} = entry)
-         when action in ["updated", "rolled_back"] and not is_nil(snapshot) do
-      GtfsPlanner.Gtfs.rollback_previewable_fields(entry) != []
-    end
-
-    defp rollback_eligible?(_), do: false
-
-    defp show_rollback_action?(entry, rollback_by_original_id) do
-      rollback_eligible?(entry) and not reverted_entry?(entry, rollback_by_original_id)
-    end
-
-    defp history_action_label(%{action: "rolled_back"}), do: "Reverted"
-    defp history_action_label(%{action: action}), do: action
-
-    defp rollback_button_label(%{action: "rolled_back"}), do: "Restore change"
-    defp rollback_button_label(_entry), do: "Revert change"
-
-    defp preview_matches_list?(nil, _entity_type, _entries), do: false
-
-    defp preview_matches_list?(
-           %{entity_type: entity_type, log: %{id: log_id}},
-           entity_type,
-           entries
-         ) do
-      Enum.any?(entries, fn entry -> entry.id == log_id end)
-    end
-
-    defp preview_matches_list?(_preview, _entity_type, _entries), do: false
-
-    defp format_timestamp(%DateTime{} = datetime),
-      do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M")
-
-    defp format_timestamp(_), do: "—"
-  end
-
   defp diff_rows(%{changed_fields: fields}) when is_map(fields) and map_size(fields) > 0 do
     fields
     |> Enum.reject(fn {field, _change} ->
@@ -408,21 +360,6 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     case Map.get(change, string_key, :__missing__) do
       :__missing__ -> Map.get(change, atom_key, :__missing__)
       value -> value
-    end
-  end
-
-  if Mix.env() == :test do
-    defp render_diff_value(change, string_key, atom_key) do
-      case Map.get(change, string_key, :__missing__) do
-        :__missing__ ->
-          case Map.get(change, atom_key, :__missing__) do
-            :__missing__ -> "—"
-            value -> render_present_value(value)
-          end
-
-        value ->
-          render_present_value(value)
-      end
     end
   end
 
@@ -572,11 +509,11 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   defp rollback_button_variant(_entry, _rollback_by_original_id, true), do: :undo
   defp rollback_button_variant(_entry, _rollback_by_original_id, false), do: :restore
 
-  defp rollback_action_label(:undo), do: "Undo this change"
-  defp rollback_action_label(:restore), do: "Restore to this state"
-  defp rollback_action_label(:reapply), do: "Re-apply this change"
-  defp rollback_action_label(:original), do: "Original version"
-  defp rollback_action_label(:none), do: nil
+  defp rollback_button_label(:undo), do: "Undo this change"
+  defp rollback_button_label(:restore), do: "Restore to this state"
+  defp rollback_button_label(:reapply), do: "Re-apply this change"
+  defp rollback_button_label(:original), do: "Original version"
+  defp rollback_button_label(:none), do: nil
 
   defp preview_matches_entry?(nil, _entity_type, _entry), do: false
 
