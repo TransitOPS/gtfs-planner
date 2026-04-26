@@ -1,6 +1,8 @@
 defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
   use ExUnit.Case, async: true
 
+  import Phoenix.LiveViewTest
+
   alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
 
   test "exposes change_log_list/1 as a function component" do
@@ -306,6 +308,91 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
       preview = %{entity_type: "stop", log: %{id: 42}}
 
       refute ChangeHistoryComponents.__test_preview_matches_entry__(preview, "stop", entry)
+    end
+  end
+
+  describe "change_diff/1 rendering" do
+    test "renders categorical wheelchair_boarding label and dot for stop entity" do
+      entry = %{
+        id: "abc",
+        changed_fields: %{"wheelchair_boarding" => %{"from" => 0, "to" => 1}}
+      }
+
+      html =
+        render_component(&ChangeHistoryComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
+
+      assert html =~ "Wheelchair accessible"
+      assert html =~ "No information"
+      assert html =~ "bg-emerald-600"
+      assert html =~ "bg-base-300"
+    end
+
+    test "renders not-accessible label and rose dot for to: 2" do
+      entry = %{
+        id: "abc",
+        changed_fields: %{"wheelchair_boarding" => %{"from" => 1, "to" => 2}}
+      }
+
+      html =
+        render_component(&ChangeHistoryComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
+
+      assert html =~ "Not accessible"
+      assert html =~ "bg-rose-600"
+    end
+
+    test "non-categorical fields fall through to plain text without dot span" do
+      entry = %{
+        id: "abc",
+        changed_fields: %{"stop_name" => %{"from" => "Old Name", "to" => "New Name"}}
+      }
+
+      html =
+        render_component(&ChangeHistoryComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
+
+      assert html =~ "stop_name"
+      assert html =~ "Old Name"
+      assert html =~ "New Name"
+      refute html =~ "bg-emerald-600"
+      refute html =~ "bg-base-300"
+      refute html =~ "bg-rose-600"
+    end
+
+    test "uses two-column grid layout" do
+      entry = %{
+        id: "abc",
+        changed_fields: %{"stop_name" => %{"from" => "A", "to" => "B"}}
+      }
+
+      html =
+        render_component(&ChangeHistoryComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
+
+      assert html =~ "[grid-template-columns:max-content_minmax(0,1fr)]"
+    end
+
+    test "accepts pre-filtered rows via :rows attr" do
+      rows = [%{field: "wheelchair_boarding", from: 0, to: 1}]
+
+      html =
+        render_component(&ChangeHistoryComponents.change_diff/1,
+          entry: %{id: "abc", changed_fields: %{}},
+          entity_type: "stop",
+          rows: rows
+        )
+
+      assert html =~ "Wheelchair accessible"
+      assert html =~ "bg-emerald-600"
     end
   end
 

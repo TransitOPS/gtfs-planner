@@ -5,6 +5,9 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   """
   use Phoenix.Component
 
+  alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.Stop
+
   @system_noise_diff_fields MapSet.new(
                               ~w(organization_id gtfs_version_id id inserted_at updated_at)
                             )
@@ -38,7 +41,8 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         &history_action_label/1,
         &rollback_button_label/1,
         &preview_matches_list?/3,
-        &format_timestamp/1
+        &format_timestamp/1,
+        &render_diff_value/3
       }
     end
   end
@@ -250,16 +254,47 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       assign_new(assigns, :resolved_rows, fn -> assigns.rows || diff_rows(assigns.entry) end)
 
     ~H"""
-    <ul :if={@resolved_rows != []} class="space-y-0.5 text-xs text-base-content/80">
-      <li :for={row <- @resolved_rows} class="font-mono leading-tight">
-        <span class="font-medium">{row.field}:</span>
-        <span>{row.from}</span>
-        <span aria-hidden="true">→</span>
-        <span>{row.to}</span>
-      </li>
-    </ul>
+    <div :if={@resolved_rows != []} class="bg-base-200/60 rounded-md p-2.5">
+      <div class="grid [grid-template-columns:max-content_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-sm">
+        <%= for row <- @resolved_rows do %>
+          <div class="text-xs text-base-content/70 font-medium pt-0.5">{row.field}</div>
+          <div class="min-w-0 break-words">
+            <span class="line-through text-base-content/50">
+              <.diff_cell entity_type={@entity_type} field={row.field} value={row.from} />
+            </span>
+            <span aria-hidden="true" class="text-base-content/50 mx-1">→</span>
+            <span>
+              <.diff_cell entity_type={@entity_type} field={row.field} value={row.to} />
+            </span>
+          </div>
+        <% end %>
+      </div>
+    </div>
     """
   end
+
+  attr :entity_type, :string, required: true
+  attr :field, :string, required: true
+  attr :value, :any, required: true
+
+  defp diff_cell(assigns) do
+    ~H"""
+    <%= case categorical_value({@entity_type, @field}, @value) do %>
+      <% :passthrough -> %>
+        {render_diff_value_text(@value)}
+      <% {label, nil} -> %>
+        {label}
+      <% {label, dot_class} -> %>
+        <span class="inline-flex items-center gap-1">
+          <span class={"w-1.5 h-1.5 rounded-full " <> dot_class}></span>
+          {label}
+        </span>
+    <% end %>
+    """
+  end
+
+  defp render_diff_value_text(:__missing__), do: "—"
+  defp render_diff_value_text(value), do: render_present_value(value)
 
   attr :rollback_preview, :map, required: true
   attr :entity_type, :string, required: true
@@ -360,8 +395,8 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     |> Enum.map(fn {field, change} ->
       %{
         field: to_string(field),
-        from: render_diff_value(change, "from", :from),
-        to: render_diff_value(change, "to", :to)
+        from: extract_change_value(change, "from", :from),
+        to: extract_change_value(change, "to", :to)
       }
     end)
     |> Enum.sort_by(& &1.field)
@@ -369,16 +404,25 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
   defp diff_rows(_entry), do: []
 
-  defp render_diff_value(change, string_key, atom_key) do
+  defp extract_change_value(change, string_key, atom_key) do
     case Map.get(change, string_key, :__missing__) do
-      :__missing__ ->
-        case Map.get(change, atom_key, :__missing__) do
-          :__missing__ -> "—"
-          value -> render_present_value(value)
-        end
+      :__missing__ -> Map.get(change, atom_key, :__missing__)
+      value -> value
+    end
+  end
 
-      value ->
-        render_present_value(value)
+  if Mix.env() == :test do
+    defp render_diff_value(change, string_key, atom_key) do
+      case Map.get(change, string_key, :__missing__) do
+        :__missing__ ->
+          case Map.get(change, atom_key, :__missing__) do
+            :__missing__ -> "—"
+            value -> render_present_value(value)
+          end
+
+        value ->
+          render_present_value(value)
+      end
     end
   end
 
@@ -540,25 +584,20 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     preview.entity_type == entity_type and preview.log.id == entry.id
   end
 
-  if Mix.env() == :test do
-    alias GtfsPlanner.Gtfs.Pathway
-    alias GtfsPlanner.Gtfs.Stop
+  defp categorical_value({"stop", "wheelchair_boarding"}, 0),
+    do: {"No information", "bg-base-300"}
 
-    defp categorical_value({"stop", "wheelchair_boarding"}, 0),
-      do: {"No information", "bg-base-300"}
+  defp categorical_value({"stop", "wheelchair_boarding"}, 1),
+    do: {"Wheelchair accessible", "bg-emerald-600"}
 
-    defp categorical_value({"stop", "wheelchair_boarding"}, 1),
-      do: {"Wheelchair accessible", "bg-emerald-600"}
+  defp categorical_value({"stop", "wheelchair_boarding"}, 2),
+    do: {"Not accessible", "bg-rose-600"}
 
-    defp categorical_value({"stop", "wheelchair_boarding"}, 2),
-      do: {"Not accessible", "bg-rose-600"}
+  defp categorical_value({"stop", "location_type"}, code),
+    do: {Stop.location_type_label(code), nil}
 
-    defp categorical_value({"stop", "location_type"}, code),
-      do: {Stop.location_type_label(code), nil}
-
-    defp categorical_value({"pathway", "pathway_mode"}, code), do: {Pathway.mode_label(code), nil}
-    defp categorical_value({"pathway", "is_bidirectional"}, true), do: {"Bidirectional", nil}
-    defp categorical_value({"pathway", "is_bidirectional"}, false), do: {"One-way", nil}
-    defp categorical_value(_, _), do: :passthrough
-  end
+  defp categorical_value({"pathway", "pathway_mode"}, code), do: {Pathway.mode_label(code), nil}
+  defp categorical_value({"pathway", "is_bidirectional"}, true), do: {"Bidirectional", nil}
+  defp categorical_value({"pathway", "is_bidirectional"}, false), do: {"One-way", nil}
+  defp categorical_value(_, _), do: :passthrough
 end
