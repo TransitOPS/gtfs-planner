@@ -208,6 +208,19 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       assert {:ok, _view, _html} = live(conn, ~p"/admin/users/organization-settings")
     end
 
+    test "renders Organization settings link on /admin/users", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/admin/users")
+
+      assert html =~ ~s(href="/admin/users/organization-settings")
+      assert html =~ "Organization settings"
+    end
+
+    test "renders organization-settings-drawer when visiting the route", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/admin/users/organization-settings")
+
+      assert html =~ "organization-settings-drawer"
+    end
+
     test "assigns organization_form for :organization_settings", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
 

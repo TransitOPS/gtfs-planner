@@ -340,6 +340,9 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
         Users
         <:subtitle>Manage users in {@current_organization.name}</:subtitle>
         <:actions>
+          <.link patch={~p"/admin/users/organization-settings"} class="btn btn-ghost">
+            Organization settings
+          </.link>
           <.link patch={~p"/admin/users/invite"} class="btn btn-primary btn-active">
             Invite User
           </.link>
@@ -426,6 +429,18 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
             available_roles={available_roles()}
             organization={@current_organization}
           />
+        <% end %>
+      </.drawer>
+
+      <.drawer
+        id="organization-settings-drawer"
+        open={@live_action == :organization_settings}
+        on_close="close_drawer"
+        title="Organization settings"
+        class="max-w-3xl"
+      >
+        <%= if assigns[:organization_form] do %>
+          <div></div>
         <% end %>
       </.drawer>
     </Layouts.app>
