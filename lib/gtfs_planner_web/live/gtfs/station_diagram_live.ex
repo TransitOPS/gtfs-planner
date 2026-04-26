@@ -216,6 +216,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:child_stops_total, 0)
     |> assign(:child_stops_with_geo, 0)
     |> assign(:anchor_count, 0)
+    |> assign(:cross_level_pathway_total, 0)
+    |> assign(:cross_level_pathway_with_geo, 0)
     |> assign(:unassigned_child_stops, [])
     |> assign(:pathways_list, [])
     |> assign(:active_stop_level, nil)
@@ -272,6 +274,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         not is_nil(s.diagram_coordinate) and not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
       end)
 
+    cross_level_pathways = Enum.filter(level_pathways, & &1.is_cross_level)
+    cross_level_pathway_total = length(cross_level_pathways)
+
+    cross_level_pathway_with_geo =
+      Enum.count(cross_level_pathways, fn p ->
+        other = if p.from_on_active_level, do: p.to_stop, else: p.from_stop
+        not is_nil(other.stop_lat) and not is_nil(other.stop_lon)
+      end)
+
     socket
     |> stream(:child_stops, visible_canvas_stops, reset: true)
     |> stream(:pathways, same_level_pathways, reset: true)
@@ -280,6 +291,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:child_stops_total, child_stops_total)
     |> assign(:child_stops_with_geo, child_stops_with_geo)
     |> assign(:anchor_count, anchor_count)
+    |> assign(:cross_level_pathway_total, cross_level_pathway_total)
+    |> assign(:cross_level_pathway_with_geo, cross_level_pathway_with_geo)
     |> assign(:unassigned_child_stops, unassigned_child_stops)
     |> assign(:pathways_list, level_pathways)
     |> assign(:active_stop_level, stop_level)
@@ -448,6 +461,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 child_stops_total={@child_stops_total}
                 child_stops_with_geo={@child_stops_with_geo}
                 anchor_count={@anchor_count}
+                cross_level_pathway_total={@cross_level_pathway_total}
+                cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
               />
             </div>
           <% else %>
@@ -1757,8 +1772,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply, put_flash(socket, :error, "No level selected")}
 
       is_nil(image_w) or is_nil(image_h) ->
-        {:noreply,
-         put_flash(socket, :error, apply_alignment_error_message(:invalid_image_dims))}
+        {:noreply, put_flash(socket, :error, apply_alignment_error_message(:invalid_image_dims))}
 
       true ->
         attrs = %{

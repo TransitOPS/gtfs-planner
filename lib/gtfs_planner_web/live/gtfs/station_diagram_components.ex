@@ -312,6 +312,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :child_stops_total, :integer, default: 0
   attr :child_stops_with_geo, :integer, default: 0
   attr :anchor_count, :integer, default: 0
+  attr :cross_level_pathway_total, :integer, default: 0
+  attr :cross_level_pathway_with_geo, :integer, default: 0
 
   def map_canvas(assigns) do
     floorplan_url =
@@ -400,9 +402,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </button>
       </div>
       <div class="px-4 sm:px-6 lg:px-8 pt-3 pb-4">
-        <p class="text-xs text-base-content/70">
-          Drag to move the floorplan. Use handles to rotate and resize.
-        </p>
+        <div class="flex items-start justify-between gap-4">
+          <p class="text-xs text-base-content/70">
+            Drag to move the floorplan. Use handles to rotate and resize.
+          </p>
+          <div class="flex flex-col items-end gap-1">
+            <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
+              {@child_stops_with_geo} of {@child_stops_total} child stops have lat/long
+            </span>
+            <span
+              data-role="cross-level-pathway-coverage"
+              class="text-xs font-medium text-base-content/70"
+            >
+              {@cross_level_pathway_with_geo} of {@cross_level_pathway_total} connections to other levels have lat/long
+            </span>
+          </div>
+        </div>
         <div class="mt-3 flex flex-wrap items-end gap-x-8 gap-y-4">
           <fieldset class="flex items-end gap-2">
             <legend class="sr-only">Map center</legend>
@@ -499,9 +514,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             >
               Infer from anchors
             </button>
-            <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
-              {@child_stops_with_geo} of {@child_stops_total} child stops have lat/long
-            </span>
           </div>
         </div>
       </div>
