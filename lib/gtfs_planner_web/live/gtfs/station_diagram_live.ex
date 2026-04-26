@@ -94,6 +94,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:audit_ctx, nil)
      |> assign(:history_open_for, nil)
      |> assign(:history_entries, [])
+     |> assign(:history_field_filter, "all")
      |> assign(:rollback_preview, nil)
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg .svg),
@@ -404,6 +405,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           reposition_stops={@reposition_stops}
           history_open_for={@history_open_for}
           history_entries={@history_entries}
+          history_field_filter={@history_field_filter}
           rollback_preview={@rollback_preview}
         />
 
@@ -418,6 +420,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pathway_error={@pathway_error}
           history_open_for={@history_open_for}
           history_entries={@history_entries}
+          history_field_filter={@history_field_filter}
           rollback_preview={@rollback_preview}
         />
 
@@ -435,6 +438,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           level_shared={@level_shared}
           history_open_for={@history_open_for}
           history_entries={@history_entries}
+          history_field_filter={@history_field_filter}
           rollback_preview={@rollback_preview}
         />
 
@@ -2616,6 +2620,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        socket
        |> assign(:history_open_for, {type, id})
        |> assign(:history_entries, entries)
+       |> assign(:history_field_filter, "all")
        |> assign(:rollback_preview, nil)}
     else
       {:noreply, put_flash(socket, :error, "History not available for this entity.")}
@@ -2632,7 +2637,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:history_open_for, nil)
      |> assign(:history_entries, [])
+     |> assign(:history_field_filter, "all")
      |> assign(:rollback_preview, nil)}
+  end
+
+  @impl true
+  def handle_event("filter_history", %{"key" => key, "entity-type" => type}, socket)
+      when type in ["stop", "pathway", "level"] and is_binary(key) do
+    if GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents.valid_filter_key?(type, key) do
+      {:noreply, assign(socket, :history_field_filter, key)}
+    else
+      {:noreply,
+       socket
+       |> assign(:history_field_filter, "all")
+       |> put_flash(:error, "Unknown history filter")}
+    end
   end
 
   @impl true

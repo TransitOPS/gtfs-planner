@@ -288,6 +288,48 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   defp format_timestamp(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M")
   defp format_timestamp(_), do: "—"
 
+  def valid_filter_key?(entity_type, key) when is_binary(entity_type) and is_binary(key) do
+    Enum.any?(field_groups(entity_type), &(&1.key == key))
+  end
+
+  defp field_groups("stop") do
+    [
+      %{key: "all", label: "All fields", fields: :all},
+      %{
+        key: "position",
+        label: "Position only",
+        fields: ~w(stop_lat stop_lon position_x position_y)
+      },
+      %{key: "accessibility", label: "Accessibility only", fields: ~w(wheelchair_boarding)},
+      %{
+        key: "naming",
+        label: "Name & description",
+        fields: ~w(stop_name stop_desc tts_stop_name)
+      }
+    ]
+  end
+
+  defp field_groups("pathway") do
+    [
+      %{key: "all", label: "All fields", fields: :all},
+      %{key: "mode", label: "Mode only", fields: ~w(pathway_mode is_bidirectional)},
+      %{
+        key: "geometry",
+        label: "Geometry only",
+        fields: ~w(length traversal_time stair_count max_slope min_width)
+      },
+      %{key: "signage", label: "Signage", fields: ~w(signposted_as reversed_signposted_as)}
+    ]
+  end
+
+  defp field_groups("level") do
+    [
+      %{key: "all", label: "All fields", fields: :all},
+      %{key: "naming", label: "Name only", fields: ~w(level_name)},
+      %{key: "index", label: "Index only", fields: ~w(level_index)}
+    ]
+  end
+
   if Mix.env() == :test do
     alias GtfsPlanner.Gtfs.Pathway
     alias GtfsPlanner.Gtfs.Stop
@@ -357,44 +399,6 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
     defp pluralize(1, word), do: word
     defp pluralize(_n, word), do: word <> "s"
-
-    defp field_groups("stop") do
-      [
-        %{key: "all", label: "All fields", fields: :all},
-        %{
-          key: "position",
-          label: "Position only",
-          fields: ~w(stop_lat stop_lon position_x position_y)
-        },
-        %{key: "accessibility", label: "Accessibility only", fields: ~w(wheelchair_boarding)},
-        %{
-          key: "naming",
-          label: "Name & description",
-          fields: ~w(stop_name stop_desc tts_stop_name)
-        }
-      ]
-    end
-
-    defp field_groups("pathway") do
-      [
-        %{key: "all", label: "All fields", fields: :all},
-        %{key: "mode", label: "Mode only", fields: ~w(pathway_mode is_bidirectional)},
-        %{
-          key: "geometry",
-          label: "Geometry only",
-          fields: ~w(length traversal_time stair_count max_slope min_width)
-        },
-        %{key: "signage", label: "Signage", fields: ~w(signposted_as reversed_signposted_as)}
-      ]
-    end
-
-    defp field_groups("level") do
-      [
-        %{key: "all", label: "All fields", fields: :all},
-        %{key: "naming", label: "Name only", fields: ~w(level_name)},
-        %{key: "index", label: "Index only", fields: ~w(level_index)}
-      ]
-    end
 
     defp categorical_value({"stop", "wheelchair_boarding"}, 0),
       do: {"No information", "bg-base-300"}

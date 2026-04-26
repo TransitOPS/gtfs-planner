@@ -9369,6 +9369,123 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert state.socket.assigns.history_entries == []
       assert state.socket.assigns.rollback_preview == nil
     end
+
+    test "filter_history with valid key updates history_field_filter assign", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_FILTER_OK",
+          stop_name: "Hist Filter OK",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 13.0, "y" => 23.0}
+        })
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "all"
+
+      render_hook(view, "filter_history", %{"key" => "position", "entity-type" => "stop"})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "position"
+    end
+
+    test "filter_history with bogus key resets filter and flashes error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_FILTER_BOGUS",
+          stop_name: "Hist Filter Bogus",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 14.0, "y" => 24.0}
+        })
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      result =
+        render_hook(view, "filter_history", %{"key" => "bogus", "entity-type" => "stop"})
+
+      assert result =~ "Unknown history filter"
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "all"
+    end
+
+    test "history_field_filter resets to \"all\" on hide_history and re-open", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_FILTER_RESET",
+          stop_name: "Hist Filter Reset",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 25.0}
+        })
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      render_hook(view, "filter_history", %{"key" => "position", "entity-type" => "stop"})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "position"
+
+      render_hook(view, "hide_history", %{})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "all"
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "all"
+    end
   end
 
   describe "StationDiagramLive - rollback preview events" do

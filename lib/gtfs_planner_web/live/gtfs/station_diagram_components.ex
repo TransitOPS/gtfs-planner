@@ -2075,6 +2075,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :platform_options, :list, default: []
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
+  attr :history_field_filter, :string, default: "all"
   attr :rollback_preview, :any, default: nil
 
   def child_stop_drawer(assigns) do
@@ -2808,6 +2809,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :pathway_error, :string, default: nil
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
+  attr :history_field_filter, :string, default: "all"
   attr :rollback_preview, :any, default: nil
 
   def pathway_drawer(assigns) do
@@ -3461,6 +3463,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :level_shared, :boolean, default: false
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
+  attr :history_field_filter, :string, default: "all"
   attr :rollback_preview, :any, default: nil
 
   def level_sidebar(assigns) do
