@@ -309,6 +309,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :align_rotation_deg, :any, default: nil
   attr :image_natural_width, :any, default: nil
   attr :image_natural_height, :any, default: nil
+  attr :child_stops_total, :integer, default: 0
+  attr :child_stops_with_geo, :integer, default: 0
+  attr :anchor_count, :integer, default: 0
 
   def map_canvas(assigns) do
     floorplan_url =
