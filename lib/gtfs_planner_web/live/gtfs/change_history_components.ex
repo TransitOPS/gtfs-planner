@@ -82,6 +82,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   attr :entries, :list, required: true
   attr :entity_type, :string, required: true
   attr :rollback_preview, :map, default: nil
+  attr :history_field_filter, :string, default: "all"
 
   def change_log_list(assigns) do
     assigns =

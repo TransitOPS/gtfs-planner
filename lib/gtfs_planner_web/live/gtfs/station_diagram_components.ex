@@ -2188,6 +2188,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           entries={@history_entries}
           entity_type="stop"
           rollback_preview={@rollback_preview}
+          history_field_filter={@history_field_filter}
         />
       </div>
     </.drawer>
@@ -2933,6 +2934,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           entries={@history_entries}
           entity_type="pathway"
           rollback_preview={@rollback_preview}
+          history_field_filter={@history_field_filter}
         />
       </div>
     </.drawer>
@@ -3522,6 +3524,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           entries={@history_entries}
           entity_type="level"
           rollback_preview={@rollback_preview}
+          history_field_filter={@history_field_filter}
         />
       </div>
     </.drawer>
