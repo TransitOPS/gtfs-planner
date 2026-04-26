@@ -281,6 +281,34 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
     end
   end
 
+  describe "preview_matches_entry?/3" do
+    test "returns false when preview is nil" do
+      entry = %{id: 1}
+      refute ChangeHistoryComponents.__test_preview_matches_entry__(nil, "stop", entry)
+    end
+
+    test "returns true when entity_type and log id match the entry" do
+      entry = %{id: 42}
+      preview = %{entity_type: "stop", log: %{id: 42}}
+
+      assert ChangeHistoryComponents.__test_preview_matches_entry__(preview, "stop", entry)
+    end
+
+    test "returns false when entity_type does not match" do
+      entry = %{id: 42}
+      preview = %{entity_type: "stop", log: %{id: 42}}
+
+      refute ChangeHistoryComponents.__test_preview_matches_entry__(preview, "pathway", entry)
+    end
+
+    test "returns false when log id does not match the entry id" do
+      entry = %{id: 99}
+      preview = %{entity_type: "stop", log: %{id: 42}}
+
+      refute ChangeHistoryComponents.__test_preview_matches_entry__(preview, "stop", entry)
+    end
+  end
+
   describe "relative_time/2" do
     test "just now for sub-minute differences" do
       now = DateTime.utc_now()

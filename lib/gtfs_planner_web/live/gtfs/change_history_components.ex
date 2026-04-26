@@ -29,6 +29,9 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       do: rollback_button_variant(entry, rollback_by_original_id, latest?)
 
     def __test_rollback_button_label__(variant), do: rollback_action_label(variant)
+
+    def __test_preview_matches_entry__(preview, entity_type, entry),
+      do: preview_matches_entry?(preview, entity_type, entry)
   end
 
   attr :entity_type, :string, required: true
@@ -438,5 +441,11 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     defp rollback_action_label(:reapply), do: "Re-apply this change"
     defp rollback_action_label(:original), do: "Original version"
     defp rollback_action_label(:none), do: nil
+
+    defp preview_matches_entry?(nil, _entity_type, _entry), do: false
+
+    defp preview_matches_entry?(%{} = preview, entity_type, entry) do
+      preview.entity_type == entity_type and preview.log.id == entry.id
+    end
   end
 end
