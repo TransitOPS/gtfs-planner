@@ -67,10 +67,14 @@ defmodule GtfsPlanner.Gtfs.AlignmentInference do
           pathway_id: String.t() | nil
         }
 
+  @anchor_minimum 2
   @max_rmse_meters 2.0
   @meters_per_degree_lat 111_111.0
   @degenerate_epsilon 1.0e-6
   @elevator_mode 5
+
+  @spec anchor_minimum() :: pos_integer()
+  def anchor_minimum, do: @anchor_minimum
 
   @spec infer_alignment([anchor()], pos_integer(), pos_integer()) ::
           {:ok, inferred_alignment()} | {:error, error_reason()}
@@ -217,7 +221,7 @@ defmodule GtfsPlanner.Gtfs.AlignmentInference do
 
   defp validate_anchor(_), do: :error
 
-  defp check_count(anchors) when length(anchors) >= 2, do: :ok
+  defp check_count(anchors) when length(anchors) >= @anchor_minimum, do: :ok
   defp check_count(_), do: {:error, :insufficient_anchors}
 
   defp solve(anchors, image_w, image_h) do

@@ -65,6 +65,11 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
       assert {:error, :insufficient_anchors} =
                AlignmentInference.infer_alignment([base_anchor()], @image_w, @image_h)
     end
+
+    test "anchor_minimum/0 returns the threshold used by infer_alignment/3" do
+      below = List.duplicate(base_anchor(), AlignmentInference.anchor_minimum() - 1)
+      assert {:error, :insufficient_anchors} = AlignmentInference.infer_alignment(below, 1024, 768)
+    end
   end
 
   describe "degenerate geometry" do
