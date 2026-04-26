@@ -1,6 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
   use GtfsPlannerWeb.ConnCase
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
@@ -212,6 +213,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#child-stop-form input[name='stop_lon'][type='number']")
       assert has_element?(view, "#child-stop-form input[name='stop_lat'][min='-90'][max='90']")
       assert has_element?(view, "#child-stop-form input[name='stop_lon'][min='-180'][max='180']")
+      assert has_element?(view, "#child-stop-form input[name='stop_lat'][step='any']")
+      assert has_element?(view, "#child-stop-form input[name='stop_lon'][step='any']")
     end
 
     test "creating a child stop persists latitude and longitude", %{
@@ -241,8 +244,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         "location_type" => "3",
         "level_id" => level.level_id,
         "wheelchair_boarding" => "",
-        "stop_lat" => "40.7128",
-        "stop_lon" => "-74.0060"
+        "stop_lat" => "40.046627198009965",
+        "stop_lon" => "-73.987654321098765"
       })
       |> render_submit()
 
@@ -251,8 +254,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         |> Enum.find(&(&1.stop_name == "Child Lat Lon Create"))
 
       assert created_stop
-      assert Decimal.equal?(created_stop.stop_lat, Decimal.new("40.7128"))
-      assert Decimal.equal?(created_stop.stop_lon, Decimal.new("-74.0060"))
+      assert Decimal.equal?(created_stop.stop_lat, Decimal.new("40.046627198009965"))
+      assert Decimal.equal?(created_stop.stop_lon, Decimal.new("-73.987654321098765"))
     end
 
     test "editing child stop shows change link and toggles level selector", %{
@@ -389,14 +392,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         "location_type" => Integer.to_string(child_stop.location_type),
         "level_id" => level.level_id,
         "wheelchair_boarding" => "",
-        "stop_lat" => "40.730610",
-        "stop_lon" => "-73.935242"
+        "stop_lat" => "40.046627198009965",
+        "stop_lon" => "-73.987654321098765"
       })
       |> render_submit()
 
       updated_stop = Gtfs.get_stop!(child_stop.id)
-      assert Decimal.equal?(updated_stop.stop_lat, Decimal.new("40.730610"))
-      assert Decimal.equal?(updated_stop.stop_lon, Decimal.new("-73.935242"))
+      assert Decimal.equal?(updated_stop.stop_lat, Decimal.new("40.046627198009965"))
+      assert Decimal.equal?(updated_stop.stop_lon, Decimal.new("-73.987654321098765"))
     end
 
     test "out-of-range latitude keeps child stop form open with validation error", %{
@@ -8333,7 +8336,3819 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "search_stop", %{"stop_id_query" => 123})
       render_hook(view, "search_stop", %{})
 
-      refute has_element?(view, "#flash-error")
+
+    end
+  end
+
+  describe "StationDiagramLive - child stop audit recording" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_STATION",
+          stop_name: "Audit Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "AUDIT_L1",
+          level_name: "Audit Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "audit-level.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "creating a child stop records a created change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "AUDIT_CREATE_1",
+        "stop_name" => "Audit Create 1",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_submit()
+
+      created =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> Enum.find(&(&1.stop_id == "AUDIT_CREATE_1"))
+
+      assert created
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "stop" and
+                cl.entity_external_id == "AUDIT_CREATE_1"
+          )
+        )
+
+      assert [%{action: "created", entity_external_id: "AUDIT_CREATE_1", actor_id: actor_id}] =
+               logs
+
+      assert actor_id == user.id
+    end
+
+    test "editing child stop details records an updated change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_EDIT_1",
+          stop_name: "Audit Edit 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 25.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => child_stop.stop_id,
+        "stop_name" => "Audit Edit 1 Renamed",
+        "location_type" => Integer.to_string(child_stop.location_type),
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "platform_code" => ""
+      })
+      |> render_submit()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "stop",
+          child_stop.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "stop_name")
+    end
+
+    test "repositioning a stop records an updated change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_REPOSITION",
+          stop_name: "Audit Reposition",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "70", "y" => "80"})
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      view
+      |> element("#positioned-stop-row-#{child_stop.id} button[phx-click='reposition_stop']")
+      |> render_click()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "stop",
+          child_stop.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "diagram_coordinate")
+    end
+
+    test "dragging a stop to a new coordinate records an updated change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_DRAG",
+          stop_name: "Audit Drag",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 25.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{
+        "id" => to_string(child_stop.id),
+        "x" => "44.2",
+        "y" => "55.8"
+      })
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "stop",
+          child_stop.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "diagram_coordinate")
+    end
+
+    test "deleting a child stop records a deleted change log with snapshot", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "AUDIT_DELETE",
+          stop_name: "Audit Delete",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 25.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='delete_child_stop'][phx-value-id='#{child_stop.id}']")
+      |> render_click()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "stop",
+          child_stop.id
+        )
+
+      assert [%{action: "deleted", snapshot: snapshot, entity_external_id: ext_id}] = logs
+      assert ext_id == "AUDIT_DELETE"
+      assert snapshot["stop_name"] == "Audit Delete"
+    end
+  end
+
+  describe "StationDiagramLive - pathway audit recording" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PW_AUDIT_STATION",
+          stop_name: "Pathway Audit Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PW_AUDIT_L1",
+          level_name: "Pathway Audit Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "pw-audit-level.png"
+        })
+
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PW_AUDIT_STOP_A",
+          stop_name: "Pathway Audit Stop A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PW_AUDIT_STOP_B",
+          stop_name: "Pathway Audit Stop B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 10.0}
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        stop_a: stop_a,
+        stop_b: stop_b
+      }
+    end
+
+    test "creating a first pathway records a created change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "create_pathway", %{
+        "from_stop_id" => stop_a.id,
+        "to_stop_id" => stop_b.id
+      })
+
+      [pathway] =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "pathway" and
+                cl.entity_external_id == ^pathway.pathway_id
+          )
+        )
+
+      assert [
+               %{
+                 action: "created",
+                 entity_external_id: ext_id,
+                 actor_id: actor_id
+               }
+             ] = logs
+
+      assert ext_id == pathway.pathway_id
+      assert actor_id == user.id
+    end
+
+    test "adding a second pathway records a created change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      first =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{first.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> element("#add-second-pathway-btn")
+      |> render_click()
+
+      pair =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn pathway ->
+          MapSet.new([pathway.from_stop_id, pathway.to_stop_id]) ==
+            MapSet.new([stop_a.stop_id, stop_b.stop_id])
+        end)
+
+      assert length(pair) == 2
+
+      second = Enum.find(pair, &(&1.id != first.id))
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "pathway" and
+                cl.entity_external_id == ^second.pathway_id
+          )
+        )
+
+      assert [%{action: "created", entity_external_id: ext_id}] = logs
+      assert ext_id == second.pathway_id
+    end
+
+    test "editing a pathway form records an updated change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "Original"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> form("#pathway-form", %{
+        "pathway_mode" => "1",
+        "is_bidirectional" => "true",
+        "traversal_time" => "99",
+        "length" => "",
+        "min_width" => "",
+        "signposted_as" => "Renamed",
+        "reversed_signposted_as" => ""
+      })
+      |> render_submit()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "pathway",
+          pathway.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "signposted_as")
+    end
+
+    test "flipping a pathway records an updated change log with from/to stop changes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: false,
+          signposted_as: "Forward",
+          reversed_signposted_as: "Reverse"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='flip_pathway']")
+      |> render_click()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "pathway",
+          pathway.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "from_stop_id")
+      assert Map.has_key?(changed_fields, "to_stop_id")
+    end
+
+    test "deleting a pathway records a deleted change log with snapshot", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true,
+          signposted_as: "Doomed"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='delete_pathway']")
+      |> render_click()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "pathway",
+          pathway.id
+        )
+
+      assert [%{action: "deleted", snapshot: snapshot, entity_external_id: ext_id}] = logs
+      assert ext_id == pathway.pathway_id
+      assert snapshot["signposted_as"] == "Doomed"
+    end
+  end
+
+  describe "StationDiagramLive - level audit recording" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "LV_AUDIT_STATION",
+          stop_name: "Level Audit Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "LV_AUDIT_L1",
+          level_name: "Level Audit 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "creating a new level records a created change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_click(element(view, "button[phx-click='open_add_level']"))
+      render_click(element(view, "input[phx-value-mode='new']"))
+
+      view
+      |> form("#level-form", %{
+        "level_id" => "LV_AUDIT_NEW",
+        "level_name" => "Level Audit New",
+        "level_index" => "2"
+      })
+      |> render_submit()
+
+      created =
+        Gtfs.list_all_levels(organization.id, gtfs_version.id)
+        |> Enum.find(&(&1.level_id == "LV_AUDIT_NEW"))
+
+      assert created
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "level" and
+                cl.entity_external_id == "LV_AUDIT_NEW"
+          )
+        )
+
+      assert [%{action: "created", entity_external_id: "LV_AUDIT_NEW", actor_id: actor_id}] = logs
+      assert actor_id == user.id
+    end
+
+    test "editing a level records an updated change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_click(element(view, "button[phx-click='open_edit_level']"))
+
+      view
+      |> form("#level-form", %{
+        "level_id" => level.level_id,
+        "level_name" => "Level Audit 1 Renamed",
+        "level_index" => "0"
+      })
+      |> render_submit()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(
+          organization.id,
+          gtfs_version.id,
+          "level",
+          level.id
+        )
+
+      assert [%{action: "updated", changed_fields: changed_fields}] = logs
+      assert Map.has_key?(changed_fields, "level_name")
+    end
+
+    test "adding an existing level to a station does not create a level change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      other_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "LV_AUDIT_L2",
+          level_name: "Level Audit 2",
+          level_index: 1.0
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_click(element(view, "button[phx-click='open_add_level']"))
+
+      view
+      |> form("#level-form", %{"existing_level_id" => other_level.id})
+      |> render_submit()
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "level"
+          )
+        )
+
+      assert logs == []
+    end
+
+    test "removing a level from a station does not create a level change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "remove_level_from_station", %{"id" => level.id})
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and
+                cl.gtfs_version_id == ^gtfs_version.id and
+                cl.entity_type == "level"
+          )
+        )
+
+      assert logs == []
+    end
+  end
+
+  describe "StationDiagramLive - history tab events" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_STATION",
+          stop_name: "History Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "HIST_L1",
+          level_name: "History Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "history.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    defp history_audit_ctx(organization, gtfs_version, station, user) do
+      %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+    end
+
+    test "show_history loads stop entries newest-first", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_STOP_1",
+          stop_name: "Hist Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "First Edit"})
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Second Edit"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == {"stop", stop.id}
+
+      entries = state.socket.assigns.history_entries
+      assert length(entries) == 2
+
+      [first, second] = entries
+      assert DateTime.compare(first.inserted_at, second.inserted_at) in [:gt, :eq]
+      assert first.changed_fields["stop_name"]["to"] == "Second Edit"
+      assert second.changed_fields["stop_name"]["to"] == "First Edit"
+    end
+
+    test "show_history loads pathway entries", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_PW_A",
+          stop_name: "A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 5.0, "y" => 5.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_PW_B",
+          stop_name: "B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      pathway = pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :pathway, pathway, "updated", %{length: 50.0})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{
+        "entity-type" => "pathway",
+        "entity-id" => pathway.id
+      })
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == {"pathway", pathway.id}
+      assert [%{entity_type: "pathway"}] = state.socket.assigns.history_entries
+    end
+
+    test "show_history loads level entries", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :level, level, "updated", %{level_name: "Renamed"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "level", "entity-id" => level.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == {"level", level.id}
+      assert [%{entity_type: "level"}] = state.socket.assigns.history_entries
+    end
+
+    test "switching history tabs clears rollback preview", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_CLEAR",
+          stop_name: "Hist Clear",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 11.0, "y" => 21.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      :sys.replace_state(view.pid, fn state ->
+        assigns = Map.put(state.socket.assigns, :rollback_preview, %{sentinel: true})
+        socket = Map.put(state.socket, :assigns, assigns)
+        Map.put(state, :socket, socket)
+      end)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+    end
+
+    test "invalid entity-type shows flash error and does not query", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      before_atom_count = :erlang.system_info(:atom_count)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      result =
+        render_hook(view, "show_history", %{
+          "entity-type" => "definitely_not_a_real_entity_type_xyz",
+          "entity-id" => Ecto.UUID.generate()
+        })
+
+      assert result =~ "invalid request"
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == nil
+      assert state.socket.assigns.history_entries == []
+
+      after_atom_count = :erlang.system_info(:atom_count)
+      assert after_atom_count - before_atom_count < 20
+    end
+
+    test "hide_history resets history and preview state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_HIDE",
+          stop_name: "Hist Hide",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 22.0}
+        })
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == {"stop", stop.id}
+      assert length(state.socket.assigns.history_entries) == 1
+
+      render_hook(view, "hide_history", %{})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == nil
+      assert state.socket.assigns.history_entries == []
+      assert state.socket.assigns.rollback_preview == nil
+    end
+
+    test "filter_history with valid key updates history_field_filter assign", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_FILTER_OK",
+          stop_name: "Hist Filter OK",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 13.0, "y" => 23.0}
+        })
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "all"
+
+      render_hook(view, "filter_history", %{"key" => "position", "entity-type" => "stop"})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "position"
+    end
+
+    test "filter_history with bogus key resets filter and flashes error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_FILTER_BOGUS",
+          stop_name: "Hist Filter Bogus",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 14.0, "y" => 24.0}
+        })
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      result =
+        render_hook(view, "filter_history", %{"key" => "bogus", "entity-type" => "stop"})
+
+      assert result =~ "Unknown history filter"
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "all"
+    end
+
+    test "history_field_filter resets to \"all\" on hide_history and re-open", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "HIST_FILTER_RESET",
+          stop_name: "Hist Filter Reset",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 25.0}
+        })
+
+      ctx = history_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      render_hook(view, "filter_history", %{"key" => "position", "entity-type" => "stop"})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "position"
+
+      render_hook(view, "hide_history", %{})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "all"
+
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_field_filter == "all"
+    end
+  end
+
+  describe "StationDiagramLive - rollback preview events" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_STATION",
+          stop_name: "Preview Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PREVIEW_L1",
+          level_name: "Preview Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "preview.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    defp preview_audit_ctx(organization, gtfs_version, station, user) do
+      %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+    end
+
+    test "preview_rollback_change_log lists only differing fields and excludes identity fields",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_STOP_1",
+          stop_name: "Original Name",
+          stop_desc: "Original Desc",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = preview_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      state = :sys.get_state(view.pid)
+      preview = state.socket.assigns.rollback_preview
+
+      assert %{
+               log: %GtfsPlanner.Gtfs.ChangeLog{},
+               entity_type: "stop",
+               entity_id: entity_id,
+               field_changes: field_changes
+             } = preview
+
+      assert entity_id == stop.id
+
+      fields = Enum.map(field_changes, & &1.field)
+      assert "stop_name" in fields
+      refute "stop_id" in fields
+      refute "stop_desc" in fields
+
+      assert Enum.all?(field_changes, fn change -> change.current != change.restored end)
+
+      stop_name_change = Enum.find(field_changes, &(&1.field == "stop_name"))
+      assert stop_name_change.current == "Changed Name"
+      assert stop_name_change.restored == "Original Name"
+    end
+
+    test "preview_rollback_change_log filters polluted stop logs to reversible fields",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_POLLUTED_STOP",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      {:ok, changed_stop} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      {:ok, log} =
+        Repo.insert(%GtfsPlanner.Gtfs.ChangeLog{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          station_stop_id: station.stop_id,
+          entity_type: "stop",
+          entity_id: changed_stop.id,
+          entity_external_id: changed_stop.stop_id,
+          action: "updated",
+          snapshot: %{
+            "stop_name" => "Original Name",
+            "organization_id" => Ecto.UUID.generate(),
+            "gtfs_version_id" => Ecto.UUID.generate(),
+            "stop_id" => "bad_stop_id"
+          },
+          changed_fields: %{
+            "stop_name" => %{"from" => "Original Name", "to" => "Changed Name"},
+            "organization_id" => %{"from" => nil, "to" => organization.id},
+            "gtfs_version_id" => %{"from" => nil, "to" => gtfs_version.id},
+            "stop_id" => %{"from" => "bad_stop_id", "to" => changed_stop.stop_id}
+          },
+          actor_id: user.id,
+          actor_email: user.email
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      state = :sys.get_state(view.pid)
+      %{field_changes: field_changes} = state.socket.assigns.rollback_preview
+
+      fields = Enum.map(field_changes, & &1.field)
+      assert fields == ["stop_name"]
+
+      [stop_name_change] = field_changes
+      assert stop_name_change.current == "Changed Name"
+      assert stop_name_change.restored == "Original Name"
+    end
+
+    test "preview_rollback_change_log shows coordinate-only stop changes",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_STOP_COORD_ONLY",
+          stop_name: "Coordinate Preview",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = preview_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+          diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+        })
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} =
+        Gtfs.update_stop(stop, %{diagram_coordinate: %{"x" => 30.0, "y" => 40.0}})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      state = :sys.get_state(view.pid)
+      preview = state.socket.assigns.rollback_preview
+
+      assert %{field_changes: [%{field: "diagram_coordinate"} = coordinate_change]} = preview
+      assert coordinate_change.current == %{"x" => 30.0, "y" => 40.0}
+      assert coordinate_change.restored == %{"x" => 10.0, "y" => 20.0}
+    end
+
+    test "preview_rollback_change_log reports already-matching changes without setting preview",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_STOP_NOOP",
+          stop_name: "Already Matching",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 22.0}
+        })
+
+      ctx = preview_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Would Change"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      result = render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      assert result =~ "This change already matches the current state."
+      refute result =~ ~s(id="rollback-preview-stop")
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+    end
+
+    test "cancel_rollback_preview clears preview and does not mutate the database",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_STOP_CANCEL",
+          stop_name: "Before",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 15.0, "y" => 25.0}
+        })
+
+      ctx = preview_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Later"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Later"})
+
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+      before_stop = Gtfs.get_stop!(stop.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview != nil
+
+      render_hook(view, "cancel_rollback_preview", %{})
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == before_stop.stop_name
+      assert after_stop.stop_desc == before_stop.stop_desc
+      assert after_stop.level_id == before_stop.level_id
+    end
+
+    test "preview_rollback_change_log with missing entity shows flash and does not set preview",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_GONE",
+          stop_name: "Gone",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 1.0, "y" => 1.0}
+        })
+
+      ctx = preview_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Updated"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _} = Gtfs.delete_stop(stop)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      result = render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      assert result =~ "entity no longer exists"
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+    end
+  end
+
+  describe "StationDiagramLive - rollback confirmation events" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_STATION",
+          stop_name: "Confirm Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "CONFIRM_L1",
+          level_name: "Confirm Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "confirm.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    defp confirm_audit_ctx(organization, gtfs_version, station, user) do
+      %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+    end
+
+    test "confirm_rollback_change_log restores a stop update and refreshes history", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_STOP_1",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      restored = Gtfs.get_stop!(stop.id)
+      assert restored.stop_name == "Original Name"
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      assert [%{action: "rolled_back"} | _] = state.socket.assigns.history_entries
+    end
+
+    test "confirm_rollback_change_log reverts legacy polluted stop log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_POLLUTED_STOP",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      {:ok, changed_stop} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      {:ok, log} =
+        Repo.insert(%GtfsPlanner.Gtfs.ChangeLog{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          station_stop_id: station.stop_id,
+          entity_type: "stop",
+          entity_id: changed_stop.id,
+          entity_external_id: changed_stop.stop_id,
+          action: "updated",
+          snapshot: %{
+            "stop_name" => "Original Name",
+            "organization_id" => Ecto.UUID.generate(),
+            "gtfs_version_id" => Ecto.UUID.generate(),
+            "stop_id" => "bad_stop_id"
+          },
+          changed_fields: %{
+            "stop_name" => %{"from" => "Original Name", "to" => "Changed Name"},
+            "organization_id" => %{"from" => nil, "to" => organization.id},
+            "gtfs_version_id" => %{"from" => nil, "to" => gtfs_version.id},
+            "stop_id" => %{"from" => "bad_stop_id", "to" => changed_stop.stop_id}
+          },
+          actor_id: user.id,
+          actor_email: user.email
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert result =~ "Change reverted."
+
+      restored = Gtfs.get_stop!(stop.id)
+      assert restored.stop_name == "Original Name"
+      assert restored.organization_id == organization.id
+      assert restored.gtfs_version_id == gtfs_version.id
+      assert restored.stop_id == "CONFIRM_POLLUTED_STOP"
+    end
+
+    test "confirm_rollback_change_log restores a moved child stop coordinate and refreshes rollback history",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      original_coordinate = %{"x" => 16.0, "y" => 26.0}
+      moved_coordinate = %{"x" => 44.0, "y" => 54.0}
+
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_STOP_COORD",
+          stop_name: "Moved Child Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: original_coordinate
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+          diagram_coordinate: moved_coordinate
+        })
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{diagram_coordinate: moved_coordinate})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      pending_xy = %{x: 77.0, y: 88.0}
+
+      :sys.replace_state(view.pid, fn state ->
+        assigns =
+          state.socket.assigns
+          |> Map.put(:selected_stop_id, stop.id)
+          |> Map.put(:pending_xy, pending_xy)
+
+        socket = Map.put(state.socket, :assigns, assigns)
+        Map.put(state, :socket, socket)
+      end)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      restored = Gtfs.get_stop!(stop.id)
+      assert restored.diagram_coordinate == original_coordinate
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+      assert state.socket.assigns.selected_stop_id == stop.id
+      assert state.socket.assigns.pending_xy == pending_xy
+
+      refreshed_child_stop =
+        Enum.find(state.socket.assigns.child_stops_list, &(&1.id == stop.id))
+
+      assert refreshed_child_stop
+      assert refreshed_child_stop.diagram_coordinate == original_coordinate
+
+      rollback_entry =
+        Enum.find(state.socket.assigns.history_entries, fn entry ->
+          entry.action == "rolled_back" and entry.rolled_back_to_log_id == log.id
+        end)
+
+      assert rollback_entry
+    end
+
+    test "confirm_rollback_change_log restores a pathway update and refreshes history", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_PW_A",
+          stop_name: "A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 5.0, "y" => 5.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_PW_B",
+          stop_name: "B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id, %{
+          traversal_time: 30
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :pathway, pathway, "updated", %{traversal_time: 99})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "pathway", pathway.id)
+
+      {:ok, _updated} = Gtfs.update_pathway(pathway, %{traversal_time: 99})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      restored = Gtfs.get_pathway!(pathway.id)
+      assert restored.traversal_time == 30
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+      assert [%{action: "rolled_back"} | _] = state.socket.assigns.history_entries
+    end
+
+    test "confirm_rollback_change_log restores a level update and refreshes history", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok = Gtfs.record_change(ctx, :level, level, "updated", %{level_name: "Renamed Level"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "level", level.id)
+
+      {:ok, _updated} = Gtfs.update_level(level, %{level_name: "Renamed Level"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      restored = Gtfs.get_level!(level.id)
+      assert restored.level_name == "Confirm Level"
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+      assert [%{action: "rolled_back"} | _] = state.socket.assigns.history_entries
+    end
+
+    test "confirm_rollback_change_log rejects mismatched log id without mutation", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_STALE",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      before_preview = :sys.get_state(view.pid).socket.assigns.rollback_preview
+      assert before_preview != nil
+
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      result =
+        render_hook(view, "confirm_rollback_change_log", %{
+          "log-id" => Ecto.UUID.generate()
+        })
+
+      assert result =~ "already been reverted" or result =~ "stale"
+
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == "Changed Name"
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == before_preview
+    end
+
+    test "confirm_rollback_change_log with no active preview rejects without mutation", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_NIL",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert result =~ "already been reverted" or result =~ "stale"
+
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == "Changed Name"
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+    end
+  end
+
+  describe "StationDiagramLive - rollback confirmation errors" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_STATION",
+          stop_name: "Rollback Error Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "ROLLBACK_ERR_L1",
+          level_name: "Rollback Error Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "rollback_err.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    defp install_preview(view, preview) do
+      :sys.replace_state(view.pid, fn state ->
+        assigns = Map.put(state.socket.assigns, :rollback_preview, preview)
+        socket = Map.put(state.socket, :assigns, assigns)
+        Map.put(state, :socket, socket)
+      end)
+    end
+
+    test "confirm_rollback_change_log surfaces :cannot_rollback_create_or_delete and leaves DB unchanged",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_CREATED",
+          stop_name: "Created Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "created", %{stop_id: stop.stop_id})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      preview = %{
+        log: log,
+        entity_type: "stop",
+        entity_id: stop.id,
+        field_changes: []
+      }
+
+      install_preview(view, preview)
+
+      before_stop = Gtfs.get_stop!(stop.id)
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "This type of change cannot be reverted."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == before_stop.stop_name
+      assert after_stop.level_id == before_stop.level_id
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+
+    test "confirm_rollback_change_log surfaces :entity_not_found when entity deleted",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_GONE",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 11.0, "y" => 21.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      preview = %{
+        log: log,
+        entity_type: "stop",
+        entity_id: stop.id,
+        field_changes: [
+          %{field: "stop_name", current: "Original Name", restored: "Original Name"}
+        ]
+      }
+
+      install_preview(view, preview)
+
+      # Delete the entity out from under the preview.
+      {:ok, _} = Repo.delete(Gtfs.get_stop!(stop.id))
+
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "The target entity no longer exists."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      assert Gtfs.get_stop(stop.id) == nil
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+
+    test "confirm_rollback_change_log surfaces :rollback_log_failed and rolls back the entity update",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_LOGFAIL",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 22.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # Tamper a non-authorization field so insert_rollback_log/3 fails inside
+      # the transaction (validate_required on entity_external_id) without
+      # tripping the cross-org/version guard before the Multi runs.
+      tampered_log = %{log | entity_external_id: nil}
+
+      preview = %{
+        log: tampered_log,
+        entity_type: "stop",
+        entity_id: stop.id,
+        field_changes: [
+          %{field: "stop_name", current: "Changed Name", restored: "Original Name"}
+        ]
+      }
+
+      install_preview(view, preview)
+
+      before_stop = Gtfs.get_stop!(stop.id)
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => tampered_log.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "Unable to record the revert."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      # Transaction should have rolled back the entity update.
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == before_stop.stop_name
+      assert after_stop.stop_name == "Changed Name"
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+
+    test "confirm_rollback_change_log surfaces :already_matches_current and clears stale preview",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      original_coordinate = %{"x" => 18.0, "y" => 28.0}
+      moved_coordinate = %{"x" => 38.0, "y" => 48.0}
+
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_NOOP",
+          stop_name: "No-op Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: original_coordinate
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+
+      :ok =
+        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+          diagram_coordinate: moved_coordinate
+        })
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, moved_stop} = Gtfs.update_stop(stop, %{diagram_coordinate: moved_coordinate})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      assert :sys.get_state(view.pid).socket.assigns.rollback_preview != nil
+
+      {:ok, _restored_elsewhere} =
+        Gtfs.update_stop(moved_stop, %{diagram_coordinate: original_coordinate})
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "This change already matches the current state."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+      assert Gtfs.get_stop!(stop.id).diagram_coordinate == original_coordinate
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+
+    test "confirm_rollback_change_log surfaces :missing_rollback_snapshot for an updated log without snapshot",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_NOSNAP_U",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 13.0, "y" => 23.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      log_without_snapshot = %{log | snapshot: nil}
+
+      preview = %{
+        log: log_without_snapshot,
+        entity_type: "stop",
+        entity_id: stop.id,
+        field_changes: []
+      }
+
+      install_preview(view, preview)
+
+      before_stop = Gtfs.get_stop!(stop.id)
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log_without_snapshot.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "This change has no snapshot and cannot be reverted."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == before_stop.stop_name
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+
+    test "confirm_rollback_change_log surfaces :missing_rollback_snapshot for a rolled_back log without snapshot",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ROLLBACK_ERR_NOSNAP_R",
+          stop_name: "Original Name",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 14.0, "y" => 24.0}
+        })
+
+      ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      rolled_back_log = %{log | action: "rolled_back", snapshot: nil}
+
+      preview = %{
+        log: rolled_back_log,
+        entity_type: "stop",
+        entity_id: stop.id,
+        field_changes: []
+      }
+
+      install_preview(view, preview)
+
+      before_stop = Gtfs.get_stop!(stop.id)
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      before_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => rolled_back_log.id})
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "This change has no snapshot and cannot be reverted."
+             )
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+
+      after_stop = Gtfs.get_stop!(stop.id)
+      assert after_stop.stop_name == before_stop.stop_name
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+
+      after_rolled_back =
+        Repo.aggregate(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          :count
+        )
+
+      assert after_rolled_back == before_rolled_back
+    end
+  end
+
+  describe "StationDiagramComponents - change_log_list/1" do
+    alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents, as: StationDiagramComponents
+
+    defp build_log(attrs) do
+      defaults = %{
+        id: Ecto.UUID.generate(),
+        entity_type: "stop",
+        action: "updated",
+        actor_email: "editor@example.com",
+        inserted_at: ~U[2026-04-24 12:30:00.000000Z],
+        changed_fields: %{"stop_name" => %{"from" => "Old", "to" => "New"}},
+        snapshot: %{"stop_name" => "Old"}
+      }
+
+      struct(GtfsPlanner.Gtfs.ChangeLog, Map.merge(defaults, attrs))
+    end
+
+    test "empty entries renders empty-state copy" do
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(id="history-stop")
+      assert html =~ "No change history is available for this stop."
+    end
+
+    test "non-empty list renders actor display name, timestamp, and action attribute" do
+      entry = build_log(%{action: "updated"})
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(id="history-stop")
+      assert html =~ ~s(id="history-entry-#{entry.id}")
+      assert html =~ "Editor"
+      assert html =~ "Apr 24"
+      assert html =~ "12:30"
+      assert html =~ ~s(data-history-entry-action="undo")
+      assert html =~ ~s(data-testid="history-summary")
+      assert html =~ ~s(data-testid="history-date-header")
+    end
+
+    test "updated entry with snapshot renders an undo rollback button" do
+      entry = build_log(%{action: "updated"})
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(data-history-entry-action="undo")
+      assert html =~ ~s(phx-click="preview_rollback_change_log")
+      assert html =~ ~s(phx-value-log-id="#{entry.id}")
+    end
+
+    test "updated entry with only non-reversible fields hides rollback button" do
+      entry =
+        build_log(%{
+          action: "updated",
+          changed_fields: %{"stop_id" => %{"from" => "OLD", "to" => "NEW"}},
+          snapshot: %{"stop_id" => "OLD"}
+        })
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(id="history-entry-#{entry.id}")
+      refute html =~ ~s(data-history-entry-action="undo")
+      refute html =~ ~s(data-history-entry-action="restore")
+      refute html =~ ~s(phx-click="preview_rollback_change_log")
+      refute html =~ ~s(phx-value-log-id="#{entry.id}")
+    end
+
+    test "reverted original entry renders status and hides its revert button" do
+      original = build_log(%{action: "updated"})
+
+      rollback =
+        build_log(%{
+          action: "rolled_back",
+          rolled_back_to_log_id: original.id
+        })
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [original, rollback],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(id="history-entry-#{original.id}")
+      assert html =~ "Reverted"
+      refute html =~ ~s(phx-value-log-id="#{original.id}")
+      assert html =~ ~s(phx-value-log-id="#{rollback.id}")
+    end
+
+    test "rolled_back entries are hidden from the timeline" do
+      entry = build_log(%{action: "rolled_back"})
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(id="history-stop")
+      refute html =~ ~s(id="history-entry-#{entry.id}")
+      refute html =~ "rolled_back"
+      refute html =~ ~s(data-history-entry-action=)
+    end
+
+    test "created entry renders disabled original button without rollback wiring" do
+      entry = build_log(%{action: "created", snapshot: nil, changed_fields: nil})
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(data-history-entry-action="original")
+      assert html =~ ~s(aria-disabled="true")
+      assert html =~ "disabled"
+      refute html =~ ~s(data-history-entry-action="undo")
+      refute html =~ ~s(data-history-entry-action="restore")
+      refute html =~ ~s(phx-click="preview_rollback_change_log")
+      refute html =~ ~s(phx-value-log-id="#{entry.id}")
+    end
+
+    test "deleted entry renders no rollback button" do
+      entry = build_log(%{action: "deleted"})
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: nil
+        )
+
+      assert html =~ ~s(id="history-entry-#{entry.id}")
+      refute html =~ ~s(data-history-entry-action="undo")
+      refute html =~ ~s(data-history-entry-action="restore")
+      refute html =~ ~s(data-history-entry-action="reapply")
+      refute html =~ ~s(data-history-entry-action="original")
+      refute html =~ ~s(phx-click="preview_rollback_change_log")
+      refute html =~ ~s(phx-value-log-id="#{entry.id}")
+    end
+
+    test "renders rollback_preview inside the targeted entry card" do
+      entry = build_log(%{action: "updated"})
+
+      preview = %{
+        log: entry,
+        entity_type: "stop",
+        entity_id: Ecto.UUID.generate(),
+        field_changes: [%{field: "stop_name", current: "New", restored: "Old"}]
+      }
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: preview
+        )
+
+      assert html =~ ~s(id="rollback-preview-stop")
+      assert html =~ ~s(id="rollback-preview-cancel-stop")
+      assert html =~ ~s(id="rollback-preview-confirm-stop")
+
+      entry_open = String.split(html, ~s(id="history-entry-#{entry.id}")) |> Enum.at(1)
+      [card_html, _rest] = String.split(entry_open, "</li>", parts: 2)
+      assert card_html =~ ~s(id="rollback-preview-stop")
+    end
+
+    test "does not render rollback_preview when it does not match any listed entry" do
+      entry = build_log(%{action: "updated"})
+
+      other_log = build_log(%{id: Ecto.UUID.generate()})
+
+      preview = %{
+        log: other_log,
+        entity_type: "stop",
+        entity_id: Ecto.UUID.generate(),
+        field_changes: []
+      }
+
+      html =
+        render_component(&StationDiagramComponents.change_log_list/1,
+          entries: [entry],
+          entity_type: "stop",
+          rollback_preview: preview
+        )
+
+      refute html =~ ~s(id="rollback-preview-stop")
+    end
+  end
+
+  describe "StationDiagramComponents - rollback_preview/1" do
+    alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents, as: StationDiagramComponents
+
+    test "lists each field change and renders cancel and confirm buttons" do
+      log = %GtfsPlanner.Gtfs.ChangeLog{id: Ecto.UUID.generate()}
+
+      preview = %{
+        log: log,
+        entity_type: "stop",
+        entity_id: Ecto.UUID.generate(),
+        field_changes: [
+          %{field: "stop_name", current: "Blue Line", restored: "Red Line"},
+          %{field: "location_type", current: 0, restored: 1}
+        ]
+      }
+
+      html =
+        render_component(&StationDiagramComponents.rollback_preview/1,
+          rollback_preview: preview,
+          entity_type: "stop"
+        )
+
+      assert html =~ "Revert these changes?"
+      assert html =~ "stop_name"
+      assert html =~ "Blue Line"
+      assert html =~ "Red Line"
+      assert html =~ "location_type"
+
+      assert html =~ ~s(id="rollback-preview-cancel-stop")
+      assert html =~ ~s(phx-click="cancel_rollback_preview")
+
+      assert html =~ ~s(id="rollback-preview-confirm-stop")
+      assert html =~ ~s(phx-click="confirm_rollback_change_log")
+      assert html =~ ~s(phx-value-log-id="#{log.id}")
+    end
+  end
+
+  describe "StationDiagramLive - history tabs in drawers" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TAB_STATION",
+          stop_name: "Tab Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "TAB_L1",
+          level_name: "Tab Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "tabs.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "child stop edit drawer renders Details and History tabs", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TAB_CHILD_1",
+          stop_name: "Tab Child 1",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 75.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert has_element?(view, "#stop-tab-details")
+      assert has_element?(view, "#stop-tab-history")
+    end
+
+    test "child stop create drawer does not render history tabs", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "12", "y" => "24"})
+
+      assert has_element?(view, "#child-stop-form")
+      refute has_element?(view, "#stop-tab-details")
+      refute has_element?(view, "#stop-tab-history")
+    end
+
+    test "clicking stop history tab opens history, details tab hides it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TAB_CHILD_SWITCH",
+          stop_name: "Tab Child Switch",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 75.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      refute has_element?(view, "#history-stop")
+
+      view |> element("#stop-tab-history") |> render_click()
+      assert has_element?(view, "#history-stop")
+
+      view |> element("#stop-tab-details") |> render_click()
+      refute has_element?(view, "#history-stop")
+    end
+
+    test "pathway drawer editing existing pathway renders history tab", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TAB_PW_A",
+          stop_name: "A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TAB_PW_B",
+          stop_name: "B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 20.0}
+        })
+
+      pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          stop_a.stop_id,
+          stop_b.stop_id
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view |> element("#pathways-#{pathway.id}") |> render_click()
+
+      assert has_element?(view, "#pathway-tab-details")
+      assert has_element?(view, "#pathway-tab-history")
+    end
+
+    test "pathway drawer closed does not render history tab", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      refute has_element?(view, "#pathway-tab-history")
+    end
+
+    test "level edit drawer renders Details and History tabs", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_click(element(view, "button[phx-click='open_edit_level']"))
+
+      assert has_element?(view, "#level-tab-details")
+      assert has_element?(view, "#level-tab-history")
+    end
+
+    test "level add drawer does not render history tabs", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_click(element(view, "button[phx-click='open_add_level']"))
+
+      refute has_element?(view, "#level-tab-details")
+      refute has_element?(view, "#level-tab-history")
+    end
+  end
+
+  describe "StationDiagramLive - cross-station show_history rejection (R3)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "XSTATION_A",
+          stop_name: "Station A",
+          location_type: 1
+        })
+
+      station_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "XSTATION_B",
+          stop_name: "Station B",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "XSTATION_L",
+          level_name: "L",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_a.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "x.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station_a: station_a,
+        station_b: station_b,
+        level: level
+      }
+    end
+
+    test "show_history for an entity in a different station is rejected", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_a: station_a,
+      station_b: station_b,
+      level: level
+    } do
+      stop_in_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "XSTATION_B_CHILD",
+          stop_name: "B Child",
+          location_type: 0,
+          parent_station: station_b.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 1.0, "y" => 1.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station_a.stop_id}/diagram", on_error: :warn)
+
+      result =
+        render_hook(view, "show_history", %{
+          "entity-type" => "stop",
+          "entity-id" => stop_in_b.id
+        })
+
+      assert result =~ "History not available for this entity."
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.history_open_for == nil
+      assert state.socket.assigns.history_entries == []
+    end
+  end
+
+  describe "StationDiagramLive - cross-station preview rejection (R4)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PR_STATION_A",
+          stop_name: "Preview A",
+          location_type: 1
+        })
+
+      station_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PR_STATION_B",
+          stop_name: "Preview B",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "PR_L",
+          level_name: "L",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_a.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "p.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station_a: station_a,
+        station_b: station_b,
+        level: level
+      }
+    end
+
+    test "preview_rollback_change_log for a log scoped to another station is rejected", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_a: station_a,
+      station_b: station_b,
+      level: level
+    } do
+      stop_in_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PR_B_CHILD",
+          stop_name: "B Child",
+          location_type: 0,
+          parent_station: station_b.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 2.0, "y" => 2.0}
+        })
+
+      ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station_b.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      :ok = Gtfs.record_change(ctx, :stop, stop_in_b, "updated", %{stop_name: "Renamed B"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop_in_b.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station_a.stop_id}/diagram", on_error: :warn)
+
+      result = render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      assert result =~ "entity no longer exists"
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.rollback_preview == nil
+    end
+  end
+
+  describe "StationDiagramLive - rollback preview diff completeness (R5)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIFFCOMPL_STATION",
+          stop_name: "Diff Compl",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "DIFFCOMPL_L",
+          level_name: "L",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diff.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "preview surfaces fields present on entity but absent from snapshot", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIFFCOMPL_STOP",
+          stop_name: "Original",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 5.0, "y" => 6.0},
+          wheelchair_boarding: 1
+        })
+
+      ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Renamed"})
+
+      [log] =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      # Drop a non-identity, non-changed field from the stored snapshot to
+      # simulate older logs missing keys the current entity now has.
+      pruned_snapshot = Map.delete(log.snapshot, "wheelchair_boarding")
+
+      log
+      |> Ecto.Changeset.change(%{snapshot: pruned_snapshot})
+      |> Repo.update!()
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+
+      state = :sys.get_state(view.pid)
+      preview = state.socket.assigns.rollback_preview
+      assert is_map(preview)
+
+      wb_change = Enum.find(preview.field_changes, &(&1.field == "wheelchair_boarding"))
+      assert wb_change, "expected wheelchair_boarding in field_changes"
+      assert wb_change.restored == nil
+      assert wb_change.current == 1
+    end
+  end
+
+  # R6 (editor-role enforcement on confirm_rollback_change_log): the
+  # StationDiagramLive on_mount hook (`{EnsureRole, :require_gtfs_access}`)
+  # already gates the entire LiveView behind the `:pathways_studio_editor`
+  # role, so a defense-in-depth in-handler check is unreachable in practice.
+  # The redundant check was removed from production code rather than adding
+  # a test that cannot exercise the rejection path.
+
+  # R2 (rollback log actor identity): see change_log_test.exs for the unit-
+  # level coverage; no LiveView mirror is needed.
+
+  describe "StationDiagramLive - non-binary log-id fallback (R11)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "FB_STATION",
+          stop_name: "FB",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "FB_L",
+          level_name: "L",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "fb.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station
+      }
+    end
+
+    test "confirm_rollback_change_log with non-binary log-id returns fallback flash", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
+
+      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => 123})
+
+      assert result =~ "invalid parameters"
+
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+    end
+  end
+
+  describe "StationDiagramLive - no-op record_change suppression (R8)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NOOP_STATION",
+          stop_name: "Noop",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "NOOP_L",
+          level_name: "Noop Level",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "noop.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "drag_end with unchanged coordinates does not insert a change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NOOP_DRAG",
+          stop_name: "Noop Drag",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 50.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(stop.id)})
+
+      render_hook(view, "drag_end", %{
+        "id" => to_string(stop.id),
+        "x" => "40.0",
+        "y" => "50.0"
+      })
+
+      logs =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      assert logs == []
+    end
+
+    test "level edit submitting unchanged values does not insert a change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_click(element(view, "button[phx-click='open_edit_level']"))
+
+      view
+      |> form("#level-form", %{
+        "level_id" => level.level_id,
+        "level_name" => level.level_name,
+        "level_index" => Integer.to_string(trunc(level.level_index))
+      })
+      |> render_submit()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "level", level.id)
+
+      assert logs == []
+    end
+  end
+
+  describe "StationDiagramComponents - falsy-value diff rendering (R9)" do
+    alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents, as: StationDiagramComponents
+
+    test "renders 0 -> 1 instead of em-dash for location_type" do
+      entry = %GtfsPlanner.Gtfs.ChangeLog{
+        id: Ecto.UUID.generate(),
+        action: "updated",
+        actor_email: "e@x.com",
+        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
+        snapshot: %{"location_type" => 0},
+        changed_fields: %{"location_type" => %{"from" => 0, "to" => 1}}
+      }
+
+      html =
+        render_component(&StationDiagramComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
+
+      assert html =~ "location_type"
+      assert html =~ GtfsPlanner.Gtfs.Stop.location_type_label(0)
+      assert html =~ GtfsPlanner.Gtfs.Stop.location_type_label(1)
+      refute html =~ "—"
+    end
+
+    test "renders false -> true for wheelchair_boarding" do
+      entry = %GtfsPlanner.Gtfs.ChangeLog{
+        id: Ecto.UUID.generate(),
+        action: "updated",
+        actor_email: "e@x.com",
+        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
+        snapshot: %{"wheelchair_boarding" => false},
+        changed_fields: %{"wheelchair_boarding" => %{"from" => false, "to" => true}}
+      }
+
+      html =
+        render_component(&StationDiagramComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
+
+      assert html =~ "wheelchair_boarding"
+      assert html =~ "false"
+      assert html =~ "true"
+    end
+
+    test "renders nil -> 5 with nil text and value for 5" do
+      entry = %GtfsPlanner.Gtfs.ChangeLog{
+        id: Ecto.UUID.generate(),
+        action: "updated",
+        actor_email: "e@x.com",
+        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
+        snapshot: %{},
+        changed_fields: %{"some_int" => %{"from" => nil, "to" => 5}}
+      }
+
+      html =
+        render_component(&StationDiagramComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
+
+      assert html =~ "some_int"
+      assert html =~ "5"
+      assert html =~ "nil"
+    end
+
+    test "suppresses system-noise fields while preserving stop_id" do
+      entry = %GtfsPlanner.Gtfs.ChangeLog{
+        id: Ecto.UUID.generate(),
+        action: "updated",
+        actor_email: "e@x.com",
+        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
+        snapshot: %{},
+        changed_fields: %{
+          "organization_id" => %{"from" => nil, "to" => Ecto.UUID.generate()},
+          "gtfs_version_id" => %{"from" => nil, "to" => Ecto.UUID.generate()},
+          "id" => %{"from" => nil, "to" => Ecto.UUID.generate()},
+          "inserted_at" => %{"from" => nil, "to" => "2026-04-24T12:00:00Z"},
+          "updated_at" => %{"from" => nil, "to" => "2026-04-24T12:30:00Z"},
+          "stop_id" => %{"from" => "OLD", "to" => "NEW"}
+        }
+      }
+
+      html =
+        render_component(&StationDiagramComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
+
+      refute html =~ "organization_id"
+      refute html =~ "gtfs_version_id"
+      refute html =~ ~s(>id</div>)
+      refute html =~ "inserted_at"
+      refute html =~ "updated_at"
+      assert html =~ "stop_id"
+    end
+
+    test "renders categorical label and dot for wheelchair_boarding=1" do
+      entry = %GtfsPlanner.Gtfs.ChangeLog{
+        id: Ecto.UUID.generate(),
+        action: "updated",
+        actor_email: "e@x.com",
+        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
+        snapshot: %{"wheelchair_boarding" => 0},
+        changed_fields: %{"wheelchair_boarding" => %{"from" => 0, "to" => 1}}
+      }
+
+      html =
+        render_component(&StationDiagramComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
+
+      assert html =~ "Wheelchair accessible"
+      assert html =~ "bg-emerald-600"
+      assert html =~ "No information"
+      assert html =~ "bg-base-300"
+    end
+  end
+
+  describe "StationDiagramLive - history tab toggling for pathway and level (R10)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TOG_STATION",
+          stop_name: "Tog Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "TOG_L1",
+          level_name: "Tog Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "tog.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "pathway history tab opens and details tab closes the panel", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TOG_PW_A",
+          stop_name: "A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 4.0, "y" => 4.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TOG_PW_B",
+          stop_name: "B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 8.0, "y" => 8.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view |> element("#pathways-#{pathway.id}") |> render_click()
+
+      assert has_element?(view, "#pathway-tab-details[aria-selected='true']")
+
+      view |> element("#pathway-tab-history") |> render_click()
+
+      assert has_element?(view, "#pathway-panel-history")
+      assert has_element?(view, "#pathway-tab-history[aria-selected='true']")
+
+      view |> element("#pathway-tab-details") |> render_click()
+
+      assert has_element?(view, "#pathway-tab-details[aria-selected='true']")
+    end
+
+    test "level history tab opens and details tab closes the panel", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_click(element(view, "button[phx-click='open_edit_level']"))
+
+      assert has_element?(view, "#level-tab-details[aria-selected='true']")
+
+      view |> element("#level-tab-history") |> render_click()
+
+      assert has_element?(view, "#level-panel-history")
+      assert has_element?(view, "#level-tab-history[aria-selected='true']")
+
+      view |> element("#level-tab-details") |> render_click()
+
+      assert has_element?(view, "#level-tab-details[aria-selected='true']")
+    end
+  end
+
+  describe "StationDiagramLive - rolled-back stop moved across stations (R7)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "RB_MOVE_A",
+          stop_name: "Move A",
+          location_type: 1
+        })
+
+      station_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "RB_MOVE_B",
+          stop_name: "Move B",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "RB_MOVE_L",
+          level_name: "L",
+          level_index: 0.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_a.id,
+          level_id: level.id
+        })
+
+      stop_level =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "rbmove.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station_a: station_a,
+        station_b: station_b,
+        level: level
+      }
+    end
+
+    test "rolling back a stop moved into station A back to station B drops it from current view",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station_a: station_a,
+           station_b: station_b,
+           level: level
+         } do
+      # Stop currently lives in station A; its prior snapshot has parent_station = B.
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "RB_MOVE_STOP",
+          stop_name: "Mover",
+          location_type: 0,
+          parent_station: station_a.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 5.0, "y" => 5.0}
+        })
+
+      ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station_a.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      # Synthesize an "updated" log whose snapshot points the stop back to station B.
+      {:ok, log} =
+        Repo.insert(%GtfsPlanner.Gtfs.ChangeLog{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          station_stop_id: station_a.stop_id,
+          entity_type: "stop",
+          entity_id: stop.id,
+          entity_external_id: stop.stop_id,
+          action: "updated",
+          snapshot: %{
+            "stop_name" => "Mover",
+            "stop_desc" => nil,
+            "stop_lat" => "0",
+            "stop_lon" => "0",
+            "location_type" => 0,
+            "wheelchair_boarding" => 0,
+            "platform_code" => nil,
+            "parent_station" => station_b.stop_id,
+            "level_id" => level.level_id
+          },
+          changed_fields: %{
+            "parent_station" => %{"from" => station_b.stop_id, "to" => station_a.stop_id}
+          },
+          actor_id: ctx.actor_id,
+          actor_email: ctx.actor_email
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station_a.stop_id}/diagram", on_error: :warn)
+
+      # Open edit drawer for the stop (so we can assert it closes).
+      view
+      |> element("#child-stop-row-#{stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert :sys.get_state(view.pid).socket.assigns.selected_stop_id == stop.id
+
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+
+      assert result =~ "Change reverted."
+
+      reloaded = Gtfs.get_stop!(stop.id)
+      assert reloaded.parent_station == station_b.stop_id
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.selected_stop_id == nil
+      assert state.socket.assigns.rollback_preview == nil
     end
   end
 

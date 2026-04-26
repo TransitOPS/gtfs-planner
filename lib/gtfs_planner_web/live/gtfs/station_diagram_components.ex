@@ -6,11 +6,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   use Phoenix.Component
 
   import GtfsPlannerWeb.CoreComponents
+  import GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
 
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
-  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.Stop
   alias LiveSelect.Component
   alias Phoenix.LiveView.JS
 
@@ -2316,6 +2317,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :reposition_search, :string, default: ""
   attr :reposition_stops, :list, default: []
   attr :platform_options, :list, default: []
+  attr :history_open_for, :any, default: nil
+  attr :history_entries, :list, default: []
+  attr :history_field_filter, :string, default: "all"
+  attr :rollback_preview, :any, default: nil
 
   def child_stop_drawer(assigns) do
     show_toggle =
@@ -2333,10 +2338,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           "Child Stop"
       end
 
+    show_history_tabs = assigns.selected_stop_id != nil
+
+    history_active =
+      show_history_tabs and
+        assigns.history_open_for == {"stop", assigns.selected_stop_id}
+
     assigns =
       assigns
       |> assign(:drawer_title, drawer_title)
       |> assign(:show_toggle, show_toggle)
+      |> assign(:show_history_tabs, show_history_tabs)
+      |> assign(:history_active, history_active)
 
     ~H"""
     <.drawer
@@ -2375,24 +2388,53 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </div>
       </:header_actions>
 
-      <.reposition_stop_view
-        :if={@pending_xy && @reposition_mode && @selected_stop_id == nil}
-        reposition_stops={@reposition_stops}
-        reposition_search={@reposition_search}
-        active_level={@active_level}
+      <.history_tab_strip
+        :if={@show_history_tabs}
+        entity_type="stop"
+        entity_id={@selected_stop_id}
+        history_active={@history_active}
       />
 
-      <.child_stop_form
-        :if={@pending_xy && !(@reposition_mode && @selected_stop_id == nil)}
-        child_stop_form={@child_stop_form}
-        platform_options={@platform_options}
-        selected_stop_id={@selected_stop_id}
-        pending_xy={@pending_xy}
-        all_levels={@all_levels}
-        editing_level={@editing_level}
-        stop_id_mode={@stop_id_mode}
-        active_level={@active_level}
-      />
+      <div
+        id="stop-panel-details"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "stop-tab-details"}
+        hidden={@history_active}
+      >
+        <.reposition_stop_view
+          :if={@pending_xy && @reposition_mode && @selected_stop_id == nil}
+          reposition_stops={@reposition_stops}
+          reposition_search={@reposition_search}
+          active_level={@active_level}
+        />
+
+        <.child_stop_form
+          :if={@pending_xy && !(@reposition_mode && @selected_stop_id == nil)}
+          child_stop_form={@child_stop_form}
+          platform_options={@platform_options}
+          selected_stop_id={@selected_stop_id}
+          pending_xy={@pending_xy}
+          all_levels={@all_levels}
+          editing_level={@editing_level}
+          stop_id_mode={@stop_id_mode}
+          active_level={@active_level}
+        />
+      </div>
+
+      <div
+        id="stop-panel-history"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "stop-tab-history"}
+        hidden={!@history_active}
+      >
+        <.change_log_list
+          :if={@history_active}
+          entries={@history_entries}
+          entity_type="stop"
+          rollback_preview={@rollback_preview}
+          history_field_filter={@history_field_filter}
+        />
+      </div>
     </.drawer>
     """
   end
@@ -2693,8 +2735,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           field={@child_stop_form[:stop_lat]}
           type="number"
           label="Latitude"
-          placeholder="e.g., 40.7128"
-          step="0.000001"
+          placeholder="e.g., 40.046627198009965"
+          step="any"
           min="-90"
           max="90"
           help="Optional"
@@ -2703,8 +2745,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           field={@child_stop_form[:stop_lon]}
           type="number"
           label="Longitude"
-          placeholder="e.g., -74.0060"
-          step="0.000001"
+          placeholder="e.g., -73.987654321098765"
+          step="any"
           min="-180"
           max="180"
           help="Optional"
@@ -3010,8 +3052,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :pathway_form_dirty, :boolean, default: false
   attr :has_scale, :boolean, default: false
   attr :pathway_error, :string, default: nil
+  attr :history_open_for, :any, default: nil
+  attr :history_entries, :list, default: []
+  attr :history_field_filter, :string, default: "all"
+  attr :rollback_preview, :any, default: nil
 
   def pathway_drawer(assigns) do
+    pathway_id = assigns.editing_pathway && Map.get(assigns.editing_pathway, :id)
+    show_history_tabs = assigns.open and not is_nil(pathway_id)
+
+    history_active =
+      show_history_tabs and assigns.history_open_for == {"pathway", pathway_id}
+
+    assigns =
+      assigns
+      |> assign(:show_history_tabs, show_history_tabs)
+      |> assign(:history_active, history_active)
+      |> assign(:pathway_id, pathway_id)
+
     ~H"""
     <.drawer
       id="pathway-drawer"
@@ -3079,21 +3137,50 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </div>
       </:header_actions>
 
-      <.pathway_preview
-        :if={@open and @editing_pathway}
-        editing_pathway={@editing_pathway}
-        pathway_form={@pathway_form}
+      <.history_tab_strip
+        :if={@show_history_tabs}
+        entity_type="pathway"
+        entity_id={@pathway_id}
+        history_active={@history_active}
       />
 
-      <div :if={@open and @editing_pathway} class="mt-6"></div>
+      <div
+        id="pathway-panel-details"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "pathway-tab-details"}
+        hidden={@history_active}
+      >
+        <.pathway_preview
+          :if={@open and @editing_pathway}
+          editing_pathway={@editing_pathway}
+          pathway_form={@pathway_form}
+        />
 
-      <.pathway_form
-        :if={@open}
-        pathway_form={@pathway_form}
-        editing_pathway={@editing_pathway}
-        has_scale={@has_scale}
-        pathway_error={@pathway_error}
-      />
+        <div :if={@open and @editing_pathway} class="mt-6"></div>
+
+        <.pathway_form
+          :if={@open}
+          pathway_form={@pathway_form}
+          editing_pathway={@editing_pathway}
+          has_scale={@has_scale}
+          pathway_error={@pathway_error}
+        />
+      </div>
+
+      <div
+        id="pathway-panel-history"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "pathway-tab-history"}
+        hidden={!@history_active}
+      >
+        <.change_log_list
+          :if={@history_active}
+          entries={@history_entries}
+          entity_type="pathway"
+          rollback_preview={@rollback_preview}
+          history_field_filter={@history_field_filter}
+        />
+      </div>
     </.drawer>
     """
   end
@@ -3620,8 +3707,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :level_mode, :atom, default: :existing
   attr :editing_level_uuid, :string, default: nil
   attr :level_shared, :boolean, default: false
+  attr :history_open_for, :any, default: nil
+  attr :history_entries, :list, default: []
+  attr :history_field_filter, :string, default: "all"
+  attr :rollback_preview, :any, default: nil
 
   def level_sidebar(assigns) do
+    show_history_tabs =
+      assigns.show_level_modal == :edit and not is_nil(assigns.editing_level_uuid)
+
+    history_active =
+      show_history_tabs and
+        assigns.history_open_for == {"level", assigns.editing_level_uuid}
+
+    assigns =
+      assigns
+      |> assign(:show_history_tabs, show_history_tabs)
+      |> assign(:history_active, history_active)
+
     ~H"""
     <.drawer
       id="level-sidebar"
@@ -3630,15 +3733,44 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       title={if @show_level_modal == :add, do: "Add Level", else: "Edit Level"}
       class="max-w-3xl"
     >
-      <.level_form
-        :if={@show_level_modal}
-        level_form={@level_form}
-        show_level_modal={@show_level_modal}
-        available_levels={@available_levels}
-        level_mode={@level_mode}
-        editing_level_uuid={@editing_level_uuid}
-        level_shared={@level_shared}
+      <.history_tab_strip
+        :if={@show_history_tabs}
+        entity_type="level"
+        entity_id={@editing_level_uuid}
+        history_active={@history_active}
       />
+
+      <div
+        id="level-panel-details"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "level-tab-details"}
+        hidden={@history_active}
+      >
+        <.level_form
+          :if={@show_level_modal}
+          level_form={@level_form}
+          show_level_modal={@show_level_modal}
+          available_levels={@available_levels}
+          level_mode={@level_mode}
+          editing_level_uuid={@editing_level_uuid}
+          level_shared={@level_shared}
+        />
+      </div>
+
+      <div
+        id="level-panel-history"
+        role={if @show_history_tabs, do: "tabpanel"}
+        aria-labelledby={if @show_history_tabs, do: "level-tab-history"}
+        hidden={!@history_active}
+      >
+        <.change_log_list
+          :if={@history_active}
+          entries={@history_entries}
+          entity_type="level"
+          rollback_preview={@rollback_preview}
+          history_field_filter={@history_field_filter}
+        />
+      </div>
     </.drawer>
     """
   end

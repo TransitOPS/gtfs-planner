@@ -728,7 +728,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert has_element?(view, "#station-pathways-case-results")
       assert has_element?(view, "#station-pathways-case-row-0")
       assert has_element?(view, "#station-pathways-case-id-0", walkability_test.id)
-      assert has_element?(view, "#station-pathways-case-description-0", "Hotel lobby to main platform")
+
+      assert has_element?(
+               view,
+               "#station-pathways-case-description-0",
+               "Hotel lobby to main platform"
+             )
 
       refute has_element?(view, "#reachability-summary-total")
       refute has_element?(view, "#reachability-summary-pass-rate")
@@ -1047,7 +1052,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
 
       assert has_element?(view, "#station-pathways-case-row-0")
       assert has_element?(view, "#station-pathways-case-id-0", valid_test_case.id)
-      assert has_element?(view, "#station-pathways-case-description-0", "Main entrance to platform A")
+
+      assert has_element?(
+               view,
+               "#station-pathways-case-description-0",
+               "Main entrance to platform A"
+             )
+
       refute has_element?(view, "#station-pathways-case-row-1")
 
       refute has_element?(view, "#station-reachability-coverage")

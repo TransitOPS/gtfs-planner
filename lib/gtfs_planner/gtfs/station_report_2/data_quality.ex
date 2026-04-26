@@ -33,7 +33,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
       station_parent_consistency_item(station, platforms, entrances, generic_nodes, stop_index),
       orphaned_platforms_item(platforms, boarding_areas),
       minimum_station_children_item(entrances, platforms),
-      entrance_to_platform_connectivity_item(entrances, all_platform_targets, directed, stop_index),
+      entrance_to_platform_connectivity_item(
+        entrances,
+        all_platform_targets,
+        directed,
+        stop_index
+      ),
       platform_interconnection_item(platforms, platform_target_index, directed, stop_index),
       wheelchair_boarding_consistency_item(
         station,
@@ -234,8 +239,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
     %{
       id: "platform_interconnection",
       label: "Platform interconnection",
-      description:
-        "Platforms that cannot be reached from any other platform via pathways",
+      description: "Platforms that cannot be reached from any other platform via pathways",
       status: if(disconnected_count == 0, do: :pass, else: :fail),
       value: %{disconnected: disconnected_count, connected: connected_count},
       value_format: :compound,
@@ -334,8 +338,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
               %{
                 id: stop.stop_id,
                 name: stop_display_name(stop, stop.stop_id),
-                reason:
-                  "marked not-accessible but #{pct}% of level siblings are accessible"
+                reason: "marked not-accessible but #{pct}% of level siblings are accessible"
               }
             end)
           else
@@ -398,8 +401,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
     %{
       id: "wheelchair_inferrable",
       label: "Wheelchair boarding determinable from pathways",
-      description:
-        "Stops where wheelchair_boarding can be inferred from connected pathway types",
+      description: "Stops where wheelchair_boarding can be inferred from connected pathway types",
       status: if(count == 0, do: :pass, else: :warn),
       value: count,
       value_format: :count,

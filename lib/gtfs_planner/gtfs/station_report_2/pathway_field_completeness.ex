@@ -87,5 +87,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.PathwayFieldCompleteness do
   defp field_label(:stair_count), do: "Stair count"
   defp field_label(:traversal_time), do: "Traversal time"
   defp field_label(:min_width), do: "Min width"
-  defp field_label(field), do: field |> to_string() |> String.replace("_", " ") |> String.capitalize()
+
+  defp field_label(field),
+    do: field |> to_string() |> String.replace("_", " ") |> String.capitalize()
 end

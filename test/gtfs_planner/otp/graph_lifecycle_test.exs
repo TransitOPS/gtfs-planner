@@ -60,8 +60,11 @@ defmodule GtfsPlanner.Otp.GraphLifecycleTest do
       default_scope = %{runtime_scope: "default", gtfs_input_sha256: "abc123"}
       station_scope = %{runtime_scope: "station_reachability", gtfs_input_sha256: "def456"}
 
-      default_graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id, default_scope)
-      station_graph_path = GraphPath.graph_obj_path(organization.id, gtfs_version.id, station_scope)
+      default_graph_path =
+        GraphPath.graph_obj_path(organization.id, gtfs_version.id, default_scope)
+
+      station_graph_path =
+        GraphPath.graph_obj_path(organization.id, gtfs_version.id, station_scope)
 
       File.mkdir_p!(Path.dirname(default_graph_path))
       File.mkdir_p!(Path.dirname(station_graph_path))

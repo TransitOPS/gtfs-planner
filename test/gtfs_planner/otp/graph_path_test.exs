@@ -34,7 +34,10 @@ defmodule GtfsPlanner.Otp.GraphPathTest do
     assert GraphPath.base_dir() == runtime_base
     assert GraphPath.workspace_root_dir(organization_id, gtfs_version_id) == workspace_dir
     assert GraphPath.workspace_dir(organization_id, gtfs_version_id) == workspace_dir
-    assert GraphPath.workspace_dir(organization_id, gtfs_version_id, scope_key) == scoped_workspace_dir
+
+    assert GraphPath.workspace_dir(organization_id, gtfs_version_id, scope_key) ==
+             scoped_workspace_dir
+
     assert GraphPath.data_dir(organization_id, gtfs_version_id) == data_dir
     assert GraphPath.data_dir(organization_id, gtfs_version_id, scope_key) == scoped_data_dir
 

@@ -177,7 +177,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
 
       # Side Entrance has no pathways → zero reachability → alert
       assert has_element?(view, "[role='alert']:not(#client-error):not(#server-error)")
-      alert_html = view |> element("[role='alert']:not(#client-error):not(#server-error)") |> render()
+
+      alert_html =
+        view |> element("[role='alert']:not(#client-error):not(#server-error)") |> render()
+
       assert alert_html =~ "Side Entrance"
       assert alert_html =~ "Needs immediate attention"
     end
@@ -627,7 +630,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       assert html =~ "To Platform"
       refute html =~ "To Exit"
     end
-
   end
 
   describe "Connectivity empty state" do

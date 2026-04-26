@@ -9,7 +9,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
-  alias GtfsPlanner.Gtfs.StationReport2.{Connectivity, DataQuality, Gps, NamingConventions, PathwayFieldCompleteness}
+
+  alias GtfsPlanner.Gtfs.StationReport2.{
+    Connectivity,
+    DataQuality,
+    Gps,
+    NamingConventions,
+    PathwayFieldCompleteness
+  }
+
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -294,7 +302,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
           if Map.has_key?(acc, key) do
             acc
           else
-            route = Connectivity.build_expanded_route(snapshot, group.source.stop_id, target.stop_id)
+            route =
+              Connectivity.build_expanded_route(snapshot, group.source.stop_id, target.stop_id)
+
             Map.put(acc, key, route)
           end
       end
@@ -364,7 +374,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
               class="print:hidden inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors cursor-pointer"
               phx-hook=".ExpandAll"
             >
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <svg
+                class="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2"
+              >
                 <path d="M4 8V4m0 0h4M4 4l5 5M20 8V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5M20 16v4m0 0h-4m4 0l-5-5" />
               </svg>
               Expand all
