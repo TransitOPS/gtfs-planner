@@ -213,6 +213,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> stream(:pathways, [], reset: true)
     |> reset_ruler_state()
     |> assign(:child_stops_list, [])
+    |> assign(:child_stops_total, 0)
+    |> assign(:child_stops_with_geo, 0)
+    |> assign(:anchor_count, 0)
+    |> assign(:cross_level_pathway_total, 0)
+    |> assign(:cross_level_pathway_with_geo, 0)
     |> assign(:unassigned_child_stops, [])
     |> assign(:pathways_list, [])
     |> assign(:active_stop_level, nil)
@@ -254,14 +259,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     active_level_stop_ids = active_level_stop_ids(all_child_stops, level)
     cross_level_badges_by_stop = cross_level_badges_by_stop(level_pathways, active_level_stop_ids)
-    visible_canvas_stops = Enum.filter(all_child_stops, & &1.on_active_level)
+    visible_canvas_stops = child_stops_on_level
     {same_level_pathways, pathway_pair_counts} = decorate_same_level_pathways(level_pathways)
+
+    child_stops_total = length(child_stops_on_level)
+
+    child_stops_with_geo =
+      Enum.count(child_stops_on_level, fn s ->
+        not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
+      end)
+
+    anchor_count =
+      Enum.count(child_stops_on_level, fn s ->
+        not is_nil(s.diagram_coordinate) and not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
+      end)
+
+    cross_level_pathways = Enum.filter(level_pathways, & &1.is_cross_level)
+    cross_level_pathway_total = length(cross_level_pathways)
+
+    cross_level_pathway_with_geo =
+      Enum.count(cross_level_pathways, fn p ->
+        other = if p.from_on_active_level, do: p.to_stop, else: p.from_stop
+        not is_nil(other.stop_lat) and not is_nil(other.stop_lon)
+      end)
 
     socket
     |> stream(:child_stops, visible_canvas_stops, reset: true)
     |> stream(:pathways, same_level_pathways, reset: true)
     |> reset_ruler_state()
     |> assign(:child_stops_list, child_stops_on_level)
+    |> assign(:child_stops_total, child_stops_total)
+    |> assign(:child_stops_with_geo, child_stops_with_geo)
+    |> assign(:anchor_count, anchor_count)
+    |> assign(:cross_level_pathway_total, cross_level_pathway_total)
+    |> assign(:cross_level_pathway_with_geo, cross_level_pathway_with_geo)
     |> assign(:unassigned_child_stops, unassigned_child_stops)
     |> assign(:pathways_list, level_pathways)
     |> assign(:active_stop_level, stop_level)
@@ -427,6 +458,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 align_rotation_deg={@active_stop_level && @active_stop_level.floorplan_rotation_deg}
                 image_natural_width={@floorplan_image_w}
                 image_natural_height={@floorplan_image_h}
+                child_stops_total={@child_stops_total}
+                child_stops_with_geo={@child_stops_with_geo}
+                anchor_count={@anchor_count}
+                cross_level_pathway_total={@cross_level_pathway_total}
+                cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
               />
             </div>
           <% else %>
@@ -1717,22 +1753,53 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
-  def handle_event("clear_alignment", _params, socket) do
-    case socket.assigns.active_stop_level do
-      %StopLevel{} = stop_level ->
-        case Gtfs.clear_stop_level_alignment(stop_level) do
+  def handle_event(
+        "save_and_apply_alignment",
+        %{
+          "center_lat" => lat,
+          "center_lon" => lon,
+          "scale_mpp" => mpp,
+          "rotation_deg" => rot
+        },
+        socket
+      ) do
+    stop_level = socket.assigns.active_stop_level
+    image_w = socket.assigns.floorplan_image_w
+    image_h = socket.assigns.floorplan_image_h
+
+    cond do
+      is_nil(stop_level) ->
+        {:noreply, put_flash(socket, :error, "No level selected")}
+
+      is_nil(image_w) or is_nil(image_h) ->
+        {:noreply, put_flash(socket, :error, apply_alignment_error_message(:invalid_image_dims))}
+
+      true ->
+        attrs = %{
+          floorplan_center_lat: lat,
+          floorplan_center_lon: lon,
+          floorplan_scale_mpp: mpp,
+          floorplan_rotation_deg: rot
+        }
+
+        case Gtfs.update_stop_level_alignment(stop_level, attrs) do
           {:ok, updated} ->
-            {:noreply,
-             socket
-             |> assign(:active_stop_level, updated)
-             |> put_flash(:info, "Alignment cleared")}
+            socket = assign(socket, :active_stop_level, updated)
+
+            case Gtfs.apply_alignment_to_child_stops(updated, image_w, image_h) do
+              {:ok, count} ->
+                {:noreply,
+                 socket
+                 |> refresh_lists()
+                 |> put_flash(:info, "Set lat/lon for #{count} child stops")}
+
+              {:error, reason} ->
+                {:noreply, put_flash(socket, :error, apply_alignment_error_message(reason))}
+            end
 
           {:error, %Ecto.Changeset{}} ->
-            {:noreply, put_flash(socket, :error, "Could not clear alignment")}
+            {:noreply, put_flash(socket, :error, "Could not save alignment")}
         end
-
-      _ ->
-        {:noreply, put_flash(socket, :error, "No level selected")}
     end
   end
 
@@ -1759,33 +1826,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
-  def handle_event("apply_alignment", _params, socket) do
-    stop_level = socket.assigns.active_stop_level
-    image_w = socket.assigns.floorplan_image_w
-    image_h = socket.assigns.floorplan_image_h
-
-    cond do
-      not alignment_complete?(stop_level) ->
-        {:noreply, put_flash(socket, :error, "Save alignment before applying")}
-
-      is_nil(image_w) or is_nil(image_h) ->
-        {:noreply, put_flash(socket, :error, "Floorplan image not ready")}
-
-      true ->
-        case Gtfs.apply_alignment_to_child_stops(stop_level, image_w, image_h) do
-          {:ok, count} ->
-            {:noreply,
-             socket
-             |> refresh_lists()
-             |> put_flash(:info, "Applied alignment to #{count} stops")}
-
-          {:error, reason} ->
-            {:noreply, put_flash(socket, :error, apply_alignment_error_message(reason))}
-        end
-    end
-  end
-
-  @impl true
   def handle_event("infer_alignment", _params, socket) do
     stop_level = socket.assigns.active_stop_level
     image_w = socket.assigns.floorplan_image_w
@@ -1798,72 +1838,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       case Gtfs.save_inferred_level_alignment(stop_level, image_w, image_h) do
         {:ok, updated, %{inferred_alignment: %{anchor_count: n, rmse_meters: rmse}}} ->
           rmse_str = :erlang.float_to_binary(rmse, decimals: 2)
+          socket = assign(socket, :active_stop_level, updated)
 
-          {:noreply,
-           socket
-           |> assign(:active_stop_level, updated)
-           |> put_flash(:info, "Inferred alignment from #{n} anchors (RMSE: #{rmse_str} m)")}
+          case Gtfs.apply_alignment_to_child_stops(updated, image_w, image_h) do
+            {:ok, count} ->
+              {:noreply,
+               socket
+               |> refresh_lists()
+               |> put_flash(
+                 :info,
+                 "Set lat/lon for #{count} child stops (#{n} anchors, RMSE #{rmse_str} m)"
+               )}
+
+            {:error, reason} ->
+              {:noreply, put_flash(socket, :error, apply_alignment_error_message(reason))}
+          end
 
         {:error, reason} ->
           {:noreply, put_flash(socket, :error, infer_alignment_error_message(reason))}
       end
     end
   end
-
-  defp infer_alignment_error_message(:insufficient_anchors),
-    do: "Not enough anchor stops to infer alignment"
-
-  defp infer_alignment_error_message(:degenerate_geometry),
-    do: "Anchor stops are too close together to infer alignment"
-
-  defp infer_alignment_error_message(:high_residual),
-    do: "Inferred alignment residual exceeds tolerance"
-
-  defp infer_alignment_error_message(:invalid_input),
-    do: "Invalid floorplan image dimensions"
-
-  defp infer_alignment_error_message(:alignment_prerequisites_missing),
-    do: "Active level is missing required alignment data"
-
-  defp infer_alignment_error_message(:not_found), do: "Active level not found"
-  defp infer_alignment_error_message(%Ecto.Changeset{}), do: "Could not save inferred alignment"
-
-  defp coerce_positive_integer(value) when is_integer(value) and value > 0, do: {:ok, value}
-
-  defp coerce_positive_integer(value) when is_float(value) and value > 0 do
-    {:ok, trunc(value)}
-  end
-
-  defp coerce_positive_integer(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, ""} when int > 0 ->
-        {:ok, int}
-
-      _ ->
-        case Float.parse(value) do
-          {float, ""} when float > 0 -> {:ok, trunc(float)}
-          _ -> :error
-        end
-    end
-  end
-
-  defp coerce_positive_integer(_), do: :error
-
-  defp alignment_complete?(%StopLevel{
-         floorplan_center_lat: lat,
-         floorplan_center_lon: lon,
-         floorplan_scale_mpp: mpp,
-         floorplan_rotation_deg: rot
-       })
-       when not is_nil(lat) and not is_nil(lon) and not is_nil(mpp) and not is_nil(rot),
-       do: true
-
-  defp alignment_complete?(_), do: false
-
-  defp apply_alignment_error_message(:alignment_missing), do: "Save alignment before applying"
-  defp apply_alignment_error_message(:invalid_image_dims), do: "Floorplan image not ready"
-  defp apply_alignment_error_message({:transform, _}), do: "Invalid alignment values"
-  defp apply_alignment_error_message(_), do: "Could not apply alignment"
 
   @impl true
   def handle_event("scale_line_click", _params, socket) do
@@ -2974,6 +2969,50 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # Private Helpers
   # ============================================================================
 
+  defp infer_alignment_error_message(:insufficient_anchors),
+    do: "Not enough anchor stops to infer alignment"
+
+  defp infer_alignment_error_message(:degenerate_geometry),
+    do: "Anchor stops are too close together to infer alignment"
+
+  defp infer_alignment_error_message(:high_residual),
+    do: "Inferred alignment residual exceeds tolerance"
+
+  defp infer_alignment_error_message(:invalid_input),
+    do: "Invalid floorplan image dimensions"
+
+  defp infer_alignment_error_message(:alignment_prerequisites_missing),
+    do: "Active level is missing required alignment data"
+
+  defp infer_alignment_error_message(:not_found), do: "Active level not found"
+  defp infer_alignment_error_message(%Ecto.Changeset{}), do: "Could not save inferred alignment"
+
+  defp coerce_positive_integer(value) when is_integer(value) and value > 0, do: {:ok, value}
+
+  defp coerce_positive_integer(value) when is_float(value) and value > 0 do
+    {:ok, trunc(value)}
+  end
+
+  defp coerce_positive_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when int > 0 ->
+        {:ok, int}
+
+      _ ->
+        case Float.parse(value) do
+          {float, ""} when float > 0 -> {:ok, trunc(float)}
+          _ -> :error
+        end
+    end
+  end
+
+  defp coerce_positive_integer(_), do: :error
+
+  defp apply_alignment_error_message(:alignment_missing), do: "Save alignment before applying"
+  defp apply_alignment_error_message(:invalid_image_dims), do: "Floorplan image not ready"
+  defp apply_alignment_error_message({:transform, _}), do: "Invalid alignment values"
+  defp apply_alignment_error_message(_), do: "Could not apply alignment"
+
   defp apply_rollback_entity_refresh(socket, "stop", %Gtfs.Stop{} = stop) do
     if stop.parent_station == socket.assigns.station.stop_id do
       refresh_current_station_stop_after_rollback(socket, stop)
@@ -3174,13 +3213,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp rollback_preview_keys(log, current_snapshot, target_snapshot) do
-    previewable_fields = Gtfs.rollback_previewable_fields(log)
+    previewable_fields = rollback_preview_field_set(log)
 
     target_snapshot
     |> Map.keys()
     |> Kernel.++(Map.keys(current_snapshot))
     |> Enum.uniq()
-    |> Enum.filter(&(&1 in previewable_fields))
+    |> Enum.filter(&MapSet.member?(previewable_fields, &1))
+  end
+
+  defp rollback_preview_field_set(log) do
+    reversible_fields =
+      log.entity_type
+      |> Gtfs.reversible_fields_for()
+      |> MapSet.new()
+
+    changed_fields =
+      log.changed_fields
+      |> Kernel.||(%{})
+      |> Map.keys()
+      |> Enum.map(&to_string/1)
+      |> MapSet.new()
+
+    if MapSet.subset?(changed_fields, reversible_fields) do
+      reversible_fields
+    else
+      log
+      |> Gtfs.rollback_previewable_fields()
+      |> MapSet.new()
+    end
   end
 
   defp rollback_preview_change(key, current_snapshot, target_snapshot, acc) do

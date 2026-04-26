@@ -21,7 +21,6 @@
  *   #map-alignment-lat-input     lat input for map.setView
  *   #map-alignment-lon-input     lon input for map.setView
  *   #map-alignment-apply-center  button that recenters the map on lat/lon
- *   #map-alignment-reset         button that resets the floorplan transform
  *   #map-alignment-opacity       range input controlling floorplan opacity
  */
 
@@ -88,11 +87,9 @@ const MapAlignmentHook = {
     const latInput = document.getElementById("map-alignment-lat-input");
     const lonInput = document.getElementById("map-alignment-lon-input");
     const applyCenterBtn = document.getElementById("map-alignment-apply-center");
-    const resetBtn = document.getElementById("map-alignment-reset");
     const opacitySlider = document.getElementById("map-alignment-opacity");
     const zoomSlider = document.getElementById("map-alignment-zoom");
     const saveBtn = document.getElementById("map-alignment-save");
-    const clearBtn = document.getElementById("map-alignment-clear");
     const applyBtn = document.getElementById("map-alignment-apply");
 
     this.overlay = overlay;
@@ -102,11 +99,9 @@ const MapAlignmentHook = {
     this.latInput = latInput;
     this.lonInput = lonInput;
     this.applyCenterBtn = applyCenterBtn;
-    this.resetBtn = resetBtn;
     this.opacitySlider = opacitySlider;
     this.zoomSlider = zoomSlider;
     this.saveBtn = saveBtn;
-    this.clearBtn = clearBtn;
     this.applyBtn = applyBtn;
 
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.6";
@@ -372,17 +367,22 @@ const MapAlignmentHook = {
       const lat = parseFloat(latInput.value);
       const lon = parseFloat(lonInput.value);
       if (Number.isNaN(lat) || Number.isNaN(lon)) return;
-      this.leafletMap.setView([lat, lon]);
+
+      const canvasRect = this.el.getBoundingClientRect();
+      const cxBefore = canvasRect.width / 2 + this.transform.tx;
+      const cyBefore = canvasRect.height / 2 + this.transform.ty;
+      const worldCenter = this.leafletMap.containerPointToLatLng([cxBefore, cyBefore]);
+
+      this.leafletMap.setView([lat, lon], this.leafletMap.getZoom(), { animate: false });
+
+      const newPt = this.leafletMap.latLngToContainerPoint(worldCenter);
+      this.transform.tx = newPt.x - canvasRect.width / 2;
+      this.transform.ty = newPt.y - canvasRect.height / 2;
+      this._applyTransform();
+
       this._fetchBuildings(lat, lon);
     };
     applyCenterBtn.addEventListener("click", this._onApplyCenter);
-
-    // --- Reset: floorplan back to identity transform ---
-    this._onReset = () => {
-      this.transform = {...IDENTITY_TRANSFORM};
-      this._applyTransform();
-    };
-    resetBtn.addEventListener("click", this._onReset);
 
     // --- Opacity slider: controls floorplan overlay opacity ---
     if (opacitySlider) {
@@ -400,14 +400,6 @@ const MapAlignmentHook = {
         this.pushEvent("save_alignment", payload);
       };
       saveBtn.addEventListener("click", this._onSave);
-    }
-
-    // --- Clear: ask server to drop saved alignment ---
-    if (clearBtn) {
-      this._onClear = () => {
-        this.pushEvent("clear_alignment", {});
-      };
-      clearBtn.addEventListener("click", this._onClear);
     }
 
     // --- Apply: push image natural size once, and forward apply clicks ---
@@ -434,7 +426,9 @@ const MapAlignmentHook = {
 
     if (applyBtn) {
       this._onApply = () => {
-        this.pushEvent("apply_alignment", {});
+        const payload = this._computeAlignment();
+        if (!payload) return;
+        this.pushEvent("save_and_apply_alignment", payload);
       };
       applyBtn.addEventListener("click", this._onApply);
     }
@@ -484,17 +478,11 @@ const MapAlignmentHook = {
     if (this.applyCenterBtn && this._onApplyCenter) {
       this.applyCenterBtn.removeEventListener("click", this._onApplyCenter);
     }
-    if (this.resetBtn && this._onReset) {
-      this.resetBtn.removeEventListener("click", this._onReset);
-    }
     if (this.opacitySlider && this._onOpacityInput) {
       this.opacitySlider.removeEventListener("input", this._onOpacityInput);
     }
     if (this.saveBtn && this._onSave) {
       this.saveBtn.removeEventListener("click", this._onSave);
-    }
-    if (this.clearBtn && this._onClear) {
-      this.clearBtn.removeEventListener("click", this._onClear);
     }
     if (this.applyBtn && this._onApply) {
       this.applyBtn.removeEventListener("click", this._onApply);

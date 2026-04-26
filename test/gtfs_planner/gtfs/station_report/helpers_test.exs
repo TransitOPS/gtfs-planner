@@ -33,7 +33,6 @@ defmodule GtfsPlanner.Gtfs.StationReport.HelpersTest do
     test "clamps near-antipodal calculations to a finite maximum distance" do
       distance = Helpers.haversine(89.999999, 0.0, -89.999999, 180.0)
 
-      assert distance == distance
       assert_in_delta distance, :math.pi() * 6_371_000.0, 1.0
     end
   end

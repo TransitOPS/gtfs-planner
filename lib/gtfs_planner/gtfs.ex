@@ -467,7 +467,8 @@ defmodule GtfsPlanner.Gtfs do
       {:ok, [%{stop_id: "...", stop_name: "Platform 1", lat: 40.7128, lon: -74.0060}]}
   """
   @spec derive_child_stop_coords(StopLevel.t(), pos_integer(), pos_integer()) ::
-          {:ok, [%{stop_id: Ecto.UUID.t(), stop_name: String.t() | nil, lat: float(), lon: float()}]}
+          {:ok,
+           [%{stop_id: Ecto.UUID.t(), stop_name: String.t() | nil, lat: float(), lon: float()}]}
           | {:error, :alignment_missing | :invalid_image_dims | {:transform, atom()}}
   def derive_child_stop_coords(%StopLevel{} = stop_level, image_w, image_h) do
     with {:ok, alignment} <- extract_alignment(stop_level),
@@ -3758,6 +3759,8 @@ defmodule GtfsPlanner.Gtfs do
 
   defp snapshot_pathway(pw) do
     %{
+      from_stop_id: pw.from_stop_id,
+      to_stop_id: pw.to_stop_id,
       pathway_mode: pw.pathway_mode,
       is_bidirectional: pw.is_bidirectional,
       traversal_time: pw.traversal_time,
@@ -3827,12 +3830,19 @@ defmodule GtfsPlanner.Gtfs do
 
   @spec reversible_attrs_for(String.t() | atom(), map()) :: map()
   defp reversible_attrs_for(entity_type, attrs) when is_map(attrs) do
-    reversible_fields = reversible_fields_for(entity_type)
+    change_log_fields = change_log_fields_for(entity_type)
 
     Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in reversible_fields
+      to_string(key) in change_log_fields
     end)
   end
+
+  defp change_log_fields_for(:pathway), do: change_log_fields_for("pathway")
+
+  defp change_log_fields_for("pathway"),
+    do: reversible_fields_for("pathway") ++ ~w(from_stop_id to_stop_id)
+
+  defp change_log_fields_for(entity_type), do: reversible_fields_for(entity_type)
 
   defp fill_snapshot_from_changed_fields(snapshot, changed_fields) when is_map(changed_fields) do
     Enum.reduce(changed_fields, snapshot, fn
@@ -4000,7 +4010,12 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
-  defp insert_rollback_log(%ChangeLog{} = log, %AuditContext{} = ctx, current_entity, update_attrs) do
+  defp insert_rollback_log(
+         %ChangeLog{} = log,
+         %AuditContext{} = ctx,
+         current_entity,
+         update_attrs
+       ) do
     pre_rollback_snapshot = build_snapshot(log.entity_type, current_entity)
 
     %ChangeLog{}

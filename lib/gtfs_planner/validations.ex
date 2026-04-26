@@ -559,7 +559,7 @@ defmodule GtfsPlanner.Validations do
       result_json: result_json,
       completed_at: DateTime.utc_now()
     })
-    |> Repo.update()
+    |> Repo.update(stale_error_field: :id)
   end
 
   @doc """
@@ -578,7 +578,7 @@ defmodule GtfsPlanner.Validations do
       error_details: inspect(reason),
       completed_at: DateTime.utc_now()
     })
-    |> Repo.update()
+    |> Repo.update(stale_error_field: :id)
   end
 
   @doc """
@@ -604,7 +604,7 @@ defmodule GtfsPlanner.Validations do
       result_json: result_json,
       completed_at: DateTime.utc_now()
     })
-    |> Repo.update()
+    |> Repo.update(stale_error_field: :id)
   end
 
   def mark_pathways_failed(%ValidationRun{}, _reason), do: {:error, :invalid_run_type}
@@ -1181,7 +1181,7 @@ defmodule GtfsPlanner.Validations do
       result_json: result_json,
       completed_at: now
     })
-    |> Repo.update()
+    |> Repo.update(stale_error_field: :id)
   end
 
   @spec insert_walkability_test_run_results(Ecto.UUID.t(), [map()], DateTime.t()) ::

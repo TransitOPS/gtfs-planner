@@ -8335,8 +8335,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "search_stop", %{"stop_id_query" => 123})
       render_hook(view, "search_stop", %{})
-
-
     end
   end
 
@@ -12465,9 +12463,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#map-alignment-lat-input")
       assert has_element?(view, "#map-alignment-lon-input")
       assert has_element?(view, "#map-alignment-apply-center")
-      assert has_element?(view, "#map-alignment-reset")
+      assert has_element?(view, "#map-alignment-save")
+      assert has_element?(view, "#map-alignment-apply")
+      assert has_element?(view, "#map-alignment-infer")
       assert has_element?(view, "#map-alignment-rotate-handle")
       assert has_element?(view, "#map-alignment-scale-handle")
+      refute has_element?(view, "#map-alignment-reset")
+      refute has_element?(view, "#map-alignment-clear")
     end
 
     test "save_alignment persists the four fields on the active stop_level", %{
@@ -12533,42 +12535,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert reloaded.floorplan_rotation_deg == nil
 
       assert html =~ "Could not save alignment"
-    end
-
-    test "clear_alignment nulls all four fields", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      stop_level: stop_level
-    } do
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
-
-      {:ok, stop_level} =
-        Gtfs.update_stop_level_alignment(stop_level, %{
-          floorplan_center_lat: 40.7128,
-          floorplan_center_lon: -74.0060,
-          floorplan_scale_mpp: 0.35,
-          floorplan_rotation_deg: 15.5
-        })
-
-      assert stop_level.floorplan_center_lat == 40.7128
-
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "clear_alignment", %{})
-
-      reloaded = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
-
-      assert reloaded.floorplan_center_lat == nil
-      assert reloaded.floorplan_center_lon == nil
-      assert reloaded.floorplan_scale_mpp == nil
-      assert reloaded.floorplan_rotation_deg == nil
     end
 
     test "map canvas renders data-align-* attributes when alignment is set", %{
@@ -12642,48 +12608,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute opening_tag =~ "data-align-rotation-deg"
     end
 
-    test "save and clear buttons are present in map mode", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      stop_level: stop_level
-    } do
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      render_hook(view, "switch_mode", %{"mode" => "map"})
-
-      assert has_element?(view, "#map-alignment-save")
-      assert has_element?(view, "#map-alignment-clear")
-    end
-
-    test "apply button is disabled when no alignment saved", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      stop_level: stop_level
-    } do
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
-
-      assert has_element?(view, "#map-alignment-apply")
-      assert has_element?(view, "#map-alignment-apply[disabled]")
-    end
-
-    test "apply button is disabled when alignment saved but image dims not reported", %{
+    test "apply button is disabled when image dims not reported", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -12760,7 +12685,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#map-alignment-infer")
       assert has_element?(view, ~s(#map-alignment-infer[phx-click="infer_alignment"]))
-      assert render(view) =~ "Infer alignment"
+      assert render(view) =~ "Infer from anchors"
     end
 
     test "infer button is disabled when image dims are missing", %{
@@ -12783,7 +12708,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#map-alignment-infer[disabled]")
     end
 
-    test "infer button is enabled after image dims are pushed", %{
+    test "infer button is disabled when anchors below minimum even with image dims", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -12800,8 +12725,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "set_image_natural_size", %{"w" => 1000, "h" => 800})
 
-      assert has_element?(view, "#map-alignment-infer")
-      refute has_element?(view, "#map-alignment-infer[disabled]")
+      assert has_element?(view, "#map-alignment-infer[disabled]")
     end
 
     test "set_image_natural_size with valid integers updates the image dimension assigns", %{
@@ -12870,7 +12794,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.floorplan_image_h == nil
     end
 
-    test "apply_alignment with valid alignment and image dims persists stop lat/lon and flashes count",
+    test "save_and_apply_alignment persists alignment and stop lat/lon and flashes count",
          %{
            conn: conn,
            user: user,
@@ -12881,14 +12805,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
            stop_level: stop_level
          } do
       {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
-
-      {:ok, _aligned} =
-        Gtfs.update_stop_level_alignment(stop_level, %{
-          floorplan_center_lat: 40.7128,
-          floorplan_center_lon: -74.0060,
-          floorplan_scale_mpp: 0.35,
-          floorplan_rotation_deg: 0.0
-        })
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -12908,16 +12824,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
 
-      html = render_hook(view, "apply_alignment", %{})
+      html =
+        render_hook(view, "save_and_apply_alignment", %{
+          "center_lat" => 40.7128,
+          "center_lon" => -74.0060,
+          "scale_mpp" => 0.35,
+          "rotation_deg" => 0.0
+        })
 
-      assert html =~ "Applied alignment to 1 stops"
+      assert html =~ "Set lat/lon for 1 child stops"
+
+      reloaded_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      assert reloaded_level.floorplan_center_lat == 40.7128
+      assert reloaded_level.floorplan_center_lon == -74.0060
+      assert reloaded_level.floorplan_scale_mpp == 0.35
+      assert reloaded_level.floorplan_rotation_deg == 0.0
 
       reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       refute is_nil(reloaded.stop_lat)
       refute is_nil(reloaded.stop_lon)
     end
 
-    test "apply_alignment without alignment shows error flash and makes no writes", %{
+    test "save_and_apply_alignment without image dimensions shows error and makes no writes", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -12927,55 +12855,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level: stop_level
     } do
       {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
-
-      child_stop =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "NO_ALIGN_CHILD",
-          stop_name: "No Align Child",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: level.level_id,
-          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
-        })
-
-      original_lat = child_stop.stop_lat
-      original_lon = child_stop.stop_lon
-
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
-
-      render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
-
-      html = render_hook(view, "apply_alignment", %{})
-
-      assert html =~ "Save alignment before applying"
-
-      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
-      assert reloaded.stop_lat == original_lat
-      assert reloaded.stop_lon == original_lon
-    end
-
-    test "apply_alignment without image dimensions shows error flash and makes no writes", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      level: level,
-      stop_level: stop_level
-    } do
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
-
-      {:ok, _aligned} =
-        Gtfs.update_stop_level_alignment(stop_level, %{
-          floorplan_center_lat: 40.7128,
-          floorplan_center_lon: -74.0060,
-          floorplan_scale_mpp: 0.35,
-          floorplan_rotation_deg: 0.0
-        })
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -12997,16 +12876,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
-      html = render_hook(view, "apply_alignment", %{})
+      html =
+        render_hook(view, "save_and_apply_alignment", %{
+          "center_lat" => 40.7128,
+          "center_lon" => -74.0060,
+          "scale_mpp" => 0.35,
+          "rotation_deg" => 0.0
+        })
 
       assert html =~ "Floorplan image not ready"
+
+      reloaded_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
+      assert reloaded_level.floorplan_center_lat == nil
 
       reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert reloaded.stop_lat == original_lat
       assert reloaded.stop_lon == original_lon
     end
 
-    test "infer_alignment with two direct anchors persists inferred alignment and flashes anchor count",
+    test "infer_alignment with three direct anchors persists inferred alignment and flashes anchor count",
          %{
            conn: conn,
            user: user,
@@ -13042,6 +12930,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           stop_lon: Decimal.new("-74.0000")
         })
 
+      _stop_c =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "INFER_LV_C",
+          stop_name: "Infer C",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0},
+          stop_lat: Decimal.new("40.7100"),
+          stop_lon: Decimal.new("-74.0050")
+        })
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -13052,9 +12952,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       html = render_hook(view, "infer_alignment", %{})
 
-      assert html =~ "Inferred alignment from 2 anchors"
-      assert html =~ "RMSE:"
-      assert html =~ " m)"
+      assert html =~ ~r/Set lat\/lon for \d+ child stops \(3 anchors, RMSE [\d.]+ m\)/
 
       reloaded = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
       refute is_nil(reloaded.floorplan_center_lat)

@@ -79,7 +79,7 @@ defmodule GtfsPlanner.Otp.PreflightTest do
           issue.code not in [:missing_required_file_data, :missing_calendar_or_calendar_dates]
         end)
 
-      assert length(integrity_issues) > 0
+      assert [_ | _] = integrity_issues
 
       Enum.each(integrity_issues, fn issue ->
         assert issue.message =~

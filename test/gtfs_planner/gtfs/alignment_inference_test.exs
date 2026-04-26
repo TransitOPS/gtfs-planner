@@ -51,7 +51,9 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
     test "non-numeric anchor field returns :invalid_input" do
       bad = %{base_anchor() | svg_x: "30"}
       anchors = [bad, %{base_anchor() | stop_id: "s2", svg_x: 70.0}]
-      assert {:error, :invalid_input} = AlignmentInference.infer_alignment(anchors, @image_w, @image_h)
+
+      assert {:error, :invalid_input} =
+               AlignmentInference.infer_alignment(anchors, @image_w, @image_h)
     end
   end
 
@@ -65,27 +67,36 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
       assert {:error, :insufficient_anchors} =
                AlignmentInference.infer_alignment([base_anchor()], @image_w, @image_h)
     end
+
+    test "anchor_minimum/0 returns the threshold used by infer_alignment/3" do
+      below = List.duplicate(base_anchor(), AlignmentInference.anchor_minimum() - 1)
+
+      assert {:error, :insufficient_anchors} =
+               AlignmentInference.infer_alignment(below, 1024, 768)
+    end
   end
 
   describe "degenerate geometry" do
-    test "two anchors at identical SVG points returns :degenerate_geometry" do
+    test "anchors at identical SVG points return :degenerate_geometry" do
       a1 = base_anchor()
       a2 = %{base_anchor() | stop_id: "s2", lat: 40.7501, lon: -73.9899}
+      a3 = %{base_anchor() | stop_id: "s3", lat: 40.7502, lon: -73.9898}
 
       assert {:error, :degenerate_geometry} =
-               AlignmentInference.infer_alignment([a1, a2], @image_w, @image_h)
+               AlignmentInference.infer_alignment([a1, a2, a3], @image_w, @image_h)
     end
 
-    test "two anchors at near-identical SVG points returns :degenerate_geometry" do
+    test "anchors at near-identical SVG points return :degenerate_geometry" do
       a1 = base_anchor()
       a2 = %{base_anchor() | stop_id: "s2", svg_x: 30.0 + 1.0e-10, svg_y: 40.0 + 1.0e-10}
+      a3 = %{base_anchor() | stop_id: "s3", svg_x: 30.0 + 2.0e-10, svg_y: 40.0 + 2.0e-10}
 
       assert {:error, :degenerate_geometry} =
-               AlignmentInference.infer_alignment([a1, a2], @image_w, @image_h)
+               AlignmentInference.infer_alignment([a1, a2, a3], @image_w, @image_h)
     end
   end
 
-  describe "successful 2-anchor solve" do
+  describe "successful anchor solve" do
     test "recovers known alignment within tight tolerance" do
       alignment = %{
         center_lat: 40.75,
@@ -96,16 +107,17 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
 
       a1 = anchor_from_svg(alignment, @image_w, @image_h, "s1", 20.0, 30.0)
       a2 = anchor_from_svg(alignment, @image_w, @image_h, "s2", 80.0, 70.0)
+      a3 = anchor_from_svg(alignment, @image_w, @image_h, "s3", 45.0, 82.0)
 
       assert {:ok, result} =
-               AlignmentInference.infer_alignment([a1, a2], @image_w, @image_h)
+               AlignmentInference.infer_alignment([a1, a2, a3], @image_w, @image_h)
 
       assert_in_delta result.center_lat, alignment.center_lat, 1.0e-8
       assert_in_delta result.center_lon, alignment.center_lon, 1.0e-8
       assert_in_delta result.scale_mpp, alignment.scale_mpp, 1.0e-8
       assert_in_delta result.rotation_deg, alignment.rotation_deg, 1.0e-6
-      assert result.rmse_meters == 0.0
-      assert result.anchor_count == 2
+      assert_in_delta result.rmse_meters, 0.0, 1.0e-8
+      assert result.anchor_count == 3
     end
 
     test "recovers zero rotation alignment" do
@@ -118,15 +130,16 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
 
       a1 = anchor_from_svg(alignment, @image_w, @image_h, "s1", 25.0, 25.0)
       a2 = anchor_from_svg(alignment, @image_w, @image_h, "s2", 75.0, 80.0)
+      a3 = anchor_from_svg(alignment, @image_w, @image_h, "s3", 42.0, 55.0)
 
       assert {:ok, result} =
-               AlignmentInference.infer_alignment([a1, a2], @image_w, @image_h)
+               AlignmentInference.infer_alignment([a1, a2, a3], @image_w, @image_h)
 
       assert_in_delta result.center_lat, alignment.center_lat, 1.0e-8
       assert_in_delta result.center_lon, alignment.center_lon, 1.0e-8
       assert_in_delta result.scale_mpp, alignment.scale_mpp, 1.0e-8
       assert_in_delta result.rotation_deg, alignment.rotation_deg, 1.0e-6
-      assert result.rmse_meters == 0.0
+      assert_in_delta result.rmse_meters, 0.0, 1.0e-8
     end
   end
 
@@ -158,7 +171,14 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
       {anchors, exclusions} = AlignmentInference.select_anchors([direct_cand("s1")], [])
 
       assert [
-               %{stop_id: "s1", source: :direct, svg_x: 30.0, svg_y: 40.0, lat: 40.75, lon: -73.99}
+               %{
+                 stop_id: "s1",
+                 source: :direct,
+                 svg_x: 30.0,
+                 svg_y: 40.0,
+                 lat: 40.75,
+                 lon: -73.99
+               }
              ] = anchors
 
       assert exclusions == []
@@ -245,7 +265,12 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
       assert [%{stop_id: "s1", source: :direct}] = anchors
 
       assert exclusions == [
-               %{stop_id: "s1", reason: :shadowed_by_direct, source: :cross_level, pathway_id: "pa"}
+               %{
+                 stop_id: "s1",
+                 reason: :shadowed_by_direct,
+                 source: :cross_level,
+                 pathway_id: "pa"
+               }
              ]
     end
 

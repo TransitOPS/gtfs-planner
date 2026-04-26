@@ -202,143 +202,145 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                 id={"history-entry-#{entry.id}"}
                 class="relative"
               >
-              <% current? = entry.id == @current_state_entry_id
-              rollback_entry = Map.get(@rollback_by_original_id, entry.id)
-              reverted? = rollback_entry != nil
+                <% current? = entry.id == @current_state_entry_id
+                rollback_entry = Map.get(@rollback_by_original_id, entry.id)
+                reverted? = rollback_entry != nil
 
-              rows = apply_field_filter(diff_rows(entry), @entity_type, @history_field_filter)
-              no_match = rows == [] and diff_rows(entry) != []
+                rows = apply_field_filter(diff_rows(entry), @entity_type, @history_field_filter)
+                no_match = rows == [] and diff_rows(entry) != []
 
-              variant =
-                rollback_button_variant(entry, @rollback_by_original_id, current?)
+                variant =
+                  rollback_button_variant(entry, @rollback_by_original_id, current?)
 
-              target_log_id =
-                case variant do
-                  :reapply -> rollback_entry.id
-                  :original -> nil
-                  :none -> nil
-                  _ -> entry.id
-                end %>
-
-              <div
-                aria-hidden="true"
-                class={[
-                  "absolute -left-[21px] top-2 w-3.5 h-3.5 rounded-full bg-base-100 border-2",
-                  if(current?, do: "border-emerald-600", else: "border-base-content/40")
-                ]}
-              >
-              </div>
-
-              <div class={[
-                "bg-base-100 border rounded-lg p-3.5",
-                if(current?,
-                  do: "border-emerald-600/40 ring-2 ring-emerald-500/30",
-                  else: "border-base-300"
-                )
-              ]}>
-                <div class="flex items-center gap-2 mb-2 flex-wrap">
-                  <div
-                    aria-hidden="true"
-                    class="w-[22px] h-[22px] rounded-full bg-base-300 text-base-content text-[10px] font-medium flex items-center justify-center shrink-0"
-                  >
-                    {display_initials(entry.actor_email)}
-                  </div>
-                  <span class="text-[13px] font-medium text-base-content">
-                    {display_name(entry.actor_email)}
-                  </span>
-                  <span
-                    :if={current?}
-                    class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-900 tracking-wide uppercase"
-                  >
-                    Current
-                  </span>
-                  <span
-                    :if={reverted?}
-                    class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-base-300 text-base-content tracking-wide uppercase"
-                  >
-                    Reverted
-                  </span>
-                  <time
-                    datetime={DateTime.to_iso8601(entry.inserted_at)}
-                    class="ml-auto text-xs text-base-content/70 tabular-nums"
-                  >
-                    {format_time_short(entry.inserted_at, @today)}
-                  </time>
-                </div>
-
-                <div class="text-[13px] mb-2.5">
-                  <span class={if(reverted?, do: "text-base-content/70", else: "text-base-content")}>
-                    {entry_summary(entry, @entity_type)}
-                  </span>
-                </div>
+                target_log_id =
+                  case variant do
+                    :reapply -> rollback_entry.id
+                    :original -> nil
+                    :none -> nil
+                    _ -> entry.id
+                  end %>
 
                 <div
-                  :if={no_match}
-                  data-testid="history-entry-no-match"
-                  class="text-xs text-base-content/70"
+                  aria-hidden="true"
+                  class={[
+                    "absolute -left-[21px] top-2 w-3.5 h-3.5 rounded-full bg-base-100 border-2",
+                    if(current?, do: "border-emerald-600", else: "border-base-content/40")
+                  ]}
                 >
-                  No matching changes
                 </div>
 
-                <.change_diff
-                  :if={not no_match}
-                  entry={entry}
-                  entity_type={@entity_type}
-                  rows={rows}
-                />
-
-                <div
-                  :if={reverted?}
-                  class="mt-2.5 text-xs text-base-content/70 flex items-center gap-1.5"
-                >
-                  <span aria-hidden="true">↩</span>
-                  <span>
-                    Reverted by
-                    <span class="font-medium text-base-content">
-                      {display_name(rollback_entry.actor_email)}
-                    </span>
-                    at
-                    <time datetime={DateTime.to_iso8601(rollback_entry.inserted_at)}>
-                      {format_time_short(rollback_entry.inserted_at, @today)}
-                    </time>
-                  </span>
-                </div>
-
-                <.rollback_preview
-                  :if={preview_matches_entry?(@rollback_preview, @entity_type, entry) or
-                    (reverted? and
-                       preview_matches_entry?(@rollback_preview, @entity_type, rollback_entry))}
-                  rollback_preview={@rollback_preview}
-                  entity_type={@entity_type}
-                />
-
-                <%= if variant != :none do %>
-                  <div class="flex justify-end mt-2.5">
-                    <button
-                      type="button"
-                      data-history-entry-action={Atom.to_string(variant)}
-                      phx-click={if variant != :original, do: "preview_rollback_change_log"}
-                      phx-value-log-id={target_log_id}
-                      aria-disabled={if variant == :original, do: "true"}
-                      disabled={variant == :original}
-                      title={
-                        if variant == :original,
-                          do: "Cannot restore to before this #{entity_label(@entity_type)} existed"
-                      }
-                      class={[
-                        "text-xs px-2.5 py-1 rounded-md border",
-                        "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500",
-                        if(variant == :original,
-                          do:
-                            "border-base-200 text-base-content/60 bg-base-200/60 cursor-not-allowed",
-                          else: "border-base-300 text-base-content hover:bg-base-200"
-                        )
-                      ]}
+                <div class={[
+                  "bg-base-100 border rounded-lg p-3.5",
+                  if(current?,
+                    do: "border-emerald-600/40 ring-2 ring-emerald-500/30",
+                    else: "border-base-300"
+                  )
+                ]}>
+                  <div class="flex items-center gap-2 mb-2 flex-wrap">
+                    <div
+                      aria-hidden="true"
+                      class="w-[22px] h-[22px] rounded-full bg-base-300 text-base-content text-[10px] font-medium flex items-center justify-center shrink-0"
                     >
-                      {rollback_button_label(variant)}
-                    </button>
+                      {display_initials(entry.actor_email)}
+                    </div>
+                    <span class="text-[13px] font-medium text-base-content">
+                      {display_name(entry.actor_email)}
+                    </span>
+                    <span
+                      :if={current?}
+                      class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-900 tracking-wide uppercase"
+                    >
+                      Current
+                    </span>
+                    <span
+                      :if={reverted?}
+                      class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-base-300 text-base-content tracking-wide uppercase"
+                    >
+                      Reverted
+                    </span>
+                    <time
+                      datetime={DateTime.to_iso8601(entry.inserted_at)}
+                      class="ml-auto text-xs text-base-content/70 tabular-nums"
+                    >
+                      {format_time_short(entry.inserted_at, @today)}
+                    </time>
                   </div>
-                <% end %>
+
+                  <div class="text-[13px] mb-2.5">
+                    <span class={if(reverted?, do: "text-base-content/70", else: "text-base-content")}>
+                      {entry_summary(entry, @entity_type)}
+                    </span>
+                  </div>
+
+                  <div
+                    :if={no_match}
+                    data-testid="history-entry-no-match"
+                    class="text-xs text-base-content/70"
+                  >
+                    No matching changes
+                  </div>
+
+                  <.change_diff
+                    :if={not no_match}
+                    entry={entry}
+                    entity_type={@entity_type}
+                    rows={rows}
+                  />
+
+                  <div
+                    :if={reverted?}
+                    class="mt-2.5 text-xs text-base-content/70 flex items-center gap-1.5"
+                  >
+                    <span aria-hidden="true">↩</span>
+                    <span>
+                      Reverted by
+                      <span class="font-medium text-base-content">
+                        {display_name(rollback_entry.actor_email)}
+                      </span>
+                      at
+                      <time datetime={DateTime.to_iso8601(rollback_entry.inserted_at)}>
+                        {format_time_short(rollback_entry.inserted_at, @today)}
+                      </time>
+                    </span>
+                  </div>
+
+                  <.rollback_preview
+                    :if={
+                      preview_matches_entry?(@rollback_preview, @entity_type, entry) or
+                        (reverted? and
+                           preview_matches_entry?(@rollback_preview, @entity_type, rollback_entry))
+                    }
+                    rollback_preview={@rollback_preview}
+                    entity_type={@entity_type}
+                  />
+
+                  <%= if variant != :none do %>
+                    <div class="flex justify-end mt-2.5">
+                      <button
+                        type="button"
+                        data-history-entry-action={Atom.to_string(variant)}
+                        phx-click={if variant != :original, do: "preview_rollback_change_log"}
+                        phx-value-log-id={target_log_id}
+                        aria-disabled={if variant == :original, do: "true"}
+                        disabled={variant == :original}
+                        title={
+                          if variant == :original,
+                            do: "Cannot restore to before this #{entity_label(@entity_type)} existed"
+                        }
+                        class={[
+                          "text-xs px-2.5 py-1 rounded-md border",
+                          "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500",
+                          if(variant == :original,
+                            do:
+                              "border-base-200 text-base-content/60 bg-base-200/60 cursor-not-allowed",
+                            else: "border-base-300 text-base-content hover:bg-base-200"
+                          )
+                        ]}
+                      >
+                        {rollback_button_label(variant)}
+                      </button>
+                    </div>
+                  <% end %>
                 </div>
               </li>
             </ul>

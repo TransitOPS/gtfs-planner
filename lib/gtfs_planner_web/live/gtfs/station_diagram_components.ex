@@ -309,6 +309,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :align_rotation_deg, :any, default: nil
   attr :image_natural_width, :any, default: nil
   attr :image_natural_height, :any, default: nil
+  attr :child_stops_total, :integer, default: 0
+  attr :child_stops_with_geo, :integer, default: 0
+  attr :anchor_count, :integer, default: 0
+  attr :cross_level_pathway_total, :integer, default: 0
+  attr :cross_level_pathway_with_geo, :integer, default: 0
 
   def map_canvas(assigns) do
     floorplan_url =
@@ -322,12 +327,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         not is_nil(assigns.align_center_lon) and
         not is_nil(assigns.align_scale_mpp) and
         not is_nil(assigns.align_rotation_deg)
-
-    has_image_dims? =
-      positive_integer?(assigns.image_natural_width) and
-        positive_integer?(assigns.image_natural_height)
-
-    apply_disabled? = not (has_alignment? and has_image_dims?)
 
     # Tie the hook root's DOM id to the active stop_level so switching levels
     # remounts the hook with the new level's floorplan and alignment attrs.
@@ -343,7 +342,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:initial_lat, initial_lat)
       |> assign(:initial_lon, initial_lon)
       |> assign(:has_alignment?, has_alignment?)
-      |> assign(:apply_disabled?, apply_disabled?)
       |> assign(:canvas_id, canvas_id)
 
     ~H"""
@@ -404,9 +402,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </button>
       </div>
       <div class="px-4 sm:px-6 lg:px-8 pt-3 pb-4">
-        <p class="text-xs text-base-content/70">
-          Drag to move the floorplan. Use handles to rotate and resize.
-        </p>
+        <div class="flex items-start justify-between gap-4">
+          <p class="text-xs text-base-content/70">
+            Drag to move the floorplan. Use handles to rotate and resize.
+          </p>
+          <div class="flex flex-col items-end gap-1">
+            <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
+              {@child_stops_with_geo} of {@child_stops_total} child stops have lat/long
+            </span>
+            <span
+              data-role="cross-level-pathway-coverage"
+              class="text-xs font-medium text-base-content/70"
+            >
+              {@cross_level_pathway_with_geo} of {@cross_level_pathway_total} connections to other levels have lat/long
+            </span>
+          </div>
+        </div>
         <div class="mt-3 flex flex-wrap items-end gap-x-8 gap-y-4">
           <fieldset class="flex items-end gap-2">
             <legend class="sr-only">Map center</legend>
@@ -476,44 +487,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             />
           </div>
 
-          <div class="ml-auto flex items-end gap-2">
-            <span class={[
-              "self-center text-xs font-medium",
-              if(@has_alignment?,
-                do: "text-green-700",
-                else: "text-base-content/50"
-              )
-            ]}>
-              {if @has_alignment?, do: "Saved", else: "Not saved"}
-            </span>
-            <button id="map-alignment-reset" type="button" class="btn btn-sm btn-ghost">
-              Reset
-            </button>
-            <button id="map-alignment-clear" type="button" class="btn btn-sm btn-ghost">
-              Clear saved
-            </button>
+          <div class="ml-auto flex items-center gap-3">
             <button id="map-alignment-save" type="button" class="btn btn-sm btn-primary">
               Save alignment
-            </button>
-            <button
-              id="map-alignment-infer"
-              type="button"
-              class="btn btn-sm btn-primary"
-              phx-click="infer_alignment"
-              disabled={
-                is_nil(@active_stop_level) or is_nil(@image_natural_width) or
-                  is_nil(@image_natural_height)
-              }
-            >
-              Infer alignment
             </button>
             <button
               id="map-alignment-apply"
               type="button"
               class="btn btn-sm btn-primary"
-              disabled={@apply_disabled?}
+              title="Set lat/lon for child stops from the floorplan's current position on the map"
+              disabled={is_nil(@image_natural_width) or is_nil(@image_natural_height)}
             >
-              Apply to child stops
+              Apply image position
+            </button>
+            <span class="text-xs text-base-content/60">or</span>
+            <button
+              id="map-alignment-infer"
+              type="button"
+              class="btn btn-sm btn-primary"
+              phx-click="infer_alignment"
+              title="Compute alignment from child stops that already have lat/lon, then set lat/lon on the rest"
+              disabled={
+                @anchor_count < GtfsPlanner.Gtfs.AlignmentInference.anchor_minimum() or
+                  is_nil(@image_natural_width) or is_nil(@image_natural_height)
+              }
+            >
+              Infer from anchors
             </button>
           </div>
         </div>
@@ -521,9 +520,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     </div>
     """
   end
-
-  defp positive_integer?(value) when is_integer(value) and value > 0, do: true
-  defp positive_integer?(_), do: false
 
   # ============================================================================
   # Diagram Canvas
