@@ -790,7 +790,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
 
   attr :active_tab, :atom,
-    values: [:details, :diagram, :report, :report_2, :reachability],
+    values: [:details, :diagram, :report, :reachability],
     default: :details
 
   attr :levels, :list, default: [], doc: "list of levels for the station (diagram tab)"
@@ -874,21 +874,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             aria-selected={@active_tab == :report}
             aria-current={@active_tab == :report && "page"}
           >
-            Report
-          </.link>
-          <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/report_2"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :report_2 && "border-primary text-base-content",
-              @active_tab != :report_2 &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :report_2}
-            aria-current={@active_tab == :report_2 && "page"}
-          >
-            Reports New
+            Reports
           </.link>
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/reachability"}

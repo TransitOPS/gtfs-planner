@@ -109,7 +109,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
          valid_version_for_org?(version_id, current_organization.id) do
       path =
         if stop_id,
-          do: "/gtfs/#{version_id}/stops/#{stop_id}/report_2",
+          do: "/gtfs/#{version_id}/stops/#{stop_id}/report",
           else: "/gtfs/#{version_id}/stops"
 
       {:noreply, push_navigate(socket, to: path)}
@@ -356,7 +356,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
           :if={@station}
           station={@station}
           gtfs_version_id={@current_gtfs_version.id}
-          active_tab={:report_2}
+          active_tab={:report}
         />
       </:sub_header>
 

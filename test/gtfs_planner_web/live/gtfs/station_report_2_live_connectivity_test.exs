@@ -138,7 +138,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "Entrance-to-Platform Reachability"
       assert html =~ "Platform Interconnection Reachability"
@@ -155,7 +155,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "Main Entrance"
       assert html =~ "Side Entrance"
@@ -173,7 +173,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Side Entrance has no pathways → zero reachability → alert
       assert has_element?(view, "[role='alert']:not(#client-error):not(#server-error)")
@@ -195,7 +195,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, _view, html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Entrance-to-platform has partial connectivity (ENT_B disconnected) → Fail badge
       assert html =~ "Fail"
@@ -211,7 +211,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open entrance_to_platform detail
       view
@@ -246,7 +246,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open both entrance_to_platform and platform_to_platform
       view
@@ -277,7 +277,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       view
       |> element(
@@ -302,7 +302,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open the dimension first
       view
@@ -337,7 +337,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       view
       |> element(
@@ -378,7 +378,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       {:ok, _view, html} =
         live(
           conn,
-          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2?dimensions=platform_to_platform"
+          "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report?dimensions=platform_to_platform"
         )
 
       assert html =~ "Platform to platform"
@@ -513,7 +513,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open the entrance_to_platform dimension
       view
@@ -609,7 +609,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Open the entrance_to_platform dimension
       view
@@ -671,7 +671,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report_2")
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert has_element?(view, "#report2-reachability-connectivity")
     end
