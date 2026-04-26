@@ -49,6 +49,14 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
     |> assign(:invite_form, nil)
   end
 
+  defp apply_action(socket, :organization_settings, _params) do
+    members = Organizations.list_users_in_organization(socket.assigns.current_organization.id)
+
+    socket
+    |> assign(:members, members)
+    |> assign(:invite_form, nil)
+  end
+
   # Helper functions (Step 9)
 
   defp available_roles do

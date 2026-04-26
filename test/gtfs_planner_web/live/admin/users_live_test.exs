@@ -203,6 +203,12 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
     end
   end
 
+  describe "organization settings route" do
+    test "pathways_studio_admin can access organization-settings route", %{conn: conn} do
+      assert {:ok, _view, _html} = live(conn, ~p"/admin/users/organization-settings")
+    end
+  end
+
   describe "deactivation flow" do
     test "deactivates user and shows deactivated status", %{
       conn: conn,
