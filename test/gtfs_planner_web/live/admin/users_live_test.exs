@@ -215,6 +215,16 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       assert %Phoenix.HTML.Form{} = form
       assert form.source.data.__struct__ == GtfsPlanner.Organizations.Organization
     end
+
+    test "validate_organization with blank name produces validation error", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      render_change(view, "validate_organization", %{"organization" => %{"name" => ""}})
+
+      form = :sys.get_state(view.pid).socket.assigns.organization_form
+      assert form.source.action == :validate
+      assert {"can't be blank", _} = form.source.errors[:name]
+    end
   end
 
   describe "deactivation flow" do
