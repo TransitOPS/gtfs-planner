@@ -10826,7 +10826,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "Earlier history is not available for imported entities."
     end
 
-    test "non-empty list renders action, actor, timestamp" do
+    test "non-empty list renders actor display name, timestamp, and action attribute" do
       entry = build_log(%{action: "updated"})
 
       html =
@@ -10837,12 +10837,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         )
 
       assert html =~ ~s(id="history-stop")
-      assert html =~ "updated"
-      assert html =~ "editor@example.com"
-      assert html =~ "2026-04-24 12:30"
+      assert html =~ ~s(id="history-entry-#{entry.id}")
+      assert html =~ "Editor"
+      assert html =~ "Apr 24"
+      assert html =~ "12:30"
+      assert html =~ ~s(data-history-entry-action="undo")
+      assert html =~ ~s(data-testid="history-summary")
+      assert html =~ ~s(data-testid="history-date-header")
     end
 
-    test "updated entry with snapshot renders Revert change button" do
+    test "updated entry with snapshot renders an undo rollback button" do
       entry = build_log(%{action: "updated"})
 
       html =
@@ -10852,12 +10856,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           rollback_preview: nil
         )
 
-      assert html =~ "Revert change"
+      assert html =~ ~s(data-history-entry-action="undo")
       assert html =~ ~s(phx-click="preview_rollback_change_log")
       assert html =~ ~s(phx-value-log-id="#{entry.id}")
     end
 
-    test "updated entry with only non-reversible fields hides Revert change button" do
+    test "updated entry with only non-reversible fields hides rollback button" do
       entry =
         build_log(%{
           action: "updated",
@@ -10872,8 +10876,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           rollback_preview: nil
         )
 
-      assert html =~ "updated"
-      refute html =~ "Revert change"
+      assert html =~ ~s(id="history-entry-#{entry.id}")
+      refute html =~ ~s(data-history-entry-action="undo")
+      refute html =~ ~s(data-history-entry-action="restore")
       refute html =~ ~s(phx-click="preview_rollback_change_log")
       refute html =~ ~s(phx-value-log-id="#{entry.id}")
     end
@@ -10900,24 +10905,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ ~s(phx-value-log-id="#{rollback.id}")
     end
 
-    test "rolled_back entry renders readable label and Restore change button" do
+    test "rolled_back entry renders reapply button and suppresses raw action label" do
       entry = build_log(%{action: "rolled_back"})
 
       html =
         render_component(&StationDiagramComponents.change_log_list/1,
           entries: [entry],
-          entity_type: "pathway",
+          entity_type: "stop",
           rollback_preview: nil
         )
 
-      assert html =~ ~s(id="history-pathway")
-      assert html =~ "Reverted"
+      assert html =~ ~s(id="history-stop")
       refute html =~ "rolled_back"
-      assert html =~ "Restore change"
-      refute html =~ "Revert change"
+      assert html =~ ~s(data-history-entry-action="reapply")
+      assert html =~ "Re-apply this change"
+      refute html =~ ~s(data-history-entry-action="undo")
+      refute html =~ ~s(data-history-entry-action="restore")
     end
 
-    test "created entry does not render Revert change button" do
+    test "created entry renders disabled original button without rollback wiring" do
       entry = build_log(%{action: "created", snapshot: nil, changed_fields: nil})
 
       html =
@@ -10927,13 +10933,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           rollback_preview: nil
         )
 
-      assert html =~ "created"
-      refute html =~ "Revert change"
+      assert html =~ ~s(data-history-entry-action="original")
+      assert html =~ ~s(aria-disabled="true")
+      assert html =~ "disabled"
+      refute html =~ ~s(data-history-entry-action="undo")
+      refute html =~ ~s(data-history-entry-action="restore")
       refute html =~ ~s(phx-click="preview_rollback_change_log")
       refute html =~ ~s(phx-value-log-id="#{entry.id}")
     end
 
-    test "deleted entry does not render Revert change button" do
+    test "deleted entry renders no rollback button" do
       entry = build_log(%{action: "deleted"})
 
       html =
@@ -10943,13 +10952,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           rollback_preview: nil
         )
 
-      assert html =~ "deleted"
-      refute html =~ "Revert change"
+      assert html =~ ~s(id="history-entry-#{entry.id}")
+      refute html =~ ~s(data-history-entry-action="undo")
+      refute html =~ ~s(data-history-entry-action="restore")
+      refute html =~ ~s(data-history-entry-action="reapply")
+      refute html =~ ~s(data-history-entry-action="original")
       refute html =~ ~s(phx-click="preview_rollback_change_log")
       refute html =~ ~s(phx-value-log-id="#{entry.id}")
     end
 
-    test "renders rollback_preview when it matches a listed entry for the entity type" do
+    test "renders rollback_preview inside the targeted entry card" do
       entry = build_log(%{action: "updated"})
 
       preview = %{
@@ -10969,6 +10981,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ ~s(id="rollback-preview-stop")
       assert html =~ ~s(id="rollback-preview-cancel-stop")
       assert html =~ ~s(id="rollback-preview-confirm-stop")
+
+      entry_open = String.split(html, ~s(id="history-entry-#{entry.id}")) |> Enum.at(1)
+      [card_html, _rest] = String.split(entry_open, "</li>", parts: 2)
+      assert card_html =~ ~s(id="rollback-preview-stop")
     end
 
     test "does not render rollback_preview when it does not match any listed entry" do
@@ -11766,11 +11782,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         changed_fields: %{"location_type" => %{"from" => 0, "to" => 1}}
       }
 
-      html = render_component(&StationDiagramComponents.change_diff/1, entry: entry)
+      html =
+        render_component(&StationDiagramComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
 
       assert html =~ "location_type"
-      assert html =~ "0"
-      assert html =~ "1"
+      assert html =~ GtfsPlanner.Gtfs.Stop.location_type_label(0)
+      assert html =~ GtfsPlanner.Gtfs.Stop.location_type_label(1)
       refute html =~ "—"
     end
 
@@ -11784,7 +11804,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         changed_fields: %{"wheelchair_boarding" => %{"from" => false, "to" => true}}
       }
 
-      html = render_component(&StationDiagramComponents.change_diff/1, entry: entry)
+      html =
+        render_component(&StationDiagramComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
 
       assert html =~ "wheelchair_boarding"
       assert html =~ "false"
@@ -11801,7 +11825,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         changed_fields: %{"some_int" => %{"from" => nil, "to" => 5}}
       }
 
-      html = render_component(&StationDiagramComponents.change_diff/1, entry: entry)
+      html =
+        render_component(&StationDiagramComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
 
       assert html =~ "some_int"
       assert html =~ "5"
@@ -11825,14 +11853,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         }
       }
 
-      html = render_component(&StationDiagramComponents.change_diff/1, entry: entry)
+      html =
+        render_component(&StationDiagramComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
 
-      refute html =~ "organization_id:"
-      refute html =~ "gtfs_version_id:"
-      refute html =~ ">id:</span>"
-      refute html =~ "inserted_at:"
-      refute html =~ "updated_at:"
-      assert html =~ "stop_id:"
+      refute html =~ "organization_id"
+      refute html =~ "gtfs_version_id"
+      refute html =~ ~s(>id</div>)
+      refute html =~ "inserted_at"
+      refute html =~ "updated_at"
+      assert html =~ "stop_id"
+    end
+
+    test "renders categorical label and dot for wheelchair_boarding=1" do
+      entry = %GtfsPlanner.Gtfs.ChangeLog{
+        id: Ecto.UUID.generate(),
+        action: "updated",
+        actor_email: "e@x.com",
+        inserted_at: ~U[2026-04-24 12:00:00.000000Z],
+        snapshot: %{"wheelchair_boarding" => 0},
+        changed_fields: %{"wheelchair_boarding" => %{"from" => 0, "to" => 1}}
+      }
+
+      html =
+        render_component(&StationDiagramComponents.change_diff/1,
+          entry: entry,
+          entity_type: "stop"
+        )
+
+      assert html =~ "Wheelchair accessible"
+      assert html =~ "bg-emerald-600"
+      assert html =~ "No information"
+      assert html =~ "bg-base-300"
     end
   end
 

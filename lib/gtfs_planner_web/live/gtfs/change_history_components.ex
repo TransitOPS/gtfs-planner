@@ -5,6 +5,8 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   """
   use Phoenix.Component
 
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
 
@@ -214,7 +216,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                   type="button"
                   data-history-entry-action={Atom.to_string(variant)}
                   phx-click={if variant != :original, do: "preview_rollback_change_log"}
-                  phx-value-log-id={entry.id}
+                  phx-value-log-id={if variant != :original, do: entry.id}
                   aria-disabled={if variant == :original, do: "true"}
                   disabled={variant == :original}
                   class={[
@@ -506,8 +508,19 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   defp rollback_button_variant(%{action: "created"}, _rollback_by_original_id, _latest?),
     do: :original
 
-  defp rollback_button_variant(_entry, _rollback_by_original_id, true), do: :undo
-  defp rollback_button_variant(_entry, _rollback_by_original_id, false), do: :restore
+  defp rollback_button_variant(%{action: "deleted"}, _rollback_by_original_id, _latest?),
+    do: :none
+
+  defp rollback_button_variant(entry, _rollback_by_original_id, latest?) do
+    cond do
+      not rollback_eligible?(entry) -> :none
+      latest? -> :undo
+      true -> :restore
+    end
+  end
+
+  defp rollback_eligible?(%ChangeLog{} = entry), do: Gtfs.rollback_previewable_fields(entry) != []
+  defp rollback_eligible?(_entry), do: true
 
   defp rollback_button_label(:undo), do: "Undo this change"
   defp rollback_button_label(:restore), do: "Restore to this state"
