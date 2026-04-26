@@ -3062,7 +3062,7 @@ defmodule GtfsPlanner.GtfsTest do
                Gtfs.infer_level_alignment(stop_level, 1000, 800)
     end
 
-    test "succeeds with two direct anchors from child stops on the target level", %{
+    test "succeeds with three direct anchors from child stops on the target level", %{
       organization: org,
       gtfs_version: version,
       station: station,
@@ -3091,10 +3091,21 @@ defmodule GtfsPlanner.GtfsTest do
           stop_lon: Decimal.new("-74.0000")
         })
 
+      _stop_c =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_DIRECT_C",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50.0, y: 50.0},
+          stop_lat: Decimal.new("40.7100"),
+          stop_lon: Decimal.new("-74.0050")
+        })
+
       assert {:ok, result} = Gtfs.infer_level_alignment(stop_level, 1000, 800)
 
       assert %{
-               inferred_alignment: %{anchor_count: 2} = inferred,
+               inferred_alignment: %{anchor_count: 3} = inferred,
                anchors_used: anchors,
                excluded_anchors: []
              } = result
@@ -3103,11 +3114,11 @@ defmodule GtfsPlanner.GtfsTest do
       assert is_float(inferred.center_lon)
       assert is_float(inferred.scale_mpp)
       assert is_float(inferred.rotation_deg)
-      assert length(anchors) == 2
+      assert length(anchors) == 3
       assert Enum.all?(anchors, &(&1.source == :direct))
     end
 
-    test "succeeds with one direct and one cross-level elevator anchor", %{
+    test "succeeds with two direct anchors and one cross-level elevator anchor", %{
       organization: org,
       gtfs_version: version,
       station: station,
@@ -3124,6 +3135,17 @@ defmodule GtfsPlanner.GtfsTest do
           diagram_coordinate: %{x: 40.0, y: 60.0},
           stop_lat: Decimal.new("40.7000"),
           stop_lon: Decimal.new("-74.0100")
+        })
+
+      _second_direct_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_MIX_DIRECT_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50.0, y: 50.0},
+          stop_lat: Decimal.new("40.7100"),
+          stop_lon: Decimal.new("-74.0050")
         })
 
       target_stop =
@@ -3156,15 +3178,15 @@ defmodule GtfsPlanner.GtfsTest do
       assert {:ok, result} = Gtfs.infer_level_alignment(stop_level, 1000, 800)
 
       assert %{
-               inferred_alignment: %{anchor_count: 2},
+               inferred_alignment: %{anchor_count: 3},
                anchors_used: anchors
              } = result
 
       sources = anchors |> Enum.map(& &1.source) |> Enum.sort()
-      assert sources == [:cross_level, :direct]
+      assert sources == [:cross_level, :direct, :direct]
     end
 
-    test "returns {:error, :insufficient_anchors} when only one usable anchor exists", %{
+    test "returns {:error, :insufficient_anchors} when fewer than three usable anchors exist", %{
       organization: org,
       gtfs_version: version,
       station: station,
@@ -3248,6 +3270,17 @@ defmodule GtfsPlanner.GtfsTest do
           diagram_coordinate: %{x: 60.0, y: 40.0},
           stop_lat: Decimal.new("40.7200"),
           stop_lon: Decimal.new("-74.0000")
+        })
+
+      _stop_c =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_INFER_C",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50.0, y: 50.0},
+          stop_lat: Decimal.new("40.7100"),
+          stop_lon: Decimal.new("-74.0050")
         })
 
       :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")

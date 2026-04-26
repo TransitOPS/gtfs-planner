@@ -67,7 +67,7 @@ defmodule GtfsPlanner.Gtfs.AlignmentInference do
           pathway_id: String.t() | nil
         }
 
-  @anchor_minimum 2
+  @anchor_minimum 3
   @max_rmse_meters 2.0
   @meters_per_degree_lat 111_111.0
   @degenerate_epsilon 1.0e-6

@@ -259,7 +259,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     active_level_stop_ids = active_level_stop_ids(all_child_stops, level)
     cross_level_badges_by_stop = cross_level_badges_by_stop(level_pathways, active_level_stop_ids)
-    visible_canvas_stops = Enum.filter(all_child_stops, & &1.on_active_level)
+    visible_canvas_stops = child_stops_on_level
     {same_level_pathways, pathway_pair_counts} = decorate_same_level_pathways(level_pathways)
 
     child_stops_total = length(child_stops_on_level)

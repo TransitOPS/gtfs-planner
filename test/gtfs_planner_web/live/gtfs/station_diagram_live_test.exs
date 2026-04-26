@@ -12894,7 +12894,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert reloaded.stop_lon == original_lon
     end
 
-    test "infer_alignment with two direct anchors persists inferred alignment and flashes anchor count",
+    test "infer_alignment with three direct anchors persists inferred alignment and flashes anchor count",
          %{
            conn: conn,
            user: user,
@@ -12930,6 +12930,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           stop_lon: Decimal.new("-74.0000")
         })
 
+      _stop_c =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "INFER_LV_C",
+          stop_name: "Infer C",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0},
+          stop_lat: Decimal.new("40.7100"),
+          stop_lon: Decimal.new("-74.0050")
+        })
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -12940,7 +12952,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       html = render_hook(view, "infer_alignment", %{})
 
-      assert html =~ ~r/Set lat\/lon for \d+ child stops \(2 anchors, RMSE [\d.]+ m\)/
+      assert html =~ ~r/Set lat\/lon for \d+ child stops \(3 anchors, RMSE [\d.]+ m\)/
 
       reloaded = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
       refute is_nil(reloaded.floorplan_center_lat)
