@@ -51,7 +51,9 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
     test "non-numeric anchor field returns :invalid_input" do
       bad = %{base_anchor() | svg_x: "30"}
       anchors = [bad, %{base_anchor() | stop_id: "s2", svg_x: 70.0}]
-      assert {:error, :invalid_input} = AlignmentInference.infer_alignment(anchors, @image_w, @image_h)
+
+      assert {:error, :invalid_input} =
+               AlignmentInference.infer_alignment(anchors, @image_w, @image_h)
     end
   end
 
@@ -68,7 +70,9 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
 
     test "anchor_minimum/0 returns the threshold used by infer_alignment/3" do
       below = List.duplicate(base_anchor(), AlignmentInference.anchor_minimum() - 1)
-      assert {:error, :insufficient_anchors} = AlignmentInference.infer_alignment(below, 1024, 768)
+
+      assert {:error, :insufficient_anchors} =
+               AlignmentInference.infer_alignment(below, 1024, 768)
     end
   end
 
@@ -163,7 +167,14 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
       {anchors, exclusions} = AlignmentInference.select_anchors([direct_cand("s1")], [])
 
       assert [
-               %{stop_id: "s1", source: :direct, svg_x: 30.0, svg_y: 40.0, lat: 40.75, lon: -73.99}
+               %{
+                 stop_id: "s1",
+                 source: :direct,
+                 svg_x: 30.0,
+                 svg_y: 40.0,
+                 lat: 40.75,
+                 lon: -73.99
+               }
              ] = anchors
 
       assert exclusions == []
@@ -250,7 +261,12 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
       assert [%{stop_id: "s1", source: :direct}] = anchors
 
       assert exclusions == [
-               %{stop_id: "s1", reason: :shadowed_by_direct, source: :cross_level, pathway_id: "pa"}
+               %{
+                 stop_id: "s1",
+                 reason: :shadowed_by_direct,
+                 source: :cross_level,
+                 pathway_id: "pa"
+               }
              ]
     end
 

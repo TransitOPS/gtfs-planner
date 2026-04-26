@@ -1860,50 +1860,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
-  defp infer_alignment_error_message(:insufficient_anchors),
-    do: "Not enough anchor stops to infer alignment"
-
-  defp infer_alignment_error_message(:degenerate_geometry),
-    do: "Anchor stops are too close together to infer alignment"
-
-  defp infer_alignment_error_message(:high_residual),
-    do: "Inferred alignment residual exceeds tolerance"
-
-  defp infer_alignment_error_message(:invalid_input),
-    do: "Invalid floorplan image dimensions"
-
-  defp infer_alignment_error_message(:alignment_prerequisites_missing),
-    do: "Active level is missing required alignment data"
-
-  defp infer_alignment_error_message(:not_found), do: "Active level not found"
-  defp infer_alignment_error_message(%Ecto.Changeset{}), do: "Could not save inferred alignment"
-
-  defp coerce_positive_integer(value) when is_integer(value) and value > 0, do: {:ok, value}
-
-  defp coerce_positive_integer(value) when is_float(value) and value > 0 do
-    {:ok, trunc(value)}
-  end
-
-  defp coerce_positive_integer(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, ""} when int > 0 ->
-        {:ok, int}
-
-      _ ->
-        case Float.parse(value) do
-          {float, ""} when float > 0 -> {:ok, trunc(float)}
-          _ -> :error
-        end
-    end
-  end
-
-  defp coerce_positive_integer(_), do: :error
-
-  defp apply_alignment_error_message(:alignment_missing), do: "Save alignment before applying"
-  defp apply_alignment_error_message(:invalid_image_dims), do: "Floorplan image not ready"
-  defp apply_alignment_error_message({:transform, _}), do: "Invalid alignment values"
-  defp apply_alignment_error_message(_), do: "Could not apply alignment"
-
   @impl true
   def handle_event("scale_line_click", _params, socket) do
     stop_level = socket.assigns.active_stop_level
@@ -3013,6 +2969,50 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # Private Helpers
   # ============================================================================
 
+  defp infer_alignment_error_message(:insufficient_anchors),
+    do: "Not enough anchor stops to infer alignment"
+
+  defp infer_alignment_error_message(:degenerate_geometry),
+    do: "Anchor stops are too close together to infer alignment"
+
+  defp infer_alignment_error_message(:high_residual),
+    do: "Inferred alignment residual exceeds tolerance"
+
+  defp infer_alignment_error_message(:invalid_input),
+    do: "Invalid floorplan image dimensions"
+
+  defp infer_alignment_error_message(:alignment_prerequisites_missing),
+    do: "Active level is missing required alignment data"
+
+  defp infer_alignment_error_message(:not_found), do: "Active level not found"
+  defp infer_alignment_error_message(%Ecto.Changeset{}), do: "Could not save inferred alignment"
+
+  defp coerce_positive_integer(value) when is_integer(value) and value > 0, do: {:ok, value}
+
+  defp coerce_positive_integer(value) when is_float(value) and value > 0 do
+    {:ok, trunc(value)}
+  end
+
+  defp coerce_positive_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when int > 0 ->
+        {:ok, int}
+
+      _ ->
+        case Float.parse(value) do
+          {float, ""} when float > 0 -> {:ok, trunc(float)}
+          _ -> :error
+        end
+    end
+  end
+
+  defp coerce_positive_integer(_), do: :error
+
+  defp apply_alignment_error_message(:alignment_missing), do: "Save alignment before applying"
+  defp apply_alignment_error_message(:invalid_image_dims), do: "Floorplan image not ready"
+  defp apply_alignment_error_message({:transform, _}), do: "Invalid alignment values"
+  defp apply_alignment_error_message(_), do: "Could not apply alignment"
+
   defp apply_rollback_entity_refresh(socket, "stop", %Gtfs.Stop{} = stop) do
     if stop.parent_station == socket.assigns.station.stop_id do
       refresh_current_station_stop_after_rollback(socket, stop)
@@ -3213,13 +3213,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp rollback_preview_keys(log, current_snapshot, target_snapshot) do
-    previewable_fields = Gtfs.rollback_previewable_fields(log)
+    previewable_fields = rollback_preview_field_set(log)
 
     target_snapshot
     |> Map.keys()
     |> Kernel.++(Map.keys(current_snapshot))
     |> Enum.uniq()
-    |> Enum.filter(&(&1 in previewable_fields))
+    |> Enum.filter(&MapSet.member?(previewable_fields, &1))
+  end
+
+  defp rollback_preview_field_set(log) do
+    reversible_fields =
+      log.entity_type
+      |> Gtfs.reversible_fields_for()
+      |> MapSet.new()
+
+    changed_fields =
+      log.changed_fields
+      |> Kernel.||(%{})
+      |> Map.keys()
+      |> Enum.map(&to_string/1)
+      |> MapSet.new()
+
+    if MapSet.subset?(changed_fields, reversible_fields) do
+      reversible_fields
+    else
+      log
+      |> Gtfs.rollback_previewable_fields()
+      |> MapSet.new()
+    end
   end
 
   defp rollback_preview_change(key, current_snapshot, target_snapshot, acc) do

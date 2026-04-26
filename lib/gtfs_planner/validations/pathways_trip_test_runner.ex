@@ -71,12 +71,20 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunner do
             {:ok, persisted_run}
 
           {:error, persistence_reason} ->
-            failure_reason = %{
-              reason: :pathways_persistence_failed,
-              details: %{error: inspect(persistence_reason)}
-            }
+            if stale_validation_run_error?(persistence_reason) do
+              {:error,
+               %{
+                 reason: :validation_run_stale,
+                 details: %{error: inspect(persistence_reason)}
+               }}
+            else
+              failure_reason = %{
+                reason: :pathways_persistence_failed,
+                details: %{error: inspect(persistence_reason)}
+              }
 
-            persist_failed_run(validations_module, validation_run, failure_reason)
+              persist_failed_run(validations_module, validation_run, failure_reason)
+            end
         end
 
       {:error, issues} when is_list(issues) ->
@@ -117,6 +125,14 @@ defmodule GtfsPlanner.Validations.PathwaysTripTestRunner do
 
   defp maybe_put_failure_component(failure_reason, key, value),
     do: Map.put(failure_reason, key, value)
+
+  defp stale_validation_run_error?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn {_field, {_message, opts}} ->
+      Keyword.get(opts, :stale, false)
+    end)
+  end
+
+  defp stale_validation_run_error?(_reason), do: false
 
   @spec persist_failed_run(module(), ValidationRun.t(), map()) :: {:error, map()}
   defp persist_failed_run(validations_module, validation_run, failure_reason) do

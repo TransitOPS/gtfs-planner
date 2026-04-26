@@ -268,7 +268,7 @@ defmodule GtfsPlanner.Gtfs.StationReport.NamingChecksTest do
       item = find_item(items, "naming_test_placeholder")
 
       assert item.status == :warn
-      assert length(item.details) >= 1
+      assert [_ | _] = item.details
     end
 
     test "naming_test_placeholder passes for normal stop_ids" do

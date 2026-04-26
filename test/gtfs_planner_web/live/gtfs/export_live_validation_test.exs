@@ -2339,7 +2339,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
       assert presented.category == :unknown_build_failure
       assert presented.title == "OTP pathways build failed"
       assert presented.summary =~ "build or runtime failure"
-      assert length(presented.checks) >= 1
+      assert [_ | _] = presented.checks
       assert presented.blocking_issues != []
 
       assert Enum.any?(presented.details, fn detail ->
@@ -2400,7 +2400,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveValidationTest do
 
       assert presented.category == :unknown_build_failure
       assert presented.title == "OTP pathways build failed"
-      assert length(presented.checks) >= 1
+      assert [_ | _] = presented.checks
       assert presented.details == []
       assert presented.blocking_issues == []
     end

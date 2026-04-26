@@ -8335,8 +8335,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "search_stop", %{"stop_id_query" => 123})
       render_hook(view, "search_stop", %{})
-
-
     end
   end
 

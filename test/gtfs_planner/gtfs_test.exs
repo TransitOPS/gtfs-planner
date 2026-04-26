@@ -3057,6 +3057,7 @@ defmodule GtfsPlanner.GtfsTest do
 
     test "returns {:error, :alignment_prerequisites_missing} when stop_level has no level_id" do
       stop_level = %GtfsPlanner.Gtfs.StopLevel{level_id: nil}
+
       assert {:error, :alignment_prerequisites_missing} =
                Gtfs.infer_level_alignment(stop_level, 1000, 800)
     end

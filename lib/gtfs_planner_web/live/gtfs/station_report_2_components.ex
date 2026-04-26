@@ -76,7 +76,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
           >
             {section.label}
           </a>
-          <span class="text-sm text-gray-500"> —   {section.desc}</span>
+          <span class="text-sm text-gray-500"> —       {section.desc}</span>
         </li>
       </ol>
     </nav>

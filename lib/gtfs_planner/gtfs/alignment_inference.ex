@@ -178,7 +178,9 @@ defmodule GtfsPlanner.Gtfs.AlignmentInference do
     |> Enum.reduce({[], []}, fn {_stop_id, group}, {winners, losers} ->
       sorted = Enum.sort_by(group, &{abs(&1.level_index_delta), &1.pathway_id})
       [winner | rest] = sorted
-      {[to_cross_anchor(winner) | winners], Enum.map(rest, &cross_exclusion(&1, :lost_tie_break)) ++ losers}
+
+      {[to_cross_anchor(winner) | winners],
+       Enum.map(rest, &cross_exclusion(&1, :lost_tie_break)) ++ losers}
     end)
   end
 

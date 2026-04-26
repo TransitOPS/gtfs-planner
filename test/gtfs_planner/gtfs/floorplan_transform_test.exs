@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransformTest do
   alias GtfsPlanner.Gtfs.FloorplanTransform
 
   @center_lat 40.75
-  @center_lon(-73.99)
+  @center_lon -73.99
   @scale_mpp 0.5
   @meters_per_degree_lat 111_111.0
 
@@ -32,7 +32,9 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransformTest do
         FloorplanTransform.svg_to_lat_lon(alignment(), image_w, image_h, %{x: 70.0, y: 50.0})
 
       expected_meters_east = (70.0 - 50.0) * fit * @scale_mpp
-      expected_lon = @center_lon + expected_meters_east / (@meters_per_degree_lat * cos_center_lat())
+
+      expected_lon =
+        @center_lon + expected_meters_east / (@meters_per_degree_lat * cos_center_lat())
 
       assert_in_delta lat, @center_lat, 1.0e-12
       assert_in_delta lon, expected_lon, 1.0e-9
@@ -98,7 +100,9 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransformTest do
         )
 
       expected_meters_east = -dx * fit * @scale_mpp
-      expected_lon = @center_lon + expected_meters_east / (@meters_per_degree_lat * cos_center_lat())
+
+      expected_lon =
+        @center_lon + expected_meters_east / (@meters_per_degree_lat * cos_center_lat())
 
       assert_in_delta lat, @center_lat, 1.0e-9
       assert_in_delta lon, expected_lon, 1.0e-9
@@ -129,18 +133,21 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransformTest do
   describe "svg_to_lat_lon/4 AC 7: invalid alignment" do
     test "missing field" do
       bad = Map.delete(alignment(), :center_lat)
+
       assert {:error, :invalid_alignment} =
                FloorplanTransform.svg_to_lat_lon(bad, 100, 100, %{x: 50.0, y: 50.0})
     end
 
     test "non-numeric field" do
       bad = %{alignment() | scale_mpp: "0.5"}
+
       assert {:error, :invalid_alignment} =
                FloorplanTransform.svg_to_lat_lon(bad, 100, 100, %{x: 50.0, y: 50.0})
     end
 
     test "center_lat at pole makes longitude denominator zero" do
       bad = %{alignment() | center_lat: 90.0}
+
       assert {:error, :invalid_alignment} =
                FloorplanTransform.svg_to_lat_lon(bad, 100, 100, %{x: 50.0, y: 50.0})
     end
