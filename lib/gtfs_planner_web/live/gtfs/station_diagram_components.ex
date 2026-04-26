@@ -2491,8 +2491,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           field={@child_stop_form[:stop_lat]}
           type="number"
           label="Latitude"
-          placeholder="e.g., 40.7128"
-          step="0.000001"
+          placeholder="e.g., 40.046627198009965"
+          step="any"
           min="-90"
           max="90"
           help="Optional"
@@ -2501,8 +2501,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           field={@child_stop_form[:stop_lon]}
           type="number"
           label="Longitude"
-          placeholder="e.g., -74.0060"
-          step="0.000001"
+          placeholder="e.g., -73.987654321098765"
+          step="any"
           min="-180"
           max="180"
           help="Optional"
