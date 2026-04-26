@@ -115,6 +115,25 @@ defmodule GtfsPlannerWeb.AccessControlTest do
       assert redirect_path != "/admin/users"
       assert flash["error"] =~ "authorized"
     end
+
+    test "editor cannot access /admin/users/organization-settings", %{
+      conn: conn,
+      user: user,
+      organization: organization
+    } do
+      add_role(user, organization, [:pathways_studio_editor])
+
+      assert {:error, {:redirect, %{to: redirect_path, flash: flash}}} =
+               live(conn, ~p"/admin/users/organization-settings")
+
+      assert redirect_path != "/admin/users/organization-settings"
+      assert flash["error"] =~ "authorized"
+    end
+
+    test "logged-out user is redirected to /users/log_in from /admin/users/organization-settings" do
+      assert {:error, {:redirect, %{to: "/users/log_in"}}} =
+               live(build_conn(), ~p"/admin/users/organization-settings")
+    end
   end
 
   describe "GTFS editor role" do

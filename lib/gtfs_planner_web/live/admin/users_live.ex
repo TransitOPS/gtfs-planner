@@ -49,6 +49,20 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
     |> assign(:invite_form, nil)
   end
 
+  defp apply_action(socket, :organization_settings, _params) do
+    members = Organizations.list_users_in_organization(socket.assigns.current_organization.id)
+
+    organization_form =
+      socket.assigns.current_organization
+      |> Organizations.change_organization()
+      |> to_form()
+
+    socket
+    |> assign(:members, members)
+    |> assign(:invite_form, nil)
+    |> assign(:organization_form, organization_form)
+  end
+
   # Helper functions (Step 9)
 
   defp available_roles do
@@ -72,11 +86,43 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
     assign(socket, :invite_form, form)
   end
 
+  defp allowed_org_params(params), do: Map.take(params, ["name"])
+
   # Event handlers (Steps 11-15)
 
   @impl true
   def handle_event("close_drawer", _params, socket) do
     {:noreply, push_patch(socket, to: ~p"/admin/users")}
+  end
+
+  @impl true
+  def handle_event("validate_organization", %{"organization" => org_params}, socket) do
+    changeset =
+      socket.assigns.current_organization
+      |> Organizations.change_organization(allowed_org_params(org_params))
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign(socket, :organization_form, to_form(changeset))}
+  end
+
+  @impl true
+  def handle_event("save_organization", %{"organization" => org_params}, socket) do
+    case Organizations.update_organization(
+           socket.assigns.current_organization,
+           allowed_org_params(org_params)
+         ) do
+      {:ok, organization} ->
+        socket =
+          socket
+          |> assign(:current_organization, organization)
+          |> put_flash(:info, "Organization updated successfully")
+          |> push_patch(to: ~p"/admin/users")
+
+        {:noreply, socket}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :organization_form, to_form(%{changeset | action: :validate}))}
+    end
   end
 
   @impl true
@@ -226,6 +272,39 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
     end
   end
 
+  # Organization settings form component (Step 6)
+
+  attr :form, Phoenix.HTML.Form, required: true
+
+  defp organization_settings_form(assigns) do
+    ~H"""
+    <.simple_form
+      for={@form}
+      id="organization-settings-form"
+      phx-change="validate_organization"
+      phx-submit="save_organization"
+    >
+      <.input
+        field={@form[:name]}
+        type="text"
+        label="Organization name"
+        maxlength="255"
+        required
+      />
+
+      <:actions>
+        <div class="flex-1"></div>
+        <.link patch={~p"/admin/users"} class="btn btn-ghost">
+          Cancel
+        </.link>
+        <.button phx-disable-with="Saving..." class="btn btn-primary">
+          Save changes
+        </.button>
+      </:actions>
+    </.simple_form>
+    """
+  end
+
   # Invite form component (Step 10)
 
   attr :form, :any, required: true
@@ -299,6 +378,9 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
         Users
         <:subtitle>Manage users in {@current_organization.name}</:subtitle>
         <:actions>
+          <.link patch={~p"/admin/users/organization-settings"} class="btn btn-ghost">
+            Organization settings
+          </.link>
           <.link patch={~p"/admin/users/invite"} class="btn btn-primary btn-active">
             Invite User
           </.link>
@@ -386,6 +468,16 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
             organization={@current_organization}
           />
         <% end %>
+      </.drawer>
+
+      <.drawer
+        id="organization-settings-drawer"
+        open={@live_action == :organization_settings}
+        on_close="close_drawer"
+        title="Organization settings"
+        class="max-w-3xl"
+      >
+        <.organization_settings_form :if={@live_action == :organization_settings} form={@organization_form} />
       </.drawer>
     </Layouts.app>
     """

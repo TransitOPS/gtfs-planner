@@ -203,6 +203,91 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
     end
   end
 
+  describe "organization settings route" do
+    test "pathways_studio_admin can access organization-settings route", %{conn: conn} do
+      assert {:ok, _view, _html} = live(conn, ~p"/admin/users/organization-settings")
+    end
+
+    test "renders Organization settings link on /admin/users", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/admin/users")
+
+      assert html =~ ~s(href="/admin/users/organization-settings")
+      assert html =~ "Organization settings"
+    end
+
+    test "renders organization-settings-drawer when visiting the route", %{
+      conn: conn,
+      organization: organization
+    } do
+      {:ok, _view, html} = live(conn, ~p"/admin/users/organization-settings")
+
+      assert html =~ "organization-settings-drawer"
+      assert html =~ ~s(id="organization-settings-form")
+      assert html =~ ~s(name="organization[name]")
+      refute html =~ ~s(name="organization[alias]")
+      assert html =~ "Save changes"
+      assert html =~ ~s(value="#{organization.name}")
+    end
+
+    test "validate_organization with blank name renders validation error", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      html =
+        view
+        |> form("#organization-settings-form", organization: %{name: ""})
+        |> render_change()
+
+      assert html =~ "can&#39;t be blank"
+    end
+
+    test "save_organization persists new name and patches to /admin/users", %{
+      conn: conn,
+      organization: organization
+    } do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      render_submit(view, "save_organization", %{"organization" => %{"name" => "Renamed Org"}})
+
+      assert_patch(view, ~p"/admin/users")
+
+      reloaded = GtfsPlanner.Organizations.get_organization!(organization.id)
+      assert reloaded.name == "Renamed Org"
+    end
+
+    test "save_organization ignores crafted alias updates", %{
+      conn: conn,
+      organization: organization
+    } do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      render_submit(view, "save_organization", %{
+        "organization" => %{"name" => "Renamed Org", "alias" => "crafted-alias"}
+      })
+
+      assert_patch(view, ~p"/admin/users")
+
+      reloaded = GtfsPlanner.Organizations.get_organization!(organization.id)
+      assert reloaded.name == "Renamed Org"
+      assert reloaded.alias == organization.alias
+    end
+
+    test "save_organization with blank name keeps drawer open and does not mutate organization",
+         %{conn: conn, organization: organization} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      html =
+        view
+        |> form("#organization-settings-form", organization: %{name: ""})
+        |> render_submit()
+
+      assert html =~ "organization-settings-drawer"
+      assert html =~ "can&#39;t be blank"
+
+      reloaded = GtfsPlanner.Organizations.get_organization!(organization.id)
+      assert reloaded.name == organization.name
+    end
+  end
+
   describe "deactivation flow" do
     test "deactivates user and shows deactivated status", %{
       conn: conn,
