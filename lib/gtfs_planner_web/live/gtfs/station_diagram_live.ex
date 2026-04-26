@@ -1871,11 +1871,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       case Gtfs.save_inferred_level_alignment(stop_level, image_w, image_h) do
         {:ok, updated, %{inferred_alignment: %{anchor_count: n, rmse_meters: rmse}}} ->
           rmse_str = :erlang.float_to_binary(rmse, decimals: 2)
+          socket = assign(socket, :active_stop_level, updated)
 
-          {:noreply,
-           socket
-           |> assign(:active_stop_level, updated)
-           |> put_flash(:info, "Inferred alignment from #{n} anchors (RMSE: #{rmse_str} m)")}
+          case Gtfs.apply_alignment_to_child_stops(updated, image_w, image_h) do
+            {:ok, count} ->
+              {:noreply,
+               socket
+               |> refresh_lists()
+               |> put_flash(
+                 :info,
+                 "Set lat/lon for #{count} child stops (#{n} anchors, RMSE #{rmse_str} m)"
+               )}
+
+            {:error, reason} ->
+              {:noreply, put_flash(socket, :error, apply_alignment_error_message(reason))}
+          end
 
         {:error, reason} ->
           {:noreply, put_flash(socket, :error, infer_alignment_error_message(reason))}
