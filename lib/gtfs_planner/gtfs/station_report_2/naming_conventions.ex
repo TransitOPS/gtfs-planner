@@ -6,7 +6,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.NamingConventions do
   normalizes status to :pass | :fail, and normalizes detail shapes.
   """
 
-  alias GtfsPlanner.Gtfs.StationReport.NamingChecks
+  alias GtfsPlanner.Gtfs.StationReport2.NamingChecks
 
   @check_config [
     %{

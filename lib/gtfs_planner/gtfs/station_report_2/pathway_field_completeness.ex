@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.PathwayFieldCompleteness do
   """
 
   alias GtfsPlanner.Gtfs.Pathway
-  alias GtfsPlanner.Gtfs.StationReport.Helpers
+  alias GtfsPlanner.Gtfs.StationReport2.Helpers
 
   @type status :: :pass | :warn | :fail
 
