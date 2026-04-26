@@ -207,6 +207,14 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
     test "pathways_studio_admin can access organization-settings route", %{conn: conn} do
       assert {:ok, _view, _html} = live(conn, ~p"/admin/users/organization-settings")
     end
+
+    test "assigns organization_form for :organization_settings", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      form = :sys.get_state(view.pid).socket.assigns.organization_form
+      assert %Phoenix.HTML.Form{} = form
+      assert form.source.data.__struct__ == GtfsPlanner.Organizations.Organization
+    end
   end
 
   describe "deactivation flow" do

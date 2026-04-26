@@ -52,9 +52,15 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
   defp apply_action(socket, :organization_settings, _params) do
     members = Organizations.list_users_in_organization(socket.assigns.current_organization.id)
 
+    organization_form =
+      socket.assigns.current_organization
+      |> Organizations.change_organization()
+      |> to_form()
+
     socket
     |> assign(:members, members)
     |> assign(:invite_form, nil)
+    |> assign(:organization_form, organization_form)
   end
 
   # Helper functions (Step 9)
