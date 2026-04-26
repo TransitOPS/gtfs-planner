@@ -260,6 +260,22 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       reloaded = GtfsPlanner.Organizations.get_organization!(organization.id)
       assert reloaded.name == "Renamed Org"
     end
+
+    test "save_organization with blank name keeps drawer open and does not mutate organization",
+         %{conn: conn, organization: organization} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      html =
+        view
+        |> form("#organization-settings-form", organization: %{name: ""})
+        |> render_submit()
+
+      assert html =~ "organization-settings-drawer"
+      assert html =~ "can&#39;t be blank"
+
+      reloaded = GtfsPlanner.Organizations.get_organization!(organization.id)
+      assert reloaded.name == organization.name
+    end
   end
 
   describe "deactivation flow" do
