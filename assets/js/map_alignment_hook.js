@@ -32,11 +32,12 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function readSavedAlignment(root) {
-  const centerLat = parseFloat(root.dataset.alignCenterLat);
-  const centerLon = parseFloat(root.dataset.alignCenterLon);
-  const scaleMpp = parseFloat(root.dataset.alignScaleMpp);
-  const rotationDeg = parseFloat(root.dataset.alignRotationDeg);
+function parseAlignmentPayload(centerLatRaw, centerLonRaw, scaleMppRaw, rotationDegRaw) {
+  const centerLat = parseFloat(centerLatRaw);
+  const centerLon = parseFloat(centerLonRaw);
+  const scaleMpp = parseFloat(scaleMppRaw);
+  const rotationDeg = parseFloat(rotationDegRaw);
+
   if (
     !Number.isFinite(centerLat) ||
     !Number.isFinite(centerLon) ||
@@ -46,7 +47,39 @@ function readSavedAlignment(root) {
   ) {
     return null;
   }
+
   return {centerLat, centerLon, scaleMpp, rotationDeg};
+}
+
+function readActiveAlignment(root) {
+  return parseAlignmentPayload(
+    root.dataset.alignCenterLat,
+    root.dataset.alignCenterLon,
+    root.dataset.alignScaleMpp,
+    root.dataset.alignRotationDeg
+  );
+}
+
+function readAdjacentAlignment(root, side) {
+  if (side === "above") {
+    return parseAlignmentPayload(
+      root.dataset.adjacentAboveCenterLat,
+      root.dataset.adjacentAboveCenterLon,
+      root.dataset.adjacentAboveScaleMpp,
+      root.dataset.adjacentAboveRotationDeg
+    );
+  }
+
+  if (side === "below") {
+    return parseAlignmentPayload(
+      root.dataset.adjacentBelowCenterLat,
+      root.dataset.adjacentBelowCenterLon,
+      root.dataset.adjacentBelowScaleMpp,
+      root.dataset.adjacentBelowRotationDeg
+    );
+  }
+
+  return null;
 }
 
 function overlayCenter(overlay) {
@@ -72,18 +105,29 @@ const MapAlignmentHook = {
 
     // Optional saved alignment. All four attrs must be present and parse to
     // finite numbers; otherwise treat as absent and fall back to identity.
-    const savedAlignment = readSavedAlignment(root);
+    const activeAlignment = readActiveAlignment(root);
+    const adjacentAlignments = {
+      above: readAdjacentAlignment(root, "above"),
+      below: readAdjacentAlignment(root, "below")
+    };
+
     console.info(
-      savedAlignment
+      activeAlignment
         ? "MapAlignment: mounted with saved alignment"
         : "MapAlignment: mounted with no saved alignment",
-      savedAlignment || {}
+      activeAlignment || {}
     );
 
-    const overlay = root.querySelector("#map-alignment-overlay");
+    const overlay = root.querySelector("#map-alignment-overlay[data-editable-overlay='true']");
+    const adjacentOverlayAbove = root.querySelector("#map-adjacent-overlay-above[data-editable-overlay='false']");
+    const adjacentOverlayBelow = root.querySelector("#map-adjacent-overlay-below[data-editable-overlay='false']");
     const leafletEl = root.querySelector("#map-alignment-leaflet");
-    const rotateHandle = root.querySelector("#map-alignment-rotate-handle");
-    const scaleHandle = root.querySelector("#map-alignment-scale-handle");
+    const rotateHandle = root.querySelector(
+      "#map-alignment-rotate-handle[data-edit-target-overlay='active']"
+    );
+    const scaleHandle = root.querySelector(
+      "#map-alignment-scale-handle[data-edit-target-overlay='active']"
+    );
     const latInput = document.getElementById("map-alignment-lat-input");
     const lonInput = document.getElementById("map-alignment-lon-input");
     const applyCenterBtn = document.getElementById("map-alignment-apply-center");
@@ -91,6 +135,11 @@ const MapAlignmentHook = {
     const zoomSlider = document.getElementById("map-alignment-zoom");
     const saveBtn = document.getElementById("map-alignment-save");
     const applyBtn = document.getElementById("map-alignment-apply");
+
+    if (!overlay || !leafletEl || !rotateHandle || !scaleHandle) {
+      console.error("MapAlignmentHook: required active overlay edit elements are missing");
+      return;
+    }
 
     this.overlay = overlay;
     this.leafletEl = leafletEl;
@@ -103,13 +152,16 @@ const MapAlignmentHook = {
     this.zoomSlider = zoomSlider;
     this.saveBtn = saveBtn;
     this.applyBtn = applyBtn;
+    this.adjacentOverlayAbove = adjacentOverlayAbove;
+    this.adjacentOverlayBelow = adjacentOverlayBelow;
+    this._overlayRestoreDisposers = [];
 
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.6";
 
     this.transform = {...IDENTITY_TRANSFORM};
 
-    const mapCenterLat = savedAlignment ? savedAlignment.centerLat : initialLat;
-    const mapCenterLon = savedAlignment ? savedAlignment.centerLon : initialLon;
+    const mapCenterLat = activeAlignment ? activeAlignment.centerLat : initialLat;
+    const mapCenterLon = activeAlignment ? activeAlignment.centerLon : initialLon;
 
     // If LiveView reused a container that already had Leaflet initialized
     // (e.g., the previous hook's destroyed() did not run before re-mount),
@@ -215,8 +267,24 @@ const MapAlignmentHook = {
 
     this._fetchBuildings(mapCenterLat, mapCenterLon);
 
-    if (savedAlignment) {
-      this._scheduleAlignmentRestore(savedAlignment);
+    if (adjacentOverlayBelow && adjacentAlignments.below) {
+      this._scheduleOverlayAlignmentRestore(
+        adjacentOverlayBelow,
+        adjacentAlignments.below,
+        "adjacent-below"
+      );
+    }
+
+    if (adjacentOverlayAbove && adjacentAlignments.above) {
+      this._scheduleOverlayAlignmentRestore(
+        adjacentOverlayAbove,
+        adjacentAlignments.above,
+        "adjacent-above"
+      );
+    }
+
+    if (activeAlignment) {
+      this._scheduleOverlayAlignmentRestore(overlay, activeAlignment, "active");
     }
 
     this._rafId = requestAnimationFrame(() => {
@@ -444,14 +512,15 @@ const MapAlignmentHook = {
       clearTimeout(this._postTransitionTimer);
       this._postTransitionTimer = null;
     }
-    if (this._onRestoreImgLoad && this.overlay) {
-      const img = this.overlay.querySelector("img");
-      if (img) img.removeEventListener("load", this._onRestoreImgLoad);
-      this._onRestoreImgLoad = null;
-    }
-    if (this._restoreObserver) {
-      this._restoreObserver.disconnect();
-      this._restoreObserver = null;
+    if (Array.isArray(this._overlayRestoreDisposers)) {
+      this._overlayRestoreDisposers.forEach((dispose) => {
+        try {
+          dispose();
+        } catch (_) {
+          // noop
+        }
+      });
+      this._overlayRestoreDisposers = [];
     }
 
     if (this.overlay) {
@@ -598,29 +667,42 @@ const MapAlignmentHook = {
     };
   },
 
-  _scheduleAlignmentRestore(savedAlignment) {
-    const overlay = this.overlay;
-    if (!overlay) return;
-    const img = overlay.querySelector("img");
+  _scheduleOverlayAlignmentRestore(overlayEl, alignment, label) {
+    if (!overlayEl || !alignment) return;
+
+    const img = overlayEl.querySelector("img");
     if (!img) return;
 
     const STABLE_MS = 250;
     let settleTimer = null;
+    let restoreObserver = null;
+    let onRestoreImgLoad = null;
+    let disposed = false;
 
     const cleanup = () => {
+      if (disposed) return;
+      disposed = true;
+
       if (settleTimer) {
         clearTimeout(settleTimer);
         settleTimer = null;
       }
-      if (this._restoreObserver) {
-        this._restoreObserver.disconnect();
-        this._restoreObserver = null;
+
+      if (restoreObserver) {
+        restoreObserver.disconnect();
+        restoreObserver = null;
       }
-      if (this._onRestoreImgLoad) {
-        img.removeEventListener("load", this._onRestoreImgLoad);
-        this._onRestoreImgLoad = null;
+
+      if (onRestoreImgLoad) {
+        img.removeEventListener("load", onRestoreImgLoad);
+        onRestoreImgLoad = null;
       }
     };
+
+    if (!Array.isArray(this._overlayRestoreDisposers)) {
+      this._overlayRestoreDisposers = [];
+    }
+    this._overlayRestoreDisposers.push(cleanup);
 
     // Run restore once canvas size has been stable for STABLE_MS.
     // During the immersive CSS transition the canvas grows over ~300ms; running
@@ -633,7 +715,7 @@ const MapAlignmentHook = {
       if (settleTimer) clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
         settleTimer = null;
-        this._restoreAlignment(savedAlignment, img);
+        this._restoreOverlayAlignment(overlayEl, alignment, img, label);
         cleanup();
       }, STABLE_MS);
     };
@@ -643,18 +725,18 @@ const MapAlignmentHook = {
 
     // Re-try (resetting the settle timer) on every canvas resize and on image
     // load, so the final "stable" measurement wins.
-    this._onRestoreImgLoad = scheduleRestore;
-    img.addEventListener("load", this._onRestoreImgLoad);
+    onRestoreImgLoad = scheduleRestore;
+    img.addEventListener("load", onRestoreImgLoad);
 
     if (typeof ResizeObserver !== "undefined") {
-      this._restoreObserver = new ResizeObserver(scheduleRestore);
-      this._restoreObserver.observe(this.el);
+      restoreObserver = new ResizeObserver(scheduleRestore);
+      restoreObserver.observe(this.el);
     }
   },
 
-  _restoreAlignment(savedAlignment, img) {
+  _restoreOverlayAlignment(overlayEl, alignment, img, label) {
     const map = this.leafletMap;
-    if (!map || !img || !img.naturalWidth || !img.naturalHeight) {
+    if (!map || !overlayEl || !img || !img.naturalWidth || !img.naturalHeight) {
       console.warn("MapAlignment: restore skipped, map or image not ready");
       return;
     }
@@ -680,26 +762,46 @@ const MapAlignmentHook = {
     if (!(containWidth > 0)) return;
 
     // Inverse of _computeAlignment: R = s_nat / (m / canvas_px).
-    const renderedPxPerImagePxNeeded = savedAlignment.scaleMpp / metersPerCanvasPx;
+    const renderedPxPerImagePxNeeded = alignment.scaleMpp / metersPerCanvasPx;
     const scale = renderedPxPerImagePxNeeded / (containWidth / img.naturalWidth);
 
+    const restoredTransform = {
+      tx: 0,
+      ty: 0,
+      rotation: alignment.rotationDeg,
+      scale: scale
+    };
+
     console.info("MapAlignment: restored", {
-      savedAlignment,
+      label,
+      alignment,
       canvasW,
       canvasH,
       metersPerCanvasPx,
       containWidth,
       imageNaturalWidth: img.naturalWidth,
-      computedScale: scale
+      computedScale: restoredTransform.scale
     });
 
-    this.transform = {
-      tx: 0,
-      ty: 0,
-      rotation: savedAlignment.rotationDeg,
-      scale: scale
-    };
-    this._applyTransform();
+    if (overlayEl === this.overlay) {
+      this.transform = restoredTransform;
+      this._applyTransform();
+      return;
+    }
+
+    if (
+      restoredTransform.tx === 0 &&
+      restoredTransform.ty === 0 &&
+      restoredTransform.rotation === 0 &&
+      restoredTransform.scale === 1
+    ) {
+      overlayEl.style.transform = "none";
+      return;
+    }
+
+    overlayEl.style.transform =
+      `translate(${restoredTransform.tx}px, ${restoredTransform.ty}px) ` +
+      `rotate(${restoredTransform.rotation}deg) scale(${restoredTransform.scale})`;
   },
 
   _applyTransform() {
@@ -801,4 +903,5 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+export { parseAlignmentPayload, readActiveAlignment, readAdjacentAlignment };
 export default MapAlignmentHook;
