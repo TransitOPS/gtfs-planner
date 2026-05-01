@@ -179,6 +179,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_status, :any, default: nil
   attr :levels, :list, default: []
   attr :active_level, :any, default: nil
+  attr :above_level, :any, default: nil
+  attr :below_level, :any, default: nil
+  attr :above_overlay_available, :boolean, default: false
+  attr :below_overlay_available, :boolean, default: false
+  attr :show_above_overlay, :boolean, default: false
+  attr :show_below_overlay, :boolean, default: false
 
   def diagram_action_strip(assigns) do
     ~H"""
@@ -273,6 +279,51 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 <% end %>
               <% end %>
             <% end %>
+
+            <%= if @mode == :map and @has_diagram and (@above_overlay_available or @below_overlay_available) do %>
+              <div
+                id="adjacent-overlay-toggle-group"
+                role="group"
+                aria-label="Adjacent overlay references"
+                class="join"
+              >
+                <button
+                  :if={@below_overlay_available}
+                  id="toggle-below-overlay"
+                  type="button"
+                  phx-click="toggle_adjacent_overlay"
+                  phx-value-side="below"
+                  aria-pressed={if(@show_below_overlay, do: "true", else: "false")}
+                  class={[
+                    "btn btn-sm join-item border",
+                    if(@show_below_overlay,
+                      do: "bg-blue-700 text-white border-blue-700",
+                      else: "bg-white text-blue-700 border-blue-300 hover:bg-blue-50"
+                    )
+                  ]}
+                >
+                  Below
+                </button>
+                <button
+                  :if={@above_overlay_available}
+                  id="toggle-above-overlay"
+                  type="button"
+                  phx-click="toggle_adjacent_overlay"
+                  phx-value-side="above"
+                  aria-pressed={if(@show_above_overlay, do: "true", else: "false")}
+                  class={[
+                    "btn btn-sm join-item border",
+                    if(@show_above_overlay,
+                      do: "bg-blue-700 text-white border-blue-700",
+                      else: "bg-white text-blue-700 border-blue-300 hover:bg-blue-50"
+                    )
+                  ]}
+                >
+                  Above
+                </button>
+              </div>
+            <% end %>
+
             <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
           </div>
         </div>
@@ -303,6 +354,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :station, :any, required: true
   attr :active_level, :any, default: nil
   attr :active_stop_level, :any, default: nil
+  attr :above_level, :any, default: nil
+  attr :below_level, :any, default: nil
+  attr :above_overlay_available, :boolean, default: false
+  attr :below_overlay_available, :boolean, default: false
   attr :align_center_lat, :any, default: nil
   attr :align_center_lon, :any, default: nil
   attr :align_scale_mpp, :any, default: nil
@@ -393,40 +448,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       >
         <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
         <div
-          :if={@show_below_overlay && @below_overlay_url}
+          :if={@below_overlay_available}
           id="map-adjacent-overlay-below"
           data-side="below"
           data-overlay-role="reference"
           data-editable-overlay="false"
-          data-overlay-visible="true"
+          data-overlay-visible={if(@show_below_overlay, do: "true", else: "false")}
           data-align-center-lat={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lat)}
           data-align-center-lon={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lon)}
           data-align-scale-mpp={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_scale_mpp)}
           data-align-rotation-deg={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_rotation_deg)}
-          class="absolute inset-0 pointer-events-none opacity-35"
+          class={[
+            "absolute inset-0 pointer-events-none opacity-35",
+            if(@show_below_overlay, do: nil, else: "hidden")
+          ]}
           style="z-index: 1;"
         >
           <img
+            :if={@below_overlay_url}
             src={@below_overlay_url}
             alt="Below level floorplan reference"
             class="absolute inset-0 h-full w-full object-contain pointer-events-none"
           />
         </div>
         <div
-          :if={@show_above_overlay && @above_overlay_url}
+          :if={@above_overlay_available}
           id="map-adjacent-overlay-above"
           data-side="above"
           data-overlay-role="reference"
           data-editable-overlay="false"
-          data-overlay-visible="true"
+          data-overlay-visible={if(@show_above_overlay, do: "true", else: "false")}
           data-align-center-lat={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lat)}
           data-align-center-lon={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lon)}
           data-align-scale-mpp={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_scale_mpp)}
           data-align-rotation-deg={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_rotation_deg)}
-          class="absolute inset-0 pointer-events-none opacity-35"
+          class={[
+            "absolute inset-0 pointer-events-none opacity-35",
+            if(@show_above_overlay, do: nil, else: "hidden")
+          ]}
           style="z-index: 1;"
         >
           <img
+            :if={@above_overlay_url}
             src={@above_overlay_url}
             alt="Above level floorplan reference"
             class="absolute inset-0 h-full w-full object-contain pointer-events-none"

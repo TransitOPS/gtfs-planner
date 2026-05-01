@@ -12329,7 +12329,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.show_above_overlay == false
       assert assigns.show_below_overlay == false
       assert assigns.adjacent_overlay_descriptors.above == nil
-      assert assigns.adjacent_overlay_descriptors.below == nil
+      refute is_nil(assigns.adjacent_overlay_descriptors.below)
+      assert assigns.adjacent_overlay_descriptors.below.level_id == middle_level.id
+      assert assigns.adjacent_overlay_descriptors.below.diagram_filename == "map-diagram.png"
     end
 
     test "refreshes stop-level cache and adjacent state after level removal in map mode", %{
@@ -12458,16 +12460,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.show_above_overlay == false
       assert assigns.show_below_overlay == false
+      assert has_element?(view, "#map-adjacent-overlay-above.hidden[data-overlay-visible='false']")
+      assert has_element?(view, "#map-adjacent-overlay-below.hidden[data-overlay-visible='false']")
+      assert has_element?(view, "#adjacent-overlay-toggle-group")
+      assert has_element?(view, "#toggle-above-overlay[aria-pressed='false']")
+      assert has_element?(view, "#toggle-below-overlay[aria-pressed='false']")
 
-      render_hook(view, "toggle_adjacent_overlay", %{"side" => "above"})
+      view
+      |> element("#toggle-above-overlay")
+      |> render_click()
+
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.show_above_overlay == true
       assert assigns.show_below_overlay == false
+      assert has_element?(view, "#toggle-above-overlay[aria-pressed='true']")
+      assert has_element?(view, "#toggle-below-overlay[aria-pressed='false']")
+      assert has_element?(
+               view,
+               ".map-canvas[data-show-above-overlay='true'][data-show-below-overlay='false']"
+             )
 
-      render_hook(view, "toggle_adjacent_overlay", %{"side" => "below"})
+      view
+      |> element("#toggle-below-overlay")
+      |> render_click()
+
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.show_above_overlay == true
       assert assigns.show_below_overlay == true
+      assert has_element?(view, "#toggle-below-overlay[aria-pressed='true']")
+      assert has_element?(
+               view,
+               ".map-canvas[data-show-above-overlay='true'][data-show-below-overlay='true']"
+             )
 
       render_hook(view, "toggle_adjacent_overlay", %{"side" => "left"})
       assigns = :sys.get_state(view.pid).socket.assigns
@@ -12478,10 +12502,205 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.above_level == nil
       assert assigns.show_above_overlay == false
+      refute has_element?(view, "#toggle-above-overlay")
 
       render_hook(view, "toggle_adjacent_overlay", %{"side" => "above"})
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.show_above_overlay == false
+    end
+
+    test "re-entering map mode resets adjacent overlays to off while eligible toggles remain", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: middle_stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      below_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "reentry_below",
+          level_name: "Re-entry Below",
+          level_index: -1.0
+        })
+
+      above_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "reentry_above",
+          level_name: "Re-entry Above",
+          level_index: 1.0
+        })
+
+      {:ok, below_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: below_level.id
+        })
+
+      {:ok, above_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: above_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(below_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(below_stop_level, "reentry-below.png")
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(above_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(above_stop_level, "reentry-above.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(view, "#toggle-above-overlay[aria-pressed='false']")
+      assert has_element?(view, "#toggle-below-overlay[aria-pressed='false']")
+      assert has_element?(view, "#map-adjacent-overlay-above.hidden[data-overlay-visible='false']")
+      assert has_element?(view, "#map-adjacent-overlay-below.hidden[data-overlay-visible='false']")
+
+      view
+      |> element("#toggle-above-overlay")
+      |> render_click()
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.show_above_overlay == true
+      assert assigns.show_below_overlay == false
+      assert has_element?(view, "#toggle-above-overlay[aria-pressed='true']")
+      assert has_element?(
+               view,
+               ".map-canvas[data-show-above-overlay='true'][data-show-below-overlay='false']"
+             )
+
+      render_hook(view, "switch_mode", %{"mode" => "view"})
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.show_above_overlay == false
+      assert assigns.show_below_overlay == false
+
+      assert has_element?(view, "#toggle-above-overlay[aria-pressed='false']")
+      assert has_element?(view, "#toggle-below-overlay[aria-pressed='false']")
+      assert has_element?(
+               view,
+               ".map-canvas[data-show-above-overlay='false'][data-show-below-overlay='false']"
+             )
+    end
+
+    test "map entry with only one adjacent side shows only that toggle and keeps overlays off", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: current_stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(current_stop_level, "map-diagram.png")
+
+      below_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "single_adjacent_below",
+          level_name: "Single Adjacent Below",
+          level_index: -1.0
+        })
+
+      {:ok, below_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: below_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(below_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(below_stop_level, "single-adjacent-below.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.show_above_overlay == false
+      assert assigns.show_below_overlay == false
+
+      assert has_element?(view, "#adjacent-overlay-toggle-group")
+      refute has_element?(view, "#toggle-above-overlay")
+      assert has_element?(view, "#toggle-below-overlay[aria-pressed='false']")
+
+      refute has_element?(view, "#map-adjacent-overlay-above")
+      assert has_element?(view, "#map-adjacent-overlay-below.hidden[data-overlay-visible='false']")
+    end
+
+    test "adjacent side without renderable descriptor hides toggle and ignores direct toggle event", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: current_stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(current_stop_level, "map-diagram.png")
+
+      above_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "missing_descriptor_above",
+          level_name: "Missing Descriptor Above",
+          level_index: 1.0
+        })
+
+      {:ok, _above_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: above_level.id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.show_above_overlay == false
+      assert assigns.show_below_overlay == false
+
+      refute has_element?(view, "#toggle-above-overlay")
+      refute has_element?(view, "#map-adjacent-overlay-above")
+
+      render_hook(view, "toggle_adjacent_overlay", %{"side" => "above"})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.show_above_overlay == false
+      assert assigns.show_below_overlay == false
+      refute has_element?(view, "#map-adjacent-overlay-above")
     end
 
     test "action strip shows map-mode hint", %{
@@ -12505,6 +12724,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#diagram-action-strip",
                "Align the floorplan over real-world imagery"
              )
+
+      refute has_element?(view, "#adjacent-overlay-toggle-group")
     end
 
     test "canvas_click in map mode is a no-op", %{
@@ -12690,8 +12911,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.active_level.id == middle_level.id
       assert assigns.above_level.level_id == above_level.id
       assert assigns.below_level.level_id == below_level.id
-      assert assigns.adjacent_overlay_descriptors.above == nil
-      assert assigns.adjacent_overlay_descriptors.below == nil
+      refute is_nil(assigns.adjacent_overlay_descriptors.above)
+      refute is_nil(assigns.adjacent_overlay_descriptors.below)
+      assert assigns.adjacent_overlay_descriptors.above.diagram_filename == "above-reference.png"
+      assert assigns.adjacent_overlay_descriptors.below.diagram_filename == "below-reference.png"
 
       render_hook(view, "toggle_adjacent_overlay", %{"side" => "above"})
       render_hook(view, "toggle_adjacent_overlay", %{"side" => "below"})

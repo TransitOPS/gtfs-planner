@@ -100,6 +100,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:floorplan_image_h, nil)
      |> assign(:above_level, nil)
      |> assign(:below_level, nil)
+     |> assign(:above_overlay_available, false)
+     |> assign(:below_overlay_available, false)
      |> assign(:show_above_overlay, false)
      |> assign(:show_below_overlay, false)
      |> assign(:adjacent_overlay_state_key, nil)
@@ -238,6 +240,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     if socket.assigns[:mode] == :map do
       socket
       |> load_station_stop_levels_cache()
+      |> assign(:show_above_overlay, false)
+      |> assign(:show_below_overlay, false)
       |> assign(:adjacent_overlay_state_key, nil)
     else
       socket
@@ -505,13 +509,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             active_level={@active_level}
             mode={@mode}
             uploads={@uploads}
-            has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
+            has_diagram={not is_nil(@active_stop_level && @active_stop_level.diagram_filename)}
             diagram_error={@diagram_error}
           />
           <.diagram_action_strip
             mode={@mode}
             selected_from_stop={@selected_from_stop}
-            has_diagram={@active_stop_level && @active_stop_level.diagram_filename}
+            has_diagram={not is_nil(@active_stop_level && @active_stop_level.diagram_filename)}
             measurement_enabled={@measurement_enabled}
             ruler_point_a={@ruler_point_a}
             ruler_point_b={@ruler_point_b}
@@ -519,6 +523,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             scale_status={@scale_status}
             levels={@levels}
             active_level={@active_level}
+            above_level={@above_level}
+            below_level={@below_level}
+            above_overlay_available={@above_overlay_available}
+            below_overlay_available={@below_overlay_available}
+            show_above_overlay={@show_above_overlay}
+            show_below_overlay={@show_below_overlay}
           />
           <%= if @mode == :map do %>
             <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
@@ -526,8 +536,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 station={@station}
                 active_level={@active_level}
                 active_stop_level={@active_stop_level}
+                above_level={@above_level}
+                below_level={@below_level}
                 organization_id={@current_organization.id}
                 adjacent_overlay_descriptors={@adjacent_overlay_descriptors}
+                above_overlay_available={@above_overlay_available}
+                below_overlay_available={@below_overlay_available}
                 show_above_overlay={@show_above_overlay}
                 show_below_overlay={@show_below_overlay}
                 align_center_lat={@active_stop_level && @active_stop_level.floorplan_center_lat}
@@ -744,6 +758,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:active_point_id, nil)
           |> maybe_disable_measurement_for_mode(mode_atom)
           |> maybe_prepare_adjacent_overlay_for_mode(mode_atom)
+          |> restream_mode_dependent_layers()
 
         {:noreply, socket}
 
@@ -759,7 +774,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("toggle_adjacent_overlay", %{"side" => "above"}, socket) do
     socket =
-      if socket.assigns[:mode] == :map and socket.assigns.above_level do
+      if socket.assigns[:mode] == :map and socket.assigns[:above_overlay_available] do
         socket
         |> maybe_hydrate_adjacent_overlay_descriptor(:above)
         |> assign(:show_above_overlay, not socket.assigns.show_above_overlay)
@@ -773,7 +788,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("toggle_adjacent_overlay", %{"side" => "below"}, socket) do
     socket =
-      if socket.assigns[:mode] == :map and socket.assigns.below_level do
+      if socket.assigns[:mode] == :map and socket.assigns[:below_overlay_available] do
         socket
         |> maybe_hydrate_adjacent_overlay_descriptor(:below)
         |> assign(:show_below_overlay, not socket.assigns.show_below_overlay)
@@ -3641,7 +3656,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     state_key = adjacent_overlay_state_key(socket, level)
 
     if socket.assigns[:adjacent_overlay_state_key] == state_key do
-      socket
+      assign_adjacent_overlay_availability(socket)
     else
       do_initialize_adjacent_overlay_state(socket, level, state_key)
     end
@@ -3657,6 +3672,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp maybe_prepare_adjacent_overlay_for_mode(socket, :map) do
     socket
+    |> assign(:show_above_overlay, false)
+    |> assign(:show_below_overlay, false)
     |> refresh_adjacent_overlay_stop_levels_cache()
     |> maybe_sync_adjacent_overlay_state(socket.assigns.active_level)
   end
@@ -3672,13 +3689,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            resolve_active_stop_level_from_cache(stop_levels_cache, level.id),
          {:ok, %{above: above_level, below: below_level}} <-
            Gtfs.resolve_adjacent_stop_levels(stop_levels_cache.ordered, active_stop_level_id) do
+      hydrated_descriptors =
+        Gtfs.build_adjacent_overlay_descriptors(%{above: above_level, below: below_level})
+
       socket
       |> assign(:above_level, above_level)
       |> assign(:below_level, below_level)
       |> assign(:show_above_overlay, false)
       |> assign(:show_below_overlay, false)
       |> assign(:adjacent_overlay_state_key, state_key)
-      |> assign(:adjacent_overlay_descriptors, %{above: nil, below: nil})
+      |> assign(:adjacent_overlay_descriptors, hydrated_descriptors)
+      |> assign_adjacent_overlay_availability()
     else
       _ ->
         reset_adjacent_overlay_assigns(socket)
@@ -3699,15 +3720,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     descriptors = socket.assigns[:adjacent_overlay_descriptors] || %{above: nil, below: nil}
 
     if Map.get(descriptors, side) do
-      socket
+      assign_adjacent_overlay_availability(socket)
     else
       adjacent_levels = %{above: socket.assigns[:above_level], below: socket.assigns[:below_level]}
       hydrated = Gtfs.build_adjacent_overlay_descriptors(adjacent_levels)
 
-      assign(socket, :adjacent_overlay_descriptors, %{
+      socket
+      |> assign(:adjacent_overlay_descriptors, %{
         above: if(side == :above, do: hydrated.above, else: descriptors.above),
         below: if(side == :below, do: hydrated.below, else: descriptors.below)
       })
+      |> assign_adjacent_overlay_availability()
     end
   end
 
@@ -3722,11 +3745,57 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> assign(:above_level, nil)
     |> assign(:below_level, nil)
+    |> assign(:above_overlay_available, false)
+    |> assign(:below_overlay_available, false)
     |> assign(:show_above_overlay, false)
     |> assign(:show_below_overlay, false)
     |> assign(:adjacent_overlay_state_key, nil)
     |> assign(:adjacent_overlay_descriptors, %{above: nil, below: nil})
   end
+
+  defp assign_adjacent_overlay_availability(socket) do
+    availability = compute_adjacent_overlay_availability(socket.assigns)
+
+    socket
+    |> assign(:above_overlay_available, availability.above)
+    |> assign(:below_overlay_available, availability.below)
+  end
+
+  defp compute_adjacent_overlay_availability(assigns) when is_map(assigns) do
+    descriptors = Map.get(assigns, :adjacent_overlay_descriptors) || %{above: nil, below: nil}
+
+    %{
+      above: adjacent_overlay_available?(Map.get(assigns, :above_level), Map.get(descriptors, :above)),
+      below: adjacent_overlay_available?(Map.get(assigns, :below_level), Map.get(descriptors, :below))
+    }
+  end
+
+  defp adjacent_overlay_available?(nil, _descriptor), do: false
+
+  defp adjacent_overlay_available?(%StopLevel{} = stop_level, descriptor) do
+    renderable_adjacent_overlay_descriptor?(descriptor) or
+      renderable_adjacent_stop_level?(stop_level)
+  end
+
+  defp adjacent_overlay_available?(_stop_level, descriptor),
+    do: renderable_adjacent_overlay_descriptor?(descriptor)
+
+  defp renderable_adjacent_stop_level?(%StopLevel{} = stop_level) do
+    StopLevel.alignment_complete?(stop_level) and
+      is_binary(stop_level.diagram_filename) and String.trim(stop_level.diagram_filename) != ""
+  end
+
+  defp renderable_adjacent_stop_level?(_stop_level), do: false
+
+  defp renderable_adjacent_overlay_descriptor?(%{} = descriptor) do
+    is_binary(descriptor[:diagram_filename]) and String.trim(descriptor[:diagram_filename]) != "" and
+      not is_nil(descriptor[:floorplan_center_lat]) and
+      not is_nil(descriptor[:floorplan_center_lon]) and
+      not is_nil(descriptor[:floorplan_scale_mpp]) and
+      not is_nil(descriptor[:floorplan_rotation_deg])
+  end
+
+  defp renderable_adjacent_overlay_descriptor?(_descriptor), do: false
 
   defp parse_optional_int(nil), do: nil
   defp parse_optional_int(""), do: nil
@@ -4307,6 +4376,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp refresh_lists(socket), do: load_level_data(socket, socket.assigns.active_level)
+
+  defp restream_mode_dependent_layers(socket) do
+    child_stops = socket.assigns[:child_stops_list] || []
+    pathways = socket.assigns[:pathways_list] || []
+    {same_level_pathways, pathway_pair_counts} = decorate_same_level_pathways(pathways)
+
+    socket
+    |> stream(:child_stops, child_stops, reset: true)
+    |> stream(:pathways, same_level_pathways, reset: true)
+    |> assign(:pathway_pair_counts, pathway_pair_counts)
+  end
 
   defp load_pathways_for_level(socket, nil) do
     socket
