@@ -156,6 +156,8 @@ const MapAlignmentHook = {
     this.adjacentOverlayBelow = adjacentOverlayBelow;
     this._overlayRestoreDisposers = [];
 
+    this._syncAdjacentOverlayVisibilityFromDataset();
+
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.6";
 
     this.transform = {...IDENTITY_TRANSFORM};
@@ -502,6 +504,10 @@ const MapAlignmentHook = {
     }
   },
 
+  updated() {
+    this._syncAdjacentOverlayVisibilityFromDataset();
+  },
+
   destroyed() {
     console.info("MapAlignment: destroyed", {id: this.el && this.el.id});
     if (this._rafId !== null && this._rafId !== undefined) {
@@ -813,6 +819,23 @@ const MapAlignmentHook = {
       this.overlay.style.transform =
         `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`;
     }
+  },
+
+  _syncAdjacentOverlayVisibilityFromDataset() {
+    const root = this.el;
+    if (!root) return;
+
+    const showAbove = root.dataset.showAboveOverlay === "true";
+    const showBelow = root.dataset.showBelowOverlay === "true";
+
+    const applyVisibility = (overlayEl, visible) => {
+      if (!overlayEl) return;
+      overlayEl.dataset.overlayVisible = visible ? "true" : "false";
+      overlayEl.classList.toggle("hidden", !visible);
+    };
+
+    applyVisibility(this.adjacentOverlayAbove, showAbove);
+    applyVisibility(this.adjacentOverlayBelow, showBelow);
   },
 
   _fetchBuildings(lat, lon) {
