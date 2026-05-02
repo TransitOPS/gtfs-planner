@@ -575,6 +575,16 @@ defmodule GtfsPlanner.Gtfs do
         image_h
       )
       when is_binary(active_stop_level_id) and is_map(proposed_alignment_attrs) do
+    Logger.info(fn ->
+      "[ALIGN_APPLY_DEBUG] start save_and_apply_stop_level_alignment " <>
+        inspect(%{
+          active_stop_level_id: active_stop_level_id,
+          proposed_alignment_attrs: proposed_alignment_attrs,
+          image_w: image_w,
+          image_h: image_h
+        })
+    end)
+
     with :ok <- validate_positive_image_dims(image_w, image_h) do
       transaction_result =
         Repo.transaction(fn ->
@@ -584,6 +594,14 @@ defmodule GtfsPlanner.Gtfs do
 
             %StopLevel{} = active_stop_level ->
               old_alignment_snapshot = stop_level_alignment_snapshot(active_stop_level)
+
+              Logger.info(fn ->
+                "[ALIGN_APPLY_DEBUG] active_stop_level_loaded " <>
+                  inspect(%{
+                    active_stop_level_id: active_stop_level.id,
+                    old_alignment_snapshot: old_alignment_snapshot
+                  })
+              end)
 
               with {:ok, updated_stop_level} <-
                      active_stop_level
@@ -608,6 +626,18 @@ defmodule GtfsPlanner.Gtfs do
                        image_w,
                        image_h
                      ) do
+                Logger.info(fn ->
+                  "[ALIGN_APPLY_DEBUG] active_stop_level_persisted " <>
+                    inspect(%{
+                      active_stop_level_id: updated_stop_level.id,
+                      updated_alignment_snapshot:
+                        stop_level_alignment_snapshot(updated_stop_level),
+                      active_delta: active_delta,
+                      propagation_target_count: length(propagation_targets),
+                      propagation_target_ids: Enum.map(propagation_targets, & &1.id)
+                    })
+                end)
+
                 # Step 16 (active-only short-circuit): when old alignment is incomplete,
                 # propagation is skipped and the active-only payload is returned.
 
@@ -626,7 +656,13 @@ defmodule GtfsPlanner.Gtfs do
                   apply_result: apply_result
                 }
               else
-                {:error, reason} -> Repo.rollback(reason)
+                {:error, reason} ->
+                  Logger.warning(fn ->
+                    "[ALIGN_APPLY_DEBUG] transaction_rollback " <>
+                      inspect(%{active_stop_level_id: active_stop_level.id, reason: reason})
+                  end)
+
+                  Repo.rollback(reason)
               end
           end
         end)
@@ -659,6 +695,11 @@ defmodule GtfsPlanner.Gtfs do
            }}
 
         {:error, reason} ->
+          Logger.warning(fn ->
+            "[ALIGN_APPLY_DEBUG] save_and_apply_failed " <>
+              inspect(%{active_stop_level_id: active_stop_level_id, reason: reason})
+          end)
+
           {:error, reason}
       end
     end
@@ -712,9 +753,25 @@ defmodule GtfsPlanner.Gtfs do
              StopLevel.compose_alignment_transforms(active_delta, target_transform),
            {:ok, updated_stop_level} <-
              persist_stop_level_alignment_transform(target_stop_level, updated_transform) do
+        Logger.info(fn ->
+          "[ALIGN_APPLY_DEBUG] propagation_target_updated " <>
+            inspect(%{
+              target_stop_level_id: target_stop_level.id,
+              target_transform: target_transform,
+              updated_transform: updated_transform,
+              persisted_stop_level_id: updated_stop_level.id
+            })
+        end)
+
         {:cont, {:ok, [updated_stop_level | acc]}}
       else
-        {:error, reason} -> {:halt, {:error, reason}}
+        {:error, reason} ->
+          Logger.warning(fn ->
+            "[ALIGN_APPLY_DEBUG] propagation_target_failed " <>
+              inspect(%{target_stop_level_id: target_stop_level.id, reason: reason})
+          end)
+
+          {:halt, {:error, reason}}
       end
     end)
     |> case do
@@ -740,14 +797,39 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp persist_stop_level_alignment_transform(%StopLevel{} = stop_level, updated_transform) do
-    stop_level
-    |> StopLevel.alignment_changeset(%{
-      floorplan_center_lat: updated_transform.center_lat,
-      floorplan_center_lon: updated_transform.center_lon,
-      floorplan_scale_mpp: updated_transform.scale_mpp,
-      floorplan_rotation_deg: updated_transform.rotation_deg
-    })
-    |> Repo.update()
+    changeset =
+      stop_level
+      |> StopLevel.alignment_changeset(%{
+        floorplan_center_lat: updated_transform.center_lat,
+        floorplan_center_lon: updated_transform.center_lon,
+        floorplan_scale_mpp: updated_transform.scale_mpp,
+        floorplan_rotation_deg: updated_transform.rotation_deg
+      })
+
+    case Repo.update(changeset) do
+      {:ok, updated_stop_level} ->
+        {:ok, updated_stop_level}
+
+      {:error, %Ecto.Changeset{} = failed_changeset} = error ->
+        Logger.warning(fn ->
+          "[ALIGN_APPLY_DEBUG] persist_stop_level_alignment_transform_failed " <>
+            inspect(%{
+              target_stop_level_id: stop_level.id,
+              attempted_transform: updated_transform,
+              errors: alignment_changeset_log_errors(failed_changeset)
+            })
+        end)
+
+        error
+    end
+  end
+
+  defp alignment_changeset_log_errors(%Ecto.Changeset{} = changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
+      Enum.reduce(opts, msg, fn {key, value}, acc ->
+        String.replace(acc, "%{#{key}}", to_string(value))
+      end)
+    end)
   end
 
   defp load_stop_level_for_update(stop_level_id) when is_binary(stop_level_id) do

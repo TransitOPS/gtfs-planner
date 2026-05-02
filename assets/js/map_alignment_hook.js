@@ -27,6 +27,7 @@
 const SCALE_MIN = 0.25;
 const SCALE_MAX = 4;
 const IDENTITY_TRANSFORM = Object.freeze({tx: 0, ty: 0, rotation: 0, scale: 1});
+const MAP_ALIGNMENT_HOOK_BUILD = "map-align-fix-v2";
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -92,6 +93,8 @@ function overlayCenter(overlay) {
 
 const MapAlignmentHook = {
   mounted() {
+    console.info("MapAlignmentHook: build", {build: MAP_ALIGNMENT_HOOK_BUILD});
+
     const L = window.L;
     if (!L) {
       console.error("MapAlignmentHook: window.L (Leaflet) is not available");
@@ -154,11 +157,12 @@ const MapAlignmentHook = {
     this.applyBtn = applyBtn;
     this.adjacentOverlayAbove = adjacentOverlayAbove;
     this.adjacentOverlayBelow = adjacentOverlayBelow;
+    this._adjacentTransforms = { above: null, below: null };
     this._overlayRestoreDisposers = [];
 
     this._syncAdjacentOverlayVisibilityFromDataset();
 
-    overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.6";
+    overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.7";
 
     this.transform = {...IDENTITY_TRANSFORM};
 
@@ -243,12 +247,14 @@ const MapAlignmentHook = {
 
         // Pin the floorplan to the map through the zoom: keep its center at
         // the same world lat/lon, and scale by 2^Δzoom so it tracks the tiles.
-        const canvasRect = this.el.getBoundingClientRect();
+        const canvasRect = this._leafletRect();
+        if (!canvasRect) return;
         const canvasW = canvasRect.width;
         const canvasH = canvasRect.height;
         const oldCx = canvasW / 2 + this.transform.tx;
         const oldCy = canvasH / 2 + this.transform.ty;
         const worldCenter = map.containerPointToLatLng([oldCx, oldCy]);
+        const adjacentCenters = this._captureAdjacentOverlayWorldCenters(canvasW, canvasH);
         const scaleFactor = Math.pow(2, target - current);
 
         map.setZoom(target, {animate: false});
@@ -258,6 +264,7 @@ const MapAlignmentHook = {
         this.transform.ty = newCenterPt.y - canvasH / 2;
         this.transform.scale = this.transform.scale * scaleFactor;
         this._applyTransform();
+        this._syncAdjacentOverlaysForZoom(adjacentCenters, canvasW, canvasH, scaleFactor);
       };
       zoomSlider.addEventListener("input", this._onZoomSliderInput);
 
@@ -438,7 +445,8 @@ const MapAlignmentHook = {
       const lon = parseFloat(lonInput.value);
       if (Number.isNaN(lat) || Number.isNaN(lon)) return;
 
-      const canvasRect = this.el.getBoundingClientRect();
+      const canvasRect = this._leafletRect();
+      if (!canvasRect) return;
       const cxBefore = canvasRect.width / 2 + this.transform.tx;
       const cyBefore = canvasRect.height / 2 + this.transform.ty;
       const worldCenter = this.leafletMap.containerPointToLatLng([cxBefore, cyBefore]);
@@ -465,9 +473,7 @@ const MapAlignmentHook = {
     // --- Save: compute canonical alignment and push to server ---
     if (saveBtn) {
       this._onSave = () => {
-        const payload = this._computeAlignment();
-        if (!payload) return;
-        this.pushEvent("save_alignment", payload);
+        this._pushAlignmentEventIfValid("save_alignment");
       };
       saveBtn.addEventListener("click", this._onSave);
     }
@@ -496,9 +502,7 @@ const MapAlignmentHook = {
 
     if (applyBtn) {
       this._onApply = () => {
-        const payload = this._computeAlignment();
-        if (!payload) return;
-        this.pushEvent("save_and_apply_alignment", payload);
+        this._pushAlignmentEventIfValid("save_and_apply_alignment");
       };
       applyBtn.addEventListener("click", this._onApply);
     }
@@ -611,7 +615,8 @@ const MapAlignmentHook = {
   _computeAlignment() {
     const overlay = this.overlay;
     const map = this.leafletMap;
-    if (!overlay || !map) return null;
+    const leafletEl = this.leafletEl;
+    if (!overlay || !map || !leafletEl) return null;
 
     const img = overlay.querySelector("img");
     if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) {
@@ -619,12 +624,23 @@ const MapAlignmentHook = {
       return null;
     }
 
-    // #map-canvas bounds are the same as the Leaflet container's; overlay is
-    // inset-0, so the overlay's untransformed center coincides with the
-    // canvas center in container coords.
-    const canvasRect = this.el.getBoundingClientRect();
+    // Use Leaflet container bounds for containerPoint conversions. The map
+    // API expects points relative to #map-alignment-leaflet, not the hook root.
+    const canvasRect = leafletEl.getBoundingClientRect();
     const canvasW = canvasRect.width;
     const canvasH = canvasRect.height;
+    if (
+      !Number.isFinite(canvasW) ||
+      !Number.isFinite(canvasH) ||
+      !(canvasW > 0) ||
+      !(canvasH > 0)
+    ) {
+      console.warn("MapAlignmentHook: invalid map geometry; skipping alignment compute", {
+        canvasW,
+        canvasH
+      });
+      return null;
+    }
 
     const {tx, ty, scale} = this.transform;
     // translate(tx, ty) rotate(r) scale(s) around transform-origin: center
@@ -714,9 +730,9 @@ const MapAlignmentHook = {
     // During the immersive CSS transition the canvas grows over ~300ms; running
     // mid-animation produces a scale tuned to a smaller canvas.
     const scheduleRestore = () => {
-      const rect = this.el.getBoundingClientRect();
+      const rect = this._leafletRect();
       const imgReady = img.complete && img.naturalWidth > 0;
-      if (!imgReady || !(rect.width > 0) || !(rect.height > 0)) return;
+      if (!imgReady || !rect || !(rect.width > 0) || !(rect.height > 0)) return;
 
       if (settleTimer) clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
@@ -736,7 +752,7 @@ const MapAlignmentHook = {
 
     if (typeof ResizeObserver !== "undefined") {
       restoreObserver = new ResizeObserver(scheduleRestore);
-      restoreObserver.observe(this.el);
+      restoreObserver.observe(this.leafletEl);
     }
   },
 
@@ -747,7 +763,11 @@ const MapAlignmentHook = {
       return;
     }
 
-    const canvasRect = this.el.getBoundingClientRect();
+    const canvasRect = this._leafletRect();
+    if (!canvasRect) {
+      console.warn("MapAlignment: restore skipped, leaflet container not ready", {label});
+      return;
+    }
     const canvasW = canvasRect.width;
     const canvasH = canvasRect.height;
     if (!(canvasW > 0) || !(canvasH > 0)) {
@@ -795,19 +815,71 @@ const MapAlignmentHook = {
       return;
     }
 
+    const side = overlayEl.dataset && overlayEl.dataset.side;
+    if (side === "above" || side === "below") {
+      this._adjacentTransforms[side] = restoredTransform;
+    }
+
+    this._applyOverlayTransform(overlayEl, restoredTransform);
+  },
+
+  _applyOverlayTransform(overlayEl, transform) {
+    if (!overlayEl || !transform) return;
+
     if (
-      restoredTransform.tx === 0 &&
-      restoredTransform.ty === 0 &&
-      restoredTransform.rotation === 0 &&
-      restoredTransform.scale === 1
+      transform.tx === 0 &&
+      transform.ty === 0 &&
+      transform.rotation === 0 &&
+      transform.scale === 1
     ) {
       overlayEl.style.transform = "none";
       return;
     }
 
     overlayEl.style.transform =
-      `translate(${restoredTransform.tx}px, ${restoredTransform.ty}px) ` +
-      `rotate(${restoredTransform.rotation}deg) scale(${restoredTransform.scale})`;
+      `translate(${transform.tx}px, ${transform.ty}px) ` +
+      `rotate(${transform.rotation}deg) scale(${transform.scale})`;
+  },
+
+  _captureAdjacentOverlayWorldCenters(canvasW, canvasH) {
+    if (!this.leafletMap) return {};
+
+    const centers = {};
+
+    ["above", "below"].forEach((side) => {
+      const transform = this._adjacentTransforms && this._adjacentTransforms[side];
+      if (!transform) return;
+
+      const cx = canvasW / 2 + transform.tx;
+      const cy = canvasH / 2 + transform.ty;
+      centers[side] = this.leafletMap.containerPointToLatLng([cx, cy]);
+    });
+
+    return centers;
+  },
+
+  _syncAdjacentOverlaysForZoom(adjacentCenters, canvasW, canvasH, scaleFactor) {
+    if (!this.leafletMap || !this._adjacentTransforms) return;
+
+    const overlaysBySide = {
+      above: this.adjacentOverlayAbove,
+      below: this.adjacentOverlayBelow
+    };
+
+    ["above", "below"].forEach((side) => {
+      const center = adjacentCenters && adjacentCenters[side];
+      const transform = this._adjacentTransforms[side];
+      const overlayEl = overlaysBySide[side];
+
+      if (!center || !transform || !overlayEl) return;
+
+      const newCenterPt = this.leafletMap.latLngToContainerPoint(center);
+      transform.tx = newCenterPt.x - canvasW / 2;
+      transform.ty = newCenterPt.y - canvasH / 2;
+      transform.scale = transform.scale * scaleFactor;
+
+      this._applyOverlayTransform(overlayEl, transform);
+    });
   },
 
   _applyTransform() {
@@ -819,6 +891,43 @@ const MapAlignmentHook = {
       this.overlay.style.transform =
         `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`;
     }
+  },
+
+  _leafletRect() {
+    if (!this.leafletEl) return null;
+    return this.leafletEl.getBoundingClientRect();
+  },
+
+  _isValidAlignmentPayload(payload) {
+    if (!payload) return false;
+
+    const {center_lat, center_lon, scale_mpp, rotation_deg} = payload;
+
+    return (
+      Number.isFinite(center_lat) &&
+      Number.isFinite(center_lon) &&
+      Number.isFinite(scale_mpp) &&
+      Number.isFinite(rotation_deg) &&
+      center_lat >= -90 &&
+      center_lat <= 90 &&
+      center_lon >= -180 &&
+      center_lon <= 180 &&
+      scale_mpp > 0
+    );
+  },
+
+  _pushAlignmentEventIfValid(eventName) {
+    const payload = this._computeAlignment();
+    if (!payload) return;
+    if (!this._isValidAlignmentPayload(payload)) {
+      console.warn("MapAlignmentHook: invalid alignment payload; skipping pushEvent", {
+        eventName,
+        payload
+      });
+      return;
+    }
+
+    this.pushEvent(eventName, payload);
   },
 
   _syncAdjacentOverlayVisibilityFromDataset() {

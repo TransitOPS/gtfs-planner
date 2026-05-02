@@ -285,7 +285,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 id="adjacent-overlay-toggle-group"
                 role="group"
                 aria-label="Adjacent overlay references"
-                class="join"
+                class="join mr-4"
               >
                 <button
                   :if={@below_overlay_available}
@@ -302,7 +302,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                     )
                   ]}
                 >
-                  Below
+                  Show {adjacent_level_label(@below_level)}
                 </button>
                 <button
                   :if={@above_overlay_available}
@@ -319,7 +319,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                     )
                   ]}
                 >
-                  Above
+                  Show {adjacent_level_label(@above_level)}
                 </button>
               </div>
             <% end %>
@@ -372,6 +372,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :anchor_count, :integer, default: 0
   attr :cross_level_pathway_total, :integer, default: 0
   attr :cross_level_pathway_with_geo, :integer, default: 0
+  attr :synced_aligned_levels_count, :integer, default: 0
+  attr :station_stop_levels_total_count, :integer, default: 0
 
   def map_canvas(assigns) do
     floorplan_url =
@@ -435,14 +437,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-align-center-lon={if @has_alignment?, do: @align_center_lon}
         data-align-scale-mpp={if @has_alignment?, do: @align_scale_mpp}
         data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
-        data-adjacent-above-center-lat={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lat)}
-        data-adjacent-above-center-lon={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lon)}
-        data-adjacent-above-scale-mpp={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_scale_mpp)}
-        data-adjacent-above-rotation-deg={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_rotation_deg)}
-        data-adjacent-below-center-lat={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lat)}
-        data-adjacent-below-center-lon={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lon)}
-        data-adjacent-below-scale-mpp={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_scale_mpp)}
-        data-adjacent-below-rotation-deg={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_rotation_deg)}
+        data-adjacent-above-center-lat={
+          adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lat)
+        }
+        data-adjacent-above-center-lon={
+          adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lon)
+        }
+        data-adjacent-above-scale-mpp={
+          adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_scale_mpp)
+        }
+        data-adjacent-above-rotation-deg={
+          adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_rotation_deg)
+        }
+        data-adjacent-below-center-lat={
+          adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lat)
+        }
+        data-adjacent-below-center-lon={
+          adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lon)
+        }
+        data-adjacent-below-scale-mpp={
+          adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_scale_mpp)
+        }
+        data-adjacent-below-rotation-deg={
+          adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_rotation_deg)
+        }
         data-image-natural-width={@image_natural_width}
         data-image-natural-height={@image_natural_height}
       >
@@ -454,12 +472,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           data-overlay-role="reference"
           data-editable-overlay="false"
           data-overlay-visible={if(@show_below_overlay, do: "true", else: "false")}
-          data-align-center-lat={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lat)}
-          data-align-center-lon={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lon)}
-          data-align-scale-mpp={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_scale_mpp)}
-          data-align-rotation-deg={adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_rotation_deg)}
+          data-align-center-lat={
+            adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lat)
+          }
+          data-align-center-lon={
+            adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lon)
+          }
+          data-align-scale-mpp={
+            adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_scale_mpp)
+          }
+          data-align-rotation-deg={
+            adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_rotation_deg)
+          }
           class={[
-            "absolute inset-0 pointer-events-none opacity-35",
+            "absolute inset-0 pointer-events-none opacity-70",
             if(@show_below_overlay, do: nil, else: "hidden")
           ]}
           style="z-index: 1;"
@@ -478,12 +504,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           data-overlay-role="reference"
           data-editable-overlay="false"
           data-overlay-visible={if(@show_above_overlay, do: "true", else: "false")}
-          data-align-center-lat={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lat)}
-          data-align-center-lon={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lon)}
-          data-align-scale-mpp={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_scale_mpp)}
-          data-align-rotation-deg={adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_rotation_deg)}
+          data-align-center-lat={
+            adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lat)
+          }
+          data-align-center-lon={
+            adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lon)
+          }
+          data-align-scale-mpp={
+            adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_scale_mpp)
+          }
+          data-align-rotation-deg={
+            adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_rotation_deg)
+          }
           class={[
-            "absolute inset-0 pointer-events-none opacity-35",
+            "absolute inset-0 pointer-events-none opacity-70",
             if(@show_above_overlay, do: nil, else: "hidden")
           ]}
           style="z-index: 1;"
@@ -547,7 +581,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               {@child_stops_with_geo} of {@child_stops_total} child stops have lat/long
             </span>
             <span class="text-xs font-medium text-base-content/70">
-              _ levels are aligned and synced
+              {@synced_aligned_levels_count} of {@station_stop_levels_total_count} levels are aligned and synced
             </span>
           </div>
         </div>
@@ -599,7 +633,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               min="0"
               max="1"
               step="0.05"
-              value="0.6"
+              value="0.7"
               class="range range-xs w-40"
             />
           </div>
@@ -622,7 +656,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
           <div class="ml-auto flex items-center gap-3">
             <button id="map-alignment-save" type="button" class="btn btn-sm btn-primary">
-              Save alignment
+              Save Individual Alignment
             </button>
             <button
               id="map-alignment-apply"
@@ -631,21 +665,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               title="Set lat/lon for child stops from the floorplan's current position on the map"
               disabled={is_nil(@image_natural_width) or is_nil(@image_natural_height)}
             >
-              Apply image position
-            </button>
-            <span class="text-xs text-base-content/60">or</span>
-            <button
-              id="map-alignment-infer"
-              type="button"
-              class="btn btn-sm btn-primary"
-              phx-click="infer_alignment"
-              title="Compute alignment from child stops that already have lat/lon, then set lat/lon on the rest"
-              disabled={
-                @anchor_count < GtfsPlanner.Gtfs.AlignmentInference.anchor_minimum() or
-                  is_nil(@image_natural_width) or is_nil(@image_natural_height)
-              }
-            >
-              Infer from anchors
+              Apply & Sync Position
             </button>
           </div>
         </div>
@@ -772,7 +792,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp adjacent_overlay_image_href(_organization_id, _station, nil), do: nil
 
-  defp adjacent_overlay_image_href(organization_id, station, descriptor) when is_map(descriptor) do
+  defp adjacent_overlay_image_href(organization_id, station, descriptor)
+       when is_map(descriptor) do
     case descriptor do
       %{diagram_filename: filename} when is_binary(filename) and filename != "" ->
         station_dir = PathSafety.stop_storage_dir(station.stop_id)
@@ -791,10 +812,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   defp adjacent_descriptor_value(nil, _key), do: nil
-  defp adjacent_descriptor_value(descriptor, key) when is_map(descriptor), do: Map.get(descriptor, key)
+
+  defp adjacent_descriptor_value(descriptor, key) when is_map(descriptor),
+    do: Map.get(descriptor, key)
 
   defp overlay_toggle_attr(true), do: "true"
   defp overlay_toggle_attr(false), do: "false"
+
+  defp adjacent_level_label(%{level: level}) when is_map(level), do: adjacent_level_label(level)
+
+  defp adjacent_level_label(%{level_name: level_name, level_id: level_id}) do
+    level_name || level_id || "level"
+  end
+
+  defp adjacent_level_label(_), do: "level"
 
   attr :streams, :any, required: true
   attr :active_point_id, :any
