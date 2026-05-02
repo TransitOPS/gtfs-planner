@@ -12396,15 +12396,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert length(assigns.station_stop_levels_cache.ordered) == 2
     end
 
-    test "toggle_adjacent_overlay only accepts above and below and only toggles when neighbor exists", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      level: _middle_level,
-      stop_level: middle_stop_level
-    } do
+    test "toggle_adjacent_overlay only accepts above and below and only toggles when neighbor exists",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: _middle_level,
+           stop_level: middle_stop_level
+         } do
       {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
 
       below_level =
@@ -12460,9 +12461,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.show_above_overlay == false
       assert assigns.show_below_overlay == false
-      assert has_element?(view, "#map-adjacent-overlay-above.hidden[data-overlay-visible='false']")
-      assert has_element?(view, "#map-adjacent-overlay-below.hidden[data-overlay-visible='false']")
+
+      assert has_element?(
+               view,
+               "#map-adjacent-overlay-above.hidden[data-overlay-visible='false']"
+             )
+
+      assert has_element?(
+               view,
+               "#map-adjacent-overlay-below.hidden[data-overlay-visible='false']"
+             )
+
       assert has_element?(view, "#adjacent-overlay-toggle-group")
+      assert has_element?(view, "#toggle-above-overlay", "Show Toggle Level Above")
+      assert has_element?(view, "#toggle-below-overlay", "Show Toggle Level Below")
       assert has_element?(view, "#toggle-above-overlay[aria-pressed='false']")
       assert has_element?(view, "#toggle-below-overlay[aria-pressed='false']")
 
@@ -12475,6 +12487,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.show_below_overlay == false
       assert has_element?(view, "#toggle-above-overlay[aria-pressed='true']")
       assert has_element?(view, "#toggle-below-overlay[aria-pressed='false']")
+
       assert has_element?(
                view,
                ".map-canvas[data-show-above-overlay='true'][data-show-below-overlay='false']"
@@ -12488,6 +12501,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.show_above_overlay == true
       assert assigns.show_below_overlay == true
       assert has_element?(view, "#toggle-below-overlay[aria-pressed='true']")
+
       assert has_element?(
                view,
                ".map-canvas[data-show-above-overlay='true'][data-show-below-overlay='true']"
@@ -12571,8 +12585,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#toggle-above-overlay[aria-pressed='false']")
       assert has_element?(view, "#toggle-below-overlay[aria-pressed='false']")
-      assert has_element?(view, "#map-adjacent-overlay-above.hidden[data-overlay-visible='false']")
-      assert has_element?(view, "#map-adjacent-overlay-below.hidden[data-overlay-visible='false']")
+
+      assert has_element?(
+               view,
+               "#map-adjacent-overlay-above.hidden[data-overlay-visible='false']"
+             )
+
+      assert has_element?(
+               view,
+               "#map-adjacent-overlay-below.hidden[data-overlay-visible='false']"
+             )
 
       view
       |> element("#toggle-above-overlay")
@@ -12582,6 +12604,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.show_above_overlay == true
       assert assigns.show_below_overlay == false
       assert has_element?(view, "#toggle-above-overlay[aria-pressed='true']")
+
       assert has_element?(
                view,
                ".map-canvas[data-show-above-overlay='true'][data-show-below-overlay='false']"
@@ -12596,6 +12619,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#toggle-above-overlay[aria-pressed='false']")
       assert has_element?(view, "#toggle-below-overlay[aria-pressed='false']")
+
       assert has_element?(
                view,
                ".map-canvas[data-show-above-overlay='false'][data-show-below-overlay='false']"
@@ -12650,20 +12674,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#adjacent-overlay-toggle-group")
       refute has_element?(view, "#toggle-above-overlay")
+      assert has_element?(view, "#toggle-below-overlay", "Show Single Adjacent Below")
       assert has_element?(view, "#toggle-below-overlay[aria-pressed='false']")
 
       refute has_element?(view, "#map-adjacent-overlay-above")
-      assert has_element?(view, "#map-adjacent-overlay-below.hidden[data-overlay-visible='false']")
+
+      assert has_element?(
+               view,
+               "#map-adjacent-overlay-below.hidden[data-overlay-visible='false']"
+             )
     end
 
-    test "adjacent side without renderable descriptor hides toggle and ignores direct toggle event", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      stop_level: current_stop_level
-    } do
+    test "adjacent side without renderable descriptor hides toggle and ignores direct toggle event",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           stop_level: current_stop_level
+         } do
       {:ok, _} = Gtfs.update_stop_level_diagram(current_stop_level, "map-diagram.png")
 
       above_level =
@@ -12703,7 +12733,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#map-adjacent-overlay-above")
     end
 
-    test "action strip shows map-mode hint", %{
+    test "action strip shows map-mode hint and synced/aligned levels count", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -12725,7 +12755,79 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "Align the floorplan over real-world imagery"
              )
 
+      assert has_element?(view, "#map-canvas-wrapper", "0 of 1 levels are aligned and synced")
+
       refute has_element?(view, "#adjacent-overlay-toggle-group")
+    end
+
+    test "map mode shows synced/aligned levels count from saved flag", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: middle_stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      below_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "synced_count_below",
+          level_name: "Synced Count Below",
+          level_index: -1.0
+        })
+
+      above_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "synced_count_above",
+          level_name: "Synced Count Above",
+          level_index: 1.0
+        })
+
+      {:ok, below_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: below_level.id
+        })
+
+      {:ok, above_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: above_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, middle_stop_level} =
+        Gtfs.update_stop_level_alignment(middle_stop_level, alignment_attrs)
+
+      {:ok, below_stop_level} =
+        Gtfs.update_stop_level_alignment(below_stop_level, alignment_attrs)
+
+      {:ok, above_stop_level} =
+        Gtfs.update_stop_level_alignment(above_stop_level, alignment_attrs)
+
+      {:ok, _} = Gtfs.update_stop_level_saved_synced_alignment(middle_stop_level, true)
+      {:ok, _} = Gtfs.update_stop_level_saved_synced_alignment(below_stop_level, true)
+      {:ok, _} = Gtfs.update_stop_level_saved_synced_alignment(above_stop_level, false)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(view, "#map-canvas-wrapper", "2 of 3 levels are aligned and synced")
     end
 
     test "canvas_click in map mode is a no-op", %{
@@ -12837,10 +12939,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
       assert has_element?(view, ".map-canvas[phx-hook='MapAlignment'][phx-update='ignore']")
+
       assert has_element?(
                view,
                ".map-canvas[data-show-above-overlay='false'][data-show-below-overlay='false']"
              )
+
       assert has_element?(view, ".map-canvas #map-alignment-leaflet")
       assert has_element?(view, "#map-alignment-overlay img[alt='Level floorplan']")
     end
@@ -13042,7 +13146,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#map-alignment-apply-center")
       assert has_element?(view, "#map-alignment-save")
       assert has_element?(view, "#map-alignment-apply")
-      assert has_element?(view, "#map-alignment-infer")
+      refute has_element?(view, "#map-alignment-infer")
+      refute has_element?(view, "#map-canvas-wrapper", "Infer from anchors")
       assert has_element?(view, "#map-alignment-rotate-handle")
       assert has_element?(view, "#map-alignment-scale-handle")
       refute has_element?(view, "#map-alignment-reset")
@@ -13113,6 +13218,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert reloaded.floorplan_rotation_deg == nil
 
       assert html =~ "Could not save alignment"
+      assert html =~ "floorplan_center_lat"
     end
 
     test "map canvas renders data-align-* attributes when alignment is set", %{
@@ -13244,7 +13350,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#map-alignment-apply[disabled]")
     end
 
-    test "infer button is present in map mode with phx-click=infer_alignment", %{
+    test "infer button is hidden in map mode", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -13261,12 +13367,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
 
-      assert has_element?(view, "#map-alignment-infer")
-      assert has_element?(view, ~s(#map-alignment-infer[phx-click="infer_alignment"]))
-      assert render(view) =~ "Infer from anchors"
+      refute has_element?(view, "#map-alignment-infer")
+      refute render(view) =~ "Infer from anchors"
     end
 
-    test "infer button is disabled when image dims are missing", %{
+    test "infer button remains hidden when image dims are missing", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -13282,11 +13387,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
-      assert has_element?(view, "#map-alignment-infer")
-      assert has_element?(view, "#map-alignment-infer[disabled]")
+      refute has_element?(view, "#map-alignment-infer")
     end
 
-    test "infer button is disabled when anchors below minimum even with image dims", %{
+    test "infer button remains hidden even with image dims", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -13303,7 +13407,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "set_image_natural_size", %{"w" => 1000, "h" => 800})
 
-      assert has_element?(view, "#map-alignment-infer[disabled]")
+      refute has_element?(view, "#map-alignment-infer")
     end
 
     test "set_image_natural_size with valid integers updates the image dimension assigns", %{

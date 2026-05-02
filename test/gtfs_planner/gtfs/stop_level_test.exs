@@ -290,8 +290,8 @@ defmodule GtfsPlanner.Gtfs.StopLevelTest do
       assert {:ok, inverted} = StopLevel.invert_alignment_transform(transform)
 
       assert inverted == %{
-               center_lat: 40.7128,
-               center_lon: -74.006,
+               center_lat: -40.7128,
+               center_lon: 74.006,
                scale_mpp: 4.0,
                rotation_deg: -30.0
              }

@@ -195,8 +195,8 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
       true ->
         {:ok,
          %{
-           center_lat: center_lat * 1.0,
-           center_lon: center_lon * 1.0,
+           center_lat: -center_lat * 1.0,
+           center_lon: -center_lon * 1.0,
            scale_mpp: 1.0 / (scale_mpp * 1.0),
            rotation_deg: -rotation_deg * 1.0
          }}
