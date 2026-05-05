@@ -644,6 +644,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
         |> render()
 
       assert row_html =~ ~r/>\s*No\s*</
+
+      view
+      |> element(
+        "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC']"
+      )
+      |> render_click()
+
+      assert has_element?(view, "#route-ENT_INACC-PLAT_INACC")
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC'].bg-red-50"
+             )
+
+      view
+      |> element(
+        "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC']"
+      )
+      |> render_click()
+
+      refute has_element?(view, "#route-ENT_INACC-PLAT_INACC")
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC'].bg-red-50"
+             )
     end
   end
 
