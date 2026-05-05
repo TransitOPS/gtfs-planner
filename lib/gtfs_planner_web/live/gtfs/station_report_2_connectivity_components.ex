@@ -168,7 +168,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
             <p class="text-[10px] text-gray-500 mt-0.5">Distance</p>
           </div>
           <div class="text-center min-w-[36px]">
-            <p class="text-sm font-semibold text-gray-900">
+            <p class={[
+              "text-sm font-semibold",
+              @inaccessible && "text-red-800",
+              !@inaccessible && "text-gray-900"
+            ]}>
               {cond do
                 @nopath -> "—"
                 @target.accessible -> "Yes"
