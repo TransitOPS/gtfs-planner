@@ -436,6 +436,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <img
               src={@reference_overlay_url}
               alt="Reference level floorplan"
+              data-reference-overlay="true"
               class="absolute inset-0 w-full h-full object-contain select-none pointer-events-none"
             />
           <% end %>

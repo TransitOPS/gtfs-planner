@@ -30,6 +30,37 @@ const IDENTITY_TRANSFORM = Object.freeze({tx: 0, ty: 0, rotation: 0, scale: 1});
 const MAP_ALIGNMENT_HOOK_BUILD = "map-align-fix-v2";
 const REFERENCE_OVERLAY_IMG_SELECTOR = "img[data-reference-overlay='true']";
 
+function ensureSingleReferenceOverlayImage(referenceOverlay) {
+  if (!referenceOverlay) return null;
+
+  const referenceImgs = Array.from(
+    referenceOverlay.querySelectorAll(REFERENCE_OVERLAY_IMG_SELECTOR)
+  );
+
+  if (referenceImgs.length > 0) {
+    const [primaryReferenceImg, ...duplicateReferenceImgs] = referenceImgs;
+    duplicateReferenceImgs.forEach((duplicateImg) => duplicateImg.remove());
+    return primaryReferenceImg;
+  }
+
+  const fallbackImgs = Array.from(referenceOverlay.querySelectorAll("img"));
+  if (fallbackImgs.length > 0) {
+    const [primaryFallbackImg, ...duplicateFallbackImgs] = fallbackImgs;
+    primaryFallbackImg.dataset.referenceOverlay = "true";
+    duplicateFallbackImgs.forEach((duplicateImg) => duplicateImg.remove());
+    return primaryFallbackImg;
+  }
+
+  const referenceImg = document.createElement("img");
+  referenceImg.alt = "Reference level floorplan";
+  referenceImg.dataset.referenceOverlay = "true";
+  referenceImg.className = "h-full w-full object-contain select-none";
+  referenceImg.draggable = false;
+  referenceOverlay.appendChild(referenceImg);
+
+  return referenceImg;
+}
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -818,23 +849,14 @@ const MapAlignmentHook = {
     const referenceUrl = (root.dataset.referenceFloorplanUrl || "").trim();
     const referenceAlignment = readReferenceAlignment(root);
 
-    let referenceImg = this.referenceOverlay.querySelector(REFERENCE_OVERLAY_IMG_SELECTOR);
+    const referenceImg = ensureSingleReferenceOverlayImage(this.referenceOverlay);
 
     if (!referenceUrl) {
-      if (referenceImg) {
-        referenceImg.remove();
-      }
+      this.referenceOverlay
+        .querySelectorAll("img")
+        .forEach((imgElement) => imgElement.remove());
       this._applyOverlayTransform(this.referenceOverlay, IDENTITY_TRANSFORM);
       return;
-    }
-
-    if (!referenceImg) {
-      referenceImg = document.createElement("img");
-      referenceImg.alt = "Reference level floorplan";
-      referenceImg.dataset.referenceOverlay = "true";
-      referenceImg.className = "h-full w-full object-contain select-none";
-      referenceImg.draggable = false;
-      this.referenceOverlay.appendChild(referenceImg);
     }
 
     const currentSrc = referenceImg.getAttribute("src") || "";

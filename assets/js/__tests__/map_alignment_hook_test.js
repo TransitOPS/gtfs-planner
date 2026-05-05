@@ -280,4 +280,72 @@ describe("map_alignment_hook reference overlay visibility sync", () => {
     expect(referenceOverlay.dataset.overlayVisible).toBe("false");
     expect(referenceOverlay.classList.contains("hidden")).toBe(true);
   });
+
+  it("reuses existing server-rendered reference image without creating duplicates", () => {
+    document.body.innerHTML = `
+      <div id="root">
+        <div id="map-reference-overlay">
+          <img id="server-reference" src="/uploads/old.png" class="absolute inset-0" />
+        </div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const referenceOverlay = document.getElementById("map-reference-overlay");
+    const serverReference = document.getElementById("server-reference");
+
+    root.dataset.referenceFloorplanUrl = "/uploads/new.png";
+    root.dataset.referenceCenterLat = "40.7131";
+    root.dataset.referenceCenterLon = "-74.0058";
+    root.dataset.referenceScaleMpp = "0.3";
+    root.dataset.referenceRotationDeg = "-5";
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      referenceOverlay,
+      _scheduleOverlayAlignmentRestore: vi.fn(),
+      _applyOverlayTransform: vi.fn(),
+    };
+
+    hook._syncReferenceOverlayFromDataset();
+
+    const imgs = referenceOverlay.querySelectorAll("img");
+    expect(imgs.length).toBe(1);
+    expect(imgs[0]).toBe(serverReference);
+    expect(imgs[0].dataset.referenceOverlay).toBe("true");
+    expect(imgs[0].getAttribute("src")).toBe("/uploads/new.png");
+  });
+
+  it("collapses duplicate reference images down to a single image", () => {
+    document.body.innerHTML = `
+      <div id="root">
+        <div id="map-reference-overlay">
+          <img data-reference-overlay="true" src="/uploads/first.png" />
+          <img data-reference-overlay="true" src="/uploads/second.png" />
+          <img src="/uploads/third.png" />
+        </div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const referenceOverlay = document.getElementById("map-reference-overlay");
+
+    root.dataset.referenceFloorplanUrl = "/uploads/final.png";
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      referenceOverlay,
+      _scheduleOverlayAlignmentRestore: vi.fn(),
+      _applyOverlayTransform: vi.fn(),
+    };
+
+    hook._syncReferenceOverlayFromDataset();
+
+    const imgs = referenceOverlay.querySelectorAll("img");
+    expect(imgs.length).toBe(1);
+    expect(imgs[0].dataset.referenceOverlay).toBe("true");
+    expect(imgs[0].getAttribute("src")).toBe("/uploads/final.png");
+  });
 });
