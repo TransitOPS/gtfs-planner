@@ -61,26 +61,13 @@ function readActiveAlignment(root) {
   );
 }
 
-function readAdjacentAlignment(root, side) {
-  if (side === "above") {
-    return parseAlignmentPayload(
-      root.dataset.adjacentAboveCenterLat,
-      root.dataset.adjacentAboveCenterLon,
-      root.dataset.adjacentAboveScaleMpp,
-      root.dataset.adjacentAboveRotationDeg
-    );
-  }
-
-  if (side === "below") {
-    return parseAlignmentPayload(
-      root.dataset.adjacentBelowCenterLat,
-      root.dataset.adjacentBelowCenterLon,
-      root.dataset.adjacentBelowScaleMpp,
-      root.dataset.adjacentBelowRotationDeg
-    );
-  }
-
-  return null;
+function readReferenceAlignment(root) {
+  return parseAlignmentPayload(
+    root.dataset.referenceCenterLat,
+    root.dataset.referenceCenterLon,
+    root.dataset.referenceScaleMpp,
+    root.dataset.referenceRotationDeg
+  );
 }
 
 function overlayCenter(overlay) {
@@ -109,10 +96,7 @@ const MapAlignmentHook = {
     // Optional saved alignment. All four attrs must be present and parse to
     // finite numbers; otherwise treat as absent and fall back to identity.
     const activeAlignment = readActiveAlignment(root);
-    const adjacentAlignments = {
-      above: readAdjacentAlignment(root, "above"),
-      below: readAdjacentAlignment(root, "below")
-    };
+    const referenceAlignment = readReferenceAlignment(root);
 
     console.info(
       activeAlignment
@@ -122,8 +106,9 @@ const MapAlignmentHook = {
     );
 
     const overlay = root.querySelector("#map-alignment-overlay[data-editable-overlay='true']");
-    const adjacentOverlayAbove = root.querySelector("#map-adjacent-overlay-above[data-editable-overlay='false']");
-    const adjacentOverlayBelow = root.querySelector("#map-adjacent-overlay-below[data-editable-overlay='false']");
+    const referenceOverlay = root.querySelector(
+      "#map-reference-overlay[data-editable-overlay='false']"
+    );
     const leafletEl = root.querySelector("#map-alignment-leaflet");
     const rotateHandle = root.querySelector(
       "#map-alignment-rotate-handle[data-edit-target-overlay='active']"
@@ -155,12 +140,10 @@ const MapAlignmentHook = {
     this.zoomSlider = zoomSlider;
     this.saveBtn = saveBtn;
     this.applyBtn = applyBtn;
-    this.adjacentOverlayAbove = adjacentOverlayAbove;
-    this.adjacentOverlayBelow = adjacentOverlayBelow;
-    this._adjacentTransforms = { above: null, below: null };
+    this.referenceOverlay = referenceOverlay;
     this._overlayRestoreDisposers = [];
 
-    this._syncAdjacentOverlayVisibilityFromDataset();
+    this._syncReferenceOverlayVisibilityFromDataset();
 
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.7";
 
@@ -254,7 +237,6 @@ const MapAlignmentHook = {
         const oldCx = canvasW / 2 + this.transform.tx;
         const oldCy = canvasH / 2 + this.transform.ty;
         const worldCenter = map.containerPointToLatLng([oldCx, oldCy]);
-        const adjacentCenters = this._captureAdjacentOverlayWorldCenters(canvasW, canvasH);
         const scaleFactor = Math.pow(2, target - current);
 
         map.setZoom(target, {animate: false});
@@ -264,7 +246,6 @@ const MapAlignmentHook = {
         this.transform.ty = newCenterPt.y - canvasH / 2;
         this.transform.scale = this.transform.scale * scaleFactor;
         this._applyTransform();
-        this._syncAdjacentOverlaysForZoom(adjacentCenters, canvasW, canvasH, scaleFactor);
       };
       zoomSlider.addEventListener("input", this._onZoomSliderInput);
 
@@ -276,20 +257,12 @@ const MapAlignmentHook = {
 
     this._fetchBuildings(mapCenterLat, mapCenterLon);
 
-    if (adjacentOverlayBelow && adjacentAlignments.below) {
-      this._scheduleOverlayAlignmentRestore(
-        adjacentOverlayBelow,
-        adjacentAlignments.below,
-        "adjacent-below"
-      );
-    }
-
-    if (adjacentOverlayAbove && adjacentAlignments.above) {
-      this._scheduleOverlayAlignmentRestore(
-        adjacentOverlayAbove,
-        adjacentAlignments.above,
-        "adjacent-above"
-      );
+    if (referenceOverlay) {
+      if (referenceAlignment) {
+        this._scheduleOverlayAlignmentRestore(referenceOverlay, referenceAlignment, "reference");
+      } else {
+        this._applyOverlayTransform(referenceOverlay, IDENTITY_TRANSFORM);
+      }
     }
 
     if (activeAlignment) {
@@ -509,7 +482,7 @@ const MapAlignmentHook = {
   },
 
   updated() {
-    this._syncAdjacentOverlayVisibilityFromDataset();
+    this._syncReferenceOverlayVisibilityFromDataset();
   },
 
   destroyed() {
@@ -815,11 +788,6 @@ const MapAlignmentHook = {
       return;
     }
 
-    const side = overlayEl.dataset && overlayEl.dataset.side;
-    if (side === "above" || side === "below") {
-      this._adjacentTransforms[side] = restoredTransform;
-    }
-
     this._applyOverlayTransform(overlayEl, restoredTransform);
   },
 
@@ -839,47 +807,6 @@ const MapAlignmentHook = {
     overlayEl.style.transform =
       `translate(${transform.tx}px, ${transform.ty}px) ` +
       `rotate(${transform.rotation}deg) scale(${transform.scale})`;
-  },
-
-  _captureAdjacentOverlayWorldCenters(canvasW, canvasH) {
-    if (!this.leafletMap) return {};
-
-    const centers = {};
-
-    ["above", "below"].forEach((side) => {
-      const transform = this._adjacentTransforms && this._adjacentTransforms[side];
-      if (!transform) return;
-
-      const cx = canvasW / 2 + transform.tx;
-      const cy = canvasH / 2 + transform.ty;
-      centers[side] = this.leafletMap.containerPointToLatLng([cx, cy]);
-    });
-
-    return centers;
-  },
-
-  _syncAdjacentOverlaysForZoom(adjacentCenters, canvasW, canvasH, scaleFactor) {
-    if (!this.leafletMap || !this._adjacentTransforms) return;
-
-    const overlaysBySide = {
-      above: this.adjacentOverlayAbove,
-      below: this.adjacentOverlayBelow
-    };
-
-    ["above", "below"].forEach((side) => {
-      const center = adjacentCenters && adjacentCenters[side];
-      const transform = this._adjacentTransforms[side];
-      const overlayEl = overlaysBySide[side];
-
-      if (!center || !transform || !overlayEl) return;
-
-      const newCenterPt = this.leafletMap.latLngToContainerPoint(center);
-      transform.tx = newCenterPt.x - canvasW / 2;
-      transform.ty = newCenterPt.y - canvasH / 2;
-      transform.scale = transform.scale * scaleFactor;
-
-      this._applyOverlayTransform(overlayEl, transform);
-    });
   },
 
   _applyTransform() {
@@ -930,21 +857,16 @@ const MapAlignmentHook = {
     this.pushEvent(eventName, payload);
   },
 
-  _syncAdjacentOverlayVisibilityFromDataset() {
+  _syncReferenceOverlayVisibilityFromDataset() {
     const root = this.el;
     if (!root) return;
 
-    const showAbove = root.dataset.showAboveOverlay === "true";
-    const showBelow = root.dataset.showBelowOverlay === "true";
+    const showReference = root.dataset.showReferenceOverlay === "true";
 
-    const applyVisibility = (overlayEl, visible) => {
-      if (!overlayEl) return;
-      overlayEl.dataset.overlayVisible = visible ? "true" : "false";
-      overlayEl.classList.toggle("hidden", !visible);
-    };
+    if (!this.referenceOverlay) return;
 
-    applyVisibility(this.adjacentOverlayAbove, showAbove);
-    applyVisibility(this.adjacentOverlayBelow, showBelow);
+    this.referenceOverlay.dataset.overlayVisible = showReference ? "true" : "false";
+    this.referenceOverlay.classList.toggle("hidden", !showReference);
   },
 
   _fetchBuildings(lat, lon) {
@@ -1035,5 +957,5 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-export { parseAlignmentPayload, readActiveAlignment, readAdjacentAlignment };
+export { parseAlignmentPayload, readActiveAlignment, readReferenceAlignment };
 export default MapAlignmentHook;

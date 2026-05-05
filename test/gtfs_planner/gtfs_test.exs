@@ -3,7 +3,6 @@ defmodule GtfsPlanner.GtfsTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Level
-  alias GtfsPlanner.Gtfs.StopLevel
 
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -1737,275 +1736,6 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
-  describe "resolve_adjacent_stop_levels/2" do
-    setup do
-      organization = organization_fixture()
-      gtfs_version = gtfs_version_fixture(organization.id)
-
-      station =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "ADJ_STATION",
-          location_type: 1
-        })
-
-      level_bottom =
-        level_fixture(organization.id, gtfs_version.id, %{
-          level_id: "ADJ_BOTTOM",
-          level_index: -1.0
-        })
-
-      level_mid_a =
-        level_fixture(organization.id, gtfs_version.id, %{
-          level_id: "ADJ_MID_A",
-          level_index: 0.0
-        })
-
-      level_mid_b =
-        level_fixture(organization.id, gtfs_version.id, %{
-          level_id: "ADJ_MID_B",
-          level_index: 0.0
-        })
-
-      level_top =
-        level_fixture(organization.id, gtfs_version.id, %{
-          level_id: "ADJ_TOP",
-          level_index: 2.0
-        })
-
-      {:ok, sl_bottom} =
-        Gtfs.create_stop_level(%{
-          organization_id: organization.id,
-          gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level_bottom.id
-        })
-
-      {:ok, sl_mid_a} =
-        Gtfs.create_stop_level(%{
-          organization_id: organization.id,
-          gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level_mid_a.id
-        })
-
-      {:ok, sl_mid_b} =
-        Gtfs.create_stop_level(%{
-          organization_id: organization.id,
-          gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level_mid_b.id
-        })
-
-      {:ok, sl_top} =
-        Gtfs.create_stop_level(%{
-          organization_id: organization.id,
-          gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level_top.id
-        })
-
-      stop_levels =
-        Gtfs.list_stop_levels_for_station(organization.id, gtfs_version.id, station.id)
-
-      %{
-        stop_levels: stop_levels,
-        sl_bottom: sl_bottom,
-        sl_mid_a: sl_mid_a,
-        sl_mid_b: sl_mid_b,
-        sl_top: sl_top
-      }
-    end
-
-    test "returns above and below neighbors for a middle level", %{
-      stop_levels: stop_levels,
-      sl_mid_a: sl_mid_a,
-      sl_bottom: sl_bottom,
-      sl_top: sl_top
-    } do
-      assert {:ok, %{above: above, below: below}} =
-               Gtfs.resolve_adjacent_stop_levels(stop_levels, sl_mid_a.id)
-
-      assert above.id == sl_top.id
-      assert below.id == sl_bottom.id
-    end
-
-    test "returns nil below for bottom level", %{
-      stop_levels: stop_levels,
-      sl_bottom: sl_bottom,
-      sl_mid_a: sl_mid_a,
-      sl_mid_b: sl_mid_b
-    } do
-      assert {:ok, %{above: above, below: nil}} =
-               Gtfs.resolve_adjacent_stop_levels(stop_levels, sl_bottom.id)
-
-      assert above.id in [sl_mid_a.id, sl_mid_b.id]
-      assert above.level.level_index == 0.0
-    end
-
-    test "returns nil above for top level", %{
-      stop_levels: stop_levels,
-      sl_mid_a: sl_mid_a,
-      sl_mid_b: sl_mid_b,
-      sl_top: sl_top
-    } do
-      assert {:ok, %{above: nil, below: below}} =
-               Gtfs.resolve_adjacent_stop_levels(stop_levels, sl_top.id)
-
-      assert below.id in [sl_mid_a.id, sl_mid_b.id]
-      assert below.level.level_index == 0.0
-    end
-
-    test "returns not_found when active stop_level is missing", %{stop_levels: stop_levels} do
-      assert {:error, :not_found} =
-               Gtfs.resolve_adjacent_stop_levels(stop_levels, Ecto.UUID.generate())
-    end
-
-    test "skips same-level peers when resolving immediate neighbors", %{
-      stop_levels: stop_levels,
-      sl_mid_b: sl_mid_b,
-      sl_bottom: sl_bottom,
-      sl_top: sl_top
-    } do
-      assert {:ok, %{above: above, below: below}} =
-               Gtfs.resolve_adjacent_stop_levels(stop_levels, sl_mid_b.id)
-
-      assert above.id == sl_top.id
-      assert below.id == sl_bottom.id
-    end
-
-    test "returns deterministic neighbors with unsorted input", %{
-      stop_levels: stop_levels,
-      sl_mid_a: sl_mid_a,
-      sl_bottom: sl_bottom,
-      sl_top: sl_top
-    } do
-      unsorted_stop_levels = [
-        Enum.find(stop_levels, &(&1.id == sl_top.id)),
-        Enum.find(stop_levels, &(&1.id == sl_mid_a.id)),
-        Enum.find(stop_levels, &(&1.id == sl_bottom.id))
-      ]
-
-      assert {:ok, %{above: above, below: below}} =
-               Gtfs.resolve_adjacent_stop_levels(unsorted_stop_levels, sl_mid_a.id)
-
-      assert above.id == sl_top.id
-      assert below.id == sl_bottom.id
-    end
-  end
-
-  describe "build_adjacent_overlay_descriptors/1" do
-    setup do
-      organization = organization_fixture()
-      gtfs_version = gtfs_version_fixture(organization.id)
-
-      station =
-        stop_fixture(organization.id, gtfs_version.id, %{
-          stop_id: "ADJ_DESC_STATION",
-          location_type: 1
-        })
-
-      level_below =
-        level_fixture(organization.id, gtfs_version.id, %{
-          level_id: "ADJ_DESC_BELOW",
-          level_index: -1.0
-        })
-
-      level_above =
-        level_fixture(organization.id, gtfs_version.id, %{
-          level_id: "ADJ_DESC_ABOVE",
-          level_index: 1.0
-        })
-
-      {:ok, below_stop_level} =
-        Gtfs.create_stop_level(%{
-          organization_id: organization.id,
-          gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level_below.id,
-          diagram_filename: "below-level.png"
-        })
-
-      {:ok, above_stop_level} =
-        Gtfs.create_stop_level(%{
-          organization_id: organization.id,
-          gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level_above.id,
-          diagram_filename: "above-level.png"
-        })
-
-      below_stop_level =
-        Repo.preload(
-          %{
-            below_stop_level
-            | floorplan_center_lat: 40.0,
-              floorplan_center_lon: -73.0,
-              floorplan_scale_mpp: 0.25,
-              floorplan_rotation_deg: 15.0
-          },
-          :level
-        )
-
-      above_stop_level =
-        Repo.preload(
-          %{
-            above_stop_level
-            | floorplan_center_lat: 41.0,
-              floorplan_center_lon: -72.0,
-              floorplan_scale_mpp: 0.5,
-              floorplan_rotation_deg: -5.0
-          },
-          :level
-        )
-
-      %{
-        above_stop_level: above_stop_level,
-        below_stop_level: below_stop_level
-      }
-    end
-
-    test "returns descriptors for both aligned neighbors", %{
-      above_stop_level: above_stop_level,
-      below_stop_level: below_stop_level
-    } do
-      descriptors =
-        Gtfs.build_adjacent_overlay_descriptors(%{
-          above: above_stop_level,
-          below: below_stop_level
-        })
-
-      assert descriptors.above.side == :above
-      assert descriptors.above.stop_level_id == above_stop_level.id
-      assert descriptors.above.level_id == above_stop_level.level_id
-      assert descriptors.above.level_index == above_stop_level.level.level_index
-      assert descriptors.above.diagram_filename == "above-level.png"
-      assert descriptors.above.floorplan_center_lat == 41.0
-      assert descriptors.above.floorplan_center_lon == -72.0
-      assert descriptors.above.floorplan_scale_mpp == 0.5
-      assert descriptors.above.floorplan_rotation_deg == -5.0
-
-      assert descriptors.below.side == :below
-      assert descriptors.below.stop_level_id == below_stop_level.id
-      assert descriptors.below.level_id == below_stop_level.level_id
-      assert descriptors.below.level_index == below_stop_level.level.level_index
-      assert descriptors.below.diagram_filename == "below-level.png"
-      assert descriptors.below.floorplan_center_lat == 40.0
-      assert descriptors.below.floorplan_center_lon == -73.0
-      assert descriptors.below.floorplan_scale_mpp == 0.25
-      assert descriptors.below.floorplan_rotation_deg == 15.0
-    end
-
-    test "returns nil descriptor for incomplete alignment", %{above_stop_level: above_stop_level} do
-      descriptors =
-        Gtfs.build_adjacent_overlay_descriptors(%{
-          above: %{above_stop_level | floorplan_rotation_deg: nil},
-          below: nil
-        })
-
-      assert descriptors == %{above: nil, below: nil}
-    end
-  end
-
   describe "list_child_stops_for_level/2" do
     setup do
       organization = organization_fixture()
@@ -2995,7 +2725,6 @@ defmodule GtfsPlanner.GtfsTest do
       assert updated.floorplan_center_lon == -74.0060
       assert updated.floorplan_scale_mpp == 0.25
       assert updated.floorplan_rotation_deg == 12.5
-      assert updated.saved_synced_alignment == false
     end
 
     test "update_stop_level_alignment/2 rejects out-of-range lat", %{stop_level: stop_level} do
@@ -3040,7 +2769,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert_receive {[:stop_levels, :updated], ^updated}
     end
 
-    test "save_stop_level_alignment/2 persists valid alignment and sync flag", %{
+    test "save_stop_level_alignment/2 persists valid alignment", %{
       stop_level: stop_level
     } do
       attrs = %{
@@ -3055,28 +2784,6 @@ defmodule GtfsPlanner.GtfsTest do
       assert updated.floorplan_center_lon == -74.0060
       assert updated.floorplan_scale_mpp == 0.25
       assert updated.floorplan_rotation_deg == 12.5
-      assert updated.saved_synced_alignment == true
-    end
-
-    test "update_stop_level_saved_synced_alignment/2 persists true", %{stop_level: stop_level} do
-      assert {:ok, updated} = Gtfs.update_stop_level_saved_synced_alignment(stop_level, true)
-      assert updated.saved_synced_alignment == true
-    end
-
-    test "update_stop_level_saved_synced_alignment/2 persists false", %{stop_level: stop_level} do
-      {:ok, synced} = Gtfs.update_stop_level_saved_synced_alignment(stop_level, true)
-
-      assert {:ok, updated} = Gtfs.update_stop_level_saved_synced_alignment(synced, false)
-      assert updated.saved_synced_alignment == false
-    end
-
-    test "update_stop_level_saved_synced_alignment/2 broadcasts update event", %{
-      stop_level: stop_level
-    } do
-      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
-
-      assert {:ok, updated} = Gtfs.update_stop_level_saved_synced_alignment(stop_level, true)
-      assert_receive {[:stop_levels, :updated], ^updated}
     end
   end
 
@@ -3144,15 +2851,12 @@ defmodule GtfsPlanner.GtfsTest do
               %{
                 active_stop_level: updated,
                 apply_result: %{
-                  active_update_status: :updated,
-                  propagated_level_count: 0,
                   touched_stop_count: 1
                 }
               }} =
                Gtfs.save_and_apply_stop_level_alignment(stop_level.id, attrs, 1000, 800)
 
       assert updated.id == stop_level.id
-      assert updated.saved_synced_alignment == true
       assert updated.floorplan_center_lat == 40.7128
       assert updated.floorplan_center_lon == -74.0060
       assert updated.floorplan_scale_mpp == 0.25
@@ -3193,440 +2897,92 @@ defmodule GtfsPlanner.GtfsTest do
                )
     end
 
-    test "propagates transformed alignment fields to eligible synced levels", %{
+    test "updates only active level data", %{
       organization: org,
       gtfs_version: version,
       station: station,
+      level: active_level,
       stop_level: active_stop_level
     } do
-      level_above =
+      other_level =
         level_fixture(org.id, version.id, %{
-          level_id: "L_SAVE_APPLY_ABOVE",
+          level_id: "L_SAVE_APPLY_OTHER",
           level_index: 1.0
         })
 
-      level_below =
-        level_fixture(org.id, version.id, %{
-          level_id: "L_SAVE_APPLY_BELOW",
-          level_index: -1.0
-        })
-
-      level_unsynced =
-        level_fixture(org.id, version.id, %{
-          level_id: "L_SAVE_APPLY_UNSYNCED",
-          level_index: 2.0
-        })
-
-      level_incomplete =
-        level_fixture(org.id, version.id, %{
-          level_id: "L_SAVE_APPLY_INCOMPLETE",
-          level_index: 3.0
-        })
-
-      {:ok, active_old} =
-        Gtfs.update_stop_level_alignment(active_stop_level, %{
-          floorplan_center_lat: 0.0,
-          floorplan_center_lon: 0.0,
-          floorplan_scale_mpp: 1.0,
-          floorplan_rotation_deg: 0.0
-        })
-
-      assert {:ok, active_old} = Gtfs.update_stop_level_saved_synced_alignment(active_old, true)
-
-      {:ok, target_synced_a} =
+      {:ok, other_stop_level} =
         Gtfs.create_stop_level(%{
           organization_id: org.id,
           gtfs_version_id: version.id,
           stop_id: station.id,
-          level_id: level_above.id
+          level_id: other_level.id
         })
 
-      {:ok, target_synced_a} =
-        Gtfs.update_stop_level_alignment(target_synced_a, %{
-          floorplan_center_lat: 1.0,
-          floorplan_center_lon: -1.0,
-          floorplan_scale_mpp: 1.0,
-          floorplan_rotation_deg: 0.0
+      {:ok, other_stop_level} =
+        Gtfs.update_stop_level_alignment(other_stop_level, %{
+          floorplan_center_lat: 40.6,
+          floorplan_center_lon: -73.9,
+          floorplan_scale_mpp: 0.5,
+          floorplan_rotation_deg: 10.0
         })
 
-      assert {:ok, target_synced_a} =
-               Gtfs.update_stop_level_saved_synced_alignment(target_synced_a, true)
-
-      {:ok, target_synced_b} =
-        Gtfs.create_stop_level(%{
-          organization_id: org.id,
-          gtfs_version_id: version.id,
-          stop_id: station.id,
-          level_id: level_below.id
-        })
-
-      {:ok, target_synced_b} =
-        Gtfs.update_stop_level_alignment(target_synced_b, %{
-          floorplan_center_lat: -1.0,
-          floorplan_center_lon: 1.0,
-          floorplan_scale_mpp: 1.0,
-          floorplan_rotation_deg: 0.0
-        })
-
-      assert {:ok, target_synced_b} =
-               Gtfs.update_stop_level_saved_synced_alignment(target_synced_b, true)
-
-      target_synced_a_child =
+      active_child =
         stop_fixture(org.id, version.id, %{
-          stop_id: "SAVE_APPLY_SYNCED_A_CHILD",
+          stop_id: "SAVE_APPLY_ACTIVE_ONLY_CHILD",
           location_type: 0,
           parent_station: station.stop_id,
-          level_id: level_above.level_id,
-          diagram_coordinate: %{x: 65, y: 35},
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50},
           stop_lat: Decimal.new("1.0"),
           stop_lon: Decimal.new("2.0")
         })
 
-      target_synced_b_child =
+      other_child =
         stop_fixture(org.id, version.id, %{
-          stop_id: "SAVE_APPLY_SYNCED_B_CHILD",
+          stop_id: "SAVE_APPLY_OTHER_LEVEL_CHILD",
           location_type: 0,
           parent_station: station.stop_id,
-          level_id: level_below.level_id,
-          diagram_coordinate: %{x: 25, y: 75},
+          level_id: other_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50},
           stop_lat: Decimal.new("3.0"),
           stop_lon: Decimal.new("4.0")
         })
 
-      {:ok, target_unsynced} =
-        Gtfs.create_stop_level(%{
-          organization_id: org.id,
-          gtfs_version_id: version.id,
-          stop_id: station.id,
-          level_id: level_unsynced.id
-        })
-
-      {:ok, target_unsynced} =
-        Gtfs.update_stop_level_alignment(target_unsynced, %{
-          floorplan_center_lat: 2.0,
-          floorplan_center_lon: -2.0,
-          floorplan_scale_mpp: 1.5,
-          floorplan_rotation_deg: 5.0
-        })
-
-      {:ok, target_incomplete} =
-        Gtfs.create_stop_level(%{
-          organization_id: org.id,
-          gtfs_version_id: version.id,
-          stop_id: station.id,
-          level_id: level_incomplete.id
-        })
-
-      assert {:ok, target_incomplete} =
-               Gtfs.update_stop_level_saved_synced_alignment(target_incomplete, true)
-
-      new_active_alignment = %{
-        floorplan_center_lat: 1.0,
-        floorplan_center_lon: -1.0,
-        floorplan_scale_mpp: 1.25,
-        floorplan_rotation_deg: 10.0
+      attrs = %{
+        floorplan_center_lat: 41.1111,
+        floorplan_center_lon: -73.2222,
+        floorplan_scale_mpp: 0.3,
+        floorplan_rotation_deg: 5.0
       }
 
       assert {:ok,
               %{
-                active_stop_level: _updated_active,
-                apply_result: %{
-                  active_update_status: :updated,
-                  propagated_level_count: 2,
-                  touched_stop_count: 2
-                }
+                active_stop_level: updated,
+                apply_result: %{touched_stop_count: 1}
               }} =
-               Gtfs.save_and_apply_stop_level_alignment(
-                 active_old.id,
-                 new_active_alignment,
-                 1200,
-                 900
-               )
+               Gtfs.save_and_apply_stop_level_alignment(active_stop_level.id, attrs, 1000, 800)
 
-      assert {:ok, delta} = StopLevel.active_alignment_delta(active_old, new_active_alignment)
+      assert updated.id == active_stop_level.id
+      assert updated.floorplan_center_lat == attrs.floorplan_center_lat
+      assert updated.floorplan_center_lon == attrs.floorplan_center_lon
+      assert updated.floorplan_scale_mpp == attrs.floorplan_scale_mpp
+      assert updated.floorplan_rotation_deg == attrs.floorplan_rotation_deg
 
-      target_synced_a_after = Repo.get!(GtfsPlanner.Gtfs.StopLevel, target_synced_a.id)
-      target_synced_b_after = Repo.get!(GtfsPlanner.Gtfs.StopLevel, target_synced_b.id)
-      target_unsynced_after = Repo.get!(GtfsPlanner.Gtfs.StopLevel, target_unsynced.id)
-      target_incomplete_after = Repo.get!(GtfsPlanner.Gtfs.StopLevel, target_incomplete.id)
+      reloaded_other_stop_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, other_stop_level.id)
+      assert reloaded_other_stop_level.floorplan_center_lat == other_stop_level.floorplan_center_lat
+      assert reloaded_other_stop_level.floorplan_center_lon == other_stop_level.floorplan_center_lon
+      assert reloaded_other_stop_level.floorplan_scale_mpp == other_stop_level.floorplan_scale_mpp
+      assert reloaded_other_stop_level.floorplan_rotation_deg == other_stop_level.floorplan_rotation_deg
 
-      target_synced_a_child_after = Repo.get!(GtfsPlanner.Gtfs.Stop, target_synced_a_child.id)
-      target_synced_b_child_after = Repo.get!(GtfsPlanner.Gtfs.Stop, target_synced_b_child.id)
+      reloaded_active_child = Repo.get!(GtfsPlanner.Gtfs.Stop, active_child.id)
+      reloaded_other_child = Repo.get!(GtfsPlanner.Gtfs.Stop, other_child.id)
 
-      assert {:ok, target_synced_a_transform} = StopLevel.alignment_transform(target_synced_a)
-
-      assert {:ok, expected_a} =
-               StopLevel.compose_alignment_transforms(delta, target_synced_a_transform)
-
-      assert {:ok, target_synced_b_transform} = StopLevel.alignment_transform(target_synced_b)
-
-      assert {:ok, expected_b} =
-               StopLevel.compose_alignment_transforms(delta, target_synced_b_transform)
-
-      assert_in_delta target_synced_a_after.floorplan_center_lat, expected_a.center_lat, 1.0e-9
-      assert_in_delta target_synced_a_after.floorplan_center_lon, expected_a.center_lon, 1.0e-9
-      assert_in_delta target_synced_a_after.floorplan_scale_mpp, expected_a.scale_mpp, 1.0e-9
-
-      assert_in_delta target_synced_a_after.floorplan_rotation_deg,
-                      expected_a.rotation_deg,
-                      1.0e-9
-
-      assert_in_delta target_synced_b_after.floorplan_center_lat, expected_b.center_lat, 1.0e-9
-      assert_in_delta target_synced_b_after.floorplan_center_lon, expected_b.center_lon, 1.0e-9
-      assert_in_delta target_synced_b_after.floorplan_scale_mpp, expected_b.scale_mpp, 1.0e-9
-
-      assert_in_delta target_synced_b_after.floorplan_rotation_deg,
-                      expected_b.rotation_deg,
-                      1.0e-9
-
-      assert target_unsynced_after.floorplan_center_lat == target_unsynced.floorplan_center_lat
-      assert target_unsynced_after.floorplan_center_lon == target_unsynced.floorplan_center_lon
-      assert target_unsynced_after.floorplan_scale_mpp == target_unsynced.floorplan_scale_mpp
-
-      assert target_unsynced_after.floorplan_rotation_deg ==
-               target_unsynced.floorplan_rotation_deg
-
-      assert target_incomplete_after.floorplan_center_lat ==
-               target_incomplete.floorplan_center_lat
-
-      assert target_incomplete_after.floorplan_center_lon ==
-               target_incomplete.floorplan_center_lon
-
-      assert is_nil(target_incomplete_after.floorplan_scale_mpp)
-      assert is_nil(target_incomplete_after.floorplan_rotation_deg)
-
-      assert {:ok, [expected_synced_a_child]} =
-               Gtfs.derive_child_stop_coords(target_synced_a_after, 1200, 900)
-
-      assert {:ok, [expected_synced_b_child]} =
-               Gtfs.derive_child_stop_coords(target_synced_b_after, 1200, 900)
-
-      assert_in_delta(
-        Decimal.to_float(target_synced_a_child_after.stop_lat),
-        expected_synced_a_child.lat,
-        1.0e-9
-      )
-
-      assert_in_delta(
-        Decimal.to_float(target_synced_a_child_after.stop_lon),
-        expected_synced_a_child.lon,
-        1.0e-9
-      )
-
-      assert_in_delta(
-        Decimal.to_float(target_synced_b_child_after.stop_lat),
-        expected_synced_b_child.lat,
-        1.0e-9
-      )
-
-      assert_in_delta(
-        Decimal.to_float(target_synced_b_child_after.stop_lon),
-        expected_synced_b_child.lon,
-        1.0e-9
-      )
+      assert_in_delta Decimal.to_float(reloaded_active_child.stop_lat), attrs.floorplan_center_lat, 1.0e-9
+      assert_in_delta Decimal.to_float(reloaded_active_child.stop_lon), attrs.floorplan_center_lon, 1.0e-9
+      assert Decimal.equal?(reloaded_other_child.stop_lat, Decimal.new("3.0"))
+      assert Decimal.equal?(reloaded_other_child.stop_lon, Decimal.new("4.0"))
     end
 
-    test "rolls back apply when propagated target alignment persistence fails", %{
-      organization: org,
-      gtfs_version: version,
-      station: station,
-      level: active_level,
-      stop_level: active_stop_level
-    } do
-      target_level =
-        level_fixture(org.id, version.id, %{
-          level_id: "L_SAVE_APPLY_ROLLBACK_ALIGN",
-          level_index: 1.0
-        })
-
-      {:ok, active_old} =
-        Gtfs.update_stop_level_alignment(active_stop_level, %{
-          floorplan_center_lat: 0.0,
-          floorplan_center_lon: 0.0,
-          floorplan_scale_mpp: 1.0,
-          floorplan_rotation_deg: 0.0
-        })
-
-      assert {:ok, active_old} = Gtfs.update_stop_level_saved_synced_alignment(active_old, true)
-
-      {:ok, target_synced} =
-        Gtfs.create_stop_level(%{
-          organization_id: org.id,
-          gtfs_version_id: version.id,
-          stop_id: station.id,
-          level_id: target_level.id
-        })
-
-      {:ok, target_synced} =
-        Gtfs.update_stop_level_alignment(target_synced, %{
-          floorplan_center_lat: 89.5,
-          floorplan_center_lon: 0.0,
-          floorplan_scale_mpp: 1.0,
-          floorplan_rotation_deg: 0.0
-        })
-
-      assert {:ok, target_synced} =
-               Gtfs.update_stop_level_saved_synced_alignment(target_synced, true)
-
-      active_child =
-        stop_fixture(org.id, version.id, %{
-          stop_id: "SAVE_APPLY_ACTIVE_CHILD_ROLLBACK_ALIGN",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: active_level.level_id,
-          diagram_coordinate: %{x: 50, y: 50},
-          stop_lat: Decimal.new("1.0"),
-          stop_lon: Decimal.new("2.0")
-        })
-
-      target_child =
-        stop_fixture(org.id, version.id, %{
-          stop_id: "SAVE_APPLY_TARGET_CHILD_ROLLBACK_ALIGN",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: target_level.level_id,
-          diagram_coordinate: %{x: 50, y: 50},
-          stop_lat: Decimal.new("3.0"),
-          stop_lon: Decimal.new("4.0")
-        })
-
-      # Delta center_lat = +2.0 makes target center_lat become 91.5, which
-      # violates stop_level alignment lat constraints and must rollback all writes.
-      assert {:error, %Ecto.Changeset{}} =
-               Gtfs.save_and_apply_stop_level_alignment(
-                 active_old.id,
-                 %{
-                   floorplan_center_lat: 2.0,
-                   floorplan_center_lon: 0.0,
-                   floorplan_scale_mpp: 1.0,
-                   floorplan_rotation_deg: 0.0
-                 },
-                 1200,
-                 900
-               )
-
-      active_after = Repo.get!(GtfsPlanner.Gtfs.StopLevel, active_old.id)
-      target_after = Repo.get!(GtfsPlanner.Gtfs.StopLevel, target_synced.id)
-      active_child_after = Repo.get!(GtfsPlanner.Gtfs.Stop, active_child.id)
-      target_child_after = Repo.get!(GtfsPlanner.Gtfs.Stop, target_child.id)
-
-      assert active_after.floorplan_center_lat == active_old.floorplan_center_lat
-      assert active_after.floorplan_center_lon == active_old.floorplan_center_lon
-      assert active_after.floorplan_scale_mpp == active_old.floorplan_scale_mpp
-      assert active_after.floorplan_rotation_deg == active_old.floorplan_rotation_deg
-      assert active_after.saved_synced_alignment == true
-
-      assert target_after.floorplan_center_lat == target_synced.floorplan_center_lat
-      assert target_after.floorplan_center_lon == target_synced.floorplan_center_lon
-      assert target_after.floorplan_scale_mpp == target_synced.floorplan_scale_mpp
-      assert target_after.floorplan_rotation_deg == target_synced.floorplan_rotation_deg
-
-      assert Decimal.equal?(active_child_after.stop_lat, Decimal.new("1.0"))
-      assert Decimal.equal?(active_child_after.stop_lon, Decimal.new("2.0"))
-      assert Decimal.equal?(target_child_after.stop_lat, Decimal.new("3.0"))
-      assert Decimal.equal?(target_child_after.stop_lon, Decimal.new("4.0"))
-    end
-
-    test "rolls back apply when propagated target child-stop persistence fails", %{
-      organization: org,
-      gtfs_version: version,
-      station: station,
-      level: active_level,
-      stop_level: active_stop_level
-    } do
-      target_level =
-        level_fixture(org.id, version.id, %{
-          level_id: "L_SAVE_APPLY_ROLLBACK_COORDS",
-          level_index: 1.0
-        })
-
-      {:ok, active_old} =
-        Gtfs.update_stop_level_alignment(active_stop_level, %{
-          floorplan_center_lat: 0.0,
-          floorplan_center_lon: 0.0,
-          floorplan_scale_mpp: 1.0,
-          floorplan_rotation_deg: 0.0
-        })
-
-      assert {:ok, active_old} = Gtfs.update_stop_level_saved_synced_alignment(active_old, true)
-
-      {:ok, target_synced} =
-        Gtfs.create_stop_level(%{
-          organization_id: org.id,
-          gtfs_version_id: version.id,
-          stop_id: station.id,
-          level_id: target_level.id
-        })
-
-      {:ok, target_synced} =
-        Gtfs.update_stop_level_alignment(target_synced, %{
-          floorplan_center_lat: 89.9,
-          floorplan_center_lon: 0.0,
-          floorplan_scale_mpp: 30.0,
-          floorplan_rotation_deg: 0.0
-        })
-
-      assert {:ok, target_synced} =
-               Gtfs.update_stop_level_saved_synced_alignment(target_synced, true)
-
-      active_child =
-        stop_fixture(org.id, version.id, %{
-          stop_id: "SAVE_APPLY_ACTIVE_CHILD_ROLLBACK_COORDS",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: active_level.level_id,
-          diagram_coordinate: %{x: 50, y: 50},
-          stop_lat: Decimal.new("5.0"),
-          stop_lon: Decimal.new("6.0")
-        })
-
-      target_bad_child =
-        stop_fixture(org.id, version.id, %{
-          stop_id: "SAVE_APPLY_TARGET_BAD_CHILD_ROLLBACK_COORDS",
-          location_type: 0,
-          parent_station: station.stop_id,
-          level_id: target_level.level_id,
-          diagram_coordinate: %{x: 50, y: 0},
-          stop_lat: Decimal.new("7.0"),
-          stop_lon: Decimal.new("8.0")
-        })
-
-      # Keep delta neutral so target alignment stays valid; propagated coordinate
-      # write still fails from invalid derived latitude (> 90), forcing rollback.
-      assert {:error, %Ecto.Changeset{}} =
-               Gtfs.save_and_apply_stop_level_alignment(
-                 active_old.id,
-                 %{
-                   floorplan_center_lat: 0.0,
-                   floorplan_center_lon: 0.0,
-                   floorplan_scale_mpp: 1.0,
-                   floorplan_rotation_deg: 0.0
-                 },
-                 1000,
-                 800
-               )
-
-      active_after = Repo.get!(GtfsPlanner.Gtfs.StopLevel, active_old.id)
-      target_after = Repo.get!(GtfsPlanner.Gtfs.StopLevel, target_synced.id)
-      active_child_after = Repo.get!(GtfsPlanner.Gtfs.Stop, active_child.id)
-      target_bad_child_after = Repo.get!(GtfsPlanner.Gtfs.Stop, target_bad_child.id)
-
-      assert active_after.floorplan_center_lat == active_old.floorplan_center_lat
-      assert active_after.floorplan_center_lon == active_old.floorplan_center_lon
-      assert active_after.floorplan_scale_mpp == active_old.floorplan_scale_mpp
-      assert active_after.floorplan_rotation_deg == active_old.floorplan_rotation_deg
-      assert active_after.saved_synced_alignment == true
-
-      assert target_after.floorplan_center_lat == target_synced.floorplan_center_lat
-      assert target_after.floorplan_center_lon == target_synced.floorplan_center_lon
-      assert target_after.floorplan_scale_mpp == target_synced.floorplan_scale_mpp
-      assert target_after.floorplan_rotation_deg == target_synced.floorplan_rotation_deg
-
-      assert Decimal.equal?(active_child_after.stop_lat, Decimal.new("5.0"))
-      assert Decimal.equal?(active_child_after.stop_lon, Decimal.new("6.0"))
-      assert Decimal.equal?(target_bad_child_after.stop_lat, Decimal.new("7.0"))
-      assert Decimal.equal?(target_bad_child_after.stop_lon, Decimal.new("8.0"))
-    end
   end
 
   describe "derive_child_stop_coords/3" do

@@ -3,25 +3,21 @@ import { describe, expect, it, vi } from "vitest";
 import MapAlignmentHook, {
   parseAlignmentPayload,
   readActiveAlignment,
-  readAdjacentAlignment,
+  readReferenceAlignment,
 } from "../map_alignment_hook";
 
 describe("map_alignment_hook alignment parsing", () => {
-  it("parses active and adjacent payloads independently", () => {
+  it("parses active and reference payloads independently", () => {
     const root = {
       dataset: {
         alignCenterLat: "40.7128",
         alignCenterLon: "-74.0060",
         alignScaleMpp: "0.25",
         alignRotationDeg: "15",
-        adjacentAboveCenterLat: "40.7131",
-        adjacentAboveCenterLon: "-74.0058",
-        adjacentAboveScaleMpp: "0.3",
-        adjacentAboveRotationDeg: "-5",
-        adjacentBelowCenterLat: "bad",
-        adjacentBelowCenterLon: "-74.0062",
-        adjacentBelowScaleMpp: "0.31",
-        adjacentBelowRotationDeg: "12",
+        referenceCenterLat: "40.7131",
+        referenceCenterLon: "-74.0058",
+        referenceScaleMpp: "0.3",
+        referenceRotationDeg: "-5",
       },
     };
 
@@ -32,14 +28,59 @@ describe("map_alignment_hook alignment parsing", () => {
       rotationDeg: 15,
     });
 
-    expect(readAdjacentAlignment(root, "above")).toEqual({
+    expect(readReferenceAlignment(root)).toEqual({
       centerLat: 40.7131,
       centerLon: -74.0058,
       scaleMpp: 0.3,
       rotationDeg: -5,
     });
+  });
 
-    expect(readAdjacentAlignment(root, "below")).toBeNull();
+  it("returns null for invalid reference payload parts", () => {
+    const root = {
+      dataset: {
+        referenceCenterLat: "bad",
+        referenceCenterLon: "-74.0062",
+        referenceScaleMpp: "0.31",
+        referenceRotationDeg: "12",
+      },
+    };
+
+    expect(readReferenceAlignment(root)).toBeNull();
+  });
+
+  it("returns null when reference payload is incomplete", () => {
+    const root = {
+      dataset: {
+        referenceCenterLat: "40.7131",
+        referenceCenterLon: "-74.0058",
+        referenceScaleMpp: "0.3",
+      },
+    };
+
+    expect(readReferenceAlignment(root)).toBeNull();
+  });
+
+  it("reads reference alignment only from reference dataset keys", () => {
+    const root = {
+      dataset: {
+        alignCenterLat: "10",
+        alignCenterLon: "20",
+        alignScaleMpp: "0.5",
+        alignRotationDeg: "45",
+        referenceCenterLat: "40.7131",
+        referenceCenterLon: "-74.0058",
+        referenceScaleMpp: "0.3",
+        referenceRotationDeg: "-5",
+      },
+    };
+
+    expect(readReferenceAlignment(root)).toEqual({
+      centerLat: 40.7131,
+      centerLon: -74.0058,
+      scaleMpp: 0.3,
+      rotationDeg: -5,
+    });
   });
 
   it("returns null for invalid payload parts", () => {
@@ -48,27 +89,27 @@ describe("map_alignment_hook alignment parsing", () => {
   });
 });
 
-describe("map_alignment_hook adjacent restore", () => {
-  it("restores adjacent overlay transform without mutating active transform state", () => {
+describe("map_alignment_hook reference restore", () => {
+  it("restores reference overlay transform without mutating active transform state", () => {
     document.body.innerHTML = `
       <div id="root">
         <div id="map-alignment-leaflet"></div>
         <div id="active-overlay"><img id="active-img" /></div>
-        <div id="adj-overlay"><img id="adj-img" /></div>
+        <div id="map-reference-overlay"><img id="reference-img" /></div>
       </div>
     `;
 
     const root = document.getElementById("root");
     const leafletEl = document.getElementById("map-alignment-leaflet");
     const activeOverlay = document.getElementById("active-overlay");
-    const adjacentOverlay = document.getElementById("adj-overlay");
-    const adjacentImg = document.getElementById("adj-img");
+    const referenceOverlay = document.getElementById("map-reference-overlay");
+    const referenceImg = document.getElementById("reference-img");
 
     root.getBoundingClientRect = () => ({ width: 200, height: 100 });
     leafletEl.getBoundingClientRect = () => ({ width: 200, height: 100 });
 
-    Object.defineProperty(adjacentImg, "naturalWidth", { value: 200, configurable: true });
-    Object.defineProperty(adjacentImg, "naturalHeight", { value: 100, configurable: true });
+    Object.defineProperty(referenceImg, "naturalWidth", { value: 200, configurable: true });
+    Object.defineProperty(referenceImg, "naturalHeight", { value: 100, configurable: true });
 
     const hook = {
       ...MapAlignmentHook,
@@ -84,16 +125,52 @@ describe("map_alignment_hook adjacent restore", () => {
     };
 
     hook._restoreOverlayAlignment(
-      adjacentOverlay,
+      referenceOverlay,
       { centerLat: 40.7, centerLon: -74, scaleMpp: 0.5, rotationDeg: 33 },
-      adjacentImg,
-      "adjacent-above",
+      referenceImg,
+      "reference",
     );
 
-    expect(adjacentOverlay.style.transform).toContain("rotate(33deg)");
-    expect(adjacentOverlay.style.transform).toContain("scale(");
+    expect(referenceOverlay.style.transform).toContain("rotate(33deg)");
+    expect(referenceOverlay.style.transform).toContain("scale(");
     expect(hook.transform).toEqual({ tx: 9, ty: 8, rotation: 7, scale: 1.2 });
     expect(hook._applyTransform).not.toHaveBeenCalled();
+  });
+
+  it("applies identity transform for reference overlay when alignment is missing", () => {
+    document.body.innerHTML = `<div id="map-reference-overlay"></div>`;
+    const referenceOverlay = document.getElementById("map-reference-overlay");
+
+    const hook = {
+      ...MapAlignmentHook,
+    };
+
+    hook._applyOverlayTransform(referenceOverlay, { tx: 0, ty: 0, rotation: 0, scale: 1 });
+
+    expect(referenceOverlay.style.transform).toBe("none");
+  });
+
+  it("applies identity transform for reference overlay when alignment payload is invalid", () => {
+    document.body.innerHTML = `<div id="root"><div id="map-reference-overlay"></div></div>`;
+    const root = document.getElementById("root");
+    const referenceOverlay = document.getElementById("map-reference-overlay");
+
+    root.dataset.referenceCenterLat = "bad";
+    root.dataset.referenceCenterLon = "-74.0058";
+    root.dataset.referenceScaleMpp = "0.3";
+    root.dataset.referenceRotationDeg = "-5";
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      referenceOverlay,
+    };
+
+    const referenceAlignment = readReferenceAlignment(root);
+    expect(referenceAlignment).toBeNull();
+
+    hook._applyOverlayTransform(referenceOverlay, { tx: 0, ty: 0, rotation: 0, scale: 1 });
+    expect(referenceOverlay.style.transform).toBe("none");
   });
 });
 
@@ -178,53 +255,29 @@ describe("map_alignment_hook alignment compute and payload gating", () => {
   });
 });
 
-describe("map_alignment_hook adjacent overlay zoom sync", () => {
-  it("keeps adjacent overlays map-anchored and scales them with zoom", () => {
-    document.body.innerHTML = `
-      <div id="adj-above" data-side="above"></div>
-      <div id="adj-below" data-side="below"></div>
-    `;
+describe("map_alignment_hook reference overlay visibility sync", () => {
+  it("shows and hides single reference overlay from dataset flag", () => {
+    document.body.innerHTML = `<div id="root"><div id="map-reference-overlay" class="hidden"></div></div>`;
 
-    const adjacentOverlayAbove = document.getElementById("adj-above");
-    const adjacentOverlayBelow = document.getElementById("adj-below");
+    const root = document.getElementById("root");
+    const referenceOverlay = document.getElementById("map-reference-overlay");
 
     const hook = {
       ...MapAlignmentHook,
-      adjacentOverlayAbove,
-      adjacentOverlayBelow,
-      _adjacentTransforms: {
-        above: { tx: 10, ty: 20, rotation: 15, scale: 1.5 },
-        below: { tx: -5, ty: 8, rotation: -10, scale: 0.8 },
-      },
-      leafletMap: {
-        latLngToContainerPoint: vi.fn((latLng) => {
-          if (latLng.id === "above") return { x: 160, y: 80 };
-          if (latLng.id === "below") return { x: 40, y: 120 };
-          return { x: 100, y: 100 };
-        }),
-      },
+      el: root,
+      referenceOverlay,
     };
 
-    hook._syncAdjacentOverlaysForZoom(
-      {
-        above: { id: "above" },
-        below: { id: "below" },
-      },
-      200,
-      100,
-      2,
-    );
+    root.dataset.showReferenceOverlay = "true";
+    hook._syncReferenceOverlayVisibilityFromDataset();
 
-    expect(hook._adjacentTransforms.above.tx).toBe(60);
-    expect(hook._adjacentTransforms.above.ty).toBe(30);
-    expect(hook._adjacentTransforms.above.scale).toBe(3);
-    expect(adjacentOverlayAbove.style.transform).toContain("translate(60px, 30px)");
-    expect(adjacentOverlayAbove.style.transform).toContain("scale(3)");
+    expect(referenceOverlay.dataset.overlayVisible).toBe("true");
+    expect(referenceOverlay.classList.contains("hidden")).toBe(false);
 
-    expect(hook._adjacentTransforms.below.tx).toBe(-60);
-    expect(hook._adjacentTransforms.below.ty).toBe(70);
-    expect(hook._adjacentTransforms.below.scale).toBeCloseTo(1.6, 6);
-    expect(adjacentOverlayBelow.style.transform).toContain("translate(-60px, 70px)");
-    expect(adjacentOverlayBelow.style.transform).toContain("scale(1.6)");
+    root.dataset.showReferenceOverlay = "false";
+    hook._syncReferenceOverlayVisibilityFromDataset();
+
+    expect(referenceOverlay.dataset.overlayVisible).toBe("false");
+    expect(referenceOverlay.classList.contains("hidden")).toBe(true);
   });
 });

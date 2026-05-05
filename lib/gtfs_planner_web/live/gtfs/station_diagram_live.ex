@@ -91,6 +91,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:naming_error, nil)
      |> assign(:naming_status, nil)
      |> assign(:naming_excluded_ids, MapSet.new())
+      |> assign(:reference_level_id, nil)
+      |> assign(:reference_stop_level, nil)
+      |> assign(:show_reference_overlay, false)
      |> assign(:audit_ctx, nil)
      |> assign(:history_open_for, nil)
      |> assign(:history_entries, [])
@@ -98,16 +101,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:rollback_preview, nil)
      |> assign(:floorplan_image_w, nil)
      |> assign(:floorplan_image_h, nil)
-     |> assign(:above_level, nil)
-     |> assign(:below_level, nil)
-     |> assign(:above_overlay_available, false)
-     |> assign(:below_overlay_available, false)
-     |> assign(:show_above_overlay, false)
-     |> assign(:show_below_overlay, false)
-     |> assign(:adjacent_overlay_state_key, nil)
-     |> assign(:adjacent_overlay_descriptors, %{above: nil, below: nil})
-     |> assign(:synced_aligned_levels_count, 0)
-     |> assign(:station_stop_levels_total_count, 0)
      |> assign(:station_stop_levels_cache, empty_station_stop_levels_cache())
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg .svg),
@@ -170,6 +163,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:available_levels, available_levels)
           |> assign(:all_levels, all_levels)
           |> assign(:active_level, active_level)
+           |> assign(:reference_level_id, nil)
+           |> assign(:reference_stop_level, nil)
+           |> assign(:show_reference_overlay, false)
           |> assign(:show_walkability_drawer, false)
           |> assign(:walkability_stop, nil)
           |> assign(
@@ -180,6 +176,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:walkability_last_results, [])
           |> assign(:walkability_mode, :create)
           |> assign(:editing_walkability_test, nil)
+
+        socket =
+          socket
+          |> load_station_stop_levels_cache()
+          |> assign_selectable_reference_stop_levels()
 
         socket = assign(socket, :audit_ctx, build_audit_ctx(socket))
 
@@ -212,13 +213,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       end
 
     cache = normalize_station_stop_levels_cache(stop_levels)
-    synced_aligned_levels_count = synced_aligned_levels_count(stop_levels)
-    station_stop_levels_total_count = station_stop_levels_total_count(stop_levels)
-
     socket
     |> assign(:station_stop_levels_cache, cache)
-    |> assign(:synced_aligned_levels_count, synced_aligned_levels_count)
-    |> assign(:station_stop_levels_total_count, station_stop_levels_total_count)
   end
 
   defp normalize_station_stop_levels_cache(stop_levels) when is_list(stop_levels) do
@@ -246,27 +242,67 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     %{ordered: [], by_level_id: %{}, by_stop_level_id: %{}}
   end
 
-  defp refresh_adjacent_overlay_stop_levels_cache(socket) do
-    if socket.assigns[:mode] == :map do
-      socket
-      |> load_station_stop_levels_cache()
-      |> assign(:show_above_overlay, false)
-      |> assign(:show_below_overlay, false)
-      |> assign(:adjacent_overlay_state_key, nil)
-    else
-      socket
-    end
+  defp selectable_reference_stop_levels(assigns) when is_map(assigns) do
+    active_level_id =
+      case Map.get(assigns, :active_level) do
+        %{level_id: level_id} -> level_id
+        _ -> nil
+      end
+
+    stop_levels =
+      assigns
+      |> Map.get(:station_stop_levels_cache, empty_station_stop_levels_cache())
+      |> Map.get(:ordered, [])
+
+    Enum.reject(stop_levels, fn stop_level ->
+      stop_level.level_id == active_level_id
+    end)
+  end
+
+  defp assign_selectable_reference_stop_levels(socket) do
+    assign(socket, :selectable_reference_stop_levels, selectable_reference_stop_levels(socket.assigns))
   end
 
   defp refresh_level_and_stop_level_cache(socket, level) do
     socket = load_level_data(socket, level)
 
-    if socket.assigns[:mode] == :map do
-      socket
-      |> refresh_adjacent_overlay_stop_levels_cache()
-      |> maybe_sync_adjacent_overlay_state(level)
-    else
-      socket
+    socket
+    |> load_station_stop_levels_cache()
+    |> assign_selectable_reference_stop_levels()
+    |> sync_reference_overlay_state(level)
+  end
+
+  defp sync_reference_overlay_state(socket, level) do
+    reference_level_id = socket.assigns[:reference_level_id]
+
+    reference_stop_level =
+      socket.assigns
+      |> Map.get(:station_stop_levels_cache, empty_station_stop_levels_cache())
+      |> Map.get(:by_level_id, %{})
+      |> Map.get(reference_level_id)
+
+    cond do
+      is_nil(reference_level_id) ->
+        socket
+        |> assign(:reference_stop_level, nil)
+        |> assign(:show_reference_overlay, false)
+
+      is_nil(reference_stop_level) ->
+        socket
+        |> assign(:reference_level_id, nil)
+        |> assign(:reference_stop_level, nil)
+        |> assign(:show_reference_overlay, false)
+
+      level && reference_stop_level.level_id == level.level_id ->
+        socket
+        |> assign(:reference_level_id, nil)
+        |> assign(:reference_stop_level, nil)
+        |> assign(:show_reference_overlay, false)
+
+      true ->
+        socket
+        |> assign(:reference_stop_level, reference_stop_level)
+        |> assign(:show_reference_overlay, true)
     end
   end
 
@@ -533,12 +569,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             scale_status={@scale_status}
             levels={@levels}
             active_level={@active_level}
-            above_level={@above_level}
-            below_level={@below_level}
-            above_overlay_available={@above_overlay_available}
-            below_overlay_available={@below_overlay_available}
-            show_above_overlay={@show_above_overlay}
-            show_below_overlay={@show_below_overlay}
+            selectable_reference_stop_levels={@selectable_reference_stop_levels}
+            reference_level_id={@reference_level_id}
           />
           <%= if @mode == :map do %>
             <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
@@ -546,14 +578,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 station={@station}
                 active_level={@active_level}
                 active_stop_level={@active_stop_level}
-                above_level={@above_level}
-                below_level={@below_level}
                 organization_id={@current_organization.id}
-                adjacent_overlay_descriptors={@adjacent_overlay_descriptors}
-                above_overlay_available={@above_overlay_available}
-                below_overlay_available={@below_overlay_available}
-                show_above_overlay={@show_above_overlay}
-                show_below_overlay={@show_below_overlay}
+                reference_stop_level={@reference_stop_level}
+                show_reference_overlay={@show_reference_overlay}
                 align_center_lat={@active_stop_level && @active_stop_level.floorplan_center_lat}
                 align_center_lon={@active_stop_level && @active_stop_level.floorplan_center_lon}
                 align_scale_mpp={@active_stop_level && @active_stop_level.floorplan_scale_mpp}
@@ -565,8 +592,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 anchor_count={@anchor_count}
                 cross_level_pathway_total={@cross_level_pathway_total}
                 cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
-                synced_aligned_levels_count={@synced_aligned_levels_count}
-                station_stop_levels_total_count={@station_stop_levels_total_count}
               />
             </div>
           <% else %>
@@ -728,6 +753,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          socket
          |> disable_measurement()
          |> assign(:active_level, selected_level)
+         |> assign_selectable_reference_stop_levels()
          |> assign(:pending_xy, nil)
          |> assign(:diagram_error, nil)
          |> assign(:show_walkability_drawer, false)
@@ -741,13 +767,47 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:walkability_mode, :create)
          |> assign(:editing_walkability_test, nil)
          |> reset_reposition_state()
-         |> maybe_sync_adjacent_overlay_state(selected_level)
+         |> load_station_stop_levels_cache()
+         |> assign_selectable_reference_stop_levels()
+         |> sync_reference_overlay_state(selected_level)
          |> load_level_data(selected_level)}
     end
   end
 
   def handle_event("switch_level", _params, socket) do
     {:noreply, assign(socket, :diagram_error, "Malformed level selection request")}
+  end
+
+  @impl true
+  def handle_event("select_reference_overlay_level", %{"level_id" => level_id}, socket) do
+    selected_level_id = normalize_reference_level_id(level_id)
+
+    reference_stop_level =
+      case selected_level_id do
+        nil ->
+          nil
+
+        level_id ->
+          socket.assigns
+          |> Map.get(:station_stop_levels_cache, empty_station_stop_levels_cache())
+          |> Map.get(:by_level_id, %{})
+          |> Map.get(level_id)
+      end
+
+    {:noreply,
+     socket
+     |> assign(:reference_level_id, if(reference_stop_level, do: selected_level_id, else: nil))
+     |> assign(:reference_stop_level, reference_stop_level)
+     |> assign(:show_reference_overlay, not is_nil(reference_stop_level))}
+  end
+
+  @impl true
+  def handle_event("select_reference_overlay_level", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:reference_level_id, nil)
+     |> assign(:reference_stop_level, nil)
+     |> assign(:show_reference_overlay, false)}
   end
 
   @impl true
@@ -769,7 +829,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:pending_xy, nil)
           |> assign(:active_point_id, nil)
           |> maybe_disable_measurement_for_mode(mode_atom)
-          |> maybe_prepare_adjacent_overlay_for_mode(mode_atom)
           |> restream_mode_dependent_layers()
 
         {:noreply, socket}
@@ -781,39 +840,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   def handle_event("switch_mode", _params, socket) do
     {:noreply, put_flash(socket, :error, "Invalid mode selection")}
-  end
-
-  @impl true
-  def handle_event("toggle_adjacent_overlay", %{"side" => "above"}, socket) do
-    socket =
-      if socket.assigns[:mode] == :map and socket.assigns[:above_overlay_available] do
-        socket
-        |> maybe_hydrate_adjacent_overlay_descriptor(:above)
-        |> assign(:show_above_overlay, not socket.assigns.show_above_overlay)
-      else
-        socket
-      end
-
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_event("toggle_adjacent_overlay", %{"side" => "below"}, socket) do
-    socket =
-      if socket.assigns[:mode] == :map and socket.assigns[:below_overlay_available] do
-        socket
-        |> maybe_hydrate_adjacent_overlay_descriptor(:below)
-        |> assign(:show_below_overlay, not socket.assigns.show_below_overlay)
-      else
-        socket
-      end
-
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_event("toggle_adjacent_overlay", _params, socket) do
-    {:noreply, socket}
   end
 
   @impl true
@@ -1213,7 +1239,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                       |> assign(:walkability_mode, :create)
                       |> assign(:editing_walkability_test, nil)
                       |> reset_reposition_state()
-                      |> maybe_sync_adjacent_overlay_state(level)
+                      |> load_station_stop_levels_cache()
+                      |> assign_selectable_reference_stop_levels()
+                      |> sync_reference_overlay_state(level)
                       |> load_level_data(level)
                     else
                       socket
@@ -3692,172 +3720,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp parse_int(_), do: 0
 
-  defp initialize_adjacent_overlay_state(socket, nil), do: reset_adjacent_overlay_assigns(socket)
-
-  defp initialize_adjacent_overlay_state(socket, level) do
-    state_key = adjacent_overlay_state_key(socket, level)
-
-    if socket.assigns[:adjacent_overlay_state_key] == state_key do
-      assign_adjacent_overlay_availability(socket)
-    else
-      do_initialize_adjacent_overlay_state(socket, level, state_key)
-    end
-  end
-
-  defp maybe_sync_adjacent_overlay_state(socket, level) do
-    if socket.assigns[:mode] == :map do
-      initialize_adjacent_overlay_state(socket, level)
-    else
-      reset_adjacent_overlay_assigns(socket)
-    end
-  end
-
-  defp maybe_prepare_adjacent_overlay_for_mode(socket, :map) do
-    socket
-    |> assign(:show_above_overlay, false)
-    |> assign(:show_below_overlay, false)
-    |> refresh_adjacent_overlay_stop_levels_cache()
-    |> maybe_sync_adjacent_overlay_state(socket.assigns.active_level)
-  end
-
-  defp maybe_prepare_adjacent_overlay_for_mode(socket, _mode),
-    do: reset_adjacent_overlay_assigns(socket)
-
-  defp do_initialize_adjacent_overlay_state(socket, level, state_key) do
-    stop_levels_cache =
-      socket.assigns[:station_stop_levels_cache] || empty_station_stop_levels_cache()
-
-    with {:ok, %StopLevel{id: active_stop_level_id}} <-
-           resolve_active_stop_level_from_cache(stop_levels_cache, level.id),
-         {:ok, %{above: above_level, below: below_level}} <-
-           Gtfs.resolve_adjacent_stop_levels(stop_levels_cache.ordered, active_stop_level_id) do
-      hydrated_descriptors =
-        Gtfs.build_adjacent_overlay_descriptors(%{above: above_level, below: below_level})
-
-      socket
-      |> assign(:above_level, above_level)
-      |> assign(:below_level, below_level)
-      |> assign(:show_above_overlay, false)
-      |> assign(:show_below_overlay, false)
-      |> assign(:adjacent_overlay_state_key, state_key)
-      |> assign(:adjacent_overlay_descriptors, hydrated_descriptors)
-      |> assign_adjacent_overlay_availability()
-    else
-      _ ->
-        reset_adjacent_overlay_assigns(socket)
-    end
-  end
-
-  defp resolve_active_stop_level_from_cache(%{by_level_id: by_level_id}, level_id)
-       when is_map(by_level_id) do
-    case Map.get(by_level_id, level_id) do
-      %StopLevel{} = stop_level -> {:ok, stop_level}
-      _ -> {:error, :not_found}
-    end
-  end
-
-  defp resolve_active_stop_level_from_cache(_cache, _level_id), do: {:error, :not_found}
-
-  defp maybe_hydrate_adjacent_overlay_descriptor(socket, side) when side in [:above, :below] do
-    descriptors = socket.assigns[:adjacent_overlay_descriptors] || %{above: nil, below: nil}
-
-    if Map.get(descriptors, side) do
-      assign_adjacent_overlay_availability(socket)
-    else
-      adjacent_levels = %{
-        above: socket.assigns[:above_level],
-        below: socket.assigns[:below_level]
-      }
-
-      hydrated = Gtfs.build_adjacent_overlay_descriptors(adjacent_levels)
-
-      socket
-      |> assign(:adjacent_overlay_descriptors, %{
-        above: if(side == :above, do: hydrated.above, else: descriptors.above),
-        below: if(side == :below, do: hydrated.below, else: descriptors.below)
-      })
-      |> assign_adjacent_overlay_availability()
-    end
-  end
-
-  defp maybe_hydrate_adjacent_overlay_descriptor(socket, _side), do: socket
-
-  defp adjacent_overlay_state_key(socket, level) do
-    station_id = socket.assigns[:station] && socket.assigns.station.id
-    {station_id, level.id}
-  end
-
-  defp reset_adjacent_overlay_assigns(socket) do
-    socket
-    |> assign(:above_level, nil)
-    |> assign(:below_level, nil)
-    |> assign(:above_overlay_available, false)
-    |> assign(:below_overlay_available, false)
-    |> assign(:show_above_overlay, false)
-    |> assign(:show_below_overlay, false)
-    |> assign(:adjacent_overlay_state_key, nil)
-    |> assign(:adjacent_overlay_descriptors, %{above: nil, below: nil})
-  end
-
-  defp assign_adjacent_overlay_availability(socket) do
-    availability = compute_adjacent_overlay_availability(socket.assigns)
-
-    socket
-    |> assign(:above_overlay_available, availability.above)
-    |> assign(:below_overlay_available, availability.below)
-  end
-
-  defp compute_adjacent_overlay_availability(assigns) when is_map(assigns) do
-    descriptors = Map.get(assigns, :adjacent_overlay_descriptors) || %{above: nil, below: nil}
-
-    %{
-      above:
-        adjacent_overlay_available?(Map.get(assigns, :above_level), Map.get(descriptors, :above)),
-      below:
-        adjacent_overlay_available?(Map.get(assigns, :below_level), Map.get(descriptors, :below))
-    }
-  end
-
-  defp adjacent_overlay_available?(nil, _descriptor), do: false
-
-  defp adjacent_overlay_available?(%StopLevel{} = stop_level, descriptor) do
-    renderable_adjacent_overlay_descriptor?(descriptor) or
-      renderable_adjacent_stop_level?(stop_level)
-  end
-
-  defp adjacent_overlay_available?(_stop_level, descriptor),
-    do: renderable_adjacent_overlay_descriptor?(descriptor)
-
-  defp renderable_adjacent_stop_level?(%StopLevel{} = stop_level) do
-    StopLevel.alignment_complete?(stop_level) and
-      is_binary(stop_level.diagram_filename) and String.trim(stop_level.diagram_filename) != ""
-  end
-
-  defp renderable_adjacent_stop_level?(_stop_level), do: false
-
-  defp renderable_adjacent_overlay_descriptor?(%{} = descriptor) do
-    is_binary(descriptor[:diagram_filename]) and String.trim(descriptor[:diagram_filename]) != "" and
-      not is_nil(descriptor[:floorplan_center_lat]) and
-      not is_nil(descriptor[:floorplan_center_lon]) and
-      not is_nil(descriptor[:floorplan_scale_mpp]) and
-      not is_nil(descriptor[:floorplan_rotation_deg])
-  end
-
-  defp renderable_adjacent_overlay_descriptor?(_descriptor), do: false
-
-  defp synced_aligned_levels_count(stop_levels) when is_list(stop_levels) do
-    Enum.count(stop_levels, fn stop_level ->
-      stop_level.saved_synced_alignment == true and StopLevel.alignment_complete?(stop_level)
-    end)
-  end
-
-  defp synced_aligned_levels_count(_stop_levels), do: 0
-
-  defp station_stop_levels_total_count(stop_levels) when is_list(stop_levels),
-    do: length(stop_levels)
-
-  defp station_stop_levels_total_count(_stop_levels), do: 0
-
   defp parse_optional_int(nil), do: nil
   defp parse_optional_int(""), do: nil
 
@@ -3919,6 +3781,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp parse_mode("connect"), do: {:ok, :connect}
   defp parse_mode("map"), do: {:ok, :map}
   defp parse_mode(_), do: :error
+
+  defp normalize_reference_level_id(level_id) when level_id in [nil, "", "none"], do: nil
+  defp normalize_reference_level_id(level_id) when is_binary(level_id), do: level_id
+  defp normalize_reference_level_id(_level_id), do: nil
 
   defp parse_svg_coordinate(value) do
     with {:ok, parsed} <- parse_float(value),
@@ -4353,10 +4219,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       socket
       |> disable_measurement()
       |> assign(:active_level, level)
+          |> assign_selectable_reference_stop_levels()
       |> assign(:pending_xy, nil)
       |> assign(:diagram_error, nil)
       |> reset_reposition_state()
-      |> maybe_sync_adjacent_overlay_state(level)
+      |> sync_reference_overlay_state(level)
       |> load_level_data(level)
     end
   end

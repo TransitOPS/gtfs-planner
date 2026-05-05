@@ -201,30 +201,6 @@ defmodule GtfsPlanner.Gtfs.StopLevelTest do
     end
   end
 
-  describe "saved_synced_alignment_changeset/2" do
-    test "is valid when saved_synced_alignment is true" do
-      changeset =
-        StopLevel.saved_synced_alignment_changeset(%StopLevel{}, %{saved_synced_alignment: true})
-
-      assert changeset.valid?
-    end
-
-    test "is valid when saved_synced_alignment is false" do
-      changeset =
-        StopLevel.saved_synced_alignment_changeset(%StopLevel{}, %{saved_synced_alignment: false})
-
-      assert changeset.valid?
-    end
-
-    test "is invalid when saved_synced_alignment is nil" do
-      changeset =
-        StopLevel.saved_synced_alignment_changeset(%StopLevel{}, %{saved_synced_alignment: nil})
-
-      refute changeset.valid?
-      assert Keyword.has_key?(changeset.errors, :saved_synced_alignment)
-    end
-  end
-
   describe "alignment_transform/1" do
     test "returns normalized transform when all alignment fields are valid" do
       stop_level = %StopLevel{

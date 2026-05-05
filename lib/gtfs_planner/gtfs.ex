@@ -435,26 +435,11 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Saves a stop_level's floorplan alignment and marks it as synced for
-  deterministic apply propagation eligibility.
+  Saves a stop_level's floorplan alignment.
   """
   def save_stop_level_alignment(%StopLevel{} = stop_level, attrs) do
     stop_level
     |> StopLevel.alignment_changeset(attrs)
-    |> Ecto.Changeset.put_change(:saved_synced_alignment, true)
-    |> Repo.update()
-    |> broadcast([:stop_levels, :updated])
-  end
-
-  @doc """
-  Updates a stop_level's saved synced alignment flag.
-  """
-  def update_stop_level_saved_synced_alignment(%StopLevel{} = stop_level, saved_synced_alignment)
-      when is_boolean(saved_synced_alignment) do
-    stop_level
-    |> StopLevel.saved_synced_alignment_changeset(%{
-      saved_synced_alignment: saved_synced_alignment
-    })
     |> Repo.update()
     |> broadcast([:stop_levels, :updated])
   end
@@ -543,7 +528,7 @@ defmodule GtfsPlanner.Gtfs do
   active level child stops in a single transaction.
 
   Returns `{:ok, %{active_stop_level: stop_level, apply_result: result}}`
-  on success.
+  on success, where `result` includes only active-level apply data.
   """
   @spec save_and_apply_stop_level_alignment(
           Ecto.UUID.t(),
@@ -555,8 +540,6 @@ defmodule GtfsPlanner.Gtfs do
            %{
              active_stop_level: StopLevel.t(),
              apply_result: %{
-               active_update_status: :updated,
-               propagated_level_count: non_neg_integer(),
                touched_stop_count: non_neg_integer()
              }
            }}
@@ -606,53 +589,25 @@ defmodule GtfsPlanner.Gtfs do
               with {:ok, updated_stop_level} <-
                      active_stop_level
                      |> StopLevel.alignment_changeset(proposed_alignment_attrs)
-                     |> Ecto.Changeset.put_change(:saved_synced_alignment, true)
                      |> Repo.update(),
                    {:ok, active_derived} <-
                      derive_child_stop_coords(updated_stop_level, image_w, image_h),
-                   {:ok, active_updated_stops} <- persist_derived_coords_in_tx(active_derived),
-                   {:ok, active_delta} <-
-                     maybe_compute_active_alignment_delta(
-                       old_alignment_snapshot,
-                       updated_stop_level
-                     ),
-                   {:ok, propagation_targets} <-
-                     select_propagation_targets_for_active_stop_level(updated_stop_level),
-                   {:ok, propagated_stop_levels} <-
-                     persist_propagated_stop_level_alignments(active_delta, propagation_targets),
-                   {:ok, propagated_updated_stops} <-
-                     persist_propagated_child_stop_coords_in_tx(
-                       propagated_stop_levels,
-                       image_w,
-                       image_h
-                     ) do
+                   {:ok, active_updated_stops} <- persist_derived_coords_in_tx(active_derived) do
                 Logger.info(fn ->
                   "[ALIGN_APPLY_DEBUG] active_stop_level_persisted " <>
                     inspect(%{
                       active_stop_level_id: updated_stop_level.id,
-                      updated_alignment_snapshot:
-                        stop_level_alignment_snapshot(updated_stop_level),
-                      active_delta: active_delta,
-                      propagation_target_count: length(propagation_targets),
-                      propagation_target_ids: Enum.map(propagation_targets, & &1.id)
+                      updated_alignment_snapshot: stop_level_alignment_snapshot(updated_stop_level)
                     })
                 end)
 
-                # Step 16 (active-only short-circuit): when old alignment is incomplete,
-                # propagation is skipped and the active-only payload is returned.
-
                 apply_result = %{
-                  active_update_status: :updated,
-                  propagated_level_count: length(propagated_stop_levels),
-                  touched_stop_count:
-                    length(active_updated_stops) + length(propagated_updated_stops)
+                  touched_stop_count: length(active_updated_stops)
                 }
 
                 %{
                   active_stop_level: updated_stop_level,
                   active_updated_stops: active_updated_stops,
-                  propagated_updated_stops: propagated_updated_stops,
-                  propagated_stop_levels: propagated_stop_levels,
                   apply_result: apply_result
                 }
               else
@@ -672,19 +627,11 @@ defmodule GtfsPlanner.Gtfs do
          %{
            active_stop_level: updated_stop_level,
            active_updated_stops: active_updated_stops,
-           propagated_updated_stops: propagated_updated_stops,
-           propagated_stop_levels: propagated_stop_levels,
            apply_result: apply_result
          }} ->
-          updated_stops = active_updated_stops ++ propagated_updated_stops
-
           broadcast({:ok, updated_stop_level}, [:stop_levels, :updated])
 
-          Enum.each(propagated_stop_levels, fn stop_level ->
-            broadcast({:ok, stop_level}, [:stop_levels, :updated])
-          end)
-
-          Enum.each(updated_stops, fn stop ->
+          Enum.each(active_updated_stops, fn stop ->
             broadcast({:ok, stop}, [:stops, :updated])
           end)
 
@@ -706,123 +653,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   def save_and_apply_stop_level_alignment(_, _, _, _), do: {:error, :invalid_input}
-
-  defp maybe_compute_active_alignment_delta(old_alignment_snapshot, updated_stop_level) do
-    if StopLevel.alignment_complete?(old_alignment_snapshot) do
-      StopLevel.active_alignment_delta(old_alignment_snapshot, updated_stop_level)
-    else
-      {:ok, nil}
-    end
-  end
-
-  defp select_propagation_targets_for_active_stop_level(%StopLevel{} = active_stop_level) do
-    targets =
-      from(sl in StopLevel,
-        join: l in Level,
-        on:
-          l.id == sl.level_id and
-            l.organization_id == sl.organization_id and
-            l.gtfs_version_id == sl.gtfs_version_id,
-        where:
-          sl.organization_id == ^active_stop_level.organization_id and
-            sl.gtfs_version_id == ^active_stop_level.gtfs_version_id and
-            sl.stop_id == ^active_stop_level.stop_id and
-            sl.id != ^active_stop_level.id and
-            sl.saved_synced_alignment == true and
-            not is_nil(sl.floorplan_center_lat) and
-            not is_nil(sl.floorplan_center_lon) and
-            not is_nil(sl.floorplan_scale_mpp) and
-            not is_nil(sl.floorplan_rotation_deg),
-        order_by: [asc: l.level_index, asc: sl.id]
-      )
-      |> Repo.all()
-
-    {:ok, targets}
-  end
-
-  defp persist_propagated_stop_level_alignments(nil, _targets), do: {:ok, []}
-
-  defp persist_propagated_stop_level_alignments(_delta, []), do: {:ok, []}
-
-  defp persist_propagated_stop_level_alignments(active_delta, propagation_targets)
-       when is_list(propagation_targets) do
-    propagation_targets
-    |> Enum.reduce_while({:ok, []}, fn target_stop_level, {:ok, acc} ->
-      with {:ok, target_transform} <- StopLevel.alignment_transform(target_stop_level),
-           {:ok, updated_transform} <-
-             StopLevel.compose_alignment_transforms(active_delta, target_transform),
-           {:ok, updated_stop_level} <-
-             persist_stop_level_alignment_transform(target_stop_level, updated_transform) do
-        Logger.info(fn ->
-          "[ALIGN_APPLY_DEBUG] propagation_target_updated " <>
-            inspect(%{
-              target_stop_level_id: target_stop_level.id,
-              target_transform: target_transform,
-              updated_transform: updated_transform,
-              persisted_stop_level_id: updated_stop_level.id
-            })
-        end)
-
-        {:cont, {:ok, [updated_stop_level | acc]}}
-      else
-        {:error, reason} ->
-          Logger.warning(fn ->
-            "[ALIGN_APPLY_DEBUG] propagation_target_failed " <>
-              inspect(%{target_stop_level_id: target_stop_level.id, reason: reason})
-          end)
-
-          {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, propagated_stop_levels} -> {:ok, Enum.reverse(propagated_stop_levels)}
-      {:error, _} = error -> error
-    end
-  end
-
-  defp persist_propagated_child_stop_coords_in_tx([], _image_w, _image_h), do: {:ok, []}
-
-  defp persist_propagated_child_stop_coords_in_tx(propagated_stop_levels, image_w, image_h)
-       when is_list(propagated_stop_levels) do
-    propagated_stop_levels
-    |> Enum.reduce_while({:ok, []}, fn stop_level, {:ok, updated_stops} ->
-      with {:ok, derived} <- derive_child_stop_coords(stop_level, image_w, image_h),
-           {:ok, persisted_stops} <- persist_derived_coords_in_tx(derived) do
-        {:cont, {:ok, updated_stops ++ persisted_stops}}
-      else
-        {:error, reason} ->
-          {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  defp persist_stop_level_alignment_transform(%StopLevel{} = stop_level, updated_transform) do
-    changeset =
-      stop_level
-      |> StopLevel.alignment_changeset(%{
-        floorplan_center_lat: updated_transform.center_lat,
-        floorplan_center_lon: updated_transform.center_lon,
-        floorplan_scale_mpp: updated_transform.scale_mpp,
-        floorplan_rotation_deg: updated_transform.rotation_deg
-      })
-
-    case Repo.update(changeset) do
-      {:ok, updated_stop_level} ->
-        {:ok, updated_stop_level}
-
-      {:error, %Ecto.Changeset{} = failed_changeset} = error ->
-        Logger.warning(fn ->
-          "[ALIGN_APPLY_DEBUG] persist_stop_level_alignment_transform_failed " <>
-            inspect(%{
-              target_stop_level_id: stop_level.id,
-              attempted_transform: updated_transform,
-              errors: alignment_changeset_log_errors(failed_changeset)
-            })
-        end)
-
-        error
-    end
-  end
 
   defp alignment_changeset_log_errors(%Ecto.Changeset{} = changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
@@ -2000,85 +1830,6 @@ defmodule GtfsPlanner.Gtfs do
       preload: [level: l]
     )
     |> Repo.all()
-  end
-
-  @doc """
-  Resolves the immediate adjacent stop levels for an active stop level.
-
-  The "above" neighbor is the closest higher `level_index`; the "below"
-  neighbor is the closest lower `level_index`.
-
-  Returns `{:ok, %{above: stop_level | nil, below: stop_level | nil}}` when the
-  active stop level is present in the input list, otherwise `{:error, :not_found}`.
-  """
-  @spec resolve_adjacent_stop_levels([StopLevel.t()], Ecto.UUID.t()) ::
-          {:ok, %{above: StopLevel.t() | nil, below: StopLevel.t() | nil}}
-          | {:error, :not_found}
-  def resolve_adjacent_stop_levels(stop_levels, active_stop_level_id)
-      when is_list(stop_levels) and is_binary(active_stop_level_id) do
-    ordered_stop_levels =
-      Enum.sort_by(stop_levels, fn stop_level ->
-        {stop_level.level.level_index, stop_level.id}
-      end)
-
-    case Enum.find_index(ordered_stop_levels, &(&1.id == active_stop_level_id)) do
-      nil ->
-        {:error, :not_found}
-
-      index ->
-        active = Enum.at(ordered_stop_levels, index)
-
-        below =
-          ordered_stop_levels
-          |> Enum.take(index)
-          |> Enum.reverse()
-          |> Enum.find(&(&1.level.level_index < active.level.level_index))
-
-        above =
-          ordered_stop_levels
-          |> Enum.drop(index + 1)
-          |> Enum.find(&(&1.level.level_index > active.level.level_index))
-
-        {:ok, %{above: above, below: below}}
-    end
-  end
-
-  @doc """
-  Builds adjacent overlay descriptors from resolved neighbor stop levels.
-
-  Includes only neighbors with complete saved alignment data and returns
-  view-only descriptors keyed by side (`:above`, `:below`).
-  """
-  @spec build_adjacent_overlay_descriptors(%{
-          above: StopLevel.t() | nil,
-          below: StopLevel.t() | nil
-        }) ::
-          %{above: map() | nil, below: map() | nil}
-  def build_adjacent_overlay_descriptors(%{above: above, below: below}) do
-    %{
-      above: adjacent_overlay_descriptor(above, :above),
-      below: adjacent_overlay_descriptor(below, :below)
-    }
-  end
-
-  defp adjacent_overlay_descriptor(nil, _side), do: nil
-
-  defp adjacent_overlay_descriptor(%StopLevel{} = stop_level, side) do
-    if StopLevel.alignment_complete?(stop_level) do
-      %{
-        side: side,
-        stop_level_id: stop_level.id,
-        level_id: stop_level.level_id,
-        level_index: stop_level.level.level_index,
-        diagram_filename: stop_level.diagram_filename,
-        floorplan_center_lat: stop_level.floorplan_center_lat,
-        floorplan_center_lon: stop_level.floorplan_center_lon,
-        floorplan_scale_mpp: stop_level.floorplan_scale_mpp,
-        floorplan_rotation_deg: stop_level.floorplan_rotation_deg
-      }
-    else
-      nil
-    end
   end
 
   @doc """

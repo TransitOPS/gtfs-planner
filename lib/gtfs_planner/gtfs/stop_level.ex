@@ -16,7 +16,6 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
           floorplan_center_lon: float() | nil,
           floorplan_scale_mpp: float() | nil,
           floorplan_rotation_deg: float() | nil,
-          saved_synced_alignment: boolean(),
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
           inserted_at: DateTime.t(),
@@ -52,7 +51,6 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
     field :floorplan_center_lon, :float
     field :floorplan_scale_mpp, :float
     field :floorplan_rotation_deg, :float
-    field :saved_synced_alignment, :boolean, default: false
 
     belongs_to :stop, GtfsPlanner.Gtfs.Stop
     belongs_to :level, GtfsPlanner.Gtfs.Level
@@ -116,12 +114,6 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
       less_than_or_equal_to: 180
     )
     |> validate_number(:floorplan_scale_mpp, greater_than: 0)
-  end
-
-  def saved_synced_alignment_changeset(stop_level, attrs) do
-    stop_level
-    |> cast(attrs, [:saved_synced_alignment])
-    |> validate_required([:saved_synced_alignment])
   end
 
   @spec alignment_complete?(t() | map()) :: boolean()

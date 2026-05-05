@@ -179,12 +179,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_status, :any, default: nil
   attr :levels, :list, default: []
   attr :active_level, :any, default: nil
-  attr :above_level, :any, default: nil
-  attr :below_level, :any, default: nil
-  attr :above_overlay_available, :boolean, default: false
-  attr :below_overlay_available, :boolean, default: false
-  attr :show_above_overlay, :boolean, default: false
-  attr :show_below_overlay, :boolean, default: false
+  attr :selectable_reference_stop_levels, :list, default: []
+  attr :reference_level_id, :string, default: nil
 
   def diagram_action_strip(assigns) do
     ~H"""
@@ -280,48 +276,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               <% end %>
             <% end %>
 
-            <%= if @mode == :map and @has_diagram and (@above_overlay_available or @below_overlay_available) do %>
-              <div
-                id="adjacent-overlay-toggle-group"
-                role="group"
-                aria-label="Adjacent overlay references"
-                class="join mr-4"
+            <%= if @mode == :map and @has_diagram and @selectable_reference_stop_levels != [] do %>
+              <form
+                id="reference-overlay-level-form"
+                phx-change="select_reference_overlay_level"
+                class="flex items-center gap-2 mr-4"
               >
-                <button
-                  :if={@below_overlay_available}
-                  id="toggle-below-overlay"
-                  type="button"
-                  phx-click="toggle_adjacent_overlay"
-                  phx-value-side="below"
-                  aria-pressed={if(@show_below_overlay, do: "true", else: "false")}
-                  class={[
-                    "btn btn-sm join-item border",
-                    if(@show_below_overlay,
-                      do: "bg-blue-700 text-white border-blue-700",
-                      else: "bg-white text-blue-700 border-blue-300 hover:bg-blue-50"
-                    )
-                  ]}
+                <label for="reference-overlay-level-select" class="text-sm font-medium text-blue-900">
+                  Reference:
+                </label>
+                <select
+                  id="reference-overlay-level-select"
+                  name="level_id"
+                  class="select select-sm select-bordered bg-white"
                 >
-                  Show {adjacent_level_label(@below_level)}
-                </button>
-                <button
-                  :if={@above_overlay_available}
-                  id="toggle-above-overlay"
-                  type="button"
-                  phx-click="toggle_adjacent_overlay"
-                  phx-value-side="above"
-                  aria-pressed={if(@show_above_overlay, do: "true", else: "false")}
-                  class={[
-                    "btn btn-sm join-item border",
-                    if(@show_above_overlay,
-                      do: "bg-blue-700 text-white border-blue-700",
-                      else: "bg-white text-blue-700 border-blue-300 hover:bg-blue-50"
-                    )
-                  ]}
-                >
-                  Show {adjacent_level_label(@above_level)}
-                </button>
-              </div>
+                  <option value="" selected={is_nil(@reference_level_id)}>None</option>
+                  <%= for stop_level <- @selectable_reference_stop_levels do %>
+                    <option
+                      value={stop_level.level_id}
+                      selected={to_string(@reference_level_id) == to_string(stop_level.level_id)}
+                    >
+                      {stop_level.level.level_name || stop_level.level.level_id}
+                    </option>
+                  <% end %>
+                </select>
+              </form>
             <% end %>
 
             <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
@@ -354,43 +333,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :station, :any, required: true
   attr :active_level, :any, default: nil
   attr :active_stop_level, :any, default: nil
-  attr :above_level, :any, default: nil
-  attr :below_level, :any, default: nil
-  attr :above_overlay_available, :boolean, default: false
-  attr :below_overlay_available, :boolean, default: false
   attr :align_center_lat, :any, default: nil
   attr :align_center_lon, :any, default: nil
   attr :align_scale_mpp, :any, default: nil
   attr :align_rotation_deg, :any, default: nil
   attr :image_natural_width, :any, default: nil
   attr :image_natural_height, :any, default: nil
-  attr :adjacent_overlay_descriptors, :map, default: %{above: nil, below: nil}
-  attr :show_above_overlay, :boolean, default: false
-  attr :show_below_overlay, :boolean, default: false
+  attr :reference_stop_level, :any, default: nil
+  attr :show_reference_overlay, :boolean, default: false
   attr :child_stops_total, :integer, default: 0
   attr :child_stops_with_geo, :integer, default: 0
   attr :anchor_count, :integer, default: 0
   attr :cross_level_pathway_total, :integer, default: 0
   attr :cross_level_pathway_with_geo, :integer, default: 0
-  attr :synced_aligned_levels_count, :integer, default: 0
-  attr :station_stop_levels_total_count, :integer, default: 0
 
   def map_canvas(assigns) do
     floorplan_url =
       diagram_image_href(assigns.organization_id, assigns.station, assigns.active_stop_level)
 
-    above_overlay_url =
-      adjacent_overlay_image_href(
+    reference_overlay_url =
+      reference_overlay_image_href(
         assigns.organization_id,
         assigns.station,
-        assigns.adjacent_overlay_descriptors[:above]
-      )
-
-    below_overlay_url =
-      adjacent_overlay_image_href(
-        assigns.organization_id,
-        assigns.station,
-        assigns.adjacent_overlay_descriptors[:below]
+        assigns.reference_stop_level
       )
 
     initial_lat = assigns.station.stop_lat || 0
@@ -416,8 +381,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:initial_lat, initial_lat)
       |> assign(:initial_lon, initial_lon)
       |> assign(:has_alignment?, has_alignment?)
-      |> assign(:above_overlay_url, above_overlay_url)
-      |> assign(:below_overlay_url, below_overlay_url)
+      |> assign(:reference_overlay_url, reference_overlay_url)
       |> assign(:canvas_id, canvas_id)
 
     ~H"""
@@ -427,8 +391,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         class="map-canvas relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
         phx-hook="MapAlignment"
         phx-update="ignore"
-        data-show-above-overlay={overlay_toggle_attr(@show_above_overlay)}
-        data-show-below-overlay={overlay_toggle_attr(@show_below_overlay)}
+        data-show-reference-overlay={overlay_toggle_attr(@show_reference_overlay)}
         data-floorplan-url={@floorplan_url}
         data-initial-lat={@initial_lat}
         data-initial-lon={@initial_lon}
@@ -437,95 +400,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-align-center-lon={if @has_alignment?, do: @align_center_lon}
         data-align-scale-mpp={if @has_alignment?, do: @align_scale_mpp}
         data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
-        data-adjacent-above-center-lat={
-          adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lat)
-        }
-        data-adjacent-above-center-lon={
-          adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lon)
-        }
-        data-adjacent-above-scale-mpp={
-          adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_scale_mpp)
-        }
-        data-adjacent-above-rotation-deg={
-          adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_rotation_deg)
-        }
-        data-adjacent-below-center-lat={
-          adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lat)
-        }
-        data-adjacent-below-center-lon={
-          adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lon)
-        }
-        data-adjacent-below-scale-mpp={
-          adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_scale_mpp)
-        }
-        data-adjacent-below-rotation-deg={
-          adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_rotation_deg)
-        }
+        data-reference-center-lat={reference_overlay_value(@reference_stop_level, :floorplan_center_lat)}
+        data-reference-center-lon={reference_overlay_value(@reference_stop_level, :floorplan_center_lon)}
+        data-reference-scale-mpp={reference_overlay_value(@reference_stop_level, :floorplan_scale_mpp)}
+        data-reference-rotation-deg={reference_overlay_value(@reference_stop_level, :floorplan_rotation_deg)}
         data-image-natural-width={@image_natural_width}
         data-image-natural-height={@image_natural_height}
       >
         <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
         <div
-          :if={@below_overlay_available}
-          id="map-adjacent-overlay-below"
-          data-side="below"
+          :if={@reference_overlay_url}
+          id="map-reference-overlay"
           data-overlay-role="reference"
           data-editable-overlay="false"
-          data-overlay-visible={if(@show_below_overlay, do: "true", else: "false")}
-          data-align-center-lat={
-            adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lat)
-          }
-          data-align-center-lon={
-            adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_center_lon)
-          }
-          data-align-scale-mpp={
-            adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_scale_mpp)
-          }
-          data-align-rotation-deg={
-            adjacent_descriptor_value(@adjacent_overlay_descriptors[:below], :floorplan_rotation_deg)
-          }
+          data-overlay-visible={if(@show_reference_overlay, do: "true", else: "false")}
+          data-align-center-lat={reference_overlay_value(@reference_stop_level, :floorplan_center_lat)}
+          data-align-center-lon={reference_overlay_value(@reference_stop_level, :floorplan_center_lon)}
+          data-align-scale-mpp={reference_overlay_value(@reference_stop_level, :floorplan_scale_mpp)}
+          data-align-rotation-deg={reference_overlay_value(@reference_stop_level, :floorplan_rotation_deg)}
           class={[
             "absolute inset-0 pointer-events-none opacity-70",
-            if(@show_below_overlay, do: nil, else: "hidden")
+            if(@show_reference_overlay, do: nil, else: "hidden")
           ]}
           style="z-index: 1;"
         >
           <img
-            :if={@below_overlay_url}
-            src={@below_overlay_url}
-            alt="Below level floorplan reference"
-            class="absolute inset-0 h-full w-full object-contain pointer-events-none"
-          />
-        </div>
-        <div
-          :if={@above_overlay_available}
-          id="map-adjacent-overlay-above"
-          data-side="above"
-          data-overlay-role="reference"
-          data-editable-overlay="false"
-          data-overlay-visible={if(@show_above_overlay, do: "true", else: "false")}
-          data-align-center-lat={
-            adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lat)
-          }
-          data-align-center-lon={
-            adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_center_lon)
-          }
-          data-align-scale-mpp={
-            adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_scale_mpp)
-          }
-          data-align-rotation-deg={
-            adjacent_descriptor_value(@adjacent_overlay_descriptors[:above], :floorplan_rotation_deg)
-          }
-          class={[
-            "absolute inset-0 pointer-events-none opacity-70",
-            if(@show_above_overlay, do: nil, else: "hidden")
-          ]}
-          style="z-index: 1;"
-        >
-          <img
-            :if={@above_overlay_url}
-            src={@above_overlay_url}
-            alt="Above level floorplan reference"
+            src={@reference_overlay_url}
+            alt="Reference level floorplan"
             class="absolute inset-0 h-full w-full object-contain pointer-events-none"
           />
         </div>
@@ -579,9 +480,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <div class="flex flex-col items-end gap-1">
             <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
               {@child_stops_with_geo} of {@child_stops_total} child stops have lat/long
-            </span>
-            <span class="text-xs font-medium text-base-content/70">
-              {@synced_aligned_levels_count} of {@station_stop_levels_total_count} levels are aligned and synced
             </span>
           </div>
         </div>
@@ -790,11 +688,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     end
   end
 
-  defp adjacent_overlay_image_href(_organization_id, _station, nil), do: nil
+  defp reference_overlay_image_href(_organization_id, _station, nil), do: nil
 
-  defp adjacent_overlay_image_href(organization_id, station, descriptor)
-       when is_map(descriptor) do
-    case descriptor do
+  defp reference_overlay_image_href(organization_id, station, reference_stop_level)
+       when is_map(reference_stop_level) do
+    case reference_stop_level do
       %{diagram_filename: filename} when is_binary(filename) and filename != "" ->
         station_dir = PathSafety.stop_storage_dir(station.stop_id)
         token = URI.encode_www_form(filename)
@@ -811,21 +709,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     end
   end
 
-  defp adjacent_descriptor_value(nil, _key), do: nil
+  defp reference_overlay_value(nil, _key), do: nil
 
-  defp adjacent_descriptor_value(descriptor, key) when is_map(descriptor),
-    do: Map.get(descriptor, key)
+  defp reference_overlay_value(reference_stop_level, key) when is_map(reference_stop_level),
+    do: Map.get(reference_stop_level, key)
 
   defp overlay_toggle_attr(true), do: "true"
   defp overlay_toggle_attr(false), do: "false"
-
-  defp adjacent_level_label(%{level: level}) when is_map(level), do: adjacent_level_label(level)
-
-  defp adjacent_level_label(%{level_name: level_name, level_id: level_id}) do
-    level_name || level_id || "level"
-  end
-
-  defp adjacent_level_label(_), do: "level"
 
   attr :streams, :any, required: true
   attr :active_point_id, :any
