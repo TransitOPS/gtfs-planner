@@ -139,7 +139,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     ~H"""
     <div class="border-b border-gray-100 last:border-b-0">
       <button
-        class="w-full flex items-center justify-between py-3.5 px-4 text-left hover:bg-gray-50 transition-colors duration-[15ms] cursor-pointer"
+        class={[
+          "w-full flex items-center justify-between py-3.5 px-4 text-left transition-colors duration-[15ms] cursor-pointer",
+          @inaccessible && "bg-red-50 hover:bg-red-100",
+          !@inaccessible && "hover:bg-gray-50"
+        ]}
         phx-click="toggle_route_expand"
         phx-value-source_id={@source_id}
         phx-value-target_id={@target.stop_id}
