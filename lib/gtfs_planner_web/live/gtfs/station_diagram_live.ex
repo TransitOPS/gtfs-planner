@@ -273,14 +273,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> Map.get(reference_level_id)
 
     cond do
-      is_nil(reference_stop_level) and selectable_levels != [] ->
-        first_reference = List.first(selectable_levels)
-
-        socket
-        |> assign(:reference_level_id, first_reference.level_id)
-        |> assign(:reference_stop_level, first_reference)
-        |> assign(:show_reference_overlay, false)
-
       is_nil(reference_stop_level) ->
         socket
         |> assign(:reference_level_id, nil)
@@ -332,7 +324,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       true ->
         socket
         |> assign(:reference_stop_level, reference_stop_level)
-        |> assign(:show_reference_overlay, true)
+        |> assign(:show_reference_overlay, false)
     end
   end
 
@@ -1951,6 +1943,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              socket
              |> assign(:active_stop_level, updated)
+             |> load_station_stop_levels_cache()
+             |> assign_selectable_reference_stop_levels()
+             |> sync_reference_overlay_state(socket.assigns.active_level)
              |> put_flash(:info, "Alignment saved")}
 
           {:error, %Ecto.Changeset{} = changeset} ->
@@ -2006,6 +2001,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              socket
              |> assign(:active_stop_level, updated)
+             |> load_station_stop_levels_cache()
+             |> assign_selectable_reference_stop_levels()
+             |> sync_reference_overlay_state(socket.assigns.active_level)
              |> refresh_lists()
              |> put_flash(:info, "Set lat/lon for #{touched_stop_count} child stops")}
 

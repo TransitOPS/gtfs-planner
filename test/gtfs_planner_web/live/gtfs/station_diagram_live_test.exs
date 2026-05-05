@@ -13010,6 +13010,64 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert_in_delta reloaded.floorplan_rotation_deg, 15.5, 1.0e-6
     end
 
+    test "saved alignment is reflected when that level is selected as reference after switching levels",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: middle_level,
+           stop_level: middle_stop_level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      above_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "alignment_ref_above",
+          level_name: "Alignment Ref Above",
+          level_index: 1.0
+        })
+
+      {:ok, above_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: above_level.id,
+          diagram_filename: "above-ref.png"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      render_hook(view, "save_alignment", %{
+        "center_lat" => 40.7128,
+        "center_lon" => -74.0060,
+        "scale_mpp" => 0.35,
+        "rotation_deg" => 15.5
+      })
+
+      render_hook(view, "switch_level", %{"level_id" => above_level.id})
+      render_hook(view, "select_reference_overlay_level", %{"level_id" => middle_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert assigns.reference_level_id == middle_level.id
+      assert assigns.reference_stop_level.level_id == middle_level.id
+      assert_in_delta assigns.reference_stop_level.floorplan_center_lat, 40.7128, 1.0e-6
+      assert_in_delta assigns.reference_stop_level.floorplan_center_lon, -74.0060, 1.0e-6
+      assert_in_delta assigns.reference_stop_level.floorplan_scale_mpp, 0.35, 1.0e-6
+      assert_in_delta assigns.reference_stop_level.floorplan_rotation_deg, 15.5, 1.0e-6
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.StopLevel, above_stop_level.id)
+      assert reloaded.level_id == above_level.id
+    end
+
     test "save_alignment rejects out-of-range lat and does not mutate the DB", %{
       conn: conn,
       user: user,
