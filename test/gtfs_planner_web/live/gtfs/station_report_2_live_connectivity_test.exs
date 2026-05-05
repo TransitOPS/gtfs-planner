@@ -345,6 +345,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       )
       |> render_click()
 
+      refute has_element?(
+               view,
+               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_B'][phx-value-target_id='PLAT_1'].bg-red-50"
+             )
+
       # Click expand on a no-path target
       view
       |> element(
