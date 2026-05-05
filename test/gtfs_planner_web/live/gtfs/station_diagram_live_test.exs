@@ -12317,8 +12317,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.show_reference_overlay == false
 
       assert has_element?(view, "#reference-overlay-level-form")
-      assert has_element?(view, "#reference-overlay-level-form option[value='']", "None")
-      assert has_element?(view, "#reference-overlay-level-form option[value='#{middle_level.id}']")
+      refute has_element?(view, "#reference-overlay-level-form option[value='']")
+      refute has_element?(view, "#reference-overlay-level-form option[value='#{middle_level.id}']")
       assert has_element?(view, "#reference-overlay-level-form option[value='#{below_level.id}']")
       assert has_element?(view, "#reference-overlay-level-form option[value='#{above_level.id}']")
 
@@ -12395,7 +12395,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == above_level.id))
     end
 
-    test "select_reference_overlay_level accepts any non-active level",
+    test "select_reference_overlay_level excludes active level and clears when switched active",
          %{
            conn: conn,
            user: user,
@@ -12461,35 +12461,34 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.reference_level_id == nil
       assert assigns.reference_stop_level == nil
       assert assigns.show_reference_overlay == false
+      refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == middle_stop_level.level_id))
 
       render_hook(view, "select_reference_overlay_level", %{"level_id" => below_level.id})
 
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.reference_level_id == below_level.id
       assert assigns.reference_stop_level.level_id == below_level.id
-      assert assigns.show_reference_overlay == true
-
-      assert has_element?(
-               view,
-               ".map-canvas[data-show-reference-overlay='true'][data-reference-center-lat][data-reference-center-lon][data-reference-scale-mpp][data-reference-rotation-deg]"
-             )
+      assert assigns.show_reference_overlay == false
+      refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == middle_stop_level.level_id))
 
       render_hook(view, "select_reference_overlay_level", %{"level_id" => above_level.id})
 
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.reference_level_id == above_level.id
       assert assigns.reference_stop_level.level_id == above_level.id
-      assert assigns.show_reference_overlay == true
+      assert assigns.show_reference_overlay == false
+      refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == middle_stop_level.level_id))
 
       render_hook(view, "switch_level", %{"level_id" => above_level.id})
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.active_level.id == above_level.id
-      assert assigns.reference_level_id == above_level.id
-      assert assigns.reference_stop_level.level_id == above_level.id
-      assert assigns.show_reference_overlay == true
+      assert assigns.reference_level_id == nil
+      assert assigns.reference_stop_level == nil
+      assert assigns.show_reference_overlay == false
+      refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == above_level.id))
     end
 
-    test "select_reference_overlay_level keeps unaligned reference visible with identity dataset fallback", %{
+    test "select_reference_overlay_level normalizes unaligned reference but keeps overlay hidden until toggled", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -12562,16 +12561,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.reference_level_id == above_level.id
       assert assigns.reference_stop_level.level_id == above_level.id
-      assert assigns.show_reference_overlay == true
+      assert assigns.show_reference_overlay == false
 
       assert has_element?(
                view,
-               ".map-canvas[data-show-reference-overlay='true']"
+               ".map-canvas[data-show-reference-overlay='false']"
              )
 
       html = render(view)
 
-      assert html =~ "data-show-reference-overlay=\"true\""
+      assert html =~ "data-show-reference-overlay=\"false\""
       assert is_number(assigns.reference_stop_level.floorplan_center_lat)
       assert is_number(assigns.reference_stop_level.floorplan_center_lon)
       assert is_number(assigns.reference_stop_level.floorplan_scale_mpp)
@@ -12851,6 +12850,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.active_level.id == middle_level.id
 
       render_hook(view, "select_reference_overlay_level", %{"level_id" => above_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == above_level.id
+      assert assigns.show_reference_overlay == false
+
+      refute has_element?(
+               view,
+               ".map-canvas[data-show-reference-overlay='true'][data-reference-center-lat][data-reference-center-lon][data-reference-scale-mpp][data-reference-rotation-deg]"
+             )
+
+      render_hook(view, "toggle_reference_overlay", %{})
 
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.reference_level_id == above_level.id

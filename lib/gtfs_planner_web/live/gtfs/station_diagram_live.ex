@@ -245,7 +245,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp selectable_reference_stop_levels(assigns) when is_map(assigns) do
     active_level_id =
       case Map.get(assigns, :active_level) do
-        %{level_id: level_id} -> level_id
+        %{id: level_id} -> level_id
         _ -> nil
       end
 
@@ -260,7 +260,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp assign_selectable_reference_stop_levels(socket) do
-    assign(socket, :selectable_reference_stop_levels, selectable_reference_stop_levels(socket.assigns))
+    selectable_levels = selectable_reference_stop_levels(socket.assigns)
+
+    socket = assign(socket, :selectable_reference_stop_levels, selectable_levels)
+
+    reference_level_id = socket.assigns[:reference_level_id]
+
+    reference_stop_level =
+      socket.assigns
+      |> Map.get(:station_stop_levels_cache, empty_station_stop_levels_cache())
+      |> Map.get(:by_level_id, %{})
+      |> Map.get(reference_level_id)
+
+    cond do
+      is_nil(reference_stop_level) and selectable_levels != [] ->
+        first_reference = List.first(selectable_levels)
+
+        socket
+        |> assign(:reference_level_id, first_reference.level_id)
+        |> assign(:reference_stop_level, first_reference)
+        |> assign(:show_reference_overlay, false)
+
+      is_nil(reference_stop_level) ->
+        socket
+        |> assign(:reference_level_id, nil)
+        |> assign(:reference_stop_level, nil)
+        |> assign(:show_reference_overlay, false)
+
+      true ->
+        socket
+        |> assign(:reference_stop_level, reference_stop_level)
+    end
   end
 
   defp refresh_level_and_stop_level_cache(socket, level) do
@@ -293,7 +323,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         |> assign(:reference_stop_level, nil)
         |> assign(:show_reference_overlay, false)
 
-      level && reference_stop_level.level_id == level.level_id ->
+      level && reference_stop_level.level_id == level.id ->
         socket
         |> assign(:reference_level_id, nil)
         |> assign(:reference_stop_level, nil)
@@ -571,6 +601,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             active_level={@active_level}
             selectable_reference_stop_levels={@selectable_reference_stop_levels}
             reference_level_id={@reference_level_id}
+            show_reference_overlay={@show_reference_overlay}
           />
           <%= if @mode == :map do %>
             <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
@@ -798,7 +829,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:reference_level_id, if(reference_stop_level, do: selected_level_id, else: nil))
      |> assign(:reference_stop_level, reference_stop_level)
-     |> assign(:show_reference_overlay, not is_nil(reference_stop_level))}
+     |> assign(:show_reference_overlay, false)}
   end
 
   @impl true
@@ -808,6 +839,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:reference_level_id, nil)
      |> assign(:reference_stop_level, nil)
      |> assign(:show_reference_overlay, false)}
+  end
+
+  @impl true
+  def handle_event("toggle_reference_overlay", _params, socket) do
+    reference_stop_level = socket.assigns[:reference_stop_level]
+
+    {:noreply,
+     if reference_stop_level do
+       assign(socket, :show_reference_overlay, not socket.assigns.show_reference_overlay)
+     else
+       assign(socket, :show_reference_overlay, false)
+     end}
   end
 
   @impl true

@@ -28,6 +28,7 @@ const SCALE_MIN = 0.25;
 const SCALE_MAX = 4;
 const IDENTITY_TRANSFORM = Object.freeze({tx: 0, ty: 0, rotation: 0, scale: 1});
 const MAP_ALIGNMENT_HOOK_BUILD = "map-align-fix-v2";
+const REFERENCE_OVERLAY_IMG_SELECTOR = "img[data-reference-overlay='true']";
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -483,6 +484,7 @@ const MapAlignmentHook = {
 
   updated() {
     this._syncReferenceOverlayVisibilityFromDataset();
+    this._syncReferenceOverlayFromDataset();
   },
 
   destroyed() {
@@ -807,6 +809,44 @@ const MapAlignmentHook = {
     overlayEl.style.transform =
       `translate(${transform.tx}px, ${transform.ty}px) ` +
       `rotate(${transform.rotation}deg) scale(${transform.scale})`;
+  },
+
+  _syncReferenceOverlayFromDataset() {
+    if (!this.referenceOverlay) return;
+
+    const root = this.el;
+    const referenceUrl = (root.dataset.referenceFloorplanUrl || "").trim();
+    const referenceAlignment = readReferenceAlignment(root);
+
+    let referenceImg = this.referenceOverlay.querySelector(REFERENCE_OVERLAY_IMG_SELECTOR);
+
+    if (!referenceUrl) {
+      if (referenceImg) {
+        referenceImg.remove();
+      }
+      this._applyOverlayTransform(this.referenceOverlay, IDENTITY_TRANSFORM);
+      return;
+    }
+
+    if (!referenceImg) {
+      referenceImg = document.createElement("img");
+      referenceImg.alt = "Reference level floorplan";
+      referenceImg.dataset.referenceOverlay = "true";
+      referenceImg.className = "h-full w-full object-contain select-none";
+      referenceImg.draggable = false;
+      this.referenceOverlay.appendChild(referenceImg);
+    }
+
+    const currentSrc = referenceImg.getAttribute("src") || "";
+    if (currentSrc !== referenceUrl) {
+      referenceImg.setAttribute("src", referenceUrl);
+    }
+
+    if (referenceAlignment) {
+      this._scheduleOverlayAlignmentRestore(this.referenceOverlay, referenceAlignment, "reference");
+    } else {
+      this._applyOverlayTransform(this.referenceOverlay, IDENTITY_TRANSFORM);
+    }
   },
 
   _applyTransform() {

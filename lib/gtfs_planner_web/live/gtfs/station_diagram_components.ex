@@ -181,6 +181,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :active_level, :any, default: nil
   attr :selectable_reference_stop_levels, :list, default: []
   attr :reference_level_id, :string, default: nil
+  attr :show_reference_overlay, :boolean, default: false
 
   def diagram_action_strip(assigns) do
     ~H"""
@@ -290,7 +291,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   name="level_id"
                   class="select select-sm select-bordered bg-white"
                 >
-                  <option value="" selected={is_nil(@reference_level_id)}>None</option>
                   <%= for stop_level <- @selectable_reference_stop_levels do %>
                     <option
                       value={stop_level.level_id}
@@ -300,6 +300,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                     </option>
                   <% end %>
                 </select>
+                <button
+                  type="button"
+                  class="btn btn-sm btn-outline"
+                  phx-click="toggle_reference_overlay"
+                  disabled={is_nil(@reference_level_id)}
+                >
+                  {if @show_reference_overlay, do: "Hide", else: "Show"}
+                </button>
               </form>
             <% end %>
 
@@ -392,6 +400,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         phx-hook="MapAlignment"
         phx-update="ignore"
         data-show-reference-overlay={overlay_toggle_attr(@show_reference_overlay)}
+        data-reference-floorplan-url={@reference_overlay_url}
         data-floorplan-url={@floorplan_url}
         data-initial-lat={@initial_lat}
         data-initial-lon={@initial_lon}
@@ -409,7 +418,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       >
         <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
         <div
-          :if={@reference_overlay_url}
           id="map-reference-overlay"
           data-overlay-role="reference"
           data-editable-overlay="false"
@@ -424,11 +432,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           ]}
           style="z-index: 1;"
         >
-          <img
-            src={@reference_overlay_url}
-            alt="Reference level floorplan"
-            class="absolute inset-0 h-full w-full object-contain pointer-events-none"
-          />
+          <%= if @reference_overlay_url do %>
+            <img
+              src={@reference_overlay_url}
+              alt="Reference level floorplan"
+              class="absolute inset-0 w-full h-full object-contain select-none pointer-events-none"
+            />
+          <% end %>
         </div>
         <div
           id="map-alignment-overlay"
