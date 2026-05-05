@@ -534,6 +534,114 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     end
   end
 
+  describe "Connectivity inaccessible row highlight" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_INACC",
+          stop_name: "Inaccessible Row Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      _level1 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_INACC_STREET",
+          level_name: "Street",
+          level_index: 0.0
+        })
+
+      _level2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_INACC_PLATFORM",
+          level_name: "Platform",
+          level_index: -1.0
+        })
+
+      entrance =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_INACC",
+          stop_name: "Stairs Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L_INACC_STREET"
+        })
+
+      platform =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_INACC",
+          stop_name: "Stairs Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L_INACC_PLATFORM"
+        })
+
+      _pw_stairs =
+        pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, platform.stop_id, %{
+          pathway_id: "PW_INACC_STAIRS",
+          pathway_mode: 2,
+          is_bidirectional: true,
+          traversal_time: 30
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station
+      }
+    end
+
+    test "reachable stairs-only route highlights row with red error styling and renders No", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      view
+      |> element(
+        "button[phx-click='toggle_connectivity_dimension'][phx-value-dimension='entrance_to_platform']"
+      )
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC'].bg-red-50"
+             )
+
+      assert has_element?(
+               view,
+               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC'].hover\\:bg-red-100"
+             )
+
+      row_html =
+        view
+        |> element(
+          "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC']"
+        )
+        |> render()
+
+      assert row_html =~ ~r/>\s*No\s*</
+    end
+  end
+
   describe "Connectivity signposted_as direction" do
     setup do
       organization = organization_fixture()
