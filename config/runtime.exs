@@ -236,6 +236,7 @@ if config_env() == :prod do
 
   if ses_region do
     config :ex_aws,
+      http_client: ExAws.Request.Req,
       access_key_id: [:instance_role],
       secret_access_key: [:instance_role],
       region: ses_region
