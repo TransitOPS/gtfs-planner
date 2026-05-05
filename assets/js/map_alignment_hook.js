@@ -797,9 +797,11 @@ const MapAlignmentHook = {
     const renderedPxPerImagePxNeeded = alignment.scaleMpp / metersPerCanvasPx;
     const scale = renderedPxPerImagePxNeeded / (containWidth / img.naturalWidth);
 
+    const alignedCenterPoint = map.latLngToContainerPoint([alignment.centerLat, alignment.centerLon]);
+
     const restoredTransform = {
-      tx: 0,
-      ty: 0,
+      tx: alignedCenterPoint.x - canvasW / 2,
+      ty: alignedCenterPoint.y - canvasH / 2,
       rotation: alignment.rotationDeg,
       scale: scale
     };
@@ -809,6 +811,7 @@ const MapAlignmentHook = {
       alignment,
       canvasW,
       canvasH,
+      alignedCenterPoint,
       metersPerCanvasPx,
       containWidth,
       imageNaturalWidth: img.naturalWidth,

@@ -120,6 +120,7 @@ describe("map_alignment_hook reference restore", () => {
       _applyTransform: vi.fn(),
       leafletMap: {
         containerPointToLatLng: ([x, y]) => ({ x, y }),
+        latLngToContainerPoint: ([lat, lon]) => ({ x: lon, y: lat }),
         distance: () => 2,
       },
     };
@@ -133,6 +134,7 @@ describe("map_alignment_hook reference restore", () => {
 
     expect(referenceOverlay.style.transform).toContain("rotate(33deg)");
     expect(referenceOverlay.style.transform).toContain("scale(");
+    expect(referenceOverlay.style.transform).toContain("translate(-174px, -9.3px)");
     expect(hook.transform).toEqual({ tx: 9, ty: 8, rotation: 7, scale: 1.2 });
     expect(hook._applyTransform).not.toHaveBeenCalled();
   });
