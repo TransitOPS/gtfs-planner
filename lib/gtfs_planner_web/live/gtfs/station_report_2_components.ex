@@ -42,11 +42,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       id: "report2-pathway-field-completeness",
       label: "Pathway Field Completeness",
       desc: "Fill rates for optional pathway fields like traversal time, stair count, and slope."
-    },
-    %{
-      id: "report2-accessibility",
-      label: "Accessibility",
-      desc: "Wheelchair boarding and accessible pathway coverage."
     }
   ]
 
@@ -958,17 +953,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     >
       Fail
     </span>
-    """
-  end
-
-  attr :report, :map, default: nil
-
-  def accessibility_section(assigns) do
-    ~H"""
-    <section id="report2-accessibility">
-      <h2 class="text-lg font-semibold">Accessibility</h2>
-      <p class="text-base-content/60">Not yet implemented.</p>
-    </section>
     """
   end
 
