@@ -121,6 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
 
   defp target_row(assigns) do
     nopath = assigns.target.status == :nopath
+    inaccessible = not nopath and assigns.target.accessible == false
     key = {assigns.source_id, assigns.target.stop_id}
     expanded_route = Map.get(assigns.expanded_routes, key)
     expanded = expanded_route != nil
@@ -129,6 +130,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     assigns =
       assigns
       |> assign(:nopath, nopath)
+      |> assign(:inaccessible, inaccessible)
       |> assign(:expanded, expanded)
       |> assign(:expanded_route, expanded_route)
       |> assign(:key, key)
