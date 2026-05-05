@@ -12,6 +12,7 @@ locals {
     OTP_JAR_PATH     = "/opt/otp/otp.jar"
     OTP_OSM_PATH     = "/opt/otp/data/philadelphia.osm.pbf"
     GEOAPIFY_API_KEY = var.geoapify_api_key
+    AWS_REGION       = data.aws_region.current.region
   }
 }
 
