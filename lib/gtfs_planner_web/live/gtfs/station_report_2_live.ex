@@ -410,7 +410,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
             expanded_routes={@expanded_routes}
           />
           <.pathway_field_completeness_section groups={@pathway_field_completeness_groups} />
-          <.accessibility_section report={@report} />
         <% end %>
       </div>
 

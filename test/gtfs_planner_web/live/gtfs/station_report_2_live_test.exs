@@ -91,7 +91,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert has_element?(view, "#report2-naming-conventions")
       assert has_element?(view, "#report2-reachability-connectivity")
       assert has_element?(view, "#report2-pathway-field-completeness")
-      assert has_element?(view, "#report2-accessibility")
     end
 
     test "sections render in correct order", %{
@@ -112,8 +111,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
         "report2-gps-checks",
         "report2-naming-conventions",
         "report2-reachability-connectivity",
-        "report2-pathway-field-completeness",
-        "report2-accessibility"
+        "report2-pathway-field-completeness"
       ]
 
       positions =

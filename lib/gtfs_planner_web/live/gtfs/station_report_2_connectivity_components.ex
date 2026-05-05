@@ -121,6 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
 
   defp target_row(assigns) do
     nopath = assigns.target.status == :nopath
+    inaccessible = not nopath and assigns.target.accessible == false
     key = {assigns.source_id, assigns.target.stop_id}
     expanded_route = Map.get(assigns.expanded_routes, key)
     expanded = expanded_route != nil
@@ -129,6 +130,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     assigns =
       assigns
       |> assign(:nopath, nopath)
+      |> assign(:inaccessible, inaccessible)
       |> assign(:expanded, expanded)
       |> assign(:expanded_route, expanded_route)
       |> assign(:key, key)
@@ -137,7 +139,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     ~H"""
     <div class="border-b border-gray-100 last:border-b-0">
       <button
-        class="w-full flex items-center justify-between py-3.5 px-4 text-left hover:bg-gray-50 transition-colors duration-[15ms] cursor-pointer"
+        class={[
+          "w-full flex items-center justify-between py-3.5 px-4 text-left transition-colors duration-[15ms] cursor-pointer",
+          @inaccessible && "bg-red-50 hover:bg-red-100",
+          !@inaccessible && "hover:bg-gray-50"
+        ]}
         phx-click="toggle_route_expand"
         phx-value-source_id={@source_id}
         phx-value-target_id={@target.stop_id}
@@ -162,7 +168,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
             <p class="text-[10px] text-gray-500 mt-0.5">Distance</p>
           </div>
           <div class="text-center min-w-[36px]">
-            <p class="text-sm font-semibold text-gray-900">
+            <p class={[
+              "text-sm font-semibold",
+              @inaccessible && "text-red-800",
+              !@inaccessible && "text-gray-900"
+            ]}>
               {cond do
                 @nopath -> "—"
                 @target.accessible -> "Yes"
