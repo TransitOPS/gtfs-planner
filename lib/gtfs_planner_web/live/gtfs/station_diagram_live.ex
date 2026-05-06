@@ -594,6 +594,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             active_level={@active_level}
             selectable_reference_stop_levels={@selectable_reference_stop_levels}
             reference_level_id={@reference_level_id}
+            reference_stop_level={@reference_stop_level}
             show_reference_overlay={@show_reference_overlay}
           />
           <%= if @mode == :map do %>

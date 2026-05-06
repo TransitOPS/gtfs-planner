@@ -181,6 +181,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :active_level, :any, default: nil
   attr :selectable_reference_stop_levels, :list, default: []
   attr :reference_level_id, :string, default: nil
+  attr :reference_stop_level, :any, default: nil
   attr :show_reference_overlay, :boolean, default: false
 
   def diagram_action_strip(assigns) do
@@ -291,6 +292,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   name="level_id"
                   class="select select-sm select-bordered bg-white"
                 >
+                  <option value="" selected={is_nil(@reference_level_id)}>
+                    Select Level Overlay
+                  </option>
                   <%= for stop_level <- @selectable_reference_stop_levels do %>
                     <option
                       value={stop_level.level_id}
@@ -304,7 +308,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   type="button"
                   class="btn btn-sm btn-outline"
                   phx-click="toggle_reference_overlay"
-                  disabled={is_nil(@reference_level_id)}
+                  disabled={is_nil(@reference_stop_level)}
                 >
                   {if @show_reference_overlay, do: "Hide", else: "Show"}
                 </button>

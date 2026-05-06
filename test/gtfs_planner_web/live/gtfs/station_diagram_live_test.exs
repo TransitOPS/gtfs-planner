@@ -12317,7 +12317,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.show_reference_overlay == false
 
       assert has_element?(view, "#reference-overlay-level-form")
-      refute has_element?(view, "#reference-overlay-level-form option[value='']")
+      assert has_element?(view, "#reference-overlay-level-form option[value='']")
+
+      assert has_element?(
+               view,
+               "#reference-overlay-level-form option[value=''][selected]",
+               "Select Level Overlay"
+             )
+
+      assert has_element?(view, "#reference-overlay-level-form button[disabled]", "Show")
 
       refute has_element?(
                view,
@@ -12504,6 +12512,63 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.reference_stop_level == nil
       assert assigns.show_reference_overlay == false
       refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == above_level.id))
+    end
+
+    test "single selectable reference level starts on prompt and enables toggle after selection",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           stop_level: middle_stop_level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      other_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "single_reference_other",
+          level_name: "Single Reference Other",
+          level_index: 1.0
+        })
+
+      {:ok, other_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: other_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(other_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(other_stop_level, "single-reference-other.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == nil
+      assert assigns.reference_stop_level == nil
+      assert has_element?(view, "#reference-overlay-level-form option[value=''][selected]")
+      assert has_element?(view, "#reference-overlay-level-form button[disabled]", "Show")
+
+      render_hook(view, "select_reference_overlay_level", %{"level_id" => other_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == other_level.id
+      assert assigns.reference_stop_level.level_id == other_level.id
+      refute has_element?(view, "#reference-overlay-level-form button[disabled]", "Show")
     end
 
     test "select_reference_overlay_level normalizes unaligned reference but keeps overlay hidden until toggled",
