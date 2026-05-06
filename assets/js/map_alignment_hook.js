@@ -169,6 +169,7 @@ const MapAlignmentHook = {
     this.lonInput = lonInput;
     this.applyCenterBtn = applyCenterBtn;
     this.opacitySlider = opacitySlider;
+    this.referenceOpacitySlider = null;
     this.zoomSlider = zoomSlider;
     this.saveBtn = saveBtn;
     this.applyBtn = applyBtn;
@@ -178,6 +179,8 @@ const MapAlignmentHook = {
     this._syncReferenceOverlayVisibilityFromDataset();
 
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.7";
+
+    if (referenceOverlay) referenceOverlay.style.opacity = "0.7";
 
     this.transform = {...IDENTITY_TRANSFORM};
 
@@ -475,6 +478,8 @@ const MapAlignmentHook = {
       opacitySlider.addEventListener("input", this._onOpacityInput);
     }
 
+    this._syncReferenceOpacitySlider();
+
     // --- Save: compute canonical alignment and push to server ---
     if (saveBtn) {
       this._onSave = () => {
@@ -516,6 +521,7 @@ const MapAlignmentHook = {
   updated() {
     this._syncReferenceOverlayVisibilityFromDataset();
     this._syncReferenceOverlayFromDataset();
+    this._syncReferenceOpacitySlider();
   },
 
   destroyed() {
@@ -565,6 +571,11 @@ const MapAlignmentHook = {
     }
     if (this.opacitySlider && this._onOpacityInput) {
       this.opacitySlider.removeEventListener("input", this._onOpacityInput);
+    }
+    if (this.referenceOpacitySlider && this._onReferenceOpacityInput) {
+      this.referenceOpacitySlider.removeEventListener("input", this._onReferenceOpacityInput);
+      this.referenceOpacitySlider = null;
+      this._onReferenceOpacityInput = null;
     }
     if (this.saveBtn && this._onSave) {
       this.saveBtn.removeEventListener("click", this._onSave);
@@ -874,6 +885,25 @@ const MapAlignmentHook = {
     }
   },
 
+  _syncReferenceOpacitySlider() {
+    const nextSlider = document.getElementById("map-reference-overlay-opacity");
+
+    if (this.referenceOpacitySlider && this._onReferenceOpacityInput) {
+      this.referenceOpacitySlider.removeEventListener("input", this._onReferenceOpacityInput);
+    }
+
+    this.referenceOpacitySlider = nextSlider;
+
+    if (!this.referenceOpacitySlider || !this.referenceOverlay) return;
+
+    this._onReferenceOpacityInput = (e) => {
+      this.referenceOverlay.style.opacity = e.target.value;
+    };
+
+    this.referenceOpacitySlider.addEventListener("input", this._onReferenceOpacityInput);
+    this.referenceOverlay.style.opacity = this.referenceOpacitySlider.value || "0.7";
+  },
+
   _applyTransform() {
     if (!this.overlay) return;
     const {tx, ty, rotation, scale} = this.transform;
@@ -932,6 +962,10 @@ const MapAlignmentHook = {
 
     this.referenceOverlay.dataset.overlayVisible = showReference ? "true" : "false";
     this.referenceOverlay.classList.toggle("hidden", !showReference);
+
+    if (showReference && this.referenceOpacitySlider) {
+      this.referenceOverlay.style.opacity = this.referenceOpacitySlider.value || "0.7";
+    }
   },
 
   _fetchBuildings(lat, lon) {

@@ -588,6 +588,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             />
           </div>
 
+          <%= if @show_reference_overlay and @reference_stop_level do %>
+            <div class="flex flex-col gap-1">
+              <label
+                for="map-reference-overlay-opacity"
+                class="text-xs font-medium text-base-content/80"
+              >
+                Reference opacity
+              </label>
+              <input
+                id="map-reference-overlay-opacity"
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value="0.7"
+                class="range range-xs w-40"
+              />
+            </div>
+          <% end %>
+
           <div class="ml-auto flex items-center gap-3">
             <button id="map-alignment-save" type="button" class="btn btn-sm btn-primary">
               Save Alignment
