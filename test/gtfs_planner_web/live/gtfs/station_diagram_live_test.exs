@@ -12571,6 +12571,79 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#reference-overlay-level-form button[disabled]", "Show")
     end
 
+    test "reference overlay options exclude levels without diagrams", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: middle_stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      with_diagram_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "reference_with_diagram",
+          level_name: "Reference With Diagram",
+          level_index: 1.0
+        })
+
+      without_diagram_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "reference_without_diagram",
+          level_name: "Reference Without Diagram",
+          level_index: -1.0
+        })
+
+      {:ok, with_diagram_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: with_diagram_level.id
+        })
+
+      {:ok, _without_diagram_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: without_diagram_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(with_diagram_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(with_diagram_stop_level, "reference.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == with_diagram_level.id))
+
+      refute Enum.any?(
+               assigns.selectable_reference_stop_levels,
+               &(&1.level_id == without_diagram_level.id)
+             )
+
+      assert has_element?(view, "#reference-overlay-level-form option[value='#{with_diagram_level.id}']")
+
+      refute has_element?(
+               view,
+               "#reference-overlay-level-form option[value='#{without_diagram_level.id}']"
+             )
+    end
+
     test "select_reference_overlay_level normalizes unaligned reference but keeps overlay hidden until toggled",
          %{
            conn: conn,

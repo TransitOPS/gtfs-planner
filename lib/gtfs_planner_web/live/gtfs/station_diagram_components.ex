@@ -315,7 +315,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                     )
                   ]}
                   phx-click="toggle_reference_overlay"
-                  disabled={is_nil(@reference_stop_level)}
+                  disabled={
+                    is_nil(@reference_stop_level) or
+                      is_nil(@reference_stop_level.diagram_filename) or
+                      @reference_stop_level.diagram_filename == ""
+                  }
                 >
                   {if @show_reference_overlay, do: "Hide", else: "Show"}
                 </button>

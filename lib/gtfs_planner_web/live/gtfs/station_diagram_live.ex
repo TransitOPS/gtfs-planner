@@ -255,10 +255,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> Map.get(:station_stop_levels_cache, empty_station_stop_levels_cache())
       |> Map.get(:ordered, [])
 
-    Enum.reject(stop_levels, fn stop_level ->
+    stop_levels
+    |> Enum.reject(fn stop_level ->
       stop_level.level_id == active_level_id
     end)
+    |> Enum.filter(&reference_overlay_eligible_stop_level?/1)
   end
+
+  defp reference_overlay_eligible_stop_level?(%StopLevel{diagram_filename: filename})
+       when is_binary(filename) and filename != "",
+       do: true
+
+  defp reference_overlay_eligible_stop_level?(_stop_level), do: false
 
   defp assign_selectable_reference_stop_levels(socket) do
     selectable_levels = selectable_reference_stop_levels(socket.assigns)
@@ -817,6 +825,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> Map.get(:station_stop_levels_cache, empty_station_stop_levels_cache())
           |> Map.get(:by_level_id, %{})
           |> Map.get(level_id)
+          |> case do
+            stop_level ->
+              if reference_overlay_eligible_stop_level?(stop_level), do: stop_level, else: nil
+          end
       end
 
     {:noreply,
@@ -840,7 +852,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     reference_stop_level = socket.assigns[:reference_stop_level]
 
     {:noreply,
-     if reference_stop_level do
+     if reference_overlay_eligible_stop_level?(reference_stop_level) do
        assign(socket, :show_reference_overlay, not socket.assigns.show_reference_overlay)
      else
        assign(socket, :show_reference_overlay, false)
