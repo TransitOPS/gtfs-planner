@@ -590,7 +590,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
           <div class="ml-auto flex items-center gap-3">
             <button id="map-alignment-save" type="button" class="btn btn-sm btn-primary">
-              Save Individual Alignment
+              Save Alignment
             </button>
             <button
               id="map-alignment-apply"
@@ -599,7 +599,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               title="Set lat/lon for child stops from the floorplan's current position on the map"
               disabled={is_nil(@image_natural_width) or is_nil(@image_natural_height)}
             >
-              Apply & Sync Position
+              Apply Image Position
             </button>
           </div>
         </div>
