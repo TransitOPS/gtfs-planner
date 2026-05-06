@@ -409,10 +409,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-align-center-lon={if @has_alignment?, do: @align_center_lon}
         data-align-scale-mpp={if @has_alignment?, do: @align_scale_mpp}
         data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
-        data-reference-center-lat={reference_overlay_value(@reference_stop_level, :floorplan_center_lat)}
-        data-reference-center-lon={reference_overlay_value(@reference_stop_level, :floorplan_center_lon)}
-        data-reference-scale-mpp={reference_overlay_value(@reference_stop_level, :floorplan_scale_mpp)}
-        data-reference-rotation-deg={reference_overlay_value(@reference_stop_level, :floorplan_rotation_deg)}
+        data-reference-center-lat={
+          reference_overlay_value(@reference_stop_level, :floorplan_center_lat)
+        }
+        data-reference-center-lon={
+          reference_overlay_value(@reference_stop_level, :floorplan_center_lon)
+        }
+        data-reference-scale-mpp={
+          reference_overlay_value(@reference_stop_level, :floorplan_scale_mpp)
+        }
+        data-reference-rotation-deg={
+          reference_overlay_value(@reference_stop_level, :floorplan_rotation_deg)
+        }
         data-image-natural-width={@image_natural_width}
         data-image-natural-height={@image_natural_height}
       >
@@ -422,10 +430,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           data-overlay-role="reference"
           data-editable-overlay="false"
           data-overlay-visible={if(@show_reference_overlay, do: "true", else: "false")}
-          data-align-center-lat={reference_overlay_value(@reference_stop_level, :floorplan_center_lat)}
-          data-align-center-lon={reference_overlay_value(@reference_stop_level, :floorplan_center_lon)}
+          data-align-center-lat={
+            reference_overlay_value(@reference_stop_level, :floorplan_center_lat)
+          }
+          data-align-center-lon={
+            reference_overlay_value(@reference_stop_level, :floorplan_center_lon)
+          }
           data-align-scale-mpp={reference_overlay_value(@reference_stop_level, :floorplan_scale_mpp)}
-          data-align-rotation-deg={reference_overlay_value(@reference_stop_level, :floorplan_rotation_deg)}
+          data-align-rotation-deg={
+            reference_overlay_value(@reference_stop_level, :floorplan_rotation_deg)
+          }
           class={[
             "absolute inset-0 pointer-events-none opacity-70",
             if(@show_reference_overlay, do: nil, else: "hidden")

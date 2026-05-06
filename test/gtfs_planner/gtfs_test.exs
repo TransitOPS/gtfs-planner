@@ -2969,20 +2969,32 @@ defmodule GtfsPlanner.GtfsTest do
       assert updated.floorplan_rotation_deg == attrs.floorplan_rotation_deg
 
       reloaded_other_stop_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, other_stop_level.id)
-      assert reloaded_other_stop_level.floorplan_center_lat == other_stop_level.floorplan_center_lat
-      assert reloaded_other_stop_level.floorplan_center_lon == other_stop_level.floorplan_center_lon
+
+      assert reloaded_other_stop_level.floorplan_center_lat ==
+               other_stop_level.floorplan_center_lat
+
+      assert reloaded_other_stop_level.floorplan_center_lon ==
+               other_stop_level.floorplan_center_lon
+
       assert reloaded_other_stop_level.floorplan_scale_mpp == other_stop_level.floorplan_scale_mpp
-      assert reloaded_other_stop_level.floorplan_rotation_deg == other_stop_level.floorplan_rotation_deg
+
+      assert reloaded_other_stop_level.floorplan_rotation_deg ==
+               other_stop_level.floorplan_rotation_deg
 
       reloaded_active_child = Repo.get!(GtfsPlanner.Gtfs.Stop, active_child.id)
       reloaded_other_child = Repo.get!(GtfsPlanner.Gtfs.Stop, other_child.id)
 
-      assert_in_delta Decimal.to_float(reloaded_active_child.stop_lat), attrs.floorplan_center_lat, 1.0e-9
-      assert_in_delta Decimal.to_float(reloaded_active_child.stop_lon), attrs.floorplan_center_lon, 1.0e-9
+      assert_in_delta Decimal.to_float(reloaded_active_child.stop_lat),
+                      attrs.floorplan_center_lat,
+                      1.0e-9
+
+      assert_in_delta Decimal.to_float(reloaded_active_child.stop_lon),
+                      attrs.floorplan_center_lon,
+                      1.0e-9
+
       assert Decimal.equal?(reloaded_other_child.stop_lat, Decimal.new("3.0"))
       assert Decimal.equal?(reloaded_other_child.stop_lon, Decimal.new("4.0"))
     end
-
   end
 
   describe "derive_child_stop_coords/3" do

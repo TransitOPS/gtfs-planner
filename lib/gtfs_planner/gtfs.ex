@@ -558,7 +558,7 @@ defmodule GtfsPlanner.Gtfs do
         image_h
       )
       when is_binary(active_stop_level_id) and is_map(proposed_alignment_attrs) do
-    Logger.info(fn ->
+    Logger.debug(fn ->
       "[ALIGN_APPLY_DEBUG] start save_and_apply_stop_level_alignment " <>
         inspect(%{
           active_stop_level_id: active_stop_level_id,
@@ -578,7 +578,7 @@ defmodule GtfsPlanner.Gtfs do
             %StopLevel{} = active_stop_level ->
               old_alignment_snapshot = stop_level_alignment_snapshot(active_stop_level)
 
-              Logger.info(fn ->
+              Logger.debug(fn ->
                 "[ALIGN_APPLY_DEBUG] active_stop_level_loaded " <>
                   inspect(%{
                     active_stop_level_id: active_stop_level.id,
@@ -593,11 +593,12 @@ defmodule GtfsPlanner.Gtfs do
                    {:ok, active_derived} <-
                      derive_child_stop_coords(updated_stop_level, image_w, image_h),
                    {:ok, active_updated_stops} <- persist_derived_coords_in_tx(active_derived) do
-                Logger.info(fn ->
+                Logger.debug(fn ->
                   "[ALIGN_APPLY_DEBUG] active_stop_level_persisted " <>
                     inspect(%{
                       active_stop_level_id: updated_stop_level.id,
-                      updated_alignment_snapshot: stop_level_alignment_snapshot(updated_stop_level)
+                      updated_alignment_snapshot:
+                        stop_level_alignment_snapshot(updated_stop_level)
                     })
                 end)
 
@@ -653,14 +654,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   def save_and_apply_stop_level_alignment(_, _, _, _), do: {:error, :invalid_input}
-
-  defp alignment_changeset_log_errors(%Ecto.Changeset{} = changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Enum.reduce(opts, msg, fn {key, value}, acc ->
-        String.replace(acc, "%{#{key}}", to_string(value))
-      end)
-    end)
-  end
 
   defp load_stop_level_for_update(stop_level_id) when is_binary(stop_level_id) do
     from(sl in StopLevel, where: sl.id == ^stop_level_id, lock: "FOR UPDATE")

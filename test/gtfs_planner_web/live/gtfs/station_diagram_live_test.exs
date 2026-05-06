@@ -12318,7 +12318,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#reference-overlay-level-form")
       refute has_element?(view, "#reference-overlay-level-form option[value='']")
-      refute has_element?(view, "#reference-overlay-level-form option[value='#{middle_level.id}']")
+
+      refute has_element?(
+               view,
+               "#reference-overlay-level-form option[value='#{middle_level.id}']"
+             )
+
       assert has_element?(view, "#reference-overlay-level-form option[value='#{below_level.id}']")
       assert has_element?(view, "#reference-overlay-level-form option[value='#{above_level.id}']")
 
@@ -12333,15 +12338,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#reference-overlay-level-form")
     end
 
-    test "refreshes stop-level cache and selectable reference levels after level removal in map mode", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      level: middle_level,
-      stop_level: middle_stop_level
-    } do
+    test "refreshes stop-level cache and selectable reference levels after level removal in map mode",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: _middle_level,
+           stop_level: middle_stop_level
+         } do
       {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
 
       below_level =
@@ -12461,7 +12467,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.reference_level_id == nil
       assert assigns.reference_stop_level == nil
       assert assigns.show_reference_overlay == false
-      refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == middle_stop_level.level_id))
+
+      refute Enum.any?(
+               assigns.selectable_reference_stop_levels,
+               &(&1.level_id == middle_stop_level.level_id)
+             )
 
       render_hook(view, "select_reference_overlay_level", %{"level_id" => below_level.id})
 
@@ -12469,7 +12479,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.reference_level_id == below_level.id
       assert assigns.reference_stop_level.level_id == below_level.id
       assert assigns.show_reference_overlay == false
-      refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == middle_stop_level.level_id))
+
+      refute Enum.any?(
+               assigns.selectable_reference_stop_levels,
+               &(&1.level_id == middle_stop_level.level_id)
+             )
 
       render_hook(view, "select_reference_overlay_level", %{"level_id" => above_level.id})
 
@@ -12477,7 +12491,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.reference_level_id == above_level.id
       assert assigns.reference_stop_level.level_id == above_level.id
       assert assigns.show_reference_overlay == false
-      refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == middle_stop_level.level_id))
+
+      refute Enum.any?(
+               assigns.selectable_reference_stop_levels,
+               &(&1.level_id == middle_stop_level.level_id)
+             )
 
       render_hook(view, "switch_level", %{"level_id" => above_level.id})
       assigns = :sys.get_state(view.pid).socket.assigns
@@ -12488,14 +12506,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == above_level.id))
     end
 
-    test "select_reference_overlay_level normalizes unaligned reference but keeps overlay hidden until toggled", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      stop_level: middle_stop_level
-    } do
+    test "select_reference_overlay_level normalizes unaligned reference but keeps overlay hidden until toggled",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           stop_level: middle_stop_level
+         } do
       {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
 
       below_level =

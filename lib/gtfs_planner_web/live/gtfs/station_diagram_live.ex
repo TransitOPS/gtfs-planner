@@ -91,9 +91,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:naming_error, nil)
      |> assign(:naming_status, nil)
      |> assign(:naming_excluded_ids, MapSet.new())
-      |> assign(:reference_level_id, nil)
-      |> assign(:reference_stop_level, nil)
-      |> assign(:show_reference_overlay, false)
+     |> assign(:reference_level_id, nil)
+     |> assign(:reference_stop_level, nil)
+     |> assign(:show_reference_overlay, false)
      |> assign(:audit_ctx, nil)
      |> assign(:history_open_for, nil)
      |> assign(:history_entries, [])
@@ -163,9 +163,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:available_levels, available_levels)
           |> assign(:all_levels, all_levels)
           |> assign(:active_level, active_level)
-           |> assign(:reference_level_id, nil)
-           |> assign(:reference_stop_level, nil)
-           |> assign(:show_reference_overlay, false)
+          |> assign(:reference_level_id, nil)
+          |> assign(:reference_stop_level, nil)
+          |> assign(:show_reference_overlay, false)
           |> assign(:show_walkability_drawer, false)
           |> assign(:walkability_stop, nil)
           |> assign(
@@ -213,6 +213,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       end
 
     cache = normalize_station_stop_levels_cache(stop_levels)
+
     socket
     |> assign(:station_stop_levels_cache, cache)
   end
@@ -4260,7 +4261,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       socket
       |> disable_measurement()
       |> assign(:active_level, level)
-          |> assign_selectable_reference_stop_levels()
+      |> assign_selectable_reference_stop_levels()
       |> assign(:pending_xy, nil)
       |> assign(:diagram_error, nil)
       |> reset_reposition_state()
