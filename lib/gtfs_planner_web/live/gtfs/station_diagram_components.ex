@@ -282,7 +282,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               <form
                 id="reference-overlay-level-form"
                 phx-change="select_reference_overlay_level"
-                class="flex items-center gap-2 mr-4"
+                class="flex items-center gap-2 mr-8"
               >
                 <label for="reference-overlay-level-select" class="text-sm font-medium text-blue-900">
                   Reference:
@@ -306,7 +306,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 </select>
                 <button
                   type="button"
-                  class="btn btn-sm btn-outline"
+                  class={[
+                    "btn btn-sm min-w-16",
+                    if(@show_reference_overlay,
+                      do:
+                        "bg-blue-600 border-blue-600 text-white hover:bg-blue-700 hover:border-blue-700",
+                      else: "btn-outline border-blue-300 text-blue-600 hover:bg-blue-50"
+                    )
+                  ]}
                   phx-click="toggle_reference_overlay"
                   disabled={is_nil(@reference_stop_level)}
                 >
