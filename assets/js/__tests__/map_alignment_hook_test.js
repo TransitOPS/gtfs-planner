@@ -90,6 +90,65 @@ describe("map_alignment_hook alignment parsing", () => {
 });
 
 describe("map_alignment_hook reference restore", () => {
+  it("cancels stale pending reference restore before applying identity", () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = `
+      <div id="root">
+        <div id="map-alignment-leaflet"></div>
+        <div id="map-reference-overlay"><img id="reference-img" /></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const referenceOverlay = document.getElementById("map-reference-overlay");
+    const referenceImg = document.getElementById("reference-img");
+
+    root.dataset.referenceFloorplanUrl = "/uploads/reference-a.png";
+    root.dataset.referenceCenterLat = "40.7131";
+    root.dataset.referenceCenterLon = "-74.0058";
+    root.dataset.referenceScaleMpp = "0.3";
+    root.dataset.referenceRotationDeg = "-5";
+
+    leafletEl.getBoundingClientRect = () => ({ width: 200, height: 100 });
+    Object.defineProperty(referenceImg, "complete", { value: true, configurable: true });
+    Object.defineProperty(referenceImg, "naturalWidth", { value: 200, configurable: true });
+    Object.defineProperty(referenceImg, "naturalHeight", { value: 100, configurable: true });
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      leafletEl,
+      referenceOverlay,
+      _overlayRestoreDisposers: [],
+      _pendingReferenceRestoreDispose: null,
+      _restoreOverlayAlignment: vi.fn(),
+      _applyOverlayTransform: MapAlignmentHook._applyOverlayTransform,
+      _leafletRect: MapAlignmentHook._leafletRect,
+      leafletMap: {
+        containerPointToLatLng: ([x, y]) => ({ lat: y, lng: x }),
+        latLngToContainerPoint: ([lat, lon]) => ({ x: lon, y: lat }),
+        distance: () => 1,
+      },
+    };
+
+    hook._syncReferenceOverlayFromDataset();
+
+    root.dataset.referenceFloorplanUrl = "";
+    delete root.dataset.referenceCenterLat;
+    delete root.dataset.referenceCenterLon;
+    delete root.dataset.referenceScaleMpp;
+    delete root.dataset.referenceRotationDeg;
+
+    hook._syncReferenceOverlayFromDataset();
+    vi.advanceTimersByTime(300);
+
+    expect(hook._restoreOverlayAlignment).not.toHaveBeenCalled();
+    expect(referenceOverlay.style.transform).toBe("none");
+
+    vi.useRealTimers();
+  });
+
   it("restores reference overlay transform without mutating active transform state", () => {
     document.body.innerHTML = `
       <div id="root">
@@ -349,5 +408,159 @@ describe("map_alignment_hook reference overlay visibility sync", () => {
     expect(imgs.length).toBe(1);
     expect(imgs[0].dataset.referenceOverlay).toBe("true");
     expect(imgs[0].getAttribute("src")).toBe("/uploads/final.png");
+  });
+});
+
+describe("map_alignment_hook zoom slider reference alignment", () => {
+  it("re-aligns reference overlay on zoom slider input when reference alignment is valid", () => {
+    document.body.innerHTML = `
+      <div id="root">
+        <div id="map-alignment-leaflet"></div>
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-reference-overlay" data-editable-overlay="false" data-overlay-visible="true"><img id="reference-img" /></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const referenceOverlay = document.getElementById("map-reference-overlay");
+    const referenceImg = document.getElementById("reference-img");
+
+    root.dataset.referenceCenterLat = "40.7131";
+    root.dataset.referenceCenterLon = "-74.0058";
+    root.dataset.referenceScaleMpp = "0.3";
+    root.dataset.referenceRotationDeg = "-5";
+
+    leafletEl.getBoundingClientRect = () => ({ width: 200, height: 100 });
+
+    Object.defineProperty(referenceImg, "naturalWidth", { value: 200, configurable: true });
+    Object.defineProperty(referenceImg, "naturalHeight", { value: 100, configurable: true });
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      leafletEl,
+      overlay,
+      referenceOverlay,
+      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+      _applyTransform: vi.fn(),
+      _restoreOverlayAlignment: vi.fn(),
+      leafletMap: {
+        getZoom: () => 10,
+        setZoom: vi.fn(),
+        containerPointToLatLng: ([x, y]) => ({ lat: y, lng: x }),
+        latLngToContainerPoint: ({ lat, lng }) => ({ x: lng, y: lat }),
+        distance: () => 1,
+      },
+    };
+
+    hook._onZoomSliderInput = (e) => {
+      const target = parseFloat(e.target.value);
+      if (!Number.isFinite(target)) return;
+      const current = hook.leafletMap.getZoom();
+      if (target === current) return;
+
+      const canvasRect = hook._leafletRect();
+      if (!canvasRect) return;
+      const canvasW = canvasRect.width;
+      const canvasH = canvasRect.height;
+      const oldCx = canvasW / 2 + hook.transform.tx;
+      const oldCy = canvasH / 2 + hook.transform.ty;
+      const worldCenter = hook.leafletMap.containerPointToLatLng([oldCx, oldCy]);
+      const scaleFactor = Math.pow(2, target - current);
+
+      hook.leafletMap.setZoom(target, {animate: false});
+
+      const newCenterPt = hook.leafletMap.latLngToContainerPoint(worldCenter);
+      hook.transform.tx = newCenterPt.x - canvasW / 2;
+      hook.transform.ty = newCenterPt.y - canvasH / 2;
+      hook.transform.scale = hook.transform.scale * scaleFactor;
+      hook._applyTransform();
+      hook._restoreReferenceOverlayForCurrentView();
+    };
+
+    hook._onZoomSliderInput({ target: { value: "11" } });
+
+    expect(hook._restoreOverlayAlignment).toHaveBeenCalledTimes(1);
+    expect(hook._restoreOverlayAlignment).toHaveBeenCalledWith(
+      hook.referenceOverlay,
+      { centerLat: 40.7131, centerLon: -74.0058, scaleMpp: 0.3, rotationDeg: -5 },
+      referenceImg,
+      "reference",
+    );
+  });
+
+  it("does not re-align reference overlay on zoom slider input when reference alignment is invalid", () => {
+    document.body.innerHTML = `
+      <div id="root">
+        <div id="map-alignment-leaflet"></div>
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-reference-overlay" data-editable-overlay="false" data-overlay-visible="true"><img id="reference-img" /></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const referenceOverlay = document.getElementById("map-reference-overlay");
+    const referenceImg = document.getElementById("reference-img");
+
+    root.dataset.referenceCenterLat = "bad";
+    root.dataset.referenceCenterLon = "-74.0058";
+    root.dataset.referenceScaleMpp = "0.3";
+    root.dataset.referenceRotationDeg = "-5";
+
+    leafletEl.getBoundingClientRect = () => ({ width: 200, height: 100 });
+
+    Object.defineProperty(referenceImg, "naturalWidth", { value: 200, configurable: true });
+    Object.defineProperty(referenceImg, "naturalHeight", { value: 100, configurable: true });
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      leafletEl,
+      overlay,
+      referenceOverlay,
+      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+      _applyTransform: vi.fn(),
+      _restoreOverlayAlignment: vi.fn(),
+      leafletMap: {
+        getZoom: () => 10,
+        setZoom: vi.fn(),
+        containerPointToLatLng: ([x, y]) => ({ lat: y, lng: x }),
+        latLngToContainerPoint: ({ lat, lng }) => ({ x: lng, y: lat }),
+        distance: () => 1,
+      },
+    };
+
+    hook._onZoomSliderInput = (e) => {
+      const target = parseFloat(e.target.value);
+      if (!Number.isFinite(target)) return;
+      const current = hook.leafletMap.getZoom();
+      if (target === current) return;
+
+      const canvasRect = hook._leafletRect();
+      if (!canvasRect) return;
+      const canvasW = canvasRect.width;
+      const canvasH = canvasRect.height;
+      const oldCx = canvasW / 2 + hook.transform.tx;
+      const oldCy = canvasH / 2 + hook.transform.ty;
+      const worldCenter = hook.leafletMap.containerPointToLatLng([oldCx, oldCy]);
+      const scaleFactor = Math.pow(2, target - current);
+
+      hook.leafletMap.setZoom(target, {animate: false});
+
+      const newCenterPt = hook.leafletMap.latLngToContainerPoint(worldCenter);
+      hook.transform.tx = newCenterPt.x - canvasW / 2;
+      hook.transform.ty = newCenterPt.y - canvasH / 2;
+      hook.transform.scale = hook.transform.scale * scaleFactor;
+      hook._applyTransform();
+      hook._restoreReferenceOverlayForCurrentView();
+    };
+
+    hook._onZoomSliderInput({ target: { value: "11" } });
+
+    expect(hook._restoreOverlayAlignment).not.toHaveBeenCalled();
   });
 });

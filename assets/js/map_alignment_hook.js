@@ -175,6 +175,7 @@ const MapAlignmentHook = {
     this.applyBtn = applyBtn;
     this.referenceOverlay = referenceOverlay;
     this._overlayRestoreDisposers = [];
+    this._pendingReferenceRestoreDispose = null;
 
     this._syncReferenceOverlayVisibilityFromDataset();
 
@@ -281,6 +282,7 @@ const MapAlignmentHook = {
         this.transform.ty = newCenterPt.y - canvasH / 2;
         this.transform.scale = this.transform.scale * scaleFactor;
         this._applyTransform();
+        this._restoreReferenceOverlayForCurrentView();
       };
       zoomSlider.addEventListener("input", this._onZoomSliderInput);
 
@@ -544,6 +546,7 @@ const MapAlignmentHook = {
       });
       this._overlayRestoreDisposers = [];
     }
+    this._pendingReferenceRestoreDispose = null;
 
     if (this.overlay) {
       this.overlay.removeEventListener("pointerdown", this._onOverlayPointerDown);
@@ -709,6 +712,15 @@ const MapAlignmentHook = {
   _scheduleOverlayAlignmentRestore(overlayEl, alignment, label) {
     if (!overlayEl || !alignment) return;
 
+    if (overlayEl === this.referenceOverlay && this._pendingReferenceRestoreDispose) {
+      try {
+        this._pendingReferenceRestoreDispose();
+      } catch (_) {
+        // noop
+      }
+      this._pendingReferenceRestoreDispose = null;
+    }
+
     const img = overlayEl.querySelector("img");
     if (!img) return;
 
@@ -736,12 +748,20 @@ const MapAlignmentHook = {
         img.removeEventListener("load", onRestoreImgLoad);
         onRestoreImgLoad = null;
       }
+
+      if (overlayEl === this.referenceOverlay && this._pendingReferenceRestoreDispose === cleanup) {
+        this._pendingReferenceRestoreDispose = null;
+      }
     };
 
     if (!Array.isArray(this._overlayRestoreDisposers)) {
       this._overlayRestoreDisposers = [];
     }
     this._overlayRestoreDisposers.push(cleanup);
+
+    if (overlayEl === this.referenceOverlay) {
+      this._pendingReferenceRestoreDispose = cleanup;
+    }
 
     // Run restore once canvas size has been stable for STABLE_MS.
     // During the immersive CSS transition the canvas grows over ~300ms; running
@@ -856,8 +876,36 @@ const MapAlignmentHook = {
       `rotate(${transform.rotation}deg) scale(${transform.scale})`;
   },
 
+  _restoreReferenceOverlayForCurrentView() {
+    if (!this.leafletMap || !this.referenceOverlay) return;
+    if (this.referenceOverlay.dataset.overlayVisible !== "true") return;
+    if (this.referenceOverlay.classList.contains("hidden")) return;
+
+    const referenceAlignment = readReferenceAlignment(this.el);
+    if (!referenceAlignment) return;
+
+    const referenceImg = this.referenceOverlay.querySelector("img");
+    if (!referenceImg || !referenceImg.naturalWidth || !referenceImg.naturalHeight) return;
+
+    this._restoreOverlayAlignment(
+      this.referenceOverlay,
+      referenceAlignment,
+      referenceImg,
+      "reference"
+    );
+  },
+
   _syncReferenceOverlayFromDataset() {
     if (!this.referenceOverlay) return;
+
+    if (this._pendingReferenceRestoreDispose) {
+      try {
+        this._pendingReferenceRestoreDispose();
+      } catch (_) {
+        // noop
+      }
+      this._pendingReferenceRestoreDispose = null;
+    }
 
     const root = this.el;
     const referenceUrl = (root.dataset.referenceFloorplanUrl || "").trim();
