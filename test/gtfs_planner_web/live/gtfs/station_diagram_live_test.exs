@@ -12298,6 +12298,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, _} = Gtfs.update_stop_level_alignment(middle_stop_level, alignment_attrs)
       {:ok, _} = Gtfs.update_stop_level_alignment(below_stop_level, alignment_attrs)
       {:ok, _} = Gtfs.update_stop_level_alignment(above_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(below_stop_level, "below-map-diagram.png")
+      {:ok, _} = Gtfs.update_stop_level_diagram(above_stop_level, "above-map-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12343,7 +12345,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.reference_stop_level == nil
       assert assigns.show_reference_overlay == false
 
-      refute has_element?(view, "#reference-overlay-level-form")
+      assert has_element?(view, "#reference-overlay-level-form")
+
+      assert has_element?(
+               view,
+               "#reference-overlay-level-form option[value='#{below_level.id}']"
+             )
+
+      refute has_element?(
+               view,
+               "#reference-overlay-level-form option[value='#{above_level.id}']"
+             )
     end
 
     test "refreshes stop-level cache and selectable reference levels after level removal in map mode",
@@ -12387,6 +12399,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           stop_id: station.id,
           level_id: above_level.id
         })
+
+      {:ok, below_stop_level} =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, below_level.id)
+
+      {:ok, above_stop_level} =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, above_level.id)
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(below_stop_level, "cache-refresh-below-map.png")
+      {:ok, _} = Gtfs.update_stop_level_diagram(above_stop_level, "cache-refresh-above-map.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
