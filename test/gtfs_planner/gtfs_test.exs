@@ -1602,6 +1602,140 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "list_stop_levels_for_station/3" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SL_STATION_A",
+          location_type: 1
+        })
+
+      station_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SL_STATION_B",
+          location_type: 1
+        })
+
+      level_ground =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "SL_GROUND",
+          level_index: 0.0
+        })
+
+      level_upper_a =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "SL_UPPER_A",
+          level_index: 1.0
+        })
+
+      level_upper_b =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "SL_UPPER_B",
+          level_index: 1.0
+        })
+
+      {:ok, sl_ground} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_a.id,
+          level_id: level_ground.id
+        })
+
+      {:ok, sl_upper_a} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_a.id,
+          level_id: level_upper_a.id
+        })
+
+      {:ok, sl_upper_b} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_a.id,
+          level_id: level_upper_b.id
+        })
+
+      {:ok, _other_station_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station_b.id,
+          level_id: level_ground.id
+        })
+
+      other_org = organization_fixture()
+      other_version = gtfs_version_fixture(other_org.id)
+
+      other_station =
+        stop_fixture(other_org.id, other_version.id, %{
+          stop_id: "SL_OTHER_STATION",
+          location_type: 1
+        })
+
+      other_level =
+        level_fixture(other_org.id, other_version.id, %{
+          level_id: "SL_OTHER_LEVEL",
+          level_index: 0.0
+        })
+
+      {:ok, _other_org_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: other_org.id,
+          gtfs_version_id: other_version.id,
+          stop_id: other_station.id,
+          level_id: other_level.id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station_a: station_a,
+        sl_ground: sl_ground,
+        sl_upper_a: sl_upper_a,
+        sl_upper_b: sl_upper_b,
+        level_upper_a: level_upper_a,
+        level_upper_b: level_upper_b
+      }
+    end
+
+    test "returns station-scoped stop_levels ordered by level_index then level id", %{
+      organization: org,
+      gtfs_version: version,
+      station_a: station,
+      sl_ground: sl_ground,
+      sl_upper_a: sl_upper_a,
+      sl_upper_b: sl_upper_b
+    } do
+      result = Gtfs.list_stop_levels_for_station(org.id, version.id, station.id)
+
+      [first_upper, second_upper] = Enum.sort_by([sl_upper_a.id, sl_upper_b.id], & &1)
+
+      assert Enum.map(result, & &1.id) == [
+               sl_ground.id,
+               first_upper,
+               second_upper
+             ]
+    end
+
+    test "preloads associated level for each returned stop_level", %{
+      organization: org,
+      gtfs_version: version,
+      station_a: station
+    } do
+      result = Gtfs.list_stop_levels_for_station(org.id, version.id, station.id)
+
+      assert Enum.all?(result, fn stop_level ->
+               Ecto.assoc_loaded?(stop_level.level) and is_number(stop_level.level.level_index)
+             end)
+    end
+  end
+
   describe "list_child_stops_for_level/2" do
     setup do
       organization = organization_fixture()
@@ -2633,6 +2767,233 @@ defmodule GtfsPlanner.GtfsTest do
 
       assert {:ok, updated} = Gtfs.update_stop_level_alignment(stop_level, attrs)
       assert_receive {[:stop_levels, :updated], ^updated}
+    end
+
+    test "save_stop_level_alignment/2 persists valid alignment", %{
+      stop_level: stop_level
+    } do
+      attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.0060,
+        floorplan_scale_mpp: 0.25,
+        floorplan_rotation_deg: 12.5
+      }
+
+      assert {:ok, updated} = Gtfs.save_stop_level_alignment(stop_level, attrs)
+      assert updated.floorplan_center_lat == 40.7128
+      assert updated.floorplan_center_lon == -74.0060
+      assert updated.floorplan_scale_mpp == 0.25
+      assert updated.floorplan_rotation_deg == 12.5
+    end
+  end
+
+  describe "save_and_apply_stop_level_alignment/4" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_SAVE_APPLY",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_SAVE_APPLY",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        stop_level: stop_level
+      }
+    end
+
+    test "saves active alignment and applies child coordinates atomically", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      # Precondition for Step 16 behavior: old active alignment is incomplete
+      refute GtfsPlanner.Gtfs.StopLevel.alignment_complete?(stop_level)
+
+      child_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_APPLY_PLATFORM",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 50}
+        })
+
+      attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.0060,
+        floorplan_scale_mpp: 0.25,
+        floorplan_rotation_deg: 0.0
+      }
+
+      assert {:ok,
+              %{
+                active_stop_level: updated,
+                apply_result: %{
+                  touched_stop_count: 1
+                }
+              }} =
+               Gtfs.save_and_apply_stop_level_alignment(stop_level.id, attrs, 1000, 800)
+
+      assert updated.id == stop_level.id
+      assert updated.floorplan_center_lat == 40.7128
+      assert updated.floorplan_center_lon == -74.0060
+      assert updated.floorplan_scale_mpp == 0.25
+      assert updated.floorplan_rotation_deg == 0.0
+
+      reloaded_child_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
+      assert_in_delta Decimal.to_float(reloaded_child_stop.stop_lat), 40.7128, 1.0e-9
+      assert_in_delta Decimal.to_float(reloaded_child_stop.stop_lon), -74.0060, 1.0e-9
+    end
+
+    test "returns :not_found when active stop level does not exist" do
+      assert {:error, :not_found} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 Ecto.UUID.generate(),
+                 %{
+                   floorplan_center_lat: 40.7128,
+                   floorplan_center_lon: -74.0060,
+                   floorplan_scale_mpp: 0.25,
+                   floorplan_rotation_deg: 0.0
+                 },
+                 1000,
+                 800
+               )
+    end
+
+    test "returns :invalid_image_dims when dimensions are invalid", %{stop_level: stop_level} do
+      assert {:error, :invalid_image_dims} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 %{
+                   floorplan_center_lat: 40.7128,
+                   floorplan_center_lon: -74.0060,
+                   floorplan_scale_mpp: 0.25,
+                   floorplan_rotation_deg: 0.0
+                 },
+                 0,
+                 800
+               )
+    end
+
+    test "updates only active level data", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: active_level,
+      stop_level: active_stop_level
+    } do
+      other_level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_SAVE_APPLY_OTHER",
+          level_index: 1.0
+        })
+
+      {:ok, other_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          stop_id: station.id,
+          level_id: other_level.id
+        })
+
+      {:ok, other_stop_level} =
+        Gtfs.update_stop_level_alignment(other_stop_level, %{
+          floorplan_center_lat: 40.6,
+          floorplan_center_lon: -73.9,
+          floorplan_scale_mpp: 0.5,
+          floorplan_rotation_deg: 10.0
+        })
+
+      active_child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_APPLY_ACTIVE_ONLY_CHILD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      other_child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_APPLY_OTHER_LEVEL_CHILD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: other_level.level_id,
+          diagram_coordinate: %{x: 50, y: 50},
+          stop_lat: Decimal.new("3.0"),
+          stop_lon: Decimal.new("4.0")
+        })
+
+      attrs = %{
+        floorplan_center_lat: 41.1111,
+        floorplan_center_lon: -73.2222,
+        floorplan_scale_mpp: 0.3,
+        floorplan_rotation_deg: 5.0
+      }
+
+      assert {:ok,
+              %{
+                active_stop_level: updated,
+                apply_result: %{touched_stop_count: 1}
+              }} =
+               Gtfs.save_and_apply_stop_level_alignment(active_stop_level.id, attrs, 1000, 800)
+
+      assert updated.id == active_stop_level.id
+      assert updated.floorplan_center_lat == attrs.floorplan_center_lat
+      assert updated.floorplan_center_lon == attrs.floorplan_center_lon
+      assert updated.floorplan_scale_mpp == attrs.floorplan_scale_mpp
+      assert updated.floorplan_rotation_deg == attrs.floorplan_rotation_deg
+
+      reloaded_other_stop_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, other_stop_level.id)
+
+      assert reloaded_other_stop_level.floorplan_center_lat ==
+               other_stop_level.floorplan_center_lat
+
+      assert reloaded_other_stop_level.floorplan_center_lon ==
+               other_stop_level.floorplan_center_lon
+
+      assert reloaded_other_stop_level.floorplan_scale_mpp == other_stop_level.floorplan_scale_mpp
+
+      assert reloaded_other_stop_level.floorplan_rotation_deg ==
+               other_stop_level.floorplan_rotation_deg
+
+      reloaded_active_child = Repo.get!(GtfsPlanner.Gtfs.Stop, active_child.id)
+      reloaded_other_child = Repo.get!(GtfsPlanner.Gtfs.Stop, other_child.id)
+
+      assert_in_delta Decimal.to_float(reloaded_active_child.stop_lat),
+                      attrs.floorplan_center_lat,
+                      1.0e-9
+
+      assert_in_delta Decimal.to_float(reloaded_active_child.stop_lon),
+                      attrs.floorplan_center_lon,
+                      1.0e-9
+
+      assert Decimal.equal?(reloaded_other_child.stop_lat, Decimal.new("3.0"))
+      assert Decimal.equal?(reloaded_other_child.stop_lon, Decimal.new("4.0"))
     end
   end
 

@@ -27,16 +27,50 @@
 const SCALE_MIN = 0.25;
 const SCALE_MAX = 4;
 const IDENTITY_TRANSFORM = Object.freeze({tx: 0, ty: 0, rotation: 0, scale: 1});
+const MAP_ALIGNMENT_HOOK_BUILD = "map-align-fix-v2";
+const REFERENCE_OVERLAY_IMG_SELECTOR = "img[data-reference-overlay='true']";
+
+function ensureSingleReferenceOverlayImage(referenceOverlay) {
+  if (!referenceOverlay) return null;
+
+  const referenceImgs = Array.from(
+    referenceOverlay.querySelectorAll(REFERENCE_OVERLAY_IMG_SELECTOR)
+  );
+
+  if (referenceImgs.length > 0) {
+    const [primaryReferenceImg, ...duplicateReferenceImgs] = referenceImgs;
+    duplicateReferenceImgs.forEach((duplicateImg) => duplicateImg.remove());
+    return primaryReferenceImg;
+  }
+
+  const fallbackImgs = Array.from(referenceOverlay.querySelectorAll("img"));
+  if (fallbackImgs.length > 0) {
+    const [primaryFallbackImg, ...duplicateFallbackImgs] = fallbackImgs;
+    primaryFallbackImg.dataset.referenceOverlay = "true";
+    duplicateFallbackImgs.forEach((duplicateImg) => duplicateImg.remove());
+    return primaryFallbackImg;
+  }
+
+  const referenceImg = document.createElement("img");
+  referenceImg.alt = "Reference level floorplan";
+  referenceImg.dataset.referenceOverlay = "true";
+  referenceImg.className = "h-full w-full object-contain select-none";
+  referenceImg.draggable = false;
+  referenceOverlay.appendChild(referenceImg);
+
+  return referenceImg;
+}
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function readSavedAlignment(root) {
-  const centerLat = parseFloat(root.dataset.alignCenterLat);
-  const centerLon = parseFloat(root.dataset.alignCenterLon);
-  const scaleMpp = parseFloat(root.dataset.alignScaleMpp);
-  const rotationDeg = parseFloat(root.dataset.alignRotationDeg);
+function parseAlignmentPayload(centerLatRaw, centerLonRaw, scaleMppRaw, rotationDegRaw) {
+  const centerLat = parseFloat(centerLatRaw);
+  const centerLon = parseFloat(centerLonRaw);
+  const scaleMpp = parseFloat(scaleMppRaw);
+  const rotationDeg = parseFloat(rotationDegRaw);
+
   if (
     !Number.isFinite(centerLat) ||
     !Number.isFinite(centerLon) ||
@@ -46,7 +80,26 @@ function readSavedAlignment(root) {
   ) {
     return null;
   }
+
   return {centerLat, centerLon, scaleMpp, rotationDeg};
+}
+
+function readActiveAlignment(root) {
+  return parseAlignmentPayload(
+    root.dataset.alignCenterLat,
+    root.dataset.alignCenterLon,
+    root.dataset.alignScaleMpp,
+    root.dataset.alignRotationDeg
+  );
+}
+
+function readReferenceAlignment(root) {
+  return parseAlignmentPayload(
+    root.dataset.referenceCenterLat,
+    root.dataset.referenceCenterLon,
+    root.dataset.referenceScaleMpp,
+    root.dataset.referenceRotationDeg
+  );
 }
 
 function overlayCenter(overlay) {
@@ -59,6 +112,8 @@ function overlayCenter(overlay) {
 
 const MapAlignmentHook = {
   mounted() {
+    console.info("MapAlignmentHook: build", {build: MAP_ALIGNMENT_HOOK_BUILD});
+
     const L = window.L;
     if (!L) {
       console.error("MapAlignmentHook: window.L (Leaflet) is not available");
@@ -72,18 +127,27 @@ const MapAlignmentHook = {
 
     // Optional saved alignment. All four attrs must be present and parse to
     // finite numbers; otherwise treat as absent and fall back to identity.
-    const savedAlignment = readSavedAlignment(root);
+    const activeAlignment = readActiveAlignment(root);
+    const referenceAlignment = readReferenceAlignment(root);
+
     console.info(
-      savedAlignment
+      activeAlignment
         ? "MapAlignment: mounted with saved alignment"
         : "MapAlignment: mounted with no saved alignment",
-      savedAlignment || {}
+      activeAlignment || {}
     );
 
-    const overlay = root.querySelector("#map-alignment-overlay");
+    const overlay = root.querySelector("#map-alignment-overlay[data-editable-overlay='true']");
+    const referenceOverlay = root.querySelector(
+      "#map-reference-overlay[data-editable-overlay='false']"
+    );
     const leafletEl = root.querySelector("#map-alignment-leaflet");
-    const rotateHandle = root.querySelector("#map-alignment-rotate-handle");
-    const scaleHandle = root.querySelector("#map-alignment-scale-handle");
+    const rotateHandle = root.querySelector(
+      "#map-alignment-rotate-handle[data-edit-target-overlay='active']"
+    );
+    const scaleHandle = root.querySelector(
+      "#map-alignment-scale-handle[data-edit-target-overlay='active']"
+    );
     const latInput = document.getElementById("map-alignment-lat-input");
     const lonInput = document.getElementById("map-alignment-lon-input");
     const applyCenterBtn = document.getElementById("map-alignment-apply-center");
@@ -91,6 +155,11 @@ const MapAlignmentHook = {
     const zoomSlider = document.getElementById("map-alignment-zoom");
     const saveBtn = document.getElementById("map-alignment-save");
     const applyBtn = document.getElementById("map-alignment-apply");
+
+    if (!overlay || !leafletEl || !rotateHandle || !scaleHandle) {
+      console.error("MapAlignmentHook: required active overlay edit elements are missing");
+      return;
+    }
 
     this.overlay = overlay;
     this.leafletEl = leafletEl;
@@ -100,16 +169,24 @@ const MapAlignmentHook = {
     this.lonInput = lonInput;
     this.applyCenterBtn = applyCenterBtn;
     this.opacitySlider = opacitySlider;
+    this.referenceOpacitySlider = null;
     this.zoomSlider = zoomSlider;
     this.saveBtn = saveBtn;
     this.applyBtn = applyBtn;
+    this.referenceOverlay = referenceOverlay;
+    this._overlayRestoreDisposers = [];
+    this._pendingReferenceRestoreDispose = null;
 
-    overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.6";
+    this._syncReferenceOverlayVisibilityFromDataset();
+
+    overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.7";
+
+    if (referenceOverlay) referenceOverlay.style.opacity = "0.7";
 
     this.transform = {...IDENTITY_TRANSFORM};
 
-    const mapCenterLat = savedAlignment ? savedAlignment.centerLat : initialLat;
-    const mapCenterLon = savedAlignment ? savedAlignment.centerLon : initialLon;
+    const mapCenterLat = activeAlignment ? activeAlignment.centerLat : initialLat;
+    const mapCenterLon = activeAlignment ? activeAlignment.centerLon : initialLon;
 
     // If LiveView reused a container that already had Leaflet initialized
     // (e.g., the previous hook's destroyed() did not run before re-mount),
@@ -189,7 +266,8 @@ const MapAlignmentHook = {
 
         // Pin the floorplan to the map through the zoom: keep its center at
         // the same world lat/lon, and scale by 2^Δzoom so it tracks the tiles.
-        const canvasRect = this.el.getBoundingClientRect();
+        const canvasRect = this._leafletRect();
+        if (!canvasRect) return;
         const canvasW = canvasRect.width;
         const canvasH = canvasRect.height;
         const oldCx = canvasW / 2 + this.transform.tx;
@@ -204,6 +282,7 @@ const MapAlignmentHook = {
         this.transform.ty = newCenterPt.y - canvasH / 2;
         this.transform.scale = this.transform.scale * scaleFactor;
         this._applyTransform();
+        this._restoreReferenceOverlayForCurrentView();
       };
       zoomSlider.addEventListener("input", this._onZoomSliderInput);
 
@@ -215,8 +294,16 @@ const MapAlignmentHook = {
 
     this._fetchBuildings(mapCenterLat, mapCenterLon);
 
-    if (savedAlignment) {
-      this._scheduleAlignmentRestore(savedAlignment);
+    if (referenceOverlay) {
+      if (referenceAlignment) {
+        this._scheduleOverlayAlignmentRestore(referenceOverlay, referenceAlignment, "reference");
+      } else {
+        this._applyOverlayTransform(referenceOverlay, IDENTITY_TRANSFORM);
+      }
+    }
+
+    if (activeAlignment) {
+      this._scheduleOverlayAlignmentRestore(overlay, activeAlignment, "active");
     }
 
     this._rafId = requestAnimationFrame(() => {
@@ -368,7 +455,8 @@ const MapAlignmentHook = {
       const lon = parseFloat(lonInput.value);
       if (Number.isNaN(lat) || Number.isNaN(lon)) return;
 
-      const canvasRect = this.el.getBoundingClientRect();
+      const canvasRect = this._leafletRect();
+      if (!canvasRect) return;
       const cxBefore = canvasRect.width / 2 + this.transform.tx;
       const cyBefore = canvasRect.height / 2 + this.transform.ty;
       const worldCenter = this.leafletMap.containerPointToLatLng([cxBefore, cyBefore]);
@@ -392,12 +480,12 @@ const MapAlignmentHook = {
       opacitySlider.addEventListener("input", this._onOpacityInput);
     }
 
+    this._syncReferenceOpacitySlider();
+
     // --- Save: compute canonical alignment and push to server ---
     if (saveBtn) {
       this._onSave = () => {
-        const payload = this._computeAlignment();
-        if (!payload) return;
-        this.pushEvent("save_alignment", payload);
+        this._pushAlignmentEventIfValid("save_alignment");
       };
       saveBtn.addEventListener("click", this._onSave);
     }
@@ -426,12 +514,16 @@ const MapAlignmentHook = {
 
     if (applyBtn) {
       this._onApply = () => {
-        const payload = this._computeAlignment();
-        if (!payload) return;
-        this.pushEvent("save_and_apply_alignment", payload);
+        this._pushAlignmentEventIfValid("save_and_apply_alignment");
       };
       applyBtn.addEventListener("click", this._onApply);
     }
+  },
+
+  updated() {
+    this._syncReferenceOverlayVisibilityFromDataset();
+    this._syncReferenceOverlayFromDataset();
+    this._syncReferenceOpacitySlider();
   },
 
   destroyed() {
@@ -444,15 +536,17 @@ const MapAlignmentHook = {
       clearTimeout(this._postTransitionTimer);
       this._postTransitionTimer = null;
     }
-    if (this._onRestoreImgLoad && this.overlay) {
-      const img = this.overlay.querySelector("img");
-      if (img) img.removeEventListener("load", this._onRestoreImgLoad);
-      this._onRestoreImgLoad = null;
+    if (Array.isArray(this._overlayRestoreDisposers)) {
+      this._overlayRestoreDisposers.forEach((dispose) => {
+        try {
+          dispose();
+        } catch (_) {
+          // noop
+        }
+      });
+      this._overlayRestoreDisposers = [];
     }
-    if (this._restoreObserver) {
-      this._restoreObserver.disconnect();
-      this._restoreObserver = null;
-    }
+    this._pendingReferenceRestoreDispose = null;
 
     if (this.overlay) {
       this.overlay.removeEventListener("pointerdown", this._onOverlayPointerDown);
@@ -480,6 +574,11 @@ const MapAlignmentHook = {
     }
     if (this.opacitySlider && this._onOpacityInput) {
       this.opacitySlider.removeEventListener("input", this._onOpacityInput);
+    }
+    if (this.referenceOpacitySlider && this._onReferenceOpacityInput) {
+      this.referenceOpacitySlider.removeEventListener("input", this._onReferenceOpacityInput);
+      this.referenceOpacitySlider = null;
+      this._onReferenceOpacityInput = null;
     }
     if (this.saveBtn && this._onSave) {
       this.saveBtn.removeEventListener("click", this._onSave);
@@ -536,7 +635,8 @@ const MapAlignmentHook = {
   _computeAlignment() {
     const overlay = this.overlay;
     const map = this.leafletMap;
-    if (!overlay || !map) return null;
+    const leafletEl = this.leafletEl;
+    if (!overlay || !map || !leafletEl) return null;
 
     const img = overlay.querySelector("img");
     if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) {
@@ -544,12 +644,23 @@ const MapAlignmentHook = {
       return null;
     }
 
-    // #map-canvas bounds are the same as the Leaflet container's; overlay is
-    // inset-0, so the overlay's untransformed center coincides with the
-    // canvas center in container coords.
-    const canvasRect = this.el.getBoundingClientRect();
+    // Use Leaflet container bounds for containerPoint conversions. The map
+    // API expects points relative to #map-alignment-leaflet, not the hook root.
+    const canvasRect = leafletEl.getBoundingClientRect();
     const canvasW = canvasRect.width;
     const canvasH = canvasRect.height;
+    if (
+      !Number.isFinite(canvasW) ||
+      !Number.isFinite(canvasH) ||
+      !(canvasW > 0) ||
+      !(canvasH > 0)
+    ) {
+      console.warn("MapAlignmentHook: invalid map geometry; skipping alignment compute", {
+        canvasW,
+        canvasH
+      });
+      return null;
+    }
 
     const {tx, ty, scale} = this.transform;
     // translate(tx, ty) rotate(r) scale(s) around transform-origin: center
@@ -598,42 +709,72 @@ const MapAlignmentHook = {
     };
   },
 
-  _scheduleAlignmentRestore(savedAlignment) {
-    const overlay = this.overlay;
-    if (!overlay) return;
-    const img = overlay.querySelector("img");
+  _scheduleOverlayAlignmentRestore(overlayEl, alignment, label) {
+    if (!overlayEl || !alignment) return;
+
+    if (overlayEl === this.referenceOverlay && this._pendingReferenceRestoreDispose) {
+      try {
+        this._pendingReferenceRestoreDispose();
+      } catch (_) {
+        // noop
+      }
+      this._pendingReferenceRestoreDispose = null;
+    }
+
+    const img = overlayEl.querySelector("img");
     if (!img) return;
 
     const STABLE_MS = 250;
     let settleTimer = null;
+    let restoreObserver = null;
+    let onRestoreImgLoad = null;
+    let disposed = false;
 
     const cleanup = () => {
+      if (disposed) return;
+      disposed = true;
+
       if (settleTimer) {
         clearTimeout(settleTimer);
         settleTimer = null;
       }
-      if (this._restoreObserver) {
-        this._restoreObserver.disconnect();
-        this._restoreObserver = null;
+
+      if (restoreObserver) {
+        restoreObserver.disconnect();
+        restoreObserver = null;
       }
-      if (this._onRestoreImgLoad) {
-        img.removeEventListener("load", this._onRestoreImgLoad);
-        this._onRestoreImgLoad = null;
+
+      if (onRestoreImgLoad) {
+        img.removeEventListener("load", onRestoreImgLoad);
+        onRestoreImgLoad = null;
+      }
+
+      if (overlayEl === this.referenceOverlay && this._pendingReferenceRestoreDispose === cleanup) {
+        this._pendingReferenceRestoreDispose = null;
       }
     };
+
+    if (!Array.isArray(this._overlayRestoreDisposers)) {
+      this._overlayRestoreDisposers = [];
+    }
+    this._overlayRestoreDisposers.push(cleanup);
+
+    if (overlayEl === this.referenceOverlay) {
+      this._pendingReferenceRestoreDispose = cleanup;
+    }
 
     // Run restore once canvas size has been stable for STABLE_MS.
     // During the immersive CSS transition the canvas grows over ~300ms; running
     // mid-animation produces a scale tuned to a smaller canvas.
     const scheduleRestore = () => {
-      const rect = this.el.getBoundingClientRect();
+      const rect = this._leafletRect();
       const imgReady = img.complete && img.naturalWidth > 0;
-      if (!imgReady || !(rect.width > 0) || !(rect.height > 0)) return;
+      if (!imgReady || !rect || !(rect.width > 0) || !(rect.height > 0)) return;
 
       if (settleTimer) clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
         settleTimer = null;
-        this._restoreAlignment(savedAlignment, img);
+        this._restoreOverlayAlignment(overlayEl, alignment, img, label);
         cleanup();
       }, STABLE_MS);
     };
@@ -643,23 +784,27 @@ const MapAlignmentHook = {
 
     // Re-try (resetting the settle timer) on every canvas resize and on image
     // load, so the final "stable" measurement wins.
-    this._onRestoreImgLoad = scheduleRestore;
-    img.addEventListener("load", this._onRestoreImgLoad);
+    onRestoreImgLoad = scheduleRestore;
+    img.addEventListener("load", onRestoreImgLoad);
 
     if (typeof ResizeObserver !== "undefined") {
-      this._restoreObserver = new ResizeObserver(scheduleRestore);
-      this._restoreObserver.observe(this.el);
+      restoreObserver = new ResizeObserver(scheduleRestore);
+      restoreObserver.observe(this.leafletEl);
     }
   },
 
-  _restoreAlignment(savedAlignment, img) {
+  _restoreOverlayAlignment(overlayEl, alignment, img, label) {
     const map = this.leafletMap;
-    if (!map || !img || !img.naturalWidth || !img.naturalHeight) {
+    if (!map || !overlayEl || !img || !img.naturalWidth || !img.naturalHeight) {
       console.warn("MapAlignment: restore skipped, map or image not ready");
       return;
     }
 
-    const canvasRect = this.el.getBoundingClientRect();
+    const canvasRect = this._leafletRect();
+    if (!canvasRect) {
+      console.warn("MapAlignment: restore skipped, leaflet container not ready", {label});
+      return;
+    }
     const canvasW = canvasRect.width;
     const canvasH = canvasRect.height;
     if (!(canvasW > 0) || !(canvasH > 0)) {
@@ -680,26 +825,131 @@ const MapAlignmentHook = {
     if (!(containWidth > 0)) return;
 
     // Inverse of _computeAlignment: R = s_nat / (m / canvas_px).
-    const renderedPxPerImagePxNeeded = savedAlignment.scaleMpp / metersPerCanvasPx;
+    const renderedPxPerImagePxNeeded = alignment.scaleMpp / metersPerCanvasPx;
     const scale = renderedPxPerImagePxNeeded / (containWidth / img.naturalWidth);
 
+    const alignedCenterPoint = map.latLngToContainerPoint([alignment.centerLat, alignment.centerLon]);
+
+    const restoredTransform = {
+      tx: alignedCenterPoint.x - canvasW / 2,
+      ty: alignedCenterPoint.y - canvasH / 2,
+      rotation: alignment.rotationDeg,
+      scale: scale
+    };
+
     console.info("MapAlignment: restored", {
-      savedAlignment,
+      label,
+      alignment,
       canvasW,
       canvasH,
+      alignedCenterPoint,
       metersPerCanvasPx,
       containWidth,
       imageNaturalWidth: img.naturalWidth,
-      computedScale: scale
+      computedScale: restoredTransform.scale
     });
 
-    this.transform = {
-      tx: 0,
-      ty: 0,
-      rotation: savedAlignment.rotationDeg,
-      scale: scale
+    if (overlayEl === this.overlay) {
+      this.transform = restoredTransform;
+      this._applyTransform();
+      return;
+    }
+
+    this._applyOverlayTransform(overlayEl, restoredTransform);
+  },
+
+  _applyOverlayTransform(overlayEl, transform) {
+    if (!overlayEl || !transform) return;
+
+    if (
+      transform.tx === 0 &&
+      transform.ty === 0 &&
+      transform.rotation === 0 &&
+      transform.scale === 1
+    ) {
+      overlayEl.style.transform = "none";
+      return;
+    }
+
+    overlayEl.style.transform =
+      `translate(${transform.tx}px, ${transform.ty}px) ` +
+      `rotate(${transform.rotation}deg) scale(${transform.scale})`;
+  },
+
+  _restoreReferenceOverlayForCurrentView() {
+    if (!this.leafletMap || !this.referenceOverlay) return;
+    if (this.referenceOverlay.dataset.overlayVisible !== "true") return;
+    if (this.referenceOverlay.classList.contains("hidden")) return;
+
+    const referenceAlignment = readReferenceAlignment(this.el);
+    if (!referenceAlignment) return;
+
+    const referenceImg = this.referenceOverlay.querySelector("img");
+    if (!referenceImg || !referenceImg.naturalWidth || !referenceImg.naturalHeight) return;
+
+    this._restoreOverlayAlignment(
+      this.referenceOverlay,
+      referenceAlignment,
+      referenceImg,
+      "reference"
+    );
+  },
+
+  _syncReferenceOverlayFromDataset() {
+    if (!this.referenceOverlay) return;
+
+    if (this._pendingReferenceRestoreDispose) {
+      try {
+        this._pendingReferenceRestoreDispose();
+      } catch (_) {
+        // noop
+      }
+      this._pendingReferenceRestoreDispose = null;
+    }
+
+    const root = this.el;
+    const referenceUrl = (root.dataset.referenceFloorplanUrl || "").trim();
+    const referenceAlignment = readReferenceAlignment(root);
+
+    const referenceImg = ensureSingleReferenceOverlayImage(this.referenceOverlay);
+
+    if (!referenceUrl) {
+      this.referenceOverlay
+        .querySelectorAll("img")
+        .forEach((imgElement) => imgElement.remove());
+      this._applyOverlayTransform(this.referenceOverlay, IDENTITY_TRANSFORM);
+      return;
+    }
+
+    const currentSrc = referenceImg.getAttribute("src") || "";
+    if (currentSrc !== referenceUrl) {
+      referenceImg.setAttribute("src", referenceUrl);
+    }
+
+    if (referenceAlignment) {
+      this._scheduleOverlayAlignmentRestore(this.referenceOverlay, referenceAlignment, "reference");
+    } else {
+      this._applyOverlayTransform(this.referenceOverlay, IDENTITY_TRANSFORM);
+    }
+  },
+
+  _syncReferenceOpacitySlider() {
+    const nextSlider = document.getElementById("map-reference-overlay-opacity");
+
+    if (this.referenceOpacitySlider && this._onReferenceOpacityInput) {
+      this.referenceOpacitySlider.removeEventListener("input", this._onReferenceOpacityInput);
+    }
+
+    this.referenceOpacitySlider = nextSlider;
+
+    if (!this.referenceOpacitySlider || !this.referenceOverlay) return;
+
+    this._onReferenceOpacityInput = (e) => {
+      this.referenceOverlay.style.opacity = e.target.value;
     };
-    this._applyTransform();
+
+    this.referenceOpacitySlider.addEventListener("input", this._onReferenceOpacityInput);
+    this.referenceOverlay.style.opacity = this.referenceOpacitySlider.value || "0.7";
   },
 
   _applyTransform() {
@@ -710,6 +960,59 @@ const MapAlignmentHook = {
     } else {
       this.overlay.style.transform =
         `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`;
+    }
+  },
+
+  _leafletRect() {
+    if (!this.leafletEl) return null;
+    return this.leafletEl.getBoundingClientRect();
+  },
+
+  _isValidAlignmentPayload(payload) {
+    if (!payload) return false;
+
+    const {center_lat, center_lon, scale_mpp, rotation_deg} = payload;
+
+    return (
+      Number.isFinite(center_lat) &&
+      Number.isFinite(center_lon) &&
+      Number.isFinite(scale_mpp) &&
+      Number.isFinite(rotation_deg) &&
+      center_lat >= -90 &&
+      center_lat <= 90 &&
+      center_lon >= -180 &&
+      center_lon <= 180 &&
+      scale_mpp > 0
+    );
+  },
+
+  _pushAlignmentEventIfValid(eventName) {
+    const payload = this._computeAlignment();
+    if (!payload) return;
+    if (!this._isValidAlignmentPayload(payload)) {
+      console.warn("MapAlignmentHook: invalid alignment payload; skipping pushEvent", {
+        eventName,
+        payload
+      });
+      return;
+    }
+
+    this.pushEvent(eventName, payload);
+  },
+
+  _syncReferenceOverlayVisibilityFromDataset() {
+    const root = this.el;
+    if (!root) return;
+
+    const showReference = root.dataset.showReferenceOverlay === "true";
+
+    if (!this.referenceOverlay) return;
+
+    this.referenceOverlay.dataset.overlayVisible = showReference ? "true" : "false";
+    this.referenceOverlay.classList.toggle("hidden", !showReference);
+
+    if (showReference && this.referenceOpacitySlider) {
+      this.referenceOverlay.style.opacity = this.referenceOpacitySlider.value || "0.7";
     }
   },
 
@@ -801,4 +1104,5 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+export { parseAlignmentPayload, readActiveAlignment, readReferenceAlignment };
 export default MapAlignmentHook;

@@ -12247,6 +12247,514 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "[id^='diagram-canvas-']")
     end
 
+    test "initializes reference overlay assigns on map mode entry and level switch", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: middle_level,
+      stop_level: middle_stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      below_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "map_level_below",
+          level_name: "Map Level Below",
+          level_index: -1.0
+        })
+
+      above_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "map_level_above",
+          level_name: "Map Level Above",
+          level_index: 1.0
+        })
+
+      {:ok, below_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: below_level.id
+        })
+
+      {:ok, above_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: above_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(middle_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_alignment(below_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_alignment(above_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(below_stop_level, "below-map-diagram.png")
+      {:ok, _} = Gtfs.update_stop_level_diagram(above_stop_level, "above-map-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == nil
+      assert assigns.reference_stop_level == nil
+      assert assigns.show_reference_overlay == false
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == nil
+      assert assigns.reference_stop_level == nil
+      assert assigns.show_reference_overlay == false
+
+      assert has_element?(view, "#reference-overlay-level-form")
+      assert has_element?(view, "#reference-overlay-level-form option[value='']")
+
+      assert has_element?(
+               view,
+               "#reference-overlay-level-form option[value=''][selected]",
+               "Select Level Overlay"
+             )
+
+      assert has_element?(view, "#reference-overlay-level-form button[disabled]", "Show")
+
+      refute has_element?(
+               view,
+               "#reference-overlay-level-form option[value='#{middle_level.id}']"
+             )
+
+      assert has_element?(view, "#reference-overlay-level-form option[value='#{below_level.id}']")
+      assert has_element?(view, "#reference-overlay-level-form option[value='#{above_level.id}']")
+
+      render_hook(view, "switch_level", %{"level_id" => above_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.active_level.id == above_level.id
+      assert assigns.reference_level_id == nil
+      assert assigns.reference_stop_level == nil
+      assert assigns.show_reference_overlay == false
+
+      assert has_element?(view, "#reference-overlay-level-form")
+
+      assert has_element?(
+               view,
+               "#reference-overlay-level-form option[value='#{below_level.id}']"
+             )
+
+      refute has_element?(
+               view,
+               "#reference-overlay-level-form option[value='#{above_level.id}']"
+             )
+    end
+
+    test "refreshes stop-level cache and selectable reference levels after level removal in map mode",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: _middle_level,
+           stop_level: middle_stop_level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      below_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "cache_refresh_below",
+          level_name: "Cache Refresh Below",
+          level_index: -1.0
+        })
+
+      above_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "cache_refresh_above",
+          level_name: "Cache Refresh Above",
+          level_index: 1.0
+        })
+
+      {:ok, _below_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: below_level.id
+        })
+
+      {:ok, _above_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: above_level.id
+        })
+
+      {:ok, below_stop_level} =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, below_level.id)
+
+      {:ok, above_stop_level} =
+        Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, above_level.id)
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(below_stop_level, "cache-refresh-below-map.png")
+      {:ok, _} = Gtfs.update_stop_level_diagram(above_stop_level, "cache-refresh-above-map.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == above_level.id))
+      assert Map.has_key?(assigns.station_stop_levels_cache.by_level_id, above_level.id)
+
+      render_hook(view, "remove_level_from_station", %{"id" => above_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.active_level.id == below_level.id
+      refute Map.has_key?(assigns.station_stop_levels_cache.by_level_id, above_level.id)
+      assert length(assigns.station_stop_levels_cache.ordered) == 2
+
+      refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == above_level.id))
+    end
+
+    test "select_reference_overlay_level excludes active level and clears when switched active",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: _middle_level,
+           stop_level: middle_stop_level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      below_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "toggle_level_below",
+          level_name: "Toggle Level Below",
+          level_index: -1.0
+        })
+
+      above_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "toggle_level_above",
+          level_name: "Toggle Level Above",
+          level_index: 1.0
+        })
+
+      {:ok, below_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: below_level.id
+        })
+
+      {:ok, above_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: above_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(below_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(below_stop_level, "below-overlay.png")
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(above_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(above_stop_level, "above-overlay.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == nil
+      assert assigns.reference_stop_level == nil
+      assert assigns.show_reference_overlay == false
+
+      refute Enum.any?(
+               assigns.selectable_reference_stop_levels,
+               &(&1.level_id == middle_stop_level.level_id)
+             )
+
+      render_hook(view, "select_reference_overlay_level", %{"level_id" => below_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == below_level.id
+      assert assigns.reference_stop_level.level_id == below_level.id
+      assert assigns.show_reference_overlay == false
+
+      refute Enum.any?(
+               assigns.selectable_reference_stop_levels,
+               &(&1.level_id == middle_stop_level.level_id)
+             )
+
+      render_hook(view, "select_reference_overlay_level", %{"level_id" => above_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == above_level.id
+      assert assigns.reference_stop_level.level_id == above_level.id
+      assert assigns.show_reference_overlay == false
+
+      refute Enum.any?(
+               assigns.selectable_reference_stop_levels,
+               &(&1.level_id == middle_stop_level.level_id)
+             )
+
+      render_hook(view, "switch_level", %{"level_id" => above_level.id})
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.active_level.id == above_level.id
+      assert assigns.reference_level_id == nil
+      assert assigns.reference_stop_level == nil
+      assert assigns.show_reference_overlay == false
+      refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == above_level.id))
+    end
+
+    test "single selectable reference level starts on prompt and enables toggle after selection",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           stop_level: middle_stop_level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      other_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "single_reference_other",
+          level_name: "Single Reference Other",
+          level_index: 1.0
+        })
+
+      {:ok, other_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: other_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(other_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(other_stop_level, "single-reference-other.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == nil
+      assert assigns.reference_stop_level == nil
+      assert has_element?(view, "#reference-overlay-level-form option[value=''][selected]")
+      assert has_element?(view, "#reference-overlay-level-form button[disabled]", "Show")
+
+      render_hook(view, "select_reference_overlay_level", %{"level_id" => other_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == other_level.id
+      assert assigns.reference_stop_level.level_id == other_level.id
+      refute has_element?(view, "#reference-overlay-level-form button[disabled]", "Show")
+    end
+
+    test "reference overlay options exclude levels without diagrams", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: middle_stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      with_diagram_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "reference_with_diagram",
+          level_name: "Reference With Diagram",
+          level_index: 1.0
+        })
+
+      without_diagram_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "reference_without_diagram",
+          level_name: "Reference Without Diagram",
+          level_index: -1.0
+        })
+
+      {:ok, with_diagram_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: with_diagram_level.id
+        })
+
+      {:ok, _without_diagram_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: without_diagram_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(with_diagram_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(with_diagram_stop_level, "reference.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == with_diagram_level.id))
+
+      refute Enum.any?(
+               assigns.selectable_reference_stop_levels,
+               &(&1.level_id == without_diagram_level.id)
+             )
+
+      assert has_element?(view, "#reference-overlay-level-form option[value='#{with_diagram_level.id}']")
+
+      refute has_element?(
+               view,
+               "#reference-overlay-level-form option[value='#{without_diagram_level.id}']"
+             )
+    end
+
+    test "select_reference_overlay_level normalizes unaligned reference but keeps overlay hidden until toggled",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           stop_level: middle_stop_level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      below_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "reentry_below",
+          level_name: "Re-entry Below",
+          level_index: -1.0
+        })
+
+      above_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "reentry_above",
+          level_name: "Re-entry Above",
+          level_index: 1.0
+        })
+
+      {:ok, below_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: below_level.id
+        })
+
+      {:ok, above_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: above_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(below_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(below_stop_level, "reentry-below.png")
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(above_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(above_stop_level, "reentry-above.png")
+
+      {:ok, _} =
+        Gtfs.update_stop_level_alignment(above_stop_level, %{
+          floorplan_center_lat: nil,
+          floorplan_center_lon: nil,
+          floorplan_scale_mpp: nil,
+          floorplan_rotation_deg: nil
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      render_hook(view, "select_reference_overlay_level", %{"level_id" => above_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == above_level.id
+      assert assigns.reference_stop_level.level_id == above_level.id
+      assert assigns.show_reference_overlay == false
+
+      assert has_element?(
+               view,
+               ".map-canvas[data-show-reference-overlay='false']"
+             )
+
+      html = render(view)
+
+      assert html =~ "data-show-reference-overlay=\"false\""
+      assert is_number(assigns.reference_stop_level.floorplan_center_lat)
+      assert is_number(assigns.reference_stop_level.floorplan_center_lon)
+      assert is_number(assigns.reference_stop_level.floorplan_scale_mpp)
+      assert is_number(assigns.reference_stop_level.floorplan_rotation_deg)
+    end
+
     test "action strip shows map-mode hint", %{
       conn: conn,
       user: user,
@@ -12268,6 +12776,74 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#diagram-action-strip",
                "Align the floorplan over real-world imagery"
              )
+
+      refute has_element?(view, "#adjacent-overlay-toggle-group")
+    end
+
+    test "map mode renders without synced/aligned levels count UI", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: middle_stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      below_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "synced_count_below",
+          level_name: "Synced Count Below",
+          level_index: -1.0
+        })
+
+      above_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "synced_count_above",
+          level_name: "Synced Count Above",
+          level_index: 1.0
+        })
+
+      {:ok, below_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: below_level.id
+        })
+
+      {:ok, above_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: above_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, _middle_stop_level} =
+        Gtfs.update_stop_level_alignment(middle_stop_level, alignment_attrs)
+
+      {:ok, _below_stop_level} =
+        Gtfs.update_stop_level_alignment(below_stop_level, alignment_attrs)
+
+      {:ok, _above_stop_level} =
+        Gtfs.update_stop_level_alignment(above_stop_level, alignment_attrs)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(view, "#map-canvas-wrapper")
     end
 
     test "canvas_click in map mode is a no-op", %{
@@ -12379,8 +12955,116 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
       assert has_element?(view, ".map-canvas[phx-hook='MapAlignment'][phx-update='ignore']")
+
+      assert has_element?(view, ".map-canvas[data-show-reference-overlay='false']")
+
       assert has_element?(view, ".map-canvas #map-alignment-leaflet")
       assert has_element?(view, "#map-alignment-overlay img[alt='Level floorplan']")
+    end
+
+    test "reference overlay stays read-only while active overlay is editable", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: middle_level,
+      stop_level: middle_stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      below_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "map_ref_level_below",
+          level_name: "Map Ref Level Below",
+          level_index: -1.0
+        })
+
+      above_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "map_ref_level_above",
+          level_name: "Map Ref Level Above",
+          level_index: 1.0
+        })
+
+      {:ok, below_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: below_level.id
+        })
+
+      {:ok, above_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: above_level.id
+        })
+
+      alignment_attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.006,
+        floorplan_scale_mpp: 0.35,
+        floorplan_rotation_deg: 0.0
+      }
+
+      {:ok, _} = Gtfs.update_stop_level_alignment(middle_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_alignment(below_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_alignment(above_stop_level, alignment_attrs)
+      {:ok, _} = Gtfs.update_stop_level_diagram(below_stop_level, "below-reference.png")
+      {:ok, _} = Gtfs.update_stop_level_diagram(above_stop_level, "above-reference.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "switch_level", %{"level_id" => middle_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.active_level.id == middle_level.id
+
+      render_hook(view, "select_reference_overlay_level", %{"level_id" => above_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == above_level.id
+      assert assigns.show_reference_overlay == false
+
+      refute has_element?(
+               view,
+               ".map-canvas[data-show-reference-overlay='true'][data-reference-center-lat][data-reference-center-lon][data-reference-scale-mpp][data-reference-rotation-deg]"
+             )
+
+      render_hook(view, "toggle_reference_overlay", %{})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.reference_level_id == above_level.id
+      assert assigns.show_reference_overlay == true
+
+      assert has_element?(
+               view,
+               ".map-canvas[data-show-reference-overlay='true'][data-reference-center-lat][data-reference-center-lon][data-reference-scale-mpp][data-reference-rotation-deg]"
+             )
+
+      assert has_element?(
+               view,
+               "#map-alignment-overlay[data-overlay-role='active'][data-editable-overlay='true'].cursor-move"
+             )
+
+      assert has_element?(
+               view,
+               "#map-alignment-rotate-handle[data-edit-target-overlay='active']"
+             )
+
+      assert has_element?(
+               view,
+               "#map-alignment-scale-handle[data-edit-target-overlay='active']"
+             )
+
+      assert middle_level.id == :sys.get_state(view.pid).socket.assigns.active_level.id
     end
 
     test "map canvas exposes initial view data attributes", %{
@@ -12465,7 +13149,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#map-alignment-apply-center")
       assert has_element?(view, "#map-alignment-save")
       assert has_element?(view, "#map-alignment-apply")
-      assert has_element?(view, "#map-alignment-infer")
+      refute has_element?(view, "#map-alignment-infer")
+      refute has_element?(view, "#map-canvas-wrapper", "Infer from anchors")
       assert has_element?(view, "#map-alignment-rotate-handle")
       assert has_element?(view, "#map-alignment-scale-handle")
       refute has_element?(view, "#map-alignment-reset")
@@ -12503,6 +13188,64 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert_in_delta reloaded.floorplan_rotation_deg, 15.5, 1.0e-6
     end
 
+    test "saved alignment is reflected when that level is selected as reference after switching levels",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: middle_level,
+           stop_level: middle_stop_level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
+
+      above_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "alignment_ref_above",
+          level_name: "Alignment Ref Above",
+          level_index: 1.0
+        })
+
+      {:ok, above_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: above_level.id,
+          diagram_filename: "above-ref.png"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      render_hook(view, "save_alignment", %{
+        "center_lat" => 40.7128,
+        "center_lon" => -74.0060,
+        "scale_mpp" => 0.35,
+        "rotation_deg" => 15.5
+      })
+
+      render_hook(view, "switch_level", %{"level_id" => above_level.id})
+      render_hook(view, "select_reference_overlay_level", %{"level_id" => middle_level.id})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert assigns.reference_level_id == middle_level.id
+      assert assigns.reference_stop_level.level_id == middle_level.id
+      assert_in_delta assigns.reference_stop_level.floorplan_center_lat, 40.7128, 1.0e-6
+      assert_in_delta assigns.reference_stop_level.floorplan_center_lon, -74.0060, 1.0e-6
+      assert_in_delta assigns.reference_stop_level.floorplan_scale_mpp, 0.35, 1.0e-6
+      assert_in_delta assigns.reference_stop_level.floorplan_rotation_deg, 15.5, 1.0e-6
+
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.StopLevel, above_stop_level.id)
+      assert reloaded.level_id == above_level.id
+    end
+
     test "save_alignment rejects out-of-range lat and does not mutate the DB", %{
       conn: conn,
       user: user,
@@ -12535,6 +13278,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert reloaded.floorplan_rotation_deg == nil
 
       assert html =~ "Could not save alignment"
+      assert html =~ "floorplan_center_lat"
     end
 
     test "map canvas renders data-align-* attributes when alignment is set", %{
@@ -12666,7 +13410,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#map-alignment-apply[disabled]")
     end
 
-    test "infer button is present in map mode with phx-click=infer_alignment", %{
+    test "infer button is hidden in map mode", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -12683,12 +13427,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
 
-      assert has_element?(view, "#map-alignment-infer")
-      assert has_element?(view, ~s(#map-alignment-infer[phx-click="infer_alignment"]))
-      assert render(view) =~ "Infer from anchors"
+      refute has_element?(view, "#map-alignment-infer")
+      refute render(view) =~ "Infer from anchors"
     end
 
-    test "infer button is disabled when image dims are missing", %{
+    test "infer button remains hidden when image dims are missing", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -12704,11 +13447,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
-      assert has_element?(view, "#map-alignment-infer")
-      assert has_element?(view, "#map-alignment-infer[disabled]")
+      refute has_element?(view, "#map-alignment-infer")
     end
 
-    test "infer button is disabled when anchors below minimum even with image dims", %{
+    test "infer button remains hidden even with image dims", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -12725,7 +13467,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "set_image_natural_size", %{"w" => 1000, "h" => 800})
 
-      assert has_element?(view, "#map-alignment-infer[disabled]")
+      refute has_element?(view, "#map-alignment-infer")
     end
 
     test "set_image_natural_size with valid integers updates the image dimension assigns", %{

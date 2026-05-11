@@ -435,6 +435,16 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Saves a stop_level's floorplan alignment.
+  """
+  def save_stop_level_alignment(%StopLevel{} = stop_level, attrs) do
+    stop_level
+    |> StopLevel.alignment_changeset(attrs)
+    |> Repo.update()
+    |> broadcast([:stop_levels, :updated])
+  end
+
+  @doc """
   Clears a stop_level's floorplan alignment.
   """
   def clear_stop_level_alignment(%StopLevel{} = stop_level) do
@@ -499,29 +509,165 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
-  defp extract_alignment(%StopLevel{
-         floorplan_center_lat: lat,
-         floorplan_center_lon: lon,
-         floorplan_scale_mpp: scale,
-         floorplan_rotation_deg: rotation
-       })
-       when is_number(lat) and is_number(lon) and is_number(scale) and is_number(rotation) do
-    {:ok,
-     %{
-       center_lat: lat,
-       center_lon: lon,
-       scale_mpp: scale,
-       rotation_deg: rotation
-     }}
+  defp extract_alignment(%StopLevel{} = stop_level) do
+    case StopLevel.alignment_transform(stop_level) do
+      {:ok, alignment} -> {:ok, alignment}
+      {:error, :alignment_missing} -> {:error, :alignment_missing}
+      {:error, :invalid_alignment} -> {:error, :alignment_missing}
+    end
   end
-
-  defp extract_alignment(%StopLevel{}), do: {:error, :alignment_missing}
 
   defp validate_positive_image_dims(w, h)
        when is_integer(w) and is_integer(h) and w > 0 and h > 0,
        do: :ok
 
   defp validate_positive_image_dims(_, _), do: {:error, :invalid_image_dims}
+
+  @doc """
+  Saves floorplan alignment for an active stop_level and applies it to the
+  active level child stops in a single transaction.
+
+  Returns `{:ok, %{active_stop_level: stop_level, apply_result: result}}`
+  on success, where `result` includes only active-level apply data.
+  """
+  @spec save_and_apply_stop_level_alignment(
+          Ecto.UUID.t(),
+          map(),
+          pos_integer(),
+          pos_integer()
+        ) ::
+          {:ok,
+           %{
+             active_stop_level: StopLevel.t(),
+             apply_result: %{
+               touched_stop_count: non_neg_integer()
+             }
+           }}
+          | {:error,
+             :not_found
+             | :invalid_input
+             | :alignment_missing
+             | :invalid_image_dims
+             | {:transform, atom()}
+             | Ecto.Changeset.t()
+             | term()}
+  def save_and_apply_stop_level_alignment(
+        active_stop_level_id,
+        proposed_alignment_attrs,
+        image_w,
+        image_h
+      )
+      when is_binary(active_stop_level_id) and is_map(proposed_alignment_attrs) do
+    Logger.debug(fn ->
+      "[ALIGN_APPLY_DEBUG] start save_and_apply_stop_level_alignment " <>
+        inspect(%{
+          active_stop_level_id: active_stop_level_id,
+          proposed_alignment_attrs: proposed_alignment_attrs,
+          image_w: image_w,
+          image_h: image_h
+        })
+    end)
+
+    with :ok <- validate_positive_image_dims(image_w, image_h) do
+      transaction_result =
+        Repo.transaction(fn ->
+          case load_stop_level_for_update(active_stop_level_id) do
+            nil ->
+              Repo.rollback(:not_found)
+
+            %StopLevel{} = active_stop_level ->
+              old_alignment_snapshot = stop_level_alignment_snapshot(active_stop_level)
+
+              Logger.debug(fn ->
+                "[ALIGN_APPLY_DEBUG] active_stop_level_loaded " <>
+                  inspect(%{
+                    active_stop_level_id: active_stop_level.id,
+                    old_alignment_snapshot: old_alignment_snapshot
+                  })
+              end)
+
+              with {:ok, updated_stop_level} <-
+                     active_stop_level
+                     |> StopLevel.alignment_changeset(proposed_alignment_attrs)
+                     |> Repo.update(),
+                   {:ok, active_derived} <-
+                     derive_child_stop_coords(updated_stop_level, image_w, image_h),
+                   {:ok, active_updated_stops} <- persist_derived_coords_in_tx(active_derived) do
+                Logger.debug(fn ->
+                  "[ALIGN_APPLY_DEBUG] active_stop_level_persisted " <>
+                    inspect(%{
+                      active_stop_level_id: updated_stop_level.id,
+                      updated_alignment_snapshot:
+                        stop_level_alignment_snapshot(updated_stop_level)
+                    })
+                end)
+
+                apply_result = %{
+                  touched_stop_count: length(active_updated_stops)
+                }
+
+                %{
+                  active_stop_level: updated_stop_level,
+                  active_updated_stops: active_updated_stops,
+                  apply_result: apply_result
+                }
+              else
+                {:error, reason} ->
+                  Logger.warning(fn ->
+                    "[ALIGN_APPLY_DEBUG] transaction_rollback " <>
+                      inspect(%{active_stop_level_id: active_stop_level.id, reason: reason})
+                  end)
+
+                  Repo.rollback(reason)
+              end
+          end
+        end)
+
+      case transaction_result do
+        {:ok,
+         %{
+           active_stop_level: updated_stop_level,
+           active_updated_stops: active_updated_stops,
+           apply_result: apply_result
+         }} ->
+          broadcast({:ok, updated_stop_level}, [:stop_levels, :updated])
+
+          Enum.each(active_updated_stops, fn stop ->
+            broadcast({:ok, stop}, [:stops, :updated])
+          end)
+
+          {:ok,
+           %{
+             active_stop_level: updated_stop_level,
+             apply_result: apply_result
+           }}
+
+        {:error, reason} ->
+          Logger.warning(fn ->
+            "[ALIGN_APPLY_DEBUG] save_and_apply_failed " <>
+              inspect(%{active_stop_level_id: active_stop_level_id, reason: reason})
+          end)
+
+          {:error, reason}
+      end
+    end
+  end
+
+  def save_and_apply_stop_level_alignment(_, _, _, _), do: {:error, :invalid_input}
+
+  defp load_stop_level_for_update(stop_level_id) when is_binary(stop_level_id) do
+    from(sl in StopLevel, where: sl.id == ^stop_level_id, lock: "FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp stop_level_alignment_snapshot(%StopLevel{} = stop_level) do
+    %{
+      floorplan_center_lat: stop_level.floorplan_center_lat,
+      floorplan_center_lon: stop_level.floorplan_center_lon,
+      floorplan_scale_mpp: stop_level.floorplan_scale_mpp,
+      floorplan_rotation_deg: stop_level.floorplan_rotation_deg
+    }
+  end
 
   @doc """
   Applies the saved floorplan alignment to persist `stop_lat`/`stop_lon` on every
@@ -567,6 +713,23 @@ defmodule GtfsPlanner.Gtfs do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp persist_derived_coords_in_tx(derived) when is_list(derived) do
+    derived
+    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, updated_stops} ->
+      case update_derived_stop_coords(entry) do
+        {:ok, updated_stop} ->
+          {:cont, {:ok, [updated_stop | updated_stops]}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, updated_stops} -> {:ok, Enum.reverse(updated_stops)}
+      {:error, _} = error -> error
     end
   end
 
@@ -1639,6 +1802,27 @@ defmodule GtfsPlanner.Gtfs do
       %{level: level, stop_count: stop_count, diagram_filename: diagram_filename}
     end)
     |> Enum.sort_by(& &1.level.level_index, :asc)
+  end
+
+  @doc """
+  Lists stop_level rows for a station within an organization/version scope.
+
+  Results are deterministically ordered by `level_index`, then `stop_levels.id`.
+  Each row preloads its associated `level` for adjacency and propagation logic.
+  """
+  @spec list_stop_levels_for_station(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          [StopLevel.t()]
+  def list_stop_levels_for_station(organization_id, gtfs_version_id, station_id) do
+    from(sl in StopLevel,
+      join: l in assoc(sl, :level),
+      where:
+        sl.organization_id == ^organization_id and
+          sl.gtfs_version_id == ^gtfs_version_id and
+          sl.stop_id == ^station_id,
+      order_by: [asc: l.level_index, asc: sl.id],
+      preload: [level: l]
+    )
+    |> Repo.all()
   end
 
   @doc """

@@ -179,6 +179,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_status, :any, default: nil
   attr :levels, :list, default: []
   attr :active_level, :any, default: nil
+  attr :selectable_reference_stop_levels, :list, default: []
+  attr :reference_level_id, :string, default: nil
+  attr :reference_stop_level, :any, default: nil
+  attr :show_reference_overlay, :boolean, default: false
 
   def diagram_action_strip(assigns) do
     ~H"""
@@ -273,6 +277,55 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 <% end %>
               <% end %>
             <% end %>
+
+            <%= if @mode == :map and @has_diagram and @selectable_reference_stop_levels != [] do %>
+              <form
+                id="reference-overlay-level-form"
+                phx-change="select_reference_overlay_level"
+                class="flex items-center gap-2 mr-8"
+              >
+                <label for="reference-overlay-level-select" class="text-sm font-medium text-blue-900">
+                  Reference:
+                </label>
+                <select
+                  id="reference-overlay-level-select"
+                  name="level_id"
+                  class="select select-sm select-bordered bg-white"
+                >
+                  <option value="" selected={is_nil(@reference_level_id)}>
+                    Select Level Overlay
+                  </option>
+                  <%= for stop_level <- @selectable_reference_stop_levels do %>
+                    <option
+                      value={stop_level.level_id}
+                      selected={to_string(@reference_level_id) == to_string(stop_level.level_id)}
+                    >
+                      {stop_level.level.level_name || stop_level.level.level_id}
+                    </option>
+                  <% end %>
+                </select>
+                <button
+                  type="button"
+                  class={[
+                    "btn btn-sm min-w-16",
+                    if(@show_reference_overlay,
+                      do:
+                        "bg-blue-600 border-blue-600 text-white hover:bg-blue-700 hover:border-blue-700",
+                      else: "btn-outline border-blue-300 text-blue-600 hover:bg-blue-50"
+                    )
+                  ]}
+                  phx-click="toggle_reference_overlay"
+                  disabled={
+                    is_nil(@reference_stop_level) or
+                      is_nil(@reference_stop_level.diagram_filename) or
+                      @reference_stop_level.diagram_filename == ""
+                  }
+                >
+                  {if @show_reference_overlay, do: "Hide", else: "Show"}
+                </button>
+              </form>
+            <% end %>
+
             <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
           </div>
         </div>
@@ -309,6 +362,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :align_rotation_deg, :any, default: nil
   attr :image_natural_width, :any, default: nil
   attr :image_natural_height, :any, default: nil
+  attr :reference_stop_level, :any, default: nil
+  attr :show_reference_overlay, :boolean, default: false
   attr :child_stops_total, :integer, default: 0
   attr :child_stops_with_geo, :integer, default: 0
   attr :anchor_count, :integer, default: 0
@@ -318,6 +373,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   def map_canvas(assigns) do
     floorplan_url =
       diagram_image_href(assigns.organization_id, assigns.station, assigns.active_stop_level)
+
+    reference_overlay_url =
+      reference_overlay_image_href(
+        assigns.organization_id,
+        assigns.station,
+        assigns.reference_stop_level
+      )
 
     initial_lat = assigns.station.stop_lat || 0
     initial_lon = assigns.station.stop_lon || 0
@@ -342,6 +404,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:initial_lat, initial_lat)
       |> assign(:initial_lon, initial_lon)
       |> assign(:has_alignment?, has_alignment?)
+      |> assign(:reference_overlay_url, reference_overlay_url)
       |> assign(:canvas_id, canvas_id)
 
     ~H"""
@@ -351,6 +414,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         class="map-canvas relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
         phx-hook="MapAlignment"
         phx-update="ignore"
+        data-show-reference-overlay={overlay_toggle_attr(@show_reference_overlay)}
+        data-reference-floorplan-url={@reference_overlay_url}
         data-floorplan-url={@floorplan_url}
         data-initial-lat={@initial_lat}
         data-initial-lon={@initial_lon}
@@ -359,14 +424,58 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-align-center-lon={if @has_alignment?, do: @align_center_lon}
         data-align-scale-mpp={if @has_alignment?, do: @align_scale_mpp}
         data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
+        data-reference-center-lat={
+          reference_overlay_value(@reference_stop_level, :floorplan_center_lat)
+        }
+        data-reference-center-lon={
+          reference_overlay_value(@reference_stop_level, :floorplan_center_lon)
+        }
+        data-reference-scale-mpp={
+          reference_overlay_value(@reference_stop_level, :floorplan_scale_mpp)
+        }
+        data-reference-rotation-deg={
+          reference_overlay_value(@reference_stop_level, :floorplan_rotation_deg)
+        }
         data-image-natural-width={@image_natural_width}
         data-image-natural-height={@image_natural_height}
       >
         <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
         <div
+          id="map-reference-overlay"
+          data-overlay-role="reference"
+          data-editable-overlay="false"
+          data-overlay-visible={if(@show_reference_overlay, do: "true", else: "false")}
+          data-align-center-lat={
+            reference_overlay_value(@reference_stop_level, :floorplan_center_lat)
+          }
+          data-align-center-lon={
+            reference_overlay_value(@reference_stop_level, :floorplan_center_lon)
+          }
+          data-align-scale-mpp={reference_overlay_value(@reference_stop_level, :floorplan_scale_mpp)}
+          data-align-rotation-deg={
+            reference_overlay_value(@reference_stop_level, :floorplan_rotation_deg)
+          }
+          class={[
+            "absolute inset-0 pointer-events-none opacity-70",
+            if(@show_reference_overlay, do: nil, else: "hidden")
+          ]}
+          style="z-index: 1;"
+        >
+          <%= if @reference_overlay_url do %>
+            <img
+              src={@reference_overlay_url}
+              alt="Reference level floorplan"
+              data-reference-overlay="true"
+              class="absolute inset-0 w-full h-full object-contain select-none pointer-events-none"
+            />
+          <% end %>
+        </div>
+        <div
           id="map-alignment-overlay"
+          data-overlay-role="active"
+          data-editable-overlay="true"
           class="absolute inset-0 cursor-move"
-          style="z-index: 1; transform-origin: center;"
+          style="z-index: 2; transform-origin: center;"
         >
           <img
             src={@floorplan_url}
@@ -376,27 +485,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </div>
         <button
           id="map-alignment-rotate-handle"
+          data-edit-target-overlay="active"
           type="button"
           title="Drag to rotate the floorplan"
           aria-label="Rotate floorplan"
           class="absolute top-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
-          style="z-index: 2;"
+          style="z-index: 3;"
         >
           <.icon name="hero-arrow-path" class="w-4 h-4" />
         </button>
         <div
           id="map-alignment-pins"
           class="absolute inset-0 pointer-events-none"
-          style="z-index: 3;"
+          style="z-index: 4;"
         >
         </div>
         <button
           id="map-alignment-scale-handle"
+          data-edit-target-overlay="active"
           type="button"
           title="Drag to resize the floorplan"
           aria-label="Resize floorplan"
           class="absolute bottom-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
-          style="z-index: 2;"
+          style="z-index: 3;"
         >
           <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
         </button>
@@ -409,12 +520,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <div class="flex flex-col items-end gap-1">
             <span data-role="child-stop-coverage" class="text-xs font-medium text-base-content/70">
               {@child_stops_with_geo} of {@child_stops_total} child stops have lat/long
-            </span>
-            <span
-              data-role="cross-level-pathway-coverage"
-              class="text-xs font-medium text-base-content/70"
-            >
-              {@cross_level_pathway_with_geo} of {@cross_level_pathway_total} connections to other levels have lat/long
             </span>
           </div>
         </div>
@@ -466,7 +571,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               min="0"
               max="1"
               step="0.05"
-              value="0.6"
+              value="0.7"
               class="range range-xs w-40"
             />
           </div>
@@ -487,9 +592,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             />
           </div>
 
+          <%= if @show_reference_overlay and @reference_stop_level do %>
+            <div class="flex flex-col gap-1">
+              <label
+                for="map-reference-overlay-opacity"
+                class="text-xs font-medium text-base-content/80"
+              >
+                Reference opacity
+              </label>
+              <input
+                id="map-reference-overlay-opacity"
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value="0.7"
+                class="range range-xs w-40"
+              />
+            </div>
+          <% end %>
+
           <div class="ml-auto flex items-center gap-3">
             <button id="map-alignment-save" type="button" class="btn btn-sm btn-primary">
-              Save alignment
+              Save Alignment
             </button>
             <button
               id="map-alignment-apply"
@@ -498,21 +623,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               title="Set lat/lon for child stops from the floorplan's current position on the map"
               disabled={is_nil(@image_natural_width) or is_nil(@image_natural_height)}
             >
-              Apply image position
-            </button>
-            <span class="text-xs text-base-content/60">or</span>
-            <button
-              id="map-alignment-infer"
-              type="button"
-              class="btn btn-sm btn-primary"
-              phx-click="infer_alignment"
-              title="Compute alignment from child stops that already have lat/lon, then set lat/lon on the rest"
-              disabled={
-                @anchor_count < GtfsPlanner.Gtfs.AlignmentInference.anchor_minimum() or
-                  is_nil(@image_natural_width) or is_nil(@image_natural_height)
-              }
-            >
-              Infer from anchors
+              Apply Image Position
             </button>
           </div>
         </div>
@@ -636,6 +747,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         nil
     end
   end
+
+  defp reference_overlay_image_href(_organization_id, _station, nil), do: nil
+
+  defp reference_overlay_image_href(organization_id, station, reference_stop_level)
+       when is_map(reference_stop_level) do
+    case reference_stop_level do
+      %{diagram_filename: filename} when is_binary(filename) and filename != "" ->
+        station_dir = PathSafety.stop_storage_dir(station.stop_id)
+        token = URI.encode_www_form(filename)
+        encoded_filename = URI.encode(filename)
+
+        if is_binary(station_dir) do
+          "/uploads/diagrams/#{organization_id}/#{station_dir}/#{encoded_filename}?v=#{token}"
+        else
+          nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp reference_overlay_value(nil, _key), do: nil
+
+  defp reference_overlay_value(reference_stop_level, key) when is_map(reference_stop_level),
+    do: Map.get(reference_stop_level, key)
+
+  defp overlay_toggle_attr(true), do: "true"
+  defp overlay_toggle_attr(false), do: "false"
 
   attr :streams, :any, required: true
   attr :active_point_id, :any
