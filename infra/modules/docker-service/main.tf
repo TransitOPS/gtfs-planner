@@ -8,7 +8,8 @@ locals {
   lb_content = yamlencode({
     services = {
       loadbalancer = {
-        image = "traefik:3"
+        image   = "traefik:3"
+        restart = "always"
         ports = [
           "80:80",
           "443:443"
