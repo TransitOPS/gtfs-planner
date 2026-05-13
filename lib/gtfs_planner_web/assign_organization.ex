@@ -14,7 +14,7 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   Administrators (system-scoped users) bypass the organization requirement.
   """
 
-  import Phoenix.LiveView, only: [put_flash: 3, redirect: 2]
+  import Phoenix.LiveView, only: [put_flash: 3, redirect: 2, attach_hook: 4]
   import Phoenix.Component, only: [assign: 3]
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Organizations
@@ -89,7 +89,12 @@ defmodule GtfsPlannerWeb.AssignOrganization do
            |> assign(:current_organization, organization)
            |> assign(:user_roles, user_roles)
            |> assign(:available_versions, available_versions)
-           |> assign(:current_gtfs_version, current_gtfs_version)}
+           |> assign(:current_gtfs_version, current_gtfs_version)
+           |> attach_hook(
+             :refresh_gtfs_versions_after_rename,
+             :handle_info,
+             &refresh_after_rename/2
+           )}
         end
 
       nil ->
@@ -109,5 +114,26 @@ defmodule GtfsPlannerWeb.AssignOrganization do
       |> redirect(to: "/users/log_in")
 
     {:halt, socket}
+  end
+
+  defp refresh_after_rename({:gtfs_version_renamed, %{id: renamed_id} = updated}, socket) do
+    org_id = socket.assigns.current_organization.id
+    versions = Versions.list_gtfs_versions_for_dropdown(org_id)
+
+    socket =
+      socket
+      |> assign(:available_versions, versions)
+      |> maybe_replace_current_gtfs_version(renamed_id, updated)
+
+    {:halt, socket}
+  end
+
+  defp refresh_after_rename(_msg, socket), do: {:cont, socket}
+
+  defp maybe_replace_current_gtfs_version(socket, renamed_id, updated) do
+    case socket.assigns.current_gtfs_version do
+      %{id: ^renamed_id} -> assign(socket, :current_gtfs_version, updated)
+      _ -> socket
+    end
   end
 end

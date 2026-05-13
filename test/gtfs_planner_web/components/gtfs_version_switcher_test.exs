@@ -2,8 +2,10 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
   use GtfsPlannerWeb.ConnCase
 
   import Phoenix.LiveViewTest
+  import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
 
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -185,6 +187,47 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       assert html =~ "A version with this name already exists"
       assert has_element?(view, "#gtfs-version-rename-form")
       assert Versions.get_gtfs_version!(current.id).name == "Current Version"
+    end
+  end
+
+  describe "AssignOrganization refresh hook" do
+    test "refreshes available_versions but keeps current_gtfs_version when a non-current version is renamed",
+         %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_admin"]
+      })
+
+      {:ok, current} = Versions.create_gtfs_version(organization.id, %{name: "Selected Version"})
+      {:ok, other} = Versions.create_gtfs_version(organization.id, %{name: "Other Version"})
+
+      conn =
+        conn
+        |> log_in_user(user)
+        |> Plug.Conn.put_session(:organization_id, organization.id)
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      latest = Versions.get_latest_gtfs_version(organization.id) |> elem(1)
+      assigns_before = :sys.get_state(view.pid).socket.assigns
+      assert assigns_before.current_gtfs_version.id == latest.id
+
+      {:ok, renamed_other} = Versions.update_gtfs_version(other, %{name: "Renamed Other"})
+
+      send(view.pid, {:gtfs_version_renamed, renamed_other})
+      _ = render(view)
+
+      assigns_after = :sys.get_state(view.pid).socket.assigns
+
+      assert assigns_after.current_gtfs_version.id == assigns_before.current_gtfs_version.id
+
+      assert {other.id, "Renamed Other"} in assigns_after.available_versions
+      refute {other.id, "Other Version"} in assigns_after.available_versions
+      assert {current.id, "Selected Version"} in assigns_after.available_versions
     end
   end
 end
