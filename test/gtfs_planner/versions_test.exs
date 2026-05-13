@@ -144,6 +144,79 @@ defmodule GtfsPlanner.VersionsTest do
     end
   end
 
+  describe "update_gtfs_version/2" do
+    test "updates the version with valid attrs" do
+      organization = organization_fixture()
+      {:ok, version} = Versions.create_gtfs_version(organization.id, %{name: "Original"})
+
+      assert {:ok, %GtfsVersion{name: "Renamed"}} =
+               Versions.update_gtfs_version(version, %{name: "Renamed"})
+
+      assert Versions.get_gtfs_version!(version.id).name == "Renamed"
+    end
+
+    test "trims leading and trailing whitespace before persisting" do
+      organization = organization_fixture()
+      {:ok, version} = Versions.create_gtfs_version(organization.id, %{name: "Original"})
+
+      assert {:ok, updated} = Versions.update_gtfs_version(version, %{name: "  Renamed  "})
+      assert updated.name == "Renamed"
+      assert Versions.get_gtfs_version!(version.id).name == "Renamed"
+    end
+
+    test "returns error when name is blank" do
+      organization = organization_fixture()
+      {:ok, version} = Versions.create_gtfs_version(organization.id, %{name: "Original"})
+
+      assert {:error, changeset} = Versions.update_gtfs_version(version, %{name: ""})
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+    end
+
+    test "returns error when name is only whitespace" do
+      organization = organization_fixture()
+      {:ok, version} = Versions.create_gtfs_version(organization.id, %{name: "Original"})
+
+      assert {:error, changeset} = Versions.update_gtfs_version(version, %{name: "   "})
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+    end
+
+    test "returns error when name is nil and does not raise" do
+      organization = organization_fixture()
+      {:ok, version} = Versions.create_gtfs_version(organization.id, %{name: "Original"})
+
+      assert {:error, changeset} = Versions.update_gtfs_version(version, %{name: nil})
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+    end
+
+    test "returns error when name duplicates another version in the same org" do
+      organization = organization_fixture()
+      {:ok, _existing} = Versions.create_gtfs_version(organization.id, %{name: "Taken"})
+      {:ok, version} = Versions.create_gtfs_version(organization.id, %{name: "Original"})
+
+      assert {:error, changeset} = Versions.update_gtfs_version(version, %{name: "Taken"})
+      assert %{name: ["A version with this name already exists"]} = errors_on(changeset)
+    end
+
+    test "succeeds when name duplicates a version in a different org" do
+      org1 = organization_fixture()
+      org2 = organization_fixture()
+      {:ok, _other} = Versions.create_gtfs_version(org1.id, %{name: "Shared"})
+      {:ok, version} = Versions.create_gtfs_version(org2.id, %{name: "Original"})
+
+      assert {:ok, updated} = Versions.update_gtfs_version(version, %{name: "Shared"})
+      assert updated.name == "Shared"
+    end
+  end
+
+  describe "change_gtfs_version/2" do
+    test "returns a changeset for the given version" do
+      organization = organization_fixture()
+      {:ok, version} = Versions.create_gtfs_version(organization.id, %{name: "Original"})
+
+      assert %Ecto.Changeset{data: ^version} = Versions.change_gtfs_version(version)
+    end
+  end
+
   describe "changeset/2" do
     test "is invalid when name is an empty string" do
       organization = organization_fixture()

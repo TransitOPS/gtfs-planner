@@ -25,6 +25,38 @@ defmodule GtfsPlanner.Versions do
   end
 
   @doc """
+  Updates a GTFS version.
+
+  ## Examples
+
+      iex> update_gtfs_version(version, %{name: "Renamed"})
+      {:ok, %GtfsVersion{}}
+
+      iex> update_gtfs_version(version, %{name: nil})
+      {:error, %Ecto.Changeset{}}
+  """
+  @spec update_gtfs_version(GtfsVersion.t(), map()) ::
+          {:ok, GtfsVersion.t()} | {:error, Ecto.Changeset.t()}
+  def update_gtfs_version(%GtfsVersion{} = version, attrs) do
+    version
+    |> GtfsVersion.changeset(attrs)
+    |> Repo.update()
+  end
+
+  @doc """
+  Returns an `%Ecto.Changeset{}` for tracking GTFS version changes.
+
+  ## Examples
+
+      iex> change_gtfs_version(version)
+      %Ecto.Changeset{data: %GtfsVersion{}}
+  """
+  @spec change_gtfs_version(GtfsVersion.t(), map()) :: Ecto.Changeset.t()
+  def change_gtfs_version(%GtfsVersion{} = version, attrs \\ %{}) do
+    GtfsVersion.changeset(version, attrs)
+  end
+
+  @doc """
   Creates a default "First Version" GTFS version for an organization.
 
   ## Examples
