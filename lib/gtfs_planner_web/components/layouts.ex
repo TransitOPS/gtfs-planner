@@ -93,7 +93,9 @@ defmodule GtfsPlannerWeb.Layouts do
         </div>
         <div class="flex-none flex items-center gap-4">
           <%= if @current_gtfs_version && @available_versions != [] do %>
-            <.gtfs_version_switcher
+            <.live_component
+              module={GtfsPlannerWeb.Components.GtfsVersionSwitcher}
+              id="gtfs-version-switcher"
               current_version={@current_gtfs_version}
               versions={@available_versions}
               organization_id={@current_organization.id}
