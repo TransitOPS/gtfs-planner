@@ -2,6 +2,7 @@ defmodule GtfsPlanner.VersionsTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Versions.GtfsVersion
 
   import GtfsPlanner.OrganizationsFixtures
 
@@ -140,6 +141,71 @@ defmodule GtfsPlanner.VersionsTest do
 
       versions = Versions.list_gtfs_versions_for_dropdown(org.id)
       assert versions == []
+    end
+  end
+
+  describe "changeset/2" do
+    test "is invalid when name is an empty string" do
+      organization = organization_fixture()
+      changeset = GtfsVersion.changeset(%GtfsVersion{organization_id: organization.id}, %{name: ""})
+
+      refute changeset.valid?
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+    end
+
+    test "is invalid when name is only whitespace (trim runs before validate_required)" do
+      organization = organization_fixture()
+
+      changeset =
+        GtfsVersion.changeset(%GtfsVersion{organization_id: organization.id}, %{name: "   "})
+
+      refute changeset.valid?
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+    end
+
+    test "is invalid when name is nil and does not raise" do
+      organization = organization_fixture()
+
+      changeset =
+        GtfsVersion.changeset(%GtfsVersion{organization_id: organization.id}, %{name: nil})
+
+      refute changeset.valid?
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+    end
+
+    test "is invalid when name exceeds 255 characters" do
+      organization = organization_fixture()
+      long_name = String.duplicate("a", 256)
+
+      changeset =
+        GtfsVersion.changeset(%GtfsVersion{organization_id: organization.id}, %{name: long_name})
+
+      refute changeset.valid?
+      assert %{name: [message]} = errors_on(changeset)
+      assert message =~ "should be at most 255"
+    end
+
+    test "is invalid when another version in the same org already has the name" do
+      organization = organization_fixture()
+      {:ok, existing} = Versions.create_gtfs_version(organization.id, %{name: "Duplicate Name"})
+
+      changeset =
+        GtfsVersion.changeset(%GtfsVersion{organization_id: organization.id}, %{name: existing.name})
+
+      refute changeset.valid?
+      assert %{name: [message]} = errors_on(changeset)
+      assert message == "A version with this name already exists"
+    end
+
+    test "is valid when another version in a different org has the same name" do
+      org1 = organization_fixture()
+      org2 = organization_fixture()
+      {:ok, _existing} = Versions.create_gtfs_version(org1.id, %{name: "Shared Name"})
+
+      changeset =
+        GtfsVersion.changeset(%GtfsVersion{organization_id: org2.id}, %{name: "Shared Name"})
+
+      assert changeset.valid?
     end
   end
 end
