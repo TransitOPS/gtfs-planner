@@ -5,5 +5,5 @@ module "docker_database" {
   project_name  = module.config.project_name
   name          = var.name
   host          = local.database_config.host
-  database_name = module.config.project_name
+  database_name = local.database_config.postgres_database_name
 }
