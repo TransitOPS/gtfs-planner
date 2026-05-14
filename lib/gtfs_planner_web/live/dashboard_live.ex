@@ -63,6 +63,28 @@ defmodule GtfsPlannerWeb.DashboardLive do
   end
 
   @impl true
+  def handle_info({:gtfs_version_renamed, updated}, socket) do
+    case socket.assigns[:current_organization] do
+      nil ->
+        {:noreply, socket}
+
+      organization ->
+        versions = Versions.list_gtfs_versions_for_dropdown(organization.id)
+
+        current =
+          case socket.assigns[:current_gtfs_version] do
+            %{id: id} when id == updated.id -> updated
+            other -> other
+          end
+
+        {:noreply,
+         socket
+         |> assign(:available_versions, versions)
+         |> assign(:current_gtfs_version, current)}
+    end
+  end
+
+  @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app
