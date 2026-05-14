@@ -46,15 +46,17 @@ locals {
 
   databases = {
     dev = {
-      network_name = "dev"
-      type         = "docker"
-      host         = data.env_var.dev_ip.value
-      is_temporary = true
+      network_name           = "dev"
+      type                   = "docker"
+      host                   = data.env_var.dev_ip.value
+      postgres_database_name = local.project_name
+      is_temporary           = true
     }
     prod = {
-      network_name = "prod"
-      type         = "rds"
-      is_temporary = false
+      network_name           = "prod"
+      type                   = "rds"
+      postgres_database_name = "prod"
+      is_temporary           = false
     }
   }
 

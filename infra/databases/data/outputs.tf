@@ -8,7 +8,7 @@ output "db_port" {
   value = try(data.aws_rds_cluster.this[0].port, 5432)
 }
 output "db_name" {
-  value = try(data.aws_rds_cluster.this[0].database_name, replace(module.config.project_name, "-", ""))
+  value = try(data.aws_rds_cluster.this[0].database_name, local.database_config.postgres_database_name)
 }
 output "db_username" {
   value = "app"
