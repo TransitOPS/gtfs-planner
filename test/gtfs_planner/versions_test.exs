@@ -280,5 +280,41 @@ defmodule GtfsPlanner.VersionsTest do
 
       assert changeset.valid?
     end
+
+    test "trims surrounding whitespace from name on cast" do
+      organization = organization_fixture()
+
+      changeset =
+        GtfsVersion.changeset(%GtfsVersion{organization_id: organization.id}, %{name: "  Hello  "})
+
+      assert changeset.valid?
+      assert Ecto.Changeset.get_change(changeset, :name) == "Hello"
+    end
+
+    test "treats a whitespace-padded name as a duplicate of an existing trimmed name" do
+      organization = organization_fixture()
+      {:ok, _existing} = Versions.create_gtfs_version(organization.id, %{name: "Dup"})
+
+      changeset =
+        GtfsVersion.changeset(%GtfsVersion{organization_id: organization.id}, %{name: "  Dup  "})
+
+      refute changeset.valid?
+      assert %{name: [message]} = errors_on(changeset)
+      assert message == "A version with this name already exists"
+    end
+
+    test "does not flag a duplicate when organization_id is nil on the struct" do
+      # organization_id is set programmatically (never cast). If a caller builds a
+      # changeset on a struct without organization_id set, unsafe_validate_unique
+      # scopes to organization_id IS NULL — which never matches any real version.
+      # This test locks in that behavior so a future refactor doesn't silently
+      # turn name uniqueness into a global lookup.
+      org = organization_fixture()
+      {:ok, _existing} = Versions.create_gtfs_version(org.id, %{name: "Anywhere"})
+
+      changeset = GtfsVersion.changeset(%GtfsVersion{organization_id: nil}, %{name: "Anywhere"})
+
+      assert changeset.valid?
+    end
   end
 end

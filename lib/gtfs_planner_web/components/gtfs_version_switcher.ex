@@ -18,12 +18,23 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
   def update(assigns, socket) do
     socket =
       socket
+      |> reset_edit_if_version_changed(assigns)
       |> assign_new(:editing?, fn -> false end)
       |> assign_new(:form, fn -> nil end)
       |> assign(assigns)
 
     {:ok, socket}
   end
+
+  defp reset_edit_if_version_changed(socket, %{current_version: %{id: incoming_id}}) do
+    case socket.assigns do
+      %{current_version: %{id: ^incoming_id}} -> socket
+      %{current_version: %{}} -> assign(socket, editing?: false, form: nil)
+      _ -> socket
+    end
+  end
+
+  defp reset_edit_if_version_changed(socket, _assigns), do: socket
 
   @impl true
   def render(assigns) do
@@ -32,7 +43,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
       id="gtfs-version-switcher"
       phx-hook="GtfsVersionHook"
       data-organization-id={@organization_id}
-      class="flex items-center gap-2 bg-base-200 rounded-full pl-3 pr-1 py-1"
+      class="flex items-center gap-2 bg-base-200 rounded-md pl-3 pr-1 py-1"
     >
       <%= if @editing? do %>
         <.form
@@ -43,7 +54,12 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           phx-submit="save"
           class="flex items-center gap-2"
         >
-          <.input field={@form[:name]} type="text" label="Name" />
+          <.input
+            field={@form[:name]}
+            type="text"
+            label={"Rename \"#{@current_version.name}\""}
+            class="input input-sm w-48"
+          />
           <button type="submit" class="btn btn-primary btn-sm">Save changes</button>
           <button
             type="button"
@@ -65,7 +81,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           id="gtfs-version-select"
           name="version"
           aria-label="Select GTFS version"
-          class="select select-sm select-ghost rounded-full bg-base-100 min-w-[120px] focus:outline-none focus:ring-2 focus:ring-primary"
+          class="select select-sm select-ghost rounded-md bg-base-100 min-w-[120px] focus:outline-none focus:ring-2 focus:ring-primary"
         >
           <option :for={{id, name} <- @versions} value={id} selected={id == @current_version.id}>
             {name}

@@ -117,21 +117,26 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   end
 
   defp refresh_after_rename({:gtfs_version_renamed, %{id: renamed_id} = updated}, socket) do
-    org_id = socket.assigns.current_organization.id
-    versions = Versions.list_gtfs_versions_for_dropdown(org_id)
+    case socket.assigns[:current_organization] do
+      %{id: org_id} ->
+        versions = Versions.list_gtfs_versions_for_dropdown(org_id)
 
-    socket =
-      socket
-      |> assign(:available_versions, versions)
-      |> maybe_replace_current_gtfs_version(renamed_id, updated)
+        socket =
+          socket
+          |> assign(:available_versions, versions)
+          |> maybe_replace_current_gtfs_version(renamed_id, updated)
 
-    {:halt, socket}
+        {:halt, socket}
+
+      _ ->
+        {:cont, socket}
+    end
   end
 
   defp refresh_after_rename(_msg, socket), do: {:cont, socket}
 
   defp maybe_replace_current_gtfs_version(socket, renamed_id, updated) do
-    case socket.assigns.current_gtfs_version do
+    case socket.assigns[:current_gtfs_version] do
       %{id: ^renamed_id} -> assign(socket, :current_gtfs_version, updated)
       _ -> socket
     end

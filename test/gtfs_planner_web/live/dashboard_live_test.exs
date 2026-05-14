@@ -7,7 +7,6 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Versions
-  alias GtfsPlanner.Versions.GtfsVersion
 
   describe "Dashboard" do
     test "redirects unauthenticated users to login page", %{conn: conn} do
@@ -148,7 +147,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       assert assigns_before.current_organization == nil
       assert assigns_before.current_gtfs_version == nil
 
-      send(view.pid, {:gtfs_version_renamed, %GtfsVersion{id: Ecto.UUID.generate(), name: "X"}})
+      send(view.pid, {:gtfs_version_renamed, %{id: Ecto.UUID.generate(), name: "X"}})
       _ = render(view)
 
       assigns_after = :sys.get_state(view.pid).socket.assigns

@@ -46,6 +46,11 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
        |> Phoenix.Component.assign(:current_version, current)}
     end
 
+    def handle_info({:swap_current_version, version_id}, socket) do
+      version = Versions.get_gtfs_version!(version_id)
+      {:noreply, Phoenix.Component.assign(socket, :current_version, version)}
+    end
+
     def handle_info(_, socket), do: {:noreply, socket}
   end
 
@@ -102,6 +107,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
 
       form_html = view |> element("#gtfs-version-rename-form") |> render()
       assert form_html =~ ~s(value="Current Version")
+      assert form_html =~ ~s(Rename &quot;Current Version&quot;)
     end
 
     test "validate surfaces duplicate-name error", %{
@@ -188,11 +194,75 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       assert has_element?(view, "#gtfs-version-rename-form")
       assert Versions.get_gtfs_version!(current.id).name == "Current Version"
     end
+
+    test "trims surrounding whitespace before persisting", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      view
+      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> render_click()
+
+      view
+      |> form("#gtfs-version-rename-form", gtfs_version: %{name: "  Renamed  "})
+      |> render_submit()
+
+      refute has_element?(view, "#gtfs-version-rename-form")
+      assert Versions.get_gtfs_version!(current.id).name == "Renamed"
+    end
+
+    test "submitting the unchanged current name succeeds without a duplicate error", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      view
+      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> render_click()
+
+      html =
+        view
+        |> form("#gtfs-version-rename-form", gtfs_version: %{name: current.name})
+        |> render_submit()
+
+      refute html =~ "A version with this name already exists"
+      refute has_element?(view, "#gtfs-version-rename-form")
+      assert Versions.get_gtfs_version!(current.id).name == current.name
+    end
+  end
+
+  describe "edit state reset" do
+    test "exits edit mode when the parent swaps current_version", %{
+      conn: conn,
+      current: current,
+      org: org,
+      other: other
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      view
+      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> render_click()
+
+      assert has_element?(view, "#gtfs-version-rename-form")
+
+      send(view.pid, {:swap_current_version, other.id})
+      _ = render(view)
+
+      refute has_element?(view, "#gtfs-version-rename-form")
+
+      form_html = view |> element("#gtfs-version-switcher") |> render()
+      assert form_html =~ "Other Version"
+    end
   end
 
   describe "AssignOrganization refresh hook" do
-    test "refreshes available_versions but keeps current_gtfs_version when a non-current version is renamed",
-         %{conn: conn} do
+    setup %{conn: conn} do
       organization = organization_fixture()
       user = user_fixture()
 
@@ -202,32 +272,53 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
         roles: ["pathways_studio_admin"]
       })
 
-      {:ok, current} = Versions.create_gtfs_version(organization.id, %{name: "Selected Version"})
-      {:ok, other} = Versions.create_gtfs_version(organization.id, %{name: "Other Version"})
+      {:ok, older} = Versions.create_gtfs_version(organization.id, %{name: "Older Version"})
+      {:ok, newer} = Versions.create_gtfs_version(organization.id, %{name: "Newer Version"})
 
       conn =
         conn
         |> log_in_user(user)
         |> Plug.Conn.put_session(:organization_id, organization.id)
 
+      # AssignOrganization picks the latest (most-recently-created) as current.
+      %{conn: conn, organization: organization, current: newer, non_current: older}
+    end
+
+    test "refreshes available_versions and updates current_gtfs_version when the current version is renamed",
+         %{conn: conn, current: current} do
       {:ok, view, _html} = live(conn, ~p"/admin/users")
 
-      latest = Versions.get_latest_gtfs_version(organization.id) |> elem(1)
+      {:ok, renamed} = Versions.update_gtfs_version(current, %{name: "Newer Renamed"})
+      send(view.pid, {:gtfs_version_renamed, renamed})
+      _ = render(view)
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert assigns.current_gtfs_version.id == current.id
+      assert assigns.current_gtfs_version.name == "Newer Renamed"
+      assert {current.id, "Newer Renamed"} in assigns.available_versions
+    end
+
+    test "refreshes available_versions but leaves current_gtfs_version unchanged when a non-current version is renamed",
+         %{conn: conn, current: current, non_current: non_current} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
       assigns_before = :sys.get_state(view.pid).socket.assigns
-      assert assigns_before.current_gtfs_version.id == latest.id
+      assert assigns_before.current_gtfs_version.id == current.id
+      assert assigns_before.current_gtfs_version.name == current.name
 
-      {:ok, renamed_other} = Versions.update_gtfs_version(other, %{name: "Renamed Other"})
-
+      {:ok, renamed_other} = Versions.update_gtfs_version(non_current, %{name: "Older Renamed"})
       send(view.pid, {:gtfs_version_renamed, renamed_other})
       _ = render(view)
 
       assigns_after = :sys.get_state(view.pid).socket.assigns
 
-      assert assigns_after.current_gtfs_version.id == assigns_before.current_gtfs_version.id
+      assert assigns_after.current_gtfs_version.id == current.id
+      assert assigns_after.current_gtfs_version.name == current.name
 
-      assert {other.id, "Renamed Other"} in assigns_after.available_versions
-      refute {other.id, "Other Version"} in assigns_after.available_versions
-      assert {current.id, "Selected Version"} in assigns_after.available_versions
+      assert {non_current.id, "Older Renamed"} in assigns_after.available_versions
+      refute {non_current.id, "Older Version"} in assigns_after.available_versions
+      assert {current.id, current.name} in assigns_after.available_versions
     end
   end
 end
