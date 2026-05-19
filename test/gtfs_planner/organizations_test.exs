@@ -400,6 +400,65 @@ defmodule GtfsPlanner.OrganizationsTest do
       assert "should be at most 255 character(s)" in errors_on(changeset).name
       assert "should be at most 255 character(s)" in errors_on(changeset).alias
     end
+
+    test "trims whitespace from name on create" do
+      {:ok, organization} =
+        Organizations.create_organization(%{name: "  Acme  ", alias: "acme-trim-create"})
+
+      assert organization.name == "Acme"
+    end
+
+    test "trims whitespace from name on update" do
+      organization = organization_fixture()
+
+      {:ok, updated} =
+        Organizations.update_organization(organization, %{name: "  Trimmed Name  "})
+
+      assert updated.name == "Trimmed Name"
+    end
+
+    test "alias normalization is unchanged when input has surrounding whitespace" do
+      padded_changeset =
+        Organization.changeset(%Organization{}, %{name: "Demo Org", alias: "  Demo Org  "})
+
+      trimmed_changeset =
+        Organization.changeset(%Organization{}, %{name: "Demo Org", alias: "Demo Org"})
+
+      assert get_change(padded_changeset, :alias) == get_change(trimmed_changeset, :alias)
+      assert get_change(padded_changeset, :alias) == "demo-org"
+    end
+  end
+
+  describe "api key changeset" do
+    test "trims whitespace from description on create" do
+      organization = organization_fixture()
+
+      {:ok, {api_key, _token}} =
+        Organizations.create_api_key(organization.id, %{description: "  My Key  "})
+
+      assert api_key.description == "My Key"
+    end
+
+    test "trims whitespace from description on update" do
+      organization = organization_fixture()
+      {api_key, _token} = api_key_fixture(organization)
+
+      {:ok, updated} =
+        Organizations.update_api_key(api_key, %{description: "  Updated Key  "})
+
+      assert updated.description == "Updated Key"
+    end
+
+    test "trims description before length validation" do
+      long_string = String.duplicate("a", 255)
+      padded = "  " <> long_string <> "  "
+
+      changeset =
+        ApiKey.changeset(%ApiKey{}, %{description: padded, organization_id: Ecto.UUID.generate()})
+
+      assert changeset.valid?
+      assert get_change(changeset, :description) == long_string
+    end
   end
 
   describe "add_user_to_organization/3" do

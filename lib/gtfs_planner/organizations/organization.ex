@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Organizations.Organization do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t(),
@@ -31,6 +32,7 @@ defmodule GtfsPlanner.Organizations.Organization do
   def changeset(organization, attrs) do
     organization
     |> cast(attrs, [:alias, :name])
+    |> trim_string_fields()
     |> normalize_alias()
     |> validate_required([:alias, :name])
     |> validate_length(:alias, max: 255)
