@@ -794,6 +794,40 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert Import.zip_entry_sizes_within_limits?([max_total_bytes], limits)
     end
 
+    test "default per-entry cap accepts a single 500MB entry" do
+      with_entry_limit_unset(fn ->
+        limits = Import.zip_limits()
+        assert Import.zip_entry_sizes_within_limits?([500 * 1024 * 1024], limits)
+      end)
+    end
+
+    test "default per-entry cap rejects 500MB + 1 byte for a single entry" do
+      with_entry_limit_unset(fn ->
+        limits = Import.zip_limits()
+        refute Import.zip_entry_sizes_within_limits?([500 * 1024 * 1024 + 1], limits)
+      end)
+    end
+
+    test "default per-entry cap accepts a typical large GTFS stop_times.txt" do
+      with_entry_limit_unset(fn ->
+        entry_sizes = [143_966_327, 1, 1, 1, 1]
+        assert Import.zip_entry_sizes_within_limits?(entry_sizes, Import.zip_limits())
+      end)
+    end
+
+    test "explicit per-entry config below the default is honored" do
+      with_entry_limit_unset(fn ->
+        Application.put_env(
+          :gtfs_planner,
+          :import_max_zip_entry_uncompressed_bytes,
+          100 * 1024 * 1024
+        )
+
+        limits = Import.zip_limits()
+        refute Import.zip_entry_sizes_within_limits?([200 * 1024 * 1024], limits)
+      end)
+    end
+
     test "zip size check rejects 500MB + 1 byte" do
       max_total_bytes = 500 * 1024 * 1024
 
@@ -814,6 +848,25 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       }
 
       refute Import.zip_entry_sizes_within_limits?([100 * 1024 * 1024 + 1], limits)
+    end
+  end
+
+  defp with_entry_limit_unset(fun) do
+    original_entry_limit =
+      Application.get_env(:gtfs_planner, :import_max_zip_entry_uncompressed_bytes)
+
+    Application.delete_env(:gtfs_planner, :import_max_zip_entry_uncompressed_bytes)
+
+    try do
+      fun.()
+    after
+      case original_entry_limit do
+        nil ->
+          Application.delete_env(:gtfs_planner, :import_max_zip_entry_uncompressed_bytes)
+
+        value ->
+          Application.put_env(:gtfs_planner, :import_max_zip_entry_uncompressed_bytes, value)
+      end
     end
   end
 
