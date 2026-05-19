@@ -502,6 +502,7 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   @max_zip_entries 10_000
   @default_max_zip_uncompressed_bytes 500 * 1024 * 1024
+  @legacy_default_max_zip_entry_uncompressed_bytes 100 * 1024 * 1024
   @default_max_zip_entry_uncompressed_bytes 500 * 1024 * 1024
 
   @doc false
@@ -517,6 +518,7 @@ defmodule GtfsPlanner.Gtfs.Import do
         :import_max_zip_entry_uncompressed_bytes,
         min(max_total_bytes, @default_max_zip_entry_uncompressed_bytes)
       )
+      |> normalize_zip_entry_limit(max_total_bytes)
 
     %{
       max_entries: @max_zip_entries,
@@ -755,6 +757,20 @@ defmodule GtfsPlanner.Gtfs.Import do
 
       _ ->
         default
+    end
+  end
+
+  defp normalize_zip_entry_limit(configured_bytes, max_total_bytes) do
+    env_override? =
+      case System.get_env("IMPORT_MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES") do
+        value when is_binary(value) -> String.trim(value) != ""
+        _ -> false
+      end
+
+    if env_override? or configured_bytes != @legacy_default_max_zip_entry_uncompressed_bytes do
+      configured_bytes
+    else
+      min(max_total_bytes, @default_max_zip_entry_uncompressed_bytes)
     end
   end
 

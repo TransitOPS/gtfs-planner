@@ -794,6 +794,48 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert Import.zip_entry_sizes_within_limits?([max_total_bytes], limits)
     end
 
+    test "configured default zip limits accept large GTFS table entries" do
+      # Some valid regional GTFS feeds have a single large table, commonly stop_times.txt,
+      # while remaining well below the total archive expansion cap.
+      entry_sizes = [143_966_327, 1, 1, 1, 1]
+
+      assert Import.zip_entry_sizes_within_limits?(entry_sizes, Import.zip_limits())
+    end
+
+    test "configured default zip limits ignore stale legacy runtime entry cap" do
+      original_entry_limit =
+        Application.get_env(:gtfs_planner, :import_max_zip_entry_uncompressed_bytes)
+
+      original_env = System.get_env("IMPORT_MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES")
+
+      on_exit(fn ->
+        case original_entry_limit do
+          nil ->
+            Application.delete_env(:gtfs_planner, :import_max_zip_entry_uncompressed_bytes)
+
+          value ->
+            Application.put_env(:gtfs_planner, :import_max_zip_entry_uncompressed_bytes, value)
+        end
+
+        case original_env do
+          nil -> System.delete_env("IMPORT_MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES")
+          value -> System.put_env("IMPORT_MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES", value)
+        end
+      end)
+
+      System.delete_env("IMPORT_MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES")
+
+      Application.put_env(
+        :gtfs_planner,
+        :import_max_zip_entry_uncompressed_bytes,
+        100 * 1024 * 1024
+      )
+
+      entry_sizes = [143_966_327, 1, 1, 1, 1]
+
+      assert Import.zip_entry_sizes_within_limits?(entry_sizes, Import.zip_limits())
+    end
+
     test "zip size check rejects 500MB + 1 byte" do
       max_total_bytes = 500 * 1024 * 1024
 
