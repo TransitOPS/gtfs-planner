@@ -12400,10 +12400,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           level_id: above_level.id
         })
 
-      {:ok, below_stop_level} =
+      below_stop_level =
         Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, below_level.id)
 
-      {:ok, above_stop_level} =
+      above_stop_level =
         Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, above_level.id)
 
       {:ok, _} = Gtfs.update_stop_level_diagram(below_stop_level, "cache-refresh-below-map.png")
