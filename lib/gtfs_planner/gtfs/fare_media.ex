@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.FareMedia do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -39,6 +40,7 @@ defmodule GtfsPlanner.Gtfs.FareMedia do
       :organization_id,
       :gtfs_version_id
     ])
+    |> trim_string_fields()
     |> validate_required([:fare_media_id, :fare_media_type, :organization_id, :gtfs_version_id])
     |> validate_inclusion(:fare_media_type, 0..4)
     |> unique_constraint([:organization_id, :gtfs_version_id, :fare_media_id])

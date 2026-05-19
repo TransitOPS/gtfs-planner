@@ -3719,4 +3719,154 @@ defmodule GtfsPlanner.GtfsTest do
       refute_receive {[:stop_levels, :updated], _}, 100
     end
   end
+
+  describe "string field trimming on persist" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "create_stop trims stop_id whitespace", %{organization: org, gtfs_version: version} do
+      attrs =
+        valid_stop_attrs(%{stop_id: "  stop-1  "})
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
+
+      assert {:ok, stop} = Gtfs.create_stop(attrs)
+      assert stop.stop_id == "stop-1"
+    end
+
+    test "update_stop trims stop_name, parent_station, and level_id whitespace", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{stop_id: "STATION_TRIM", location_type: 1})
+
+      level = level_fixture(org.id, version.id, %{level_id: "L_TRIM", level_index: 0.0})
+
+      child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_TRIM",
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      assert {:ok, updated} =
+               Gtfs.update_stop(child, %{
+                 stop_name: "  Wrapped Name  ",
+                 parent_station: "  #{station.stop_id}  ",
+                 level_id: "  #{level.level_id}  "
+               })
+
+      assert updated.stop_name == "Wrapped Name"
+      assert updated.parent_station == station.stop_id
+      assert updated.level_id == level.level_id
+    end
+
+    test "create_pathway trims pathway_id, from_stop_id, to_stop_id, and signposted fields", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      parent =
+        stop_fixture(org.id, version.id, %{stop_id: "PARENT_PATH_TRIM", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{level_id: "L_PATH_TRIM", level_index: 0.0})
+
+      from =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "FROM_TRIM",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
+
+      to =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "TO_TRIM",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
+
+      attrs = %{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        pathway_id: "  P_TRIM  ",
+        pathway_mode: 1,
+        is_bidirectional: true,
+        traversal_time: 60,
+        from_stop_id: "  #{from.stop_id}  ",
+        to_stop_id: "  #{to.stop_id}  ",
+        signposted_as: "  To Platform  ",
+        reversed_signposted_as: "  From Platform  "
+      }
+
+      assert {:ok, pathway} = Gtfs.create_pathway(attrs)
+      assert pathway.pathway_id == "P_TRIM"
+      assert pathway.from_stop_id == from.stop_id
+      assert pathway.to_stop_id == to.stop_id
+      assert pathway.signposted_as == "To Platform"
+      assert pathway.reversed_signposted_as == "From Platform"
+    end
+
+    test "create_route trims route_id, route_short_name, route_long_name, and agency_id", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      attrs =
+        valid_route_attrs(%{
+          route_id: "  R_TRIM  ",
+          route_short_name: "  RT  ",
+          route_long_name: "  Trimmed Route  ",
+          agency_id: "  AGENCY_TRIM  "
+        })
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
+
+      assert {:ok, route} = Gtfs.create_route(attrs)
+      assert route.route_id == "R_TRIM"
+      assert route.route_short_name == "RT"
+      assert route.route_long_name == "Trimmed Route"
+      assert route.agency_id == "AGENCY_TRIM"
+    end
+
+    test "per-version unique conflict applies to trimmed stop_id", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      base_attrs =
+        valid_stop_attrs(%{stop_id: "stop-1"})
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
+
+      assert {:ok, _first} = Gtfs.create_stop(base_attrs)
+
+      whitespace_attrs =
+        valid_stop_attrs(%{stop_id: "  stop-1  "})
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
+
+      assert {:error, changeset} = Gtfs.create_stop(whitespace_attrs)
+      assert "has already been taken" in errors_on(changeset).organization_id
+    end
+
+    test "Stop.import_changeset trims the same fields as changeset" do
+      attrs = %{
+        stop_id: "  IMPORT_TRIM  ",
+        stop_name: "  Imported Stop  ",
+        parent_station: "  PARENT_IMPORT  ",
+        level_id: "  L_IMPORT  ",
+        organization_id: Ecto.UUID.generate(),
+        gtfs_version_id: Ecto.UUID.generate()
+      }
+
+      changeset = GtfsPlanner.Gtfs.Stop.import_changeset(%GtfsPlanner.Gtfs.Stop{}, attrs)
+
+      assert Ecto.Changeset.get_change(changeset, :stop_id) == "IMPORT_TRIM"
+      assert Ecto.Changeset.get_change(changeset, :stop_name) == "Imported Stop"
+      assert Ecto.Changeset.get_change(changeset, :parent_station) == "PARENT_IMPORT"
+      assert Ecto.Changeset.get_change(changeset, :level_id) == "L_IMPORT"
+    end
+  end
 end

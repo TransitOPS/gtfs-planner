@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Stop do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -88,6 +89,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
       :parent_station,
       :level_id
     ])
+    |> trim_string_fields()
     |> validate_required([:stop_id, :organization_id, :gtfs_version_id])
     |> validate_inclusion(:location_type, 0..4)
     |> validate_inclusion(:wheelchair_boarding, 0..2)

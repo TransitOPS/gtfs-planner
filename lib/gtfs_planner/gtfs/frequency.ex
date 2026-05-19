@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Frequency do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -45,6 +46,7 @@ defmodule GtfsPlanner.Gtfs.Frequency do
       :organization_id,
       :gtfs_version_id
     ])
+    |> trim_string_fields()
     |> validate_required([
       :trip_id,
       :start_time,

@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.RouteNetwork do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -36,6 +37,7 @@ defmodule GtfsPlanner.Gtfs.RouteNetwork do
       :organization_id,
       :gtfs_version_id
     ])
+    |> trim_string_fields()
     |> validate_required([:network_id, :route_id, :organization_id, :gtfs_version_id])
     |> unique_constraint([:organization_id, :gtfs_version_id, :network_id, :route_id])
     |> foreign_key_constraint(:organization_id)
