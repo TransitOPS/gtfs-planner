@@ -2,6 +2,7 @@ defmodule GtfsPlanner.ValidationsTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.ValidationRun
   alias GtfsPlanner.Validations.WalkabilityTest
 
   import GtfsPlanner.OrganizationsFixtures
@@ -140,6 +141,20 @@ defmodule GtfsPlanner.ValidationsTest do
                Validations.create_validation_run(org.id, version.id, "unsupported_type")
 
       assert "is invalid" in errors_on(changeset).run_type
+    end
+
+    test "ValidationRun.changeset/2 trims whitespace from string fields" do
+      changeset =
+        ValidationRun.changeset(%ValidationRun{started_at: DateTime.utc_now()}, %{
+          run_type: "  mobility_data  ",
+          status: "\tstarted\n",
+          error_details: "  boom  "
+        })
+
+      assert changeset.valid?
+      assert Ecto.Changeset.get_change(changeset, :run_type) == "mobility_data"
+      assert Ecto.Changeset.get_change(changeset, :status) == "started"
+      assert Ecto.Changeset.get_change(changeset, :error_details) == "boom"
     end
 
     test "mark_pathways_running/1 updates pathways run to running", %{
@@ -1314,6 +1329,26 @@ defmodule GtfsPlanner.ValidationsTest do
       assert updated.id == walkability_test.id
       assert updated.description == "Updated description"
       assert updated.expected_traversable == true
+    end
+
+    test "create_walkability_test/3 trims whitespace from string fields", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      attrs = %{
+        stop_id: "  stop-trim  ",
+        address: "\t123 Trim St\n",
+        description: "  needs trimming  ",
+        address_lat: Decimal.new("42.3601"),
+        address_lon: Decimal.new("-71.0589")
+      }
+
+      assert {:ok, %WalkabilityTest{} = walkability_test} =
+               Validations.create_walkability_test(org.id, version.id, attrs)
+
+      assert walkability_test.stop_id == "stop-trim"
+      assert walkability_test.address == "123 Trim St"
+      assert walkability_test.description == "needs trimming"
     end
 
     test "delete_walkability_test/1 removes the record", %{

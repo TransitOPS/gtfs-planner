@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Validations.ValidationRun do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -68,6 +69,7 @@ defmodule GtfsPlanner.Validations.ValidationRun do
       :started_at,
       :completed_at
     ])
+    |> trim_string_fields()
     |> validate_required([:run_type, :status, :started_at])
     |> validate_inclusion(:run_type, @run_types)
     |> validate_inclusion(:status, @statuses)
