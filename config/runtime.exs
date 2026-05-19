@@ -125,12 +125,13 @@ config :gtfs_planner,
           _ -> 500 * 1024 * 1024
         end)
 
-config :gtfs_planner,
-       :import_max_zip_entry_uncompressed_bytes,
-       (case Integer.parse(System.get_env("IMPORT_MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES") || "") do
-          {value, ""} when value > 0 -> value
-          _ -> 500 * 1024 * 1024
-        end)
+case Integer.parse(System.get_env("IMPORT_MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES") || "") do
+  {value, ""} when value > 0 ->
+    config :gtfs_planner, :import_max_zip_entry_uncompressed_bytes, value
+
+  _ ->
+    :ok
+end
 
 config :gtfs_planner,
        :geoapify_api_key,
