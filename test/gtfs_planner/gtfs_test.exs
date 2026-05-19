@@ -3868,5 +3868,117 @@ defmodule GtfsPlanner.GtfsTest do
       assert Ecto.Changeset.get_change(changeset, :parent_station) == "PARENT_IMPORT"
       assert Ecto.Changeset.get_change(changeset, :level_id) == "L_IMPORT"
     end
+
+    test "context API trims every :string field for stops, pathways, and routes end to end",
+         %{organization: org, gtfs_version: version} do
+      # Set up a parent station + level so the child stop can carry
+      # whitespace-wrapped :parent_station and :level_id values.
+      parent =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "ROUNDTRIP_PARENT",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "ROUNDTRIP_LEVEL",
+          level_index: 0.0
+        })
+
+      # --- Stop: every :string field in the cast list ---
+      stop_attrs = %{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        stop_id: "  ROUNDTRIP_STOP  ",
+        stop_name: "  Round Trip Stop  ",
+        stop_desc: "  A stop for round-trip testing  ",
+        platform_code: "  A1  ",
+        parent_station: "  #{parent.stop_id}  ",
+        level_id: "  #{level.level_id}  ",
+        stop_lat: Decimal.new("40.0"),
+        stop_lon: Decimal.new("-74.0"),
+        location_type: 0,
+        wheelchair_boarding: 0
+      }
+
+      assert {:ok, stop} = Gtfs.create_stop(stop_attrs)
+      reloaded_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+
+      assert reloaded_stop.stop_id == "ROUNDTRIP_STOP"
+      assert reloaded_stop.stop_name == "Round Trip Stop"
+      assert reloaded_stop.stop_desc == "A stop for round-trip testing"
+      assert reloaded_stop.platform_code == "A1"
+      assert reloaded_stop.parent_station == parent.stop_id
+      assert reloaded_stop.level_id == level.level_id
+
+      # Two child stops to act as pathway endpoints.
+      from_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "ROUNDTRIP_FROM",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
+
+      to_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "ROUNDTRIP_TO",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
+
+      # --- Pathway: every :string field in the cast list ---
+      pathway_attrs = %{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        pathway_id: "  ROUNDTRIP_PATHWAY  ",
+        pathway_mode: 1,
+        is_bidirectional: true,
+        traversal_time: 60,
+        from_stop_id: "  #{from_stop.stop_id}  ",
+        to_stop_id: "  #{to_stop.stop_id}  ",
+        signposted_as: "  To Platform A  ",
+        reversed_signposted_as: "  From Platform A  ",
+        field_notes: "  Measured 2025-01-15  "
+      }
+
+      assert {:ok, pathway} = Gtfs.create_pathway(pathway_attrs)
+      reloaded_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
+
+      assert reloaded_pathway.pathway_id == "ROUNDTRIP_PATHWAY"
+      assert reloaded_pathway.from_stop_id == from_stop.stop_id
+      assert reloaded_pathway.to_stop_id == to_stop.stop_id
+      assert reloaded_pathway.signposted_as == "To Platform A"
+      assert reloaded_pathway.reversed_signposted_as == "From Platform A"
+      assert reloaded_pathway.field_notes == "Measured 2025-01-15"
+
+      # --- Route: every :string field in the cast list ---
+      route_attrs = %{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        route_id: "  ROUNDTRIP_ROUTE  ",
+        route_type: 3,
+        route_short_name: "  RT  ",
+        route_long_name: "  Round Trip Route  ",
+        agency_id: "  ROUNDTRIP_AGENCY  ",
+        route_desc: "  Test description  ",
+        route_url: "  http://example.com/route  ",
+        route_color: "  0000FF  ",
+        route_text_color: "  FFFFFF  ",
+        network_id: "  ROUNDTRIP_NETWORK  "
+      }
+
+      assert {:ok, route} = Gtfs.create_route(route_attrs)
+      reloaded_route = Repo.get!(GtfsPlanner.Gtfs.Route, route.id)
+
+      assert reloaded_route.route_id == "ROUNDTRIP_ROUTE"
+      assert reloaded_route.route_short_name == "RT"
+      assert reloaded_route.route_long_name == "Round Trip Route"
+      assert reloaded_route.agency_id == "ROUNDTRIP_AGENCY"
+      assert reloaded_route.route_desc == "Test description"
+      assert reloaded_route.route_url == "http://example.com/route"
+      assert reloaded_route.route_color == "0000FF"
+      assert reloaded_route.route_text_color == "FFFFFF"
+      assert reloaded_route.network_id == "ROUNDTRIP_NETWORK"
+    end
   end
 end
