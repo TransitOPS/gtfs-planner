@@ -1,4 +1,8 @@
 defmodule GtfsPlanner.Gtfs.StationEditingStatus do
+  @moduledoc """
+  Persisted signal that a user is actively editing a station.
+  """
+
   use Ecto.Schema
   import Ecto.Changeset
 
