@@ -102,6 +102,92 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.station_editing_status == nil
     end
+
+    test "set_station_editing_status event creates a status owned by the current user", %{
+      conn: conn,
+      viewer: viewer,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, viewer, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
+
+      render_click(view, "set_station_editing_status")
+
+      state = :sys.get_state(view.pid)
+      assigned_status = state.socket.assigns.station_editing_status
+
+      persisted_status =
+        Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id)
+
+      assert assigned_status.user.id == viewer.id
+      assert persisted_status.id == assigned_status.id
+      assert persisted_status.user.id == viewer.id
+    end
+
+    test "clear_station_editing_status event clears the active status", %{
+      conn: conn,
+      viewer: viewer,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      assert {:ok, _status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 viewer
+               )
+
+      conn = log_in_user(conn, viewer, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
+
+      render_click(view, "clear_station_editing_status")
+
+      state = :sys.get_state(view.pid)
+
+      assert state.socket.assigns.station_editing_status == nil
+      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
+    end
+
+    test "set_station_editing_status event leaves the assign unchanged when setting fails", %{
+      conn: conn,
+      viewer: viewer,
+      editor: editor,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      assert {:ok, status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 editor
+               )
+
+      conn = log_in_user(conn, viewer, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
+
+      assert {:ok, _station} = Gtfs.delete_stop(station)
+
+      render_click(view, "set_station_editing_status")
+
+      state = :sys.get_state(view.pid)
+
+      assert state.socket.assigns.station_editing_status.id == status.id
+      assert state.socket.assigns.station_editing_status.user.id == editor.id
+      assert has_element?(view, "#flash-error", "Failed to set station editing status")
+      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
+    end
   end
 
   describe "StopDetailLive - No Level child stop edit link" do

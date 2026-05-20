@@ -73,6 +73,40 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   end
 
   @impl true
+  def handle_event("set_station_editing_status", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.set_station_editing_status(
+           organization_id,
+           gtfs_version_id,
+           socket.assigns.stop,
+           socket.assigns.current_user
+         ) do
+      {:ok, status} ->
+        {:noreply, assign(socket, :station_editing_status, status)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to set station editing status")}
+    end
+  end
+
+  @impl true
+  def handle_event("clear_station_editing_status", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    :ok =
+      Gtfs.clear_station_editing_status(
+        organization_id,
+        gtfs_version_id,
+        socket.assigns.stop.id
+      )
+
+    {:noreply, assign(socket, :station_editing_status, nil)}
+  end
+
+  @impl true
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
     current_organization = socket.assigns.current_organization
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
