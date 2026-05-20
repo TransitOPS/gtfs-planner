@@ -405,6 +405,48 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
     end
 
+    test "clear_station_editing_status event keeps an already-cleared station idle", %{
+      conn: conn,
+      viewer: viewer,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, viewer, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
+
+      render_click(view, "clear_station_editing_status")
+
+      state = :sys.get_state(view.pid)
+
+      assert state.socket.assigns.station_editing_status == nil
+      refute has_element?(view, "#station-editing-status-banner")
+
+      assert has_element?(
+               view,
+               ~s(#station-editing-status-button[phx-click="set_station_editing_status"]),
+               "I'm editing this Station"
+             )
+
+      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
+    end
+
+    test "redirects with flash when station is missing", %{
+      conn: conn,
+      viewer: viewer,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      conn = log_in_user(conn, viewer, organization: organization)
+
+      assert {:error, {:live_redirect, %{to: to_path, flash: %{"error" => "Station not found"}}}} =
+               live(conn, "/gtfs/#{gtfs_version.id}/stops/UNKNOWN_STATUS")
+
+      assert to_path == "/gtfs/#{gtfs_version.id}/stops"
+    end
+
     test "set_station_editing_status event leaves the assign unchanged when setting fails", %{
       conn: conn,
       viewer: viewer,
