@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Gtfs do
   """
 
   import Ecto.Query, warn: false
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AlignmentInference
@@ -34,6 +35,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.Shape
+  alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.StationNaming
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopArea
@@ -1271,6 +1273,141 @@ defmodule GtfsPlanner.Gtfs do
           s.stop_id == ^stop_id
     )
     |> Repo.one()
+  end
+
+  @doc """
+  Gets the active station editing status for an organization, GTFS version, and station.
+  """
+  @spec get_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          StationEditingStatus.t() | nil
+  def get_station_editing_status(organization_id, gtfs_version_id, station_id) do
+    from(s in StationEditingStatus,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.station_id == ^station_id,
+      preload: [:user]
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Subscribes to station editing status updates for an organization, GTFS version, and station.
+  """
+  @spec subscribe_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          :ok | {:error, term()}
+  def subscribe_station_editing_status(organization_id, gtfs_version_id, station_id) do
+    Phoenix.PubSub.subscribe(
+      GtfsPlanner.PubSub,
+      station_editing_status_topic(organization_id, gtfs_version_id, station_id)
+    )
+  end
+
+  @doc """
+  Creates or replaces the active editing status for a station.
+  """
+  @spec set_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Stop.t(), Accounts.User.t()) ::
+          {:ok, StationEditingStatus.t()} | {:error, Ecto.Changeset.t()}
+  def set_station_editing_status(
+        organization_id,
+        gtfs_version_id,
+        %Stop{} = station,
+        %Accounts.User{} = user
+      ) do
+    started_at = DateTime.utc_now()
+
+    attrs = %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id,
+      station_id: station.id,
+      user_id: user.id,
+      started_at: started_at
+    }
+
+    Repo.transaction(fn ->
+      lock_station_editing_status!(organization_id, gtfs_version_id, station.id)
+
+      %StationEditingStatus{}
+      |> StationEditingStatus.changeset(attrs)
+      |> Repo.insert(
+        on_conflict: [set: [user_id: user.id, started_at: started_at]],
+        conflict_target: [:organization_id, :gtfs_version_id, :station_id],
+        returning: true
+      )
+      |> case do
+        {:ok, status} ->
+          status = Repo.preload(status, :user)
+          :ok = broadcast_station_editing_status(status)
+          {:ok, status}
+
+        {:error, changeset} ->
+          {:error, changeset}
+      end
+    end)
+    |> case do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Clears the active station editing status for an organization, GTFS version, and station.
+  """
+  @spec clear_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
+  def clear_station_editing_status(organization_id, gtfs_version_id, station_id) do
+    {:ok, :ok} =
+      Repo.transaction(fn ->
+        lock_station_editing_status!(organization_id, gtfs_version_id, station_id)
+
+        from(s in StationEditingStatus,
+          where:
+            s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+              s.station_id == ^station_id
+        )
+        |> Repo.delete_all()
+
+        :ok =
+          broadcast_station_editing_status(
+            organization_id,
+            gtfs_version_id,
+            station_id,
+            nil
+          )
+      end)
+
+    :ok
+  end
+
+  defp broadcast_station_editing_status(%StationEditingStatus{} = status) do
+    broadcast_station_editing_status(
+      status.organization_id,
+      status.gtfs_version_id,
+      status.station_id,
+      status
+    )
+  end
+
+  defp broadcast_station_editing_status(organization_id, gtfs_version_id, station_id, status) do
+    Phoenix.PubSub.broadcast(
+      GtfsPlanner.PubSub,
+      station_editing_status_topic(organization_id, gtfs_version_id, station_id),
+      {:station_editing_status_updated, status}
+    )
+  end
+
+  defp station_editing_status_topic(organization_id, gtfs_version_id, station_id) do
+    "station_editing_status:#{organization_id}:#{gtfs_version_id}:#{station_id}"
+  end
+
+  defp lock_station_editing_status!(organization_id, gtfs_version_id, station_id) do
+    topic = station_editing_status_topic(organization_id, gtfs_version_id, station_id)
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+      [topic]
+    )
+
+    :ok
   end
 
   @doc """

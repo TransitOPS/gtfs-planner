@@ -38,6 +38,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, stop.id)
         pathways = Gtfs.list_pathways_for_station(organization_id, gtfs_version_id, stop.id)
 
+        if connected?(socket) do
+          :ok =
+            Gtfs.subscribe_station_editing_status(organization_id, gtfs_version_id, stop.id)
+        end
+
+        station_editing_status =
+          Gtfs.get_station_editing_status(organization_id, gtfs_version_id, stop.id)
+
         # Group child stops by level. nil key means "No Level".
         child_stops_by_level =
           Enum.group_by(child_stops, fn s ->
@@ -54,8 +62,48 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
          |> assign(:child_stops, child_stops)
          |> assign(:child_stops_by_level, child_stops_by_level)
          |> assign(:levels, levels)
-         |> assign(:pathways, pathways)}
+         |> assign(:pathways, pathways)
+         |> assign(:station_editing_status, station_editing_status)}
     end
+  end
+
+  @impl true
+  def handle_info({:station_editing_status_updated, status}, socket) do
+    {:noreply, assign(socket, :station_editing_status, status)}
+  end
+
+  @impl true
+  def handle_event("set_station_editing_status", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.set_station_editing_status(
+           organization_id,
+           gtfs_version_id,
+           socket.assigns.stop,
+           socket.assigns.current_user
+         ) do
+      {:ok, status} ->
+        {:noreply, assign(socket, :station_editing_status, status)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to set station editing status")}
+    end
+  end
+
+  @impl true
+  def handle_event("clear_station_editing_status", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    :ok =
+      Gtfs.clear_station_editing_status(
+        organization_id,
+        gtfs_version_id,
+        socket.assigns.stop.id
+      )
+
+    {:noreply, assign(socket, :station_editing_status, nil)}
   end
 
   @impl true
@@ -102,11 +150,62 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       available_versions={assigns[:available_versions] || []}
     >
       <:sub_header>
+        <%= if @station_editing_status do %>
+          <div class="w-full px-4 sm:px-6 lg:px-8 pt-3">
+            <section
+              id="station-editing-status-banner"
+              role="status"
+              class="flex flex-col gap-3 border-l-4 border-info bg-info/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div class="min-w-0">
+                <p class="text-sm font-semibold text-base-content">
+                  <%= if editing_status_owner?(@station_editing_status, @current_user) do %>
+                    You're editing this Station.
+                  <% else %>
+                    {@station_editing_status.user.email} is editing this Station.
+                  <% end %>
+                </p>
+                <p class="mt-1 text-sm text-base-content/70">
+                  <%= if editing_status_owner?(@station_editing_status, @current_user) do %>
+                    Others have been notified. Remember to clear this when you're done.
+                  <% else %>
+                    You can view it, but it's best to wait before making changes.
+                  <% end %>
+                </p>
+                <p class="mt-1 text-xs font-medium text-base-content/60">
+                  Started {relative_started_at(@station_editing_status.started_at)}
+                </p>
+              </div>
+
+              <.button
+                id="station-editing-status-banner-clear-button"
+                phx-click="clear_station_editing_status"
+                variant="secondary"
+                size="sm"
+              >
+                {editing_status_button_label(@station_editing_status, @current_user)}
+              </.button>
+            </section>
+          </div>
+        <% end %>
+
         <.station_sub_nav
           station={@stop}
           gtfs_version_id={@current_gtfs_version.id}
           active_tab={:details}
-        />
+        >
+          <:actions>
+            <.button
+              id="station-editing-status-button"
+              phx-click={editing_status_button_event(@station_editing_status, @current_user)}
+              title={editing_status_tooltip(@station_editing_status, @current_user)}
+              variant="secondary"
+              size="sm"
+            >
+              {editing_status_button_label(@station_editing_status, @current_user)}
+            </.button>
+          </:actions>
+        </.station_sub_nav>
       </:sub_header>
 
       <div class="bg-base-100 border border-base-300 rounded-lg p-6">
@@ -291,6 +390,54 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       end
     rescue
       _ -> false
+    end
+  end
+
+  defp editing_status_owner?(nil, _current_user), do: false
+
+  defp editing_status_owner?(editing_status, current_user) do
+    editing_status.user_id == current_user.id
+  end
+
+  defp editing_status_button_label(nil, _current_user), do: "I'm editing this Station"
+
+  defp editing_status_button_label(editing_status, current_user) do
+    if editing_status_owner?(editing_status, current_user) do
+      "I'm done"
+    else
+      "Clear editing status"
+    end
+  end
+
+  defp editing_status_button_event(nil, _current_user), do: "set_station_editing_status"
+
+  defp editing_status_button_event(_editing_status, _current_user),
+    do: "clear_station_editing_status"
+
+  defp editing_status_tooltip(nil, _current_user),
+    do: "Let others know you're editing this Station."
+
+  defp editing_status_tooltip(editing_status, current_user) do
+    if editing_status_owner?(editing_status, current_user) do
+      "Let others know you're done editing this Station."
+    else
+      "Clear this editing status for everyone."
+    end
+  end
+
+  defp relative_started_at(%DateTime{} = started_at) do
+    minutes =
+      DateTime.utc_now()
+      |> DateTime.diff(started_at, :second)
+      |> max(0)
+      |> div(60)
+
+    cond do
+      minutes == 0 -> "just now"
+      minutes == 1 -> "1 minute ago"
+      minutes < 60 -> "#{minutes} minutes ago"
+      minutes < 120 -> "1 hour ago"
+      true -> "#{div(minutes, 60)} hours ago"
     end
   end
 end
