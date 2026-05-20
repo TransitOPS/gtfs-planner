@@ -1291,6 +1291,18 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Subscribes to station editing status updates for an organization, GTFS version, and station.
+  """
+  @spec subscribe_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          :ok | {:error, term()}
+  def subscribe_station_editing_status(organization_id, gtfs_version_id, station_id) do
+    Phoenix.PubSub.subscribe(
+      GtfsPlanner.PubSub,
+      station_editing_status_topic(organization_id, gtfs_version_id, station_id)
+    )
+  end
+
+  @doc """
   Creates or replaces the active editing status for a station.
   """
   @spec set_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Stop.t(), Accounts.User.t()) ::
@@ -1319,8 +1331,13 @@ defmodule GtfsPlanner.Gtfs do
       returning: true
     )
     |> case do
-      {:ok, status} -> {:ok, Repo.preload(status, :user)}
-      {:error, changeset} -> {:error, changeset}
+      {:ok, status} ->
+        status = Repo.preload(status, :user)
+        :ok = broadcast_station_editing_status(status)
+        {:ok, status}
+
+      {:error, changeset} ->
+        {:error, changeset}
     end
   end
 
@@ -1336,7 +1353,36 @@ defmodule GtfsPlanner.Gtfs do
     )
     |> Repo.delete_all()
 
+    :ok =
+      broadcast_station_editing_status(
+        organization_id,
+        gtfs_version_id,
+        station_id,
+        nil
+      )
+
     :ok
+  end
+
+  defp broadcast_station_editing_status(%StationEditingStatus{} = status) do
+    broadcast_station_editing_status(
+      status.organization_id,
+      status.gtfs_version_id,
+      status.station_id,
+      status
+    )
+  end
+
+  defp broadcast_station_editing_status(organization_id, gtfs_version_id, station_id, status) do
+    Phoenix.PubSub.broadcast(
+      GtfsPlanner.PubSub,
+      station_editing_status_topic(organization_id, gtfs_version_id, station_id),
+      {:station_editing_status_updated, status}
+    )
+  end
+
+  defp station_editing_status_topic(organization_id, gtfs_version_id, station_id) do
+    "station_editing_status:#{organization_id}:#{gtfs_version_id}:#{station_id}"
   end
 
   @doc """

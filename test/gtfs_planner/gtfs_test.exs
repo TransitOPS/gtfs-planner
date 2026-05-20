@@ -1025,6 +1025,37 @@ defmodule GtfsPlanner.GtfsTest do
       assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
     end
 
+    test "subscribers receive station editing status updates after set and clear", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      user: user
+    } do
+      assert :ok =
+               Gtfs.subscribe_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station.id
+               )
+
+      assert {:ok, status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 user
+               )
+
+      assert_receive {:station_editing_status_updated, %StationEditingStatus{} = broadcast_status}
+
+      assert broadcast_status.id == status.id
+      assert broadcast_status.user.id == user.id
+      assert broadcast_status.user.email == user.email
+
+      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+      assert_receive {:station_editing_status_updated, nil}
+    end
+
     test "statuses are isolated by station, GTFS version, and organization", %{
       organization: organization,
       gtfs_version: gtfs_version,
