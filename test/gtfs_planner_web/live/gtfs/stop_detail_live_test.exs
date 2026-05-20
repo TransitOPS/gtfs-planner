@@ -171,7 +171,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
              )
 
       assert has_element?(view, "#station-editing-status-banner", "Started 5 minutes ago")
-      assert has_element?(view, "#station-editing-status-banner-clear-button", "I'm done")
+      refute has_element?(view, "#station-editing-status-banner-clear-button")
     end
 
     test "renders the other-user active station editing status button", %{
@@ -238,38 +238,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
              )
 
       assert has_element?(view, "#station-editing-status-banner", "Started 1 hour ago")
-
-      assert has_element?(
-               view,
-               "#station-editing-status-banner-clear-button",
-               "Clear editing status"
-             )
-    end
-
-    test "clears the active status from the station editing status banner button", %{
-      conn: conn,
-      viewer: viewer,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
-    } do
-      assert {:ok, _status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 viewer
-               )
-
-      conn = log_in_user(conn, viewer, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
-
-      render_click(element(view, "#station-editing-status-banner-clear-button"))
-
-      refute has_element?(view, "#station-editing-status-banner")
-      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
+      refute has_element?(view, "#station-editing-status-banner-clear-button")
     end
 
     test "renders every relative started time bucket in the station editing status banner", %{
