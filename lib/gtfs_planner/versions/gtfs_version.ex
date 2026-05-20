@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Versions.GtfsVersion do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   alias GtfsPlanner.Repo
 
@@ -47,10 +48,7 @@ defmodule GtfsPlanner.Versions.GtfsVersion do
   def changeset(gtfs_version, attrs) do
     gtfs_version
     |> cast(attrs, [:name])
-    |> update_change(:name, fn
-      name when is_binary(name) -> String.trim(name)
-      other -> other
-    end)
+    |> trim_string_fields()
     |> validate_required([:name])
     |> validate_length(:name, min: 1, max: 255)
     |> unsafe_validate_unique([:name, :organization_id], Repo,

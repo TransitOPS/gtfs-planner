@@ -3719,4 +3719,266 @@ defmodule GtfsPlanner.GtfsTest do
       refute_receive {[:stop_levels, :updated], _}, 100
     end
   end
+
+  describe "string field trimming on persist" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "create_stop trims stop_id whitespace", %{organization: org, gtfs_version: version} do
+      attrs =
+        valid_stop_attrs(%{stop_id: "  stop-1  "})
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
+
+      assert {:ok, stop} = Gtfs.create_stop(attrs)
+      assert stop.stop_id == "stop-1"
+    end
+
+    test "update_stop trims stop_name, parent_station, and level_id whitespace", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(org.id, version.id, %{stop_id: "STATION_TRIM", location_type: 1})
+
+      level = level_fixture(org.id, version.id, %{level_id: "L_TRIM", level_index: 0.0})
+
+      child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_TRIM",
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      assert {:ok, updated} =
+               Gtfs.update_stop(child, %{
+                 stop_name: "  Wrapped Name  ",
+                 parent_station: "  #{station.stop_id}  ",
+                 level_id: "  #{level.level_id}  "
+               })
+
+      assert updated.stop_name == "Wrapped Name"
+      assert updated.parent_station == station.stop_id
+      assert updated.level_id == level.level_id
+    end
+
+    test "create_pathway trims pathway_id, from_stop_id, to_stop_id, and signposted fields", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      parent =
+        stop_fixture(org.id, version.id, %{stop_id: "PARENT_PATH_TRIM", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{level_id: "L_PATH_TRIM", level_index: 0.0})
+
+      from =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "FROM_TRIM",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
+
+      to =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "TO_TRIM",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
+
+      attrs = %{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        pathway_id: "  P_TRIM  ",
+        pathway_mode: 1,
+        is_bidirectional: true,
+        traversal_time: 60,
+        from_stop_id: "  #{from.stop_id}  ",
+        to_stop_id: "  #{to.stop_id}  ",
+        signposted_as: "  To Platform  ",
+        reversed_signposted_as: "  From Platform  "
+      }
+
+      assert {:ok, pathway} = Gtfs.create_pathway(attrs)
+      assert pathway.pathway_id == "P_TRIM"
+      assert pathway.from_stop_id == from.stop_id
+      assert pathway.to_stop_id == to.stop_id
+      assert pathway.signposted_as == "To Platform"
+      assert pathway.reversed_signposted_as == "From Platform"
+    end
+
+    test "create_route trims route_id, route_short_name, route_long_name, and agency_id", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      attrs =
+        valid_route_attrs(%{
+          route_id: "  R_TRIM  ",
+          route_short_name: "  RT  ",
+          route_long_name: "  Trimmed Route  ",
+          agency_id: "  AGENCY_TRIM  "
+        })
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
+
+      assert {:ok, route} = Gtfs.create_route(attrs)
+      assert route.route_id == "R_TRIM"
+      assert route.route_short_name == "RT"
+      assert route.route_long_name == "Trimmed Route"
+      assert route.agency_id == "AGENCY_TRIM"
+    end
+
+    test "per-version unique conflict applies to trimmed stop_id", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      base_attrs =
+        valid_stop_attrs(%{stop_id: "stop-1"})
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
+
+      assert {:ok, _first} = Gtfs.create_stop(base_attrs)
+
+      whitespace_attrs =
+        valid_stop_attrs(%{stop_id: "  stop-1  "})
+        |> Map.put(:organization_id, org.id)
+        |> Map.put(:gtfs_version_id, version.id)
+
+      assert {:error, changeset} = Gtfs.create_stop(whitespace_attrs)
+      assert "has already been taken" in errors_on(changeset).organization_id
+    end
+
+    test "Stop.import_changeset trims the same fields as changeset" do
+      attrs = %{
+        stop_id: "  IMPORT_TRIM  ",
+        stop_name: "  Imported Stop  ",
+        parent_station: "  PARENT_IMPORT  ",
+        level_id: "  L_IMPORT  ",
+        organization_id: Ecto.UUID.generate(),
+        gtfs_version_id: Ecto.UUID.generate()
+      }
+
+      changeset = GtfsPlanner.Gtfs.Stop.import_changeset(%GtfsPlanner.Gtfs.Stop{}, attrs)
+
+      assert Ecto.Changeset.get_change(changeset, :stop_id) == "IMPORT_TRIM"
+      assert Ecto.Changeset.get_change(changeset, :stop_name) == "Imported Stop"
+      assert Ecto.Changeset.get_change(changeset, :parent_station) == "PARENT_IMPORT"
+      assert Ecto.Changeset.get_change(changeset, :level_id) == "L_IMPORT"
+    end
+
+    test "context API trims every :string field for stops, pathways, and routes end to end",
+         %{organization: org, gtfs_version: version} do
+      # Set up a parent station + level so the child stop can carry
+      # whitespace-wrapped :parent_station and :level_id values.
+      parent =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "ROUNDTRIP_PARENT",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "ROUNDTRIP_LEVEL",
+          level_index: 0.0
+        })
+
+      # --- Stop: every :string field in the cast list ---
+      stop_attrs = %{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        stop_id: "  ROUNDTRIP_STOP  ",
+        stop_name: "  Round Trip Stop  ",
+        stop_desc: "  A stop for round-trip testing  ",
+        platform_code: "  A1  ",
+        parent_station: "  #{parent.stop_id}  ",
+        level_id: "  #{level.level_id}  ",
+        stop_lat: Decimal.new("40.0"),
+        stop_lon: Decimal.new("-74.0"),
+        location_type: 0,
+        wheelchair_boarding: 0
+      }
+
+      assert {:ok, stop} = Gtfs.create_stop(stop_attrs)
+      reloaded_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+
+      assert reloaded_stop.stop_id == "ROUNDTRIP_STOP"
+      assert reloaded_stop.stop_name == "Round Trip Stop"
+      assert reloaded_stop.stop_desc == "A stop for round-trip testing"
+      assert reloaded_stop.platform_code == "A1"
+      assert reloaded_stop.parent_station == parent.stop_id
+      assert reloaded_stop.level_id == level.level_id
+
+      # Two child stops to act as pathway endpoints.
+      from_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "ROUNDTRIP_FROM",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
+
+      to_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "ROUNDTRIP_TO",
+          parent_station: parent.stop_id,
+          level_id: level.level_id
+        })
+
+      # --- Pathway: every :string field in the cast list ---
+      pathway_attrs = %{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        pathway_id: "  ROUNDTRIP_PATHWAY  ",
+        pathway_mode: 1,
+        is_bidirectional: true,
+        traversal_time: 60,
+        from_stop_id: "  #{from_stop.stop_id}  ",
+        to_stop_id: "  #{to_stop.stop_id}  ",
+        signposted_as: "  To Platform A  ",
+        reversed_signposted_as: "  From Platform A  ",
+        field_notes: "  Measured 2025-01-15  "
+      }
+
+      assert {:ok, pathway} = Gtfs.create_pathway(pathway_attrs)
+      reloaded_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
+
+      assert reloaded_pathway.pathway_id == "ROUNDTRIP_PATHWAY"
+      assert reloaded_pathway.from_stop_id == from_stop.stop_id
+      assert reloaded_pathway.to_stop_id == to_stop.stop_id
+      assert reloaded_pathway.signposted_as == "To Platform A"
+      assert reloaded_pathway.reversed_signposted_as == "From Platform A"
+      assert reloaded_pathway.field_notes == "Measured 2025-01-15"
+
+      # --- Route: every :string field in the cast list ---
+      route_attrs = %{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        route_id: "  ROUNDTRIP_ROUTE  ",
+        route_type: 3,
+        route_short_name: "  RT  ",
+        route_long_name: "  Round Trip Route  ",
+        agency_id: "  ROUNDTRIP_AGENCY  ",
+        route_desc: "  Test description  ",
+        route_url: "  http://example.com/route  ",
+        route_color: "  0000FF  ",
+        route_text_color: "  FFFFFF  ",
+        network_id: "  ROUNDTRIP_NETWORK  "
+      }
+
+      assert {:ok, route} = Gtfs.create_route(route_attrs)
+      reloaded_route = Repo.get!(GtfsPlanner.Gtfs.Route, route.id)
+
+      assert reloaded_route.route_id == "ROUNDTRIP_ROUTE"
+      assert reloaded_route.route_short_name == "RT"
+      assert reloaded_route.route_long_name == "Round Trip Route"
+      assert reloaded_route.agency_id == "ROUNDTRIP_AGENCY"
+      assert reloaded_route.route_desc == "Test description"
+      assert reloaded_route.route_url == "http://example.com/route"
+      assert reloaded_route.route_color == "0000FF"
+      assert reloaded_route.route_text_color == "FFFFFF"
+      assert reloaded_route.network_id == "ROUNDTRIP_NETWORK"
+    end
+  end
 end

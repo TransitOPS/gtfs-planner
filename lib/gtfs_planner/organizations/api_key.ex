@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Organizations.ApiKey do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @secret_size 32
   @hash_algorithm :sha512
@@ -93,6 +94,7 @@ defmodule GtfsPlanner.Organizations.ApiKey do
   def changeset(api_key \\ %__MODULE__{}, attrs) do
     api_key
     |> cast(attrs, [:description, :roles, :organization_id])
+    |> trim_string_fields()
     |> validate_required([:description])
     |> validate_length(:description, max: 255)
     |> foreign_key_constraint(:organization_id)
@@ -104,6 +106,7 @@ defmodule GtfsPlanner.Organizations.ApiKey do
   def update_changeset(api_key \\ %__MODULE__{}, attrs) do
     api_key
     |> cast(attrs, [:description, :roles])
+    |> trim_string_fields()
     |> validate_required([:description])
     |> validate_length(:description, max: 255)
   end

@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Accounts.User do
   """
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,
@@ -37,6 +38,7 @@ defmodule GtfsPlanner.Accounts.User do
   def registration_changeset(user, attrs, opts \\ []) do
     user
     |> cast(attrs, [:email, :password])
+    |> trim_string_fields(except: [:password, :current_password])
     |> validate_email(opts)
     |> validate_password(opts)
   end
@@ -47,6 +49,7 @@ defmodule GtfsPlanner.Accounts.User do
   def email_changeset(user, attrs) do
     user
     |> cast(attrs, [:email])
+    |> trim_string_fields(except: [:password, :current_password])
     |> validate_email()
     |> case do
       %{changes: %{email: _}} = changeset ->
@@ -91,6 +94,7 @@ defmodule GtfsPlanner.Accounts.User do
   def invite_changeset(user, attrs \\ %{}) do
     user
     |> cast(attrs, [:email])
+    |> trim_string_fields(except: [:password, :current_password])
     |> validate_email()
     |> validate_required([:email])
     |> unique_constraint(:email)
@@ -102,6 +106,7 @@ defmodule GtfsPlanner.Accounts.User do
   def changeset(user, attrs, opts \\ []) do
     user
     |> cast(attrs, [:email])
+    |> trim_string_fields(except: [:password, :current_password])
     |> validate_email(opts)
   end
 

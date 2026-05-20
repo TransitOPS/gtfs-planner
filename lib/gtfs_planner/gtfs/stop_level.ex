@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.StopLevel do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
   alias GtfsPlanner.Gtfs.Coordinates
 
   @type t :: %__MODULE__{
@@ -74,6 +75,7 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
       :organization_id,
       :gtfs_version_id
     ])
+    |> trim_string_fields()
     |> validate_required([:stop_id, :level_id, :organization_id, :gtfs_version_id])
     |> unique_constraint([:organization_id, :gtfs_version_id, :stop_id, :level_id])
   end

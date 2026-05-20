@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.FareLegJoinRule do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -42,6 +43,7 @@ defmodule GtfsPlanner.Gtfs.FareLegJoinRule do
       :organization_id,
       :gtfs_version_id
     ])
+    |> trim_string_fields()
     |> validate_required([:organization_id, :gtfs_version_id])
     |> unique_constraint([
       :organization_id,

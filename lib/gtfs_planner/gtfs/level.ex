@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Level do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t(),
@@ -41,6 +42,7 @@ defmodule GtfsPlanner.Gtfs.Level do
       :organization_id,
       :gtfs_version_id
     ])
+    |> trim_string_fields()
     |> validate_required([:level_id, :level_index, :organization_id, :gtfs_version_id])
     |> unique_constraint([:organization_id, :gtfs_version_id, :level_id],
       name: :levels_organization_id_gtfs_version_id_level_id_index

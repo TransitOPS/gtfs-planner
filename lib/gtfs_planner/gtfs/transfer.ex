@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Transfer do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -54,6 +55,7 @@ defmodule GtfsPlanner.Gtfs.Transfer do
       :organization_id,
       :gtfs_version_id
     ])
+    |> trim_string_fields()
     |> validate_required([
       :from_stop_id,
       :to_stop_id,

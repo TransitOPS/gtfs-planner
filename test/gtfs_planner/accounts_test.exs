@@ -849,4 +849,57 @@ defmodule GtfsPlanner.AccountsTest do
       assert changeset.valid?
     end
   end
+
+  describe "email and password trimming" do
+    test "register_user/1 trims surrounding whitespace from email" do
+      unique = System.unique_integer([:positive])
+      raw = "  foo-#{unique}@example.com  "
+
+      {:ok, user} = Accounts.register_user(%{email: raw, password: valid_user_password()})
+
+      assert user.email == String.trim(raw)
+    end
+
+    test "change_user_email/2 trims and lowercases email" do
+      user = user_fixture()
+
+      changeset =
+        Accounts.change_user_email(user, %{email: "  NewMail@Example.COM  "})
+
+      assert get_change(changeset, :email) == "newmail@example.com"
+      assert changeset.valid?
+    end
+
+    test "invite_user/2 trims and lowercases email" do
+      org_id = Ecto.UUID.generate()
+      raw = "  Invitee-#{System.unique_integer([:positive])}@Example.com  "
+
+      {:ok, user} = Accounts.invite_user(raw, org_id)
+
+      assert user.email == raw |> String.trim() |> String.downcase()
+    end
+
+    test "register_user/1 preserves whitespace in password" do
+      email = unique_user_email()
+      padded_password = "  hunter2 padded password  "
+
+      {:ok, user} = Accounts.register_user(%{email: email, password: padded_password})
+
+      assert Accounts.get_user_by_email_and_password(user.email, padded_password)
+      refute Accounts.get_user_by_email_and_password(user.email, String.trim(padded_password))
+    end
+
+    test "change_user_password/2 preserves whitespace in password" do
+      user = user_fixture()
+      padded_password = "  hunter2 padded password  "
+
+      changeset =
+        Accounts.change_user_password(user, %{
+          password: padded_password,
+          password_confirmation: padded_password
+        })
+
+      assert get_change(changeset, :password) == padded_password
+    end
+  end
 end

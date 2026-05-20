@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Validations.WalkabilityTest do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -58,6 +59,7 @@ defmodule GtfsPlanner.Validations.WalkabilityTest do
       :expected_min_distance_meters,
       :expected_max_distance_meters
     ])
+    |> trim_string_fields()
     |> validate_required([:stop_id, :address, :address_lat, :address_lon, :gtfs_version_id])
     |> validate_number(:expected_min_duration_seconds, greater_than_or_equal_to: 0)
     |> validate_number(:expected_max_duration_seconds, greater_than_or_equal_to: 0)

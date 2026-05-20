@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Route do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -72,6 +73,7 @@ defmodule GtfsPlanner.Gtfs.Route do
       :organization_id,
       :gtfs_version_id
     ])
+    |> trim_string_fields()
     |> validate_required([:route_id, :route_type, :organization_id, :gtfs_version_id])
     |> validate_route_name()
     |> validate_inclusion(:route_type, [0, 1, 2, 3, 4, 5, 6, 7, 11, 12])

@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Pathway do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @pathway_modes %{
     walkway: 1,
@@ -100,6 +101,7 @@ defmodule GtfsPlanner.Gtfs.Pathway do
       :from_stop_id,
       :to_stop_id
     ])
+    |> trim_string_fields()
     |> validate_required([
       :pathway_id,
       :pathway_mode,

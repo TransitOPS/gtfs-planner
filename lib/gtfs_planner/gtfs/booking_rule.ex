@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.BookingRule do
   use Ecto.Schema
   import Ecto.Changeset
+  import GtfsPlanner.ChangesetHelpers
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -75,6 +76,7 @@ defmodule GtfsPlanner.Gtfs.BookingRule do
       :organization_id,
       :gtfs_version_id
     ])
+    |> trim_string_fields()
     |> validate_required([:booking_rule_id, :booking_type, :organization_id, :gtfs_version_id])
     |> unique_constraint([:organization_id, :gtfs_version_id, :booking_rule_id])
     |> foreign_key_constraint(:organization_id)

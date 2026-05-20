@@ -126,8 +126,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
       {:ok, updated} ->
         send(self(), {:gtfs_version_renamed, updated})
 
-        {:noreply,
-         assign(socket, editing?: false, form: nil, current_version: updated)}
+        {:noreply, assign(socket, editing?: false, form: nil, current_version: updated)}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset))}
