@@ -150,6 +150,45 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       available_versions={assigns[:available_versions] || []}
     >
       <:sub_header>
+        <%= if @station_editing_status do %>
+          <div class="w-full px-4 sm:px-6 lg:px-8 pt-3">
+            <section
+              id="station-editing-status-banner"
+              role="status"
+              class="flex flex-col gap-3 border-l-4 border-info bg-info/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div class="min-w-0">
+                <p class="text-sm font-semibold text-base-content">
+                  <%= if editing_status_owner?(@station_editing_status, @current_user) do %>
+                    You're editing this Station.
+                  <% else %>
+                    {@station_editing_status.user.email} is editing this Station.
+                  <% end %>
+                </p>
+                <p class="mt-1 text-sm text-base-content/70">
+                  <%= if editing_status_owner?(@station_editing_status, @current_user) do %>
+                    Others have been notified. Remember to clear this when you're done.
+                  <% else %>
+                    You can view it, but it's best to wait before making changes.
+                  <% end %>
+                </p>
+                <p class="mt-1 text-xs font-medium text-base-content/60">
+                  Started {relative_started_at(@station_editing_status.started_at)}
+                </p>
+              </div>
+
+              <.button
+                id="station-editing-status-banner-clear-button"
+                phx-click="clear_station_editing_status"
+                variant="secondary"
+                size="sm"
+              >
+                {editing_status_button_label(@station_editing_status, @current_user)}
+              </.button>
+            </section>
+          </div>
+        <% end %>
+
         <.station_sub_nav
           station={@stop}
           gtfs_version_id={@current_gtfs_version.id}
@@ -383,6 +422,22 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       "Let others know you're done editing this Station."
     else
       "Clear this editing status for everyone."
+    end
+  end
+
+  defp relative_started_at(%DateTime{} = started_at) do
+    minutes =
+      DateTime.utc_now()
+      |> DateTime.diff(started_at, :second)
+      |> max(0)
+      |> div(60)
+
+    cond do
+      minutes == 0 -> "just now"
+      minutes == 1 -> "1 minute ago"
+      minutes < 60 -> "#{minutes} minutes ago"
+      minutes < 120 -> "1 hour ago"
+      true -> "#{div(minutes, 60)} hours ago"
     end
   end
 end
