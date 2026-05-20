@@ -220,7 +220,9 @@ defmodule GtfsPlanner.VersionsTest do
   describe "changeset/2" do
     test "is invalid when name is an empty string" do
       organization = organization_fixture()
-      changeset = GtfsVersion.changeset(%GtfsVersion{organization_id: organization.id}, %{name: ""})
+
+      changeset =
+        GtfsVersion.changeset(%GtfsVersion{organization_id: organization.id}, %{name: ""})
 
       refute changeset.valid?
       assert %{name: ["can't be blank"]} = errors_on(changeset)
@@ -263,7 +265,9 @@ defmodule GtfsPlanner.VersionsTest do
       {:ok, existing} = Versions.create_gtfs_version(organization.id, %{name: "Duplicate Name"})
 
       changeset =
-        GtfsVersion.changeset(%GtfsVersion{organization_id: organization.id}, %{name: existing.name})
+        GtfsVersion.changeset(%GtfsVersion{organization_id: organization.id}, %{
+          name: existing.name
+        })
 
       refute changeset.valid?
       assert %{name: [message]} = errors_on(changeset)

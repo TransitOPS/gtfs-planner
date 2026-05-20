@@ -12650,14 +12650,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
       assigns = :sys.get_state(view.pid).socket.assigns
-      assert Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == with_diagram_level.id))
+
+      assert Enum.any?(
+               assigns.selectable_reference_stop_levels,
+               &(&1.level_id == with_diagram_level.id)
+             )
 
       refute Enum.any?(
                assigns.selectable_reference_stop_levels,
                &(&1.level_id == without_diagram_level.id)
              )
 
-      assert has_element?(view, "#reference-overlay-level-form option[value='#{with_diagram_level.id}']")
+      assert has_element?(
+               view,
+               "#reference-overlay-level-form option[value='#{with_diagram_level.id}']"
+             )
 
       refute has_element?(
                view,
