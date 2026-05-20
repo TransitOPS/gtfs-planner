@@ -155,7 +155,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
             <section
               id="station-editing-status-banner"
               role="status"
-              class="flex flex-col gap-3 border-l-4 border-info bg-info/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+              class="border-l-4 border-info bg-info/10 px-4 py-3"
             >
               <div class="min-w-0">
                 <p class="text-sm font-semibold text-base-content">
@@ -176,15 +176,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                   Started {relative_started_at(@station_editing_status.started_at)}
                 </p>
               </div>
-
-              <.button
-                id="station-editing-status-banner-clear-button"
-                phx-click="clear_station_editing_status"
-                variant="secondary"
-                size="sm"
-              >
-                {editing_status_button_label(@station_editing_status, @current_user)}
-              </.button>
             </section>
           </div>
         <% end %>
