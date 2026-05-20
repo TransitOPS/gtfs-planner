@@ -68,6 +68,90 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       assert state.socket.assigns.station_editing_status.user.email == editor.email
     end
 
+    test "renders the idle station editing status button", %{
+      conn: conn,
+      viewer: viewer,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, viewer, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
+
+      assert has_element?(
+               view,
+               ~s(#station-editing-status-button[phx-click="set_station_editing_status"][title="Let others know you're editing this Station."]),
+               "I'm editing this Station"
+             )
+
+      render_click(element(view, "#station-editing-status-button"))
+
+      status = Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id)
+
+      assert status.user.id == viewer.id
+    end
+
+    test "renders the owner active station editing status button", %{
+      conn: conn,
+      viewer: viewer,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      assert {:ok, _status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 viewer
+               )
+
+      conn = log_in_user(conn, viewer, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
+
+      assert has_element?(
+               view,
+               ~s(#station-editing-status-button[phx-click="clear_station_editing_status"][title="Let others know you're done editing this Station."]),
+               "I'm done"
+             )
+
+      render_click(element(view, "#station-editing-status-button"))
+
+      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
+    end
+
+    test "renders the other-user active station editing status button", %{
+      conn: conn,
+      viewer: viewer,
+      editor: editor,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      assert {:ok, _status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 editor
+               )
+
+      conn = log_in_user(conn, viewer, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
+
+      assert has_element?(
+               view,
+               ~s(#station-editing-status-button[phx-click="clear_station_editing_status"][title="Clear this editing status for everyone."]),
+               "Clear editing status"
+             )
+    end
+
     test "updates the station editing status assign from PubSub broadcasts", %{
       conn: conn,
       viewer: viewer,

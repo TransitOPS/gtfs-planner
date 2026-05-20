@@ -154,7 +154,19 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           station={@stop}
           gtfs_version_id={@current_gtfs_version.id}
           active_tab={:details}
-        />
+        >
+          <:actions>
+            <.button
+              id="station-editing-status-button"
+              phx-click={editing_status_button_event(@station_editing_status, @current_user)}
+              title={editing_status_tooltip(@station_editing_status, @current_user)}
+              variant="secondary"
+              size="sm"
+            >
+              {editing_status_button_label(@station_editing_status, @current_user)}
+            </.button>
+          </:actions>
+        </.station_sub_nav>
       </:sub_header>
 
       <div class="bg-base-100 border border-base-300 rounded-lg p-6">
@@ -339,6 +351,38 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       end
     rescue
       _ -> false
+    end
+  end
+
+  defp editing_status_owner?(nil, _current_user), do: false
+
+  defp editing_status_owner?(editing_status, current_user) do
+    editing_status.user_id == current_user.id
+  end
+
+  defp editing_status_button_label(nil, _current_user), do: "I'm editing this Station"
+
+  defp editing_status_button_label(editing_status, current_user) do
+    if editing_status_owner?(editing_status, current_user) do
+      "I'm done"
+    else
+      "Clear editing status"
+    end
+  end
+
+  defp editing_status_button_event(nil, _current_user), do: "set_station_editing_status"
+
+  defp editing_status_button_event(_editing_status, _current_user),
+    do: "clear_station_editing_status"
+
+  defp editing_status_tooltip(nil, _current_user),
+    do: "Let others know you're editing this Station."
+
+  defp editing_status_tooltip(editing_status, current_user) do
+    if editing_status_owner?(editing_status, current_user) do
+      "Let others know you're done editing this Station."
+    else
+      "Clear this editing status for everyone."
     end
   end
 end
