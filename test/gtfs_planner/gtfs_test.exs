@@ -1025,6 +1025,28 @@ defmodule GtfsPlanner.GtfsTest do
       assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
     end
 
+    test "setting and clearing a status does not update the station timestamp", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      user: user
+    } do
+      station = Gtfs.get_stop!(station.id)
+      updated_at = station.updated_at
+
+      assert {:ok, _status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 user
+               )
+
+      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+
+      assert Gtfs.get_stop!(station.id).updated_at == updated_at
+    end
+
     test "subscribers receive station editing status updates after set and clear", %{
       organization: organization,
       gtfs_version: gtfs_version,
