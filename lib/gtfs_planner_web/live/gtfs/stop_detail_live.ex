@@ -38,13 +38,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, stop.id)
         pathways = Gtfs.list_pathways_for_station(organization_id, gtfs_version_id, stop.id)
 
-        station_editing_status =
-          Gtfs.get_station_editing_status(organization_id, gtfs_version_id, stop.id)
-
         if connected?(socket) do
           :ok =
             Gtfs.subscribe_station_editing_status(organization_id, gtfs_version_id, stop.id)
         end
+
+        station_editing_status =
+          Gtfs.get_station_editing_status(organization_id, gtfs_version_id, stop.id)
 
         # Group child stops by level. nil key means "No Level".
         child_stops_by_level =

@@ -1323,21 +1323,29 @@ defmodule GtfsPlanner.Gtfs do
       started_at: started_at
     }
 
-    %StationEditingStatus{}
-    |> StationEditingStatus.changeset(attrs)
-    |> Repo.insert(
-      on_conflict: [set: [user_id: user.id, started_at: started_at]],
-      conflict_target: [:organization_id, :gtfs_version_id, :station_id],
-      returning: true
-    )
-    |> case do
-      {:ok, status} ->
-        status = Repo.preload(status, :user)
-        :ok = broadcast_station_editing_status(status)
-        {:ok, status}
+    Repo.transaction(fn ->
+      lock_station_editing_status!(organization_id, gtfs_version_id, station.id)
 
-      {:error, changeset} ->
-        {:error, changeset}
+      %StationEditingStatus{}
+      |> StationEditingStatus.changeset(attrs)
+      |> Repo.insert(
+        on_conflict: [set: [user_id: user.id, started_at: started_at]],
+        conflict_target: [:organization_id, :gtfs_version_id, :station_id],
+        returning: true
+      )
+      |> case do
+        {:ok, status} ->
+          status = Repo.preload(status, :user)
+          :ok = broadcast_station_editing_status(status)
+          {:ok, status}
+
+        {:error, changeset} ->
+          {:error, changeset}
+      end
+    end)
+    |> case do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -1346,20 +1354,25 @@ defmodule GtfsPlanner.Gtfs do
   """
   @spec clear_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
   def clear_station_editing_status(organization_id, gtfs_version_id, station_id) do
-    from(s in StationEditingStatus,
-      where:
-        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
-          s.station_id == ^station_id
-    )
-    |> Repo.delete_all()
+    {:ok, :ok} =
+      Repo.transaction(fn ->
+        lock_station_editing_status!(organization_id, gtfs_version_id, station_id)
 
-    :ok =
-      broadcast_station_editing_status(
-        organization_id,
-        gtfs_version_id,
-        station_id,
-        nil
-      )
+        from(s in StationEditingStatus,
+          where:
+            s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+              s.station_id == ^station_id
+        )
+        |> Repo.delete_all()
+
+        :ok =
+          broadcast_station_editing_status(
+            organization_id,
+            gtfs_version_id,
+            station_id,
+            nil
+          )
+      end)
 
     :ok
   end
@@ -1383,6 +1396,18 @@ defmodule GtfsPlanner.Gtfs do
 
   defp station_editing_status_topic(organization_id, gtfs_version_id, station_id) do
     "station_editing_status:#{organization_id}:#{gtfs_version_id}:#{station_id}"
+  end
+
+  defp lock_station_editing_status!(organization_id, gtfs_version_id, station_id) do
+    topic = station_editing_status_topic(organization_id, gtfs_version_id, station_id)
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+      [topic]
+    )
+
+    :ok
   end
 
   @doc """
