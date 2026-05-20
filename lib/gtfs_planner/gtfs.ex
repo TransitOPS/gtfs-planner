@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Gtfs do
   """
 
   import Ecto.Query, warn: false
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AlignmentInference
@@ -34,6 +35,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.Shape
+  alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.StationNaming
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopArea
@@ -1271,6 +1273,70 @@ defmodule GtfsPlanner.Gtfs do
           s.stop_id == ^stop_id
     )
     |> Repo.one()
+  end
+
+  @doc """
+  Gets the active station editing status for an organization, GTFS version, and station.
+  """
+  @spec get_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          StationEditingStatus.t() | nil
+  def get_station_editing_status(organization_id, gtfs_version_id, station_id) do
+    from(s in StationEditingStatus,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.station_id == ^station_id,
+      preload: [:user]
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Creates or replaces the active editing status for a station.
+  """
+  @spec set_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Stop.t(), Accounts.User.t()) ::
+          {:ok, StationEditingStatus.t()} | {:error, Ecto.Changeset.t()}
+  def set_station_editing_status(
+        organization_id,
+        gtfs_version_id,
+        %Stop{} = station,
+        %Accounts.User{} = user
+      ) do
+    started_at = DateTime.utc_now()
+
+    attrs = %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id,
+      station_id: station.id,
+      user_id: user.id,
+      started_at: started_at
+    }
+
+    %StationEditingStatus{}
+    |> StationEditingStatus.changeset(attrs)
+    |> Repo.insert(
+      on_conflict: [set: [user_id: user.id, started_at: started_at]],
+      conflict_target: [:organization_id, :gtfs_version_id, :station_id],
+      returning: true
+    )
+    |> case do
+      {:ok, status} -> {:ok, Repo.preload(status, :user)}
+      {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  @doc """
+  Clears the active station editing status for an organization, GTFS version, and station.
+  """
+  @spec clear_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
+  def clear_station_editing_status(organization_id, gtfs_version_id, station_id) do
+    from(s in StationEditingStatus,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.station_id == ^station_id
+    )
+    |> Repo.delete_all()
+
+    :ok
   end
 
   @doc """

@@ -3,6 +3,7 @@ defmodule GtfsPlanner.GtfsTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Level
+  alias GtfsPlanner.Gtfs.StationEditingStatus
 
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -910,6 +911,206 @@ defmodule GtfsPlanner.GtfsTest do
 
       assert Gtfs.get_stop(child.id).id == child.id
       assert Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id).id == pathway.id
+    end
+  end
+
+  describe "station editing statuses" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "station",
+          location_type: 1
+        })
+
+      user = user_fixture(%{email: "editor@example.com"})
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        user: user
+      }
+    end
+
+    test "get_station_editing_status/3 returns nil when no status exists", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
+    end
+
+    test "set_station_editing_status/4 returns a status with preloaded user", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      user: user
+    } do
+      assert {:ok, status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 user
+               )
+
+      assert status.organization_id == organization.id
+      assert status.gtfs_version_id == gtfs_version.id
+      assert status.station_id == station.id
+      assert status.user_id == user.id
+      assert status.started_at
+      assert status.user.id == user.id
+      assert status.user.email == user.email
+    end
+
+    test "set_station_editing_status/4 replaces the previous user for the same station scope", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      user: user
+    } do
+      other_user = user_fixture(%{email: "replacement@example.com"})
+
+      assert {:ok, _status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 user
+               )
+
+      assert {:ok, replacement} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 other_user
+               )
+
+      assert replacement.user_id == other_user.id
+      assert replacement.user.id == other_user.id
+
+      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id).user_id ==
+               other_user.id
+
+      assert station_editing_status_count(organization.id, gtfs_version.id, station.id) == 1
+    end
+
+    test "clear_station_editing_status/3 removes a status and returns ok", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      user: user
+    } do
+      assert {:ok, _status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 user
+               )
+
+      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
+    end
+
+    test "clear_station_editing_status/3 returns ok when no status exists", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+    end
+
+    test "statuses are isolated by station, GTFS version, and organization", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      user: user
+    } do
+      same_version_station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "other-station",
+          location_type: 1
+        })
+
+      other_version = gtfs_version_fixture(organization.id)
+
+      other_version_station =
+        stop_fixture(organization.id, other_version.id, %{
+          stop_id: station.stop_id,
+          location_type: 1
+        })
+
+      other_organization = organization_fixture()
+      other_organization_version = gtfs_version_fixture(other_organization.id)
+
+      other_organization_station =
+        stop_fixture(other_organization.id, other_organization_version.id, %{
+          stop_id: station.stop_id,
+          location_type: 1
+        })
+
+      same_version_user = user_fixture(%{email: "same-version@example.com"})
+      other_version_user = user_fixture(%{email: "other-version@example.com"})
+      other_organization_user = user_fixture(%{email: "other-organization@example.com"})
+
+      assert {:ok, _status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 user
+               )
+
+      assert {:ok, _status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 same_version_station,
+                 same_version_user
+               )
+
+      assert {:ok, _status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 other_version.id,
+                 other_version_station,
+                 other_version_user
+               )
+
+      assert {:ok, _status} =
+               Gtfs.set_station_editing_status(
+                 other_organization.id,
+                 other_organization_version.id,
+                 other_organization_station,
+                 other_organization_user
+               )
+
+      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+
+      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
+
+      assert Gtfs.get_station_editing_status(
+               organization.id,
+               gtfs_version.id,
+               same_version_station.id
+             ).user_id == same_version_user.id
+
+      assert Gtfs.get_station_editing_status(
+               organization.id,
+               other_version.id,
+               other_version_station.id
+             ).user_id == other_version_user.id
+
+      assert Gtfs.get_station_editing_status(
+               other_organization.id,
+               other_organization_version.id,
+               other_organization_station.id
+             ).user_id == other_organization_user.id
     end
   end
 
@@ -3980,5 +4181,14 @@ defmodule GtfsPlanner.GtfsTest do
       assert reloaded_route.route_text_color == "FFFFFF"
       assert reloaded_route.network_id == "ROUNDTRIP_NETWORK"
     end
+  end
+
+  defp station_editing_status_count(organization_id, gtfs_version_id, station_id) do
+    from(s in StationEditingStatus,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.station_id == ^station_id
+    )
+    |> Repo.aggregate(:count)
   end
 end
