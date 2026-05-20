@@ -10,6 +10,100 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
 
+  describe "StopDetailLive - station editing status" do
+    setup do
+      organization = organization_fixture()
+      viewer = user_fixture(%{email: "viewer@example.com"})
+      editor = user_fixture(%{email: "editor@example.com"})
+
+      Accounts.create_user_org_membership(%{
+        user_id: viewer.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_STATUS",
+          stop_name: "Status Station",
+          location_type: 1
+        })
+
+      %{
+        viewer: viewer,
+        editor: editor,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station
+      }
+    end
+
+    test "assigns an existing station editing status when the station page loads", %{
+      conn: conn,
+      viewer: viewer,
+      editor: editor,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      assert {:ok, status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 editor
+               )
+
+      conn = log_in_user(conn, viewer, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
+
+      state = :sys.get_state(view.pid)
+
+      assert state.socket.assigns.station_editing_status.id == status.id
+      assert state.socket.assigns.station_editing_status.user.id == editor.id
+      assert state.socket.assigns.station_editing_status.user.email == editor.email
+    end
+
+    test "updates the station editing status assign from PubSub broadcasts", %{
+      conn: conn,
+      viewer: viewer,
+      editor: editor,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, viewer, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.station_editing_status == nil
+
+      assert {:ok, status} =
+               Gtfs.set_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station,
+                 editor
+               )
+
+      state = :sys.get_state(view.pid)
+
+      assert state.socket.assigns.station_editing_status.id == status.id
+      assert state.socket.assigns.station_editing_status.user.id == editor.id
+
+      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.station_editing_status == nil
+    end
+  end
+
   describe "StopDetailLive - No Level child stop edit link" do
     setup do
       organization = organization_fixture()

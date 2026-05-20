@@ -38,6 +38,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         levels = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, stop.id)
         pathways = Gtfs.list_pathways_for_station(organization_id, gtfs_version_id, stop.id)
 
+        station_editing_status =
+          Gtfs.get_station_editing_status(organization_id, gtfs_version_id, stop.id)
+
+        if connected?(socket) do
+          :ok =
+            Gtfs.subscribe_station_editing_status(organization_id, gtfs_version_id, stop.id)
+        end
+
         # Group child stops by level. nil key means "No Level".
         child_stops_by_level =
           Enum.group_by(child_stops, fn s ->
@@ -54,8 +62,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
          |> assign(:child_stops, child_stops)
          |> assign(:child_stops_by_level, child_stops_by_level)
          |> assign(:levels, levels)
-         |> assign(:pathways, pathways)}
+         |> assign(:pathways, pathways)
+         |> assign(:station_editing_status, station_editing_status)}
     end
+  end
+
+  @impl true
+  def handle_info({:station_editing_status_updated, status}, socket) do
+    {:noreply, assign(socket, :station_editing_status, status)}
   end
 
   @impl true
