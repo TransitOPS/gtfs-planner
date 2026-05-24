@@ -4,6 +4,10 @@ import MapAlignmentHook, {
   parseAlignmentPayload,
   readActiveAlignment,
   readReferenceAlignment,
+  symbolForLocationType,
+  activeColorForLocationType,
+  normalizeLevelIndex,
+  referenceColorForLevel,
 } from "../map_alignment_hook";
 
 describe("map_alignment_hook alignment parsing", () => {
@@ -86,6 +90,86 @@ describe("map_alignment_hook alignment parsing", () => {
   it("returns null for invalid payload parts", () => {
     expect(parseAlignmentPayload("40", "-74", "0", "0")).toBeNull();
     expect(parseAlignmentPayload("x", "-74", "0.2", "0")).toBeNull();
+  });
+});
+
+describe("map_alignment_hook pure helpers", () => {
+  it("maps location_type to deterministic symbol grammar", () => {
+    expect(symbolForLocationType(0)).toBe("rect_upright");
+    expect(symbolForLocationType(2)).toBe("rect_upright");
+    expect(symbolForLocationType(4)).toBe("rect_square");
+    expect(symbolForLocationType(1)).toBe("circle");
+    expect(symbolForLocationType("2")).toBe("rect_upright");
+    expect(symbolForLocationType(undefined)).toBe("circle");
+  });
+
+  it("returns high-contrast active colors by location_type with readable fallback", () => {
+    expect(activeColorForLocationType(0)).toEqual({
+      fill: "#2563EB",
+      stroke: "#1E3A8A",
+    });
+
+    expect(activeColorForLocationType(4)).toEqual({
+      fill: "#CA8A04",
+      stroke: "#713F12",
+    });
+
+    expect(activeColorForLocationType(99)).toEqual({
+      fill: "#334155",
+      stroke: "#0F172A",
+    });
+
+    expect(activeColorForLocationType("bad")).toEqual({
+      fill: "#334155",
+      stroke: "#0F172A",
+    });
+  });
+
+  it("normalizes level index to finite number or null", () => {
+    expect(normalizeLevelIndex(2)).toBe(2);
+    expect(normalizeLevelIndex("3")).toBe(3);
+    expect(normalizeLevelIndex("3.5")).toBe(3.5);
+    expect(normalizeLevelIndex("")).toBeNull();
+    expect(normalizeLevelIndex("bad")).toBeNull();
+    expect(normalizeLevelIndex(null)).toBeNull();
+  });
+
+  it("maps reference color by normalized level index deterministically", () => {
+    expect(referenceColorForLevel(0, "L0")).toEqual({
+      fill: "#E0F2FE",
+      stroke: "#0369A1",
+    });
+
+    expect(referenceColorForLevel("1", "L1")).toEqual({
+      fill: "#DCFCE7",
+      stroke: "#166534",
+    });
+
+    expect(referenceColorForLevel(-1, "L-1")).toEqual({
+      fill: "#DCFCE7",
+      stroke: "#166534",
+    });
+  });
+
+  it("uses levelId hash fallback when level index is invalid or missing", () => {
+    const byIdA1 = referenceColorForLevel(null, "level-a");
+    const byIdA2 = referenceColorForLevel(undefined, "level-a");
+    const byIdB = referenceColorForLevel("bad", "level-b");
+
+    expect(byIdA1).toEqual(byIdA2);
+    expect(byIdA1).toMatchObject({ fill: expect.any(String), stroke: expect.any(String) });
+    expect(byIdB).toMatchObject({ fill: expect.any(String), stroke: expect.any(String) });
+  });
+
+  it("returns neutral fallback when both index and levelId are missing", () => {
+    expect(referenceColorForLevel(null, null)).toEqual({
+      fill: "#F8FAFC",
+      stroke: "#475569",
+    });
+    expect(referenceColorForLevel("", "")).toEqual({
+      fill: "#F8FAFC",
+      stroke: "#475569",
+    });
   });
 });
 
@@ -562,5 +646,194 @@ describe("map_alignment_hook zoom slider reference alignment", () => {
     hook._onZoomSliderInput({ target: { value: "11" } });
 
     expect(hook._restoreOverlayAlignment).not.toHaveBeenCalled();
+  });
+});
+
+describe("map_alignment_hook active child stops rendering", () => {
+  it("ignores stale active child-stop payload for non-active level", () => {
+    document.body.innerHTML = `
+      <div id="root" data-active-level-id="active-level">
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const activePinsRoot = document.getElementById("map-alignment-pins-active");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _activePinsRoot: activePinsRoot,
+      _activeChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderActiveChildStops({
+      level_id: "other-level",
+      stops: [{ stop_id: "s1", lat: 40.7, lon: -74.0 }],
+    });
+
+    expect(hook._activeChildStops).toEqual([]);
+    expect(activePinsRoot.children.length).toBe(0);
+    expect(hook._positionPins).not.toHaveBeenCalled();
+  });
+
+  it("normalizes numeric-string lat lon and filters invalid coordinates", () => {
+    document.body.innerHTML = `
+      <div id="root" data-active-level-id="active-level">
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const activePinsRoot = document.getElementById("map-alignment-pins-active");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _activePinsRoot: activePinsRoot,
+      _activeChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [
+        { stop_id: "valid-string", lat: "40.7001", lon: "-74.0021" },
+        { stop_id: "invalid-lat", lat: "bad", lon: "-74.0" },
+        { stop_id: "invalid-lon", lat: 40.71, lon: undefined },
+      ],
+    });
+
+    expect(hook._activeChildStops.length).toBe(1);
+    expect(hook._activeChildStops[0]).toMatchObject({
+      stop_id: "valid-string",
+      lat: 40.7001,
+      lon: -74.0021,
+    });
+    expect(activePinsRoot.children.length).toBe(1);
+    const tooltip = activePinsRoot.children[0].lastChild;
+    expect(tooltip.textContent).toBe("A: valid-string");
+    expect(hook._positionPins).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("map_alignment_hook reference child stops rendering", () => {
+  it("ignores stale reference child-stop payload for non-reference level", () => {
+    document.body.innerHTML = `
+      <div id="root" data-reference-level-id="reference-level">
+        <div id="map-alignment-pins-reference"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const referencePinsRoot = document.getElementById("map-alignment-pins-reference");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _referencePinsRoot: referencePinsRoot,
+      _referenceChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderReferenceChildStops({
+      level_id: "other-reference-level",
+      stops: [{ stop_id: "s1", lat: 40.7, lon: -74.0 }],
+    });
+
+    expect(hook._referenceChildStops).toEqual([]);
+    expect(referencePinsRoot.children.length).toBe(0);
+    expect(hook._positionPins).not.toHaveBeenCalled();
+  });
+
+  it("normalizes numeric-string lat lon and filters invalid coordinates", () => {
+    document.body.innerHTML = `
+      <div id="root" data-reference-level-id="reference-level">
+        <div id="map-alignment-pins-reference"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const referencePinsRoot = document.getElementById("map-alignment-pins-reference");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _referencePinsRoot: referencePinsRoot,
+      _referenceChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderReferenceChildStops({
+      level_id: "reference-level",
+      stops: [
+        { stop_id: "valid-string", lat: "40.7001", lon: "-74.0021" },
+        { stop_id: "invalid-lat", lat: "bad", lon: "-74.0" },
+        { stop_id: "invalid-lon", lat: 40.71, lon: undefined },
+      ],
+    });
+
+    expect(hook._referenceChildStops.length).toBe(1);
+    expect(hook._referenceChildStops[0]).toMatchObject({
+      stop_id: "valid-string",
+      lat: 40.7001,
+      lon: -74.0021,
+    });
+    expect(referencePinsRoot.children.length).toBe(1);
+    const tooltip = referencePinsRoot.children[0].lastChild;
+    expect(tooltip.textContent).toBe("R: valid-string");
+    expect(hook._positionPins).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies role-differentiated reference styling with symbol grammar and subdued type-themed colors", () => {
+    document.body.innerHTML = `
+      <div id="root" data-reference-level-id="reference-level">
+        <div id="map-alignment-pins-reference"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const referencePinsRoot = document.getElementById("map-alignment-pins-reference");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _referencePinsRoot: referencePinsRoot,
+      _referenceChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderReferenceChildStops({
+      level_id: "reference-level",
+      level_index: 1,
+      stops: [
+        { stop_id: "u", stop_name: "Upright", location_type: 2, lat: 40.7001, lon: -74.0021 },
+      ],
+    });
+
+    const pin = referencePinsRoot.children[0];
+    const dot = pin.firstChild;
+    const tooltip = pin.lastChild;
+    const typeStrokeHex = activeColorForLocationType(2).stroke;
+    const typeFillHex = activeColorForLocationType(2).fill;
+
+    const normalizeCssColor = (cssColor) => {
+      const sample = document.createElement("div");
+      sample.style.color = cssColor;
+      return sample.style.color;
+    };
+
+    expect(pin.className).toContain("pointer-events-none");
+    expect(pin.style.width).toBe("8px");
+    expect(pin.style.height).toBe("12px");
+
+    expect(dot.style.backgroundColor).toBe(normalizeCssColor(typeFillHex));
+    expect(dot.style.borderColor).toBe(normalizeCssColor(typeStrokeHex));
+    expect(dot.style.borderStyle).toBe("dashed");
+    expect(dot.style.borderWidth).toBe("1.5px");
+    expect(dot.style.opacity).toBe("0.3");
+    expect(dot.style.borderRadius).toBe("2px");
+    expect(tooltip.textContent).toBe("R: Upright");
   });
 });

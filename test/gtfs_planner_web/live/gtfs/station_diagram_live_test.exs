@@ -12309,6 +12309,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.reference_level_id == nil
       assert assigns.reference_stop_level == nil
+      assert assigns.reference_level_index == nil
       assert assigns.show_reference_overlay == false
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
@@ -12507,6 +12508,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.reference_level_id == below_level.id
       assert assigns.reference_stop_level.level_id == below_level.id
+      assert assigns.reference_level_index == -1.0
       assert assigns.show_reference_overlay == false
 
       refute Enum.any?(
@@ -12519,6 +12521,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.reference_level_id == above_level.id
       assert assigns.reference_stop_level.level_id == above_level.id
+      assert assigns.reference_level_index == 1.0
       assert assigns.show_reference_overlay == false
 
       refute Enum.any?(
@@ -12531,6 +12534,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert assigns.active_level.id == above_level.id
       assert assigns.reference_level_id == nil
       assert assigns.reference_stop_level == nil
+      assert assigns.reference_level_index == nil
       assert assigns.show_reference_overlay == false
       refute Enum.any?(assigns.selectable_reference_stop_levels, &(&1.level_id == above_level.id))
     end
@@ -12967,6 +12971,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, ".map-canvas #map-alignment-leaflet")
       assert has_element?(view, "#map-alignment-overlay img[alt='Level floorplan']")
+      assert has_element?(view, "#map-alignment-pins-reference[data-overlay-role='reference']")
+      assert has_element?(view, "#map-alignment-pins-active[data-overlay-role='active']")
     end
 
     test "reference overlay stays read-only while active overlay is editable", %{
@@ -13755,7 +13761,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert reloaded.floorplan_rotation_deg == before.floorplan_rotation_deg
     end
 
-    test "map_ready pushes set_child_stops with markers for geo-coded child stops", %{
+    test "map_ready pushes active and reference child stop payloads", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -13797,20 +13803,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "map_ready", %{})
 
-      assert_push_event(view, "set_child_stops", %{stops: stops})
+      assert_push_event(view, "set_active_child_stops", %{stops: stops, level_id: active_level_id})
+      assert active_level_id == level.level_id
+
+      assert_push_event(view, "set_reference_child_stops", %{
+        stops: reference_stops,
+        level_id: reference_level_id,
+        level_index: reference_level_index
+      })
+
+      assert reference_stops == []
+      assert is_nil(reference_level_id)
+      assert is_nil(reference_level_index)
 
       assert [
                %{
                  stop_id: "MARKER_GEO",
                  stop_name: "Geo Platform",
                  platform_code: "A",
+                 location_type: 0,
                  lat: 40.7128,
                  lon: -74.006
                }
              ] = stops
     end
 
-    test "map_ready returns empty stops payload when no child stops have lat/lon", %{
+    test "map_ready returns empty active payload and cleared reference payload when no child stops have lat lon", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -13840,7 +13858,116 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "map_ready", %{})
 
-      assert_push_event(view, "set_child_stops", %{stops: []})
+      assert_push_event(view, "set_active_child_stops", %{stops: [], level_id: active_level_id})
+      assert active_level_id == level.level_id
+
+      assert_push_event(view, "set_reference_child_stops", %{
+        stops: [],
+        level_id: nil,
+        level_index: nil
+      })
+    end
+
+    test "map_ready pushes reference child stops when reference overlay is enabled", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      reference_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_REF",
+          level_name: "Reference Level",
+          level_index: 1.0
+        })
+
+      {:ok, reference_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: reference_level.id
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(reference_stop_level, "reference-map-diagram.png")
+
+      _active_with_geo =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ACTIVE_MARKER_GEO",
+          stop_name: "Active Geo Platform",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          platform_code: "A",
+          stop_lat: Decimal.new("40.7128"),
+          stop_lon: Decimal.new("-74.0060")
+        })
+
+      _reference_with_geo =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REFERENCE_MARKER_GEO",
+          stop_name: "Reference Geo Platform",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: reference_level.level_id,
+          platform_code: "R",
+          stop_lat: Decimal.new("40.7130"),
+          stop_lon: Decimal.new("-74.0058")
+        })
+
+      _reference_without_geo =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REFERENCE_MARKER_NO_GEO",
+          stop_name: "Reference No Geo",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: reference_level.level_id,
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      render_hook(view, "select_reference_overlay_level", %{"level_id" => reference_level.id})
+
+      assert_push_event(view, "set_reference_child_stops", %{
+        stops: [],
+        level_id: nil,
+        level_index: nil
+      })
+
+      render_hook(view, "toggle_reference_overlay", %{})
+      render_hook(view, "map_ready", %{})
+
+      assert_push_event(view, "set_reference_child_stops", %{
+        stops: reference_stops,
+        level_id: reference_level_id,
+        level_index: reference_level_index
+      })
+
+      assert reference_level_id == reference_level.id
+      assert reference_level_index == reference_level.level_index
+
+      assert Enum.any?(reference_stops, fn stop ->
+               stop.stop_id == "REFERENCE_MARKER_GEO" and
+                 stop.stop_name == "Reference Geo Platform" and
+                 stop.platform_code == "R" and
+                 stop.location_type == 2 and
+                 stop.lat == 40.713 and
+                 stop.lon == -74.0058
+             end)
+
+      refute Enum.any?(reference_stops, &(&1.stop_id == "ACTIVE_MARKER_GEO"))
+      refute Enum.any?(reference_stops, &(&1.stop_id == "REFERENCE_MARKER_NO_GEO"))
     end
   end
 end

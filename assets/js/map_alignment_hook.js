@@ -29,6 +29,69 @@ const SCALE_MAX = 4;
 const IDENTITY_TRANSFORM = Object.freeze({tx: 0, ty: 0, rotation: 0, scale: 1});
 const MAP_ALIGNMENT_HOOK_BUILD = "map-align-fix-v2";
 const REFERENCE_OVERLAY_IMG_SELECTOR = "img[data-reference-overlay='true']";
+const ACTIVE_TYPE_COLORS = Object.freeze({
+  rect_upright: Object.freeze({ fill: "#2563EB", stroke: "#1E3A8A" }),
+  rect_square: Object.freeze({ fill: "#CA8A04", stroke: "#713F12" }),
+  circle: Object.freeze({ fill: "#334155", stroke: "#0F172A" })
+});
+const REFERENCE_LEVEL_PALETTE = Object.freeze([
+  Object.freeze({ fill: "#E0F2FE", stroke: "#0369A1" }),
+  Object.freeze({ fill: "#DCFCE7", stroke: "#166534" }),
+  Object.freeze({ fill: "#FEF3C7", stroke: "#92400E" }),
+  Object.freeze({ fill: "#FCE7F3", stroke: "#9D174D" }),
+  Object.freeze({ fill: "#EDE9FE", stroke: "#5B21B6" }),
+  Object.freeze({ fill: "#F3F4F6", stroke: "#374151" })
+]);
+const REFERENCE_LEVEL_FALLBACK = Object.freeze({ fill: "#F8FAFC", stroke: "#475569" });
+function symbolForLocationType(locationType) {
+  const parsed =
+    typeof locationType === "number"
+      ? locationType
+      : Number.parseInt(String(locationType), 10);
+
+  if (parsed === 0 || parsed === 2) return "rect_upright";
+  if (parsed === 4) return "rect_square";
+  return "circle";
+}
+
+function activeColorForLocationType(locationType) {
+  const symbol = symbolForLocationType(locationType);
+  return ACTIVE_TYPE_COLORS[symbol] || ACTIVE_TYPE_COLORS.circle;
+}
+
+function normalizeLevelIndex(raw) {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const parsed = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function stableHash(value) {
+  const str = String(value || "");
+  let hash = 0;
+
+  for (let i = 0; i < str.length; i += 1) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash |= 0;
+  }
+
+  return Math.abs(hash);
+}
+
+function referenceColorForLevel(levelIndex, levelId) {
+  const normalized = normalizeLevelIndex(levelIndex);
+
+  if (normalized !== null) {
+    const paletteIndex = Math.abs(Math.trunc(normalized)) % REFERENCE_LEVEL_PALETTE.length;
+    return REFERENCE_LEVEL_PALETTE[paletteIndex] || REFERENCE_LEVEL_FALLBACK;
+  }
+
+  if (levelId !== null && levelId !== undefined && String(levelId) !== "") {
+    const paletteIndex = stableHash(levelId) % REFERENCE_LEVEL_PALETTE.length;
+    return REFERENCE_LEVEL_PALETTE[paletteIndex] || REFERENCE_LEVEL_FALLBACK;
+  }
+
+  return REFERENCE_LEVEL_FALLBACK;
+}
 
 function ensureSingleReferenceOverlayImage(referenceOverlay) {
   if (!referenceOverlay) return null;
@@ -243,14 +306,17 @@ const MapAlignmentHook = {
 
     this.leafletMap = map;
 
-    this._pinsRoot = root.querySelector("#map-alignment-pins");
-    this._childStops = [];
+    this._activePinsRoot = root.querySelector("#map-alignment-pins-active");
+    this._referencePinsRoot = root.querySelector("#map-alignment-pins-reference");
+    this._activeChildStops = [];
+    this._referenceChildStops = [];
     this._onMapViewChanged = () => this._positionPins();
     map.on("move", this._onMapViewChanged);
     map.on("zoom", this._onMapViewChanged);
     map.on("viewreset", this._onMapViewChanged);
     map.on("resize", this._onMapViewChanged);
-    this.handleEvent("set_child_stops", (payload) => this._renderChildStops(payload));
+    this.handleEvent("set_active_child_stops", (payload) => this._renderActiveChildStops(payload));
+    this.handleEvent("set_reference_child_stops", (payload) => this._renderReferenceChildStops(payload));
     this.pushEvent("map_ready", {});
 
     if (zoomSlider) {
@@ -616,9 +682,7 @@ const MapAlignmentHook = {
       } catch (_) {}
     }
     this._onMapViewChanged = null;
-    if (this._pinsRoot) this._pinsRoot.innerHTML = "";
-    this._pinsRoot = null;
-    this._childStops = null;
+    this._clearPinLayers();
 
     if (this.leafletMap) {
       // If LiveView has already re-mounted another hook on the same container,
@@ -1037,42 +1101,146 @@ const MapAlignmentHook = {
       .catch(() => { /* silent: buildings overlay is optional */ });
   },
 
-  _renderChildStops({stops}) {
+  _renderActiveChildStops(payload = {}) {
+    const { stops, level_id: levelId } = payload;
     const received = (stops || []).length;
-    if (!this._pinsRoot) {
-      console.warn("MapAlignment: set_child_stops received but no #map-alignment-pins root", {received});
+    if (!this._activePinsRoot) {
+      console.warn("MapAlignment: set_active_child_stops received but no #map-alignment-pins-active root", {received});
       return;
     }
 
-    this._childStops = (stops || []).filter(
-      (s) => Number.isFinite(s.lat) && Number.isFinite(s.lon)
-    );
+    const activeLevelId = this.el?.dataset?.activeLevelId || null;
+    if (activeLevelId && levelId && String(activeLevelId) !== String(levelId)) {
+      console.info("MapAlignment: skipping stale active child-stop payload", {
+        payloadLevelId: levelId,
+        activeLevelId,
+        received
+      });
+      return;
+    }
+
+    this._activeChildStops = (stops || [])
+      .map((s) => {
+        const lat = typeof s?.lat === "number" ? s.lat : parseFloat(s?.lat);
+        const lon = typeof s?.lon === "number" ? s.lon : parseFloat(s?.lon);
+        return Number.isFinite(lat) && Number.isFinite(lon) ? { ...s, lat, lon } : null;
+      })
+      .filter(Boolean);
 
     console.info("MapAlignment: rendering child-stop pins", {
       received,
-      rendered: this._childStops.length,
-      sample: this._childStops[0] || null
+      rendered: this._activeChildStops.length,
+      sample: this._activeChildStops[0] || null
     });
 
-    this._pinsRoot.innerHTML = "";
-    this._childStops.forEach((s) => {
+    this._activePinsRoot.innerHTML = "";
+    this._activeChildStops.forEach((s) => {
+      const symbol = symbolForLocationType(s.location_type);
+      const activeColors = activeColorForLocationType(s.location_type);
       const pin = document.createElement("div");
       pin.className =
         "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
-      pin.style.width = "10px";
-      pin.style.height = "10px";
+      pin.style.width = symbol === "rect_upright" ? "8px" : "10px";
+      pin.style.height = symbol === "rect_upright" ? "12px" : "10px";
 
       const dot = document.createElement("div");
-      dot.className = "w-full h-full rounded-full bg-white border border-black";
+      dot.className = "w-full h-full border";
+      dot.style.backgroundColor = activeColors.fill;
+      dot.style.borderColor = activeColors.stroke;
+
+      if (symbol === "rect_upright") {
+        dot.style.borderRadius = "2px";
+      } else if (symbol === "rect_square") {
+        dot.style.borderRadius = "2px";
+      } else {
+        dot.style.borderRadius = "9999px";
+      }
+
       pin.appendChild(dot);
 
       const tip = document.createElement("div");
       tip.className =
         "absolute left-1/2 bottom-full mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 text-white text-xs px-1.5 py-0.5 opacity-0 group-hover:opacity-100 pointer-events-none";
-      tip.textContent = stopTooltipLabel(s);
+      tip.textContent = stopTooltipLabel(s, "A");
       pin.appendChild(tip);
 
-      this._pinsRoot.appendChild(pin);
+      this._activePinsRoot.appendChild(pin);
+      s._el = pin;
+    });
+
+    this._positionPins();
+  },
+
+  _renderReferenceChildStops(payload = {}) {
+    const {stops, level_id: levelId} = payload;
+    const received = (stops || []).length;
+    if (!this._referencePinsRoot) {
+      console.warn(
+        "MapAlignment: set_reference_child_stops received but no #map-alignment-pins-reference root",
+        {received}
+      );
+      return;
+    }
+
+    const referenceLevelId = this.el?.dataset?.referenceLevelId || null;
+    if (referenceLevelId && levelId && String(referenceLevelId) !== String(levelId)) {
+      console.info("MapAlignment: skipping stale reference child-stop payload", {
+        payloadLevelId: levelId,
+        referenceLevelId,
+        received
+      });
+      return;
+    }
+
+    this._referenceChildStops = (stops || [])
+      .map((s) => {
+        const lat = typeof s?.lat === "number" ? s.lat : parseFloat(s?.lat);
+        const lon = typeof s?.lon === "number" ? s.lon : parseFloat(s?.lon);
+        return Number.isFinite(lat) && Number.isFinite(lon) ? {...s, lat, lon} : null;
+      })
+      .filter(Boolean);
+
+    console.info("MapAlignment: rendering reference child-stop pins", {
+      received,
+      rendered: this._referenceChildStops.length,
+      sample: this._referenceChildStops[0] || null
+    });
+
+    this._referencePinsRoot.innerHTML = "";
+    this._referenceChildStops.forEach((s) => {
+      const symbol = symbolForLocationType(s.location_type);
+      const activeTypeColors = activeColorForLocationType(s.location_type);
+      const pin = document.createElement("div");
+      pin.className =
+        "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-none";
+      pin.style.width = symbol === "rect_upright" ? "8px" : "10px";
+      pin.style.height = symbol === "rect_upright" ? "12px" : "10px";
+
+      const dot = document.createElement("div");
+      dot.className = "w-full h-full border";
+      dot.style.backgroundColor = activeTypeColors.fill;
+      dot.style.opacity = "0.3";
+      dot.style.borderColor = activeTypeColors.stroke;
+      dot.style.borderStyle = "dashed";
+      dot.style.borderWidth = "1.5px";
+
+      if (symbol === "rect_upright") {
+        dot.style.borderRadius = "2px";
+      } else if (symbol === "rect_square") {
+        dot.style.borderRadius = "2px";
+      } else {
+        dot.style.borderRadius = "9999px";
+      }
+
+      pin.appendChild(dot);
+
+      const tip = document.createElement("div");
+      tip.className =
+        "absolute left-1/2 bottom-full mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 text-white text-xs px-1.5 py-0.5 opacity-0 group-hover:opacity-100 pointer-events-none";
+      tip.textContent = stopTooltipLabel(s, "R");
+      pin.appendChild(tip);
+
+      this._referencePinsRoot.appendChild(pin);
       s._el = pin;
     });
 
@@ -1080,20 +1248,38 @@ const MapAlignmentHook = {
   },
 
   _positionPins() {
-    if (!this._pinsRoot || !this.leafletMap || !this._childStops) return;
-    this._childStops.forEach((s) => {
+    if (!this.leafletMap) return;
+
+    (this._activeChildStops || []).forEach((s) => {
       if (!s._el) return;
       const pt = this.leafletMap.latLngToContainerPoint([s.lat, s.lon]);
       s._el.style.left = `${pt.x}px`;
       s._el.style.top = `${pt.y}px`;
     });
+
+    (this._referenceChildStops || []).forEach((s) => {
+      if (!s._el) return;
+      const pt = this.leafletMap.latLngToContainerPoint([s.lat, s.lon]);
+      s._el.style.left = `${pt.x}px`;
+      s._el.style.top = `${pt.y}px`;
+    });
+  },
+
+  _clearPinLayers() {
+    if (this._activePinsRoot) this._activePinsRoot.innerHTML = "";
+    if (this._referencePinsRoot) this._referencePinsRoot.innerHTML = "";
+    this._activePinsRoot = null;
+    this._referencePinsRoot = null;
+    this._activeChildStops = null;
+    this._referenceChildStops = null;
   }
 };
 
-function stopTooltipLabel(s) {
+function stopTooltipLabel(s, roleTag = "") {
   const name = s.stop_name || s.stop_id || "";
   const platform = s.platform_code ? ` · Plat ${s.platform_code}` : "";
-  return escapeHtml(name + platform);
+  const rolePrefix = roleTag ? `${roleTag}: ` : "";
+  return escapeHtml(`${rolePrefix}${name}${platform}`);
 }
 
 function escapeHtml(str) {
@@ -1104,5 +1290,13 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-export { parseAlignmentPayload, readActiveAlignment, readReferenceAlignment };
+export {
+  parseAlignmentPayload,
+  readActiveAlignment,
+  readReferenceAlignment,
+  symbolForLocationType,
+  activeColorForLocationType,
+  normalizeLevelIndex,
+  referenceColorForLevel
+};
 export default MapAlignmentHook;
