@@ -391,6 +391,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:platform_options, [])
     |> assign(:platform_stop_ids, MapSet.new())
     |> assign(:pathway_pair_counts, %{})
+    |> assign(:reference_child_stop_markers_cache, %{})
   end
 
   defp load_level_data(socket, level) do
@@ -466,13 +467,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:platform_options, platforms_for_station)
     |> assign(:platform_stop_ids, platform_stop_ids)
     |> assign(:pathway_pair_counts, pathway_pair_counts)
+    |> assign(:reference_child_stop_markers_cache, %{})
     |> push_child_stop_markers()
   end
 
   defp push_child_stop_markers(socket) do
     if socket.assigns[:mode] == :map do
       active_payload = active_child_stop_payload(socket)
-      reference_payload = reference_child_stop_payload(socket)
+      {reference_payload, socket} = reference_child_stop_payload(socket)
       total = length(socket.assigns[:child_stops_list] || [])
 
       require Logger
@@ -504,29 +506,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     show_reference_overlay = socket.assigns[:show_reference_overlay]
 
     if show_reference_overlay and reference_overlay_eligible_stop_level?(reference_level) do
+      {markers, socket} = reference_child_stop_markers(socket, reference_level)
+
       %{
-        stops: reference_child_stop_markers(socket, reference_level),
+        stops: markers,
         level_id: reference_level.level_id,
         level_index: socket.assigns[:reference_level_index]
       }
+      |> then(&{&1, socket})
     else
-      %{stops: [], level_id: nil, level_index: nil}
+      {%{stops: [], level_id: nil, level_index: nil}, socket}
     end
   end
 
   defp reference_child_stop_markers(socket, reference_level) do
     station = socket.assigns[:station]
+    level_id = reference_level && reference_level.level_id
+    cache = socket.assigns[:reference_child_stop_markers_cache] || %{}
 
     cond do
       is_nil(station) or is_nil(reference_level) ->
-        []
+        {[], socket}
+
+      is_map_key(cache, level_id) ->
+        {Map.get(cache, level_id, []), socket}
 
       true ->
-        station.id
-        |> Gtfs.list_child_stops_for_level(reference_level.level_id)
-        |> Enum.filter(& &1.on_active_level)
-        |> Enum.map(&child_stop_marker/1)
-        |> Enum.reject(&is_nil/1)
+        markers =
+          station.id
+          |> Gtfs.list_child_stops_for_level(level_id)
+          |> Enum.filter(& &1.on_active_level)
+          |> Enum.map(&child_stop_marker/1)
+          |> Enum.reject(&is_nil/1)
+
+        {markers, assign(socket, :reference_child_stop_markers_cache, Map.put(cache, level_id, markers))}
     end
   end
 

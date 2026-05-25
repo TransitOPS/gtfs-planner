@@ -6,8 +6,6 @@ import MapAlignmentHook, {
   readReferenceAlignment,
   symbolForLocationType,
   activeColorForLocationType,
-  normalizeLevelIndex,
-  referenceColorForLevel,
 } from "../map_alignment_hook";
 
 describe("map_alignment_hook alignment parsing", () => {
@@ -125,52 +123,6 @@ describe("map_alignment_hook pure helpers", () => {
     });
   });
 
-  it("normalizes level index to finite number or null", () => {
-    expect(normalizeLevelIndex(2)).toBe(2);
-    expect(normalizeLevelIndex("3")).toBe(3);
-    expect(normalizeLevelIndex("3.5")).toBe(3.5);
-    expect(normalizeLevelIndex("")).toBeNull();
-    expect(normalizeLevelIndex("bad")).toBeNull();
-    expect(normalizeLevelIndex(null)).toBeNull();
-  });
-
-  it("maps reference color by normalized level index deterministically", () => {
-    expect(referenceColorForLevel(0, "L0")).toEqual({
-      fill: "#E0F2FE",
-      stroke: "#0369A1",
-    });
-
-    expect(referenceColorForLevel("1", "L1")).toEqual({
-      fill: "#DCFCE7",
-      stroke: "#166534",
-    });
-
-    expect(referenceColorForLevel(-1, "L-1")).toEqual({
-      fill: "#DCFCE7",
-      stroke: "#166534",
-    });
-  });
-
-  it("uses levelId hash fallback when level index is invalid or missing", () => {
-    const byIdA1 = referenceColorForLevel(null, "level-a");
-    const byIdA2 = referenceColorForLevel(undefined, "level-a");
-    const byIdB = referenceColorForLevel("bad", "level-b");
-
-    expect(byIdA1).toEqual(byIdA2);
-    expect(byIdA1).toMatchObject({ fill: expect.any(String), stroke: expect.any(String) });
-    expect(byIdB).toMatchObject({ fill: expect.any(String), stroke: expect.any(String) });
-  });
-
-  it("returns neutral fallback when both index and levelId are missing", () => {
-    expect(referenceColorForLevel(null, null)).toEqual({
-      fill: "#F8FAFC",
-      stroke: "#475569",
-    });
-    expect(referenceColorForLevel("", "")).toEqual({
-      fill: "#F8FAFC",
-      stroke: "#475569",
-    });
-  });
 });
 
 describe("map_alignment_hook reference restore", () => {
@@ -496,6 +448,87 @@ describe("map_alignment_hook reference overlay visibility sync", () => {
 });
 
 describe("map_alignment_hook zoom slider reference alignment", () => {
+  it("wires zoom slider input through mounted listener registration", () => {
+    document.body.innerHTML = `
+      <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16">
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+        <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+        <input id="map-alignment-lat-input" value="40.7128" />
+        <input id="map-alignment-lon-input" value="-74.0060" />
+        <button id="map-alignment-apply-center"></button>
+        <input id="map-alignment-opacity" value="0.7" />
+        <input id="map-alignment-zoom" value="16" />
+        <button id="map-alignment-save"></button>
+        <button id="map-alignment-apply"></button>
+        <div id="map-alignment-pins-active"></div>
+        <div id="map-alignment-pins-reference"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const activeImg = document.getElementById("active-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const zoomSlider = document.getElementById("map-alignment-zoom");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
+    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
+    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+
+    const mapOn = vi.fn();
+    const mapSetZoom = vi.fn();
+    const mapInstance = {
+      on: mapOn,
+      off: vi.fn(),
+      remove: vi.fn(),
+      invalidateSize: vi.fn(),
+      setZoom: mapSetZoom,
+      getZoom: vi.fn(() => 16),
+      getMinZoom: vi.fn(() => 16),
+      getMaxZoom: vi.fn(() => 22),
+      setView: vi.fn(),
+      latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+      distance: vi.fn(() => 1),
+      removeLayer: vi.fn(),
+    };
+
+    const originalL = window.L;
+    const originalFetch = global.fetch;
+
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+    window.L = {
+      map: vi.fn(() => mapInstance),
+      tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+      geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+    };
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      pushEvent: vi.fn(),
+      handleEvent: vi.fn(),
+    };
+
+    hook.mounted();
+
+    expect(hook.pushEvent).toHaveBeenCalledWith("map_ready", {});
+    expect(mapOn).toHaveBeenCalledWith("zoomend", expect.any(Function));
+    expect(zoomSlider.value).toBe("16");
+
+    zoomSlider.value = "17";
+    zoomSlider.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(mapSetZoom).toHaveBeenCalledWith(17, { animate: false });
+
+    window.L = originalL;
+    global.fetch = originalFetch;
+  });
+
   it("re-aligns reference overlay on zoom slider input when reference alignment is valid", () => {
     document.body.innerHTML = `
       <div id="root">
@@ -539,32 +572,7 @@ describe("map_alignment_hook zoom slider reference alignment", () => {
       },
     };
 
-    hook._onZoomSliderInput = (e) => {
-      const target = parseFloat(e.target.value);
-      if (!Number.isFinite(target)) return;
-      const current = hook.leafletMap.getZoom();
-      if (target === current) return;
-
-      const canvasRect = hook._leafletRect();
-      if (!canvasRect) return;
-      const canvasW = canvasRect.width;
-      const canvasH = canvasRect.height;
-      const oldCx = canvasW / 2 + hook.transform.tx;
-      const oldCy = canvasH / 2 + hook.transform.ty;
-      const worldCenter = hook.leafletMap.containerPointToLatLng([oldCx, oldCy]);
-      const scaleFactor = Math.pow(2, target - current);
-
-      hook.leafletMap.setZoom(target, {animate: false});
-
-      const newCenterPt = hook.leafletMap.latLngToContainerPoint(worldCenter);
-      hook.transform.tx = newCenterPt.x - canvasW / 2;
-      hook.transform.ty = newCenterPt.y - canvasH / 2;
-      hook.transform.scale = hook.transform.scale * scaleFactor;
-      hook._applyTransform();
-      hook._restoreReferenceOverlayForCurrentView();
-    };
-
-    hook._onZoomSliderInput({ target: { value: "11" } });
+    hook._handleZoomSliderInput({ target: { value: "11" } });
 
     expect(hook._restoreOverlayAlignment).toHaveBeenCalledTimes(1);
     expect(hook._restoreOverlayAlignment).toHaveBeenCalledWith(
@@ -618,32 +626,7 @@ describe("map_alignment_hook zoom slider reference alignment", () => {
       },
     };
 
-    hook._onZoomSliderInput = (e) => {
-      const target = parseFloat(e.target.value);
-      if (!Number.isFinite(target)) return;
-      const current = hook.leafletMap.getZoom();
-      if (target === current) return;
-
-      const canvasRect = hook._leafletRect();
-      if (!canvasRect) return;
-      const canvasW = canvasRect.width;
-      const canvasH = canvasRect.height;
-      const oldCx = canvasW / 2 + hook.transform.tx;
-      const oldCy = canvasH / 2 + hook.transform.ty;
-      const worldCenter = hook.leafletMap.containerPointToLatLng([oldCx, oldCy]);
-      const scaleFactor = Math.pow(2, target - current);
-
-      hook.leafletMap.setZoom(target, {animate: false});
-
-      const newCenterPt = hook.leafletMap.latLngToContainerPoint(worldCenter);
-      hook.transform.tx = newCenterPt.x - canvasW / 2;
-      hook.transform.ty = newCenterPt.y - canvasH / 2;
-      hook.transform.scale = hook.transform.scale * scaleFactor;
-      hook._applyTransform();
-      hook._restoreReferenceOverlayForCurrentView();
-    };
-
-    hook._onZoomSliderInput({ target: { value: "11" } });
+    hook._handleZoomSliderInput({ target: { value: "11" } });
 
     expect(hook._restoreOverlayAlignment).not.toHaveBeenCalled();
   });
@@ -824,7 +807,7 @@ describe("map_alignment_hook reference child stops rendering", () => {
       return sample.style.color;
     };
 
-    expect(pin.className).toContain("pointer-events-none");
+    expect(pin.className).toContain("pointer-events-auto");
     expect(pin.style.width).toBe("8px");
     expect(pin.style.height).toBe("12px");
 
