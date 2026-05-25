@@ -93,6 +93,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:naming_excluded_ids, MapSet.new())
      |> assign(:reference_level_id, nil)
      |> assign(:reference_stop_level, nil)
+      |> assign(:reference_level_index, nil)
      |> assign(:show_reference_overlay, false)
      |> assign(:audit_ctx, nil)
      |> assign(:history_open_for, nil)
@@ -165,6 +166,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:active_level, active_level)
           |> assign(:reference_level_id, nil)
           |> assign(:reference_stop_level, nil)
+          |> assign(:reference_level_index, nil)
           |> assign(:show_reference_overlay, false)
           |> assign(:show_walkability_drawer, false)
           |> assign(:walkability_stop, nil)
@@ -286,11 +288,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         socket
         |> assign(:reference_level_id, nil)
         |> assign(:reference_stop_level, nil)
+        |> assign(:reference_level_index, nil)
         |> assign(:show_reference_overlay, false)
 
       true ->
         socket
         |> assign(:reference_stop_level, reference_stop_level)
+        |> assign(:reference_level_index, reference_stop_level_index(reference_stop_level))
     end
   end
 
@@ -316,23 +320,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       is_nil(reference_level_id) ->
         socket
         |> assign(:reference_stop_level, nil)
+        |> assign(:reference_level_index, nil)
         |> assign(:show_reference_overlay, false)
 
       is_nil(reference_stop_level) ->
         socket
         |> assign(:reference_level_id, nil)
         |> assign(:reference_stop_level, nil)
+        |> assign(:reference_level_index, nil)
         |> assign(:show_reference_overlay, false)
 
       level && reference_stop_level.level_id == level.id ->
         socket
         |> assign(:reference_level_id, nil)
         |> assign(:reference_stop_level, nil)
+        |> assign(:reference_level_index, nil)
         |> assign(:show_reference_overlay, false)
 
       true ->
         socket
         |> assign(:reference_stop_level, reference_stop_level)
+        |> assign(:reference_level_index, reference_stop_level_index(reference_stop_level))
         |> assign(:show_reference_overlay, false)
     end
   end
@@ -383,6 +391,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:platform_options, [])
     |> assign(:platform_stop_ids, MapSet.new())
     |> assign(:pathway_pair_counts, %{})
+    |> assign(:reference_child_stop_markers_cache, %{})
   end
 
   defp load_level_data(socket, level) do
@@ -458,23 +467,79 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:platform_options, platforms_for_station)
     |> assign(:platform_stop_ids, platform_stop_ids)
     |> assign(:pathway_pair_counts, pathway_pair_counts)
+    |> assign(:reference_child_stop_markers_cache, %{})
     |> push_child_stop_markers()
   end
 
   defp push_child_stop_markers(socket) do
     if socket.assigns[:mode] == :map do
-      markers = child_stop_markers(socket)
+      active_payload = active_child_stop_payload(socket)
+      {reference_payload, socket} = reference_child_stop_payload(socket)
       total = length(socket.assigns[:child_stops_list] || [])
 
       require Logger
 
       Logger.info(
-        "StationDiagram map pins: #{length(markers)} geo-coded / #{total} child stops on level"
+        "StationDiagram map pins: #{length(active_payload.stops)} geo-coded / #{total} child stops on level"
       )
 
-      push_event(socket, "set_child_stops", %{stops: markers})
+      socket
+      |> push_event("set_active_child_stops", active_payload)
+      |> push_event("set_reference_child_stops", reference_payload)
     else
       socket
+    end
+  end
+
+  defp active_child_stop_payload(socket) do
+    active_level_id =
+      case socket.assigns[:active_level] do
+        %{level_id: level_id} -> level_id
+        _ -> nil
+      end
+
+    %{stops: child_stop_markers(socket), level_id: active_level_id}
+  end
+
+  defp reference_child_stop_payload(socket) do
+    reference_level = socket.assigns[:reference_stop_level]
+    show_reference_overlay = socket.assigns[:show_reference_overlay]
+
+    if show_reference_overlay and reference_overlay_eligible_stop_level?(reference_level) do
+      {markers, socket} = reference_child_stop_markers(socket, reference_level)
+
+      %{
+        stops: markers,
+        level_id: reference_level.level_id,
+        level_index: socket.assigns[:reference_level_index]
+      }
+      |> then(&{&1, socket})
+    else
+      {%{stops: [], level_id: nil, level_index: nil}, socket}
+    end
+  end
+
+  defp reference_child_stop_markers(socket, reference_level) do
+    station = socket.assigns[:station]
+    level_id = reference_level && reference_level.level_id
+    cache = socket.assigns[:reference_child_stop_markers_cache] || %{}
+
+    cond do
+      is_nil(station) or is_nil(reference_level) ->
+        {[], socket}
+
+      is_map_key(cache, level_id) ->
+        {Map.get(cache, level_id, []), socket}
+
+      true ->
+        markers =
+          station.id
+          |> Gtfs.list_child_stops_for_level(level_id)
+          |> Enum.filter(& &1.on_active_level)
+          |> Enum.map(&child_stop_marker/1)
+          |> Enum.reject(&is_nil/1)
+
+        {markers, assign(socket, :reference_child_stop_markers_cache, Map.put(cache, level_id, markers))}
     end
   end
 
@@ -492,6 +557,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           stop_id: stop.stop_id,
           stop_name: stop.stop_name,
           platform_code: stop.platform_code,
+          location_type: stop.location_type,
           lat: lat,
           lon: lon
         }
@@ -835,7 +901,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:reference_level_id, if(reference_stop_level, do: selected_level_id, else: nil))
      |> assign(:reference_stop_level, reference_stop_level)
-     |> assign(:show_reference_overlay, false)}
+     |> assign(:reference_level_index, reference_stop_level_index(reference_stop_level))
+     |> assign(:show_reference_overlay, false)
+     |> push_child_stop_markers()}
   end
 
   @impl true
@@ -844,7 +912,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:reference_level_id, nil)
      |> assign(:reference_stop_level, nil)
-     |> assign(:show_reference_overlay, false)}
+     |> assign(:reference_level_index, nil)
+     |> assign(:show_reference_overlay, false)
+     |> push_child_stop_markers()}
   end
 
   @impl true
@@ -853,9 +923,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     {:noreply,
      if reference_overlay_eligible_stop_level?(reference_stop_level) do
-       assign(socket, :show_reference_overlay, not socket.assigns.show_reference_overlay)
+       socket
+       |> assign(:show_reference_overlay, not socket.assigns.show_reference_overlay)
+       |> push_child_stop_markers()
      else
-       assign(socket, :show_reference_overlay, false)
+       socket
+       |> assign(:show_reference_overlay, false)
+       |> push_child_stop_markers()
      end}
   end
 
@@ -3200,6 +3274,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # ============================================================================
   # Private Helpers
   # ============================================================================
+
+  defp reference_stop_level_index(%StopLevel{level: %{level_index: level_index}})
+       when is_number(level_index),
+       do: level_index * 1.0
+
+  defp reference_stop_level_index(_stop_level), do: nil
 
   defp infer_alignment_error_message(:insufficient_anchors),
     do: "Not enough anchor stops to infer alignment"

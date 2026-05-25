@@ -2057,28 +2057,30 @@ defmodule GtfsPlanner.Gtfs do
       [%Stop{}, ...]
   """
   def list_child_stops_for_level(parent_station_id, level_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
-    level = Repo.get!(Level, level_id)
+    with %Stop{} = parent_station <- Repo.get(Stop, parent_station_id),
+         %Level{} = level <- Repo.get(Level, level_id) do
+      descendants =
+        descendant_stop_ids_query(
+          parent_station.organization_id,
+          parent_station.gtfs_version_id,
+          parent_station.stop_id
+        )
 
-    descendants =
-      descendant_stop_ids_query(
-        parent_station.organization_id,
-        parent_station.gtfs_version_id,
-        parent_station.stop_id
+      from(s in Stop,
+        where:
+          s.stop_id in subquery(descendants) and
+            s.organization_id == ^parent_station.organization_id and
+            s.gtfs_version_id == ^parent_station.gtfs_version_id,
+        order_by: [asc: s.stop_name]
       )
-
-    from(s in Stop,
-      where:
-        s.stop_id in subquery(descendants) and
-          s.organization_id == ^parent_station.organization_id and
-          s.gtfs_version_id == ^parent_station.gtfs_version_id,
-      order_by: [asc: s.stop_name]
-    )
-    |> Repo.all()
-    |> Enum.map(fn stop ->
-      # Add a virtual field indicating if this stop is on the active level
-      Map.put(stop, :on_active_level, stop.level_id == level.level_id)
-    end)
+      |> Repo.all()
+      |> Enum.map(fn stop ->
+        # Add a virtual field indicating if this stop is on the active level
+        Map.put(stop, :on_active_level, stop.level_id == level.level_id)
+      end)
+    else
+      _ -> []
+    end
   end
 
   @doc """

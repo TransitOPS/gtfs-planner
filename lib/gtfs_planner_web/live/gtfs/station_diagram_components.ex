@@ -415,6 +415,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         phx-hook="MapAlignment"
         phx-update="ignore"
         data-show-reference-overlay={overlay_toggle_attr(@show_reference_overlay)}
+        data-active-level-id={@active_level && @active_level.level_id}
+        data-reference-level-id={@reference_stop_level && @reference_stop_level.level_id}
         data-reference-floorplan-url={@reference_overlay_url}
         data-floorplan-url={@floorplan_url}
         data-initial-lat={@initial_lat}
@@ -495,9 +497,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <.icon name="hero-arrow-path" class="w-4 h-4" />
         </button>
         <div
-          id="map-alignment-pins"
+          id="map-alignment-pins-reference"
+          data-overlay-role="reference"
           class="absolute inset-0 pointer-events-none"
           style="z-index: 4;"
+        >
+        </div>
+        <div
+          id="map-alignment-pins-active"
+          data-overlay-role="active"
+          class="absolute inset-0 pointer-events-none"
+          style="z-index: 5;"
         >
         </div>
         <button

@@ -4,6 +4,8 @@ import MapAlignmentHook, {
   parseAlignmentPayload,
   readActiveAlignment,
   readReferenceAlignment,
+  symbolForLocationType,
+  activeColorForLocationType,
 } from "../map_alignment_hook";
 
 describe("map_alignment_hook alignment parsing", () => {
@@ -87,6 +89,45 @@ describe("map_alignment_hook alignment parsing", () => {
     expect(parseAlignmentPayload("40", "-74", "0", "0")).toBeNull();
     expect(parseAlignmentPayload("x", "-74", "0.2", "0")).toBeNull();
   });
+});
+
+describe("map_alignment_hook pure helpers", () => {
+  it("maps location_type to deterministic symbol grammar", () => {
+    expect(symbolForLocationType(0)).toBe("rect_upright");
+    expect(symbolForLocationType(2)).toBe("rect_upright");
+    expect(symbolForLocationType(4)).toBe("rect_square");
+    expect(symbolForLocationType(1)).toBe("circle");
+    expect(symbolForLocationType("2")).toBe("rect_upright");
+    expect(symbolForLocationType(undefined)).toBe("circle");
+  });
+
+  it("returns high-contrast active colors by location_type with readable fallback", () => {
+    expect(activeColorForLocationType(0)).toEqual({
+      fill: "#2563EB",
+      stroke: "#1E3A8A",
+    });
+
+    expect(activeColorForLocationType(2)).toEqual({
+      fill: "#FFFFFF",
+      stroke: "#2563EB",
+    });
+
+    expect(activeColorForLocationType(4)).toEqual({
+      fill: "#CA8A04",
+      stroke: "#713F12",
+    });
+
+    expect(activeColorForLocationType(99)).toEqual({
+      fill: "#334155",
+      stroke: "#0F172A",
+    });
+
+    expect(activeColorForLocationType("bad")).toEqual({
+      fill: "#334155",
+      stroke: "#0F172A",
+    });
+  });
+
 });
 
 describe("map_alignment_hook reference restore", () => {
@@ -412,6 +453,87 @@ describe("map_alignment_hook reference overlay visibility sync", () => {
 });
 
 describe("map_alignment_hook zoom slider reference alignment", () => {
+  it("wires zoom slider input through mounted listener registration", () => {
+    document.body.innerHTML = `
+      <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16">
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+        <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+        <input id="map-alignment-lat-input" value="40.7128" />
+        <input id="map-alignment-lon-input" value="-74.0060" />
+        <button id="map-alignment-apply-center"></button>
+        <input id="map-alignment-opacity" value="0.7" />
+        <input id="map-alignment-zoom" value="16" />
+        <button id="map-alignment-save"></button>
+        <button id="map-alignment-apply"></button>
+        <div id="map-alignment-pins-active"></div>
+        <div id="map-alignment-pins-reference"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const activeImg = document.getElementById("active-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const zoomSlider = document.getElementById("map-alignment-zoom");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
+    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
+    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+
+    const mapOn = vi.fn();
+    const mapSetZoom = vi.fn();
+    const mapInstance = {
+      on: mapOn,
+      off: vi.fn(),
+      remove: vi.fn(),
+      invalidateSize: vi.fn(),
+      setZoom: mapSetZoom,
+      getZoom: vi.fn(() => 16),
+      getMinZoom: vi.fn(() => 16),
+      getMaxZoom: vi.fn(() => 22),
+      setView: vi.fn(),
+      latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+      distance: vi.fn(() => 1),
+      removeLayer: vi.fn(),
+    };
+
+    const originalL = window.L;
+    const originalFetch = global.fetch;
+
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+    window.L = {
+      map: vi.fn(() => mapInstance),
+      tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+      geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+    };
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      pushEvent: vi.fn(),
+      handleEvent: vi.fn(),
+    };
+
+    hook.mounted();
+
+    expect(hook.pushEvent).toHaveBeenCalledWith("map_ready", {});
+    expect(mapOn).toHaveBeenCalledWith("zoomend", expect.any(Function));
+    expect(zoomSlider.value).toBe("16");
+
+    zoomSlider.value = "17";
+    zoomSlider.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(mapSetZoom).toHaveBeenCalledWith(17, { animate: false });
+
+    window.L = originalL;
+    global.fetch = originalFetch;
+  });
+
   it("re-aligns reference overlay on zoom slider input when reference alignment is valid", () => {
     document.body.innerHTML = `
       <div id="root">
@@ -455,32 +577,7 @@ describe("map_alignment_hook zoom slider reference alignment", () => {
       },
     };
 
-    hook._onZoomSliderInput = (e) => {
-      const target = parseFloat(e.target.value);
-      if (!Number.isFinite(target)) return;
-      const current = hook.leafletMap.getZoom();
-      if (target === current) return;
-
-      const canvasRect = hook._leafletRect();
-      if (!canvasRect) return;
-      const canvasW = canvasRect.width;
-      const canvasH = canvasRect.height;
-      const oldCx = canvasW / 2 + hook.transform.tx;
-      const oldCy = canvasH / 2 + hook.transform.ty;
-      const worldCenter = hook.leafletMap.containerPointToLatLng([oldCx, oldCy]);
-      const scaleFactor = Math.pow(2, target - current);
-
-      hook.leafletMap.setZoom(target, {animate: false});
-
-      const newCenterPt = hook.leafletMap.latLngToContainerPoint(worldCenter);
-      hook.transform.tx = newCenterPt.x - canvasW / 2;
-      hook.transform.ty = newCenterPt.y - canvasH / 2;
-      hook.transform.scale = hook.transform.scale * scaleFactor;
-      hook._applyTransform();
-      hook._restoreReferenceOverlayForCurrentView();
-    };
-
-    hook._onZoomSliderInput({ target: { value: "11" } });
+    hook._handleZoomSliderInput({ target: { value: "11" } });
 
     expect(hook._restoreOverlayAlignment).toHaveBeenCalledTimes(1);
     expect(hook._restoreOverlayAlignment).toHaveBeenCalledWith(
@@ -534,33 +631,197 @@ describe("map_alignment_hook zoom slider reference alignment", () => {
       },
     };
 
-    hook._onZoomSliderInput = (e) => {
-      const target = parseFloat(e.target.value);
-      if (!Number.isFinite(target)) return;
-      const current = hook.leafletMap.getZoom();
-      if (target === current) return;
-
-      const canvasRect = hook._leafletRect();
-      if (!canvasRect) return;
-      const canvasW = canvasRect.width;
-      const canvasH = canvasRect.height;
-      const oldCx = canvasW / 2 + hook.transform.tx;
-      const oldCy = canvasH / 2 + hook.transform.ty;
-      const worldCenter = hook.leafletMap.containerPointToLatLng([oldCx, oldCy]);
-      const scaleFactor = Math.pow(2, target - current);
-
-      hook.leafletMap.setZoom(target, {animate: false});
-
-      const newCenterPt = hook.leafletMap.latLngToContainerPoint(worldCenter);
-      hook.transform.tx = newCenterPt.x - canvasW / 2;
-      hook.transform.ty = newCenterPt.y - canvasH / 2;
-      hook.transform.scale = hook.transform.scale * scaleFactor;
-      hook._applyTransform();
-      hook._restoreReferenceOverlayForCurrentView();
-    };
-
-    hook._onZoomSliderInput({ target: { value: "11" } });
+    hook._handleZoomSliderInput({ target: { value: "11" } });
 
     expect(hook._restoreOverlayAlignment).not.toHaveBeenCalled();
+  });
+});
+
+describe("map_alignment_hook active child stops rendering", () => {
+  it("ignores stale active child-stop payload for non-active level", () => {
+    document.body.innerHTML = `
+      <div id="root" data-active-level-id="active-level">
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const activePinsRoot = document.getElementById("map-alignment-pins-active");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _activePinsRoot: activePinsRoot,
+      _activeChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderActiveChildStops({
+      level_id: "other-level",
+      stops: [{ stop_id: "s1", lat: 40.7, lon: -74.0 }],
+    });
+
+    expect(hook._activeChildStops).toEqual([]);
+    expect(activePinsRoot.children.length).toBe(0);
+    expect(hook._positionPins).not.toHaveBeenCalled();
+  });
+
+  it("normalizes numeric-string lat lon and filters invalid coordinates", () => {
+    document.body.innerHTML = `
+      <div id="root" data-active-level-id="active-level">
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const activePinsRoot = document.getElementById("map-alignment-pins-active");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _activePinsRoot: activePinsRoot,
+      _activeChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [
+        { stop_id: "valid-string", lat: "40.7001", lon: "-74.0021" },
+        { stop_id: "invalid-lat", lat: "bad", lon: "-74.0" },
+        { stop_id: "invalid-lon", lat: 40.71, lon: undefined },
+      ],
+    });
+
+    expect(hook._activeChildStops.length).toBe(1);
+    expect(hook._activeChildStops[0]).toMatchObject({
+      stop_id: "valid-string",
+      lat: 40.7001,
+      lon: -74.0021,
+    });
+    expect(activePinsRoot.children.length).toBe(1);
+    const tooltip = activePinsRoot.children[0].lastChild;
+    expect(tooltip.textContent).toBe("A: valid-string");
+    expect(hook._positionPins).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("map_alignment_hook reference child stops rendering", () => {
+  it("ignores stale reference child-stop payload for non-reference level", () => {
+    document.body.innerHTML = `
+      <div id="root" data-reference-level-id="reference-level">
+        <div id="map-alignment-pins-reference"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const referencePinsRoot = document.getElementById("map-alignment-pins-reference");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _referencePinsRoot: referencePinsRoot,
+      _referenceChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderReferenceChildStops({
+      level_id: "other-reference-level",
+      stops: [{ stop_id: "s1", lat: 40.7, lon: -74.0 }],
+    });
+
+    expect(hook._referenceChildStops).toEqual([]);
+    expect(referencePinsRoot.children.length).toBe(0);
+    expect(hook._positionPins).not.toHaveBeenCalled();
+  });
+
+  it("normalizes numeric-string lat lon and filters invalid coordinates", () => {
+    document.body.innerHTML = `
+      <div id="root" data-reference-level-id="reference-level">
+        <div id="map-alignment-pins-reference"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const referencePinsRoot = document.getElementById("map-alignment-pins-reference");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _referencePinsRoot: referencePinsRoot,
+      _referenceChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderReferenceChildStops({
+      level_id: "reference-level",
+      stops: [
+        { stop_id: "valid-string", lat: "40.7001", lon: "-74.0021" },
+        { stop_id: "invalid-lat", lat: "bad", lon: "-74.0" },
+        { stop_id: "invalid-lon", lat: 40.71, lon: undefined },
+      ],
+    });
+
+    expect(hook._referenceChildStops.length).toBe(1);
+    expect(hook._referenceChildStops[0]).toMatchObject({
+      stop_id: "valid-string",
+      lat: 40.7001,
+      lon: -74.0021,
+    });
+    expect(referencePinsRoot.children.length).toBe(1);
+    const tooltip = referencePinsRoot.children[0].lastChild;
+    expect(tooltip.textContent).toBe("R: valid-string");
+    expect(hook._positionPins).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies role-differentiated reference styling with symbol grammar and subdued type-themed colors", () => {
+    document.body.innerHTML = `
+      <div id="root" data-reference-level-id="reference-level">
+        <div id="map-alignment-pins-reference"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const referencePinsRoot = document.getElementById("map-alignment-pins-reference");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _referencePinsRoot: referencePinsRoot,
+      _referenceChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderReferenceChildStops({
+      level_id: "reference-level",
+      level_index: 1,
+      stops: [
+        { stop_id: "u", stop_name: "Upright", location_type: 2, lat: 40.7001, lon: -74.0021 },
+      ],
+    });
+
+    const pin = referencePinsRoot.children[0];
+    const dot = pin.firstChild;
+    const tooltip = pin.lastChild;
+    const typeStrokeHex = activeColorForLocationType(2).stroke;
+    const typeFillHex = activeColorForLocationType(2).fill;
+
+    const normalizeCssColor = (cssColor) => {
+      const sample = document.createElement("div");
+      sample.style.color = cssColor;
+      return sample.style.color;
+    };
+
+    expect(pin.className).toContain("pointer-events-auto");
+    expect(pin.style.width).toBe("8px");
+    expect(pin.style.height).toBe("12px");
+
+    expect(dot.style.backgroundColor).toBe(normalizeCssColor(typeFillHex));
+    expect(dot.style.borderColor).toBe(normalizeCssColor(typeStrokeHex));
+    expect(dot.style.borderStyle).toBe("dashed");
+    expect(dot.style.borderWidth).toBe("1.5px");
+    expect(dot.style.opacity).toBe("0.3");
+    expect(dot.style.borderRadius).toBe("2px");
+    expect(tooltip.textContent).toBe("R: Upright");
   });
 });

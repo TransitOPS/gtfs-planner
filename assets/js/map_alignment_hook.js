@@ -29,6 +29,76 @@ const SCALE_MAX = 4;
 const IDENTITY_TRANSFORM = Object.freeze({tx: 0, ty: 0, rotation: 0, scale: 1});
 const MAP_ALIGNMENT_HOOK_BUILD = "map-align-fix-v2";
 const REFERENCE_OVERLAY_IMG_SELECTOR = "img[data-reference-overlay='true']";
+const ACTIVE_TYPE_COLORS = Object.freeze({
+  rect_upright: Object.freeze({ fill: "#2563EB", stroke: "#1E3A8A" }),
+  rect_square: Object.freeze({ fill: "#CA8A04", stroke: "#713F12" }),
+  circle: Object.freeze({ fill: "#334155", stroke: "#0F172A" })
+});
+
+function shouldEnableMapAlignmentDiagnostics(root) {
+  if (root?.dataset?.mapAlignmentDebugLogging === "true") return true;
+
+  const nodeEnv =
+    typeof process !== "undefined" && process?.env ? process.env.NODE_ENV : undefined;
+
+  if (nodeEnv !== "production") return true;
+
+  try {
+    return window?.localStorage?.getItem("mapAlignmentDebug") === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function createMapAlignmentLogger(root) {
+  const diagnosticsEnabled = shouldEnableMapAlignmentDiagnostics(root);
+
+  return {
+    warn(message, meta) {
+      if (!diagnosticsEnabled) return;
+      if (meta === undefined) {
+        console.warn(message);
+        return;
+      }
+      console.warn(message, meta);
+    },
+
+    error(message, meta) {
+      if (meta === undefined) {
+        console.error(message);
+        return;
+      }
+      console.error(message, meta);
+    }
+  };
+}
+function symbolForLocationType(locationType) {
+  const parsed =
+    typeof locationType === "number"
+      ? locationType
+      : Number.parseInt(String(locationType), 10);
+
+  if (parsed === 0 || parsed === 2) return "rect_upright";
+  if (parsed === 4) return "rect_square";
+  return "circle";
+}
+
+function activeColorForLocationType(locationType) {
+  const parsed =
+    typeof locationType === "number"
+      ? locationType
+      : Number.parseInt(String(locationType), 10);
+
+  if (parsed === 2) {
+    return {
+      fill: "#FFFFFF",
+      stroke: ACTIVE_TYPE_COLORS.rect_upright.fill
+    };
+  }
+
+  const symbol = symbolForLocationType(locationType);
+  return ACTIVE_TYPE_COLORS[symbol] || ACTIVE_TYPE_COLORS.circle;
+}
 
 function ensureSingleReferenceOverlayImage(referenceOverlay) {
   if (!referenceOverlay) return null;
@@ -112,15 +182,15 @@ function overlayCenter(overlay) {
 
 const MapAlignmentHook = {
   mounted() {
-    console.info("MapAlignmentHook: build", {build: MAP_ALIGNMENT_HOOK_BUILD});
+    const root = this.el;
+    this._logger = createMapAlignmentLogger(root);
 
     const L = window.L;
     if (!L) {
-      console.error("MapAlignmentHook: window.L (Leaflet) is not available");
+      this._logger.error("MapAlignmentHook: window.L (Leaflet) is not available");
       return;
     }
 
-    const root = this.el;
     const initialLat = parseFloat(root.dataset.initialLat);
     const initialLon = parseFloat(root.dataset.initialLon);
     const initialZoom = parseInt(root.dataset.initialZoom, 10);
@@ -129,13 +199,6 @@ const MapAlignmentHook = {
     // finite numbers; otherwise treat as absent and fall back to identity.
     const activeAlignment = readActiveAlignment(root);
     const referenceAlignment = readReferenceAlignment(root);
-
-    console.info(
-      activeAlignment
-        ? "MapAlignment: mounted with saved alignment"
-        : "MapAlignment: mounted with no saved alignment",
-      activeAlignment || {}
-    );
 
     const overlay = root.querySelector("#map-alignment-overlay[data-editable-overlay='true']");
     const referenceOverlay = root.querySelector(
@@ -157,7 +220,7 @@ const MapAlignmentHook = {
     const applyBtn = document.getElementById("map-alignment-apply");
 
     if (!overlay || !leafletEl || !rotateHandle || !scaleHandle) {
-      console.error("MapAlignmentHook: required active overlay edit elements are missing");
+      this._logger.error("MapAlignmentHook: required active overlay edit elements are missing");
       return;
     }
 
@@ -243,14 +306,17 @@ const MapAlignmentHook = {
 
     this.leafletMap = map;
 
-    this._pinsRoot = root.querySelector("#map-alignment-pins");
-    this._childStops = [];
+    this._activePinsRoot = root.querySelector("#map-alignment-pins-active");
+    this._referencePinsRoot = root.querySelector("#map-alignment-pins-reference");
+    this._activeChildStops = [];
+    this._referenceChildStops = [];
     this._onMapViewChanged = () => this._positionPins();
     map.on("move", this._onMapViewChanged);
     map.on("zoom", this._onMapViewChanged);
     map.on("viewreset", this._onMapViewChanged);
     map.on("resize", this._onMapViewChanged);
-    this.handleEvent("set_child_stops", (payload) => this._renderChildStops(payload));
+    this.handleEvent("set_active_child_stops", (payload) => this._renderActiveChildStops(payload));
+    this.handleEvent("set_reference_child_stops", (payload) => this._renderReferenceChildStops(payload));
     this.pushEvent("map_ready", {});
 
     if (zoomSlider) {
@@ -258,32 +324,7 @@ const MapAlignmentHook = {
       zoomSlider.max = String(map.getMaxZoom());
       zoomSlider.value = String(map.getZoom());
 
-      this._onZoomSliderInput = (e) => {
-        const target = parseFloat(e.target.value);
-        if (!Number.isFinite(target)) return;
-        const current = map.getZoom();
-        if (target === current) return;
-
-        // Pin the floorplan to the map through the zoom: keep its center at
-        // the same world lat/lon, and scale by 2^Δzoom so it tracks the tiles.
-        const canvasRect = this._leafletRect();
-        if (!canvasRect) return;
-        const canvasW = canvasRect.width;
-        const canvasH = canvasRect.height;
-        const oldCx = canvasW / 2 + this.transform.tx;
-        const oldCy = canvasH / 2 + this.transform.ty;
-        const worldCenter = map.containerPointToLatLng([oldCx, oldCy]);
-        const scaleFactor = Math.pow(2, target - current);
-
-        map.setZoom(target, {animate: false});
-
-        const newCenterPt = map.latLngToContainerPoint(worldCenter);
-        this.transform.tx = newCenterPt.x - canvasW / 2;
-        this.transform.ty = newCenterPt.y - canvasH / 2;
-        this.transform.scale = this.transform.scale * scaleFactor;
-        this._applyTransform();
-        this._restoreReferenceOverlayForCurrentView();
-      };
+      this._onZoomSliderInput = (e) => this._handleZoomSliderInput(e);
       zoomSlider.addEventListener("input", this._onZoomSliderInput);
 
       this._onZoomEnd = () => {
@@ -527,7 +568,6 @@ const MapAlignmentHook = {
   },
 
   destroyed() {
-    console.info("MapAlignment: destroyed", {id: this.el && this.el.id});
     if (this._rafId !== null && this._rafId !== undefined) {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
@@ -616,9 +656,7 @@ const MapAlignmentHook = {
       } catch (_) {}
     }
     this._onMapViewChanged = null;
-    if (this._pinsRoot) this._pinsRoot.innerHTML = "";
-    this._pinsRoot = null;
-    this._childStops = null;
+    this._clearPinLayers();
 
     if (this.leafletMap) {
       // If LiveView has already re-mounted another hook on the same container,
@@ -640,7 +678,7 @@ const MapAlignmentHook = {
 
     const img = overlay.querySelector("img");
     if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) {
-      console.warn("MapAlignmentHook: floorplan image not loaded; skipping save");
+      this._logger.warn("MapAlignmentHook: floorplan image not loaded; skipping save");
       return null;
     }
 
@@ -655,7 +693,7 @@ const MapAlignmentHook = {
       !(canvasW > 0) ||
       !(canvasH > 0)
     ) {
-      console.warn("MapAlignmentHook: invalid map geometry; skipping alignment compute", {
+      this._logger.warn("MapAlignmentHook: invalid map geometry; skipping alignment compute", {
         canvasW,
         canvasH
       });
@@ -685,21 +723,6 @@ const MapAlignmentHook = {
     // scale_mpp = meters per natural image pixel.
     //   (m / canvas_px) × (canvas_px / natural_px) = m / natural_px
     const scaleMpp = metersPerCanvasPx * renderedPxPerImagePx;
-
-    console.info("MapAlignment: computed save payload", {
-      canvasW,
-      canvasH,
-      tx,
-      ty,
-      userScale: scale,
-      metersPerCanvasPx,
-      containWidth,
-      imageNaturalWidth: img.naturalWidth,
-      renderedPxPerImagePx,
-      scaleMpp,
-      mapZoom: map.getZoom(),
-      mapCenter: map.getCenter()
-    });
 
     return {
       center_lat: centerLatLng.lat,
@@ -796,19 +819,19 @@ const MapAlignmentHook = {
   _restoreOverlayAlignment(overlayEl, alignment, img, label) {
     const map = this.leafletMap;
     if (!map || !overlayEl || !img || !img.naturalWidth || !img.naturalHeight) {
-      console.warn("MapAlignment: restore skipped, map or image not ready");
+      this._logger.warn("MapAlignment: restore skipped, map or image not ready");
       return;
     }
 
     const canvasRect = this._leafletRect();
     if (!canvasRect) {
-      console.warn("MapAlignment: restore skipped, leaflet container not ready", {label});
+      this._logger.warn("MapAlignment: restore skipped, leaflet container not ready", {label});
       return;
     }
     const canvasW = canvasRect.width;
     const canvasH = canvasRect.height;
     if (!(canvasW > 0) || !(canvasH > 0)) {
-      console.warn("MapAlignment: restore skipped, canvas has zero size", {canvasW, canvasH});
+      this._logger.warn("MapAlignment: restore skipped, canvas has zero size", {canvasW, canvasH});
       return;
     }
 
@@ -836,18 +859,6 @@ const MapAlignmentHook = {
       rotation: alignment.rotationDeg,
       scale: scale
     };
-
-    console.info("MapAlignment: restored", {
-      label,
-      alignment,
-      canvasW,
-      canvasH,
-      alignedCenterPoint,
-      metersPerCanvasPx,
-      containWidth,
-      imageNaturalWidth: img.naturalWidth,
-      computedScale: restoredTransform.scale
-    });
 
     if (overlayEl === this.overlay) {
       this.transform = restoredTransform;
@@ -990,7 +1001,7 @@ const MapAlignmentHook = {
     const payload = this._computeAlignment();
     if (!payload) return;
     if (!this._isValidAlignmentPayload(payload)) {
-      console.warn("MapAlignmentHook: invalid alignment payload; skipping pushEvent", {
+      this._logger.warn("MapAlignmentHook: invalid alignment payload; skipping pushEvent", {
         eventName,
         payload
       });
@@ -1037,42 +1048,154 @@ const MapAlignmentHook = {
       .catch(() => { /* silent: buildings overlay is optional */ });
   },
 
-  _renderChildStops({stops}) {
+  _handleZoomSliderInput(e) {
+    const map = this.leafletMap;
+    if (!map) return;
+
+    const target = parseFloat(e?.target?.value);
+    if (!Number.isFinite(target)) return;
+    const current = map.getZoom();
+    if (target === current) return;
+
+    // Pin the floorplan to the map through the zoom: keep its center at
+    // the same world lat/lon, and scale by 2^Δzoom so it tracks the tiles.
+    const canvasRect = this._leafletRect();
+    if (!canvasRect) return;
+    const canvasW = canvasRect.width;
+    const canvasH = canvasRect.height;
+    const oldCx = canvasW / 2 + this.transform.tx;
+    const oldCy = canvasH / 2 + this.transform.ty;
+    const worldCenter = map.containerPointToLatLng([oldCx, oldCy]);
+    const scaleFactor = Math.pow(2, target - current);
+
+    map.setZoom(target, {animate: false});
+
+    const newCenterPt = map.latLngToContainerPoint(worldCenter);
+    this.transform.tx = newCenterPt.x - canvasW / 2;
+    this.transform.ty = newCenterPt.y - canvasH / 2;
+    this.transform.scale = this.transform.scale * scaleFactor;
+    this._applyTransform();
+    this._restoreReferenceOverlayForCurrentView();
+  },
+
+  _renderActiveChildStops(payload = {}) {
+    const { stops, level_id: levelId } = payload;
     const received = (stops || []).length;
-    if (!this._pinsRoot) {
-      console.warn("MapAlignment: set_child_stops received but no #map-alignment-pins root", {received});
+    if (!this._activePinsRoot) {
+      this._logger.warn("MapAlignment: set_active_child_stops received but no #map-alignment-pins-active root", {received});
       return;
     }
 
-    this._childStops = (stops || []).filter(
-      (s) => Number.isFinite(s.lat) && Number.isFinite(s.lon)
-    );
+    const activeLevelId = this.el?.dataset?.activeLevelId || null;
+    if (activeLevelId && levelId && String(activeLevelId) !== String(levelId)) {
+      return;
+    }
 
-    console.info("MapAlignment: rendering child-stop pins", {
-      received,
-      rendered: this._childStops.length,
-      sample: this._childStops[0] || null
-    });
+    this._activeChildStops = (stops || [])
+      .map((s) => {
+        const lat = typeof s?.lat === "number" ? s.lat : parseFloat(s?.lat);
+        const lon = typeof s?.lon === "number" ? s.lon : parseFloat(s?.lon);
+        return Number.isFinite(lat) && Number.isFinite(lon) ? { ...s, lat, lon } : null;
+      })
+      .filter(Boolean);
 
-    this._pinsRoot.innerHTML = "";
-    this._childStops.forEach((s) => {
+    this._activePinsRoot.innerHTML = "";
+    this._activeChildStops.forEach((s) => {
+      const symbol = symbolForLocationType(s.location_type);
+      const activeColors = activeColorForLocationType(s.location_type);
       const pin = document.createElement("div");
       pin.className =
         "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
-      pin.style.width = "10px";
-      pin.style.height = "10px";
+      pin.style.width = symbol === "rect_upright" ? "8px" : "10px";
+      pin.style.height = symbol === "rect_upright" ? "12px" : "10px";
 
       const dot = document.createElement("div");
-      dot.className = "w-full h-full rounded-full bg-white border border-black";
+      dot.className = "w-full h-full border";
+      dot.style.backgroundColor = activeColors.fill;
+      dot.style.borderColor = activeColors.stroke;
+
+      if (symbol === "rect_upright") {
+        dot.style.borderRadius = "2px";
+      } else if (symbol === "rect_square") {
+        dot.style.borderRadius = "2px";
+      } else {
+        dot.style.borderRadius = "9999px";
+      }
+
       pin.appendChild(dot);
 
       const tip = document.createElement("div");
       tip.className =
         "absolute left-1/2 bottom-full mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 text-white text-xs px-1.5 py-0.5 opacity-0 group-hover:opacity-100 pointer-events-none";
-      tip.textContent = stopTooltipLabel(s);
+      tip.textContent = stopTooltipLabel(s, "A");
       pin.appendChild(tip);
 
-      this._pinsRoot.appendChild(pin);
+      this._activePinsRoot.appendChild(pin);
+      s._el = pin;
+    });
+
+    this._positionPins();
+  },
+
+  _renderReferenceChildStops(payload = {}) {
+    const {stops, level_id: levelId} = payload;
+    const received = (stops || []).length;
+    if (!this._referencePinsRoot) {
+      this._logger.warn(
+        "MapAlignment: set_reference_child_stops received but no #map-alignment-pins-reference root",
+        {received}
+      );
+      return;
+    }
+
+    const referenceLevelId = this.el?.dataset?.referenceLevelId || null;
+    if (referenceLevelId && levelId && String(referenceLevelId) !== String(levelId)) {
+      return;
+    }
+
+    this._referenceChildStops = (stops || [])
+      .map((s) => {
+        const lat = typeof s?.lat === "number" ? s.lat : parseFloat(s?.lat);
+        const lon = typeof s?.lon === "number" ? s.lon : parseFloat(s?.lon);
+        return Number.isFinite(lat) && Number.isFinite(lon) ? {...s, lat, lon} : null;
+      })
+      .filter(Boolean);
+
+    this._referencePinsRoot.innerHTML = "";
+    this._referenceChildStops.forEach((s) => {
+      const symbol = symbolForLocationType(s.location_type);
+      const activeTypeColors = activeColorForLocationType(s.location_type);
+      const pin = document.createElement("div");
+      pin.className =
+        "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
+      pin.style.width = symbol === "rect_upright" ? "8px" : "10px";
+      pin.style.height = symbol === "rect_upright" ? "12px" : "10px";
+
+      const dot = document.createElement("div");
+      dot.className = "w-full h-full border";
+      dot.style.backgroundColor = activeTypeColors.fill;
+      dot.style.opacity = "0.3";
+      dot.style.borderColor = activeTypeColors.stroke;
+      dot.style.borderStyle = "dashed";
+      dot.style.borderWidth = "1.5px";
+
+      if (symbol === "rect_upright") {
+        dot.style.borderRadius = "2px";
+      } else if (symbol === "rect_square") {
+        dot.style.borderRadius = "2px";
+      } else {
+        dot.style.borderRadius = "9999px";
+      }
+
+      pin.appendChild(dot);
+
+      const tip = document.createElement("div");
+      tip.className =
+        "absolute left-1/2 bottom-full mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 text-white text-xs px-1.5 py-0.5 opacity-0 group-hover:opacity-100 pointer-events-none";
+      tip.textContent = stopTooltipLabel(s, "R");
+      pin.appendChild(tip);
+
+      this._referencePinsRoot.appendChild(pin);
       s._el = pin;
     });
 
@@ -1080,29 +1203,45 @@ const MapAlignmentHook = {
   },
 
   _positionPins() {
-    if (!this._pinsRoot || !this.leafletMap || !this._childStops) return;
-    this._childStops.forEach((s) => {
+    if (!this.leafletMap) return;
+
+    (this._activeChildStops || []).forEach((s) => {
       if (!s._el) return;
       const pt = this.leafletMap.latLngToContainerPoint([s.lat, s.lon]);
       s._el.style.left = `${pt.x}px`;
       s._el.style.top = `${pt.y}px`;
     });
+
+    (this._referenceChildStops || []).forEach((s) => {
+      if (!s._el) return;
+      const pt = this.leafletMap.latLngToContainerPoint([s.lat, s.lon]);
+      s._el.style.left = `${pt.x}px`;
+      s._el.style.top = `${pt.y}px`;
+    });
+  },
+
+  _clearPinLayers() {
+    if (this._activePinsRoot) this._activePinsRoot.innerHTML = "";
+    if (this._referencePinsRoot) this._referencePinsRoot.innerHTML = "";
+    this._activePinsRoot = null;
+    this._referencePinsRoot = null;
+    this._activeChildStops = null;
+    this._referenceChildStops = null;
   }
 };
 
-function stopTooltipLabel(s) {
+function stopTooltipLabel(s, roleTag = "") {
   const name = s.stop_name || s.stop_id || "";
   const platform = s.platform_code ? ` · Plat ${s.platform_code}` : "";
-  return escapeHtml(name + platform);
+  const rolePrefix = roleTag ? `${roleTag}: ` : "";
+  return `${rolePrefix}${name}${platform}`;
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-export { parseAlignmentPayload, readActiveAlignment, readReferenceAlignment };
+export {
+  parseAlignmentPayload,
+  readActiveAlignment,
+  readReferenceAlignment,
+  symbolForLocationType,
+  activeColorForLocationType
+};
 export default MapAlignmentHook;
