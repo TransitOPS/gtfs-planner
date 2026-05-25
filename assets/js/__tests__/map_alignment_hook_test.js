@@ -107,6 +107,11 @@ describe("map_alignment_hook pure helpers", () => {
       stroke: "#1E3A8A",
     });
 
+    expect(activeColorForLocationType(2)).toEqual({
+      fill: "#FFFFFF",
+      stroke: "#2563EB",
+    });
+
     expect(activeColorForLocationType(4)).toEqual({
       fill: "#CA8A04",
       stroke: "#713F12",

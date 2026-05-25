@@ -84,6 +84,18 @@ function symbolForLocationType(locationType) {
 }
 
 function activeColorForLocationType(locationType) {
+  const parsed =
+    typeof locationType === "number"
+      ? locationType
+      : Number.parseInt(String(locationType), 10);
+
+  if (parsed === 2) {
+    return {
+      fill: "#FFFFFF",
+      stroke: ACTIVE_TYPE_COLORS.rect_upright.fill
+    };
+  }
+
   const symbol = symbolForLocationType(locationType);
   return ACTIVE_TYPE_COLORS[symbol] || ACTIVE_TYPE_COLORS.circle;
 }
