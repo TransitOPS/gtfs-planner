@@ -2,6 +2,7 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
   use ExUnit.Case, async: true
 
   import Plug.Test
+  import Plug.Conn
 
   alias GtfsPlannerWeb.UploadsPlug
 
@@ -47,6 +48,61 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn.halted
       assert conn.status == 200
       assert conn.resp_body == file_content
+    end
+
+    test "adds CORS header when served to an allowed (localhost) origin" do
+      org_id = "123"
+      stop_id = "TEST_STATION"
+      filename = "floor_plan.png"
+
+      file_dir = Path.join([@uploads_path, "diagrams", org_id, stop_id])
+      File.mkdir_p!(file_dir)
+      File.write!(Path.join(file_dir, filename), "fake png content")
+
+      conn =
+        conn(:get, "/uploads/diagrams/#{org_id}/#{stop_id}/#{filename}")
+        |> put_req_header("origin", "http://localhost:51091")
+        |> UploadsPlug.call([])
+
+      assert conn.halted
+      assert conn.status == 200
+
+      assert get_resp_header(conn, "access-control-allow-origin") == [
+               "http://localhost:51091"
+             ]
+    end
+
+    test "answers CORS preflight (OPTIONS) for an allowed origin without serving a file" do
+      conn =
+        conn(:options, "/uploads/diagrams/123/TEST_STATION/floor_plan.png")
+        |> put_req_header("origin", "http://localhost:51091")
+        |> UploadsPlug.call([])
+
+      assert conn.halted
+      assert conn.status == 204
+
+      assert get_resp_header(conn, "access-control-allow-origin") == [
+               "http://localhost:51091"
+             ]
+    end
+
+    test "omits CORS header for a disallowed origin" do
+      org_id = "123"
+      stop_id = "TEST_STATION"
+      filename = "floor_plan.png"
+
+      file_dir = Path.join([@uploads_path, "diagrams", org_id, stop_id])
+      File.mkdir_p!(file_dir)
+      File.write!(Path.join(file_dir, filename), "fake png content")
+
+      conn =
+        conn(:get, "/uploads/diagrams/#{org_id}/#{stop_id}/#{filename}")
+        |> put_req_header("origin", "https://evil.example.com")
+        |> UploadsPlug.call([])
+
+      assert conn.halted
+      assert conn.status == 200
+      assert get_resp_header(conn, "access-control-allow-origin") == []
     end
 
     test "passes through when file does not exist" do

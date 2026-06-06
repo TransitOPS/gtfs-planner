@@ -6,6 +6,15 @@ defmodule GtfsPlannerWeb.UploadsPlug do
   directory specified by the `:uploads_path` application configuration.
   If a file is not found, the request is passed to the next plug.
 
+  ## CORS
+
+  Uploaded files (e.g. floorplan diagrams) are fetched cross-origin by the
+  companion web app, so the same CORS policy used by the API
+  (`GtfsPlannerWeb.Plugs.CORS`) is applied here. Without it the browser blocks
+  the response and the image can't be read. Other endpoints get CORS via the
+  router's `:api_cors` pipeline, but this plug runs at the endpoint level,
+  before the router, so it applies CORS itself.
+
   ## Security
 
   This plug implements path traversal protection by validating that the
@@ -19,6 +28,21 @@ defmodule GtfsPlannerWeb.UploadsPlug do
   def init(opts), do: opts
 
   def call(%Plug.Conn{path_info: ["uploads" | rest]} = conn, _opts) do
+    # Apply the shared CORS policy (echoes allowed origins, answers OPTIONS
+    # preflight by halting). For a cross-origin GET it adds the
+    # access-control-allow-origin header the browser requires.
+    conn = GtfsPlannerWeb.Plugs.CORS.call(conn, [])
+
+    if conn.halted do
+      conn
+    else
+      serve_upload(conn, rest)
+    end
+  end
+
+  def call(conn, _opts), do: conn
+
+  defp serve_upload(conn, rest) do
     uploads_base = Application.fetch_env!(:gtfs_planner, :uploads_path)
     uploads_base_expanded = Path.expand(uploads_base)
 
@@ -43,6 +67,4 @@ defmodule GtfsPlannerWeb.UploadsPlug do
         conn
     end
   end
-
-  def call(conn, _opts), do: conn
 end
