@@ -369,6 +369,48 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert String.contains?(floorplan["url"], "B1%2Fbusway%20plan.png")
     end
 
+    test "level floorplan url uses the encoded storage directory for unsafe station stop_id", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      level = level_fixture(org.id, version.id)
+
+      station =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "station/with spaces",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      {:ok, _stop_level} =
+        %StopLevel{
+          stop_id: station.id,
+          level_id: level.id,
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          diagram_filename: "concourse.png",
+          floorplan_center_lat: 39.9536,
+          floorplan_center_lon: -75.1632,
+          floorplan_scale_mpp: 0.05,
+          floorplan_rotation_deg: 12.5
+        }
+        |> Repo.insert()
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      encoded_dir = "sid_" <> Base.url_encode64(station.stop_id, padding: false)
+
+      assert %{"data" => data} = json_response(conn, 200)
+      floorplan = Enum.find(data["levels"], &(&1["id"] == level.id))["floorplan"]
+
+      assert floorplan["url"] =~ "/uploads/diagrams/#{org.id}/#{encoded_dir}/concourse.png"
+    end
+
     test "level floorplan is null when the stop_level has a diagram but incomplete alignment",
          %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)
@@ -391,6 +433,53 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
 
       assert %{"data" => data} = json_response(conn, 200)
       assert Enum.find(data["levels"], &(&1["id"] == level.id))["floorplan"] == nil
+    end
+
+    test "stop coordinates serialize decimal values as numbers and nil values as null", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      level = level_fixture(org.id, version.id)
+      station = stop_fixture(org.id, version.id, %{location_type: 1, parent_station: nil})
+
+      decimal_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "decimal_stop",
+          stop_name: "Decimal Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          stop_lat: Decimal.new("39.9536"),
+          stop_lon: Decimal.new("-75.1632")
+        })
+
+      nil_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "nil_stop",
+          stop_name: "Nil Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => data} = json_response(conn, 200)
+
+      decimal_stop_json = Enum.find(data["stops"], &(&1["id"] == decimal_stop.id))
+      nil_stop_json = Enum.find(data["stops"], &(&1["id"] == nil_stop.id))
+
+      assert decimal_stop_json["lat"] == 39.9536
+      assert decimal_stop_json["lon"] == -75.1632
+      assert nil_stop_json["lat"] == nil
+      assert nil_stop_json["lon"] == nil
     end
 
     test "bundle includes field_notes and field_completed_at in pathway serialization", %{
