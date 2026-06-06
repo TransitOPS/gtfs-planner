@@ -466,6 +466,28 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
           stop_lon: nil
         })
 
+      lat_only_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "lat_only_stop",
+          stop_name: "Lat Only Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          stop_lat: Decimal.new("40.0"),
+          stop_lon: nil
+        })
+
+      lon_only_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "lon_only_stop",
+          stop_name: "Lon Only Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          stop_lat: nil,
+          stop_lon: Decimal.new("-75.0")
+        })
+
       conn =
         conn
         |> authed_conn(user)
@@ -475,11 +497,17 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
 
       decimal_stop_json = Enum.find(data["stops"], &(&1["id"] == decimal_stop.id))
       nil_stop_json = Enum.find(data["stops"], &(&1["id"] == nil_stop.id))
+      lat_only_stop_json = Enum.find(data["stops"], &(&1["id"] == lat_only_stop.id))
+      lon_only_stop_json = Enum.find(data["stops"], &(&1["id"] == lon_only_stop.id))
 
       assert decimal_stop_json["lat"] == 39.9536
       assert decimal_stop_json["lon"] == -75.1632
       assert nil_stop_json["lat"] == nil
       assert nil_stop_json["lon"] == nil
+      assert lat_only_stop_json["lat"] == nil
+      assert lat_only_stop_json["lon"] == nil
+      assert lon_only_stop_json["lat"] == nil
+      assert lon_only_stop_json["lon"] == nil
     end
 
     test "bundle includes field_notes and field_completed_at in pathway serialization", %{

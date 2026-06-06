@@ -167,6 +167,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
   end
 
   defp serialize_stop(stop) do
+    {lat, lon} = serialize_coordinates(stop.stop_lat, stop.stop_lon)
+
     %{
       id: stop.id,
       stop_id: stop.stop_id,
@@ -177,10 +179,14 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       wheelchair_boarding: stop.wheelchair_boarding,
       platform_code: stop.platform_code,
       diagram_coordinate: stop.diagram_coordinate,
-      lat: decimal_to_number(stop.stop_lat),
-      lon: decimal_to_number(stop.stop_lon)
+      lat: lat,
+      lon: lon
     }
   end
+
+  defp serialize_coordinates(nil, _lon), do: {nil, nil}
+  defp serialize_coordinates(_lat, nil), do: {nil, nil}
+  defp serialize_coordinates(lat, lon), do: {decimal_to_number(lat), decimal_to_number(lon)}
 
   defp decimal_to_number(%Decimal{} = d), do: Decimal.to_float(d)
   defp decimal_to_number(nil), do: nil
