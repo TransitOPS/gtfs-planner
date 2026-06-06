@@ -343,7 +343,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
           level_id: level.id,
           organization_id: org.id,
           gtfs_version_id: version.id,
-          diagram_filename: "B1_busway.png",
+          diagram_filename: "B1/busway plan.png",
           floorplan_center_lat: 39.9536,
           floorplan_center_lon: -75.1632,
           floorplan_scale_mpp: 0.05,
@@ -359,14 +359,14 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert %{"data" => data} = json_response(conn, 200)
       floorplan = Enum.find(data["levels"], &(&1["id"] == level.id))["floorplan"]
 
-      assert floorplan["filename"] == "B1_busway.png"
+      assert floorplan["filename"] == "B1/busway plan.png"
       assert floorplan["center_lat"] == 39.9536
       assert floorplan["center_lon"] == -75.1632
       assert floorplan["scale_mpp"] == 0.05
       assert floorplan["rotation_deg"] == 12.5
       assert is_binary(floorplan["url"])
       assert String.contains?(floorplan["url"], "/uploads/diagrams/")
-      assert String.contains?(floorplan["url"], "B1_busway.png")
+      assert String.contains?(floorplan["url"], "B1%2Fbusway%20plan.png")
     end
 
     test "level floorplan is null when the stop_level has a diagram but incomplete alignment",

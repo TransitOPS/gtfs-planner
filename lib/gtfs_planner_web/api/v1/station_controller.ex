@@ -157,7 +157,9 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
   defp floorplan_url(org_id, station_stop_id, filename) do
     case PathSafety.stop_storage_dir(station_stop_id) do
       dir when is_binary(dir) ->
-        "#{Endpoint.url()}/uploads/diagrams/#{org_id}/#{dir}/#{URI.encode(filename)}"
+        encoded_filename = URI.encode(filename, &URI.char_unreserved?/1)
+
+        "#{Endpoint.url()}/uploads/diagrams/#{org_id}/#{dir}/#{encoded_filename}"
 
       _ ->
         nil
