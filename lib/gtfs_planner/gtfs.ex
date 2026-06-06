@@ -1882,7 +1882,7 @@ defmodule GtfsPlanner.Gtfs do
           sl.organization_id == ^organization_id and
             sl.gtfs_version_id == ^gtfs_version_id and
             sl.stop_id == ^parent_station_id,
-        select: %{level: l, diagram_filename: sl.diagram_filename}
+        select: %{level: l, stop_level: sl, diagram_filename: sl.diagram_filename}
       )
       |> Repo.all()
 
@@ -1935,8 +1935,14 @@ defmodule GtfsPlanner.Gtfs do
 
       stop_count = Map.get(levels_from_stops, level_id, 0)
       diagram_filename = if from_stop_levels, do: from_stop_levels.diagram_filename, else: nil
+      stop_level = if from_stop_levels, do: from_stop_levels.stop_level, else: nil
 
-      %{level: level, stop_count: stop_count, diagram_filename: diagram_filename}
+      %{
+        level: level,
+        stop_count: stop_count,
+        diagram_filename: diagram_filename,
+        stop_level: stop_level
+      }
     end)
     |> Enum.sort_by(& &1.level.level_index, :asc)
   end
