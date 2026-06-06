@@ -2,7 +2,10 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
   use GtfsPlannerWeb, :controller
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Endpoint
 
   @default_page 1
   @default_per_page 25
@@ -76,6 +79,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       child_stops = Gtfs.list_child_stops_for_parent(org_id, version_id, station.id)
       levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
       pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
+      floorplans = Gtfs.map_floorplans_for_station(org_id, version_id, station.id)
 
       json(conn, %{
         data: %{
@@ -84,10 +88,9 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
             stop_id: station.stop_id,
             stop_name: station.stop_name
           },
-          levels: Enum.map(levels, &serialize_level/1),
+          levels: Enum.map(levels, &serialize_level(&1, floorplans, org_id, station.stop_id)),
           stops: Enum.map(child_stops, &serialize_stop/1),
           pathways: Enum.map(pathways, &serialize_pathway/1),
-          diagrams: [],
           downloaded_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
         }
       })
@@ -105,17 +108,60 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     end
   end
 
-  defp serialize_level(%{level: level}) do
-    serialize_level(level)
+  defp serialize_level(%{level: level}, floorplans, org_id, station_stop_id) do
+    serialize_level(level, floorplans, org_id, station_stop_id)
   end
 
-  defp serialize_level(%{id: _} = level) do
+  defp serialize_level(%{id: _} = level, floorplans, org_id, station_stop_id) do
     %{
       id: level.id,
       level_id: level.level_id,
       level_index: level.level_index,
-      level_name: level.level_name
+      level_name: level.level_name,
+      floorplan: serialize_floorplan(Map.get(floorplans, level.id), org_id, station_stop_id)
     }
+  end
+
+  # A floorplan is only mappable when it has an image and a complete alignment;
+  # an unaligned image cannot be placed on the map, so emit null.
+  defp serialize_floorplan(
+         %StopLevel{diagram_filename: filename} = stop_level,
+         org_id,
+         station_stop_id
+       )
+       when is_binary(filename) and filename != "" do
+    if StopLevel.alignment_complete?(stop_level) do
+      case floorplan_url(org_id, station_stop_id, filename) do
+        nil ->
+          nil
+
+        url ->
+          %{
+            filename: filename,
+            url: url,
+            center_lat: stop_level.floorplan_center_lat,
+            center_lon: stop_level.floorplan_center_lon,
+            scale_mpp: stop_level.floorplan_scale_mpp,
+            rotation_deg: stop_level.floorplan_rotation_deg
+          }
+      end
+    else
+      nil
+    end
+  end
+
+  defp serialize_floorplan(_stop_level, _org_id, _station_stop_id), do: nil
+
+  # Floorplan images are served as static files under /uploads (see UploadsPlug),
+  # not via an /api/v1 endpoint. Return an absolute URL the client can GET directly.
+  defp floorplan_url(org_id, station_stop_id, filename) do
+    case PathSafety.stop_storage_dir(station_stop_id) do
+      dir when is_binary(dir) ->
+        "#{Endpoint.url()}/uploads/diagrams/#{org_id}/#{dir}/#{URI.encode(filename)}"
+
+      _ ->
+        nil
+    end
   end
 
   defp serialize_stop(stop) do
@@ -128,9 +174,15 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       parent_station: stop.parent_station,
       wheelchair_boarding: stop.wheelchair_boarding,
       platform_code: stop.platform_code,
-      diagram_coordinate: stop.diagram_coordinate
+      diagram_coordinate: stop.diagram_coordinate,
+      lat: decimal_to_number(stop.stop_lat),
+      lon: decimal_to_number(stop.stop_lon)
     }
   end
+
+  defp decimal_to_number(%Decimal{} = d), do: Decimal.to_float(d)
+  defp decimal_to_number(nil), do: nil
+  defp decimal_to_number(n) when is_number(n), do: n
 
   defp parse_page(params) do
     case params["page"] do

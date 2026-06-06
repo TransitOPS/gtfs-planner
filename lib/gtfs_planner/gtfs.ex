@@ -2136,6 +2136,28 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns the `StopLevel` rows (floorplan filename + alignment) for a station's
+  parent stop, keyed by level UUID. Used to attach floorplan metadata to each
+  level in the companion bundle.
+
+  ## Examples
+
+      iex> map_floorplans_for_station(org_id, version_id, parent_id)
+      %{"level-uuid" => %StopLevel{diagram_filename: "B1.png", ...}}
+  """
+  def map_floorplans_for_station(organization_id, gtfs_version_id, parent_station_id) do
+    from(sl in StopLevel,
+      where:
+        sl.organization_id == ^organization_id and
+          sl.gtfs_version_id == ^gtfs_version_id and
+          sl.stop_id == ^parent_station_id,
+      select: sl
+    )
+    |> Repo.all()
+    |> Map.new(fn %StopLevel{level_id: level_id} = sl -> {level_id, sl} end)
+  end
+
+  @doc """
   Returns pathways where from_stop or to_stop is a child of the given station.
 
   ## Examples

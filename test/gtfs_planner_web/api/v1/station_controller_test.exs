@@ -7,6 +7,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.StopLevel
+  alias GtfsPlanner.Repo
 
   # ---------------------------------------------------------------------------
   # Helpers
@@ -304,16 +306,91 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert data["station"]["stop_name"] == station.stop_name
 
       assert length(data["levels"]) == 1
-      assert hd(data["levels"])["id"] == level.id
+      level_json = hd(data["levels"])
+      assert level_json["id"] == level.id
+      # No stop_level/alignment for this level → floorplan is null.
+      assert Map.has_key?(level_json, "floorplan")
+      assert level_json["floorplan"] == nil
 
       assert length(data["stops"]) == 2
+      # Stops carry resolved coordinates as JSON numbers (from stop_lat/stop_lon).
+      stop_json = hd(data["stops"])
+      assert is_number(stop_json["lat"])
+      assert is_number(stop_json["lon"])
 
       assert length(data["pathways"]) == 1
       p = hd(data["pathways"])
       assert p["id"] == pathway.id
       assert p["pathway_id"] == pathway.pathway_id
 
+      # The legacy diagrams[] array is gone.
+      refute Map.has_key?(data, "diagrams")
+
       assert is_binary(data["downloaded_at"])
+    end
+
+    test "level floorplan carries url + alignment when the stop_level is aligned", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, level: level} = build_station_data(org.id, version.id)
+
+      {:ok, _stop_level} =
+        %StopLevel{
+          stop_id: station.id,
+          level_id: level.id,
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          diagram_filename: "B1_busway.png",
+          floorplan_center_lat: 39.9536,
+          floorplan_center_lon: -75.1632,
+          floorplan_scale_mpp: 0.05,
+          floorplan_rotation_deg: 12.5
+        }
+        |> Repo.insert()
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      floorplan = Enum.find(data["levels"], &(&1["id"] == level.id))["floorplan"]
+
+      assert floorplan["filename"] == "B1_busway.png"
+      assert floorplan["center_lat"] == 39.9536
+      assert floorplan["center_lon"] == -75.1632
+      assert floorplan["scale_mpp"] == 0.05
+      assert floorplan["rotation_deg"] == 12.5
+      assert is_binary(floorplan["url"])
+      assert String.contains?(floorplan["url"], "/uploads/diagrams/")
+      assert String.contains?(floorplan["url"], "B1_busway.png")
+    end
+
+    test "level floorplan is null when the stop_level has a diagram but incomplete alignment",
+         %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, level: level} = build_station_data(org.id, version.id)
+
+      {:ok, _stop_level} =
+        %StopLevel{
+          stop_id: station.id,
+          level_id: level.id,
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          diagram_filename: "B1_busway.png"
+        }
+        |> Repo.insert()
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert Enum.find(data["levels"], &(&1["id"] == level.id))["floorplan"] == nil
     end
 
     test "bundle includes field_notes and field_completed_at in pathway serialization", %{
