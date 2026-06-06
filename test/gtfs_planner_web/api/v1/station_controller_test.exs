@@ -323,8 +323,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert p["id"] == pathway.id
       assert p["pathway_id"] == pathway.pathway_id
 
-      # The legacy diagrams[] array is gone.
-      refute Map.has_key?(data, "diagrams")
+      # Keep the legacy diagrams[] array for companion client compatibility.
+      assert data["diagrams"] == []
 
       assert is_binary(data["downloaded_at"])
     end

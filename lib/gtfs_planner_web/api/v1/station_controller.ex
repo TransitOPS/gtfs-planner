@@ -79,7 +79,6 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       child_stops = Gtfs.list_child_stops_for_parent(org_id, version_id, station.id)
       levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
       pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
-      floorplans = Gtfs.map_floorplans_for_station(org_id, version_id, station.id)
 
       json(conn, %{
         data: %{
@@ -88,9 +87,10 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
             stop_id: station.stop_id,
             stop_name: station.stop_name
           },
-          levels: Enum.map(levels, &serialize_level(&1, floorplans, org_id, station.stop_id)),
+          levels: Enum.map(levels, &serialize_level(&1, org_id, station.stop_id)),
           stops: Enum.map(child_stops, &serialize_stop/1),
           pathways: Enum.map(pathways, &serialize_pathway/1),
+          diagrams: [],
           downloaded_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
         }
       })
@@ -108,17 +108,17 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     end
   end
 
-  defp serialize_level(%{level: level}, floorplans, org_id, station_stop_id) do
-    serialize_level(level, floorplans, org_id, station_stop_id)
+  defp serialize_level(%{level: level} = level_data, org_id, station_stop_id) do
+    serialize_level(level, Map.get(level_data, :stop_level), org_id, station_stop_id)
   end
 
-  defp serialize_level(%{id: _} = level, floorplans, org_id, station_stop_id) do
+  defp serialize_level(%{id: _} = level, stop_level, org_id, station_stop_id) do
     %{
       id: level.id,
       level_id: level.level_id,
       level_index: level.level_index,
       level_name: level.level_name,
-      floorplan: serialize_floorplan(Map.get(floorplans, level.id), org_id, station_stop_id)
+      floorplan: serialize_floorplan(stop_level, org_id, station_stop_id)
     }
   end
 

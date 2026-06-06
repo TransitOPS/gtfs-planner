@@ -1696,12 +1696,13 @@ defmodule GtfsPlanner.GtfsTest do
       })
 
       # Also create stop_level associations to test diagram_filename (optional)
-      Gtfs.create_stop_level(%{
-        stop_id: station_a.id,
-        level_id: level1.id,
-        organization_id: org.id,
-        gtfs_version_id: version.id
-      })
+      {:ok, stop_level1} =
+        Gtfs.create_stop_level(%{
+          stop_id: station_a.id,
+          level_id: level1.id,
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
 
       Gtfs.create_stop_level(%{
         stop_id: station_a.id,
@@ -1723,6 +1724,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert length(result_a) == 2
       assert Enum.any?(result_a, fn %{level: l} -> l.id == level1.id end)
       assert Enum.any?(result_a, fn %{level: l} -> l.id == level2.id end)
+
+      assert Enum.any?(result_a, fn %{level: l, stop_level: sl} ->
+               l.id == level1.id and sl.id == stop_level1.id
+             end)
 
       # Verify station B returns empty list (no levels assigned)
       result_b = Gtfs.list_levels_for_station(org.id, version.id, station_b.id)
