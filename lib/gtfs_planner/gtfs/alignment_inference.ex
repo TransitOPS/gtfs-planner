@@ -3,9 +3,13 @@ defmodule GtfsPlanner.Gtfs.AlignmentInference do
   Pure inference of floorplan alignment from anchored stops.
 
   Solves a 2D similarity transform (uniform scale, rotation, translation)
-  that maps SVG percentage coordinates (0-100) to local meter offsets
-  derived from anchor latitude/longitude, then reconstructs the four
-  alignment fields consumed by `GtfsPlanner.Gtfs.FloorplanTransform`.
+  that maps diagram coordinates (width-normalized, top-left anchored — see
+  `GtfsPlanner.Gtfs.FloorplanTransform`'s coordinate conventions) to local
+  meter offsets derived from anchor latitude/longitude, then reconstructs the
+  four alignment fields consumed by `FloorplanTransform`. The anchor
+  parameterization mirrors `FloorplanTransform.project/4` exactly so inferred
+  alignments round-trip, and the fitted parameters carry their physical
+  meaning (center = painted image center, scale_mpp = meters per image pixel).
 
   No Ecto, Repo, or LiveView dependencies.
   """
@@ -227,22 +231,37 @@ defmodule GtfsPlanner.Gtfs.AlignmentInference do
   defp check_count(_), do: {:error, :insufficient_anchors}
 
   defp solve(anchors, image_w, image_h) do
-    fit = max(image_w, image_h) / 100.0
+    # Diagram units → pixel offsets from the painted image center, mirroring
+    # FloorplanTransform.project (width-normalized units, true-center anchor)
+    # so inferred alignments round-trip exactly and the fitted parameters keep
+    # their physical meaning (center = image center, scale_mpp = m / px).
+    unit = image_w / 100.0
+    half_w = image_w / 2.0
+    half_h = image_h / 2.0
     lat0 = mean(Enum.map(anchors, & &1.lat))
     lon0 = mean(Enum.map(anchors, & &1.lon))
 
-    with {:ok, first} <- solve_pass(anchors, fit, lat0, lon0, :math.cos(deg_to_rad(lat0))),
+    with {:ok, first} <-
+           solve_pass(anchors, unit, half_w, half_h, lat0, lon0, :math.cos(deg_to_rad(lat0))),
          refined_center_lat <- lat0 - first.transform.ty / @meters_per_degree_lat,
          {:ok, solution} <-
-           solve_pass(anchors, fit, lat0, lon0, :math.cos(deg_to_rad(refined_center_lat))) do
+           solve_pass(
+             anchors,
+             unit,
+             half_w,
+             half_h,
+             lat0,
+             lon0,
+             :math.cos(deg_to_rad(refined_center_lat))
+           ) do
       {:ok, Map.put(solution, :anchor_count, length(anchors))}
     end
   end
 
-  defp solve_pass(anchors, fit, lat0, lon0, cos_lat) do
+  defp solve_pass(anchors, unit, half_w, half_h, lat0, lon0, cos_lat) do
     pq =
       Enum.map(anchors, fn a ->
-        p = {(a.svg_x - 50.0) * fit, (a.svg_y - 50.0) * fit}
+        p = {a.svg_x * unit - half_w, a.svg_y * unit - half_h}
         east = (a.lon - lon0) * @meters_per_degree_lat * cos_lat
         south = -(a.lat - lat0) * @meters_per_degree_lat
         {p, {east, south}}

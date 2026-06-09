@@ -23,15 +23,21 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransformTest do
   defp cos_center_lat, do: :math.cos(@center_lat * :math.pi() / 180.0)
 
   describe "svg_to_lat_lon/4 AC 1: east offset at rotation 0" do
-    test "point east of center yields larger lon, unchanged lat" do
+    test "point east of the image center yields larger lon, unchanged lat" do
       image_w = 200
       image_h = 100
-      fit = max(image_w, image_h) / 100.0
+      unit = image_w / 100.0
+      # The image's vertical center in diagram units is 50 * h/w (the space is
+      # width-normalized, top-left anchored), not 50.
+      center_y_units = 50.0 * image_h / image_w
 
       {:ok, {lat, lon}} =
-        FloorplanTransform.svg_to_lat_lon(alignment(), image_w, image_h, %{x: 70.0, y: 50.0})
+        FloorplanTransform.svg_to_lat_lon(alignment(), image_w, image_h, %{
+          x: 70.0,
+          y: center_y_units
+        })
 
-      expected_meters_east = (70.0 - 50.0) * fit * @scale_mpp
+      expected_meters_east = (70.0 - 50.0) * unit * @scale_mpp
 
       expected_lon =
         @center_lon + expected_meters_east / (@meters_per_degree_lat * cos_center_lat())
@@ -110,22 +116,61 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransformTest do
     end
   end
 
-  describe "svg_to_lat_lon/4 AC 5: center point on landscape image" do
-    test "(50, 50) maps to center" do
+  describe "svg_to_lat_lon/4 AC 5: image center on landscape image" do
+    test "the painted image center maps to (center_lat, center_lon)" do
+      image_w = 800
+      image_h = 400
+      # Width-normalized space: the image center is (50, 50 * h/w).
+      center_y_units = 50.0 * image_h / image_w
+
       {:ok, {lat, lon}} =
-        FloorplanTransform.svg_to_lat_lon(alignment(), 800, 400, %{x: 50.0, y: 50.0})
+        FloorplanTransform.svg_to_lat_lon(alignment(), image_w, image_h, %{
+          x: 50.0,
+          y: center_y_units
+        })
 
       assert_in_delta lat, @center_lat, 1.0e-12
       assert_in_delta lon, @center_lon, 1.0e-12
     end
   end
 
-  describe "svg_to_lat_lon/4 AC 6: center point on portrait image" do
-    test "(50, 50) maps to center" do
+  describe "svg_to_lat_lon/4 AC 6: image center on portrait image" do
+    test "the painted image center maps to (center_lat, center_lon), past y = 50" do
+      image_w = 400
+      image_h = 800
+      # Portrait: the image extends past y = 100; its center sits at y = 100.
+      center_y_units = 50.0 * image_h / image_w
+      assert center_y_units == 100.0
+
       {:ok, {lat, lon}} =
-        FloorplanTransform.svg_to_lat_lon(alignment(), 400, 800, %{x: 50.0, y: 50.0})
+        FloorplanTransform.svg_to_lat_lon(alignment(), image_w, image_h, %{
+          x: 50.0,
+          y: center_y_units
+        })
 
       assert_in_delta lat, @center_lat, 1.0e-12
+      assert_in_delta lon, @center_lon, 1.0e-12
+    end
+  end
+
+  describe "svg_to_lat_lon/4 AC 6b: width-normalized units on a portrait image" do
+    test "a y offset scales by image WIDTH, not max(w, h)" do
+      image_w = 400
+      image_h = 800
+      unit = image_w / 100.0
+      center_y_units = 50.0 * image_h / image_w
+      dy_units = 10.0
+
+      {:ok, {lat, lon}} =
+        FloorplanTransform.svg_to_lat_lon(alignment(), image_w, image_h, %{
+          x: 50.0,
+          y: center_y_units + dy_units
+        })
+
+      expected_meters_south = dy_units * unit * @scale_mpp
+      expected_lat = @center_lat - expected_meters_south / @meters_per_degree_lat
+
+      assert_in_delta lat, expected_lat, 1.0e-12
       assert_in_delta lon, @center_lon, 1.0e-12
     end
   end

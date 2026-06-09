@@ -3096,7 +3096,9 @@ defmodule GtfsPlanner.GtfsTest do
           location_type: 0,
           parent_station: station.stop_id,
           level_id: level.level_id,
-          diagram_coordinate: %{x: 50, y: 50}
+          # The painted image center in width-normalized diagram units is
+          # (50, 50 * h/w) — (50, 40) for a 1000x800 image.
+          diagram_coordinate: %{x: 50, y: 40}
         })
 
       attrs = %{
@@ -3191,7 +3193,8 @@ defmodule GtfsPlanner.GtfsTest do
           location_type: 0,
           parent_station: station.stop_id,
           level_id: active_level.level_id,
-          diagram_coordinate: %{x: 50, y: 50},
+          # Image center for a 1000x800 image in width-normalized units.
+          diagram_coordinate: %{x: 50, y: 40},
           stop_lat: Decimal.new("1.0"),
           stop_lon: Decimal.new("2.0")
         })
@@ -3336,7 +3339,8 @@ defmodule GtfsPlanner.GtfsTest do
           location_type: 0,
           parent_station: station.stop_id,
           level_id: active_level.level_id,
-          diagram_coordinate: %{x: 50, y: 50}
+          # Image center for a 1000x800 image in width-normalized units.
+          diagram_coordinate: %{x: 50, y: 40}
         })
 
       _stop_nil_coord =
@@ -3471,7 +3475,8 @@ defmodule GtfsPlanner.GtfsTest do
           location_type: 0,
           parent_station: station.stop_id,
           level_id: active_level.level_id,
-          diagram_coordinate: %{x: 50, y: 50},
+          # Image center for a 1000x800 image in width-normalized units.
+          diagram_coordinate: %{x: 50, y: 40},
           stop_lat: Decimal.new("1.0"),
           stop_lon: Decimal.new("2.0")
         })
@@ -3492,7 +3497,7 @@ defmodule GtfsPlanner.GtfsTest do
       reloaded_a = Repo.get!(GtfsPlanner.Gtfs.Stop, stop_a.id)
       reloaded_b = Repo.get!(GtfsPlanner.Gtfs.Stop, stop_b.id)
 
-      # Center of diagram (50,50) maps exactly to center_lat/center_lon.
+      # The painted image center maps exactly to center_lat/center_lon.
       assert_in_delta Decimal.to_float(reloaded_a.stop_lat), 40.7128, 1.0e-9
       assert_in_delta Decimal.to_float(reloaded_a.stop_lon), -74.0060, 1.0e-9
 
