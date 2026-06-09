@@ -141,6 +141,32 @@ defmodule GtfsPlanner.Gtfs.AlignmentInferenceTest do
       assert_in_delta result.rotation_deg, alignment.rotation_deg, 1.0e-6
       assert_in_delta result.rmse_meters, 0.0, 1.0e-8
     end
+
+    test "recovers known alignment on a portrait image" do
+      alignment = %{
+        center_lat: 40.75,
+        center_lon: -73.99,
+        scale_mpp: 0.75,
+        rotation_deg: -8.0
+      }
+
+      pw = 400
+      ph = 800
+      center_y = 50.0 * ph / pw
+
+      a1 = anchor_from_svg(alignment, pw, ph, "s1", 20.0, center_y - 30.0)
+      a2 = anchor_from_svg(alignment, pw, ph, "s2", 80.0, center_y + 40.0)
+      a3 = anchor_from_svg(alignment, pw, ph, "s3", 45.0, center_y + 10.0)
+
+      assert {:ok, result} = AlignmentInference.infer_alignment([a1, a2, a3], pw, ph)
+
+      assert_in_delta result.center_lat, alignment.center_lat, 1.0e-8
+      assert_in_delta result.center_lon, alignment.center_lon, 1.0e-8
+      assert_in_delta result.scale_mpp, alignment.scale_mpp, 1.0e-8
+      assert_in_delta result.rotation_deg, alignment.rotation_deg, 1.0e-6
+      assert_in_delta result.rmse_meters, 0.0, 1.0e-8
+      assert result.anchor_count == 3
+    end
   end
 
   describe "select_anchors/2" do
