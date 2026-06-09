@@ -3,6 +3,20 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransform do
   Pure transform from floorplan SVG coordinate space to geographic
   latitude/longitude using saved alignment metadata.
 
+  ## Coordinate conventions
+
+  Diagram (SVG) coordinates are **width-normalized and top-left anchored**,
+  matching the canvas they are authored in (`DiagramCanvas` renders the image
+  with its width spanning the full 0–100 viewBox range, anchored top-left):
+  one diagram unit is `image_w / 100` pixels on **both** axes, so a portrait
+  image extends past `y = 100`.
+
+  The alignment anchor (`center_lat`/`center_lon`) is the **painted image
+  center** — pixel `(image_w / 2, image_h / 2)` — and `scale_mpp` is meters
+  per natural image pixel, matching how `MapAlignmentHook._computeAlignment`
+  defines them when an operator saves a manual alignment. `rotation_deg`
+  rotates clockwise about that center.
+
   The transform is deterministic and has no Repo, Ecto, or LiveView
   dependencies.
   """
@@ -77,9 +91,12 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransform do
   defp validate_point(_), do: {:error, :invalid_point}
 
   defp project(a, image_w, image_h, point) do
-    fit = max(image_w, image_h) / 100.0
-    dx_img = (point.x - 50.0) * fit
-    dy_img = (point.y - 50.0) * fit
+    # One diagram unit is image_w / 100 px on BOTH axes (width-normalized,
+    # top-left anchored — see the module doc), and the alignment anchor is the
+    # painted image center, so offsets are taken from (image_w/2, image_h/2).
+    unit = image_w / 100.0
+    dx_img = point.x * unit - image_w / 2.0
+    dy_img = point.y * unit - image_h / 2.0
 
     rotation_rad = deg_to_rad(a.rotation_deg)
     cos_r = :math.cos(rotation_rad)
