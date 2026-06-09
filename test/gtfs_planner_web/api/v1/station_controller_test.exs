@@ -411,7 +411,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert floorplan["url"] =~ "/uploads/diagrams/#{org.id}/#{encoded_dir}/concourse.png"
     end
 
-    test "level floorplan is null when the stop_level has a diagram but incomplete alignment",
+    test "level floorplan carries the image with null alignment when the stop_level has a diagram but incomplete alignment",
          %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)
       %{station: station, level: level} = build_station_data(org.id, version.id)
@@ -423,6 +423,39 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
           organization_id: org.id,
           gtfs_version_id: version.id,
           diagram_filename: "B1_busway.png"
+        }
+        |> Repo.insert()
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      floorplan = Enum.find(data["levels"], &(&1["id"] == level.id))["floorplan"]
+
+      # The diagram image is emitted independent of alignment so the client can
+      # render it in diagram space; the alignment fields are null.
+      assert floorplan["filename"] == "B1_busway.png"
+      assert is_binary(floorplan["url"])
+      assert String.contains?(floorplan["url"], "/uploads/diagrams/")
+      assert floorplan["center_lat"] == nil
+      assert floorplan["center_lon"] == nil
+      assert floorplan["scale_mpp"] == nil
+      assert floorplan["rotation_deg"] == nil
+    end
+
+    test "level floorplan is null when the stop_level has no diagram image",
+         %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, level: level} = build_station_data(org.id, version.id)
+
+      {:ok, _stop_level} =
+        %StopLevel{
+          stop_id: station.id,
+          level_id: level.id,
+          organization_id: org.id,
+          gtfs_version_id: version.id
         }
         |> Repo.insert()
 

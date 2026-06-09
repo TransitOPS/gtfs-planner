@@ -122,31 +122,34 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     }
   end
 
-  # A floorplan is only mappable when it has an image and a complete alignment;
-  # an unaligned image cannot be placed on the map, so emit null.
+  # The diagram image is the primary spatial artifact, so emit the floorplan
+  # whenever a level has an image — independent of geographic alignment. The
+  # alignment transform (center/scale/rotation) is optional enrichment: present
+  # together only when the alignment is complete, otherwise all four are null
+  # (the client then renders the image in diagram space). See the companion app's
+  # specs/principles.md "Diagram is primary, geo-alignment is enrichment".
+  # Null is emitted only when there is no image, or its URL can't be built.
   defp serialize_floorplan(
          %StopLevel{diagram_filename: filename} = stop_level,
          org_id,
          station_stop_id
        )
        when is_binary(filename) and filename != "" do
-    if StopLevel.alignment_complete?(stop_level) do
-      case floorplan_url(org_id, station_stop_id, filename) do
-        nil ->
-          nil
+    case floorplan_url(org_id, station_stop_id, filename) do
+      nil ->
+        nil
 
-        url ->
-          %{
-            filename: filename,
-            url: url,
-            center_lat: stop_level.floorplan_center_lat,
-            center_lon: stop_level.floorplan_center_lon,
-            scale_mpp: stop_level.floorplan_scale_mpp,
-            rotation_deg: stop_level.floorplan_rotation_deg
-          }
-      end
-    else
-      nil
+      url ->
+        aligned? = StopLevel.alignment_complete?(stop_level)
+
+        %{
+          filename: filename,
+          url: url,
+          center_lat: if(aligned?, do: stop_level.floorplan_center_lat),
+          center_lon: if(aligned?, do: stop_level.floorplan_center_lon),
+          scale_mpp: if(aligned?, do: stop_level.floorplan_scale_mpp),
+          rotation_deg: if(aligned?, do: stop_level.floorplan_rotation_deg)
+        }
     end
   end
 
