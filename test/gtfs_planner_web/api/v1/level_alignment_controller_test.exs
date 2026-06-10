@@ -162,6 +162,33 @@ defmodule GtfsPlannerWeb.Api.V1.LevelAlignmentControllerTest do
       assert %{"error" => %{"code" => "invalid_alignment"}} = json_response(conn, 422)
     end
 
+    test "returns 403 for an org member without the editor role",
+         %{conn: conn, org: org} do
+      non_editor = user_fixture()
+
+      {:ok, _membership} =
+        Accounts.create_user_org_membership(%{
+          user_id: non_editor.id,
+          organization_id: org.id,
+          # org admin (user management) but NOT a GTFS editor
+          roles: ["pathways_studio_admin"]
+        })
+
+      version = gtfs_version_fixture(org.id)
+      %{station: station, level: level} = build_aligned_fixture(org.id, version.id)
+
+      conn =
+        conn
+        |> authed_conn(non_editor)
+        |> put(alignment_url(version.id, station.id, level.id), %{
+          "alignment" => @alignment,
+          "image_w" => 1000,
+          "image_h" => 800
+        })
+
+      assert %{"error" => %{"code" => "forbidden"}} = json_response(conn, 403)
+    end
+
     test "returns 422 no_diagram when the level has no diagram image",
          %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)

@@ -154,6 +154,12 @@ defmodule GtfsPlannerWeb.Router do
     plug GtfsPlannerWeb.Plugs.AssignApiOrganization
   end
 
+  # API routes that WRITE GTFS data additionally require the editor role —
+  # the API counterpart of the desktop's EnsureRole :require_gtfs_access.
+  pipeline :api_editor do
+    plug GtfsPlannerWeb.Plugs.RequireApiEditorRole
+  end
+
   # -- Companion API routes ----------------------------------------------------
 
   # CORS preflight — must be before authenticated routes
@@ -180,6 +186,11 @@ defmodule GtfsPlannerWeb.Router do
     get "/versions/:version_id/stations", StationController, :index
     get "/versions/:version_id/stations/:station_id/bundle", StationController, :bundle
     post "/versions/:version_id/stations/:station_id/sync", SyncController, :create
+  end
+
+  # Protected API routes that write GTFS data (editor role required)
+  scope "/api/v1", GtfsPlannerWeb.Api.V1 do
+    pipe_through [:api_session, :api_editor]
 
     put "/versions/:version_id/stations/:station_id/levels/:level_id/alignment",
         LevelAlignmentController,
