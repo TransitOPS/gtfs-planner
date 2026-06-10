@@ -105,11 +105,11 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
       assert %DateTime{} = updated.field_completed_at
     end
 
-    test "does not modify read-only fields (pathway_mode, from_stop_id, to_stop_id)",
+    test "does not modify read-only fields (pathway_mode)",
          %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)
 
-      %{station: station, pathway: pathway, child1: child1, child2: child2} =
+      %{station: station, pathway: pathway} =
         build_station_with_pathway(org.id, version.id)
 
       original_mode = pathway.pathway_mode
@@ -118,9 +118,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         "pathways" => [
           %{
             "id" => pathway.id,
-            "pathway_mode" => 7,
-            "from_stop_id" => "tampered",
-            "to_stop_id" => "tampered"
+            "pathway_mode" => 7
           }
         ]
       }
@@ -135,8 +133,130 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
 
       unchanged = Repo.get!(Pathway, pathway.id)
       assert unchanged.pathway_mode == original_mode
+    end
+
+    test "endpoint pair matching stored order is a no-op (accepted)",
+         %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+
+      %{station: station, pathway: pathway, child1: child1, child2: child2} =
+        build_station_with_pathway(org.id, version.id)
+
+      payload = %{
+        "pathways" => [
+          %{
+            "id" => pathway.id,
+            "from_stop_id" => child1.stop_id,
+            "to_stop_id" => child2.stop_id,
+            "field_notes" => "unchanged endpoints"
+          }
+        ]
+      }
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), payload)
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert data["synced_count"] == 1
+      refute Map.has_key?(data, "errors")
+
+      updated = Repo.get!(Pathway, pathway.id)
+      assert updated.from_stop_id == child1.stop_id
+      assert updated.to_stop_id == child2.stop_id
+      assert updated.field_notes == "unchanged endpoints"
+    end
+
+    test "swapped endpoint pair reverses the pathway (with other fields, atomically)",
+         %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+
+      %{station: station, pathway: pathway, child1: child1, child2: child2} =
+        build_station_with_pathway(org.id, version.id)
+
+      payload = %{
+        "pathways" => [
+          %{
+            "id" => pathway.id,
+            "from_stop_id" => child2.stop_id,
+            "to_stop_id" => child1.stop_id,
+            "signposted_as" => "Now the other way",
+            "stair_count" => -4
+          }
+        ]
+      }
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), payload)
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert data["synced_count"] == 1
+      refute Map.has_key?(data, "errors")
+
+      updated = Repo.get!(Pathway, pathway.id)
+      assert updated.from_stop_id == child2.stop_id
+      assert updated.to_stop_id == child1.stop_id
+      assert updated.signposted_as == "Now the other way"
+      assert updated.stair_count == -4
+    end
+
+    test "foreign endpoint pair is rejected with invalid_endpoints and nothing applied",
+         %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+
+      %{station: station, pathway: pathway, child1: child1, child2: child2} =
+        build_station_with_pathway(org.id, version.id)
+
+      payload = %{
+        "pathways" => [
+          %{
+            "id" => pathway.id,
+            "from_stop_id" => "somewhere_else",
+            "to_stop_id" => child2.stop_id,
+            "field_notes" => "must not be applied"
+          }
+        ]
+      }
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), payload)
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert data["synced_count"] == 0
+      assert [%{"id" => _, "code" => "invalid_endpoints"}] = data["errors"]
+
+      unchanged = Repo.get!(Pathway, pathway.id)
       assert unchanged.from_stop_id == child1.stop_id
       assert unchanged.to_stop_id == child2.stop_id
+      assert unchanged.field_notes != "must not be applied"
+    end
+
+    test "partial endpoint pair (only one field) is rejected",
+         %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+
+      %{station: station, pathway: pathway, child2: child2} =
+        build_station_with_pathway(org.id, version.id)
+
+      payload = %{
+        "pathways" => [
+          %{"id" => pathway.id, "from_stop_id" => child2.stop_id}
+        ]
+      }
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), payload)
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert data["synced_count"] == 0
+      assert [%{"code" => "invalid_endpoints"}] = data["errors"]
     end
 
     test "returns error for pathway ID belonging to another org",
