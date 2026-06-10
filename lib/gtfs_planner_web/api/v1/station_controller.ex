@@ -80,12 +80,21 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
       pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
 
+      {station_lat, station_lon} =
+        serialize_coordinates(station.stop_lat, station.stop_lon)
+
       json(conn, %{
         data: %{
           station: %{
             id: station.id,
             stop_id: station.stop_id,
-            stop_name: station.stop_name
+            stop_name: station.stop_name,
+            # The station stop's own GTFS coordinates — the canonical station
+            # location, present even when no level is aligned. The companion
+            # uses this as the camera fallback for geographic views of
+            # un-aligned stations.
+            lat: station_lat,
+            lon: station_lon
           },
           levels: Enum.map(levels, &serialize_level(&1, org_id, station.stop_id)),
           stops: Enum.map(child_stops, &serialize_stop/1),

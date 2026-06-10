@@ -304,6 +304,10 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert data["station"]["id"] == station.id
       assert data["station"]["stop_id"] == station.stop_id
       assert data["station"]["stop_name"] == station.stop_name
+      # The station's own GTFS coordinates ride along as JSON numbers — the
+      # companion's camera fallback for un-aligned stations.
+      assert is_number(data["station"]["lat"])
+      assert is_number(data["station"]["lon"])
 
       assert length(data["levels"]) == 1
       level_json = hd(data["levels"])
