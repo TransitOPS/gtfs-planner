@@ -180,6 +180,10 @@ defmodule GtfsPlannerWeb.Router do
     get "/versions/:version_id/stations", StationController, :index
     get "/versions/:version_id/stations/:station_id/bundle", StationController, :bundle
     post "/versions/:version_id/stations/:station_id/sync", SyncController, :create
+
+    put "/versions/:version_id/stations/:station_id/levels/:level_id/alignment",
+        LevelAlignmentController,
+        :update
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

@@ -641,7 +641,11 @@ defmodule GtfsPlanner.Gtfs do
           {:ok,
            %{
              active_stop_level: updated_stop_level,
-             apply_result: apply_result
+             apply_result: apply_result,
+             # The re-imputed stops, for callers that return them to a client
+             # (the companion alignment endpoint updates its local DB from
+             # these instead of re-downloading the station).
+             updated_stops: active_updated_stops
            }}
 
         {:error, reason} ->
