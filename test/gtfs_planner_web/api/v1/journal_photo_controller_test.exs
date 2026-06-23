@@ -142,6 +142,71 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoControllerTest do
       assert File.exists?(dest)
     end
 
+    test "persists client-provided pixel dimensions from metadata", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      station = build_station(org.id, version.id)
+      entry = journal_entry_fixture(org, version, station, user)
+
+      photo_id = Ecto.UUID.generate()
+
+      payload = %{
+        "file" => upload_fixture("jpegbytes"),
+        "metadata" =>
+          Jason.encode!(%{
+            "id" => photo_id,
+            "journal_entry_id" => entry.id,
+            "captured_at" => "2026-06-20T10:05:00Z",
+            "content_type" => "image/jpeg",
+            "width" => 4032,
+            "height" => 3024
+          })
+      }
+
+      conn = conn |> authed_conn(user) |> post(photos_url(version.id, station.id), payload)
+
+      assert %{"data" => %{"photo" => photo}} = json_response(conn, 201)
+      assert photo["width"] == 4032
+      assert photo["height"] == 3024
+
+      row = Repo.get!(JournalPhoto, photo_id)
+      assert row.width == 4032
+      assert row.height == 3024
+    end
+
+    test "leaves dimensions null when metadata omits them (older client)", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      station = build_station(org.id, version.id)
+      entry = journal_entry_fixture(org, version, station, user)
+
+      photo_id = Ecto.UUID.generate()
+
+      payload = %{
+        "file" => upload_fixture("jpegbytes"),
+        "metadata" =>
+          Jason.encode!(%{
+            "id" => photo_id,
+            "journal_entry_id" => entry.id,
+            "captured_at" => "2026-06-20T10:05:00Z",
+            "content_type" => "image/jpeg"
+          })
+      }
+
+      conn = conn |> authed_conn(user) |> post(photos_url(version.id, station.id), payload)
+
+      assert json_response(conn, 201)
+      row = Repo.get!(JournalPhoto, photo_id)
+      assert is_nil(row.width)
+      assert is_nil(row.height)
+    end
+
     test "is idempotent on id (re-upload returns the same record)", %{
       conn: conn,
       user: user,

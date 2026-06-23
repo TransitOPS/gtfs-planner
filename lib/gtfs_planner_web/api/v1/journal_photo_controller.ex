@@ -51,6 +51,10 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoController do
              "filename" => filename,
              "content_type" => content_type,
              "byte_size" => byte_size,
+             # Pixel dimensions are client-computed at capture (the server
+             # doesn't decode uploads); absent for older clients → stay null.
+             "width" => metadata["width"],
+             "height" => metadata["height"],
              "captured_at" => metadata["captured_at"]
            }) do
       conn
