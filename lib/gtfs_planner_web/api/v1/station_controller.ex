@@ -176,17 +176,23 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
          station_stop_id,
          pin_entries_by_level
        ) do
-    pin_entries =
+    stop_level_id =
       case stop_level do
-        %StopLevel{id: stop_level_id} -> Map.get(pin_entries_by_level, stop_level_id, [])
-        _ -> []
+        %StopLevel{id: id} -> id
+        _ -> nil
       end
+
+    pin_entries = Map.get(pin_entries_by_level, stop_level_id, [])
 
     %{
       id: level.id,
       level_id: level.level_id,
       level_index: level.level_index,
       level_name: level.level_name,
+      # The station↔level join UUID — the companion needs it to anchor a new
+      # pin entry to this level (pin entries echo it back, but a fresh drop needs
+      # it from the level). Null when the level has no stop_level association.
+      stop_level_id: stop_level_id,
       floorplan: serialize_floorplan(stop_level, org_id, station_stop_id),
       journal_entries: pin_entries
     }

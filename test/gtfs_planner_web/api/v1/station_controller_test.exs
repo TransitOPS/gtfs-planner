@@ -417,7 +417,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       version = gtfs_version_fixture(org.id)
       %{station: station, level: level} = build_station_data(org.id, version.id)
 
-      {:ok, _stop_level} =
+      {:ok, stop_level} =
         %StopLevel{
           stop_id: station.id,
           level_id: level.id,
@@ -437,7 +437,11 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
 
       assert %{"data" => data} = json_response(conn, 200)
-      floorplan = Enum.find(data["levels"], &(&1["id"] == level.id))["floorplan"]
+      level_json = Enum.find(data["levels"], &(&1["id"] == level.id))
+      # The companion needs the stop_level UUID to anchor a new pin to this level.
+      assert level_json["stop_level_id"] == stop_level.id
+
+      floorplan = level_json["floorplan"]
 
       assert floorplan["filename"] == "B1/busway plan.png"
       assert floorplan["center_lat"] == 39.9536
