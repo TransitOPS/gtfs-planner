@@ -177,7 +177,8 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
           "diagram_y" => update["diagram_y"],
           "body" => update["body"],
           "captured_at" => update["captured_at"],
-          "resolved_at" => update["resolved_at"]
+          "closed_at" => update["closed_at"],
+          "closed_by" => update["closed_by"]
         }
 
         case Gtfs.upsert_journal_entry(attrs) do

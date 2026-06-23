@@ -474,6 +474,85 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
       assert Repo.get!(JournalEntry, id).body == "Edited"
     end
 
+    test "round-trips closed_at/closed_by through sync and the bundle", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station} = build_station_with_pathway(org.id, version.id)
+
+      closed_id = Ecto.UUID.generate()
+      open_id = Ecto.UUID.generate()
+      closer_id = Ecto.UUID.generate()
+
+      payload = %{
+        "pathways" => [],
+        "journal_entries" => [
+          %{
+            "id" => closed_id,
+            "target_type" => "station",
+            "body" => "Closed note",
+            "captured_at" => "2026-06-20T10:00:00Z",
+            "closed_at" => "2026-06-21T12:00:00Z",
+            "closed_by" => closer_id
+          },
+          %{
+            "id" => open_id,
+            "target_type" => "station",
+            "body" => "Open note",
+            "captured_at" => "2026-06-20T10:00:00Z"
+          }
+        ]
+      }
+
+      conn1 = conn |> authed_conn(user) |> post(sync_url(version.id, station.id), payload)
+      assert %{"data" => data} = json_response(conn1, 200)
+      assert data["journal_synced_count"] == 2
+
+      # Persisted as the close state (null closed_at = open).
+      closed = Repo.get!(JournalEntry, closed_id)
+      assert closed.closed_at == ~U[2026-06-21 12:00:00.000000Z]
+      assert closed.closed_by == closer_id
+
+      open = Repo.get!(JournalEntry, open_id)
+      assert is_nil(open.closed_at)
+      assert is_nil(open.closed_by)
+
+      # Comes back out through the bundle.
+      bundle_conn =
+        build_conn()
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => bundle} = json_response(bundle_conn, 200)
+      entries = bundle["journal_entries"]
+
+      closed_json = Enum.find(entries, &(&1["id"] == closed_id))
+      assert closed_json["closed_at"] == "2026-06-21T12:00:00.000000Z"
+      assert closed_json["closed_by"] == closer_id
+
+      open_json = Enum.find(entries, &(&1["id"] == open_id))
+      assert is_nil(open_json["closed_at"])
+      assert is_nil(open_json["closed_by"])
+
+      # A re-sync can update the close state (on_conflict replaces it).
+      reopen = %{
+        "pathways" => [],
+        "journal_entries" => [
+          %{
+            "id" => closed_id,
+            "target_type" => "station",
+            "body" => "Closed note",
+            "captured_at" => "2026-06-20T10:00:00Z"
+          }
+        ]
+      }
+
+      build_conn() |> authed_conn(user) |> post(sync_url(version.id, station.id), reopen)
+      assert is_nil(Repo.get!(JournalEntry, closed_id).closed_at)
+    end
+
     test "reports a per-item error without failing the batch", %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)
       %{station: station} = build_station_with_pathway(org.id, version.id)

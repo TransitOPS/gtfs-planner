@@ -2274,7 +2274,8 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Upsert a station-journal entry by its client-generated `id` (idempotent). On
   conflict, the mutable fields are replaced (last-write-wins on `body` /
-  `resolved_at`); scoping and authorship are preserved from the original insert.
+  `closed_at` / `closed_by`); scoping and authorship are preserved from the
+  original insert.
 
   A `pin` entry's canonical anchor is its diagram coordinate (`stop_level_id` +
   `diagram_x/y`), exactly like a node's `diagram_coordinate`. Sync never sets
@@ -2291,7 +2292,8 @@ defmodule GtfsPlanner.Gtfs do
         {:replace,
          [
            :body,
-           :resolved_at,
+           :closed_at,
+           :closed_by,
            :target_type,
            :target_id,
            :stop_level_id,

@@ -32,7 +32,8 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
           body: String.t() | nil,
           author_id: Ecto.UUID.t(),
           captured_at: DateTime.t(),
-          resolved_at: DateTime.t() | nil,
+          closed_at: DateTime.t() | nil,
+          closed_by: Ecto.UUID.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -51,7 +52,8 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
     field :body, :string
     field :author_id, :binary_id
     field :captured_at, :utc_datetime_usec
-    field :resolved_at, :utc_datetime_usec
+    field :closed_at, :utc_datetime_usec
+    field :closed_by, :binary_id
     field :station_id, :binary_id
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
@@ -81,7 +83,8 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
       :body,
       :author_id,
       :captured_at,
-      :resolved_at
+      :closed_at,
+      :closed_by
     ])
     |> trim_string_fields()
     |> validate_required([

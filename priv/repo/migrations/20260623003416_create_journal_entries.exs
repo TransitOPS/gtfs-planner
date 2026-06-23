@@ -32,7 +32,8 @@ defmodule GtfsPlanner.Repo.Migrations.CreateJournalEntries do
       # user deletion never cascades into or nulls journal history.
       add :author_id, :binary_id, null: false
       add :captured_at, :utc_datetime_usec, null: false
-      add :resolved_at, :utc_datetime_usec
+      add :closed_at, :utc_datetime_usec
+      add :closed_by, :binary_id
 
       timestamps(type: :utc_datetime_usec)
     end

@@ -331,7 +331,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       body: entry.body,
       author_id: entry.author_id,
       captured_at: entry.captured_at,
-      resolved_at: entry.resolved_at,
+      closed_at: entry.closed_at,
+      closed_by: entry.closed_by,
       photos: Map.get(photos_by_entry, entry.id, [])
     }
   end
@@ -349,7 +350,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       body: entry.body,
       author_id: entry.author_id,
       captured_at: entry.captured_at,
-      resolved_at: entry.resolved_at,
+      closed_at: entry.closed_at,
+      closed_by: entry.closed_by,
       photos: Map.get(photos_by_entry, entry.id, [])
     }
   end
