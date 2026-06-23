@@ -1621,6 +1621,5 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert reloaded.floorplan_scale_mpp == before.floorplan_scale_mpp
       assert reloaded.floorplan_rotation_deg == before.floorplan_rotation_deg
     end
-
   end
 end

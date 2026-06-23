@@ -93,7 +93,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:naming_excluded_ids, MapSet.new())
      |> assign(:reference_level_id, nil)
      |> assign(:reference_stop_level, nil)
-      |> assign(:reference_level_index, nil)
+     |> assign(:reference_level_index, nil)
      |> assign(:show_reference_overlay, false)
      |> assign(:audit_ctx, nil)
      |> assign(:history_open_for, nil)
@@ -539,7 +539,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> Enum.map(&child_stop_marker/1)
           |> Enum.reject(&is_nil/1)
 
-        {markers, assign(socket, :reference_child_stop_markers_cache, Map.put(cache, level_id, markers))}
+        {markers,
+         assign(socket, :reference_child_stop_markers_cache, Map.put(cache, level_id, markers))}
     end
   end
 

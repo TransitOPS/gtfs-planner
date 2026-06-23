@@ -12149,5 +12149,4 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert state.socket.assigns.rollback_preview == nil
     end
   end
-
 end
