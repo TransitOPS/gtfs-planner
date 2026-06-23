@@ -2282,6 +2282,41 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.all()
   end
 
+  @doc """
+  Fetch a single journal entry scoped to its (org, version), or nil. Used by the
+  desktop review surface to act on one entry.
+  """
+  def get_journal_entry(organization_id, gtfs_version_id, id) do
+    Repo.get_by(JournalEntry,
+      id: id,
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    )
+  end
+
+  @doc """
+  Close a journal entry — a desk/Studio action that stamps `closed_at` = now and
+  `closed_by` = the acting user. Closing changes an entry's review state; it never
+  hides the entry from the journal. Re-closing simply restamps. Distinct from the
+  companion sync path (`sync_journal_entries/2`), which ignores client closure
+  fields; this touches only the workflow fields and skips target re-validation.
+  """
+  def close_journal_entry(%JournalEntry{} = entry, closed_by_user_id) do
+    entry
+    |> Ecto.Changeset.change(closed_at: DateTime.utc_now(), closed_by: closed_by_user_id)
+    |> Repo.update()
+  end
+
+  @doc """
+  Reopen a closed journal entry: clears `closed_at`/`closed_by` so it returns to the
+  open queue. No-op-safe on an already-open entry.
+  """
+  def reopen_journal_entry(%JournalEntry{} = entry) do
+    entry
+    |> Ecto.Changeset.change(closed_at: nil, closed_by: nil)
+    |> Repo.update()
+  end
+
   defp descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id) do
     direct_child_ids =
       from(s in Stop,

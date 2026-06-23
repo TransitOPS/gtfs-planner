@@ -104,6 +104,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:floorplan_image_w, nil)
      |> assign(:floorplan_image_h, nil)
      |> assign(:station_stop_levels_cache, empty_station_stop_levels_cache())
+     |> assign(:show_journal_drawer, false)
+     |> assign(:journal_entries, [])
+     |> assign(:journal_photos_by_entry, %{})
+     |> assign(:journal_user_names, %{})
+     |> assign(:journal_target_labels, %{})
+     |> assign(:journal_open_count, 0)
+     |> assign(:journal_focus_entry_id, nil)
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg .svg),
        max_file_size: 10_000_000,
@@ -183,9 +190,139 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         socket =
           socket
           |> load_level_data(active_level)
+          |> load_journal()
           |> maybe_open_child_stop_from_params(params)
 
         {:noreply, socket}
+    end
+  end
+
+  # Load the station journal (entries newest-first, photos grouped by entry with
+  # resolved static URLs, author/closer display names, node target labels, and the
+  # open-entry count) into assigns for the review drawer + pin markers.
+  defp load_journal(socket) do
+    %{
+      current_organization: %{id: org_id},
+      current_gtfs_version: %{id: version_id},
+      station: station
+    } = socket.assigns
+
+    entries =
+      org_id
+      |> Gtfs.list_journal_entries_for_station(version_id, station.id)
+      |> Enum.reverse()
+
+    photos_by_entry =
+      org_id
+      |> Gtfs.list_journal_photos_for_station(version_id, station.id)
+      |> Enum.group_by(& &1.journal_entry_id, fn p ->
+        %{
+          id: p.id,
+          filename: p.filename,
+          content_type: p.content_type,
+          width: p.width,
+          height: p.height,
+          url: journal_photo_url(org_id, station.stop_id, p.filename)
+        }
+      end)
+
+    user_names =
+      entries
+      |> Enum.flat_map(&[&1.author_id, &1.closed_by])
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> resolve_journal_user_names()
+
+    socket
+    |> assign(:journal_entries, entries)
+    |> assign(:journal_photos_by_entry, photos_by_entry)
+    |> assign(:journal_user_names, user_names)
+    |> assign(:journal_target_labels, build_journal_target_labels(entries))
+    |> assign(:journal_open_count, Enum.count(entries, &is_nil(&1.closed_at)))
+  end
+
+  defp set_journal_entry_closed(socket, id, closed?) do
+    %{current_organization: %{id: org_id}, current_gtfs_version: %{id: version_id}} =
+      socket.assigns
+
+    case Gtfs.get_journal_entry(org_id, version_id, id) do
+      nil ->
+        put_flash(socket, :error, "Journal entry not found.")
+
+      entry ->
+        result =
+          if closed? do
+            Gtfs.close_journal_entry(entry, socket.assigns.current_user.id)
+          else
+            Gtfs.reopen_journal_entry(entry)
+          end
+
+        case result do
+          {:ok, _} -> load_journal(socket)
+          {:error, _} -> put_flash(socket, :error, "Couldn't update the journal entry.")
+        end
+    end
+  end
+
+  # Static URL for a field-capture photo (mirrors the bundle's field_capture_url,
+  # but relative — LiveView serves from the same host). Served by UploadsPlug.
+  defp journal_photo_url(org_id, station_stop_id, filename) do
+    case PathSafety.stop_storage_dir(station_stop_id) do
+      dir when is_binary(dir) ->
+        encoded = URI.encode(filename, &URI.char_unreserved?/1)
+        "/uploads/field-captures/#{org_id}/#{dir}/#{encoded}"
+
+      _ ->
+        nil
+    end
+  end
+
+  defp resolve_journal_user_names(ids) do
+    Map.new(ids, fn id -> {id, journal_user_email(id)} end)
+  end
+
+  defp journal_user_email(id) do
+    GtfsPlanner.Accounts.get_user!(id).email
+  rescue
+    _ -> "unknown"
+  end
+
+  # Display labels for node-targeted entries (stop name). Pathway/pin/station chips
+  # use generic labels in the component, so only node ids need resolving.
+  defp build_journal_target_labels(entries) do
+    entries
+    |> Enum.filter(&(&1.target_type == "node" and not is_nil(&1.target_id)))
+    |> Enum.map(& &1.target_id)
+    |> Enum.uniq()
+    |> Enum.reduce(%{}, fn id, acc ->
+      case safe_stop_label(id) do
+        nil -> acc
+        label -> Map.put(acc, id, label)
+      end
+    end)
+  end
+
+  defp safe_stop_label(id) do
+    stop = Gtfs.get_stop!(id)
+    stop.stop_name || stop.stop_id
+  rescue
+    _ -> nil
+  end
+
+  # Pin entries anchored to the active level (by stop_level_id) with coordinates,
+  # for the diagram overlay's pin markers.
+  defp journal_pins_for_active_level(assigns) do
+    case assigns[:active_stop_level] do
+      %{id: stop_level_id} ->
+        for e <- assigns.journal_entries,
+            e.target_type == "pin",
+            e.stop_level_id == stop_level_id,
+            not is_nil(e.diagram_x),
+            not is_nil(e.diagram_y),
+            do: e
+
+      _ ->
+        []
     end
   end
 
@@ -861,6 +998,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             active_level={@active_level}
             other_levels={@other_levels}
             enabled_count={MapSet.size(MapSet.union(@other_levels_floorplan, @other_levels_stops))}
+            journal_open_count={@journal_open_count}
           />
           <%= if @mode == :map do %>
             <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
@@ -903,6 +1041,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
                 scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
                 measurement_enabled={@measurement_enabled}
+                journal_pins={journal_pins_for_active_level(assigns)}
               />
             </div>
           <% end %>
@@ -982,6 +1121,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           applying?={@naming_applying?}
           error={@naming_error}
           excluded_ids={@naming_excluded_ids}
+        />
+
+        <.station_journal_drawer
+          open={@show_journal_drawer}
+          entries={@journal_entries}
+          photos_by_entry={@journal_photos_by_entry}
+          user_names={@journal_user_names}
+          target_labels={@journal_target_labels}
+          focus_entry_id={@journal_focus_entry_id}
         />
 
         <div :if={@naming_status} role="status" aria-live="polite" class="mx-4 sm:mx-6 lg:mx-8 mt-2">
@@ -2467,6 +2615,39 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:naming_applying?, false)
      |> assign(:naming_error, nil)
      |> assign(:naming_excluded_ids, MapSet.new())}
+  end
+
+  # ── Station journal review ──
+
+  def handle_event("open_journal_panel", _params, socket) do
+    {:noreply,
+     socket
+     |> load_journal()
+     |> assign(:journal_focus_entry_id, nil)
+     |> assign(:show_journal_drawer, true)}
+  end
+
+  def handle_event("close_journal_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_journal_drawer, false)
+     |> assign(:journal_focus_entry_id, nil)}
+  end
+
+  def handle_event("close_journal_entry", %{"id" => id}, socket) do
+    {:noreply, set_journal_entry_closed(socket, id, true)}
+  end
+
+  def handle_event("reopen_journal_entry", %{"id" => id}, socket) do
+    {:noreply, set_journal_entry_closed(socket, id, false)}
+  end
+
+  def handle_event("focus_journal_pin", %{"id" => id}, socket) do
+    {:noreply,
+     socket
+     |> load_journal()
+     |> assign(:journal_focus_entry_id, id)
+     |> assign(:show_journal_drawer, true)}
   end
 
   @impl true

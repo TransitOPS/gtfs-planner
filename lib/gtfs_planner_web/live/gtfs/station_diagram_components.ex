@@ -181,6 +181,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :active_level, :any, default: nil
   attr :other_levels, :list, default: []
   attr :enabled_count, :integer, default: 0
+  attr :journal_open_count, :integer, default: 0
 
   def diagram_action_strip(assigns) do
     ~H"""
@@ -236,6 +237,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <% end %>
           </div>
           <div class="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
+              phx-click="open_journal_panel"
+            >
+              <.icon name="hero-clipboard-document-list" class="w-4 h-4" /> Journal
+              <span :if={@journal_open_count > 0} class="badge badge-sm badge-warning ml-1">
+                {@journal_open_count}
+              </span>
+            </button>
             <%= if @mode == :view and @has_diagram do %>
               <form id="stop-search-form" phx-submit="search_stop" class="flex items-center">
                 <input
@@ -701,6 +712,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_point_a, :any, default: nil
   attr :scale_point_b, :any, default: nil
   attr :measurement_enabled, :boolean, default: false
+  attr :journal_pins, :list, default: []
 
   def diagram_canvas(assigns) do
     canvas_key = diagram_canvas_key(assigns.active_level, assigns.active_stop_level)
@@ -749,6 +761,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             scale_point_a={@scale_point_a}
             scale_point_b={@scale_point_b}
             measurement_enabled={@measurement_enabled}
+            journal_pins={@journal_pins}
           />
           <div
             id="diagram-edit-tooltip"
@@ -807,6 +820,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_point_a, :any, default: nil
   attr :scale_point_b, :any, default: nil
   attr :measurement_enabled, :boolean, default: false
+  attr :journal_pins, :list, default: []
 
   defp diagram_overlay(assigns) do
     ~H"""
@@ -863,7 +877,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         :if={@pending_xy && @mode == :add && @selected_stop_id == nil}
         pending_xy={@pending_xy}
       />
+      <.journal_pins_layer pins={@journal_pins} />
     </svg>
+    """
+  end
+
+  attr :pins, :list, default: []
+
+  # Journal pin markers, drawn in the same 0–100 diagram space as node markers
+  # (from each pin entry's diagram_x/diagram_y). Distinct shape/color from nodes;
+  # clicking one opens the journal drawer focused on that entry. Closed pins are
+  # muted. The caller filters to the active level and to pins with coordinates.
+  defp journal_pins_layer(assigns) do
+    ~H"""
+    <g id="journal-pins-svg">
+      <g
+        :for={pin <- @pins}
+        data-journal-pin-id={pin.id}
+        class="cursor-pointer"
+        style="pointer-events: auto;"
+        phx-click="focus_journal_pin"
+        phx-value-id={pin.id}
+      >
+        <circle
+          cx={pin.diagram_x}
+          cy={pin.diagram_y}
+          r="1.1"
+          fill={if pin.closed_at, do: "#9CA3AF", else: "#DB2777"}
+          fill-opacity="0.85"
+          stroke="#FFFFFF"
+          stroke-width="0.2"
+        />
+        <circle cx={pin.diagram_x} cy={pin.diagram_y} r="0.35" fill="#FFFFFF" />
+      </g>
+    </g>
     """
   end
 
@@ -4333,6 +4380,137 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # ============================================================================
   # Naming Drawer
   # ============================================================================
+
+  @doc """
+  Station journal review drawer. Lists companion-captured entries newest-first with
+  their target, author, time, note, and photos. Closing is a desk action: closed
+  entries are de-emphasized and badged with who/when but never hidden or filtered
+  out (per the journal's open/closed treatment). Open entries show Close; closed
+  ones show Reopen.
+  """
+  attr :open, :boolean, default: false
+  attr :entries, :list, default: []
+  attr :photos_by_entry, :map, default: %{}
+  attr :user_names, :map, default: %{}
+  attr :target_labels, :map, default: %{}
+  attr :focus_entry_id, :string, default: nil
+
+  def station_journal_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="station-journal-drawer"
+      open={@open}
+      on_close="close_journal_drawer"
+      title="Station journal"
+      class="max-w-xl"
+    >
+      <div :if={@entries == []} class="text-sm text-base-content/60 py-8 text-center">
+        No journal entries captured for this station yet.
+      </div>
+
+      <ul class="space-y-3">
+        <li
+          :for={entry <- @entries}
+          id={"journal-entry-#{entry.id}"}
+          class={[
+            "rounded-lg border p-3",
+            entry.closed_at && "border-base-300 bg-base-200/60 opacity-70",
+            !entry.closed_at && "border-base-300 bg-base-100",
+            @focus_entry_id == entry.id && "ring-2 ring-primary"
+          ]}
+        >
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class={["badge badge-sm", journal_target_class(entry.target_type)]}>
+                {journal_target_label(entry, @target_labels)}
+              </span>
+              <span :if={entry.closed_at} class="badge badge-sm badge-ghost">Closed</span>
+            </div>
+            <span class="text-xs text-base-content/50 whitespace-nowrap">
+              {journal_format_time(entry.captured_at)}
+            </span>
+          </div>
+
+          <p :if={entry.body && entry.body != ""} class="mt-2 text-sm whitespace-pre-wrap">
+            {entry.body}
+          </p>
+
+          <div :if={Map.get(@photos_by_entry, entry.id, []) != []} class="mt-2 flex flex-wrap gap-2">
+            <a
+              :for={photo <- Map.get(@photos_by_entry, entry.id, [])}
+              href={photo.url}
+              target="_blank"
+              rel="noopener"
+              class="block"
+            >
+              <img
+                src={photo.url}
+                alt="Journal photo"
+                loading="lazy"
+                class="h-20 w-20 rounded object-cover border border-base-300 hover:opacity-90"
+              />
+            </a>
+          </div>
+
+          <div class="mt-2 flex items-center justify-between gap-2">
+            <span class="text-xs text-base-content/50">
+              by {journal_user_name(entry.author_id, @user_names)}
+            </span>
+            <div class="flex items-center gap-2">
+              <span :if={entry.closed_at} class="text-xs text-base-content/50">
+                Closed by {journal_user_name(entry.closed_by, @user_names)} · {journal_format_time(
+                  entry.closed_at
+                )}
+              </span>
+              <button
+                :if={entry.closed_at}
+                type="button"
+                class="btn btn-xs btn-ghost"
+                phx-click="reopen_journal_entry"
+                phx-value-id={entry.id}
+              >
+                Reopen
+              </button>
+              <button
+                :if={!entry.closed_at}
+                type="button"
+                class="btn btn-xs btn-outline"
+                phx-click="close_journal_entry"
+                phx-value-id={entry.id}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </li>
+      </ul>
+    </.drawer>
+    """
+  end
+
+  defp journal_target_label(%{target_type: "station"}, _labels), do: "Station"
+  defp journal_target_label(%{target_type: "pin"}, _labels), do: "Pin"
+
+  defp journal_target_label(%{target_type: type, target_id: id}, labels)
+       when type in ["node", "pathway"] do
+    Map.get(labels, id) || String.capitalize(type)
+  end
+
+  defp journal_target_label(_entry, _labels), do: "Entry"
+
+  defp journal_target_class("station"), do: "badge-neutral"
+  defp journal_target_class("node"), do: "badge-info"
+  defp journal_target_class("pathway"), do: "badge-accent"
+  defp journal_target_class("pin"), do: "badge-secondary"
+  defp journal_target_class(_), do: "badge-ghost"
+
+  defp journal_user_name(nil, _names), do: "—"
+  defp journal_user_name(id, names), do: Map.get(names, id) || "unknown"
+
+  defp journal_format_time(nil), do: ""
+
+  defp journal_format_time(%DateTime{} = dt),
+    do: Calendar.strftime(dt, "%b %-d, %Y %-I:%M %p")
 
   attr :open, :boolean, default: false
   attr :style, :atom, default: :kebab
