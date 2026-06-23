@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.JournalEntry
   alias GtfsPlanner.Gtfs.Pathway
@@ -533,6 +534,202 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
       assert data["journal_synced_count"] == 0
       assert [%{"code" => "not_found"}] = data["errors"]
       assert Repo.aggregate(JournalEntry, :count, :id) == 0
+    end
+  end
+
+  describe "create/2 — pin journal entries" do
+    setup [:setup_user_with_org]
+
+    # A stop_level on the station, optionally aligned + sized.
+    defp build_stop_level(org_id, version_id, station, opts) do
+      level = level_fixture(org_id, version_id)
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: org_id,
+          gtfs_version_id: version_id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      if Keyword.get(opts, :aligned, false) do
+        {:ok, stop_level} =
+          Gtfs.update_stop_level_alignment(stop_level, %{
+            floorplan_center_lat: 40.7128,
+            floorplan_center_lon: -74.0060,
+            floorplan_scale_mpp: 0.25,
+            floorplan_rotation_deg: 0.0
+          })
+
+        stop_level
+      else
+        stop_level
+      end
+    end
+
+    # Posts a single pin entry through sync. Returns the decoded response data.
+    defp sync_pin(_conn, user, version, station, pin_id, stop_level, extra \\ %{}) do
+      entry =
+        Map.merge(
+          %{
+            "id" => pin_id,
+            "target_type" => "pin",
+            "stop_level_id" => stop_level.id,
+            # Painted image center in width-normalized units for 1000x800.
+            "diagram_x" => 50.0,
+            "diagram_y" => 40.0,
+            "captured_at" => "2026-06-20T10:00:00Z"
+          },
+          extra
+        )
+
+      conn =
+        build_conn()
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), %{
+          "pathways" => [],
+          "journal_entries" => [entry]
+        })
+
+      assert %{"data" => data} = json_response(conn, 200)
+      data
+    end
+
+    defp bundle_pin_entry(user, version, station, pin_id) do
+      bundle_conn =
+        build_conn()
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => %{"levels" => levels}} = json_response(bundle_conn, 200)
+
+      levels
+      |> Enum.flat_map(& &1["journal_entries"])
+      |> Enum.find(&(&1["id"] == pin_id))
+    end
+
+    test "syncs a pin storing diagram_x/y with null lat/lon (no sync-time imputation)", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station} = build_station_with_pathway(org.id, version.id)
+      stop_level = build_stop_level(org.id, version.id, station, aligned: true)
+
+      pin_id = Ecto.UUID.generate()
+
+      data = sync_pin(conn, user, version, station, pin_id, stop_level)
+
+      assert data["journal_synced_count"] == 1
+      # Sync no longer imputes pin coords, so there is no journal_entries echo.
+      refute Map.has_key?(data, "journal_entries")
+
+      entry = Repo.get!(JournalEntry, pin_id)
+      assert entry.target_type == "pin"
+      assert entry.stop_level_id == stop_level.id
+      assert entry.diagram_x == 50.0
+      assert entry.diagram_y == 40.0
+      assert is_nil(entry.lat)
+      assert is_nil(entry.lon)
+
+      # Bundle serves the canonical diagram coordinate; lat/lon still null.
+      pin_entry = bundle_pin_entry(user, version, station, pin_id)
+      assert pin_entry["target_type"] == "pin"
+      assert pin_entry["diagram_coordinate"] == %{"x" => 50.0, "y" => 40.0}
+      assert is_nil(pin_entry["lat"])
+      assert is_nil(pin_entry["lon"])
+      assert pin_entry["photos"] == []
+    end
+
+    test "imputes pin lat/lon at alignment time, then bundle serves them", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station} = build_station_with_pathway(org.id, version.id)
+      # Unaligned at sync time, so the pin lands with null lat/lon.
+      stop_level = build_stop_level(org.id, version.id, station, aligned: false)
+
+      pin_id = Ecto.UUID.generate()
+      sync_pin(conn, user, version, station, pin_id, stop_level)
+
+      assert is_nil(Repo.get!(JournalEntry, pin_id).lat)
+
+      # Aligning the level imputes lat/lon for its pins alongside nodes.
+      assert {:ok, _} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 %{
+                   floorplan_center_lat: 40.7128,
+                   floorplan_center_lon: -74.0060,
+                   floorplan_scale_mpp: 0.25,
+                   floorplan_rotation_deg: 0.0
+                 },
+                 1000,
+                 800
+               )
+
+      entry = Repo.get!(JournalEntry, pin_id)
+      assert_in_delta entry.lat, 40.7128, 1.0e-6
+      assert_in_delta entry.lon, -74.0060, 1.0e-6
+
+      pin_entry = bundle_pin_entry(user, version, station, pin_id)
+      assert pin_entry["diagram_coordinate"] == %{"x" => 50.0, "y" => 40.0}
+      assert_in_delta pin_entry["lat"], 40.7128, 1.0e-6
+      assert_in_delta pin_entry["lon"], -74.0060, 1.0e-6
+    end
+
+    test "pin lat/lon stay null on an unaligned level", %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+      %{station: station} = build_station_with_pathway(org.id, version.id)
+      stop_level = build_stop_level(org.id, version.id, station, aligned: false)
+
+      pin_id = Ecto.UUID.generate()
+      sync_pin(conn, user, version, station, pin_id, stop_level)
+
+      entry = Repo.get!(JournalEntry, pin_id)
+      assert is_nil(entry.lat)
+      assert is_nil(entry.lon)
+    end
+
+    test "re-syncing a pin after alignment does not reset imputed lat/lon", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station} = build_station_with_pathway(org.id, version.id)
+      stop_level = build_stop_level(org.id, version.id, station, aligned: false)
+
+      pin_id = Ecto.UUID.generate()
+      sync_pin(conn, user, version, station, pin_id, stop_level)
+
+      assert {:ok, _} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 %{
+                   floorplan_center_lat: 40.7128,
+                   floorplan_center_lon: -74.0060,
+                   floorplan_scale_mpp: 0.25,
+                   floorplan_rotation_deg: 0.0
+                 },
+                 1000,
+                 800
+               )
+
+      imputed = Repo.get!(JournalEntry, pin_id)
+      assert_in_delta imputed.lat, 40.7128, 1.0e-6
+
+      # A later metadata re-sync (e.g. edited body) must preserve server-imputed
+      # lat/lon — sync never carries lat/lon and must not clobber them to null.
+      sync_pin(conn, user, version, station, pin_id, stop_level, %{"body" => "edited"})
+
+      re_synced = Repo.get!(JournalEntry, pin_id)
+      assert re_synced.body == "edited"
+      assert_in_delta re_synced.lat, imputed.lat, 1.0e-9
+      assert_in_delta re_synced.lon, imputed.lon, 1.0e-9
     end
   end
 end

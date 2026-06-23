@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.JournalEntry
+  alias GtfsPlanner.Gtfs.JournalPhoto
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Location
   alias GtfsPlanner.Gtfs.Network
@@ -595,7 +596,15 @@ defmodule GtfsPlanner.Gtfs do
                      |> Repo.update(),
                    {:ok, active_derived} <-
                      derive_child_stop_coords(updated_stop_level, image_w, image_h),
-                   {:ok, active_updated_stops} <- persist_derived_coords_in_tx(active_derived) do
+                   {:ok, active_updated_stops} <- persist_derived_coords_in_tx(active_derived),
+                   # Pins anchor on diagram coordinates like nodes; their lat/lon
+                   # is optional enrichment re-imputed here whenever the level is
+                   # (re)aligned, using the client-supplied image dims — never at
+                   # sync time.
+                   {:ok, active_derived_pins} <-
+                     derive_pin_coords(updated_stop_level, image_w, image_h),
+                   {:ok, _active_updated_pins} <-
+                     persist_derived_pin_coords_in_tx(active_derived_pins) do
                 Logger.debug(fn ->
                   "[ALIGN_APPLY_DEBUG] active_stop_level_persisted " <>
                     inspect(%{
@@ -747,6 +756,74 @@ defmodule GtfsPlanner.Gtfs do
           stop_lat: Decimal.from_float(lat),
           stop_lon: Decimal.from_float(lon)
         })
+        |> Repo.update()
+    end
+  end
+
+  # Derives lat/lon enrichment for every `pin` journal entry anchored to this
+  # level, mirroring `derive_child_stop_coords/3` for nodes: the canonical anchor
+  # is the pin's diagram coordinate; lat/lon is computed via the same
+  # `FloorplanTransform.svg_to_lat_lon/4` using the level's alignment and the
+  # client-supplied image dims. A pin whose diagram point can't normalize is
+  # skipped (its lat/lon is left untouched). Returns `{:error, :alignment_missing}`
+  # when the level isn't aligned so the alignment write can't silently produce
+  # geo-less pins on an aligned level.
+  defp derive_pin_coords(%StopLevel{} = stop_level, image_w, image_h) do
+    with {:ok, alignment} <- extract_alignment(stop_level),
+         :ok <- validate_positive_image_dims(image_w, image_h) do
+      stop_level.id
+      |> list_pin_entries_for_level()
+      |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
+        case Coordinates.normalize_point(%{x: entry.diagram_x, y: entry.diagram_y}) do
+          nil ->
+            {:cont, {:ok, acc}}
+
+          %{x: x, y: y} ->
+            case FloorplanTransform.svg_to_lat_lon(alignment, image_w, image_h, %{x: x, y: y}) do
+              {:ok, {lat, lon}} ->
+                {:cont, {:ok, [%{id: entry.id, lat: lat, lon: lon} | acc]}}
+
+              {:error, reason} ->
+                {:halt, {:error, {:transform, reason}}}
+            end
+        end
+      end)
+      |> case do
+        {:ok, entries} -> {:ok, Enum.reverse(entries)}
+        {:error, _} = error -> error
+      end
+    end
+  end
+
+  defp list_pin_entries_for_level(stop_level_id) do
+    from(e in JournalEntry,
+      where: e.target_type == "pin" and e.stop_level_id == ^stop_level_id
+    )
+    |> Repo.all()
+  end
+
+  defp persist_derived_pin_coords_in_tx(derived) when is_list(derived) do
+    derived
+    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, updated} ->
+      case update_derived_pin_coords(entry) do
+        {:ok, updated_entry} -> {:cont, {:ok, [updated_entry | updated]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, updated} -> {:ok, Enum.reverse(updated)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp update_derived_pin_coords(%{id: id, lat: lat, lon: lon}) do
+    case Repo.get(JournalEntry, id) do
+      nil ->
+        {:error, :journal_entry_not_found}
+
+      %JournalEntry{} = entry ->
+        entry
+        |> Ecto.Changeset.change(lat: lat, lon: lon)
         |> Repo.update()
     end
   end
@@ -2198,14 +2275,65 @@ defmodule GtfsPlanner.Gtfs do
   Upsert a station-journal entry by its client-generated `id` (idempotent). On
   conflict, the mutable fields are replaced (last-write-wins on `body` /
   `resolved_at`); scoping and authorship are preserved from the original insert.
+
+  A `pin` entry's canonical anchor is its diagram coordinate (`stop_level_id` +
+  `diagram_x/y`), exactly like a node's `diagram_coordinate`. Sync never sets
+  `lat`/`lon`: that geographic enrichment is imputed at level-alignment time (see
+  `save_and_apply_stop_level_alignment/4`) and is therefore omitted from the
+  `on_conflict` replace list so a later metadata re-sync can't reset an
+  alignment-imputed lat/lon back to nil.
   """
   def upsert_journal_entry(attrs) do
     %JournalEntry{}
     |> JournalEntry.changeset(attrs)
     |> Repo.insert(
-      on_conflict: {:replace, [:body, :resolved_at, :target_type, :target_id, :updated_at]},
+      on_conflict:
+        {:replace,
+         [
+           :body,
+           :resolved_at,
+           :target_type,
+           :target_id,
+           :stop_level_id,
+           :diagram_x,
+           :diagram_y,
+           :updated_at
+         ]},
       conflict_target: :id
     )
+  end
+
+  @doc """
+  Upsert a journal photo by its client-generated `id` (idempotent on retry). On
+  conflict the mutable metadata is replaced; scoping and the owning entry are
+  preserved from the original insert. See the companion app's
+  `specs/api/station-journal.md`.
+  """
+  def upsert_journal_photo(attrs) do
+    %JournalPhoto{}
+    |> JournalPhoto.changeset(attrs)
+    |> Repo.insert(
+      on_conflict:
+        {:replace, [:filename, :content_type, :byte_size, :width, :height, :updated_at]},
+      conflict_target: :id
+    )
+  end
+
+  @doc """
+  All journal photos whose owning entry belongs to the given (org, version,
+  station), oldest first. Used to nest photos under their entries in the bundle.
+  """
+  def list_journal_photos_for_station(organization_id, gtfs_version_id, station_id) do
+    from(p in JournalPhoto,
+      join: e in JournalEntry,
+      on: e.id == p.journal_entry_id,
+      where:
+        e.organization_id == ^organization_id and
+          e.gtfs_version_id == ^gtfs_version_id and
+          e.station_id == ^station_id,
+      order_by: [asc: p.captured_at, asc: p.inserted_at]
+    )
+    |> Repo.all()
   end
 
   defp descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id) do

@@ -172,6 +172,9 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
           "author_id" => author_id,
           "target_type" => update["target_type"],
           "target_id" => update["target_id"],
+          "stop_level_id" => update["stop_level_id"],
+          "diagram_x" => update["diagram_x"],
+          "diagram_y" => update["diagram_y"],
           "body" => update["body"],
           "captured_at" => update["captured_at"],
           "resolved_at" => update["resolved_at"]
@@ -195,7 +198,9 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
             }
         end
       end)
-      |> then(fn acc -> %{acc | errors: Enum.reverse(acc.errors)} end)
+      |> then(fn acc ->
+        %{acc | errors: Enum.reverse(acc.errors)}
+      end)
     else
       %{
         synced: 0,

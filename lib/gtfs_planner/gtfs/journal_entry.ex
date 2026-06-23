@@ -6,14 +6,16 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
 
   The `id` is client-generated (stable across offline capture → sync) and is the
   upsert key. `target_type` is polymorphic over `station` (target_id null),
-  `node`, and `pathway` (the `pin` target and its diagram coordinate columns are
-  added by a later migration).
+  `node`, `pathway`, and `pin` (an arbitrary point on a level: `stop_level_id` +
+  `diagram_x/y` as the canonical anchor — exactly like a node's diagram
+  coordinate. `lat/lon` is optional enrichment imputed at level-alignment time,
+  not at sync, and stays nil on unaligned levels).
   """
   use Ecto.Schema
   import Ecto.Changeset
   import GtfsPlanner.ChangesetHelpers
 
-  @target_types ~w(station node pathway)
+  @target_types ~w(station node pathway pin)
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t(),
@@ -22,6 +24,11 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
           station_id: Ecto.UUID.t(),
           target_type: String.t(),
           target_id: Ecto.UUID.t() | nil,
+          stop_level_id: Ecto.UUID.t() | nil,
+          diagram_x: float() | nil,
+          diagram_y: float() | nil,
+          lat: float() | nil,
+          lon: float() | nil,
           body: String.t() | nil,
           author_id: Ecto.UUID.t(),
           captured_at: DateTime.t(),
@@ -36,6 +43,11 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
   schema "journal_entries" do
     field :target_type, :string
     field :target_id, :binary_id
+    field :stop_level_id, :binary_id
+    field :diagram_x, :float
+    field :diagram_y, :float
+    field :lat, :float
+    field :lon, :float
     field :body, :string
     field :author_id, :binary_id
     field :captured_at, :utc_datetime_usec
@@ -61,6 +73,11 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
       :station_id,
       :target_type,
       :target_id,
+      :stop_level_id,
+      :diagram_x,
+      :diagram_y,
+      :lat,
+      :lon,
       :body,
       :author_id,
       :captured_at,
@@ -77,14 +94,20 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
       :captured_at
     ])
     |> validate_inclusion(:target_type, @target_types)
-    |> validate_target_id()
+    |> validate_target()
     |> foreign_key_constraint(:organization_id)
     |> foreign_key_constraint(:gtfs_version_id)
     |> foreign_key_constraint(:station_id)
+    |> foreign_key_constraint(:stop_level_id)
   end
 
-  # A node/pathway entry must name its target; a station entry must not.
-  defp validate_target_id(changeset) do
+  # Target-shape rules by `target_type`:
+  #   - node/pathway: `target_id` required (the node/pathway UUID).
+  #   - station:      `target_id` must be blank.
+  #   - pin:          no `target_id`; `stop_level_id` + `diagram_x/y` required
+  #                   (the level + diagram-canvas point is the canonical anchor).
+  #                   lat/lon are optional enrichment imputed at alignment time.
+  defp validate_target(changeset) do
     case get_field(changeset, :target_type) do
       type when type in ["node", "pathway"] ->
         if get_field(changeset, :target_id),
@@ -96,8 +119,19 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
           do: add_error(changeset, :target_id, "must be blank for station targets"),
           else: changeset
 
+      "pin" ->
+        changeset
+        |> validate_pin_target_id()
+        |> validate_required([:stop_level_id, :diagram_x, :diagram_y])
+
       _ ->
         changeset
     end
+  end
+
+  defp validate_pin_target_id(changeset) do
+    if get_field(changeset, :target_id),
+      do: add_error(changeset, :target_id, "must be blank for pin targets"),
+      else: changeset
   end
 end

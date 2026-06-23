@@ -3128,6 +3128,54 @@ defmodule GtfsPlanner.GtfsTest do
       assert_in_delta Decimal.to_float(reloaded_child_stop.stop_lon), -74.0060, 1.0e-9
     end
 
+    test "imputes lat/lon for pin journal entries on the level alongside nodes", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      stop_level: stop_level
+    } do
+      author = user_fixture(%{email: "pin-align@example.com"})
+
+      pin_id = Ecto.UUID.generate()
+
+      {:ok, _pin} =
+        Gtfs.upsert_journal_entry(%{
+          "id" => pin_id,
+          "organization_id" => org.id,
+          "gtfs_version_id" => version.id,
+          "station_id" => station.id,
+          "author_id" => author.id,
+          "target_type" => "pin",
+          "stop_level_id" => stop_level.id,
+          # Painted image center in width-normalized units for 1000x800.
+          "diagram_x" => 50.0,
+          "diagram_y" => 40.0,
+          "captured_at" => "2026-06-20T10:00:00Z"
+        })
+
+      # Null before alignment — the canonical anchor is the diagram coordinate.
+      pre = Repo.get!(GtfsPlanner.Gtfs.JournalEntry, pin_id)
+      assert is_nil(pre.lat)
+      assert is_nil(pre.lon)
+
+      attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.0060,
+        floorplan_scale_mpp: 0.25,
+        floorplan_rotation_deg: 0.0
+      }
+
+      assert {:ok, _} =
+               Gtfs.save_and_apply_stop_level_alignment(stop_level.id, attrs, 1000, 800)
+
+      post = Repo.get!(GtfsPlanner.Gtfs.JournalEntry, pin_id)
+      assert_in_delta post.lat, 40.7128, 1.0e-9
+      assert_in_delta post.lon, -74.0060, 1.0e-9
+      # The canonical diagram coordinate is untouched.
+      assert post.diagram_x == 50.0
+      assert post.diagram_y == 40.0
+    end
+
     test "returns :not_found when active stop level does not exist" do
       assert {:error, :not_found} =
                Gtfs.save_and_apply_stop_level_alignment(

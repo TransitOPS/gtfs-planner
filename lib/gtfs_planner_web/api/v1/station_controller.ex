@@ -80,13 +80,29 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
       pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
 
-      # Station journal: group entries by target so each serializes onto its
-      # node/pathway (and station-targeted ones go top-level). Pin-targeted
-      # entries land on levels[] once the pin migration is in.
-      entries_by_target =
+      # Photos, grouped by their owning entry id and pre-serialized, so each
+      # journal entry can nest its photos[] (empty list when none).
+      photos_by_entry =
         org_id
-        |> Gtfs.list_journal_entries_for_station(version_id, station.id)
-        |> Enum.group_by(&{&1.target_type, &1.target_id}, &serialize_journal_entry/1)
+        |> Gtfs.list_journal_photos_for_station(version_id, station.id)
+        |> Enum.group_by(& &1.journal_entry_id, &serialize_photo(&1, org_id, station.stop_id))
+
+      ser_entry = &serialize_journal_entry(&1, photos_by_entry)
+
+      # Station journal: group entries by target so each serializes onto its
+      # node/pathway (station-targeted ones go top-level; pin-targeted ones land
+      # on levels[], keyed by stop_level_id).
+      all_entries = Gtfs.list_journal_entries_for_station(org_id, version_id, station.id)
+
+      entries_by_target =
+        all_entries
+        |> Enum.reject(&(&1.target_type == "pin"))
+        |> Enum.group_by(&{&1.target_type, &1.target_id}, ser_entry)
+
+      pin_entries_by_level =
+        all_entries
+        |> Enum.filter(&(&1.target_type == "pin"))
+        |> Enum.group_by(& &1.stop_level_id, &serialize_pin_entry(&1, photos_by_entry))
 
       {station_lat, station_lon} =
         serialize_coordinates(station.stop_lat, station.stop_lon)
@@ -104,7 +120,11 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
             lat: station_lat,
             lon: station_lon
           },
-          levels: Enum.map(levels, &serialize_level(&1, org_id, station.stop_id)),
+          levels:
+            Enum.map(
+              levels,
+              &serialize_level(&1, org_id, station.stop_id, pin_entries_by_level)
+            ),
           stops:
             Enum.map(
               child_stops,
@@ -134,17 +154,41 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     end
   end
 
-  defp serialize_level(%{level: level} = level_data, org_id, station_stop_id) do
-    serialize_level(level, Map.get(level_data, :stop_level), org_id, station_stop_id)
+  defp serialize_level(
+         %{level: level} = level_data,
+         org_id,
+         station_stop_id,
+         pin_entries_by_level
+       ) do
+    serialize_level(
+      level,
+      Map.get(level_data, :stop_level),
+      org_id,
+      station_stop_id,
+      pin_entries_by_level
+    )
   end
 
-  defp serialize_level(%{id: _} = level, stop_level, org_id, station_stop_id) do
+  defp serialize_level(
+         %{id: _} = level,
+         stop_level,
+         org_id,
+         station_stop_id,
+         pin_entries_by_level
+       ) do
+    pin_entries =
+      case stop_level do
+        %StopLevel{id: stop_level_id} -> Map.get(pin_entries_by_level, stop_level_id, [])
+        _ -> []
+      end
+
     %{
       id: level.id,
       level_id: level.level_id,
       level_index: level.level_index,
       level_name: level.level_name,
-      floorplan: serialize_floorplan(stop_level, org_id, station_stop_id)
+      floorplan: serialize_floorplan(stop_level, org_id, station_stop_id),
+      journal_entries: pin_entries
     }
   end
 
@@ -272,9 +316,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     }
   end
 
-  # `photos: []` is always present (forward-compatible); photos are populated
-  # once the journal-photos table + upload land. See specs/api/station-journal.md.
-  defp serialize_journal_entry(entry) do
+  # Station/node/pathway entries: each nests its photos[] (empty when none).
+  defp serialize_journal_entry(entry, photos_by_entry) do
     %{
       id: entry.id,
       target_type: entry.target_type,
@@ -283,7 +326,50 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       author_id: entry.author_id,
       captured_at: entry.captured_at,
       resolved_at: entry.resolved_at,
-      photos: []
+      photos: Map.get(photos_by_entry, entry.id, [])
     }
+  end
+
+  # Pin entries carry the diagram-canvas point + imputed lat/lon (mirroring how
+  # stops[] carry node coords), in addition to the common entry fields.
+  defp serialize_pin_entry(entry, photos_by_entry) do
+    %{
+      id: entry.id,
+      target_type: entry.target_type,
+      stop_level_id: entry.stop_level_id,
+      diagram_coordinate: %{x: entry.diagram_x, y: entry.diagram_y},
+      lat: entry.lat,
+      lon: entry.lon,
+      body: entry.body,
+      author_id: entry.author_id,
+      captured_at: entry.captured_at,
+      resolved_at: entry.resolved_at,
+      photos: Map.get(photos_by_entry, entry.id, [])
+    }
+  end
+
+  defp serialize_photo(photo, org_id, station_stop_id) do
+    %{
+      id: photo.id,
+      url: field_capture_url(org_id, station_stop_id, photo.filename),
+      content_type: photo.content_type,
+      width: photo.width,
+      height: photo.height,
+      captured_at: photo.captured_at
+    }
+  end
+
+  # Field-capture photos are served as static files under /uploads (like
+  # floorplans), not via an /api/v1 endpoint. Returns an absolute URL.
+  defp field_capture_url(org_id, station_stop_id, filename) do
+    case PathSafety.stop_storage_dir(station_stop_id) do
+      dir when is_binary(dir) ->
+        encoded_filename = URI.encode(filename, &URI.char_unreserved?/1)
+
+        "#{Endpoint.url()}/uploads/field-captures/#{org_id}/#{dir}/#{encoded_filename}"
+
+      _ ->
+        nil
+    end
   end
 end
