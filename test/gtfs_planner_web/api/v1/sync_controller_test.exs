@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Gtfs.JournalEntry
   alias GtfsPlanner.Gtfs.Pathway
 
   # ---------------------------------------------------------------------------
@@ -368,6 +369,170 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
 
       updated = Repo.get!(Pathway, good_pathway.id)
       assert updated.traversal_time == 90
+    end
+  end
+
+  describe "create/2 — journal entries" do
+    setup [:setup_user_with_org]
+
+    test "creates station/node/pathway journal entries alongside pathways", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+
+      %{station: station, child1: child1, pathway: pathway} =
+        build_station_with_pathway(org.id, version.id)
+
+      station_entry_id = Ecto.UUID.generate()
+      node_entry_id = Ecto.UUID.generate()
+      pathway_entry_id = Ecto.UUID.generate()
+
+      payload = %{
+        "pathways" => [],
+        "journal_entries" => [
+          %{
+            "id" => station_entry_id,
+            "target_type" => "station",
+            "body" => "Whole-station note",
+            "captured_at" => "2026-06-20T10:00:00Z"
+          },
+          %{
+            "id" => node_entry_id,
+            "target_type" => "node",
+            "target_id" => child1.id,
+            "body" => "Node note",
+            "captured_at" => "2026-06-20T10:01:00Z"
+          },
+          %{
+            "id" => pathway_entry_id,
+            "target_type" => "pathway",
+            "target_id" => pathway.id,
+            "body" => "Pathway note",
+            "captured_at" => "2026-06-20T10:02:00Z"
+          }
+        ]
+      }
+
+      conn = conn |> authed_conn(user) |> post(sync_url(version.id, station.id), payload)
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert data["journal_synced_count"] == 3
+      refute Map.has_key?(data, "errors")
+
+      entry = Repo.get!(JournalEntry, node_entry_id)
+      assert entry.target_type == "node"
+      assert entry.target_id == child1.id
+      assert entry.body == "Node note"
+      assert entry.author_id == user.id
+      assert entry.organization_id == org.id
+      assert entry.station_id == station.id
+    end
+
+    test "upserts by id (idempotent) and updates body on re-sync", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station} = build_station_with_pathway(org.id, version.id)
+      id = Ecto.UUID.generate()
+
+      post1 = %{
+        "pathways" => [],
+        "journal_entries" => [
+          %{
+            "id" => id,
+            "target_type" => "station",
+            "body" => "First",
+            "captured_at" => "2026-06-20T10:00:00Z"
+          }
+        ]
+      }
+
+      conn |> authed_conn(user) |> post(sync_url(version.id, station.id), post1)
+
+      post2 = %{
+        "pathways" => [],
+        "journal_entries" => [
+          %{
+            "id" => id,
+            "target_type" => "station",
+            "body" => "Edited",
+            "captured_at" => "2026-06-20T10:00:00Z"
+          }
+        ]
+      }
+
+      conn2 = build_conn() |> authed_conn(user) |> post(sync_url(version.id, station.id), post2)
+
+      assert %{"data" => data} = json_response(conn2, 200)
+      assert data["journal_synced_count"] == 1
+      assert Repo.aggregate(JournalEntry, :count, :id) == 1
+      assert Repo.get!(JournalEntry, id).body == "Edited"
+    end
+
+    test "reports a per-item error without failing the batch", %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+      %{station: station} = build_station_with_pathway(org.id, version.id)
+      good_id = Ecto.UUID.generate()
+
+      payload = %{
+        "pathways" => [],
+        "journal_entries" => [
+          %{
+            "id" => good_id,
+            "target_type" => "station",
+            "body" => "ok",
+            "captured_at" => "2026-06-20T10:00:00Z"
+          },
+          %{
+            "id" => Ecto.UUID.generate(),
+            "target_type" => "bogus",
+            "body" => "bad",
+            "captured_at" => "2026-06-20T10:00:00Z"
+          }
+        ]
+      }
+
+      conn = conn |> authed_conn(user) |> post(sync_url(version.id, station.id), payload)
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert data["journal_synced_count"] == 1
+      assert [%{"code" => "validation_error"}] = data["errors"]
+      assert Repo.get(JournalEntry, good_id)
+    end
+
+    test "rejects journal entries for a station outside the org", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      other_org = organization_fixture()
+      other_version = gtfs_version_fixture(other_org.id)
+      %{station: other_station} = build_station_with_pathway(other_org.id, other_version.id)
+
+      payload = %{
+        "pathways" => [],
+        "journal_entries" => [
+          %{
+            "id" => Ecto.UUID.generate(),
+            "target_type" => "station",
+            "body" => "x",
+            "captured_at" => "2026-06-20T10:00:00Z"
+          }
+        ]
+      }
+
+      # Authed as `user` (org), but posting to another org's station id.
+      conn = conn |> authed_conn(user) |> post(sync_url(version.id, other_station.id), payload)
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert data["journal_synced_count"] == 0
+      assert [%{"code" => "not_found"}] = data["errors"]
+      assert Repo.aggregate(JournalEntry, :count, :id) == 0
     end
   end
 end

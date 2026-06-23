@@ -1,8 +1,9 @@
 defmodule GtfsPlannerWeb.Api.V1.SyncController do
   use GtfsPlannerWeb, :controller
 
-  alias GtfsPlanner.Repo
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Repo
 
   @editable_fields ~w(traversal_time stair_count min_width signposted_as reversed_signposted_as field_notes field_completed_at)a
 
@@ -14,12 +15,17 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
   # See the companion app's specs/api/sync.md.
 
   @doc "POST /api/v1/versions/:version_id/stations/:station_id/sync"
-  def create(conn, %{
-        "version_id" => _version_id,
-        "station_id" => _station_id,
-        "pathways" => pathway_updates
-      }) do
+  def create(
+        conn,
+        %{
+          "version_id" => version_id,
+          "station_id" => station_id,
+          "pathways" => pathway_updates
+        } = params
+      ) do
     org_id = conn.assigns[:current_organization_id]
+    author_id = conn.assigns[:current_user_id]
+    journal_updates = Map.get(params, "journal_entries", [])
 
     results =
       Enum.reduce(pathway_updates, %{synced: 0, errors: []}, fn update, acc ->
@@ -92,21 +98,19 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
         end
       end)
 
-    response = %{
-      data: %{
+    journal = sync_journal_entries(journal_updates, org_id, version_id, station_id, author_id)
+
+    errors = Enum.reverse(results.errors) ++ journal.errors
+
+    data =
+      %{
         synced_count: results.synced,
         synced_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
       }
-    }
+      |> maybe_put(:journal_synced_count, journal_updates != [], journal.synced)
+      |> maybe_put(:errors, errors != [], errors)
 
-    response =
-      if results.errors != [] do
-        put_in(response, [:data, :errors], Enum.reverse(results.errors))
-      else
-        response
-      end
-
-    json(conn, response)
+    json(conn, %{data: data})
   end
 
   def create(conn, _params) do
@@ -145,4 +149,72 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
         :invalid_endpoints
     end
   end
+
+  defp maybe_put(map, _key, false, _value), do: map
+  defp maybe_put(map, key, true, value), do: Map.put(map, key, value)
+
+  # Upsert station-journal entries by client-generated id (idempotent). Each item
+  # is independent, like the pathway loop — partial failure stays 200 with
+  # per-item errors. Entries are scoped to the path's version/station and the
+  # session's org/user; a request to a station outside the org fails them all.
+  defp sync_journal_entries([], _org_id, _version_id, _station_id, _author_id),
+    do: %{synced: 0, errors: []}
+
+  defp sync_journal_entries(updates, org_id, version_id, station_id, author_id) do
+    if valid_station?(Gtfs.get_stop(station_id), org_id, version_id) do
+      updates
+      |> Enum.reduce(%{synced: 0, errors: []}, fn update, acc ->
+        attrs = %{
+          "id" => update["id"],
+          "organization_id" => org_id,
+          "gtfs_version_id" => version_id,
+          "station_id" => station_id,
+          "author_id" => author_id,
+          "target_type" => update["target_type"],
+          "target_id" => update["target_id"],
+          "body" => update["body"],
+          "captured_at" => update["captured_at"],
+          "resolved_at" => update["resolved_at"]
+        }
+
+        case Gtfs.upsert_journal_entry(attrs) do
+          {:ok, _entry} ->
+            %{acc | synced: acc.synced + 1}
+
+          {:error, _changeset} ->
+            %{
+              acc
+              | errors: [
+                  %{
+                    id: update["id"],
+                    code: "validation_error",
+                    message: "Failed to save journal entry."
+                  }
+                  | acc.errors
+                ]
+            }
+        end
+      end)
+      |> then(fn acc -> %{acc | errors: Enum.reverse(acc.errors)} end)
+    else
+      %{
+        synced: 0,
+        errors:
+          Enum.map(updates, fn u ->
+            %{id: u["id"], code: "not_found", message: "Station not found."}
+          end)
+      }
+    end
+  end
+
+  # Repeated variables enforce equality: matches only when the station's org and
+  # version equal the request's. A nil station (not found) falls through to false.
+  defp valid_station?(
+         %{organization_id: org_id, gtfs_version_id: version_id},
+         org_id,
+         version_id
+       ),
+       do: true
+
+  defp valid_station?(_station, _org_id, _version_id), do: false
 end

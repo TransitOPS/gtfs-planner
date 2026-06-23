@@ -80,6 +80,14 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
       pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
 
+      # Station journal: group entries by target so each serializes onto its
+      # node/pathway (and station-targeted ones go top-level). Pin-targeted
+      # entries land on levels[] once the pin migration is in.
+      entries_by_target =
+        org_id
+        |> Gtfs.list_journal_entries_for_station(version_id, station.id)
+        |> Enum.group_by(&{&1.target_type, &1.target_id}, &serialize_journal_entry/1)
+
       {station_lat, station_lon} =
         serialize_coordinates(station.stop_lat, station.stop_lon)
 
@@ -97,8 +105,17 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
             lon: station_lon
           },
           levels: Enum.map(levels, &serialize_level(&1, org_id, station.stop_id)),
-          stops: Enum.map(child_stops, &serialize_stop/1),
-          pathways: Enum.map(pathways, &serialize_pathway/1),
+          stops:
+            Enum.map(
+              child_stops,
+              &serialize_stop(&1, Map.get(entries_by_target, {"node", &1.id}, []))
+            ),
+          pathways:
+            Enum.map(
+              pathways,
+              &serialize_pathway(&1, Map.get(entries_by_target, {"pathway", &1.id}, []))
+            ),
+          journal_entries: Map.get(entries_by_target, {"station", nil}, []),
           diagrams: [],
           downloaded_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
         }
@@ -178,7 +195,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     end
   end
 
-  defp serialize_stop(stop) do
+  defp serialize_stop(stop, journal_entries) do
     {lat, lon} = serialize_coordinates(stop.stop_lat, stop.stop_lon)
 
     %{
@@ -192,7 +209,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       platform_code: stop.platform_code,
       diagram_coordinate: stop.diagram_coordinate,
       lat: lat,
-      lon: lon
+      lon: lon,
+      journal_entries: journal_entries
     }
   end
 
@@ -233,7 +251,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     end
   end
 
-  defp serialize_pathway(pathway) do
+  defp serialize_pathway(pathway, journal_entries) do
     %{
       id: pathway.id,
       pathway_id: pathway.pathway_id,
@@ -249,7 +267,23 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       signposted_as: pathway.signposted_as,
       reversed_signposted_as: pathway.reversed_signposted_as,
       field_notes: pathway.field_notes,
-      field_completed_at: pathway.field_completed_at
+      field_completed_at: pathway.field_completed_at,
+      journal_entries: journal_entries
+    }
+  end
+
+  # `photos: []` is always present (forward-compatible); photos are populated
+  # once the journal-photos table + upload land. See specs/api/station-journal.md.
+  defp serialize_journal_entry(entry) do
+    %{
+      id: entry.id,
+      target_type: entry.target_type,
+      target_id: entry.target_id,
+      body: entry.body,
+      author_id: entry.author_id,
+      captured_at: entry.captured_at,
+      resolved_at: entry.resolved_at,
+      photos: []
     }
   end
 end

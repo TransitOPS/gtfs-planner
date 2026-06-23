@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Repo
 
@@ -331,6 +332,81 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert data["diagrams"] == []
 
       assert is_binary(data["downloaded_at"])
+    end
+
+    test "attaches journal entries to station, node, and pathway (each with photos: [])", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+
+      %{station: station, child1: child1, pathway: pathway} =
+        build_station_data(org.id, version.id)
+
+      base = %{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        station_id: station.id,
+        author_id: user.id,
+        captured_at: ~U[2026-06-20 10:00:00.000000Z]
+      }
+
+      {:ok, _} =
+        Gtfs.upsert_journal_entry(
+          Map.merge(base, %{
+            id: Ecto.UUID.generate(),
+            target_type: "station",
+            body: "Station note"
+          })
+        )
+
+      {:ok, _} =
+        Gtfs.upsert_journal_entry(
+          Map.merge(base, %{
+            id: Ecto.UUID.generate(),
+            target_type: "node",
+            target_id: child1.id,
+            body: "Node note"
+          })
+        )
+
+      {:ok, _} =
+        Gtfs.upsert_journal_entry(
+          Map.merge(base, %{
+            id: Ecto.UUID.generate(),
+            target_type: "pathway",
+            target_id: pathway.id,
+            body: "Pathway note"
+          })
+        )
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => data} = json_response(conn, 200)
+
+      # Station-targeted entries ride at the top level.
+      assert [station_entry] = data["journal_entries"]
+      assert station_entry["target_type"] == "station"
+      assert station_entry["body"] == "Station note"
+      assert station_entry["photos"] == []
+
+      # Node-targeted entries ride on their stop.
+      stop_json = Enum.find(data["stops"], &(&1["id"] == child1.id))
+      assert [node_entry] = stop_json["journal_entries"]
+      assert node_entry["body"] == "Node note"
+
+      # Pathway-targeted entries ride on their pathway.
+      p = hd(data["pathways"])
+      assert [pathway_entry] = p["journal_entries"]
+      assert pathway_entry["body"] == "Pathway note"
+
+      # An unrelated stop carries an empty array.
+      other = Enum.find(data["stops"], &(&1["id"] != child1.id))
+      assert other["journal_entries"] == []
     end
 
     test "level floorplan carries url + alignment when the stop_level is aligned", %{

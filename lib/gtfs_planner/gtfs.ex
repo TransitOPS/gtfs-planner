@@ -26,6 +26,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.FeedInfo
   alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Frequency
+  alias GtfsPlanner.Gtfs.JournalEntry
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Location
   alias GtfsPlanner.Gtfs.Network
@@ -2176,6 +2177,35 @@ defmodule GtfsPlanner.Gtfs do
       select_merge: %{from_stop: from_stop, to_stop: to_stop}
     )
     |> Repo.all()
+  end
+
+  @doc """
+  All station-journal entries for a station (any target), oldest first. See the
+  companion app's `specs/api/station-journal.md`.
+  """
+  def list_journal_entries_for_station(organization_id, gtfs_version_id, station_id) do
+    from(e in JournalEntry,
+      where:
+        e.organization_id == ^organization_id and
+          e.gtfs_version_id == ^gtfs_version_id and
+          e.station_id == ^station_id,
+      order_by: [asc: e.captured_at, asc: e.inserted_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Upsert a station-journal entry by its client-generated `id` (idempotent). On
+  conflict, the mutable fields are replaced (last-write-wins on `body` /
+  `resolved_at`); scoping and authorship are preserved from the original insert.
+  """
+  def upsert_journal_entry(attrs) do
+    %JournalEntry{}
+    |> JournalEntry.changeset(attrs)
+    |> Repo.insert(
+      on_conflict: {:replace, [:body, :resolved_at, :target_type, :target_id, :updated_at]},
+      conflict_target: :id
+    )
   end
 
   defp descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id) do
