@@ -4474,6 +4474,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :photos_by_entry, :map, default: %{}
   attr :user_names, :map, default: %{}
   attr :target_labels, :map, default: %{}
+  attr :entry_levels, :map, default: %{}
   attr :focus_entry_id, :string, default: nil
   attr :filter, :atom, default: :all
 
@@ -4542,11 +4543,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 <span class="text-xs whitespace-nowrap text-base-content/50">
                   {journal_format_time(entry.captured_at)}
                 </span>
-                <span :if={entry.closed_at} class="badge badge-xs badge-ghost">Closed</span>
+                <div class="flex items-center gap-1">
+                  <span
+                    :if={Map.get(@entry_levels, entry.id)}
+                    class="badge badge-xs badge-ghost whitespace-nowrap"
+                    title="On level"
+                  >
+                    {Map.get(@entry_levels, entry.id)}
+                  </span>
+                  <span :if={entry.closed_at} class="badge badge-xs badge-ghost">Closed</span>
+                </div>
               </div>
             </div>
 
-            <p :if={entry.body && entry.body != ""} class="mt-2 text-sm whitespace-pre-wrap">
+            <p
+              :if={entry.body && entry.body != ""}
+              class="mt-2 text-sm whitespace-pre-wrap"
+            >
               {entry.body}
             </p>
 

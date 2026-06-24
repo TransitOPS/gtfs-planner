@@ -109,6 +109,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:journal_photos_by_entry, %{})
      |> assign(:journal_user_names, %{})
      |> assign(:journal_target_labels, %{})
+     |> assign(:journal_entry_levels, %{})
      |> assign(:journal_open_count, 0)
      |> assign(:journal_focus_entry_id, nil)
      |> assign(:journal_filter, :all)
@@ -234,11 +235,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> Enum.uniq()
       |> resolve_journal_user_names()
 
+    entry_levels = Map.new(entries, &{&1.id, entry_level_name(socket, &1)})
+
     socket
     |> assign(:journal_entries, entries)
     |> assign(:journal_photos_by_entry, photos_by_entry)
     |> assign(:journal_user_names, user_names)
     |> assign(:journal_target_labels, build_journal_target_labels(entries))
+    |> assign(:journal_entry_levels, entry_levels)
     |> assign(:journal_open_count, Enum.count(entries, &is_nil(&1.closed_at)))
   end
 
@@ -416,6 +420,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp entry_level(_socket, _entry), do: nil
+
+  # Display name of an entry's level (for the rail's level tag), or nil for
+  # station entries / unresolved targets.
+  defp entry_level_name(socket, entry) do
+    case entry_level(socket, entry) do
+      %{level_name: name} when is_binary(name) and name != "" -> name
+      %{level_id: level_id} when is_binary(level_id) -> level_id
+      _ -> nil
+    end
+  end
 
   defp safe_get_stop(id) do
     Gtfs.get_stop!(id)
@@ -1286,6 +1300,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         photos_by_entry={@journal_photos_by_entry}
         user_names={@journal_user_names}
         target_labels={@journal_target_labels}
+        entry_levels={@journal_entry_levels}
         focus_entry_id={@journal_focus_entry_id}
         filter={@journal_filter}
       />
@@ -2218,7 +2233,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:pathway_form_dirty, false)
        |> assign(:editing_pathway, pathway)
        |> assign(:pathway_form, form)
-       |> assign(:show_pathway_drawer, true)}
+       |> assign(:show_pathway_drawer, true)
+       # Close the node editor so the two never stack.
+       |> assign(:pending_xy, nil)
+       |> assign(:selected_stop_id, nil)
+       |> assign(:active_point_id, nil)}
     end
   end
 
@@ -5140,6 +5159,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:editing_level, false)
     |> assign(:stop_id_mode, :manual)
     |> assign(:child_stop_form, form)
+    # The node + pathway editors are mutually exclusive — close the pathway drawer
+    # so opening this one never stacks on top of it.
+    |> assign(:show_pathway_drawer, false)
   end
 
   defp stop_diagram_point(stop) do
