@@ -920,6 +920,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <g
         :for={pin <- @pins}
         data-journal-pin-id={pin.id}
+        data-journal-scale="true"
+        data-center-x={pin.diagram_x}
+        data-center-y={pin.diagram_y}
         class="cursor-pointer"
         style="pointer-events: auto;"
         phx-click="focus_journal_pin"
@@ -1165,6 +1168,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <g
       class="cursor-pointer"
       style="pointer-events: auto;"
+      data-journal-scale="true"
+      data-center-x={@cx}
+      data-center-y={@cy}
       phx-click="focus_journal_entry"
       phx-value-id={@entry_id}
     >
