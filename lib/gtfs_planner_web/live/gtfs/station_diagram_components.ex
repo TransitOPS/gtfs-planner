@@ -713,6 +713,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_point_b, :any, default: nil
   attr :measurement_enabled, :boolean, default: false
   attr :journal_pins, :list, default: []
+  attr :journal_targets, :map, default: %{}
+  attr :journal_focus_id, :string, default: nil
 
   def diagram_canvas(assigns) do
     canvas_key = diagram_canvas_key(assigns.active_level, assigns.active_stop_level)
@@ -762,6 +764,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             scale_point_b={@scale_point_b}
             measurement_enabled={@measurement_enabled}
             journal_pins={@journal_pins}
+            journal_targets={@journal_targets}
+            journal_focus_id={@journal_focus_id}
           />
           <div
             id="diagram-edit-tooltip"
@@ -821,6 +825,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_point_b, :any, default: nil
   attr :measurement_enabled, :boolean, default: false
   attr :journal_pins, :list, default: []
+  attr :journal_targets, :map, default: %{}
+  attr :journal_focus_id, :string, default: nil
 
   defp diagram_overlay(assigns) do
     ~H"""
@@ -853,7 +859,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </marker>
       </defs>
 
-      <.pathways_layer streams={@streams} mode={@mode} />
+      <.pathways_layer streams={@streams} mode={@mode} journal_targets={@journal_targets} />
       <.ruler_line
         :if={@measurement_enabled and @ruler_point_a}
         point_a={@ruler_point_a}
@@ -866,6 +872,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         mode={@mode}
         measurement_enabled={@measurement_enabled}
         cross_level_badges_by_stop={@cross_level_badges_by_stop}
+        journal_targets={@journal_targets}
       />
       <.ruler_line
         :if={(@mode == :view and @scale_point_a) && @scale_point_b}
@@ -877,12 +884,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         :if={@pending_xy && @mode == :add && @selected_stop_id == nil}
         pending_xy={@pending_xy}
       />
-      <.journal_pins_layer pins={@journal_pins} />
+      <.journal_pins_layer pins={@journal_pins} focus_id={@journal_focus_id} />
     </svg>
     """
   end
 
   attr :pins, :list, default: []
+  attr :focus_id, :string, default: nil
 
   # Journal pin markers, drawn in the same 0–100 diagram space as node markers
   # (from each pin entry's diagram_x/diagram_y). Distinct shape/color from nodes;
@@ -900,6 +908,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         phx-value-id={pin.id}
       >
         <circle
+          :if={@focus_id == pin.id}
+          cx={pin.diagram_x}
+          cy={pin.diagram_y}
+          r="2.0"
+          fill="none"
+          stroke="#DB2777"
+          stroke-width="0.3"
+          stroke-opacity="0.8"
+          class="animate-pulse"
+        />
+        <circle
           cx={pin.diagram_x}
           cy={pin.diagram_y}
           r="1.1"
@@ -916,13 +935,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :streams, :any, required: true
   attr :mode, :atom, required: true
+  attr :journal_targets, :map, default: %{}
 
   defp pathways_layer(assigns) do
     ~H"""
     <g id="pathways-svg" phx-update="stream">
       <%= for {dom_id, pathway} <- @streams.pathways do %>
         <%= if pathway.from_stop.diagram_coordinate && pathway.to_stop.diagram_coordinate do %>
-          <.pathway_element id={dom_id} pathway={pathway} mode={@mode} />
+          <.pathway_element
+            id={dom_id}
+            pathway={pathway}
+            mode={@mode}
+            journal_entry_id={Map.get(@journal_targets, pathway.id)}
+          />
         <% end %>
       <% end %>
     </g>
@@ -932,6 +957,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :id, :string, required: true
   attr :pathway, :any, required: true
   attr :mode, :atom, required: true
+  attr :journal_entry_id, :string, default: nil
 
   defp pathway_element(assigns) do
     from_coordinate = assigns.pathway.from_stop.diagram_coordinate
@@ -974,6 +1000,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:has_forward_label?, has_forward_label?)
       |> assign(:has_reverse_label?, has_reverse_label?)
       |> assign(:editable?, assigns.mode == :view)
+      |> assign(:jx, (x1 + x2) / 2)
+      |> assign(:jy, (y1 + y2) / 2)
 
     ~H"""
     <g
@@ -1113,6 +1141,49 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         text={@reverse_label_text}
         side={:reverse}
       />
+      <.journal_target_indicator
+        :if={@journal_entry_id}
+        cx={@jx}
+        cy={@jy}
+        entry_id={@journal_entry_id}
+      />
+    </g>
+    """
+  end
+
+  attr :cx, :float, required: true
+  attr :cy, :float, required: true
+  attr :entry_id, :string, required: true
+
+  # Subtle "has an open journal entry" indicator drawn on a node/pathway while the
+  # journal is open. Clicking it focuses that entry in the rail (map → journal).
+  defp journal_target_indicator(assigns) do
+    ~H"""
+    <g
+      class="cursor-pointer"
+      style="pointer-events: auto;"
+      phx-click="focus_journal_entry"
+      phx-value-id={@entry_id}
+    >
+      <circle
+        cx={@cx}
+        cy={@cy}
+        r="1.25"
+        fill="#F59E0B"
+        fill-opacity="0.95"
+        stroke="#FFFFFF"
+        stroke-width="0.25"
+      />
+      <text
+        x={@cx}
+        y={@cy + 0.62}
+        text-anchor="middle"
+        font-size="1.5"
+        font-weight="bold"
+        fill="#FFFFFF"
+      >
+        !
+      </text>
     </g>
     """
   end
@@ -1633,6 +1704,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :mode, :atom, required: true
   attr :measurement_enabled, :boolean, default: false
   attr :cross_level_badges_by_stop, :map, default: %{}
+  attr :journal_targets, :map, default: %{}
 
   defp stops_layer(assigns) do
     assigns =
@@ -1658,6 +1730,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <% label_x = cx + label_offset_x %>
           <% label_y = cy + label_offset_y %>
           <% stop_aria_label = stop_aria_label(stop) %>
+          <% journal_entry_id = Map.get(@journal_targets, stop.id) %>
           <g
             id={dom_id}
             class="group pointer-events-auto"
@@ -1815,6 +1888,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               stop={stop}
               mode={@mode}
               cross_level_badges_by_stop={@cross_level_badges_by_stop}
+            />
+            <.journal_target_indicator
+              :if={journal_entry_id}
+              cx={cx + 1.6}
+              cy={cy - 1.6}
+              entry_id={journal_entry_id}
             />
           </g>
         <% end %>
@@ -4454,15 +4533,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             ]}
           >
             <div class="flex items-start justify-between gap-2">
-              <div class="flex items-center gap-2 min-w-0">
-                <span class={["badge badge-sm", journal_target_class(entry.target_type)]}>
-                  {journal_target_label(entry, @target_labels)}
+              <.journal_target_chip
+                entry={entry}
+                label={journal_target_label(entry, @target_labels)}
+              />
+              <div class="flex shrink-0 flex-col items-end gap-1">
+                <span class="text-xs whitespace-nowrap text-base-content/50">
+                  {journal_format_time(entry.captured_at)}
                 </span>
-                <span :if={entry.closed_at} class="badge badge-sm badge-ghost">Closed</span>
+                <span :if={entry.closed_at} class="badge badge-xs badge-ghost">Closed</span>
               </div>
-              <span class="text-xs text-base-content/50 whitespace-nowrap">
-                {journal_format_time(entry.captured_at)}
-              </span>
             </div>
 
             <p :if={entry.body && entry.body != ""} class="mt-2 text-sm whitespace-pre-wrap">
@@ -4533,11 +4613,57 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp journal_target_label(_entry, _labels), do: "Entry"
 
-  defp journal_target_class("station"), do: "badge-neutral"
-  defp journal_target_class("node"), do: "badge-info"
-  defp journal_target_class("pathway"), do: "badge-accent"
-  defp journal_target_class("pin"), do: "badge-secondary"
-  defp journal_target_class(_), do: "badge-ghost"
+  # The target chip. A pill that truncates long names (full name in the title),
+  # and — for node/pathway/pin — a clickable button that locates the target on the
+  # diagram: node/pathway open their editor beside the journal; a pin highlights
+  # its marker. Station entries aren't clickable (no map target).
+  attr :entry, :any, required: true
+  attr :label, :string, required: true
+
+  defp journal_target_chip(assigns) do
+    assigns = assign(assigns, :action, journal_target_action(assigns.entry))
+
+    ~H"""
+    <button
+      :if={@action}
+      type="button"
+      class={[
+        "block min-w-0 max-w-full truncate rounded px-1.5 py-0.5 text-left text-xs font-medium hover:brightness-95",
+        journal_target_class(@entry.target_type)
+      ]}
+      title={"#{@label} — click to locate on the diagram"}
+      phx-click={elem(@action, 0)}
+      phx-value-id={elem(@action, 1)}
+    >
+      {@label}
+    </button>
+    <span
+      :if={!@action}
+      class={[
+        "block min-w-0 max-w-full truncate rounded px-1.5 py-0.5 text-xs font-medium",
+        journal_target_class(@entry.target_type)
+      ]}
+      title={@label}
+    >
+      {@label}
+    </span>
+    """
+  end
+
+  defp journal_target_action(%{target_type: "node", target_id: id}) when is_binary(id),
+    do: {"edit_child_stop", id}
+
+  defp journal_target_action(%{target_type: "pathway", target_id: id}) when is_binary(id),
+    do: {"edit_pathway", id}
+
+  defp journal_target_action(%{target_type: "pin", id: id}), do: {"focus_journal_pin", id}
+  defp journal_target_action(_), do: nil
+
+  defp journal_target_class("station"), do: "bg-gray-100 text-gray-700"
+  defp journal_target_class("node"), do: "bg-blue-100 text-blue-800"
+  defp journal_target_class("pathway"), do: "bg-purple-100 text-purple-800"
+  defp journal_target_class("pin"), do: "bg-pink-100 text-pink-800"
+  defp journal_target_class(_), do: "bg-gray-100 text-gray-600"
 
   defp journal_user_name(nil, _names), do: "—"
   defp journal_user_name(id, names), do: Map.get(names, id) || "unknown"

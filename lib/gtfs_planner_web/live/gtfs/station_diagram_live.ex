@@ -310,6 +310,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     _ -> nil
   end
 
+  # Map of target_id => newest open entry id for node/pathway-targeted entries,
+  # but only while the journal panel is open — drives the subtle "has an open
+  # entry" indicators on the diagram, which click through to focus that entry.
+  defp journal_diagram_targets(assigns) do
+    if assigns.journal_panel_open do
+      for e <- assigns.journal_entries,
+          e.target_type in ["node", "pathway"],
+          is_nil(e.closed_at),
+          not is_nil(e.target_id),
+          reduce: %{} do
+        acc -> Map.put_new(acc, e.target_id, e.id)
+      end
+    else
+      %{}
+    end
+  end
+
   # Pin entries anchored to the active level (by stop_level_id) with coordinates,
   # for the diagram overlay's pin markers.
   defp journal_pins_for_active_level(assigns) do
@@ -1053,6 +1070,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
                 measurement_enabled={@measurement_enabled}
                 journal_pins={journal_pins_for_active_level(assigns)}
+                journal_targets={journal_diagram_targets(assigns)}
+                journal_focus_id={@journal_focus_entry_id}
               />
             </div>
           <% end %>
@@ -2657,6 +2676,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply, assign(socket, :journal_filter, filter)}
   end
 
+  # Map → journal: a diagram indicator (on a node/pathway with an open entry) was
+  # clicked. Open the panel if needed and focus that entry (rings + scrolls to it).
+  def handle_event("focus_journal_entry", %{"id" => id}, socket) do
+    {:noreply,
+     socket
+     |> assign(:journal_panel_open, true)
+     |> assign(:journal_focus_entry_id, id)
+     |> push_event("journal_focus", %{id: id})}
+  end
+
   def handle_event("close_journal_entry", %{"id" => id}, socket) do
     {:noreply, set_journal_entry_closed(socket, id, true)}
   end
@@ -2670,7 +2699,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> load_journal()
      |> assign(:journal_focus_entry_id, id)
-     |> assign(:journal_panel_open, true)}
+     |> assign(:journal_panel_open, true)
+     |> push_event("journal_focus", %{id: id})}
   end
 
   @impl true

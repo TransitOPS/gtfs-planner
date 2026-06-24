@@ -197,6 +197,49 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalTest do
     refute open =~ "already closed here"
   end
 
+  test "a node entry's target chip is a clickable button that opens its editor",
+       %{conn: conn} =
+         ctx do
+    node =
+      stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+        stop_id: "NODE_1",
+        stop_name: "Faulty Elevator",
+        location_type: 0,
+        parent_station: ctx.station.stop_id,
+        level_id: ctx.level.level_id,
+        diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+      })
+
+    entry_fixture(ctx.organization, ctx.gtfs_version, ctx.station, ctx.user, %{
+      "target_type" => "node",
+      "target_id" => node.id,
+      "body" => "elevator out of service"
+    })
+
+    view = open_diagram(conn, ctx)
+    html = open_panel(view)
+
+    # The chip is a button wired to the node editor with the node's id.
+    assert html =~ ~s(phx-click="edit_child_stop")
+    assert html =~ ~s(phx-value-id="#{node.id}")
+    assert html =~ "Faulty Elevator"
+  end
+
+  test "focus_journal_entry opens the panel and focuses the entry", %{conn: conn} = ctx do
+    entry =
+      entry_fixture(ctx.organization, ctx.gtfs_version, ctx.station, ctx.user, %{
+        "body" => "jump to me"
+      })
+
+    view = open_diagram(conn, ctx)
+
+    html = render_hook(view, "focus_journal_entry", %{"id" => entry.id})
+
+    # Panel opened (entry visible) and the focused entry carries the highlight ring.
+    assert html =~ "jump to me"
+    assert html =~ ~r/id="journal-entry-#{entry.id}"[^>]*ring-2/
+  end
+
   test "the Journal button shows an open-entry count badge", %{conn: conn} = ctx do
     entry_fixture(ctx.organization, ctx.gtfs_version, ctx.station, ctx.user, %{"body" => "one"})
 
