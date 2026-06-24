@@ -713,7 +713,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_point_b, :any, default: nil
   attr :measurement_enabled, :boolean, default: false
   attr :journal_pins, :list, default: []
-  attr :journal_targets, :map, default: %{}
+  attr :journal_indicators, :list, default: []
   attr :journal_focus_id, :string, default: nil
 
   def diagram_canvas(assigns) do
@@ -764,7 +764,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             scale_point_b={@scale_point_b}
             measurement_enabled={@measurement_enabled}
             journal_pins={@journal_pins}
-            journal_targets={@journal_targets}
+            journal_indicators={@journal_indicators}
             journal_focus_id={@journal_focus_id}
           />
           <div
@@ -825,7 +825,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_point_b, :any, default: nil
   attr :measurement_enabled, :boolean, default: false
   attr :journal_pins, :list, default: []
-  attr :journal_targets, :map, default: %{}
+  attr :journal_indicators, :list, default: []
   attr :journal_focus_id, :string, default: nil
 
   defp diagram_overlay(assigns) do
@@ -859,7 +859,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </marker>
       </defs>
 
-      <.pathways_layer streams={@streams} mode={@mode} journal_targets={@journal_targets} />
+      <.pathways_layer streams={@streams} mode={@mode} />
       <.ruler_line
         :if={@measurement_enabled and @ruler_point_a}
         point_a={@ruler_point_a}
@@ -872,7 +872,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         mode={@mode}
         measurement_enabled={@measurement_enabled}
         cross_level_badges_by_stop={@cross_level_badges_by_stop}
-        journal_targets={@journal_targets}
       />
       <.ruler_line
         :if={(@mode == :view and @scale_point_a) && @scale_point_b}
@@ -885,7 +884,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         pending_xy={@pending_xy}
       />
       <.journal_pins_layer pins={@journal_pins} focus_id={@journal_focus_id} />
+      <.journal_indicators_layer indicators={@journal_indicators} />
     </svg>
+    """
+  end
+
+  attr :indicators, :list, default: []
+
+  # Non-stream layer of "has an open entry" indicators for node/pathway targets on
+  # the active level (positions resolved server-side). Separate from the streamed
+  # stops/pathways so it reacts to journal open/close + entry changes.
+  defp journal_indicators_layer(assigns) do
+    ~H"""
+    <g id="journal-indicators-svg">
+      <.journal_target_indicator
+        :for={ind <- @indicators}
+        cx={ind.cx}
+        cy={ind.cy}
+        entry_id={ind.entry_id}
+      />
+    </g>
     """
   end
 
@@ -935,19 +953,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :streams, :any, required: true
   attr :mode, :atom, required: true
-  attr :journal_targets, :map, default: %{}
 
   defp pathways_layer(assigns) do
     ~H"""
     <g id="pathways-svg" phx-update="stream">
       <%= for {dom_id, pathway} <- @streams.pathways do %>
         <%= if pathway.from_stop.diagram_coordinate && pathway.to_stop.diagram_coordinate do %>
-          <.pathway_element
-            id={dom_id}
-            pathway={pathway}
-            mode={@mode}
-            journal_entry_id={Map.get(@journal_targets, pathway.id)}
-          />
+          <.pathway_element id={dom_id} pathway={pathway} mode={@mode} />
         <% end %>
       <% end %>
     </g>
@@ -957,7 +969,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :id, :string, required: true
   attr :pathway, :any, required: true
   attr :mode, :atom, required: true
-  attr :journal_entry_id, :string, default: nil
 
   defp pathway_element(assigns) do
     from_coordinate = assigns.pathway.from_stop.diagram_coordinate
@@ -1000,8 +1011,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:has_forward_label?, has_forward_label?)
       |> assign(:has_reverse_label?, has_reverse_label?)
       |> assign(:editable?, assigns.mode == :view)
-      |> assign(:jx, (x1 + x2) / 2)
-      |> assign(:jy, (y1 + y2) / 2)
 
     ~H"""
     <g
@@ -1140,12 +1149,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         y2={@y2}
         text={@reverse_label_text}
         side={:reverse}
-      />
-      <.journal_target_indicator
-        :if={@journal_entry_id}
-        cx={@jx}
-        cy={@jy}
-        entry_id={@journal_entry_id}
       />
     </g>
     """
@@ -1704,7 +1707,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :mode, :atom, required: true
   attr :measurement_enabled, :boolean, default: false
   attr :cross_level_badges_by_stop, :map, default: %{}
-  attr :journal_targets, :map, default: %{}
 
   defp stops_layer(assigns) do
     assigns =
@@ -1730,7 +1732,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <% label_x = cx + label_offset_x %>
           <% label_y = cy + label_offset_y %>
           <% stop_aria_label = stop_aria_label(stop) %>
-          <% journal_entry_id = Map.get(@journal_targets, stop.id) %>
           <g
             id={dom_id}
             class="group pointer-events-auto"
@@ -1888,12 +1889,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               stop={stop}
               mode={@mode}
               cross_level_badges_by_stop={@cross_level_badges_by_stop}
-            />
-            <.journal_target_indicator
-              :if={journal_entry_id}
-              cx={cx + 1.6}
-              cy={cy - 1.6}
-              entry_id={journal_entry_id}
             />
           </g>
         <% end %>

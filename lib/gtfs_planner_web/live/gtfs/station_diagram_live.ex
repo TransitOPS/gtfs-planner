@@ -310,22 +310,54 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     _ -> nil
   end
 
-  # Map of target_id => newest open entry id for node/pathway-targeted entries,
-  # but only while the journal panel is open — drives the subtle "has an open
-  # entry" indicators on the diagram, which click through to focus that entry.
-  defp journal_diagram_targets(assigns) do
+  # Indicator markers for node/pathway entries on the active level, but only while
+  # the journal panel is open: a list of %{cx, cy, entry_id} resolved from each
+  # open node/pathway entry's target coordinate (node = its diagram point;
+  # pathway = the midpoint of its from/to). Rendered in a non-stream overlay layer
+  # so it reacts to journal toggles; clicking one focuses that entry in the rail.
+  defp journal_indicators(assigns) do
     if assigns.journal_panel_open do
-      for e <- assigns.journal_entries,
-          e.target_type in ["node", "pathway"],
-          is_nil(e.closed_at),
-          not is_nil(e.target_id),
-          reduce: %{} do
-        acc -> Map.put_new(acc, e.target_id, e.id)
-      end
+      stops_by_id = Map.new(assigns.child_stops_list || [], &{&1.id, &1})
+      pathways_by_id = Map.new(assigns.pathways_list || [], &{&1.id, &1})
+
+      assigns.journal_entries
+      |> Enum.filter(
+        &(&1.target_type in ["node", "pathway"] and is_nil(&1.closed_at) and
+            not is_nil(&1.target_id))
+      )
+      |> Enum.uniq_by(& &1.target_id)
+      |> Enum.flat_map(fn e ->
+        case journal_indicator_xy(e, stops_by_id, pathways_by_id) do
+          {cx, cy} -> [%{cx: cx, cy: cy, entry_id: e.id}]
+          nil -> []
+        end
+      end)
     else
-      %{}
+      []
     end
   end
+
+  defp journal_indicator_xy(%{target_type: "node", target_id: id}, stops, _pathways) do
+    case stops[id] do
+      %{diagram_coordinate: %{"x" => x, "y" => y}} -> {x + 1.6, y - 1.6}
+      _ -> nil
+    end
+  end
+
+  defp journal_indicator_xy(%{target_type: "pathway", target_id: id}, _stops, pathways) do
+    case pathways[id] do
+      %{
+        from_stop: %{diagram_coordinate: %{"x" => x1, "y" => y1}},
+        to_stop: %{diagram_coordinate: %{"x" => x2, "y" => y2}}
+      } ->
+        {(x1 + x2) / 2, (y1 + y2) / 2}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp journal_indicator_xy(_entry, _stops, _pathways), do: nil
 
   # Pin entries anchored to the active level (by stop_level_id) with coordinates,
   # for the diagram overlay's pin markers.
@@ -1070,7 +1102,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
                 measurement_enabled={@measurement_enabled}
                 journal_pins={journal_pins_for_active_level(assigns)}
-                journal_targets={journal_diagram_targets(assigns)}
+                journal_indicators={journal_indicators(assigns)}
                 journal_focus_id={@journal_focus_entry_id}
               />
             </div>

@@ -225,6 +225,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalTest do
     assert html =~ "Faulty Elevator"
   end
 
+  test "a node with an open entry shows a clickable diagram indicator while the journal is open",
+       %{conn: conn} = ctx do
+    ctx.stop_level
+    |> Ecto.Changeset.change(diagram_filename: "floorplan.png")
+    |> Repo.update!()
+
+    node =
+      stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+        stop_id: "NODE_2",
+        stop_name: "Broken Gate",
+        location_type: 0,
+        parent_station: ctx.station.stop_id,
+        level_id: ctx.level.level_id,
+        diagram_coordinate: %{"x" => 25.0, "y" => 35.0}
+      })
+
+    entry =
+      entry_fixture(ctx.organization, ctx.gtfs_version, ctx.station, ctx.user, %{
+        "target_type" => "node",
+        "target_id" => node.id,
+        "body" => "gate stuck"
+      })
+
+    view = open_diagram(conn, ctx)
+
+    # Closed journal: no indicator on the diagram.
+    refute render(view) =~ ~s(phx-value-id="#{entry.id}")
+
+    # Open the journal: the indicator appears, wired to focus that entry.
+    html = open_panel(view)
+    assert html =~ ~s(phx-click="focus_journal_entry")
+    assert html =~ ~s(phx-value-id="#{entry.id}")
+  end
+
   test "focus_journal_entry opens the panel and focuses the entry", %{conn: conn} = ctx do
     entry =
       entry_fixture(ctx.organization, ctx.gtfs_version, ctx.station, ctx.user, %{
