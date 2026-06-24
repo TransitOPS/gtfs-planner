@@ -4382,109 +4382,121 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # ============================================================================
 
   @doc """
-  Station journal review drawer. Lists companion-captured entries newest-first with
-  their target, author, time, note, and photos. Closing is a desk action: closed
+  Station journal review panel — a docked side rail (not an overlay), so the desk
+  reviewer keeps the captured entries visible while they edit the diagram the
+  entries describe. Lists companion-captured entries newest-first with their
+  target, author, time, note, and photos. Closing is a desk action: closed
   entries are de-emphasized and badged with who/when but never hidden or filtered
   out (per the journal's open/closed treatment). Open entries show Close; closed
   ones show Reopen.
   """
-  attr :open, :boolean, default: false
   attr :entries, :list, default: []
   attr :photos_by_entry, :map, default: %{}
   attr :user_names, :map, default: %{}
   attr :target_labels, :map, default: %{}
   attr :focus_entry_id, :string, default: nil
 
-  def station_journal_drawer(assigns) do
+  def station_journal_panel(assigns) do
     ~H"""
-    <.drawer
-      id="station-journal-drawer"
-      open={@open}
-      on_close="close_journal_drawer"
-      title="Station journal"
-      class="max-w-xl"
+    <aside
+      id="station-journal-panel"
+      class="flex w-96 shrink-0 flex-col self-stretch overflow-hidden rounded-lg border border-base-300 bg-base-100 max-h-[calc(100vh-13rem)] sticky top-4"
     >
-      <div :if={@entries == []} class="text-sm text-base-content/60 py-8 text-center">
-        No journal entries captured for this station yet.
+      <div class="flex items-center justify-between border-b border-base-300 px-3 py-2">
+        <h2 class="text-sm font-semibold">Station journal</h2>
+        <button
+          type="button"
+          class="btn btn-ghost btn-xs btn-circle"
+          phx-click="close_journal_panel"
+          aria-label="Close journal panel"
+        >
+          <.icon name="hero-x-mark" class="h-4 w-4" />
+        </button>
       </div>
 
-      <ul class="space-y-3">
-        <li
-          :for={entry <- @entries}
-          id={"journal-entry-#{entry.id}"}
-          class={[
-            "rounded-lg border p-3",
-            entry.closed_at && "border-base-300 bg-base-200/60 opacity-70",
-            !entry.closed_at && "border-base-300 bg-base-100",
-            @focus_entry_id == entry.id && "ring-2 ring-primary"
-          ]}
-        >
-          <div class="flex items-start justify-between gap-2">
-            <div class="flex items-center gap-2 min-w-0">
-              <span class={["badge badge-sm", journal_target_class(entry.target_type)]}>
-                {journal_target_label(entry, @target_labels)}
+      <div class="flex-1 overflow-y-auto p-3">
+        <div :if={@entries == []} class="text-sm text-base-content/60 py-8 text-center">
+          No journal entries captured for this station yet.
+        </div>
+
+        <ul class="space-y-3">
+          <li
+            :for={entry <- @entries}
+            id={"journal-entry-#{entry.id}"}
+            class={[
+              "rounded-lg border p-3",
+              entry.closed_at && "border-base-300 bg-base-200/60 opacity-70",
+              !entry.closed_at && "border-base-300 bg-base-100",
+              @focus_entry_id == entry.id && "ring-2 ring-primary"
+            ]}
+          >
+            <div class="flex items-start justify-between gap-2">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class={["badge badge-sm", journal_target_class(entry.target_type)]}>
+                  {journal_target_label(entry, @target_labels)}
+                </span>
+                <span :if={entry.closed_at} class="badge badge-sm badge-ghost">Closed</span>
+              </div>
+              <span class="text-xs text-base-content/50 whitespace-nowrap">
+                {journal_format_time(entry.captured_at)}
               </span>
-              <span :if={entry.closed_at} class="badge badge-sm badge-ghost">Closed</span>
             </div>
-            <span class="text-xs text-base-content/50 whitespace-nowrap">
-              {journal_format_time(entry.captured_at)}
-            </span>
-          </div>
 
-          <p :if={entry.body && entry.body != ""} class="mt-2 text-sm whitespace-pre-wrap">
-            {entry.body}
-          </p>
+            <p :if={entry.body && entry.body != ""} class="mt-2 text-sm whitespace-pre-wrap">
+              {entry.body}
+            </p>
 
-          <div :if={Map.get(@photos_by_entry, entry.id, []) != []} class="mt-2 flex flex-wrap gap-2">
-            <a
-              :for={photo <- Map.get(@photos_by_entry, entry.id, [])}
-              href={photo.url}
-              target="_blank"
-              rel="noopener"
-              class="block"
-            >
-              <img
-                src={photo.url}
-                alt="Journal photo"
-                loading="lazy"
-                class="h-20 w-20 rounded object-cover border border-base-300 hover:opacity-90"
-              />
-            </a>
-          </div>
+            <div :if={Map.get(@photos_by_entry, entry.id, []) != []} class="mt-2 flex flex-wrap gap-2">
+              <a
+                :for={photo <- Map.get(@photos_by_entry, entry.id, [])}
+                href={photo.url}
+                target="_blank"
+                rel="noopener"
+                class="block"
+              >
+                <img
+                  src={photo.url}
+                  alt="Journal photo"
+                  loading="lazy"
+                  class="h-20 w-20 rounded object-cover border border-base-300 hover:opacity-90"
+                />
+              </a>
+            </div>
 
-          <div class="mt-2 flex items-center justify-between gap-2">
-            <span class="text-xs text-base-content/50">
-              by {journal_user_name(entry.author_id, @user_names)}
-            </span>
-            <div class="flex items-center gap-2">
-              <span :if={entry.closed_at} class="text-xs text-base-content/50">
-                Closed by {journal_user_name(entry.closed_by, @user_names)} · {journal_format_time(
-                  entry.closed_at
-                )}
+            <div class="mt-2 flex items-center justify-between gap-2">
+              <span class="text-xs text-base-content/50">
+                by {journal_user_name(entry.author_id, @user_names)}
               </span>
-              <button
-                :if={entry.closed_at}
-                type="button"
-                class="btn btn-xs btn-ghost"
-                phx-click="reopen_journal_entry"
-                phx-value-id={entry.id}
-              >
-                Reopen
-              </button>
-              <button
-                :if={!entry.closed_at}
-                type="button"
-                class="btn btn-xs btn-outline"
-                phx-click="close_journal_entry"
-                phx-value-id={entry.id}
-              >
-                Close
-              </button>
+              <div class="flex items-center gap-2">
+                <span :if={entry.closed_at} class="text-xs text-base-content/50">
+                  Closed by {journal_user_name(entry.closed_by, @user_names)} · {journal_format_time(
+                    entry.closed_at
+                  )}
+                </span>
+                <button
+                  :if={entry.closed_at}
+                  type="button"
+                  class="btn btn-xs btn-ghost"
+                  phx-click="reopen_journal_entry"
+                  phx-value-id={entry.id}
+                >
+                  Reopen
+                </button>
+                <button
+                  :if={!entry.closed_at}
+                  type="button"
+                  class="btn btn-xs btn-outline"
+                  phx-click="close_journal_entry"
+                  phx-value-id={entry.id}
+                >
+                  Close
+                </button>
+              </div>
             </div>
-          </div>
-        </li>
-      </ul>
-    </.drawer>
+          </li>
+        </ul>
+      </div>
+    </aside>
     """
   end
 

@@ -104,7 +104,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:floorplan_image_w, nil)
      |> assign(:floorplan_image_h, nil)
      |> assign(:station_stop_levels_cache, empty_station_stop_levels_cache())
-     |> assign(:show_journal_drawer, false)
+     |> assign(:journal_panel_open, false)
      |> assign(:journal_entries, [])
      |> assign(:journal_photos_by_entry, %{})
      |> assign(:journal_user_names, %{})
@@ -1000,51 +1000,65 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             enabled_count={MapSet.size(MapSet.union(@other_levels_floorplan, @other_levels_stops))}
             journal_open_count={@journal_open_count}
           />
-          <%= if @mode == :map do %>
-            <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
-              <.map_canvas
-                station={@station}
-                active_level={@active_level}
-                active_stop_level={@active_stop_level}
-                organization_id={@current_organization.id}
-                align_center_lat={@active_stop_level && @active_stop_level.floorplan_center_lat}
-                align_center_lon={@active_stop_level && @active_stop_level.floorplan_center_lon}
-                align_scale_mpp={@active_stop_level && @active_stop_level.floorplan_scale_mpp}
-                align_rotation_deg={@active_stop_level && @active_stop_level.floorplan_rotation_deg}
-                image_natural_width={@floorplan_image_w}
-                image_natural_height={@floorplan_image_h}
-                child_stops_total={@child_stops_total}
-                child_stops_with_geo={@child_stops_with_geo}
-                anchor_count={@anchor_count}
-                cross_level_pathway_total={@cross_level_pathway_total}
-                cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
-                other_levels_floorplan_count={MapSet.size(@other_levels_floorplan)}
-              />
+          <div class="flex w-full items-start gap-4 px-4 py-4 sm:px-6 lg:px-8">
+            <div class="min-w-0 flex-1">
+              <%= if @mode == :map do %>
+                <div id="map-canvas-wrapper">
+                  <.map_canvas
+                    station={@station}
+                    active_level={@active_level}
+                    active_stop_level={@active_stop_level}
+                    organization_id={@current_organization.id}
+                    align_center_lat={@active_stop_level && @active_stop_level.floorplan_center_lat}
+                    align_center_lon={@active_stop_level && @active_stop_level.floorplan_center_lon}
+                    align_scale_mpp={@active_stop_level && @active_stop_level.floorplan_scale_mpp}
+                    align_rotation_deg={
+                      @active_stop_level && @active_stop_level.floorplan_rotation_deg
+                    }
+                    image_natural_width={@floorplan_image_w}
+                    image_natural_height={@floorplan_image_h}
+                    child_stops_total={@child_stops_total}
+                    child_stops_with_geo={@child_stops_with_geo}
+                    anchor_count={@anchor_count}
+                    cross_level_pathway_total={@cross_level_pathway_total}
+                    cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
+                    other_levels_floorplan_count={MapSet.size(@other_levels_floorplan)}
+                  />
+                </div>
+              <% else %>
+                <div id="diagram-canvas-wrapper">
+                  <.diagram_canvas
+                    station={@station}
+                    active_level={@active_level}
+                    active_stop_level={@active_stop_level}
+                    streams={@streams}
+                    active_point_id={@active_point_id}
+                    pending_xy={@pending_xy}
+                    selected_stop_id={@selected_stop_id}
+                    mode={@mode}
+                    uploads={@uploads}
+                    cross_level_badges_by_stop={@cross_level_badges_by_stop}
+                    diagram_error={@diagram_error}
+                    organization_id={@current_organization.id}
+                    ruler_point_a={@ruler_point_a}
+                    ruler_point_b={@ruler_point_b}
+                    scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
+                    scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
+                    measurement_enabled={@measurement_enabled}
+                    journal_pins={journal_pins_for_active_level(assigns)}
+                  />
+                </div>
+              <% end %>
             </div>
-          <% else %>
-            <div id="diagram-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
-              <.diagram_canvas
-                station={@station}
-                active_level={@active_level}
-                active_stop_level={@active_stop_level}
-                streams={@streams}
-                active_point_id={@active_point_id}
-                pending_xy={@pending_xy}
-                selected_stop_id={@selected_stop_id}
-                mode={@mode}
-                uploads={@uploads}
-                cross_level_badges_by_stop={@cross_level_badges_by_stop}
-                diagram_error={@diagram_error}
-                organization_id={@current_organization.id}
-                ruler_point_a={@ruler_point_a}
-                ruler_point_b={@ruler_point_b}
-                scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
-                scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
-                measurement_enabled={@measurement_enabled}
-                journal_pins={journal_pins_for_active_level(assigns)}
-              />
-            </div>
-          <% end %>
+            <.station_journal_panel
+              :if={@journal_panel_open}
+              entries={@journal_entries}
+              photos_by_entry={@journal_photos_by_entry}
+              user_names={@journal_user_names}
+              target_labels={@journal_target_labels}
+              focus_entry_id={@journal_focus_entry_id}
+            />
+          </div>
         </:sub_header>
 
         <.child_stop_drawer
@@ -1121,15 +1135,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           applying?={@naming_applying?}
           error={@naming_error}
           excluded_ids={@naming_excluded_ids}
-        />
-
-        <.station_journal_drawer
-          open={@show_journal_drawer}
-          entries={@journal_entries}
-          photos_by_entry={@journal_photos_by_entry}
-          user_names={@journal_user_names}
-          target_labels={@journal_target_labels}
-          focus_entry_id={@journal_focus_entry_id}
         />
 
         <div :if={@naming_status} role="status" aria-live="polite" class="mx-4 sm:mx-6 lg:mx-8 mt-2">
@@ -2620,17 +2625,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # ── Station journal review ──
 
   def handle_event("open_journal_panel", _params, socket) do
-    {:noreply,
-     socket
-     |> load_journal()
-     |> assign(:journal_focus_entry_id, nil)
-     |> assign(:show_journal_drawer, true)}
+    # The toolbar button toggles the docked panel; opening reloads the journal.
+    if socket.assigns.journal_panel_open do
+      {:noreply,
+       socket |> assign(:journal_panel_open, false) |> assign(:journal_focus_entry_id, nil)}
+    else
+      {:noreply,
+       socket
+       |> load_journal()
+       |> assign(:journal_focus_entry_id, nil)
+       |> assign(:journal_panel_open, true)}
+    end
   end
 
-  def handle_event("close_journal_drawer", _params, socket) do
+  def handle_event("close_journal_panel", _params, socket) do
     {:noreply,
      socket
-     |> assign(:show_journal_drawer, false)
+     |> assign(:journal_panel_open, false)
      |> assign(:journal_focus_entry_id, nil)}
   end
 
@@ -2647,7 +2658,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> load_journal()
      |> assign(:journal_focus_entry_id, id)
-     |> assign(:show_journal_drawer, true)}
+     |> assign(:journal_panel_open, true)}
   end
 
   @impl true
