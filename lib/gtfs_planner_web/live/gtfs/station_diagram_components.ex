@@ -4400,10 +4400,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <aside
       id="station-journal-panel"
-      class="flex w-96 shrink-0 flex-col self-stretch overflow-hidden rounded-lg border border-base-300 bg-base-100 max-h-[calc(100vh-13rem)] sticky top-4"
+      class="fixed top-0 right-0 z-[55] flex h-screen w-96 flex-col border-l border-base-300 bg-base-100 shadow-xl"
     >
-      <div class="flex items-center justify-between border-b border-base-300 px-3 py-2">
-        <h2 class="text-sm font-semibold">Station journal</h2>
+      <div class="flex items-center justify-between border-b border-emerald-100 bg-emerald-50 px-3 py-2">
+        <h2 class="text-sm font-semibold text-emerald-900">Station journal</h2>
         <button
           type="button"
           class="btn btn-ghost btn-xs btn-circle"

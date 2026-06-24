@@ -714,7 +714,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
     <%!-- Overlay --%>
     <div
       class={[
-        "fixed inset-0 bg-black/30 z-40 transition-opacity duration-300",
+        "app-drawer-overlay fixed inset-0 bg-black/30 z-40 transition-opacity duration-300",
         @open && "opacity-100",
         !@open && "opacity-0 pointer-events-none"
       ]}
@@ -724,7 +724,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
     <aside
       id={@id}
       class={[
-        "fixed top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 z-50 transition-transform duration-300 overflow-x-hidden",
+        "app-drawer fixed top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 z-50 transition-transform duration-300 overflow-x-hidden",
         @open && "translate-x-0",
         !@open && "translate-x-full",
         @class

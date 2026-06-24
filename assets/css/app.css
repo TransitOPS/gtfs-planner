@@ -276,3 +276,16 @@ body:has(#diagram-page[data-immersive="true"]) {
     background-color: transparent !important;
   }
 }
+
+/* Station journal rail.
+   When the docked journal is open, `.journal-open` is set on #diagram-page and
+   the page reserves the right 24rem (pr-96). The slide-in edit drawers + their
+   overlay are `fixed right-0`, so shift them left by the rail width (w-96 =
+   24rem) — node/pathway editing then opens *beside* the journal, not under it.
+   Two-class specificity beats the drawers' own `right-0`/`inset-0` utility. */
+.journal-open .app-drawer {
+  right: 24rem;
+}
+.journal-open .app-drawer-overlay {
+  right: 24rem;
+}
