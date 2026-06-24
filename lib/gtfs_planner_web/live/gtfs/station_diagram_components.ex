@@ -4483,15 +4483,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       assign(assigns, :visible_entries, filter_journal_entries(assigns.entries, assigns.filter))
 
     ~H"""
+    <%!-- Reference rail, deliberately styled UNLIKE the edit drawers: a muted,
+    recessed surface (no shadow) with an amber identity (header + left accent),
+    so an editor that opens beside it reads as a separate floating panel. --%>
     <aside
       id="station-journal-panel"
-      class="fixed top-0 right-0 z-[55] flex h-screen w-96 flex-col border-l border-base-300 bg-base-100 shadow-xl"
+      class="fixed top-0 right-0 z-[55] flex h-screen w-96 flex-col border-l-4 border-amber-400 bg-base-200"
     >
-      <div class="flex items-center justify-between border-b border-emerald-100 bg-emerald-50 px-3 py-2">
-        <h2 class="text-sm font-semibold text-emerald-900">Station journal</h2>
+      <div class="flex items-center justify-between border-b border-amber-200 bg-amber-50 px-3 py-2">
+        <h2 class="flex items-center gap-1.5 text-sm font-semibold text-amber-900">
+          <.icon name="hero-clipboard-document-list" class="h-4 w-4" /> Station journal
+        </h2>
         <button
           type="button"
-          class="btn btn-ghost btn-xs btn-circle"
+          class="btn btn-ghost btn-xs btn-circle text-amber-900/70 hover:bg-amber-200/50"
           phx-click="close_journal_panel"
           aria-label="Close journal panel"
         >
@@ -4499,14 +4504,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </button>
       </div>
 
-      <div class="border-b border-base-200 px-3 py-2">
+      <div class="border-b border-base-300 px-3 py-2">
         <div class="join w-full" role="group" aria-label="Filter journal entries">
           <button
             :for={{value, label} <- [{:all, "All"}, {:open, "Open"}, {:closed, "Closed"}]}
             type="button"
             class={[
               "btn btn-xs join-item flex-1",
-              @filter == value && "btn-primary",
+              @filter == value && "border-amber-500 bg-amber-500 text-white hover:bg-amber-600",
               @filter != value && "btn-ghost"
             ]}
             aria-pressed={@filter == value}
@@ -4529,9 +4534,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             id={"journal-entry-#{entry.id}"}
             class={[
               "rounded-lg border p-3",
-              entry.closed_at && "border-base-300 bg-base-200/60 opacity-70",
-              !entry.closed_at && "border-base-300 bg-base-100",
-              @focus_entry_id == entry.id && "ring-2 ring-primary"
+              # Open cards are white + lifted so they read as live items floating
+              # on the muted rail; closed cards blend back into it.
+              entry.closed_at && "border-base-300 bg-base-200/40 opacity-70",
+              !entry.closed_at && "border-base-300 bg-base-100 shadow-sm",
+              @focus_entry_id == entry.id && "ring-2 ring-amber-400"
             ]}
           >
             <div class="flex items-start justify-between gap-2">
