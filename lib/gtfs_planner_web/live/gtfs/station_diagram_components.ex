@@ -4556,12 +4556,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               </div>
             </div>
 
+            <%!-- phx-no-format keeps {entry.body} flush to the tags: with
+            whitespace-pre-wrap, any markup indentation the formatter would add
+            renders as a leading indent in the note. --%>
             <p
               :if={entry.body && entry.body != ""}
               class="mt-2 text-sm whitespace-pre-wrap"
-            >
-              {entry.body}
-            </p>
+              phx-no-format
+            >{entry.body}</p>
 
             <div :if={Map.get(@photos_by_entry, entry.id, []) != []} class="mt-2 flex flex-wrap gap-2">
               <a
