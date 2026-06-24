@@ -210,19 +210,70 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalTest do
         diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
       })
 
-    entry_fixture(ctx.organization, ctx.gtfs_version, ctx.station, ctx.user, %{
-      "target_type" => "node",
-      "target_id" => node.id,
-      "body" => "elevator out of service"
-    })
+    entry =
+      entry_fixture(ctx.organization, ctx.gtfs_version, ctx.station, ctx.user, %{
+        "target_type" => "node",
+        "target_id" => node.id,
+        "body" => "elevator out of service"
+      })
 
     view = open_diagram(conn, ctx)
     html = open_panel(view)
 
-    # The chip is a button wired to the node editor with the node's id.
-    assert html =~ ~s(phx-click="edit_child_stop")
-    assert html =~ ~s(phx-value-id="#{node.id}")
+    # The chip routes through journal_locate keyed by the entry id.
+    assert html =~ ~s(phx-click="journal_locate")
+    assert html =~ ~s(phx-value-id="#{entry.id}")
     assert html =~ "Faulty Elevator"
+
+    # Locating opens the node editor (delegates to edit_child_stop).
+    located = render_hook(view, "journal_locate", %{"id" => entry.id})
+    assert located =~ "Edit Child Stop"
+    assert located =~ "Faulty Elevator"
+  end
+
+  test "locating an entry on another level switches the diagram to that level",
+       %{conn: conn} = ctx do
+    # Second level + a node on it (the active level defaults to L1 / index 0).
+    level2 =
+      level_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+        level_id: "L2",
+        level_name: "Mezzanine",
+        level_index: 1.0
+      })
+
+    {:ok, _} =
+      Gtfs.create_stop_level(%{
+        organization_id: ctx.organization.id,
+        gtfs_version_id: ctx.gtfs_version.id,
+        stop_id: ctx.station.id,
+        level_id: level2.id
+      })
+
+    node_l2 =
+      stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+        stop_id: "NODE_L2",
+        stop_name: "Upper Turnstile",
+        location_type: 0,
+        parent_station: ctx.station.stop_id,
+        level_id: level2.level_id,
+        diagram_coordinate: %{"x" => 20.0, "y" => 20.0}
+      })
+
+    entry =
+      entry_fixture(ctx.organization, ctx.gtfs_version, ctx.station, ctx.user, %{
+        "target_type" => "node",
+        "target_id" => node_l2.id,
+        "body" => "turnstile jammed"
+      })
+
+    view = open_diagram(conn, ctx)
+
+    # Active level starts on L1; locating the L2-targeted entry switches to L2.
+    assert render(view) =~ ~r/<option value="#{ctx.level.id}"[^>]*selected/
+
+    located = render_hook(view, "journal_locate", %{"id" => entry.id})
+    assert located =~ ~r/<option value="#{level2.id}"[^>]*selected/
+    assert located =~ "Edit Child Stop"
   end
 
   test "a node with an open entry shows a clickable diagram indicator while the journal is open",

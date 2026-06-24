@@ -4651,13 +4651,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
-  defp journal_target_action(%{target_type: "node", target_id: id}) when is_binary(id),
-    do: {"edit_child_stop", id}
+  # All clickable chips route through journal_locate (keyed by the ENTRY id): it
+  # resolves the target's level, switches the diagram there if needed, then opens
+  # the node/pathway editor or focuses the pin — so a target on another level is
+  # navigated to rather than acted on off-screen.
+  defp journal_target_action(%{target_type: "node", target_id: id, id: eid}) when is_binary(id),
+    do: {"journal_locate", eid}
 
-  defp journal_target_action(%{target_type: "pathway", target_id: id}) when is_binary(id),
-    do: {"edit_pathway", id}
+  defp journal_target_action(%{target_type: "pathway", target_id: id, id: eid})
+       when is_binary(id),
+       do: {"journal_locate", eid}
 
-  defp journal_target_action(%{target_type: "pin", id: id}), do: {"focus_journal_pin", id}
+  defp journal_target_action(%{target_type: "pin", id: eid}), do: {"journal_locate", eid}
   defp journal_target_action(_), do: nil
 
   defp journal_target_class("station"), do: "bg-gray-100 text-gray-700"

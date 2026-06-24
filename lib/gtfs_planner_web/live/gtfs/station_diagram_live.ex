@@ -376,6 +376,81 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
+  # Switch the diagram to the level a journal entry's target lives on, if it isn't
+  # already active. Resolves the level from the target (pin → its stop_level;
+  # node/pathway → the stop's GTFS level_id matched to a station level).
+  defp maybe_switch_to_entry_level(socket, entry) do
+    with %{} = level <- entry_level(socket, entry),
+         true <- level.id != socket.assigns.active_level.id do
+      switch_to_level(socket, level)
+    else
+      _ -> socket
+    end
+  end
+
+  defp entry_level(socket, %{target_type: "pin", stop_level_id: slid}) when is_binary(slid) do
+    case socket.assigns.station_stop_levels_cache.by_stop_level_id[slid] do
+      %{level: %{} = level} -> level
+      _ -> nil
+    end
+  end
+
+  defp entry_level(socket, %{target_type: "node", target_id: id}) when is_binary(id) do
+    case safe_get_stop(id) do
+      %{level_id: gtfs_level_id} when is_binary(gtfs_level_id) ->
+        Enum.find(socket.assigns.levels, &(&1.level_id == gtfs_level_id))
+
+      _ ->
+        nil
+    end
+  end
+
+  defp entry_level(socket, %{target_type: "pathway", target_id: id}) when is_binary(id) do
+    case safe_get_pathway(id) do
+      %{from_stop: %{level_id: gtfs_level_id}} when is_binary(gtfs_level_id) ->
+        Enum.find(socket.assigns.levels, &(&1.level_id == gtfs_level_id))
+
+      _ ->
+        nil
+    end
+  end
+
+  defp entry_level(_socket, _entry), do: nil
+
+  defp safe_get_stop(id) do
+    Gtfs.get_stop!(id)
+  rescue
+    _ -> nil
+  end
+
+  defp safe_get_pathway(id) do
+    Gtfs.get_pathway_with_stops!(id)
+  rescue
+    _ -> nil
+  end
+
+  # The active-level switch pipeline (extracted from search_stop) — reused when a
+  # journal target lives on another level.
+  defp switch_to_level(socket, level) do
+    socket
+    |> disable_measurement()
+    |> assign(:active_level, level)
+    |> assign(:pending_xy, nil)
+    |> assign(:diagram_error, nil)
+    |> assign(:show_walkability_drawer, false)
+    |> assign(:walkability_stop, nil)
+    |> assign(:walkability_form, to_form(default_walkability_form_params(), as: :walkability))
+    |> clear_walkability_selection()
+    |> assign(:walkability_last_results, [])
+    |> assign(:walkability_mode, :create)
+    |> assign(:editing_walkability_test, nil)
+    |> reset_reposition_state()
+    |> load_station_stop_levels_cache()
+    |> assign_selectable_reference_stop_levels()
+    |> sync_reference_overlay_state(level)
+    |> load_level_data(level)
+  end
+
   defp load_station_stop_levels_cache(socket) do
     stop_levels =
       case socket.assigns do
@@ -2716,6 +2791,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:journal_panel_open, true)
      |> assign(:journal_focus_entry_id, id)
      |> push_event("journal_focus", %{id: id})}
+  end
+
+  # Journal → map: locate an entry's target on the diagram. Switch to the target's
+  # level if it isn't the active one, then open the node/pathway editor or focus
+  # the pin — so chips for off-level targets navigate there instead of acting
+  # off-screen. Keyed by the entry id (the target is resolved from the entry).
+  def handle_event("journal_locate", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.journal_entries, &(&1.id == id)) do
+      nil ->
+        {:noreply, socket}
+
+      entry ->
+        socket =
+          socket
+          |> assign(:journal_panel_open, true)
+          |> maybe_switch_to_entry_level(entry)
+
+        case entry.target_type do
+          "node" -> handle_event("edit_child_stop", %{"id" => entry.target_id}, socket)
+          "pathway" -> handle_event("edit_pathway", %{"id" => entry.target_id}, socket)
+          "pin" -> handle_event("focus_journal_pin", %{"id" => entry.id}, socket)
+          _ -> {:noreply, socket}
+        end
+    end
   end
 
   def handle_event("close_journal_entry", %{"id" => id}, socket) do
