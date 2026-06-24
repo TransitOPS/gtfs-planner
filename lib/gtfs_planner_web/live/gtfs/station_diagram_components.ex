@@ -4395,8 +4395,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :user_names, :map, default: %{}
   attr :target_labels, :map, default: %{}
   attr :focus_entry_id, :string, default: nil
+  attr :filter, :atom, default: :all
 
   def station_journal_panel(assigns) do
+    assigns =
+      assign(assigns, :visible_entries, filter_journal_entries(assigns.entries, assigns.filter))
+
     ~H"""
     <aside
       id="station-journal-panel"
@@ -4414,14 +4418,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         </button>
       </div>
 
+      <div class="border-b border-base-200 px-3 py-2">
+        <div class="join w-full" role="group" aria-label="Filter journal entries">
+          <button
+            :for={{value, label} <- [{:all, "All"}, {:open, "Open"}, {:closed, "Closed"}]}
+            type="button"
+            class={[
+              "btn btn-xs join-item flex-1",
+              @filter == value && "btn-primary",
+              @filter != value && "btn-ghost"
+            ]}
+            aria-pressed={@filter == value}
+            phx-click="set_journal_filter"
+            phx-value-filter={value}
+          >
+            {label}
+          </button>
+        </div>
+      </div>
+
       <div class="flex-1 overflow-y-auto p-3">
-        <div :if={@entries == []} class="text-sm text-base-content/60 py-8 text-center">
-          No journal entries captured for this station yet.
+        <div :if={@visible_entries == []} class="text-sm text-base-content/60 py-8 text-center">
+          {journal_empty_message(@filter)}
         </div>
 
         <ul class="space-y-3">
           <li
-            :for={entry <- @entries}
+            :for={entry <- @visible_entries}
             id={"journal-entry-#{entry.id}"}
             class={[
               "rounded-lg border p-3",
@@ -4523,6 +4546,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp journal_format_time(%DateTime{} = dt),
     do: Calendar.strftime(dt, "%b %-d, %Y %-I:%M %p")
+
+  defp filter_journal_entries(entries, :open),
+    do: Enum.filter(entries, &is_nil(&1.closed_at))
+
+  defp filter_journal_entries(entries, :closed),
+    do: Enum.reject(entries, &is_nil(&1.closed_at))
+
+  defp filter_journal_entries(entries, _all), do: entries
+
+  defp journal_empty_message(:open), do: "No open entries."
+  defp journal_empty_message(:closed), do: "No closed entries."
+  defp journal_empty_message(_all), do: "No journal entries captured for this station yet."
 
   attr :open, :boolean, default: false
   attr :style, :atom, default: :kebab

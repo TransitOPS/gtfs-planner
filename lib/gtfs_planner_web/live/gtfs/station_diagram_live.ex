@@ -111,6 +111,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:journal_target_labels, %{})
      |> assign(:journal_open_count, 0)
      |> assign(:journal_focus_entry_id, nil)
+     |> assign(:journal_filter, :all)
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg .svg),
        max_file_size: 10_000_000,
@@ -1160,6 +1161,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         user_names={@journal_user_names}
         target_labels={@journal_target_labels}
         focus_entry_id={@journal_focus_entry_id}
+        filter={@journal_filter}
       />
     </div>
     """
@@ -2648,6 +2650,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:journal_panel_open, false)
      |> assign(:journal_focus_entry_id, nil)}
+  end
+
+  def handle_event("set_journal_filter", %{"filter" => filter}, socket) do
+    filter = if filter in ~w(all open closed), do: String.to_existing_atom(filter), else: :all
+    {:noreply, assign(socket, :journal_filter, filter)}
   end
 
   def handle_event("close_journal_entry", %{"id" => id}, socket) do

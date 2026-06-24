@@ -161,6 +161,42 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalTest do
     assert html =~ ~s(data-journal-pin-id="#{pin.id}")
   end
 
+  test "the All/Open/Closed filter scopes the visible entries (default all)",
+       %{conn: conn} = ctx do
+    entry_fixture(ctx.organization, ctx.gtfs_version, ctx.station, ctx.user, %{
+      "body" => "still open here"
+    })
+
+    entry_fixture(ctx.organization, ctx.gtfs_version, ctx.station, ctx.user, %{
+      "body" => "already closed here",
+      "closed_at" => "2026-06-21T10:00:00Z",
+      "closed_by" => ctx.user.id
+    })
+
+    view = open_diagram(conn, ctx)
+
+    # Default (All): both show.
+    all = open_panel(view)
+    assert all =~ "still open here"
+    assert all =~ "already closed here"
+
+    closed =
+      view
+      |> element("button[phx-click='set_journal_filter'][phx-value-filter='closed']")
+      |> render_click()
+
+    assert closed =~ "already closed here"
+    refute closed =~ "still open here"
+
+    open =
+      view
+      |> element("button[phx-click='set_journal_filter'][phx-value-filter='open']")
+      |> render_click()
+
+    assert open =~ "still open here"
+    refute open =~ "already closed here"
+  end
+
   test "the Journal button shows an open-entry count badge", %{conn: conn} = ctx do
     entry_fixture(ctx.organization, ctx.gtfs_version, ctx.station, ctx.user, %{"body" => "one"})
 
