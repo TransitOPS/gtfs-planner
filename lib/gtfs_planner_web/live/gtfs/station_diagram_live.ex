@@ -894,6 +894,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 anchor_count={@anchor_count}
                 cross_level_pathway_total={@cross_level_pathway_total}
                 cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
+                other_levels_floorplan_count={MapSet.size(@other_levels_floorplan)}
               />
             </div>
           <% else %>

@@ -369,6 +369,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :anchor_count, :integer, default: 0
   attr :cross_level_pathway_total, :integer, default: 0
   attr :cross_level_pathway_with_geo, :integer, default: 0
+  attr :other_levels_floorplan_count, :integer, default: 0
 
   def map_canvas(assigns) do
     floorplan_url =
@@ -443,34 +444,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       >
         <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
         <div
-          id="map-reference-overlay"
-          data-overlay-role="reference"
-          data-editable-overlay="false"
-          data-overlay-visible={if(@show_reference_overlay, do: "true", else: "false")}
-          data-align-center-lat={
-            reference_overlay_value(@reference_stop_level, :floorplan_center_lat)
-          }
-          data-align-center-lon={
-            reference_overlay_value(@reference_stop_level, :floorplan_center_lon)
-          }
-          data-align-scale-mpp={reference_overlay_value(@reference_stop_level, :floorplan_scale_mpp)}
-          data-align-rotation-deg={
-            reference_overlay_value(@reference_stop_level, :floorplan_rotation_deg)
-          }
-          class={[
-            "absolute inset-0 pointer-events-none opacity-70",
-            if(@show_reference_overlay, do: nil, else: "hidden")
-          ]}
-          style="z-index: 1;"
+          id="map-other-overlays"
+          class="absolute inset-0"
+          style="z-index: 1; pointer-events: none;"
         >
-          <%= if @reference_overlay_url do %>
-            <img
-              src={@reference_overlay_url}
-              alt="Reference level floorplan"
-              data-reference-overlay="true"
-              class="absolute inset-0 w-full h-full object-contain select-none pointer-events-none"
-            />
-          <% end %>
         </div>
         <div
           id="map-alignment-overlay"
@@ -497,8 +474,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <.icon name="hero-arrow-path" class="w-4 h-4" />
         </button>
         <div
-          id="map-alignment-pins-reference"
-          data-overlay-role="reference"
+          id="map-other-pins"
           class="absolute inset-0 pointer-events-none"
           style="z-index: 4;"
         >
@@ -602,16 +578,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             />
           </div>
 
-          <%= if @show_reference_overlay and @reference_stop_level do %>
+          <%= if @other_levels_floorplan_count >= 1 do %>
             <div class="flex flex-col gap-1">
               <label
-                for="map-reference-overlay-opacity"
+                for="map-other-overlays-opacity"
                 class="text-xs font-medium text-base-content/80"
               >
-                Reference opacity
+                Other-levels opacity
               </label>
               <input
-                id="map-reference-overlay-opacity"
+                id="map-other-overlays-opacity"
                 type="range"
                 min="0"
                 max="1"
