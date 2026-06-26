@@ -58,6 +58,10 @@ export function createOtherLevelsLayers(deps) {
   const pinGroups = new Map();
   let opacity = DEFAULT_OPACITY;
 
+  function dotOpacityFor(floorplanOpacity) {
+    return Math.min(1, 0.35 + 0.65 * floorplanOpacity);
+  }
+
   function createOverlay(levelId) {
     const overlayEl = document.createElement("div");
     overlayEl.className = "absolute inset-0";
@@ -106,7 +110,7 @@ export function createOtherLevelsLayers(deps) {
     const dot = document.createElement("div");
     dot.className = "w-full h-full border";
     dot.style.backgroundColor = color;
-    dot.style.opacity = "0.3";
+    dot.style.opacity = String(dotOpacityFor(opacity));
     dot.style.borderColor = color;
     dot.style.borderStyle = "dashed";
     dot.style.borderWidth = "1.5px";
@@ -207,6 +211,13 @@ export function createOtherLevelsLayers(deps) {
     opacity = value;
     overlays.forEach((record) => {
       record.img.style.opacity = String(value);
+    });
+    const pinOpacity = String(dotOpacityFor(value));
+    pinGroups.forEach((group) => {
+      group.markers.forEach((marker) => {
+        const dot = marker.el.firstElementChild;
+        if (dot) dot.style.opacity = pinOpacity;
+      });
     });
   }
 
