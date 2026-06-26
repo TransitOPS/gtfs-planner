@@ -1010,59 +1010,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
-  def handle_event("select_reference_overlay_level", %{"level_id" => level_id}, socket) do
-    selected_level_id = normalize_reference_level_id(level_id)
-
-    reference_stop_level =
-      case selected_level_id do
-        nil ->
-          nil
-
-        level_id ->
-          socket.assigns
-          |> Map.get(:station_stop_levels_cache, empty_station_stop_levels_cache())
-          |> Map.get(:by_level_id, %{})
-          |> Map.get(level_id)
-          |> case do
-            stop_level ->
-              if reference_overlay_eligible_stop_level?(stop_level), do: stop_level, else: nil
-          end
-      end
-
-    {:noreply,
-     socket
-     |> assign(:reference_level_id, if(reference_stop_level, do: selected_level_id, else: nil))
-     |> assign(:reference_stop_level, reference_stop_level)
-     |> assign(:reference_level_index, reference_stop_level_index(reference_stop_level))
-     |> assign(:show_reference_overlay, false)
-     |> push_child_stop_markers()}
+  def handle_event("toggle_other_level_floorplan", %{"level-id" => id}, socket) do
+    {:noreply, toggle_other_level(socket, :other_levels_floorplan, id, :floorplan_eligible?)}
   end
 
   @impl true
-  def handle_event("select_reference_overlay_level", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:reference_level_id, nil)
-     |> assign(:reference_stop_level, nil)
-     |> assign(:reference_level_index, nil)
-     |> assign(:show_reference_overlay, false)
-     |> push_child_stop_markers()}
+  def handle_event("toggle_other_level_floorplan", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("toggle_other_level_stops", %{"level-id" => id}, socket) do
+    {:noreply, toggle_other_level(socket, :other_levels_stops, id, :stops_eligible?)}
   end
 
   @impl true
-  def handle_event("toggle_reference_overlay", _params, socket) do
-    reference_stop_level = socket.assigns[:reference_stop_level]
+  def handle_event("toggle_other_level_stops", _params, socket), do: {:noreply, socket}
 
+  @impl true
+  def handle_event("clear_other_levels", _params, socket) do
     {:noreply,
-     if reference_overlay_eligible_stop_level?(reference_stop_level) do
-       socket
-       |> assign(:show_reference_overlay, not socket.assigns.show_reference_overlay)
-       |> push_child_stop_markers()
-     else
-       socket
-       |> assign(:show_reference_overlay, false)
-       |> push_child_stop_markers()
-     end}
+     socket
+     |> assign(:other_levels_floorplan, MapSet.new())
+     |> assign(:other_levels_stops, MapSet.new())
+     |> assign_other_levels()}
+
+    # step 5 wires push_other_levels/1 here
   end
 
   @impl true
@@ -4052,9 +4023,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp parse_mode("map"), do: {:ok, :map}
   defp parse_mode(_), do: :error
 
-  defp normalize_reference_level_id(level_id) when level_id in [nil, "", "none"], do: nil
-  defp normalize_reference_level_id(level_id) when is_binary(level_id), do: level_id
-  defp normalize_reference_level_id(_level_id), do: nil
+  defp toggle_other_level(socket, mapset_assign, level_id, eligibility_key) do
+    current = Map.get(socket.assigns, mapset_assign, MapSet.new())
+
+    updated =
+      cond do
+        MapSet.member?(current, level_id) ->
+          MapSet.delete(current, level_id)
+
+        other_level_eligible?(socket, level_id, eligibility_key) ->
+          MapSet.put(current, level_id)
+
+        true ->
+          current
+      end
+
+    socket
+    |> assign(mapset_assign, updated)
+    |> assign_other_levels()
+
+    # step 5 wires push_other_levels/1 here
+  end
+
+  defp other_level_eligible?(socket, level_id, eligibility_key) do
+    socket.assigns
+    |> Map.get(:other_levels, [])
+    |> Enum.find(&(&1.level_id == level_id))
+    |> case do
+      nil -> false
+      row -> Map.get(row, eligibility_key, false)
+    end
+  end
 
   defp parse_svg_coordinate(value) do
     with {:ok, parsed} <- parse_float(value),
