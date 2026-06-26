@@ -547,7 +547,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp build_other_levels(socket) do
     active_level_id =
       case socket.assigns[:active_level] do
-        %{level_id: level_id} -> level_id
+        %{id: id} -> id
         _ -> nil
       end
 
@@ -566,7 +566,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp populate_other_level_caches(socket) do
     active_level_id =
       case socket.assigns[:active_level] do
-        %{level_id: level_id} -> level_id
+        %{id: id} -> id
         _ -> nil
       end
 
