@@ -71,3 +71,6 @@ infra/modules/rds-database/db_admin/.python-version
 infra/modules/rds-database/db_admin.zip
 # Environment variables
 .env
+
+# Spec-driven development artifacts
+.specs/
