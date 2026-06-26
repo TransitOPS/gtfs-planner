@@ -588,7 +588,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp other_level_view(%StopLevel{} = stop_level, station, floorplan_on, stops_on, counts_cache) do
     level_id = stop_level.level_id
-    level_index = reference_stop_level_index(stop_level)
+    level_index = stop_level_index(stop_level)
 
     {geo_stop_count, total_stop_count} =
       Map.get_lazy(counts_cache, level_id, fn -> other_level_stop_counts(station, level_id) end)
@@ -3341,11 +3341,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # Private Helpers
   # ============================================================================
 
-  defp reference_stop_level_index(%StopLevel{level: %{level_index: level_index}})
+  defp stop_level_index(%StopLevel{level: %{level_index: level_index}})
        when is_number(level_index),
        do: level_index * 1.0
 
-  defp reference_stop_level_index(_stop_level), do: nil
+  defp stop_level_index(_stop_level), do: nil
 
   defp infer_alignment_error_message(:insufficient_anchors),
     do: "Not enough anchor stops to infer alignment"
