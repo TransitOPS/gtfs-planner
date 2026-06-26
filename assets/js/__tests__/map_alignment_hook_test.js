@@ -3,23 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 import MapAlignmentHook, {
   parseAlignmentPayload,
   readActiveAlignment,
-  readReferenceAlignment,
   symbolForLocationType,
   activeColorForLocationType,
 } from "../map_alignment_hook";
 
 describe("map_alignment_hook alignment parsing", () => {
-  it("parses active and reference payloads independently", () => {
+  it("parses the active payload from align dataset keys", () => {
     const root = {
       dataset: {
         alignCenterLat: "40.7128",
         alignCenterLon: "-74.0060",
         alignScaleMpp: "0.25",
         alignRotationDeg: "15",
-        referenceCenterLat: "40.7131",
-        referenceCenterLon: "-74.0058",
-        referenceScaleMpp: "0.3",
-        referenceRotationDeg: "-5",
       },
     };
 
@@ -28,60 +23,6 @@ describe("map_alignment_hook alignment parsing", () => {
       centerLon: -74.006,
       scaleMpp: 0.25,
       rotationDeg: 15,
-    });
-
-    expect(readReferenceAlignment(root)).toEqual({
-      centerLat: 40.7131,
-      centerLon: -74.0058,
-      scaleMpp: 0.3,
-      rotationDeg: -5,
-    });
-  });
-
-  it("returns null for invalid reference payload parts", () => {
-    const root = {
-      dataset: {
-        referenceCenterLat: "bad",
-        referenceCenterLon: "-74.0062",
-        referenceScaleMpp: "0.31",
-        referenceRotationDeg: "12",
-      },
-    };
-
-    expect(readReferenceAlignment(root)).toBeNull();
-  });
-
-  it("returns null when reference payload is incomplete", () => {
-    const root = {
-      dataset: {
-        referenceCenterLat: "40.7131",
-        referenceCenterLon: "-74.0058",
-        referenceScaleMpp: "0.3",
-      },
-    };
-
-    expect(readReferenceAlignment(root)).toBeNull();
-  });
-
-  it("reads reference alignment only from reference dataset keys", () => {
-    const root = {
-      dataset: {
-        alignCenterLat: "10",
-        alignCenterLon: "20",
-        alignScaleMpp: "0.5",
-        alignRotationDeg: "45",
-        referenceCenterLat: "40.7131",
-        referenceCenterLon: "-74.0058",
-        referenceScaleMpp: "0.3",
-        referenceRotationDeg: "-5",
-      },
-    };
-
-    expect(readReferenceAlignment(root)).toEqual({
-      centerLat: 40.7131,
-      centerLon: -74.0058,
-      scaleMpp: 0.3,
-      rotationDeg: -5,
     });
   });
 
@@ -128,152 +69,6 @@ describe("map_alignment_hook pure helpers", () => {
     });
   });
 
-});
-
-describe("map_alignment_hook reference restore", () => {
-  it("cancels stale pending reference restore before applying identity", () => {
-    vi.useFakeTimers();
-    document.body.innerHTML = `
-      <div id="root">
-        <div id="map-alignment-leaflet"></div>
-        <div id="map-reference-overlay"><img id="reference-img" /></div>
-      </div>
-    `;
-
-    const root = document.getElementById("root");
-    const leafletEl = document.getElementById("map-alignment-leaflet");
-    const referenceOverlay = document.getElementById("map-reference-overlay");
-    const referenceImg = document.getElementById("reference-img");
-
-    root.dataset.referenceFloorplanUrl = "/uploads/reference-a.png";
-    root.dataset.referenceCenterLat = "40.7131";
-    root.dataset.referenceCenterLon = "-74.0058";
-    root.dataset.referenceScaleMpp = "0.3";
-    root.dataset.referenceRotationDeg = "-5";
-
-    leafletEl.getBoundingClientRect = () => ({ width: 200, height: 100 });
-    Object.defineProperty(referenceImg, "complete", { value: true, configurable: true });
-    Object.defineProperty(referenceImg, "naturalWidth", { value: 200, configurable: true });
-    Object.defineProperty(referenceImg, "naturalHeight", { value: 100, configurable: true });
-
-    const hook = {
-      ...MapAlignmentHook,
-      el: root,
-      leafletEl,
-      referenceOverlay,
-      _overlayRestoreDisposers: [],
-      _pendingReferenceRestoreDispose: null,
-      _restoreOverlayAlignment: vi.fn(),
-      _applyOverlayTransform: MapAlignmentHook._applyOverlayTransform,
-      _leafletRect: MapAlignmentHook._leafletRect,
-      leafletMap: {
-        containerPointToLatLng: ([x, y]) => ({ lat: y, lng: x }),
-        latLngToContainerPoint: ([lat, lon]) => ({ x: lon, y: lat }),
-        distance: () => 1,
-      },
-    };
-
-    hook._syncReferenceOverlayFromDataset();
-
-    root.dataset.referenceFloorplanUrl = "";
-    delete root.dataset.referenceCenterLat;
-    delete root.dataset.referenceCenterLon;
-    delete root.dataset.referenceScaleMpp;
-    delete root.dataset.referenceRotationDeg;
-
-    hook._syncReferenceOverlayFromDataset();
-    vi.advanceTimersByTime(300);
-
-    expect(hook._restoreOverlayAlignment).not.toHaveBeenCalled();
-    expect(referenceOverlay.style.transform).toBe("none");
-
-    vi.useRealTimers();
-  });
-
-  it("restores reference overlay transform without mutating active transform state", () => {
-    document.body.innerHTML = `
-      <div id="root">
-        <div id="map-alignment-leaflet"></div>
-        <div id="active-overlay"><img id="active-img" /></div>
-        <div id="map-reference-overlay"><img id="reference-img" /></div>
-      </div>
-    `;
-
-    const root = document.getElementById("root");
-    const leafletEl = document.getElementById("map-alignment-leaflet");
-    const activeOverlay = document.getElementById("active-overlay");
-    const referenceOverlay = document.getElementById("map-reference-overlay");
-    const referenceImg = document.getElementById("reference-img");
-
-    root.getBoundingClientRect = () => ({ width: 200, height: 100 });
-    leafletEl.getBoundingClientRect = () => ({ width: 200, height: 100 });
-
-    Object.defineProperty(referenceImg, "naturalWidth", { value: 200, configurable: true });
-    Object.defineProperty(referenceImg, "naturalHeight", { value: 100, configurable: true });
-
-    const hook = {
-      ...MapAlignmentHook,
-      el: root,
-      leafletEl,
-      overlay: activeOverlay,
-      transform: { tx: 9, ty: 8, rotation: 7, scale: 1.2 },
-      _applyTransform: vi.fn(),
-      leafletMap: {
-        containerPointToLatLng: ([x, y]) => ({ x, y }),
-        latLngToContainerPoint: ([lat, lon]) => ({ x: lon, y: lat }),
-        distance: () => 2,
-      },
-    };
-
-    hook._restoreOverlayAlignment(
-      referenceOverlay,
-      { centerLat: 40.7, centerLon: -74, scaleMpp: 0.5, rotationDeg: 33 },
-      referenceImg,
-      "reference",
-    );
-
-    expect(referenceOverlay.style.transform).toContain("rotate(33deg)");
-    expect(referenceOverlay.style.transform).toContain("scale(");
-    expect(referenceOverlay.style.transform).toContain("translate(-174px, -9.3px)");
-    expect(hook.transform).toEqual({ tx: 9, ty: 8, rotation: 7, scale: 1.2 });
-    expect(hook._applyTransform).not.toHaveBeenCalled();
-  });
-
-  it("applies identity transform for reference overlay when alignment is missing", () => {
-    document.body.innerHTML = `<div id="map-reference-overlay"></div>`;
-    const referenceOverlay = document.getElementById("map-reference-overlay");
-
-    const hook = {
-      ...MapAlignmentHook,
-    };
-
-    hook._applyOverlayTransform(referenceOverlay, { tx: 0, ty: 0, rotation: 0, scale: 1 });
-
-    expect(referenceOverlay.style.transform).toBe("none");
-  });
-
-  it("applies identity transform for reference overlay when alignment payload is invalid", () => {
-    document.body.innerHTML = `<div id="root"><div id="map-reference-overlay"></div></div>`;
-    const root = document.getElementById("root");
-    const referenceOverlay = document.getElementById("map-reference-overlay");
-
-    root.dataset.referenceCenterLat = "bad";
-    root.dataset.referenceCenterLon = "-74.0058";
-    root.dataset.referenceScaleMpp = "0.3";
-    root.dataset.referenceRotationDeg = "-5";
-
-    const hook = {
-      ...MapAlignmentHook,
-      el: root,
-      referenceOverlay,
-    };
-
-    const referenceAlignment = readReferenceAlignment(root);
-    expect(referenceAlignment).toBeNull();
-
-    hook._applyOverlayTransform(referenceOverlay, { tx: 0, ty: 0, rotation: 0, scale: 1 });
-    expect(referenceOverlay.style.transform).toBe("none");
-  });
 });
 
 describe("map_alignment_hook alignment compute and payload gating", () => {
@@ -357,102 +152,7 @@ describe("map_alignment_hook alignment compute and payload gating", () => {
   });
 });
 
-describe("map_alignment_hook reference overlay visibility sync", () => {
-  it("shows and hides single reference overlay from dataset flag", () => {
-    document.body.innerHTML = `<div id="root"><div id="map-reference-overlay" class="hidden"></div></div>`;
-
-    const root = document.getElementById("root");
-    const referenceOverlay = document.getElementById("map-reference-overlay");
-
-    const hook = {
-      ...MapAlignmentHook,
-      el: root,
-      referenceOverlay,
-    };
-
-    root.dataset.showReferenceOverlay = "true";
-    hook._syncReferenceOverlayVisibilityFromDataset();
-
-    expect(referenceOverlay.dataset.overlayVisible).toBe("true");
-    expect(referenceOverlay.classList.contains("hidden")).toBe(false);
-
-    root.dataset.showReferenceOverlay = "false";
-    hook._syncReferenceOverlayVisibilityFromDataset();
-
-    expect(referenceOverlay.dataset.overlayVisible).toBe("false");
-    expect(referenceOverlay.classList.contains("hidden")).toBe(true);
-  });
-
-  it("reuses existing server-rendered reference image without creating duplicates", () => {
-    document.body.innerHTML = `
-      <div id="root">
-        <div id="map-reference-overlay">
-          <img id="server-reference" src="/uploads/old.png" class="absolute inset-0" />
-        </div>
-      </div>
-    `;
-
-    const root = document.getElementById("root");
-    const referenceOverlay = document.getElementById("map-reference-overlay");
-    const serverReference = document.getElementById("server-reference");
-
-    root.dataset.referenceFloorplanUrl = "/uploads/new.png";
-    root.dataset.referenceCenterLat = "40.7131";
-    root.dataset.referenceCenterLon = "-74.0058";
-    root.dataset.referenceScaleMpp = "0.3";
-    root.dataset.referenceRotationDeg = "-5";
-
-    const hook = {
-      ...MapAlignmentHook,
-      el: root,
-      referenceOverlay,
-      _scheduleOverlayAlignmentRestore: vi.fn(),
-      _applyOverlayTransform: vi.fn(),
-    };
-
-    hook._syncReferenceOverlayFromDataset();
-
-    const imgs = referenceOverlay.querySelectorAll("img");
-    expect(imgs.length).toBe(1);
-    expect(imgs[0]).toBe(serverReference);
-    expect(imgs[0].dataset.referenceOverlay).toBe("true");
-    expect(imgs[0].getAttribute("src")).toBe("/uploads/new.png");
-  });
-
-  it("collapses duplicate reference images down to a single image", () => {
-    document.body.innerHTML = `
-      <div id="root">
-        <div id="map-reference-overlay">
-          <img data-reference-overlay="true" src="/uploads/first.png" />
-          <img data-reference-overlay="true" src="/uploads/second.png" />
-          <img src="/uploads/third.png" />
-        </div>
-      </div>
-    `;
-
-    const root = document.getElementById("root");
-    const referenceOverlay = document.getElementById("map-reference-overlay");
-
-    root.dataset.referenceFloorplanUrl = "/uploads/final.png";
-
-    const hook = {
-      ...MapAlignmentHook,
-      el: root,
-      referenceOverlay,
-      _scheduleOverlayAlignmentRestore: vi.fn(),
-      _applyOverlayTransform: vi.fn(),
-    };
-
-    hook._syncReferenceOverlayFromDataset();
-
-    const imgs = referenceOverlay.querySelectorAll("img");
-    expect(imgs.length).toBe(1);
-    expect(imgs[0].dataset.referenceOverlay).toBe("true");
-    expect(imgs[0].getAttribute("src")).toBe("/uploads/final.png");
-  });
-});
-
-describe("map_alignment_hook zoom slider reference alignment", () => {
+describe("map_alignment_hook zoom slider", () => {
   it("wires zoom slider input through mounted listener registration", () => {
     document.body.innerHTML = `
       <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16">
@@ -468,7 +168,6 @@ describe("map_alignment_hook zoom slider reference alignment", () => {
         <button id="map-alignment-save"></button>
         <button id="map-alignment-apply"></button>
         <div id="map-alignment-pins-active"></div>
-        <div id="map-alignment-pins-reference"></div>
       </div>
     `;
 
@@ -532,108 +231,6 @@ describe("map_alignment_hook zoom slider reference alignment", () => {
 
     window.L = originalL;
     global.fetch = originalFetch;
-  });
-
-  it("re-aligns reference overlay on zoom slider input when reference alignment is valid", () => {
-    document.body.innerHTML = `
-      <div id="root">
-        <div id="map-alignment-leaflet"></div>
-        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
-        <div id="map-reference-overlay" data-editable-overlay="false" data-overlay-visible="true"><img id="reference-img" /></div>
-      </div>
-    `;
-
-    const root = document.getElementById("root");
-    const leafletEl = document.getElementById("map-alignment-leaflet");
-    const overlay = document.getElementById("map-alignment-overlay");
-    const referenceOverlay = document.getElementById("map-reference-overlay");
-    const referenceImg = document.getElementById("reference-img");
-
-    root.dataset.referenceCenterLat = "40.7131";
-    root.dataset.referenceCenterLon = "-74.0058";
-    root.dataset.referenceScaleMpp = "0.3";
-    root.dataset.referenceRotationDeg = "-5";
-
-    leafletEl.getBoundingClientRect = () => ({ width: 200, height: 100 });
-
-    Object.defineProperty(referenceImg, "naturalWidth", { value: 200, configurable: true });
-    Object.defineProperty(referenceImg, "naturalHeight", { value: 100, configurable: true });
-
-    const hook = {
-      ...MapAlignmentHook,
-      el: root,
-      leafletEl,
-      overlay,
-      referenceOverlay,
-      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
-      _applyTransform: vi.fn(),
-      _restoreOverlayAlignment: vi.fn(),
-      leafletMap: {
-        getZoom: () => 10,
-        setZoom: vi.fn(),
-        containerPointToLatLng: ([x, y]) => ({ lat: y, lng: x }),
-        latLngToContainerPoint: ({ lat, lng }) => ({ x: lng, y: lat }),
-        distance: () => 1,
-      },
-    };
-
-    hook._handleZoomSliderInput({ target: { value: "11" } });
-
-    expect(hook._restoreOverlayAlignment).toHaveBeenCalledTimes(1);
-    expect(hook._restoreOverlayAlignment).toHaveBeenCalledWith(
-      hook.referenceOverlay,
-      { centerLat: 40.7131, centerLon: -74.0058, scaleMpp: 0.3, rotationDeg: -5 },
-      referenceImg,
-      "reference",
-    );
-  });
-
-  it("does not re-align reference overlay on zoom slider input when reference alignment is invalid", () => {
-    document.body.innerHTML = `
-      <div id="root">
-        <div id="map-alignment-leaflet"></div>
-        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
-        <div id="map-reference-overlay" data-editable-overlay="false" data-overlay-visible="true"><img id="reference-img" /></div>
-      </div>
-    `;
-
-    const root = document.getElementById("root");
-    const leafletEl = document.getElementById("map-alignment-leaflet");
-    const overlay = document.getElementById("map-alignment-overlay");
-    const referenceOverlay = document.getElementById("map-reference-overlay");
-    const referenceImg = document.getElementById("reference-img");
-
-    root.dataset.referenceCenterLat = "bad";
-    root.dataset.referenceCenterLon = "-74.0058";
-    root.dataset.referenceScaleMpp = "0.3";
-    root.dataset.referenceRotationDeg = "-5";
-
-    leafletEl.getBoundingClientRect = () => ({ width: 200, height: 100 });
-
-    Object.defineProperty(referenceImg, "naturalWidth", { value: 200, configurable: true });
-    Object.defineProperty(referenceImg, "naturalHeight", { value: 100, configurable: true });
-
-    const hook = {
-      ...MapAlignmentHook,
-      el: root,
-      leafletEl,
-      overlay,
-      referenceOverlay,
-      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
-      _applyTransform: vi.fn(),
-      _restoreOverlayAlignment: vi.fn(),
-      leafletMap: {
-        getZoom: () => 10,
-        setZoom: vi.fn(),
-        containerPointToLatLng: ([x, y]) => ({ lat: y, lng: x }),
-        latLngToContainerPoint: ({ lat, lng }) => ({ x: lng, y: lat }),
-        distance: () => 1,
-      },
-    };
-
-    hook._handleZoomSliderInput({ target: { value: "11" } });
-
-    expect(hook._restoreOverlayAlignment).not.toHaveBeenCalled();
   });
 });
 
@@ -703,125 +300,5 @@ describe("map_alignment_hook active child stops rendering", () => {
     const tooltip = activePinsRoot.children[0].lastChild;
     expect(tooltip.textContent).toBe("A: valid-string");
     expect(hook._positionPins).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("map_alignment_hook reference child stops rendering", () => {
-  it("ignores stale reference child-stop payload for non-reference level", () => {
-    document.body.innerHTML = `
-      <div id="root" data-reference-level-id="reference-level">
-        <div id="map-alignment-pins-reference"></div>
-      </div>
-    `;
-
-    const root = document.getElementById("root");
-    const referencePinsRoot = document.getElementById("map-alignment-pins-reference");
-
-    const hook = {
-      ...MapAlignmentHook,
-      el: root,
-      _referencePinsRoot: referencePinsRoot,
-      _referenceChildStops: [],
-      _positionPins: vi.fn(),
-    };
-
-    hook._renderReferenceChildStops({
-      level_id: "other-reference-level",
-      stops: [{ stop_id: "s1", lat: 40.7, lon: -74.0 }],
-    });
-
-    expect(hook._referenceChildStops).toEqual([]);
-    expect(referencePinsRoot.children.length).toBe(0);
-    expect(hook._positionPins).not.toHaveBeenCalled();
-  });
-
-  it("normalizes numeric-string lat lon and filters invalid coordinates", () => {
-    document.body.innerHTML = `
-      <div id="root" data-reference-level-id="reference-level">
-        <div id="map-alignment-pins-reference"></div>
-      </div>
-    `;
-
-    const root = document.getElementById("root");
-    const referencePinsRoot = document.getElementById("map-alignment-pins-reference");
-
-    const hook = {
-      ...MapAlignmentHook,
-      el: root,
-      _referencePinsRoot: referencePinsRoot,
-      _referenceChildStops: [],
-      _positionPins: vi.fn(),
-    };
-
-    hook._renderReferenceChildStops({
-      level_id: "reference-level",
-      stops: [
-        { stop_id: "valid-string", lat: "40.7001", lon: "-74.0021" },
-        { stop_id: "invalid-lat", lat: "bad", lon: "-74.0" },
-        { stop_id: "invalid-lon", lat: 40.71, lon: undefined },
-      ],
-    });
-
-    expect(hook._referenceChildStops.length).toBe(1);
-    expect(hook._referenceChildStops[0]).toMatchObject({
-      stop_id: "valid-string",
-      lat: 40.7001,
-      lon: -74.0021,
-    });
-    expect(referencePinsRoot.children.length).toBe(1);
-    const tooltip = referencePinsRoot.children[0].lastChild;
-    expect(tooltip.textContent).toBe("R: valid-string");
-    expect(hook._positionPins).toHaveBeenCalledTimes(1);
-  });
-
-  it("applies role-differentiated reference styling with symbol grammar and subdued type-themed colors", () => {
-    document.body.innerHTML = `
-      <div id="root" data-reference-level-id="reference-level">
-        <div id="map-alignment-pins-reference"></div>
-      </div>
-    `;
-
-    const root = document.getElementById("root");
-    const referencePinsRoot = document.getElementById("map-alignment-pins-reference");
-
-    const hook = {
-      ...MapAlignmentHook,
-      el: root,
-      _referencePinsRoot: referencePinsRoot,
-      _referenceChildStops: [],
-      _positionPins: vi.fn(),
-    };
-
-    hook._renderReferenceChildStops({
-      level_id: "reference-level",
-      level_index: 1,
-      stops: [
-        { stop_id: "u", stop_name: "Upright", location_type: 2, lat: 40.7001, lon: -74.0021 },
-      ],
-    });
-
-    const pin = referencePinsRoot.children[0];
-    const dot = pin.firstChild;
-    const tooltip = pin.lastChild;
-    const typeStrokeHex = activeColorForLocationType(2).stroke;
-    const typeFillHex = activeColorForLocationType(2).fill;
-
-    const normalizeCssColor = (cssColor) => {
-      const sample = document.createElement("div");
-      sample.style.color = cssColor;
-      return sample.style.color;
-    };
-
-    expect(pin.className).toContain("pointer-events-auto");
-    expect(pin.style.width).toBe("8px");
-    expect(pin.style.height).toBe("12px");
-
-    expect(dot.style.backgroundColor).toBe(normalizeCssColor(typeFillHex));
-    expect(dot.style.borderColor).toBe(normalizeCssColor(typeStrokeHex));
-    expect(dot.style.borderStyle).toBe("dashed");
-    expect(dot.style.borderWidth).toBe("1.5px");
-    expect(dot.style.opacity).toBe("0.3");
-    expect(dot.style.borderRadius).toBe("2px");
-    expect(tooltip.textContent).toBe("R: Upright");
   });
 });

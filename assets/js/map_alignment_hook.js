@@ -22,13 +22,17 @@
  *   #map-alignment-lon-input     lon input for map.setView
  *   #map-alignment-apply-center  button that recenters the map on lat/lon
  *   #map-alignment-opacity       range input controlling floorplan opacity
+ *   #map-other-overlays          container root for other-level floorplan overlays
+ *   #map-other-pins              container root for other-level stop pins
+ *   #map-other-overlays-opacity  range input controlling other-level opacity
  */
+
+import { createOtherLevelsLayers } from "./map_overlay_layers";
 
 const SCALE_MIN = 0.25;
 const SCALE_MAX = 4;
 const IDENTITY_TRANSFORM = Object.freeze({tx: 0, ty: 0, rotation: 0, scale: 1});
 const MAP_ALIGNMENT_HOOK_BUILD = "map-align-fix-v2";
-const REFERENCE_OVERLAY_IMG_SELECTOR = "img[data-reference-overlay='true']";
 const ACTIVE_TYPE_COLORS = Object.freeze({
   rect_upright: Object.freeze({ fill: "#2563EB", stroke: "#1E3A8A" }),
   rect_square: Object.freeze({ fill: "#CA8A04", stroke: "#713F12" }),
@@ -100,37 +104,6 @@ function activeColorForLocationType(locationType) {
   return ACTIVE_TYPE_COLORS[symbol] || ACTIVE_TYPE_COLORS.circle;
 }
 
-function ensureSingleReferenceOverlayImage(referenceOverlay) {
-  if (!referenceOverlay) return null;
-
-  const referenceImgs = Array.from(
-    referenceOverlay.querySelectorAll(REFERENCE_OVERLAY_IMG_SELECTOR)
-  );
-
-  if (referenceImgs.length > 0) {
-    const [primaryReferenceImg, ...duplicateReferenceImgs] = referenceImgs;
-    duplicateReferenceImgs.forEach((duplicateImg) => duplicateImg.remove());
-    return primaryReferenceImg;
-  }
-
-  const fallbackImgs = Array.from(referenceOverlay.querySelectorAll("img"));
-  if (fallbackImgs.length > 0) {
-    const [primaryFallbackImg, ...duplicateFallbackImgs] = fallbackImgs;
-    primaryFallbackImg.dataset.referenceOverlay = "true";
-    duplicateFallbackImgs.forEach((duplicateImg) => duplicateImg.remove());
-    return primaryFallbackImg;
-  }
-
-  const referenceImg = document.createElement("img");
-  referenceImg.alt = "Reference level floorplan";
-  referenceImg.dataset.referenceOverlay = "true";
-  referenceImg.className = "h-full w-full object-contain select-none";
-  referenceImg.draggable = false;
-  referenceOverlay.appendChild(referenceImg);
-
-  return referenceImg;
-}
-
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -163,15 +136,6 @@ function readActiveAlignment(root) {
   );
 }
 
-function readReferenceAlignment(root) {
-  return parseAlignmentPayload(
-    root.dataset.referenceCenterLat,
-    root.dataset.referenceCenterLon,
-    root.dataset.referenceScaleMpp,
-    root.dataset.referenceRotationDeg
-  );
-}
-
 function overlayCenter(overlay) {
   const rect = overlay.getBoundingClientRect();
   return {
@@ -198,12 +162,8 @@ const MapAlignmentHook = {
     // Optional saved alignment. All four attrs must be present and parse to
     // finite numbers; otherwise treat as absent and fall back to identity.
     const activeAlignment = readActiveAlignment(root);
-    const referenceAlignment = readReferenceAlignment(root);
 
     const overlay = root.querySelector("#map-alignment-overlay[data-editable-overlay='true']");
-    const referenceOverlay = root.querySelector(
-      "#map-reference-overlay[data-editable-overlay='false']"
-    );
     const leafletEl = root.querySelector("#map-alignment-leaflet");
     const rotateHandle = root.querySelector(
       "#map-alignment-rotate-handle[data-edit-target-overlay='active']"
@@ -232,19 +192,12 @@ const MapAlignmentHook = {
     this.lonInput = lonInput;
     this.applyCenterBtn = applyCenterBtn;
     this.opacitySlider = opacitySlider;
-    this.referenceOpacitySlider = null;
     this.zoomSlider = zoomSlider;
     this.saveBtn = saveBtn;
     this.applyBtn = applyBtn;
-    this.referenceOverlay = referenceOverlay;
     this._overlayRestoreDisposers = [];
-    this._pendingReferenceRestoreDispose = null;
-
-    this._syncReferenceOverlayVisibilityFromDataset();
 
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.7";
-
-    if (referenceOverlay) referenceOverlay.style.opacity = "0.7";
 
     this.transform = {...IDENTITY_TRANSFORM};
 
@@ -307,16 +260,43 @@ const MapAlignmentHook = {
     this.leafletMap = map;
 
     this._activePinsRoot = root.querySelector("#map-alignment-pins-active");
-    this._referencePinsRoot = root.querySelector("#map-alignment-pins-reference");
     this._activeChildStops = [];
-    this._referenceChildStops = [];
-    this._onMapViewChanged = () => this._positionPins();
+
+    const otherOverlaysRoot = root.querySelector("#map-other-overlays");
+    const otherPinsRoot = root.querySelector("#map-other-pins");
+    if (otherOverlaysRoot && otherPinsRoot) {
+      this._otherLevels = createOtherLevelsLayers({
+        overlaysRoot: otherOverlaysRoot,
+        pinsRoot: otherPinsRoot,
+        applyOverlayTransform: (el, alignment) => this._applyOtherLevelOverlayTransform(el, alignment),
+        projectLatLng: (lat, lon) => {
+          const pt = this.leafletMap.latLngToContainerPoint([lat, lon]);
+          return pt ? {x: pt.x, y: pt.y} : null;
+        },
+        symbolFor: symbolForLocationType
+      });
+      this._otherLevels.setOpacity(0.7);
+    } else {
+      this._otherLevels = null;
+    }
+
+    this._viewFrame = null;
+    this._onMapViewChanged = () => {
+      if (this._viewFrame) return;
+      this._viewFrame = requestAnimationFrame(() => {
+        this._viewFrame = null;
+        this._positionPins();
+        if (this._otherLevels) this._otherLevels.reposition();
+      });
+    };
     map.on("move", this._onMapViewChanged);
     map.on("zoom", this._onMapViewChanged);
     map.on("viewreset", this._onMapViewChanged);
     map.on("resize", this._onMapViewChanged);
     this.handleEvent("set_active_child_stops", (payload) => this._renderActiveChildStops(payload));
-    this.handleEvent("set_reference_child_stops", (payload) => this._renderReferenceChildStops(payload));
+    this.handleEvent("set_other_levels", (payload) => {
+      if (this._otherLevels) this._otherLevels.update(payload);
+    });
     this.pushEvent("map_ready", {});
 
     if (zoomSlider) {
@@ -334,14 +314,6 @@ const MapAlignmentHook = {
     }
 
     this._fetchBuildings(mapCenterLat, mapCenterLon);
-
-    if (referenceOverlay) {
-      if (referenceAlignment) {
-        this._scheduleOverlayAlignmentRestore(referenceOverlay, referenceAlignment, "reference");
-      } else {
-        this._applyOverlayTransform(referenceOverlay, IDENTITY_TRANSFORM);
-      }
-    }
 
     if (activeAlignment) {
       this._scheduleOverlayAlignmentRestore(overlay, activeAlignment, "active");
@@ -521,7 +493,7 @@ const MapAlignmentHook = {
       opacitySlider.addEventListener("input", this._onOpacityInput);
     }
 
-    this._syncReferenceOpacitySlider();
+    this._syncOtherOverlaysOpacitySlider();
 
     // --- Save: compute canonical alignment and push to server ---
     if (saveBtn) {
@@ -562,9 +534,7 @@ const MapAlignmentHook = {
   },
 
   updated() {
-    this._syncReferenceOverlayVisibilityFromDataset();
-    this._syncReferenceOverlayFromDataset();
-    this._syncReferenceOpacitySlider();
+    this._syncOtherOverlaysOpacitySlider();
   },
 
   destroyed() {
@@ -576,6 +546,10 @@ const MapAlignmentHook = {
       clearTimeout(this._postTransitionTimer);
       this._postTransitionTimer = null;
     }
+    if (this._viewFrame) {
+      cancelAnimationFrame(this._viewFrame);
+      this._viewFrame = null;
+    }
     if (Array.isArray(this._overlayRestoreDisposers)) {
       this._overlayRestoreDisposers.forEach((dispose) => {
         try {
@@ -586,7 +560,6 @@ const MapAlignmentHook = {
       });
       this._overlayRestoreDisposers = [];
     }
-    this._pendingReferenceRestoreDispose = null;
 
     if (this.overlay) {
       this.overlay.removeEventListener("pointerdown", this._onOverlayPointerDown);
@@ -615,10 +588,10 @@ const MapAlignmentHook = {
     if (this.opacitySlider && this._onOpacityInput) {
       this.opacitySlider.removeEventListener("input", this._onOpacityInput);
     }
-    if (this.referenceOpacitySlider && this._onReferenceOpacityInput) {
-      this.referenceOpacitySlider.removeEventListener("input", this._onReferenceOpacityInput);
-      this.referenceOpacitySlider = null;
-      this._onReferenceOpacityInput = null;
+    if (this.otherOpacitySlider && this._onOtherOpacityInput) {
+      this.otherOpacitySlider.removeEventListener("input", this._onOtherOpacityInput);
+      this.otherOpacitySlider = null;
+      this._onOtherOpacityInput = null;
     }
     if (this.saveBtn && this._onSave) {
       this.saveBtn.removeEventListener("click", this._onSave);
@@ -657,6 +630,11 @@ const MapAlignmentHook = {
     }
     this._onMapViewChanged = null;
     this._clearPinLayers();
+
+    if (this._otherLevels) {
+      this._otherLevels.destroy();
+      this._otherLevels = null;
+    }
 
     if (this.leafletMap) {
       // If LiveView has already re-mounted another hook on the same container,
@@ -735,15 +713,6 @@ const MapAlignmentHook = {
   _scheduleOverlayAlignmentRestore(overlayEl, alignment, label) {
     if (!overlayEl || !alignment) return;
 
-    if (overlayEl === this.referenceOverlay && this._pendingReferenceRestoreDispose) {
-      try {
-        this._pendingReferenceRestoreDispose();
-      } catch (_) {
-        // noop
-      }
-      this._pendingReferenceRestoreDispose = null;
-    }
-
     const img = overlayEl.querySelector("img");
     if (!img) return;
 
@@ -771,20 +740,12 @@ const MapAlignmentHook = {
         img.removeEventListener("load", onRestoreImgLoad);
         onRestoreImgLoad = null;
       }
-
-      if (overlayEl === this.referenceOverlay && this._pendingReferenceRestoreDispose === cleanup) {
-        this._pendingReferenceRestoreDispose = null;
-      }
     };
 
     if (!Array.isArray(this._overlayRestoreDisposers)) {
       this._overlayRestoreDisposers = [];
     }
     this._overlayRestoreDisposers.push(cleanup);
-
-    if (overlayEl === this.referenceOverlay) {
-      this._pendingReferenceRestoreDispose = cleanup;
-    }
 
     // Run restore once canvas size has been stable for STABLE_MS.
     // During the immersive CSS transition the canvas grows over ~300ms; running
@@ -860,13 +821,52 @@ const MapAlignmentHook = {
       scale: scale
     };
 
-    if (overlayEl === this.overlay) {
-      this.transform = restoredTransform;
-      this._applyTransform();
-      return;
-    }
+    this.transform = restoredTransform;
+    this._applyTransform();
+  },
 
-    this._applyOverlayTransform(overlayEl, restoredTransform);
+  // Compute the CSS transform that places an alignment-described floorplan at
+  // the current map view and apply it to `el`. Mirrors _restoreOverlayAlignment
+  // but takes the server payload's snake_case alignment and targets the given
+  // element (used by the other-levels overlay manager via injected callback).
+  _applyOtherLevelOverlayTransform(el, alignment) {
+    const map = this.leafletMap;
+    if (!map || !el || !alignment) return;
+
+    const img = el.tagName === "IMG" ? el : el.querySelector("img");
+    if (!img || !img.naturalWidth || !img.naturalHeight) return;
+
+    const canvasRect = this._leafletRect();
+    if (!canvasRect) return;
+    const canvasW = canvasRect.width;
+    const canvasH = canvasRect.height;
+    if (!(canvasW > 0) || !(canvasH > 0)) return;
+
+    const cx = canvasW / 2;
+    const cy = canvasH / 2;
+    const p0 = map.containerPointToLatLng([cx, cy]);
+    const p1 = map.containerPointToLatLng([cx + 1, cy]);
+    const metersPerCanvasPx = map.distance(p0, p1);
+
+    const imgAspect = img.naturalWidth / img.naturalHeight;
+    const canvasAspect = canvasW / canvasH;
+    const containWidth = canvasAspect > imgAspect ? canvasH * imgAspect : canvasW;
+    if (!(containWidth > 0) || !(metersPerCanvasPx > 0)) return;
+
+    const renderedPxPerImagePxNeeded = alignment.scale_mpp / metersPerCanvasPx;
+    const scale = renderedPxPerImagePxNeeded / (containWidth / img.naturalWidth);
+
+    const alignedCenterPoint = map.latLngToContainerPoint([
+      alignment.center_lat,
+      alignment.center_lon
+    ]);
+
+    this._applyOverlayTransform(el, {
+      tx: alignedCenterPoint.x - canvasW / 2,
+      ty: alignedCenterPoint.y - canvasH / 2,
+      rotation: alignment.rotation_deg,
+      scale: scale
+    });
   },
 
   _applyOverlayTransform(overlayEl, transform) {
@@ -887,80 +887,24 @@ const MapAlignmentHook = {
       `rotate(${transform.rotation}deg) scale(${transform.scale})`;
   },
 
-  _restoreReferenceOverlayForCurrentView() {
-    if (!this.leafletMap || !this.referenceOverlay) return;
-    if (this.referenceOverlay.dataset.overlayVisible !== "true") return;
-    if (this.referenceOverlay.classList.contains("hidden")) return;
+  _syncOtherOverlaysOpacitySlider() {
+    const nextSlider = document.getElementById("map-other-overlays-opacity");
 
-    const referenceAlignment = readReferenceAlignment(this.el);
-    if (!referenceAlignment) return;
-
-    const referenceImg = this.referenceOverlay.querySelector("img");
-    if (!referenceImg || !referenceImg.naturalWidth || !referenceImg.naturalHeight) return;
-
-    this._restoreOverlayAlignment(
-      this.referenceOverlay,
-      referenceAlignment,
-      referenceImg,
-      "reference"
-    );
-  },
-
-  _syncReferenceOverlayFromDataset() {
-    if (!this.referenceOverlay) return;
-
-    if (this._pendingReferenceRestoreDispose) {
-      try {
-        this._pendingReferenceRestoreDispose();
-      } catch (_) {
-        // noop
-      }
-      this._pendingReferenceRestoreDispose = null;
+    if (this.otherOpacitySlider && this._onOtherOpacityInput) {
+      this.otherOpacitySlider.removeEventListener("input", this._onOtherOpacityInput);
+      this._onOtherOpacityInput = null;
     }
 
-    const root = this.el;
-    const referenceUrl = (root.dataset.referenceFloorplanUrl || "").trim();
-    const referenceAlignment = readReferenceAlignment(root);
+    this.otherOpacitySlider = nextSlider;
 
-    const referenceImg = ensureSingleReferenceOverlayImage(this.referenceOverlay);
+    if (!this.otherOpacitySlider || !this._otherLevels) return;
 
-    if (!referenceUrl) {
-      this.referenceOverlay
-        .querySelectorAll("img")
-        .forEach((imgElement) => imgElement.remove());
-      this._applyOverlayTransform(this.referenceOverlay, IDENTITY_TRANSFORM);
-      return;
-    }
-
-    const currentSrc = referenceImg.getAttribute("src") || "";
-    if (currentSrc !== referenceUrl) {
-      referenceImg.setAttribute("src", referenceUrl);
-    }
-
-    if (referenceAlignment) {
-      this._scheduleOverlayAlignmentRestore(this.referenceOverlay, referenceAlignment, "reference");
-    } else {
-      this._applyOverlayTransform(this.referenceOverlay, IDENTITY_TRANSFORM);
-    }
-  },
-
-  _syncReferenceOpacitySlider() {
-    const nextSlider = document.getElementById("map-reference-overlay-opacity");
-
-    if (this.referenceOpacitySlider && this._onReferenceOpacityInput) {
-      this.referenceOpacitySlider.removeEventListener("input", this._onReferenceOpacityInput);
-    }
-
-    this.referenceOpacitySlider = nextSlider;
-
-    if (!this.referenceOpacitySlider || !this.referenceOverlay) return;
-
-    this._onReferenceOpacityInput = (e) => {
-      this.referenceOverlay.style.opacity = e.target.value;
+    this._onOtherOpacityInput = (e) => {
+      this._otherLevels.setOpacity(parseFloat(e.target.value));
     };
 
-    this.referenceOpacitySlider.addEventListener("input", this._onReferenceOpacityInput);
-    this.referenceOverlay.style.opacity = this.referenceOpacitySlider.value || "0.7";
+    this.otherOpacitySlider.addEventListener("input", this._onOtherOpacityInput);
+    this._otherLevels.setOpacity(parseFloat(this.otherOpacitySlider.value) || 0.7);
   },
 
   _applyTransform() {
@@ -1011,22 +955,6 @@ const MapAlignmentHook = {
     this.pushEvent(eventName, payload);
   },
 
-  _syncReferenceOverlayVisibilityFromDataset() {
-    const root = this.el;
-    if (!root) return;
-
-    const showReference = root.dataset.showReferenceOverlay === "true";
-
-    if (!this.referenceOverlay) return;
-
-    this.referenceOverlay.dataset.overlayVisible = showReference ? "true" : "false";
-    this.referenceOverlay.classList.toggle("hidden", !showReference);
-
-    if (showReference && this.referenceOpacitySlider) {
-      this.referenceOverlay.style.opacity = this.referenceOpacitySlider.value || "0.7";
-    }
-  },
-
   _fetchBuildings(lat, lon) {
     const L = window.L;
     if (!L) return;
@@ -1075,7 +1003,7 @@ const MapAlignmentHook = {
     this.transform.ty = newCenterPt.y - canvasH / 2;
     this.transform.scale = this.transform.scale * scaleFactor;
     this._applyTransform();
-    this._restoreReferenceOverlayForCurrentView();
+    if (this._otherLevels) this._otherLevels.reposition();
   },
 
   _renderActiveChildStops(payload = {}) {
@@ -1137,71 +1065,6 @@ const MapAlignmentHook = {
     this._positionPins();
   },
 
-  _renderReferenceChildStops(payload = {}) {
-    const {stops, level_id: levelId} = payload;
-    const received = (stops || []).length;
-    if (!this._referencePinsRoot) {
-      this._logger.warn(
-        "MapAlignment: set_reference_child_stops received but no #map-alignment-pins-reference root",
-        {received}
-      );
-      return;
-    }
-
-    const referenceLevelId = this.el?.dataset?.referenceLevelId || null;
-    if (referenceLevelId && levelId && String(referenceLevelId) !== String(levelId)) {
-      return;
-    }
-
-    this._referenceChildStops = (stops || [])
-      .map((s) => {
-        const lat = typeof s?.lat === "number" ? s.lat : parseFloat(s?.lat);
-        const lon = typeof s?.lon === "number" ? s.lon : parseFloat(s?.lon);
-        return Number.isFinite(lat) && Number.isFinite(lon) ? {...s, lat, lon} : null;
-      })
-      .filter(Boolean);
-
-    this._referencePinsRoot.innerHTML = "";
-    this._referenceChildStops.forEach((s) => {
-      const symbol = symbolForLocationType(s.location_type);
-      const activeTypeColors = activeColorForLocationType(s.location_type);
-      const pin = document.createElement("div");
-      pin.className =
-        "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
-      pin.style.width = symbol === "rect_upright" ? "8px" : "10px";
-      pin.style.height = symbol === "rect_upright" ? "12px" : "10px";
-
-      const dot = document.createElement("div");
-      dot.className = "w-full h-full border";
-      dot.style.backgroundColor = activeTypeColors.fill;
-      dot.style.opacity = "0.3";
-      dot.style.borderColor = activeTypeColors.stroke;
-      dot.style.borderStyle = "dashed";
-      dot.style.borderWidth = "1.5px";
-
-      if (symbol === "rect_upright") {
-        dot.style.borderRadius = "2px";
-      } else if (symbol === "rect_square") {
-        dot.style.borderRadius = "2px";
-      } else {
-        dot.style.borderRadius = "9999px";
-      }
-
-      pin.appendChild(dot);
-
-      const tip = document.createElement("div");
-      tip.className =
-        "absolute left-1/2 bottom-full mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 text-white text-xs px-1.5 py-0.5 opacity-0 group-hover:opacity-100 pointer-events-none";
-      tip.textContent = stopTooltipLabel(s, "R");
-      pin.appendChild(tip);
-
-      this._referencePinsRoot.appendChild(pin);
-      s._el = pin;
-    });
-
-    this._positionPins();
-  },
-
   _positionPins() {
     if (!this.leafletMap) return;
 
@@ -1211,22 +1074,12 @@ const MapAlignmentHook = {
       s._el.style.left = `${pt.x}px`;
       s._el.style.top = `${pt.y}px`;
     });
-
-    (this._referenceChildStops || []).forEach((s) => {
-      if (!s._el) return;
-      const pt = this.leafletMap.latLngToContainerPoint([s.lat, s.lon]);
-      s._el.style.left = `${pt.x}px`;
-      s._el.style.top = `${pt.y}px`;
-    });
   },
 
   _clearPinLayers() {
     if (this._activePinsRoot) this._activePinsRoot.innerHTML = "";
-    if (this._referencePinsRoot) this._referencePinsRoot.innerHTML = "";
     this._activePinsRoot = null;
-    this._referencePinsRoot = null;
     this._activeChildStops = null;
-    this._referenceChildStops = null;
   }
 };
 
@@ -1240,7 +1093,6 @@ function stopTooltipLabel(s, roleTag = "") {
 export {
   parseAlignmentPayload,
   readActiveAlignment,
-  readReferenceAlignment,
   symbolForLocationType,
   activeColorForLocationType
 };
