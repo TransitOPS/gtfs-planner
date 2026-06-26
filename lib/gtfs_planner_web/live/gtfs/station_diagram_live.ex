@@ -391,7 +391,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:platform_options, [])
     |> assign(:platform_stop_ids, MapSet.new())
     |> assign(:pathway_pair_counts, %{})
-    |> assign(:reference_child_stop_markers_cache, %{})
+    |> assign(:other_level_markers_cache, %{})
+    |> assign(:other_level_counts_cache, %{})
   end
 
   defp load_level_data(socket, level) do
@@ -467,7 +468,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:platform_options, platforms_for_station)
     |> assign(:platform_stop_ids, platform_stop_ids)
     |> assign(:pathway_pair_counts, pathway_pair_counts)
-    |> assign(:reference_child_stop_markers_cache, %{})
+    |> assign(:other_level_markers_cache, %{})
+    |> assign(:other_level_counts_cache, %{})
     |> push_child_stop_markers()
   end
 
@@ -520,29 +522,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp reference_child_stop_markers(socket, reference_level) do
+    other_level_markers(socket, reference_level && reference_level.level_id)
+  end
+
+  defp other_level_markers(socket, level_id) do
     station = socket.assigns[:station]
-    level_id = reference_level && reference_level.level_id
-    cache = socket.assigns[:reference_child_stop_markers_cache] || %{}
+    cache = Map.get(socket.assigns, :other_level_markers_cache, %{})
 
     cond do
-      is_nil(station) or is_nil(reference_level) ->
+      is_nil(station) or is_nil(level_id) ->
         {[], socket}
 
       is_map_key(cache, level_id) ->
         {Map.get(cache, level_id, []), socket}
 
       true ->
-        markers =
-          station.id
-          |> Gtfs.list_child_stops_for_level(level_id)
-          |> Enum.filter(& &1.on_active_level)
-          |> Enum.map(&child_stop_marker/1)
-          |> Enum.reject(&is_nil/1)
-
-        {markers,
-         assign(socket, :reference_child_stop_markers_cache, Map.put(cache, level_id, markers))}
+        markers = level_child_stop_markers(station, level_id)
+        {markers, assign(socket, :other_level_markers_cache, Map.put(cache, level_id, markers))}
     end
   end
+
+  defp level_child_stop_markers(%Stop{} = station, level_id) when is_binary(level_id) do
+    station.id
+    |> Gtfs.list_child_stops_for_level(level_id)
+    |> Enum.filter(& &1.on_active_level)
+    |> Enum.map(&child_stop_marker/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp level_child_stop_markers(_station, _level_id), do: []
 
   defp child_stop_markers(socket) do
     socket.assigns
@@ -563,18 +571,44 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     station = socket.assigns[:station]
     floorplan_on = Map.get(socket.assigns, :other_levels_floorplan, MapSet.new())
     stops_on = Map.get(socket.assigns, :other_levels_stops, MapSet.new())
+    counts_cache = Map.get(socket.assigns, :other_level_counts_cache, %{})
 
     socket.assigns
     |> Map.get(:station_stop_levels_cache, empty_station_stop_levels_cache())
     |> Map.get(:ordered, [])
     |> Enum.reject(&(&1.level_id == active_level_id))
-    |> Enum.map(&other_level_view(&1, station, floorplan_on, stops_on))
+    |> Enum.map(&other_level_view(&1, station, floorplan_on, stops_on, counts_cache))
   end
 
-  defp other_level_view(%StopLevel{} = stop_level, station, floorplan_on, stops_on) do
+  defp populate_other_level_caches(socket) do
+    active_level_id =
+      case socket.assigns[:active_level] do
+        %{level_id: level_id} -> level_id
+        _ -> nil
+      end
+
+    station = socket.assigns[:station]
+
+    counts =
+      socket.assigns
+      |> Map.get(:station_stop_levels_cache, empty_station_stop_levels_cache())
+      |> Map.get(:ordered, [])
+      |> Enum.reject(&(&1.level_id == active_level_id))
+      |> Map.new(fn stop_level ->
+        {stop_level.level_id, other_level_stop_counts(station, stop_level.level_id)}
+      end)
+
+    socket
+    |> assign(:other_level_counts_cache, counts)
+    |> assign(:other_level_markers_cache, %{})
+  end
+
+  defp other_level_view(%StopLevel{} = stop_level, station, floorplan_on, stops_on, counts_cache) do
     level_id = stop_level.level_id
     level_index = reference_stop_level_index(stop_level)
-    {geo_stop_count, total_stop_count} = other_level_stop_counts(station, level_id)
+
+    {geo_stop_count, total_stop_count} =
+      Map.get_lazy(counts_cache, level_id, fn -> other_level_stop_counts(station, level_id) end)
 
     has_diagram? = is_binary(stop_level.diagram_filename) and stop_level.diagram_filename != ""
     has_alignment? = StopLevel.alignment_complete?(stop_level)
@@ -2170,6 +2204,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              socket
              |> assign(:active_stop_level, updated)
+             |> assign(:other_level_markers_cache, %{})
+             |> assign(:other_level_counts_cache, %{})
              |> load_station_stop_levels_cache()
              |> assign_selectable_reference_stop_levels()
              |> sync_reference_overlay_state(socket.assigns.active_level)
