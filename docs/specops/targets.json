@@ -1,0 +1,398 @@
+{
+  "version": 1,
+  "system": {
+    "summary": "GTFS Planner is a multi-tenant Phoenix application for managing GTFS transit datasets, including organization-scoped authentication, editable routes and stations, station diagrams, import/export workflows, validation runs, OTP graph and station materialization, companion JSON APIs, and deployment/support tooling.",
+    "external_dependencies": [
+      "Elixir and Phoenix LiveView",
+      "PostgreSQL",
+      "Geoapify geocoding API",
+      "OpenTripPlanner",
+      "OpenStreetMap extracts",
+      "SMTP email delivery via Swoosh/gen_smtp",
+      "Tailwind CSS and daisyUI",
+      "Docker",
+      "AWS/OpenTofu infrastructure"
+    ]
+  },
+  "targets": [
+    {
+      "slug": "lib-gtfs-planner-web-api",
+      "name": "Companion API Controllers",
+      "scope": "Serves the JSON companion API for login, GTFS versions, station bundles, CORS preflight, and pathway sync updates.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner_web/api",
+      "source_globs": [
+        "lib/gtfs_planner_web/api/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-web-api.md",
+      "source_hash": "sha256:22dfde87cb7192094d51e0cdb08ebf6ee5d1676f2694e7da4c3543d1b62ecbdd",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-web-components",
+      "name": "Web Components and Layouts",
+      "scope": "Provides shared Phoenix components, layouts, navigation, email layouts, and the GTFS version switcher used across the web UI.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner_web/components",
+      "source_globs": [
+        "lib/gtfs_planner_web/components/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-web-components.md",
+      "source_hash": "sha256:5bb8a41d6fb20a8187fd528aec37d3cd159e673f7931aff284faa08072024411",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-web-controllers",
+      "name": "HTTP Controllers",
+      "scope": "Handles non-LiveView browser and HTTP endpoints for sessions, health checks, map data, errors, and the station resolution prototype.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner_web/controllers",
+      "source_globs": [
+        "lib/gtfs_planner_web/controllers/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-web-controllers.md",
+      "source_hash": "sha256:899315dcb118025f92078750033e982f1bb7532d2652d6c81d28c36b6cc4f0ec",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-web-live",
+      "name": "LiveView Interfaces",
+      "scope": "Implements the authenticated web workflows for dashboards, admin screens, user settings, GTFS browsing, import/export, validation results, station diagrams, and reports.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner_web/live",
+      "source_globs": [
+        "lib/gtfs_planner_web/live/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-web-live.md",
+      "source_hash": "sha256:183abe3a191ac02a51bfdde8f2392bc4d3425b7c8c4ea7d6ace76f4a5297d5b0",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-web-plugs",
+      "name": "API and Upload Plugs",
+      "scope": "Defines request plugs for CORS, companion API session verification, organization assignment, and upload handling.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner_web/plugs",
+      "source_globs": [
+        "lib/gtfs_planner_web/plugs/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-web-plugs.md",
+      "source_hash": "sha256:02f695f3946271ff648791130d131475beccdac06ba94b95c00623d9499f4123",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-web-templates",
+      "name": "Email Templates",
+      "scope": "Stores HEEx email templates for account confirmation, password reset, invitations, and email-change instructions.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner_web/templates",
+      "source_globs": [
+        "lib/gtfs_planner_web/templates/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-web-templates.md",
+      "source_hash": "sha256:2e8bcd6d4d82989c1b9512f52a31a212cdab46bd381220c942784f22ea58cd05",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-accounts",
+      "name": "Accounts Context",
+      "scope": "Manages users, credentials, session and email tokens, invitations, organization memberships, notifications, and companion API session tokens.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner/accounts",
+      "source_globs": [
+        "lib/gtfs_planner/accounts/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-accounts.md",
+      "source_hash": "sha256:86947e3cfaed4ac74678064ef69e1f0a3867e719d039f78e6c01304c2347b200",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-authorization",
+      "name": "Authorization Roles",
+      "scope": "Defines the canonical system and organization roles used for administration and GTFS editing access control.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner/authorization",
+      "source_globs": [
+        "lib/gtfs_planner/authorization/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-authorization.md",
+      "source_hash": "sha256:a877b0e0ae42177fc7bb3f01d1acf531b352ba543540902f0f530cbd3104a03f",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-geocoding",
+      "name": "Geocoding Context",
+      "scope": "Routes address autocomplete requests through a behavior-backed geocoding service and the Geoapify implementation.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner/geocoding",
+      "source_globs": [
+        "lib/gtfs_planner/geocoding/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-geocoding.md",
+      "source_hash": "sha256:c084daa68b630714fb721fcefb18005b0f431b72ade584e99fc6f1244bc5ab12",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-gtfs",
+      "name": "GTFS Data Context",
+      "scope": "Owns the organization/version-scoped GTFS schemas, queries, edits, imports, exports, station modeling, pathways, diagrams, and change-log behavior.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner/gtfs",
+      "source_globs": [
+        "lib/gtfs_planner/gtfs/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-gtfs.md",
+      "source_hash": "sha256:db91a4a831875e9079833eace0076c27fed55b72907a60230c212f41e977b9dc",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-organizations",
+      "name": "Organizations Context",
+      "scope": "Manages tenant organizations, API keys, membership associations, default version creation, and organization PubSub notifications.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner/organizations",
+      "source_globs": [
+        "lib/gtfs_planner/organizations/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-organizations.md",
+      "source_hash": "sha256:80ab034d4b15211e4e4006bcca771ecb7a97b2821f1500dac37d72ab98cc4e49",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-otp",
+      "name": "OTP Integration Context",
+      "scope": "Builds and caches OTP-ready GTFS artifacts and graphs, checks local OTP prerequisites, runs OTP runtime sessions, and materializes station-scoped feeds.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner/otp",
+      "source_globs": [
+        "lib/gtfs_planner/otp/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-otp.md",
+      "source_hash": "sha256:83043cb59d54195b590146472362943283073fedfba5da5e119671a4185f7c64",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-validations",
+      "name": "Validation Context",
+      "scope": "Creates and tracks GTFS validation runs, pathway and station reachability tests, preflight checks, summaries, and persisted validation results.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner/validations",
+      "source_globs": [
+        "lib/gtfs_planner/validations/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-validations.md",
+      "source_hash": "sha256:363fd543037620b2caa9e137135ccb604aa2ec4251c60953f6f781af136c8ddc",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-gtfs-planner-versions",
+      "name": "GTFS Versions Context",
+      "scope": "Manages named GTFS dataset versions within each organization and provides version lookup and dropdown data.",
+      "origin": "derived",
+      "structural_unit": "lib/gtfs_planner/versions",
+      "source_globs": [
+        "lib/gtfs_planner/versions/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-gtfs-planner-versions.md",
+      "source_hash": "sha256:a528eacfcb55f1ee76b521228d531ffac974d7122be2bbf0c75d1a375e835c75",
+      "last_synthesized": null
+    },
+    {
+      "slug": "lib-mix",
+      "name": "Mix Maintenance Tasks",
+      "scope": "Provides operator Mix tasks for importing GTFS tables and installing or checking local OTP assets.",
+      "origin": "derived",
+      "structural_unit": "lib/mix",
+      "source_globs": [
+        "lib/mix/**"
+      ],
+      "tier2_path": "docs/specops/analysis/lib-mix.md",
+      "source_hash": "sha256:941a643879e3a4cd1519db5e0968ed809f785fa2d49258fddd9120da84f01937",
+      "last_synthesized": null
+    }
+  ],
+  "overrides": [],
+  "renames": [],
+  "coverage": {
+    "unassigned": {
+      "count": 6028,
+      "by_top_level": [
+        {
+          "path": "deps",
+          "count": 3073
+        },
+        {
+          "path": "_build",
+          "count": 1764
+        },
+        {
+          "path": "infra",
+          "count": 964
+        },
+        {
+          "path": "priv",
+          "count": 146
+        },
+        {
+          "path": "lib",
+          "count": 23
+        },
+        {
+          "path": "assets",
+          "count": 13
+        },
+        {
+          "path": "mise-tasks",
+          "count": 10
+        },
+        {
+          "path": "config",
+          "count": 5
+        },
+        {
+          "path": ".clinerules",
+          "count": 4
+        },
+        {
+          "path": "rel",
+          "count": 4
+        },
+        {
+          "path": ".elixir_ls",
+          "count": 2
+        },
+        {
+          "path": "scripts",
+          "count": 2
+        },
+        {
+          "path": ".claude",
+          "count": 1
+        },
+        {
+          "path": ".dockerignore",
+          "count": 1
+        },
+        {
+          "path": ".env",
+          "count": 1
+        },
+        {
+          "path": ".formatter.exs",
+          "count": 1
+        },
+        {
+          "path": ".gitignore",
+          "count": 1
+        },
+        {
+          "path": ".tool-versions",
+          "count": 1
+        },
+        {
+          "path": "AGENTS.md",
+          "count": 1
+        },
+        {
+          "path": "docker-compose.mock-production.yml",
+          "count": 1
+        },
+        {
+          "path": "docker-compose.yml",
+          "count": 1
+        },
+        {
+          "path": "Dockerfile",
+          "count": 1
+        },
+        {
+          "path": "erl_crash.dump",
+          "count": 1
+        },
+        {
+          "path": "LICENSE",
+          "count": 1
+        },
+        {
+          "path": "logfile",
+          "count": 1
+        },
+        {
+          "path": "mise.toml",
+          "count": 1
+        },
+        {
+          "path": "mix.exs",
+          "count": 1
+        },
+        {
+          "path": "mix.lock",
+          "count": 1
+        },
+        {
+          "path": "README.md",
+          "count": 1
+        },
+        {
+          "path": "test-failures-output.txt",
+          "count": 1
+        }
+      ],
+      "sample": [
+        "deps/argon2_elixir/.hex",
+        "deps/argon2_elixir/argon2/include/argon2.h",
+        "deps/argon2_elixir/argon2/src/argon2.c",
+        "_build/dev/lib/argon2_elixir/.mix/compile.elixir",
+        "_build/dev/lib/argon2_elixir/.mix/compile.elixir_scm",
+        "_build/dev/lib/argon2_elixir/ebin/argon2_elixir.app",
+        "infra/accounts/.terraform.lock.hcl",
+        "infra/accounts/.terraform/modules/cluster.ecs_cluster/.editorconfig",
+        "infra/accounts/.terraform/modules/cluster.ecs_cluster/.gitignore",
+        "priv/gettext/en/LC_MESSAGES/errors.po",
+        "priv/gettext/errors.pot",
+        "priv/gtfs_validator/gtfs-validator-cli.jar",
+        "lib/gtfs_planner_web.ex",
+        "lib/gtfs_planner_web/api_key_auth.ex",
+        "lib/gtfs_planner_web/assign_gtfs_version.ex",
+        "assets/css/app.css",
+        "assets/js/app.js",
+        "assets/js/diagram_canvas_hook.js",
+        "mise-tasks/infra/account-information",
+        "mise-tasks/infra/database/manage",
+        "mise-tasks/infra/environment/build",
+        "config/config.exs",
+        "config/dev.exs",
+        "config/prod.exs",
+        ".clinerules/commit-rules.md",
+        ".clinerules/deepseek-guidance.md",
+        ".clinerules/git.md",
+        "rel/env.bat.eex",
+        "rel/env.sh.eex",
+        "rel/remote.vm.args.eex",
+        ".elixir_ls/.gitignore",
+        ".elixir_ls/iplt-28.2_elixir-1.19.4-test",
+        "scripts/docker-build.sh",
+        "scripts/docker-run.sh",
+        ".claude/settings.local.json",
+        ".dockerignore",
+        ".env",
+        ".formatter.exs",
+        ".gitignore",
+        ".tool-versions",
+        "AGENTS.md",
+        "docker-compose.mock-production.yml",
+        "docker-compose.yml",
+        "Dockerfile",
+        "erl_crash.dump",
+        "LICENSE",
+        "logfile",
+        "mise.toml",
+        "mix.exs",
+        "mix.lock"
+      ],
+      "truncated": true
+    },
+    "overlaps": [],
+    "low_confidence": false
+  }
+}

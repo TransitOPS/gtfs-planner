@@ -447,3 +447,31 @@ And **never** do this:
 <!-- phoenix:liveview-end -->
 
 <!-- usage-rules-end -->
+
+<!-- agents-docs:start -->
+## SpecOps Agent Docs Index
+
+Manifest: [`docs/specops/targets.json`](docs/specops/targets.json)
+
+**System:** GTFS Planner is a multi-tenant Phoenix application for managing GTFS transit datasets, including organization-scoped authentication, editable routes and stations, station diagrams, import/export workflows, validation runs, OTP graph and station materialization, companion JSON APIs, and deployment/support tooling.
+
+**External dependencies:** Elixir/Phoenix LiveView, PostgreSQL, Geoapify geocoding API, OpenTripPlanner, OSM extracts, SMTP (Swoosh), Tailwind CSS/daisyUI, Docker, AWS/OpenTofu.
+
+| # | Target | Agent Doc | Deep Analysis | Status |
+|---|---|---|---|---|
+| 1 | Companion API Controllers | [`agents/lib-gtfs-planner-web-api.md`](docs/specops/agents/lib-gtfs-planner-web-api.md) | [`analysis/lib-gtfs-planner-web-api.md`](docs/specops/analysis/lib-gtfs-planner-web-api.md) | ✅ |
+| 2 | Web Components and Layouts | [`agents/lib-gtfs-planner-web-components.md`](docs/specops/agents/lib-gtfs-planner-web-components.md) | [`analysis/lib-gtfs-planner-web-components.md`](docs/specops/analysis/lib-gtfs-planner-web-components.md) | ✅ |
+| 3 | HTTP Controllers | [`agents/lib-gtfs-planner-web-controllers.md`](docs/specops/agents/lib-gtfs-planner-web-controllers.md) | [`analysis/lib-gtfs-planner-web-controllers.md`](docs/specops/analysis/lib-gtfs-planner-web-controllers.md) | ✅ |
+| 4 | LiveView Interfaces | [`agents/lib-gtfs-planner-web-live.md`](docs/specops/agents/lib-gtfs-planner-web-live.md) | [`analysis/lib-gtfs-planner-web-live.md`](docs/specops/analysis/lib-gtfs-planner-web-live.md) | ✅ |
+| 5 | API and Upload Plugs | [`agents/lib-gtfs-planner-web-plugs.md`](docs/specops/agents/lib-gtfs-planner-web-plugs.md) | [`analysis/lib-gtfs-planner-web-plugs.md`](docs/specops/analysis/lib-gtfs-planner-web-plugs.md) | ✅ |
+| 6 | Email Templates | [`agents/lib-gtfs-planner-web-templates.md`](docs/specops/agents/lib-gtfs-planner-web-templates.md) | [`analysis/lib-gtfs-planner-web-templates.md`](docs/specops/analysis/lib-gtfs-planner-web-templates.md) | ✅ |
+| 7 | Accounts Context | [`agents/lib-gtfs-planner-accounts.md`](docs/specops/agents/lib-gtfs-planner-accounts.md) | [`analysis/lib-gtfs-planner-accounts.md`](docs/specops/analysis/lib-gtfs-planner-accounts.md) | ✅ |
+| 8 | Authorization Roles | [`agents/lib-gtfs-planner-authorization.md`](docs/specops/agents/lib-gtfs-planner-authorization.md) | [`analysis/lib-gtfs-planner-authorization.md`](docs/specops/analysis/lib-gtfs-planner-authorization.md) | ✅ |
+| 9 | Geocoding Context | [`agents/lib-gtfs-planner-geocoding.md`](docs/specops/agents/lib-gtfs-planner-geocoding.md) | [`analysis/lib-gtfs-planner-geocoding.md`](docs/specops/analysis/lib-gtfs-planner-geocoding.md) | ✅ |
+| 10 | GTFS Data Context | [`agents/lib-gtfs-planner-gtfs.md`](docs/specops/agents/lib-gtfs-planner-gtfs.md) | [`analysis/lib-gtfs-planner-gtfs.md`](docs/specops/analysis/lib-gtfs-planner-gtfs.md) | ✅ |
+| 11 | Organizations Context | [`agents/lib-gtfs-planner-organizations.md`](docs/specops/agents/lib-gtfs-planner-organizations.md) | [`analysis/lib-gtfs-planner-organizations.md`](docs/specops/analysis/lib-gtfs-planner-organizations.md) | ✅ |
+| 12 | OTP Integration Context | [`agents/lib-gtfs-planner-otp.md`](docs/specops/agents/lib-gtfs-planner-otp.md) | [`analysis/lib-gtfs-planner-otp.md`](docs/specops/analysis/lib-gtfs-planner-otp.md) | ✅ |
+| 13 | Validation Context | [`agents/lib-gtfs-planner-validations.md`](docs/specops/agents/lib-gtfs-planner-validations.md) | [`analysis/lib-gtfs-planner-validations.md`](docs/specops/analysis/lib-gtfs-planner-validations.md) | ✅ |
+| 14 | GTFS Versions Context | [`agents/lib-gtfs-planner-versions.md`](docs/specops/agents/lib-gtfs-planner-versions.md) | [`analysis/lib-gtfs-planner-versions.md`](docs/specops/analysis/lib-gtfs-planner-versions.md) | ✅ |
+| 15 | Mix Maintenance Tasks | [`agents/lib-mix.md`](docs/specops/agents/lib-mix.md) | [`analysis/lib-mix.md`](docs/specops/analysis/lib-mix.md) | ✅ |
+<!-- agents-docs:end -->
