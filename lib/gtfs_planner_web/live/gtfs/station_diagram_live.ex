@@ -95,6 +95,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:reference_stop_level, nil)
      |> assign(:reference_level_index, nil)
      |> assign(:show_reference_overlay, false)
+     |> assign(:other_levels, [])
+     |> assign(:other_levels_floorplan, MapSet.new())
+     |> assign(:other_levels_stops, MapSet.new())
+     |> assign(:other_level_counts_cache, %{})
+     |> assign(:other_level_markers_cache, %{})
      |> assign(:audit_ctx, nil)
      |> assign(:history_open_for, nil)
      |> assign(:history_entries, [])
@@ -393,6 +398,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:pathway_pair_counts, %{})
     |> assign(:other_level_markers_cache, %{})
     |> assign(:other_level_counts_cache, %{})
+    |> assign(:other_levels, [])
   end
 
   defp load_level_data(socket, level) do
@@ -470,7 +476,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:pathway_pair_counts, pathway_pair_counts)
     |> assign(:other_level_markers_cache, %{})
     |> assign(:other_level_counts_cache, %{})
+    |> assign_other_levels()
     |> push_child_stop_markers()
+  end
+
+  defp assign_other_levels(socket) do
+    if socket.assigns[:mode] == :map do
+      socket
+      |> populate_other_level_caches()
+      |> then(&assign(&1, :other_levels, build_other_levels(&1)))
+    else
+      assign(socket, :other_levels, [])
+    end
   end
 
   defp push_child_stop_markers(socket) do
@@ -1068,6 +1085,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:active_point_id, nil)
           |> maybe_disable_measurement_for_mode(mode_atom)
           |> restream_mode_dependent_layers()
+          |> assign_other_levels()
 
         {:noreply, socket}
 
