@@ -93,7 +93,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:naming_excluded_ids, MapSet.new())
      |> assign(:reference_level_id, nil)
      |> assign(:reference_stop_level, nil)
-      |> assign(:reference_level_index, nil)
+     |> assign(:reference_level_index, nil)
      |> assign(:show_reference_overlay, false)
      |> assign(:audit_ctx, nil)
      |> assign(:history_open_for, nil)
@@ -539,7 +539,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> Enum.map(&child_stop_marker/1)
           |> Enum.reject(&is_nil/1)
 
-        {markers, assign(socket, :reference_child_stop_markers_cache, Map.put(cache, level_id, markers))}
+        {markers,
+         assign(socket, :reference_child_stop_markers_cache, Map.put(cache, level_id, markers))}
     end
   end
 
@@ -549,6 +550,86 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> Enum.map(&child_stop_marker/1)
     |> Enum.reject(&is_nil/1)
   end
+
+  @other_level_palette ~w(#2563eb #16a34a #d97706 #db2777 #7c3aed #0891b2 #ca8a04 #dc2626)
+
+  defp build_other_levels(socket) do
+    active_level_id =
+      case socket.assigns[:active_level] do
+        %{level_id: level_id} -> level_id
+        _ -> nil
+      end
+
+    station = socket.assigns[:station]
+    floorplan_on = Map.get(socket.assigns, :other_levels_floorplan, MapSet.new())
+    stops_on = Map.get(socket.assigns, :other_levels_stops, MapSet.new())
+
+    socket.assigns
+    |> Map.get(:station_stop_levels_cache, empty_station_stop_levels_cache())
+    |> Map.get(:ordered, [])
+    |> Enum.reject(&(&1.level_id == active_level_id))
+    |> Enum.map(&other_level_view(&1, station, floorplan_on, stops_on))
+  end
+
+  defp other_level_view(%StopLevel{} = stop_level, station, floorplan_on, stops_on) do
+    level_id = stop_level.level_id
+    level_index = reference_stop_level_index(stop_level)
+    {geo_stop_count, total_stop_count} = other_level_stop_counts(station, level_id)
+
+    has_diagram? = is_binary(stop_level.diagram_filename) and stop_level.diagram_filename != ""
+    has_alignment? = StopLevel.alignment_complete?(stop_level)
+
+    row = %{
+      level_id: level_id,
+      name: other_level_name(stop_level),
+      level_index: level_index,
+      color: other_level_color(level_index),
+      has_diagram?: has_diagram?,
+      has_alignment?: has_alignment?,
+      geo_stop_count: geo_stop_count,
+      total_stop_count: total_stop_count,
+      floorplan_on?: MapSet.member?(floorplan_on, level_id),
+      stops_on?: MapSet.member?(stops_on, level_id)
+    }
+
+    row
+    |> Map.put(:floorplan_eligible?, other_level_floorplan_eligible?(row))
+    |> Map.put(:stops_eligible?, other_level_stops_eligible?(row))
+  end
+
+  defp other_level_stop_counts(%Stop{} = station, level_id) when is_binary(level_id) do
+    stops =
+      station.id
+      |> Gtfs.list_child_stops_for_level(level_id)
+      |> Enum.filter(& &1.on_active_level)
+
+    geo =
+      Enum.count(stops, fn s ->
+        not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
+      end)
+
+    {geo, length(stops)}
+  end
+
+  defp other_level_stop_counts(_station, _level_id), do: {0, 0}
+
+  defp other_level_name(%StopLevel{level: %{level_name: name}})
+       when is_binary(name) and name != "",
+       do: name
+
+  defp other_level_name(%StopLevel{level_id: level_id}), do: level_id
+
+  defp other_level_color(level_index) when is_number(level_index) do
+    Enum.at(@other_level_palette, Integer.mod(trunc(level_index), length(@other_level_palette)))
+  end
+
+  defp other_level_color(_level_index), do: List.first(@other_level_palette)
+
+  defp other_level_floorplan_eligible?(%{has_diagram?: has_diagram?, has_alignment?: has_alignment?}),
+    do: has_diagram? and has_alignment?
+
+  defp other_level_stops_eligible?(%{geo_stop_count: geo_stop_count}),
+    do: geo_stop_count > 0
 
   defp child_stop_marker(stop) do
     case {marker_float(stop.stop_lat), marker_float(stop.stop_lon)} do
