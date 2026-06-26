@@ -179,10 +179,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_status, :any, default: nil
   attr :levels, :list, default: []
   attr :active_level, :any, default: nil
-  attr :selectable_reference_stop_levels, :list, default: []
-  attr :reference_level_id, :string, default: nil
-  attr :reference_stop_level, :any, default: nil
-  attr :show_reference_overlay, :boolean, default: false
+  attr :other_levels, :list, default: []
+  attr :enabled_count, :integer, default: 0
 
   def diagram_action_strip(assigns) do
     ~H"""
@@ -278,53 +276,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               <% end %>
             <% end %>
 
-            <%= if @mode == :map and @has_diagram and @selectable_reference_stop_levels != [] do %>
-              <form
-                id="reference-overlay-level-form"
-                phx-change="select_reference_overlay_level"
-                class="flex items-center gap-2 mr-8"
-              >
-                <label for="reference-overlay-level-select" class="text-sm font-medium text-blue-900">
-                  Reference:
-                </label>
-                <select
-                  id="reference-overlay-level-select"
-                  name="level_id"
-                  class="select select-sm select-bordered bg-white"
-                >
-                  <option value="" selected={is_nil(@reference_level_id)}>
-                    Select Level Overlay
-                  </option>
-                  <%= for stop_level <- @selectable_reference_stop_levels do %>
-                    <option
-                      value={stop_level.level_id}
-                      selected={to_string(@reference_level_id) == to_string(stop_level.level_id)}
-                    >
-                      {stop_level.level.level_name || stop_level.level.level_id}
-                    </option>
-                  <% end %>
-                </select>
-                <button
-                  type="button"
-                  class={[
-                    "btn btn-sm min-w-16",
-                    if(@show_reference_overlay,
-                      do:
-                        "bg-blue-600 border-blue-600 text-white hover:bg-blue-700 hover:border-blue-700",
-                      else: "btn-outline border-blue-300 text-blue-600 hover:bg-blue-50"
-                    )
-                  ]}
-                  phx-click="toggle_reference_overlay"
-                  disabled={
-                    is_nil(@reference_stop_level) or
-                      is_nil(@reference_stop_level.diagram_filename) or
-                      @reference_stop_level.diagram_filename == ""
-                  }
-                >
-                  {if @show_reference_overlay, do: "Hide", else: "Show"}
-                </button>
-              </form>
-            <% end %>
+            <.other_levels_panel
+              :if={@mode == :map and @has_diagram}
+              other_levels={@other_levels}
+              enabled_count={@enabled_count}
+            />
 
             <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
           </div>
@@ -352,6 +308,133 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
+  attr :other_levels, :list, default: []
+  attr :enabled_count, :integer, default: 0
+
+  def other_levels_panel(assigns) do
+    open_panel =
+      JS.toggle(to: "#other-levels-panel")
+      |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#other-levels-button")
+
+    close_panel =
+      JS.hide(to: "#other-levels-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#other-levels-button")
+
+    assigns =
+      assigns
+      |> assign(:open_panel, open_panel)
+      |> assign(:close_panel, close_panel)
+
+    ~H"""
+    <div class="relative">
+      <button
+        id="other-levels-button"
+        type="button"
+        class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
+        aria-haspopup="dialog"
+        aria-controls="other-levels-panel"
+        aria-expanded="false"
+        phx-click={@open_panel}
+      >
+        <.icon name="hero-square-3-stack-3d" class="w-4 h-4" /> Other levels
+        <span :if={@enabled_count > 0} class="badge badge-sm badge-primary">
+          {@enabled_count}
+        </span>
+      </button>
+
+      <div
+        id="other-levels-panel"
+        role="dialog"
+        aria-label="Other levels"
+        phx-click-away={@close_panel}
+        phx-window-keydown={@close_panel}
+        phx-key="escape"
+        style="display: none;"
+        class="absolute right-0 z-20 mt-2 w-80 rounded-lg border border-base-300 bg-white shadow-lg"
+      >
+        <div class="flex items-center justify-between border-b border-base-200 px-4 py-2">
+          <span class="text-sm font-medium text-base-content">Other levels</span>
+          <button
+            type="button"
+            class="btn btn-ghost btn-xs text-blue-700 hover:bg-blue-100"
+            phx-click="clear_other_levels"
+          >
+            Clear
+          </button>
+        </div>
+
+        <%= if @other_levels == [] do %>
+          <p class="px-4 py-6 text-sm text-base-content/70">
+            This station has no other levels to compare.
+          </p>
+        <% else %>
+          <ul class="max-h-80 overflow-y-auto py-1">
+            <li :for={row <- @other_levels} class="px-4 py-3">
+              <div class="flex items-center gap-2">
+                <span
+                  class="inline-block h-3 w-3 shrink-0 rounded-full"
+                  style={"background-color: #{row.color};"}
+                  aria-hidden="true"
+                >
+                </span>
+                <span class="truncate text-sm font-medium text-base-content">{row.name}</span>
+              </div>
+              <p class="mt-0.5 text-xs text-base-content/70">
+                {row.geo_stop_count}/{row.total_stop_count} located
+              </p>
+              <div class="mt-2 flex flex-col gap-1">
+                <label class="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    phx-click="toggle_other_level_floorplan"
+                    phx-value-level-id={row.level_id}
+                    checked={row.floorplan_on?}
+                    disabled={not row.floorplan_eligible?}
+                    aria-describedby={
+                      not row.floorplan_eligible? && "floorplan-reason-#{row.level_id}"
+                    }
+                  />
+                  <span>Floorplan</span>
+                  <span
+                    :if={not row.floorplan_eligible?}
+                    id={"floorplan-reason-#{row.level_id}"}
+                    class="text-xs text-base-content/60"
+                  >
+                    {floorplan_disabled_reason(row)}
+                  </span>
+                </label>
+                <label class="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    phx-click="toggle_other_level_stops"
+                    phx-value-level-id={row.level_id}
+                    checked={row.stops_on?}
+                    disabled={not row.stops_eligible?}
+                    aria-describedby={not row.stops_eligible? && "stops-reason-#{row.level_id}"}
+                  />
+                  <span>Stops</span>
+                  <span
+                    :if={not row.stops_eligible?}
+                    id={"stops-reason-#{row.level_id}"}
+                    class="text-xs text-base-content/60"
+                  >
+                    No geo-coded child stops
+                  </span>
+                </label>
+              </div>
+            </li>
+          </ul>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  defp floorplan_disabled_reason(%{has_diagram?: false}), do: "No diagram"
+  defp floorplan_disabled_reason(_row), do: "Not yet aligned"
+
   attr :organization_id, :string, required: true
   attr :station, :any, required: true
   attr :active_level, :any, default: nil
@@ -362,24 +445,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :align_rotation_deg, :any, default: nil
   attr :image_natural_width, :any, default: nil
   attr :image_natural_height, :any, default: nil
-  attr :reference_stop_level, :any, default: nil
-  attr :show_reference_overlay, :boolean, default: false
   attr :child_stops_total, :integer, default: 0
   attr :child_stops_with_geo, :integer, default: 0
   attr :anchor_count, :integer, default: 0
   attr :cross_level_pathway_total, :integer, default: 0
   attr :cross_level_pathway_with_geo, :integer, default: 0
+  attr :other_levels_floorplan_count, :integer, default: 0
 
   def map_canvas(assigns) do
     floorplan_url =
       diagram_image_href(assigns.organization_id, assigns.station, assigns.active_stop_level)
-
-    reference_overlay_url =
-      reference_overlay_image_href(
-        assigns.organization_id,
-        assigns.station,
-        assigns.reference_stop_level
-      )
 
     initial_lat = assigns.station.stop_lat || 0
     initial_lon = assigns.station.stop_lon || 0
@@ -404,7 +479,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:initial_lat, initial_lat)
       |> assign(:initial_lon, initial_lon)
       |> assign(:has_alignment?, has_alignment?)
-      |> assign(:reference_overlay_url, reference_overlay_url)
       |> assign(:canvas_id, canvas_id)
 
     ~H"""
@@ -414,10 +488,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         class="map-canvas relative bg-base-200 border border-base-300 rounded-lg overflow-hidden aspect-square"
         phx-hook="MapAlignment"
         phx-update="ignore"
-        data-show-reference-overlay={overlay_toggle_attr(@show_reference_overlay)}
         data-active-level-id={@active_level && @active_level.level_id}
-        data-reference-level-id={@reference_stop_level && @reference_stop_level.level_id}
-        data-reference-floorplan-url={@reference_overlay_url}
         data-floorplan-url={@floorplan_url}
         data-initial-lat={@initial_lat}
         data-initial-lon={@initial_lon}
@@ -426,51 +497,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-align-center-lon={if @has_alignment?, do: @align_center_lon}
         data-align-scale-mpp={if @has_alignment?, do: @align_scale_mpp}
         data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
-        data-reference-center-lat={
-          reference_overlay_value(@reference_stop_level, :floorplan_center_lat)
-        }
-        data-reference-center-lon={
-          reference_overlay_value(@reference_stop_level, :floorplan_center_lon)
-        }
-        data-reference-scale-mpp={
-          reference_overlay_value(@reference_stop_level, :floorplan_scale_mpp)
-        }
-        data-reference-rotation-deg={
-          reference_overlay_value(@reference_stop_level, :floorplan_rotation_deg)
-        }
         data-image-natural-width={@image_natural_width}
         data-image-natural-height={@image_natural_height}
       >
         <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
         <div
-          id="map-reference-overlay"
-          data-overlay-role="reference"
-          data-editable-overlay="false"
-          data-overlay-visible={if(@show_reference_overlay, do: "true", else: "false")}
-          data-align-center-lat={
-            reference_overlay_value(@reference_stop_level, :floorplan_center_lat)
-          }
-          data-align-center-lon={
-            reference_overlay_value(@reference_stop_level, :floorplan_center_lon)
-          }
-          data-align-scale-mpp={reference_overlay_value(@reference_stop_level, :floorplan_scale_mpp)}
-          data-align-rotation-deg={
-            reference_overlay_value(@reference_stop_level, :floorplan_rotation_deg)
-          }
-          class={[
-            "absolute inset-0 pointer-events-none opacity-70",
-            if(@show_reference_overlay, do: nil, else: "hidden")
-          ]}
-          style="z-index: 1;"
+          id="map-other-overlays"
+          class="absolute inset-0"
+          style="z-index: 1; pointer-events: none;"
         >
-          <%= if @reference_overlay_url do %>
-            <img
-              src={@reference_overlay_url}
-              alt="Reference level floorplan"
-              data-reference-overlay="true"
-              class="absolute inset-0 w-full h-full object-contain select-none pointer-events-none"
-            />
-          <% end %>
         </div>
         <div
           id="map-alignment-overlay"
@@ -497,8 +532,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <.icon name="hero-arrow-path" class="w-4 h-4" />
         </button>
         <div
-          id="map-alignment-pins-reference"
-          data-overlay-role="reference"
+          id="map-other-pins"
           class="absolute inset-0 pointer-events-none"
           style="z-index: 4;"
         >
@@ -602,16 +636,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             />
           </div>
 
-          <%= if @show_reference_overlay and @reference_stop_level do %>
+          <%= if @other_levels_floorplan_count >= 1 do %>
             <div class="flex flex-col gap-1">
               <label
-                for="map-reference-overlay-opacity"
+                for="map-other-overlays-opacity"
                 class="text-xs font-medium text-base-content/80"
               >
-                Reference opacity
+                Other-levels opacity
               </label>
               <input
-                id="map-reference-overlay-opacity"
+                id="map-other-overlays-opacity"
                 type="range"
                 min="0"
                 max="1"
@@ -757,35 +791,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         nil
     end
   end
-
-  defp reference_overlay_image_href(_organization_id, _station, nil), do: nil
-
-  defp reference_overlay_image_href(organization_id, station, reference_stop_level)
-       when is_map(reference_stop_level) do
-    case reference_stop_level do
-      %{diagram_filename: filename} when is_binary(filename) and filename != "" ->
-        station_dir = PathSafety.stop_storage_dir(station.stop_id)
-        token = URI.encode_www_form(filename)
-        encoded_filename = URI.encode(filename)
-
-        if is_binary(station_dir) do
-          "/uploads/diagrams/#{organization_id}/#{station_dir}/#{encoded_filename}?v=#{token}"
-        else
-          nil
-        end
-
-      _ ->
-        nil
-    end
-  end
-
-  defp reference_overlay_value(nil, _key), do: nil
-
-  defp reference_overlay_value(reference_stop_level, key) when is_map(reference_stop_level),
-    do: Map.get(reference_stop_level, key)
-
-  defp overlay_toggle_attr(true), do: "true"
-  defp overlay_toggle_attr(false), do: "false"
 
   attr :streams, :any, required: true
   attr :active_point_id, :any
