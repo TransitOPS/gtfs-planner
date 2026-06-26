@@ -990,15 +990,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert_in_delta reloaded.floorplan_rotation_deg, 15.5, 1.0e-6
     end
 
-    test "a saved alignment makes that level floorplan-eligible once it becomes an other level", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      level: middle_level,
-      stop_level: middle_stop_level
-    } do
+    test "a saved alignment makes that level floorplan-eligible once it becomes an other level",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: middle_level,
+           stop_level: middle_stop_level
+         } do
       {:ok, _} = Gtfs.update_stop_level_diagram(middle_stop_level, "map-diagram.png")
 
       above_level =

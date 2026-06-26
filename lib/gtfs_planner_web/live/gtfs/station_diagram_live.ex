@@ -642,8 +642,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp other_level_color(_level_index), do: List.first(@other_level_palette)
 
-  defp other_level_floorplan_eligible?(%{has_diagram?: has_diagram?, has_alignment?: has_alignment?}),
-    do: has_diagram? and has_alignment?
+  defp other_level_floorplan_eligible?(%{
+         has_diagram?: has_diagram?,
+         has_alignment?: has_alignment?
+       }),
+       do: has_diagram? and has_alignment?
 
   defp other_level_stops_eligible?(%{geo_stop_count: geo_stop_count}),
     do: geo_stop_count > 0
@@ -765,9 +768,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             levels={@levels}
             active_level={@active_level}
             other_levels={@other_levels}
-            enabled_count={
-              MapSet.size(MapSet.union(@other_levels_floorplan, @other_levels_stops))
-            }
+            enabled_count={MapSet.size(MapSet.union(@other_levels_floorplan, @other_levels_stops))}
           />
           <%= if @mode == :map do %>
             <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">

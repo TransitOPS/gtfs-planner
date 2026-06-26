@@ -330,14 +330,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <button
         id="other-levels-button"
         type="button"
-        class="btn btn-sm btn-outline border-blue-300 text-blue-600 hover:bg-blue-50"
+        class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
         aria-haspopup="dialog"
         aria-controls="other-levels-panel"
         aria-expanded="false"
         phx-click={@open_panel}
       >
-        <.icon name="hero-square-3-stack-3d" class="w-4 h-4" />
-        Other levels
+        <.icon name="hero-square-3-stack-3d" class="w-4 h-4" /> Other levels
         <span :if={@enabled_count > 0} class="badge badge-sm badge-primary">
           {@enabled_count}
         </span>
@@ -347,11 +346,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         id="other-levels-panel"
         role="dialog"
         aria-label="Other levels"
-        hidden
         phx-click-away={@close_panel}
         phx-window-keydown={@close_panel}
         phx-key="escape"
-        class="hidden absolute right-0 z-20 mt-2 w-80 rounded-lg border border-base-300 bg-white shadow-lg"
+        style="display: none;"
+        class="absolute right-0 z-20 mt-2 w-80 rounded-lg border border-base-300 bg-white shadow-lg"
       >
         <div class="flex items-center justify-between border-b border-base-200 px-4 py-2">
           <span class="text-sm font-medium text-base-content">Other levels</span>
