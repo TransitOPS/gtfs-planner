@@ -27,8 +27,8 @@ function floorplan(url) {
   };
 }
 
-function stop(stopId, lat, lon, label) {
-  return { stop_id: stopId, lat, lon, location_type: 1, label };
+function stop(stopId, lat, lon, label, overrides = {}) {
+  return { stop_id: stopId, lat, lon, location_type: 1, label, ...overrides };
 }
 
 function level({ levelId, index, color, fp, stops = [] }) {
@@ -61,6 +61,25 @@ describe("createOtherLevelsLayers overlay reconciliation (AC-14)", () => {
     expect(deps.applyOverlayTransform).toHaveBeenCalledTimes(2);
     expect(deps.applyOverlayTransform).toHaveBeenCalledWith(imgs[0], fpA);
     expect(deps.applyOverlayTransform).toHaveBeenCalledWith(imgs[1], fpB);
+  });
+
+  it("re-applies a floorplan transform when the image load completes", () => {
+    const deps = makeDeps();
+    const layers = createOtherLevelsLayers(deps);
+    const fpA = floorplan("/a.png");
+
+    layers.update({
+      active_level_id: "active",
+      levels: [level({ levelId: "a", index: 1, color: "#ff0000", fp: fpA })],
+    });
+
+    const img = deps.overlaysRoot.querySelector("img");
+    deps.applyOverlayTransform.mockClear();
+
+    img.dispatchEvent(new Event("load"));
+
+    expect(deps.applyOverlayTransform).toHaveBeenCalledTimes(1);
+    expect(deps.applyOverlayTransform).toHaveBeenCalledWith(img, fpA);
   });
 
   it("removes only the omitted level's overlay on a follow-up update", () => {
@@ -143,6 +162,31 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
     expect(dotA.style.borderColor).toBe("rgb(255, 0, 0)");
     const dotB = groupB.querySelector(".map-pin > div");
     expect(dotB.style.borderColor).toBe("rgb(0, 255, 0)");
+  });
+
+  it("falls back to stop name, id, and platform when no explicit label is present", () => {
+    const deps = makeDeps();
+    const layers = createOtherLevelsLayers(deps);
+
+    layers.update({
+      levels: [
+        level({
+          levelId: "a",
+          index: 1,
+          color: "#ff0000",
+          fp: null,
+          stops: [
+            stop("s1", 40.7, -74.0, undefined, {
+              stop_name: "Mezzanine North",
+              platform_code: "2",
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const tooltip = deps.pinsRoot.querySelector(".map-pin > div:last-child");
+    expect(tooltip.textContent).toBe("Mezzanine North · Plat 2");
   });
 
   it("updates marker positions on reposition when projection changes", () => {

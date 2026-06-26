@@ -32,6 +32,13 @@ function borderRadiusForSymbol(symbol) {
   return "9999px";
 }
 
+function tooltipLabel(stop) {
+  if (stop.label) return stop.label;
+  const name = stop.stop_name || stop.stop_id || "";
+  const platform = stop.platform_code ? ` · Plat ${stop.platform_code}` : "";
+  return `${name}${platform}`;
+}
+
 export function createOtherLevelsLayers(deps) {
   const { overlaysRoot, pinsRoot, applyOverlayTransform, projectLatLng, symbolFor } = deps || {};
 
@@ -65,10 +72,15 @@ export function createOtherLevelsLayers(deps) {
     img.alt = "Other level floorplan";
     img.style.opacity = String(opacity);
 
+    const record = { overlayEl, img, alignment: null };
+    record.onImageLoad = () => {
+      if (record.alignment) applyOverlayTransform(record.img, record.alignment);
+    };
+    img.addEventListener("load", record.onImageLoad);
+
     overlayEl.appendChild(img);
     overlaysRoot.appendChild(overlayEl);
 
-    const record = { overlayEl, img, alignment: null };
     overlays.set(levelId, record);
     return record;
   }
@@ -104,7 +116,7 @@ export function createOtherLevelsLayers(deps) {
     const tip = document.createElement("div");
     tip.className =
       "absolute left-1/2 bottom-full mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 text-white text-xs px-1.5 py-0.5 opacity-0 group-hover:opacity-100 pointer-events-none";
-    tip.textContent = stop.label || "";
+    tip.textContent = tooltipLabel(stop);
     pin.appendChild(tip);
 
     return { lat: stop.lat, lon: stop.lon, el: pin };
@@ -140,6 +152,7 @@ export function createOtherLevelsLayers(deps) {
   function removeOverlay(levelId) {
     const record = overlays.get(levelId);
     if (!record) return;
+    if (record.onImageLoad) record.img.removeEventListener("load", record.onImageLoad);
     record.overlayEl.remove();
     overlays.delete(levelId);
   }
@@ -198,7 +211,10 @@ export function createOtherLevelsLayers(deps) {
   }
 
   function destroy() {
-    overlays.forEach((record) => record.overlayEl.remove());
+    overlays.forEach((record) => {
+      if (record.onImageLoad) record.img.removeEventListener("load", record.onImageLoad);
+      record.overlayEl.remove();
+    });
     pinGroups.forEach((group) => group.pinGroupEl.remove());
     overlays.clear();
     pinGroups.clear();
