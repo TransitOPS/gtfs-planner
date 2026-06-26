@@ -493,7 +493,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp push_child_stop_markers(socket) do
     if socket.assigns[:mode] == :map do
       active_payload = active_child_stop_payload(socket)
-      {reference_payload, socket} = reference_child_stop_payload(socket)
       total = length(socket.assigns[:child_stops_list] || [])
 
       require Logger
@@ -504,9 +503,103 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
       socket
       |> push_event("set_active_child_stops", active_payload)
-      |> push_event("set_reference_child_stops", reference_payload)
+      |> push_other_levels()
     else
       socket
+    end
+  end
+
+  defp push_other_levels(socket) do
+    if socket.assigns[:mode] == :map do
+      {levels, socket} =
+        socket.assigns
+        |> Map.get(:other_levels, [])
+        |> Enum.flat_map_reduce(socket, &other_level_render/2)
+
+      push_event(socket, "set_other_levels", %{
+        active_level_id: active_level_id(socket),
+        levels: levels
+      })
+    else
+      socket
+    end
+  end
+
+  defp other_level_render(row, socket) do
+    floorplan = other_level_floorplan(socket, row)
+
+    {stops, socket} =
+      if row.stops_on? and row.stops_eligible? do
+        other_level_markers(socket, row.level_id)
+      else
+        {[], socket}
+      end
+
+    if is_nil(floorplan) and stops == [] do
+      {[], socket}
+    else
+      render = %{
+        level_id: row.level_id,
+        level_index: row.level_index,
+        color: row.color,
+        floorplan: floorplan,
+        stops: stops
+      }
+
+      {[render], socket}
+    end
+  end
+
+  defp other_level_floorplan(socket, %{floorplan_on?: true, floorplan_eligible?: true} = row) do
+    case other_level_stop_level(socket, row.level_id) do
+      %StopLevel{} = stop_level ->
+        case other_level_diagram_url(socket, stop_level) do
+          nil ->
+            nil
+
+          url ->
+            %{
+              url: url,
+              center_lat: stop_level.floorplan_center_lat,
+              center_lon: stop_level.floorplan_center_lon,
+              scale_mpp: stop_level.floorplan_scale_mpp,
+              rotation_deg: stop_level.floorplan_rotation_deg
+            }
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp other_level_floorplan(_socket, _row), do: nil
+
+  defp other_level_stop_level(socket, level_id) do
+    socket.assigns
+    |> Map.get(:station_stop_levels_cache, empty_station_stop_levels_cache())
+    |> Map.get(:ordered, [])
+    |> Enum.find(&(&1.level_id == level_id))
+  end
+
+  defp other_level_diagram_url(socket, %StopLevel{diagram_filename: filename})
+       when is_binary(filename) and filename != "" do
+    organization_id = socket.assigns.current_organization.id
+    station = socket.assigns[:station]
+    station_dir = station && PathSafety.stop_storage_dir(station.stop_id)
+
+    if is_binary(station_dir) do
+      token = URI.encode_www_form(filename)
+      encoded_filename = URI.encode(filename)
+      "/uploads/diagrams/#{organization_id}/#{station_dir}/#{encoded_filename}?v=#{token}"
+    end
+  end
+
+  defp other_level_diagram_url(_socket, _stop_level), do: nil
+
+  defp active_level_id(socket) do
+    case socket.assigns[:active_level] do
+      %{level_id: level_id} -> level_id
+      _ -> nil
     end
   end
 
@@ -518,28 +611,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       end
 
     %{stops: child_stop_markers(socket), level_id: active_level_id}
-  end
-
-  defp reference_child_stop_payload(socket) do
-    reference_level = socket.assigns[:reference_stop_level]
-    show_reference_overlay = socket.assigns[:show_reference_overlay]
-
-    if show_reference_overlay and reference_overlay_eligible_stop_level?(reference_level) do
-      {markers, socket} = reference_child_stop_markers(socket, reference_level)
-
-      %{
-        stops: markers,
-        level_id: reference_level.level_id,
-        level_index: socket.assigns[:reference_level_index]
-      }
-      |> then(&{&1, socket})
-    else
-      {%{stops: [], level_id: nil, level_index: nil}, socket}
-    end
-  end
-
-  defp reference_child_stop_markers(socket, reference_level) do
-    other_level_markers(socket, reference_level && reference_level.level_id)
   end
 
   defp other_level_markers(socket, level_id) do
@@ -1001,6 +1072,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> load_station_stop_levels_cache()
          |> assign_selectable_reference_stop_levels()
          |> sync_reference_overlay_state(selected_level)
+         |> assign(:other_levels_floorplan, MapSet.new())
+         |> assign(:other_levels_stops, MapSet.new())
          |> load_level_data(selected_level)}
     end
   end
@@ -1031,9 +1104,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:other_levels_floorplan, MapSet.new())
      |> assign(:other_levels_stops, MapSet.new())
-     |> assign_other_levels()}
-
-    # step 5 wires push_other_levels/1 here
+     |> assign_other_levels()
+     |> push_other_levels()}
   end
 
   @impl true
@@ -1056,7 +1128,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:active_point_id, nil)
           |> maybe_disable_measurement_for_mode(mode_atom)
           |> restream_mode_dependent_layers()
+          |> assign(:other_levels_floorplan, MapSet.new())
+          |> assign(:other_levels_stops, MapSet.new())
           |> assign_other_levels()
+          |> push_child_stop_markers()
 
         {:noreply, socket}
 
@@ -4041,8 +4116,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> assign(mapset_assign, updated)
     |> assign_other_levels()
-
-    # step 5 wires push_other_levels/1 here
+    |> push_other_levels()
   end
 
   defp other_level_eligible?(socket, level_id, eligibility_key) do
