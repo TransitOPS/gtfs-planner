@@ -17,6 +17,12 @@ function cssColor(value) {
   return el.style.color;
 }
 
+function cssBorderColor(value) {
+  const el = document.createElement("div");
+  el.style.borderColor = value;
+  return el.style.borderColor;
+}
+
 function expectPinTreatment(pin, locationType) {
   const treatment = treatmentForLocationType(locationType, DIAGRAM_BASE_COLOR);
   const dot = pin.firstChild;
@@ -24,7 +30,7 @@ function expectPinTreatment(pin, locationType) {
   expect(pin.style.width).toBe(treatment.width);
   expect(pin.style.height).toBe(treatment.height);
   expect(dot.style.backgroundColor).toBe(cssColor(treatment.fill));
-  expect(dot.style.borderColor).toBe(cssColor(treatment.stroke));
+  expect(dot.style.borderColor).toBe(cssBorderColor(treatment.stroke));
   expect(dot.style.borderRadius).toBe(treatment.borderRadius);
 }
 
@@ -330,7 +336,7 @@ describe("map_alignment_hook active child stops rendering", () => {
     expectPinTreatment(boardingPin, 0);
     expect(symbolForLocationType(0)).toBe("rect_upright");
     expect(boardingDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
-    expect(boardingDot.style.borderColor).toBe(cssColor(HALO_COLOR));
+    expect(boardingDot.style.borderColor).toBe(cssBorderColor(HALO_COLOR));
     expect(boardingDot.style.backgroundColor).not.toBe(cssColor("#2563EB"));
     expect(boardingDot.style.backgroundColor).not.toBe(cssColor("#CA8A04"));
     expect(boardingDot.style.backgroundColor).not.toBe(cssColor("#334155"));
@@ -349,13 +355,13 @@ describe("map_alignment_hook active child stops rendering", () => {
     expectPinTreatment(entrancePin, 2);
     expect(symbolForLocationType(2)).toBe("rect_upright");
     expect(entranceDot.style.backgroundColor).toBe(cssColor(HALO_COLOR));
-    expect(entranceDot.style.borderColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
+    expect(entranceDot.style.borderColor).toBe(cssBorderColor(DIAGRAM_BASE_COLOR));
 
     const genericPin = activePinsRoot.children[3];
     const genericDot = genericPin.firstChild;
     expectPinTreatment(genericPin, "bad");
     expect(symbolForLocationType("bad")).toBe("circle");
     expect(genericDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
-    expect(genericDot.style.borderColor).toBe(cssColor(HALO_COLOR));
+    expect(genericDot.style.borderColor).toBe(cssBorderColor(HALO_COLOR));
   });
 });
