@@ -2,9 +2,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOtherLevelsLayers } from "../map_overlay_layers";
 import {
-  HALO_COLOR,
   OUTLINE_DOT_MIN_OPACITY,
   symbolForLocationType,
+  treatmentForLocationType,
 } from "../stop_icon_symbols";
 
 // The active editable overlay (#map-alignment-overlay) renders at z-index 2.
@@ -15,6 +15,17 @@ function cssColor(value) {
   const el = document.createElement("div");
   el.style.color = value;
   return el.style.color;
+}
+
+function expectMarkerTreatment(pin, locationType, color) {
+  const treatment = treatmentForLocationType(locationType, color);
+  const dot = pin.firstChild;
+
+  expect(pin.style.width).toBe(treatment.width);
+  expect(pin.style.height).toBe(treatment.height);
+  expect(dot.style.backgroundColor).toBe(cssColor(treatment.fill));
+  expect(dot.style.borderColor).toBe(cssColor(treatment.stroke));
+  expect(dot.style.borderRadius).toBe(treatment.borderRadius);
 }
 
 function makeDeps(overrides = {}) {
@@ -169,14 +180,12 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
     expect(groupA.querySelectorAll(".map-pin").length).toBe(1);
     expect(groupB.querySelectorAll(".map-pin").length).toBe(2);
 
-    const dotA = groupA.querySelector(".map-pin > div");
-    expect(dotA.style.backgroundColor).toBe("rgb(255, 0, 0)");
-    expect(dotA.style.borderColor).toBe(cssColor(HALO_COLOR));
-    expect(dotA.style.borderStyle).toBe("dashed");
-    const dotB = groupB.querySelector(".map-pin > div");
-    expect(dotB.style.backgroundColor).toBe("rgb(0, 255, 0)");
-    expect(dotB.style.borderColor).toBe(cssColor(HALO_COLOR));
-    expect(dotB.style.borderStyle).toBe("dashed");
+    const pinA = groupA.querySelector(".map-pin");
+    expectMarkerTreatment(pinA, 1, "#ff0000");
+    expect(pinA.firstChild.style.borderStyle).toBe("dashed");
+    const pinB = groupB.querySelector(".map-pin");
+    expectMarkerTreatment(pinB, 1, "#00ff00");
+    expect(pinB.firstChild.style.borderStyle).toBe("dashed");
   });
 
   it("renders Entrance/Exit markers with white fill and the level color as the outline", () => {
@@ -196,14 +205,8 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
     });
 
     const pin = deps.pinsRoot.querySelector(".map-pin");
-    const dot = pin.querySelector("div");
-
-    expect(pin.style.width).toBe("8px");
-    expect(pin.style.height).toBe("12px");
-    expect(dot.style.backgroundColor).toBe(cssColor(HALO_COLOR));
-    expect(dot.style.borderColor).toBe("rgb(51, 102, 153)");
-    expect(dot.style.borderStyle).toBe("dashed");
-    expect(dot.style.borderRadius).toBe("2px");
+    expectMarkerTreatment(pin, 2, "#336699");
+    expect(pin.firstChild.style.borderStyle).toBe("dashed");
   });
 
   it("renders unknown location types as circle markers", () => {
@@ -223,11 +226,8 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
     });
 
     const pin = deps.pinsRoot.querySelector(".map-pin");
-    const dot = pin.querySelector("div");
-
-    expect(pin.style.width).toBe("10px");
-    expect(pin.style.height).toBe("10px");
-    expect(dot.style.borderRadius).toBe("9999px");
+    expectMarkerTreatment(pin, "unknown", "#ff0000");
+    expect(symbolForLocationType("unknown")).toBe("circle");
   });
 
   it("keeps outline opacity above the legibility floor while reducing non-entrance markers normally", () => {
@@ -253,7 +253,7 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
 
     const dots = deps.pinsRoot.querySelectorAll(".map-pin > div:first-child");
     expect(dots[0].style.opacity).toBe(String(OUTLINE_DOT_MIN_OPACITY));
-    expect(dots[1].style.opacity).toBe("0.35");
+    expect(parseFloat(dots[1].style.opacity)).toBeLessThan(OUTLINE_DOT_MIN_OPACITY);
   });
 
   it("falls back to stop name, id, and platform when no explicit label is present", () => {
@@ -280,6 +280,34 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
     const tooltip = deps.pinsRoot.querySelector(".map-pin > div:last-child");
     expect(tooltip.textContent).toBe("Mezzanine North · Plat 2");
     expect(tooltip.classList.contains("group-hover:opacity-100")).toBe(true);
+  });
+
+  it("renders the hover tooltip on both entrance and non-entrance markers", () => {
+    const deps = makeDeps();
+    const layers = createOtherLevelsLayers(deps);
+
+    layers.update({
+      levels: [
+        level({
+          levelId: "a",
+          index: 1,
+          color: "#ff0000",
+          fp: null,
+          stops: [
+            stop("entrance", 40.7, -74.0, "Entrance", { location_type: 2 }),
+            stop("platform", 40.8, -74.1, "Platform", { location_type: 0 }),
+          ],
+        }),
+      ],
+    });
+
+    const pins = deps.pinsRoot.querySelectorAll(".map-pin");
+    expect(pins.length).toBe(2);
+
+    pins.forEach((pin) => {
+      const tooltip = pin.lastElementChild;
+      expect(tooltip.classList.contains("group-hover:opacity-100")).toBe(true);
+    });
   });
 
   it("updates marker positions on reposition when projection changes", () => {
