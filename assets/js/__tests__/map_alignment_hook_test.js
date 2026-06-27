@@ -3,9 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 import MapAlignmentHook, {
   parseAlignmentPayload,
   readActiveAlignment,
-  symbolForLocationType,
-  activeColorForLocationType,
 } from "../map_alignment_hook";
+import {
+  DIAGRAM_BASE_COLOR,
+  HALO_COLOR,
+  symbolForLocationType,
+} from "../stop_icon_symbols";
+
+function cssColor(value) {
+  const el = document.createElement("div");
+  el.style.color = value;
+  return el.style.color;
+}
 
 describe("map_alignment_hook alignment parsing", () => {
   it("parses the active payload from align dataset keys", () => {
@@ -41,34 +50,6 @@ describe("map_alignment_hook pure helpers", () => {
     expect(symbolForLocationType("2")).toBe("rect_upright");
     expect(symbolForLocationType(undefined)).toBe("circle");
   });
-
-  it("returns high-contrast active colors by location_type with readable fallback", () => {
-    expect(activeColorForLocationType(0)).toEqual({
-      fill: "#2563EB",
-      stroke: "#1E3A8A",
-    });
-
-    expect(activeColorForLocationType(2)).toEqual({
-      fill: "#FFFFFF",
-      stroke: "#2563EB",
-    });
-
-    expect(activeColorForLocationType(4)).toEqual({
-      fill: "#CA8A04",
-      stroke: "#713F12",
-    });
-
-    expect(activeColorForLocationType(99)).toEqual({
-      fill: "#334155",
-      stroke: "#0F172A",
-    });
-
-    expect(activeColorForLocationType("bad")).toEqual({
-      fill: "#334155",
-      stroke: "#0F172A",
-    });
-  });
-
 });
 
 describe("map_alignment_hook alignment compute and payload gating", () => {
@@ -126,6 +107,7 @@ describe("map_alignment_hook alignment compute and payload gating", () => {
         scale_mpp: 0.25,
         rotation_deg: 10,
       })),
+      _logger: { warn: vi.fn() },
       pushEvent: vi.fn(),
     };
 
@@ -143,6 +125,7 @@ describe("map_alignment_hook alignment compute and payload gating", () => {
         scale_mpp: Infinity,
         rotation_deg: 10,
       })),
+      _logger: { warn: vi.fn() },
       pushEvent: vi.fn(),
     };
 
@@ -300,5 +283,57 @@ describe("map_alignment_hook active child stops rendering", () => {
     const tooltip = activePinsRoot.children[0].lastChild;
     expect(tooltip.textContent).toBe("A: valid-string");
     expect(hook._positionPins).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders active child stops with diagram colors, halo, and shared geometry", () => {
+    document.body.innerHTML = `
+      <div id="root" data-active-level-id="active-level">
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const activePinsRoot = document.getElementById("map-alignment-pins-active");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _activePinsRoot: activePinsRoot,
+      _activeChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [
+        { stop_id: "boarding-area", lat: 40.7, lon: -74.0, location_type: 0 },
+        { stop_id: "entrance", lat: 40.71, lon: -74.01, location_type: 2 },
+        { stop_id: "generic-node", lat: 40.72, lon: -74.02, location_type: "bad" },
+      ],
+    });
+
+    const boardingPin = activePinsRoot.children[0];
+    const boardingDot = boardingPin.firstChild;
+    expect(boardingPin.style.width).toBe("8px");
+    expect(boardingPin.style.height).toBe("12px");
+    expect(boardingDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
+    expect(boardingDot.style.borderColor).toBe(cssColor(HALO_COLOR));
+    expect(boardingDot.style.borderRadius).toBe("2px");
+
+    const entrancePin = activePinsRoot.children[1];
+    const entranceDot = entrancePin.firstChild;
+    expect(entrancePin.style.width).toBe("8px");
+    expect(entrancePin.style.height).toBe("12px");
+    expect(entranceDot.style.backgroundColor).toBe(cssColor(HALO_COLOR));
+    expect(entranceDot.style.borderColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
+    expect(entranceDot.style.borderRadius).toBe("2px");
+
+    const genericPin = activePinsRoot.children[2];
+    const genericDot = genericPin.firstChild;
+    expect(genericPin.style.width).toBe("10px");
+    expect(genericPin.style.height).toBe("10px");
+    expect(genericDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
+    expect(genericDot.style.borderColor).toBe(cssColor(HALO_COLOR));
+    expect(genericDot.style.borderRadius).toBe("9999px");
   });
 });

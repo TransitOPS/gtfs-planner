@@ -31,7 +31,7 @@ import { createOtherLevelsLayers } from "./map_overlay_layers";
 import {
   DIAGRAM_BASE_COLOR,
   symbolForLocationType,
-  treatmentForLocationType
+  treatmentForLocationType,
 } from "./stop_icon_symbols";
 
 const SCALE_MIN = 0.25;
@@ -1057,6 +1057,5 @@ function stopTooltipLabel(s, roleTag = "") {
 export {
   parseAlignmentPayload,
   readActiveAlignment,
-  symbolForLocationType
 };
 export default MapAlignmentHook;
