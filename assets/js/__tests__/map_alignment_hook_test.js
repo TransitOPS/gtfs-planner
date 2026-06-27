@@ -319,6 +319,7 @@ describe("map_alignment_hook active child stops rendering", () => {
       level_id: "active-level",
       stops: [
         { stop_id: "boarding-area", lat: 40.7, lon: -74.0, location_type: 0 },
+        { stop_id: "boarding-point", lat: 40.705, lon: -74.005, location_type: 4 },
         { stop_id: "entrance", lat: 40.71, lon: -74.01, location_type: 2 },
         { stop_id: "generic-node", lat: 40.72, lon: -74.02, location_type: "bad" },
       ],
@@ -334,14 +335,23 @@ describe("map_alignment_hook active child stops rendering", () => {
     expect(boardingDot.style.backgroundColor).not.toBe(cssColor("#CA8A04"));
     expect(boardingDot.style.backgroundColor).not.toBe(cssColor("#334155"));
 
-    const entrancePin = activePinsRoot.children[1];
+    const boardingPointPin = activePinsRoot.children[1];
+    const boardingPointDot = boardingPointPin.firstChild;
+    expectPinTreatment(boardingPointPin, 4);
+    expect(symbolForLocationType(4)).toBe("rect_square");
+    expect(boardingPointDot.style.backgroundColor).toBe(boardingDot.style.backgroundColor);
+    expect(boardingPointDot.style.borderColor).toBe(boardingDot.style.borderColor);
+    expect(boardingPointPin.style.width).not.toBe(boardingPin.style.width);
+    expect(boardingPointPin.style.height).not.toBe(boardingPin.style.height);
+
+    const entrancePin = activePinsRoot.children[2];
     const entranceDot = entrancePin.firstChild;
     expectPinTreatment(entrancePin, 2);
     expect(symbolForLocationType(2)).toBe("rect_upright");
     expect(entranceDot.style.backgroundColor).toBe(cssColor(HALO_COLOR));
     expect(entranceDot.style.borderColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
 
-    const genericPin = activePinsRoot.children[2];
+    const genericPin = activePinsRoot.children[3];
     const genericDot = genericPin.firstChild;
     expectPinTreatment(genericPin, "bad");
     expect(symbolForLocationType("bad")).toBe("circle");
