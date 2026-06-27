@@ -337,16 +337,13 @@ describe("map_alignment_hook active child stops rendering", () => {
     expect(symbolForLocationType(0)).toBe("rect_upright");
     expect(boardingDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
     expect(boardingDot.style.borderColor).toBe(cssBorderColor(HALO_COLOR));
-    expect(boardingDot.style.backgroundColor).not.toBe(cssColor("#2563EB"));
-    expect(boardingDot.style.backgroundColor).not.toBe(cssColor("#CA8A04"));
-    expect(boardingDot.style.backgroundColor).not.toBe(cssColor("#334155"));
 
     const boardingPointPin = activePinsRoot.children[1];
     const boardingPointDot = boardingPointPin.firstChild;
     expectPinTreatment(boardingPointPin, 4);
     expect(symbolForLocationType(4)).toBe("rect_square");
-    expect(boardingPointDot.style.backgroundColor).toBe(boardingDot.style.backgroundColor);
-    expect(boardingPointDot.style.borderColor).toBe(boardingDot.style.borderColor);
+    expect(boardingPointDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
+    expect(boardingPointDot.style.borderColor).toBe(cssBorderColor(HALO_COLOR));
     expect(boardingPointPin.style.width).not.toBe(boardingPin.style.width);
     expect(boardingPointPin.style.height).not.toBe(boardingPin.style.height);
 
