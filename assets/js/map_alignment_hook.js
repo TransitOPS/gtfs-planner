@@ -30,6 +30,7 @@
 import { createOtherLevelsLayers } from "./map_overlay_layers";
 import {
   DIAGRAM_BASE_COLOR,
+  appendStopBadges,
   symbolForLocationType,
   treatmentForLocationType,
 } from "./stop_icon_symbols";
@@ -1021,6 +1022,8 @@ const MapAlignmentHook = {
         "absolute left-1/2 bottom-full mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 text-white text-xs px-1.5 py-0.5 opacity-0 group-hover:opacity-100 pointer-events-none";
       tip.textContent = stopTooltipLabel(s, "A");
       pin.appendChild(tip);
+
+      appendStopBadges(pin, s.badges, DIAGRAM_BASE_COLOR);
 
       this._activePinsRoot.appendChild(pin);
       s._el = pin;

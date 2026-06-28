@@ -6,7 +6,6 @@ import MapAlignmentHook, {
 } from "../map_alignment_hook";
 import {
   DIAGRAM_BASE_COLOR,
-  HALO_COLOR,
   symbolForLocationType,
   treatmentForLocationType,
 } from "../stop_icon_symbols";
@@ -331,27 +330,30 @@ describe("map_alignment_hook active child stops rendering", () => {
       ],
     });
 
+    // Every active marker renders in the unified base color (fill === border),
+    // with shape — not color — encoding the location type.
     const boardingPin = activePinsRoot.children[0];
     const boardingDot = boardingPin.firstChild;
     expectPinTreatment(boardingPin, 0);
     expect(symbolForLocationType(0)).toBe("rect_upright");
     expect(boardingDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
-    expect(boardingDot.style.borderColor).toBe(cssBorderColor(HALO_COLOR));
+    expect(boardingDot.style.borderColor).toBe(cssBorderColor(DIAGRAM_BASE_COLOR));
 
     const boardingPointPin = activePinsRoot.children[1];
     const boardingPointDot = boardingPointPin.firstChild;
     expectPinTreatment(boardingPointPin, 4);
     expect(symbolForLocationType(4)).toBe("rect_square");
     expect(boardingPointDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
-    expect(boardingPointDot.style.borderColor).toBe(cssBorderColor(HALO_COLOR));
+    expect(boardingPointDot.style.borderColor).toBe(cssBorderColor(DIAGRAM_BASE_COLOR));
     expect(boardingPointPin.style.width).not.toBe(boardingPin.style.width);
     expect(boardingPointPin.style.height).not.toBe(boardingPin.style.height);
 
+    // Entrance/Exit (2) gets no white-fill outline — same solid color as the rest.
     const entrancePin = activePinsRoot.children[2];
     const entranceDot = entrancePin.firstChild;
     expectPinTreatment(entrancePin, 2);
     expect(symbolForLocationType(2)).toBe("rect_upright");
-    expect(entranceDot.style.backgroundColor).toBe(cssColor(HALO_COLOR));
+    expect(entranceDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
     expect(entranceDot.style.borderColor).toBe(cssBorderColor(DIAGRAM_BASE_COLOR));
 
     const genericPin = activePinsRoot.children[3];
@@ -359,6 +361,47 @@ describe("map_alignment_hook active child stops rendering", () => {
     expectPinTreatment(genericPin, "bad");
     expect(symbolForLocationType("bad")).toBe("circle");
     expect(genericDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
-    expect(genericDot.style.borderColor).toBe(cssBorderColor(HALO_COLOR));
+    expect(genericDot.style.borderColor).toBe(cssBorderColor(DIAGRAM_BASE_COLOR));
+  });
+
+  it("renders cross-level pathway badges beside active child stops", () => {
+    document.body.innerHTML = `
+      <div id="root" data-active-level-id="active-level">
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const activePinsRoot = document.getElementById("map-alignment-pins-active");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _activePinsRoot: activePinsRoot,
+      _activeChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [
+        {
+          stop_id: "with-stairs",
+          lat: 40.7,
+          lon: -74.0,
+          location_type: 0,
+          badges: [{ pathway_mode: 4 }],
+        },
+        { stop_id: "plain", lat: 40.71, lon: -74.01, location_type: 0 },
+      ],
+    });
+
+    const badgedPin = activePinsRoot.children[0];
+    const badges = badgedPin.querySelectorAll("svg.map-stop-badge");
+    expect(badges).toHaveLength(1);
+    expect(badges[0].dataset.badgeSymbol).toBe("stairs");
+
+    const plainPin = activePinsRoot.children[1];
+    expect(plainPin.querySelectorAll("svg.map-stop-badge")).toHaveLength(0);
   });
 });

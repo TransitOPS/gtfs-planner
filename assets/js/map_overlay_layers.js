@@ -14,7 +14,7 @@
  * payload = { active_level_id, levels: [LevelRender] }
  */
 
-import { OUTLINE_DOT_MIN_OPACITY, treatmentForLocationType } from "./stop_icon_symbols";
+import { appendStopBadges, treatmentForLocationType } from "./stop_icon_symbols";
 
 const DEFAULT_OPACITY = 0.7;
 
@@ -96,7 +96,7 @@ export function createOtherLevelsLayers(deps) {
     const dot = document.createElement("div");
     dot.className = "w-full h-full border";
     dot.style.backgroundColor = treatment.fill;
-    dot.style.opacity = String(markerDotOpacity(treatment.outline, opacity));
+    dot.style.opacity = String(dotOpacityFor(opacity));
     dot.style.borderColor = treatment.stroke;
     dot.style.borderStyle = "dashed";
     dot.style.borderWidth = "1.5px";
@@ -109,12 +109,9 @@ export function createOtherLevelsLayers(deps) {
     tip.textContent = tooltipLabel(stop);
     pin.appendChild(tip);
 
-    return { lat: stop.lat, lon: stop.lon, outline: treatment.outline, el: pin };
-  }
+    appendStopBadges(pin, stop.badges, color);
 
-  function markerDotOpacity(outline, floorplanOpacity) {
-    const dotOpacity = dotOpacityFor(floorplanOpacity);
-    return outline ? Math.max(OUTLINE_DOT_MIN_OPACITY, dotOpacity) : dotOpacity;
+    return { lat: stop.lat, lon: stop.lon, el: pin };
   }
 
   function applyStops(levelId, color, stops) {
@@ -206,7 +203,7 @@ export function createOtherLevelsLayers(deps) {
     pinGroups.forEach((group) => {
       group.markers.forEach((marker) => {
         const dot = marker.el.firstElementChild;
-        if (dot) dot.style.opacity = String(markerDotOpacity(marker.outline, value));
+        if (dot) dot.style.opacity = String(dotOpacityFor(value));
       });
     });
   }

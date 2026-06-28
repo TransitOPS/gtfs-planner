@@ -1,11 +1,7 @@
 /* @vitest-environment jsdom */
 import { describe, expect, it, vi } from "vitest";
 import { createOtherLevelsLayers } from "../map_overlay_layers";
-import {
-  OUTLINE_DOT_MIN_OPACITY,
-  symbolForLocationType,
-  treatmentForLocationType,
-} from "../stop_icon_symbols";
+import { symbolForLocationType, treatmentForLocationType } from "../stop_icon_symbols";
 
 // The active editable overlay (#map-alignment-overlay) renders at z-index 2.
 // Other-level overlays must sit strictly below it (AC-16).
@@ -149,7 +145,7 @@ describe("createOtherLevelsLayers overlay reconciliation (AC-14)", () => {
 });
 
 describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
-  it("renders one pin group per level with non-entrance markers using level fill and white dashed halo", () => {
+  it("renders one pin group per level with markers in the unified level color and a dashed border", () => {
     const deps = makeDeps();
     const layers = createOtherLevelsLayers(deps);
 
@@ -188,7 +184,7 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
     expect(pinB.firstChild.style.borderStyle).toBe("dashed");
   });
 
-  it("renders Entrance/Exit markers with white fill and the level color as the outline", () => {
+  it("renders Entrance/Exit markers in the unified level color with no white outline", () => {
     const deps = makeDeps();
     const layers = createOtherLevelsLayers(deps);
 
@@ -206,7 +202,11 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
 
     const pin = deps.pinsRoot.querySelector(".map-pin");
     expectMarkerTreatment(pin, 2, "#336699");
-    expect(pin.firstChild.style.borderStyle).toBe("dashed");
+    const dot = pin.firstChild;
+    // Fill and border are the same level color — no white-fill outline treatment.
+    expect(dot.style.backgroundColor).toBe(cssColor("#336699"));
+    expect(dot.style.borderColor).toBe(cssColor("#336699"));
+    expect(dot.style.borderStyle).toBe("dashed");
   });
 
   it("renders unknown location types as circle markers", () => {
@@ -230,7 +230,7 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
     expect(symbolForLocationType("unknown")).toBe("circle");
   });
 
-  it("keeps outline opacity above the legibility floor while reducing non-entrance markers normally", () => {
+  it("applies one uniform dot opacity to every marker regardless of location type", () => {
     const deps = makeDeps();
     const layers = createOtherLevelsLayers(deps);
 
@@ -252,8 +252,7 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
     layers.setOpacity(0);
 
     const dots = deps.pinsRoot.querySelectorAll(".map-pin > div:first-child");
-    expect(dots[0].style.opacity).toBe(String(OUTLINE_DOT_MIN_OPACITY));
-    expect(parseFloat(dots[1].style.opacity)).toBeLessThan(OUTLINE_DOT_MIN_OPACITY);
+    expect(dots[0].style.opacity).toBe(dots[1].style.opacity);
   });
 
   it("falls back to stop name, id, and platform when no explicit label is present", () => {
@@ -360,6 +359,53 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
       levels: [level({ levelId: "a", index: 1, color: "#f00", fp: null, stops: [] })],
     });
     expect(deps.pinsRoot.querySelectorAll("[data-other-level-id]").length).toBe(0);
+  });
+
+  it("renders a cross-level badge per pathway next to the stop marker", () => {
+    const deps = makeDeps();
+    const layers = createOtherLevelsLayers(deps);
+
+    layers.update({
+      levels: [
+        level({
+          levelId: "a",
+          index: 1,
+          color: "#f00",
+          fp: null,
+          stops: [
+            stop("s1", 40.7, -74.0, "Stop 1", {
+              badges: [{ pathway_mode: 2 }, { pathway_mode: 5 }],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const pin = deps.pinsRoot.querySelector(".map-pin");
+    const badges = pin.querySelectorAll("svg.map-stop-badge");
+    expect(badges).toHaveLength(2);
+    expect(badges[0].dataset.badgeSymbol).toBe("stairs");
+    expect(badges[1].dataset.badgeSymbol).toBe("elevator");
+  });
+
+  it("renders no badge for a stop without cross-level pathways", () => {
+    const deps = makeDeps();
+    const layers = createOtherLevelsLayers(deps);
+
+    layers.update({
+      levels: [
+        level({
+          levelId: "a",
+          index: 1,
+          color: "#f00",
+          fp: null,
+          stops: [stop("s1", 40.7, -74.0, "Stop 1")],
+        }),
+      ],
+    });
+
+    const pin = deps.pinsRoot.querySelector(".map-pin");
+    expect(pin.querySelectorAll("svg.map-stop-badge")).toHaveLength(0);
   });
 });
 

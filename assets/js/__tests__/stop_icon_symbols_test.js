@@ -4,9 +4,11 @@ import {
   DIAGRAM_ACTIVE_COLOR,
   DIAGRAM_BASE_COLOR,
   HALO_COLOR,
+  appendStopBadges,
+  badgeSymbolForMode,
   borderRadiusForSymbol,
+  createBadgeElement,
   dimensionsForSymbol,
-  isOutlineType,
   symbolForLocationType,
   treatmentForLocationType,
 } from "../stop_icon_symbols";
@@ -32,77 +34,108 @@ describe("stop_icon_symbols vocabulary", () => {
 
   it("defines dimensions and border radii for every symbol", () => {
     expect(dimensionsForSymbol("rect_upright")).toEqual({
-      width: "8px",
-      height: "12px",
+      width: "12px",
+      height: "18px",
     });
     expect(borderRadiusForSymbol("rect_upright")).toBe("2px");
 
     expect(dimensionsForSymbol("rect_square")).toEqual({
-      width: "10px",
-      height: "10px",
+      width: "15px",
+      height: "15px",
     });
     expect(borderRadiusForSymbol("rect_square")).toBe("2px");
 
     expect(dimensionsForSymbol("circle")).toEqual({
-      width: "10px",
-      height: "10px",
+      width: "15px",
+      height: "15px",
     });
     expect(borderRadiusForSymbol("circle")).toBe("9999px");
   });
 
-  it("treats only Entrance/Exit location types as outline markers", () => {
-    expect(isOutlineType(0)).toBe(false);
-    expect(isOutlineType(1)).toBe(false);
-    expect(isOutlineType(2)).toBe(true);
-    expect(isOutlineType("2")).toBe(true);
-    expect(isOutlineType(3)).toBe(false);
-    expect(isOutlineType(4)).toBe(false);
-    expect(isOutlineType(undefined)).toBe(false);
-    expect(isOutlineType(null)).toBe(false);
-    expect(isOutlineType("not-a-location-type")).toBe(false);
-  });
-
-  it("returns the exact icon treatment table for map render paths", () => {
+  it("renders every location type in one unified level color, fill and stroke", () => {
     const color = "#123ABC";
 
     expect(treatmentForLocationType(0, color)).toEqual({
       symbol: "rect_upright",
-      outline: false,
       fill: color,
-      stroke: "#FFFFFF",
-      width: "8px",
-      height: "12px",
+      stroke: color,
+      width: "12px",
+      height: "18px",
       borderRadius: "2px",
     });
 
+    // Entrance/Exit (2) gets no white-outline treatment — solid level color.
     expect(treatmentForLocationType(2, color)).toEqual({
       symbol: "rect_upright",
-      outline: true,
-      fill: "#FFFFFF",
+      fill: color,
       stroke: color,
-      width: "8px",
-      height: "12px",
+      width: "12px",
+      height: "18px",
       borderRadius: "2px",
     });
 
     expect(treatmentForLocationType(4, color)).toEqual({
       symbol: "rect_square",
-      outline: false,
       fill: color,
-      stroke: "#FFFFFF",
-      width: "10px",
-      height: "10px",
+      stroke: color,
+      width: "15px",
+      height: "15px",
       borderRadius: "2px",
     });
 
     expect(treatmentForLocationType("not-a-location-type", color)).toEqual({
       symbol: "circle",
-      outline: false,
       fill: color,
-      stroke: "#FFFFFF",
-      width: "10px",
-      height: "10px",
+      stroke: color,
+      width: "15px",
+      height: "15px",
       borderRadius: "9999px",
     });
+  });
+});
+
+describe("cross-level pathway badges", () => {
+  it("maps stairs and escalator modes to the staircase glyph", () => {
+    expect(badgeSymbolForMode(2)).toBe("stairs");
+    expect(badgeSymbolForMode(4)).toBe("stairs");
+    expect(badgeSymbolForMode("2")).toBe("stairs");
+  });
+
+  it("maps every other cross-level mode to the elevator glyph", () => {
+    expect(badgeSymbolForMode(5)).toBe("elevator");
+    expect(badgeSymbolForMode(1)).toBe("elevator");
+    expect(badgeSymbolForMode(undefined)).toBe("elevator");
+  });
+
+  it("renders an SVG glyph in the level color tagged by symbol", () => {
+    const stairs = createBadgeElement(2, "#123ABC", 0);
+    expect(stairs.tagName.toLowerCase()).toBe("svg");
+    expect(stairs.dataset.badgeSymbol).toBe("stairs");
+    const path = stairs.querySelector("path");
+    expect(path.getAttribute("fill")).toBe("#123ABC");
+    // No white halo — the badge is a single unified color.
+    expect(path.getAttribute("stroke")).toBe(null);
+
+    const elevator = createBadgeElement(5, "#123ABC", 0);
+    expect(elevator.dataset.badgeSymbol).toBe("elevator");
+  });
+
+  it("stacks successive badges horizontally by index", () => {
+    const first = createBadgeElement(2, "#123ABC", 0);
+    const second = createBadgeElement(5, "#123ABC", 1);
+    expect(first.style.left).not.toBe(second.style.left);
+  });
+
+  it("appends one badge element per pathway in the level color, and nothing without badges", () => {
+    const marker = document.createElement("div");
+    appendStopBadges(marker, [{ pathway_mode: 2 }, { pathway_mode: 5 }], "#123ABC");
+    const badges = marker.querySelectorAll("svg.map-stop-badge");
+    expect(badges).toHaveLength(2);
+    expect(badges[0].querySelector("path").getAttribute("fill")).toBe("#123ABC");
+
+    const empty = document.createElement("div");
+    appendStopBadges(empty, [], "#123ABC");
+    appendStopBadges(empty, undefined, "#123ABC");
+    expect(empty.querySelectorAll("svg.map-stop-badge")).toHaveLength(0);
   });
 });
