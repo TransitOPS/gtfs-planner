@@ -1545,6 +1545,111 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert reloaded.floorplan_scale_mpp == before.floorplan_scale_mpp
       assert reloaded.floorplan_rotation_deg == before.floorplan_rotation_deg
     end
+
+    test "active child-stop payload carries a cross-level pathway badge", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level,
+      level: level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      other_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "BADGE_OTHER_LEVEL",
+          level_name: "Badge Other Level",
+          level_index: 1.0
+        })
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: other_level.id
+        })
+
+      active_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BADGE_ACTIVE",
+          stop_name: "Badge Active",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      other_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BADGE_OTHER",
+          stop_name: "Badge Other",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: other_level.level_id,
+          stop_lat: Decimal.new("40.7010"),
+          stop_lon: Decimal.new("-74.0010")
+        })
+
+      _stairs_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          active_stop.stop_id,
+          other_stop.stop_id,
+          %{pathway_mode: 2, is_bidirectional: false}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert_push_event(view, "set_active_child_stops", %{stops: stops})
+      marker = Enum.find(stops, &(&1.stop_id == "BADGE_ACTIVE"))
+
+      assert [%{pathway_mode: 2}] = marker.badges
+    end
+
+    test "active child-stop payload omits badges for stops without cross-level pathways", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level,
+      level: level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      _plain_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "BADGE_NONE",
+          stop_name: "Badge None",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert_push_event(view, "set_active_child_stops", %{stops: stops})
+      marker = Enum.find(stops, &(&1.stop_id == "BADGE_NONE"))
+
+      assert marker.badges == []
+    end
   end
 
   # Creates an other level with a diagram and a complete alignment (floorplan-eligible)

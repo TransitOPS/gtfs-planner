@@ -28,16 +28,17 @@
  */
 
 import { createOtherLevelsLayers } from "./map_overlay_layers";
+import {
+  DIAGRAM_BASE_COLOR,
+  appendStopBadges,
+  symbolForLocationType,
+  treatmentForLocationType,
+} from "./stop_icon_symbols";
 
 const SCALE_MIN = 0.25;
 const SCALE_MAX = 4;
 const IDENTITY_TRANSFORM = Object.freeze({tx: 0, ty: 0, rotation: 0, scale: 1});
 const MAP_ALIGNMENT_HOOK_BUILD = "map-align-fix-v2";
-const ACTIVE_TYPE_COLORS = Object.freeze({
-  rect_upright: Object.freeze({ fill: "#2563EB", stroke: "#1E3A8A" }),
-  rect_square: Object.freeze({ fill: "#CA8A04", stroke: "#713F12" }),
-  circle: Object.freeze({ fill: "#334155", stroke: "#0F172A" })
-});
 
 function shouldEnableMapAlignmentDiagnostics(root) {
   if (root?.dataset?.mapAlignmentDebugLogging === "true") return true;
@@ -76,34 +77,6 @@ function createMapAlignmentLogger(root) {
     }
   };
 }
-function symbolForLocationType(locationType) {
-  const parsed =
-    typeof locationType === "number"
-      ? locationType
-      : Number.parseInt(String(locationType), 10);
-
-  if (parsed === 0 || parsed === 2) return "rect_upright";
-  if (parsed === 4) return "rect_square";
-  return "circle";
-}
-
-function activeColorForLocationType(locationType) {
-  const parsed =
-    typeof locationType === "number"
-      ? locationType
-      : Number.parseInt(String(locationType), 10);
-
-  if (parsed === 2) {
-    return {
-      fill: "#FFFFFF",
-      stroke: ACTIVE_TYPE_COLORS.rect_upright.fill
-    };
-  }
-
-  const symbol = symbolForLocationType(locationType);
-  return ACTIVE_TYPE_COLORS[symbol] || ACTIVE_TYPE_COLORS.circle;
-}
-
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -1029,26 +1002,18 @@ const MapAlignmentHook = {
 
     this._activePinsRoot.innerHTML = "";
     this._activeChildStops.forEach((s) => {
-      const symbol = symbolForLocationType(s.location_type);
-      const activeColors = activeColorForLocationType(s.location_type);
+      const treatment = treatmentForLocationType(s.location_type, DIAGRAM_BASE_COLOR);
       const pin = document.createElement("div");
       pin.className =
         "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
-      pin.style.width = symbol === "rect_upright" ? "8px" : "10px";
-      pin.style.height = symbol === "rect_upright" ? "12px" : "10px";
+      pin.style.width = treatment.width;
+      pin.style.height = treatment.height;
 
       const dot = document.createElement("div");
       dot.className = "w-full h-full border";
-      dot.style.backgroundColor = activeColors.fill;
-      dot.style.borderColor = activeColors.stroke;
-
-      if (symbol === "rect_upright") {
-        dot.style.borderRadius = "2px";
-      } else if (symbol === "rect_square") {
-        dot.style.borderRadius = "2px";
-      } else {
-        dot.style.borderRadius = "9999px";
-      }
+      dot.style.backgroundColor = treatment.fill;
+      dot.style.borderColor = treatment.stroke;
+      dot.style.borderRadius = treatment.borderRadius;
 
       pin.appendChild(dot);
 
@@ -1057,6 +1022,8 @@ const MapAlignmentHook = {
         "absolute left-1/2 bottom-full mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 text-white text-xs px-1.5 py-0.5 opacity-0 group-hover:opacity-100 pointer-events-none";
       tip.textContent = stopTooltipLabel(s, "A");
       pin.appendChild(tip);
+
+      appendStopBadges(pin, s.badges, DIAGRAM_BASE_COLOR);
 
       this._activePinsRoot.appendChild(pin);
       s._el = pin;
@@ -1093,7 +1060,5 @@ function stopTooltipLabel(s, roleTag = "") {
 export {
   parseAlignmentPayload,
   readActiveAlignment,
-  symbolForLocationType,
-  activeColorForLocationType
 };
 export default MapAlignmentHook;

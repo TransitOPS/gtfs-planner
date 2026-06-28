@@ -520,25 +520,56 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {Map.get(cache, level_id, []), socket}
 
       true ->
-        markers = level_child_stop_markers(station, level_id)
+        markers = level_child_stop_markers(socket, station, level_id)
         {markers, assign(socket, :other_level_markers_cache, Map.put(cache, level_id, markers))}
     end
   end
 
-  defp level_child_stop_markers(%Stop{} = station, level_id) when is_binary(level_id) do
-    station.id
-    |> Gtfs.list_child_stops_for_level(level_id)
-    |> Enum.filter(& &1.on_active_level)
-    |> Enum.map(&child_stop_marker/1)
+  defp level_child_stop_markers(socket, %Stop{} = station, level_id) when is_binary(level_id) do
+    level_stops =
+      station.id
+      |> Gtfs.list_child_stops_for_level(level_id)
+      |> Enum.filter(& &1.on_active_level)
+
+    badges_by_stop = other_level_badges(socket, station, level_id, level_stops)
+
+    level_stops
+    |> Enum.map(&child_stop_marker(&1, badges_by_stop))
     |> Enum.reject(&is_nil/1)
   end
 
-  defp level_child_stop_markers(_station, _level_id), do: []
+  defp level_child_stop_markers(_socket, _station, _level_id), do: []
+
+  # Cross-level stairs/elevator badges for a non-active level: load that level's
+  # pathways and key the badges to that level's stops, mirroring the active-level
+  # computation in cross_level_badges_by_stop/2.
+  defp other_level_badges(socket, %Stop{} = station, level_id, level_stops) do
+    with %StopLevel{level: %{id: internal_level_id}} when not is_nil(internal_level_id) <-
+           other_level_stop_level(socket, level_id) do
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+      pathways =
+        Gtfs.list_pathways_for_level(
+          organization_id,
+          gtfs_version_id,
+          internal_level_id,
+          station.id
+        )
+
+      level_stop_ids = level_stops |> Enum.map(& &1.id) |> MapSet.new()
+      cross_level_badges_by_stop(pathways, level_stop_ids)
+    else
+      _ -> %{}
+    end
+  end
 
   defp child_stop_markers(socket) do
+    badges_by_stop = Map.get(socket.assigns, :cross_level_badges_by_stop, %{})
+
     socket.assigns
     |> Map.get(:child_stops_list, [])
-    |> Enum.map(&child_stop_marker/1)
+    |> Enum.map(&child_stop_marker(&1, badges_by_stop))
     |> Enum.reject(&is_nil/1)
   end
 
@@ -651,7 +682,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp other_level_stops_eligible?(%{geo_stop_count: geo_stop_count}),
     do: geo_stop_count > 0
 
-  defp child_stop_marker(stop) do
+  defp child_stop_marker(stop, badges_by_stop) do
     case {marker_float(stop.stop_lat), marker_float(stop.stop_lon)} do
       {lat, lon} when is_float(lat) and is_float(lon) ->
         %{
@@ -660,12 +691,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           platform_code: stop.platform_code,
           location_type: stop.location_type,
           lat: lat,
-          lon: lon
+          lon: lon,
+          badges: stop_badges(badges_by_stop, stop.id)
         }
 
       _ ->
         nil
     end
+  end
+
+  defp stop_badges(badges_by_stop, stop_id) do
+    badges_by_stop
+    |> Map.get(stop_id, [])
+    |> Enum.map(&%{pathway_mode: &1.pathway_mode, pathway_id: &1.pathway_id})
   end
 
   defp marker_float(%Decimal{} = d), do: Decimal.to_float(d)

@@ -10,10 +10,11 @@
  *   overlaysRoot, pinsRoot,
  *   applyOverlayTransform: (el, alignment) => void,
  *   projectLatLng: (lat, lon) => {x, y},
- *   symbolFor: (locationType) => string,
  * }
  * payload = { active_level_id, levels: [LevelRender] }
  */
+
+import { appendStopBadges, treatmentForLocationType } from "./stop_icon_symbols";
 
 const DEFAULT_OPACITY = 0.7;
 
@@ -21,16 +22,6 @@ const DEFAULT_OPACITY = 0.7;
 // Other-level overlays must sit strictly below it so the active overlay stays
 // the only drag/rotate/scale target (AC-16).
 const OTHER_OVERLAY_Z_INDEX = "1";
-
-function dimensionsForSymbol(symbol) {
-  if (symbol === "rect_upright") return { width: "8px", height: "12px" };
-  return { width: "10px", height: "10px" };
-}
-
-function borderRadiusForSymbol(symbol) {
-  if (symbol === "rect_upright" || symbol === "rect_square") return "2px";
-  return "9999px";
-}
 
 function tooltipLabel(stop) {
   if (stop.label) return stop.label;
@@ -40,7 +31,7 @@ function tooltipLabel(stop) {
 }
 
 export function createOtherLevelsLayers(deps) {
-  const { overlaysRoot, pinsRoot, applyOverlayTransform, projectLatLng, symbolFor } = deps || {};
+  const { overlaysRoot, pinsRoot, applyOverlayTransform, projectLatLng } = deps || {};
 
   if (!overlaysRoot) throw new Error("createOtherLevelsLayers: overlaysRoot is required");
   if (!pinsRoot) throw new Error("createOtherLevelsLayers: pinsRoot is required");
@@ -50,10 +41,6 @@ export function createOtherLevelsLayers(deps) {
   if (typeof projectLatLng !== "function") {
     throw new Error("createOtherLevelsLayers: projectLatLng must be a function");
   }
-  if (typeof symbolFor !== "function") {
-    throw new Error("createOtherLevelsLayers: symbolFor must be a function");
-  }
-
   const overlays = new Map();
   const pinGroups = new Map();
   let opacity = DEFAULT_OPACITY;
@@ -99,22 +86,21 @@ export function createOtherLevelsLayers(deps) {
   }
 
   function createMarker(levelId, color, stop) {
-    const symbol = symbolFor(stop.location_type);
-    const { width, height } = dimensionsForSymbol(symbol);
+    const treatment = treatmentForLocationType(stop.location_type, color);
 
     const pin = document.createElement("div");
     pin.className = "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
-    pin.style.width = width;
-    pin.style.height = height;
+    pin.style.width = treatment.width;
+    pin.style.height = treatment.height;
 
     const dot = document.createElement("div");
     dot.className = "w-full h-full border";
-    dot.style.backgroundColor = color;
+    dot.style.backgroundColor = treatment.fill;
     dot.style.opacity = String(dotOpacityFor(opacity));
-    dot.style.borderColor = color;
+    dot.style.borderColor = treatment.stroke;
     dot.style.borderStyle = "dashed";
     dot.style.borderWidth = "1.5px";
-    dot.style.borderRadius = borderRadiusForSymbol(symbol);
+    dot.style.borderRadius = treatment.borderRadius;
     pin.appendChild(dot);
 
     const tip = document.createElement("div");
@@ -122,6 +108,8 @@ export function createOtherLevelsLayers(deps) {
       "absolute left-1/2 bottom-full mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 text-white text-xs px-1.5 py-0.5 opacity-0 group-hover:opacity-100 pointer-events-none";
     tip.textContent = tooltipLabel(stop);
     pin.appendChild(tip);
+
+    appendStopBadges(pin, stop.badges, color);
 
     return { lat: stop.lat, lon: stop.lon, el: pin };
   }
@@ -212,11 +200,10 @@ export function createOtherLevelsLayers(deps) {
     overlays.forEach((record) => {
       record.img.style.opacity = String(value);
     });
-    const pinOpacity = String(dotOpacityFor(value));
     pinGroups.forEach((group) => {
       group.markers.forEach((marker) => {
         const dot = marker.el.firstElementChild;
-        if (dot) dot.style.opacity = pinOpacity;
+        if (dot) dot.style.opacity = String(dotOpacityFor(value));
       });
     });
   }

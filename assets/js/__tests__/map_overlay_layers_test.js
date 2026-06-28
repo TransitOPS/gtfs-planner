@@ -1,10 +1,28 @@
 /* @vitest-environment jsdom */
 import { describe, expect, it, vi } from "vitest";
 import { createOtherLevelsLayers } from "../map_overlay_layers";
+import { symbolForLocationType, treatmentForLocationType } from "../stop_icon_symbols";
 
 // The active editable overlay (#map-alignment-overlay) renders at z-index 2.
 // Other-level overlays must sit strictly below it (AC-16).
 const ACTIVE_OVERLAY_Z_INDEX = 2;
+
+function cssColor(value) {
+  const el = document.createElement("div");
+  el.style.color = value;
+  return el.style.color;
+}
+
+function expectMarkerTreatment(pin, locationType, color) {
+  const treatment = treatmentForLocationType(locationType, color);
+  const dot = pin.firstChild;
+
+  expect(pin.style.width).toBe(treatment.width);
+  expect(pin.style.height).toBe(treatment.height);
+  expect(dot.style.backgroundColor).toBe(cssColor(treatment.fill));
+  expect(dot.style.borderColor).toBe(cssColor(treatment.stroke));
+  expect(dot.style.borderRadius).toBe(treatment.borderRadius);
+}
 
 function makeDeps(overrides = {}) {
   return {
@@ -12,7 +30,7 @@ function makeDeps(overrides = {}) {
     pinsRoot: document.createElement("div"),
     applyOverlayTransform: vi.fn(),
     projectLatLng: vi.fn(() => ({ x: 10, y: 20 })),
-    symbolFor: vi.fn(() => "circle"),
+    symbolFor: symbolForLocationType,
     ...overrides,
   };
 }
@@ -127,7 +145,7 @@ describe("createOtherLevelsLayers overlay reconciliation (AC-14)", () => {
 });
 
 describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
-  it("renders one pin group per level with markers colored by the level color", () => {
+  it("renders one pin group per level with markers in the unified level color and a dashed border", () => {
     const deps = makeDeps();
     const layers = createOtherLevelsLayers(deps);
 
@@ -158,10 +176,83 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
     expect(groupA.querySelectorAll(".map-pin").length).toBe(1);
     expect(groupB.querySelectorAll(".map-pin").length).toBe(2);
 
-    const dotA = groupA.querySelector(".map-pin > div");
-    expect(dotA.style.borderColor).toBe("rgb(255, 0, 0)");
-    const dotB = groupB.querySelector(".map-pin > div");
-    expect(dotB.style.borderColor).toBe("rgb(0, 255, 0)");
+    const pinA = groupA.querySelector(".map-pin");
+    expectMarkerTreatment(pinA, 1, "#ff0000");
+    expect(pinA.firstChild.style.borderStyle).toBe("dashed");
+    const pinB = groupB.querySelector(".map-pin");
+    expectMarkerTreatment(pinB, 1, "#00ff00");
+    expect(pinB.firstChild.style.borderStyle).toBe("dashed");
+  });
+
+  it("renders Entrance/Exit markers in the unified level color with no white outline", () => {
+    const deps = makeDeps();
+    const layers = createOtherLevelsLayers(deps);
+
+    layers.update({
+      levels: [
+        level({
+          levelId: "a",
+          index: 1,
+          color: "#336699",
+          fp: null,
+          stops: [stop("entrance", 40.7, -74.0, "Entrance", { location_type: 2 })],
+        }),
+      ],
+    });
+
+    const pin = deps.pinsRoot.querySelector(".map-pin");
+    expectMarkerTreatment(pin, 2, "#336699");
+    const dot = pin.firstChild;
+    // Fill and border are the same level color — no white-fill outline treatment.
+    expect(dot.style.backgroundColor).toBe(cssColor("#336699"));
+    expect(dot.style.borderColor).toBe(cssColor("#336699"));
+    expect(dot.style.borderStyle).toBe("dashed");
+  });
+
+  it("renders unknown location types as circle markers", () => {
+    const deps = makeDeps();
+    const layers = createOtherLevelsLayers(deps);
+
+    layers.update({
+      levels: [
+        level({
+          levelId: "a",
+          index: 1,
+          color: "#ff0000",
+          fp: null,
+          stops: [stop("unknown", 40.7, -74.0, "Unknown", { location_type: "unknown" })],
+        }),
+      ],
+    });
+
+    const pin = deps.pinsRoot.querySelector(".map-pin");
+    expectMarkerTreatment(pin, "unknown", "#ff0000");
+    expect(symbolForLocationType("unknown")).toBe("circle");
+  });
+
+  it("applies one uniform dot opacity to every marker regardless of location type", () => {
+    const deps = makeDeps();
+    const layers = createOtherLevelsLayers(deps);
+
+    layers.update({
+      levels: [
+        level({
+          levelId: "a",
+          index: 1,
+          color: "#ff0000",
+          fp: null,
+          stops: [
+            stop("entrance", 40.7, -74.0, "Entrance", { location_type: 2 }),
+            stop("platform", 40.8, -74.1, "Platform", { location_type: 0 }),
+          ],
+        }),
+      ],
+    });
+
+    layers.setOpacity(0);
+
+    const dots = deps.pinsRoot.querySelectorAll(".map-pin > div:first-child");
+    expect(dots[0].style.opacity).toBe(dots[1].style.opacity);
   });
 
   it("falls back to stop name, id, and platform when no explicit label is present", () => {
@@ -187,6 +278,35 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
 
     const tooltip = deps.pinsRoot.querySelector(".map-pin > div:last-child");
     expect(tooltip.textContent).toBe("Mezzanine North · Plat 2");
+    expect(tooltip.classList.contains("group-hover:opacity-100")).toBe(true);
+  });
+
+  it("renders the hover tooltip on both entrance and non-entrance markers", () => {
+    const deps = makeDeps();
+    const layers = createOtherLevelsLayers(deps);
+
+    layers.update({
+      levels: [
+        level({
+          levelId: "a",
+          index: 1,
+          color: "#ff0000",
+          fp: null,
+          stops: [
+            stop("entrance", 40.7, -74.0, "Entrance", { location_type: 2 }),
+            stop("platform", 40.8, -74.1, "Platform", { location_type: 0 }),
+          ],
+        }),
+      ],
+    });
+
+    const pins = deps.pinsRoot.querySelectorAll(".map-pin");
+    expect(pins.length).toBe(2);
+
+    pins.forEach((pin) => {
+      const tooltip = pin.lastElementChild;
+      expect(tooltip.classList.contains("group-hover:opacity-100")).toBe(true);
+    });
   });
 
   it("updates marker positions on reposition when projection changes", () => {
@@ -239,6 +359,53 @@ describe("createOtherLevelsLayers pin rendering (AC-15)", () => {
       levels: [level({ levelId: "a", index: 1, color: "#f00", fp: null, stops: [] })],
     });
     expect(deps.pinsRoot.querySelectorAll("[data-other-level-id]").length).toBe(0);
+  });
+
+  it("renders a cross-level badge per pathway next to the stop marker", () => {
+    const deps = makeDeps();
+    const layers = createOtherLevelsLayers(deps);
+
+    layers.update({
+      levels: [
+        level({
+          levelId: "a",
+          index: 1,
+          color: "#f00",
+          fp: null,
+          stops: [
+            stop("s1", 40.7, -74.0, "Stop 1", {
+              badges: [{ pathway_mode: 2 }, { pathway_mode: 5 }],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const pin = deps.pinsRoot.querySelector(".map-pin");
+    const badges = pin.querySelectorAll("svg.map-stop-badge");
+    expect(badges).toHaveLength(2);
+    expect(badges[0].dataset.badgeSymbol).toBe("stairs");
+    expect(badges[1].dataset.badgeSymbol).toBe("elevator");
+  });
+
+  it("renders no badge for a stop without cross-level pathways", () => {
+    const deps = makeDeps();
+    const layers = createOtherLevelsLayers(deps);
+
+    layers.update({
+      levels: [
+        level({
+          levelId: "a",
+          index: 1,
+          color: "#f00",
+          fp: null,
+          stops: [stop("s1", 40.7, -74.0, "Stop 1")],
+        }),
+      ],
+    });
+
+    const pin = deps.pinsRoot.querySelector(".map-pin");
+    expect(pin.querySelectorAll("svg.map-stop-badge")).toHaveLength(0);
   });
 });
 
