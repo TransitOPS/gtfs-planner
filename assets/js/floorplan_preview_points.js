@@ -1,12 +1,11 @@
 /**
  * DOM-free preview-coordinate helpers for active child-stop pins.
  *
- * This module mirrors the coordinate convention documented in
+ * This module follows the coordinate convention in
  * lib/gtfs_planner/gtfs/floorplan_transform.ex but returns ONLY map-container
- * pixels, never lat/lon. The server transform remains the durable source of
- * truth; this helper exists purely to position preview pins while the operator
- * manipulates the active floorplan, so browser geometry never becomes a data
- * source.
+ * pixels. The server transform remains the durable source of truth; this helper
+ * exists purely to position preview pins while the operator manipulates the
+ * active floorplan, so browser geometry never becomes a data source.
  *
  * Coordinate convention (matching floorplan_transform.ex `project/4`):
  *   1. Diagram coordinates are width-normalized and top-left anchored.
