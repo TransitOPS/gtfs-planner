@@ -506,3 +506,119 @@ describe("map_alignment_hook active child stops positioning by mode", () => {
     expect(activePinsRoot.children[0].dataset.positionMode).toBe("geo");
   });
 });
+
+describe("map_alignment_hook _applyTransform repositioning", () => {
+  function buildTransformHook() {
+    document.body.innerHTML = `
+      <div id="root" data-active-level-id="active-level">
+        <div id="map-alignment-overlay"><img id="overlay-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const img = document.getElementById("overlay-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const activePinsRoot = document.getElementById("map-alignment-pins-active");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 500, height: 400 });
+    Object.defineProperty(img, "naturalWidth", { value: 1000, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 800, configurable: true });
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      overlay,
+      leafletEl,
+      _activePinsRoot: activePinsRoot,
+      _activeChildStops: [],
+      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+      _otherLevels: { reposition: vi.fn() },
+      leafletMap: {
+        latLngToContainerPoint: vi.fn(([lat, lon]) => ({ x: lon, y: lat })),
+      },
+    };
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [
+        { stop_id: "diagram-stop", diagram_coordinate: { x: 10, y: 15 } },
+      ],
+    });
+
+    const pin = activePinsRoot.children[0];
+    return { hook, pin, before: { left: pin.style.left, top: pin.style.top } };
+  }
+
+  it("repositions a diagram-mode pin when the transform is translated", () => {
+    const { hook, pin, before } = buildTransformHook();
+
+    hook.transform.tx = 60;
+    hook.transform.ty = -40;
+    hook._applyTransform();
+
+    expect(pin.style.left).not.toBe(before.left);
+    expect(pin.style.top).not.toBe(before.top);
+  });
+
+  it("repositions a diagram-mode pin when the transform is rotated", () => {
+    const { hook, pin, before } = buildTransformHook();
+
+    hook.transform.rotation = 30;
+    hook._applyTransform();
+
+    const moved =
+      pin.style.left !== before.left || pin.style.top !== before.top;
+    expect(moved).toBe(true);
+  });
+
+  it("repositions a diagram-mode pin when the transform is scaled", () => {
+    const { hook, pin, before } = buildTransformHook();
+
+    hook.transform.scale = 2;
+    hook._applyTransform();
+
+    const moved =
+      pin.style.left !== before.left || pin.style.top !== before.top;
+    expect(moved).toBe(true);
+  });
+
+  it("does not call other-level reposition from active-only _applyTransform", () => {
+    const { hook } = buildTransformHook();
+
+    hook.transform.tx = 25;
+    hook._applyTransform();
+
+    expect(hook._otherLevels.reposition).not.toHaveBeenCalled();
+  });
+
+  it("calls other-level reposition in the zoom slider path", () => {
+    const reposition = vi.fn();
+    const hook = {
+      ...MapAlignmentHook,
+      overlay: document.createElement("div"),
+      leafletEl: (() => {
+        const el = document.createElement("div");
+        el.getBoundingClientRect = () => ({ width: 500, height: 400 });
+        return el;
+      })(),
+      _activePinsRoot: null,
+      _activeChildStops: [],
+      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+      _otherLevels: { reposition },
+      leafletMap: {
+        getZoom: vi.fn(() => 16),
+        setZoom: vi.fn(),
+        containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+        latLngToContainerPoint: vi.fn(({ lat, lng }) => ({ x: lng, y: lat })),
+      },
+    };
+
+    hook._handleZoomSliderInput({ target: { value: "17" } });
+
+    expect(hook.leafletMap.setZoom).toHaveBeenCalledWith(17, { animate: false });
+    expect(reposition).toHaveBeenCalledTimes(1);
+  });
+});

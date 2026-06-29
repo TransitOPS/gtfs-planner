@@ -893,6 +893,11 @@ const MapAlignmentHook = {
       this.overlay.style.transform =
         `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`;
     }
+    // Active markers live outside the transformed overlay; recompute their
+    // anchors so they track the floorplan as it translates/rotates/scales.
+    // Other-level overlays are intentionally NOT repositioned here — that
+    // fires only on the map move/zoom/view paths.
+    this._positionPins();
   },
 
   _leafletRect() {
