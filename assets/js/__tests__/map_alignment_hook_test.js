@@ -783,6 +783,66 @@ describe("map_alignment_hook active child stops positioning by mode", () => {
   });
 });
 
+describe("map_alignment_hook preview status", () => {
+  function buildStatusHook({ activeLevelId = "active-level" } = {}) {
+    document.body.innerHTML = `
+      <div id="root" data-active-level-id="${activeLevelId}">
+        <div id="map-alignment-pins-active"></div>
+        <span id="map-alignment-preview-status" aria-live="polite">Preview not ready</span>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const activePinsRoot = document.getElementById("map-alignment-pins-active");
+    const statusEl = document.getElementById("map-alignment-preview-status");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _activePinsRoot: activePinsRoot,
+      _activeChildStops: [],
+      _previewStatusEl: statusEl,
+      // Image ready so the status renders the count branch, not "not ready".
+      _naturalSizeImg: { naturalWidth: 1000, naturalHeight: 800 },
+      _positionPins: vi.fn(),
+    };
+
+    return { hook, statusEl };
+  }
+
+  it("reports diagram and geo pin counts in the preview status", () => {
+    const { hook, statusEl } = buildStatusHook();
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [
+        { stop_id: "diagram-a", diagram_coordinate: { x: 10, y: 20 } },
+        { stop_id: "diagram-b", diagram_coordinate: { x: 30, y: 40 } },
+        { stop_id: "geo-a", lat: 50, lon: 100 },
+      ],
+    });
+
+    expect(statusEl.textContent).toContain("2");
+    expect(statusEl.textContent).toContain("1");
+    expect(statusEl.textContent).toContain("anchored to floorplan");
+    expect(statusEl.textContent).toContain("positioned from map");
+  });
+
+  it("does not overwrite preview status for a stale level payload", () => {
+    const { hook, statusEl } = buildStatusHook();
+    statusEl.textContent = "2 anchored to floorplan · 1 positioned from map";
+
+    hook._renderActiveChildStops({
+      level_id: "other-level",
+      stops: [{ stop_id: "s1", lat: 40.7, lon: -74.0 }],
+    });
+
+    expect(statusEl.textContent).toBe(
+      "2 anchored to floorplan · 1 positioned from map"
+    );
+  });
+});
+
 describe("map_alignment_hook _applyTransform repositioning", () => {
   function buildTransformHook() {
     document.body.innerHTML = `

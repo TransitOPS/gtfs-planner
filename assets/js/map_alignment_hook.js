@@ -57,6 +57,16 @@ const APPLY_ENABLED_TITLE =
   "Set lat/lon for child stops from the floorplan's current position on the map";
 const APPLY_DISABLED_TITLE = "Waiting for the floorplan image to load";
 
+// Preview status copy (operator-facing, plain language). Shown before the
+// floorplan image is ready or after the active marker layer is cleared.
+const PREVIEW_STATUS_NOT_READY = "Preview not ready";
+
+// Ready-state status: front-load the two deterministic counts. Diagram-mode pins
+// are anchored to the floorplan image; geo-mode pins fall back to map position.
+function previewStatusText(diagramCount, geoCount) {
+  return `${diagramCount} anchored to floorplan · ${geoCount} positioned from map`;
+}
+
 function shouldEnableMapAlignmentDiagnostics(root) {
   if (root?.dataset?.mapAlignmentDebugLogging === "true") return true;
 
@@ -185,6 +195,7 @@ const MapAlignmentHook = {
     this.zoomSlider = zoomSlider;
     this.saveBtn = saveBtn;
     this.applyBtn = applyBtn;
+    this._previewStatusEl = document.getElementById("map-alignment-preview-status");
     this._overlayRestoreDisposers = [];
 
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.7";
@@ -506,6 +517,7 @@ const MapAlignmentHook = {
         h: img.naturalHeight
       });
       this._syncApplyButtonState();
+      this._syncPreviewStatus();
     };
     if (img) {
       if (img.complete && img.naturalWidth > 0) {
@@ -955,6 +967,28 @@ const MapAlignmentHook = {
     applyBtn.title = ready ? APPLY_ENABLED_TITLE : APPLY_DISABLED_TITLE;
   },
 
+  // Keep #map-alignment-preview-status accurate after active markers render and
+  // after image readiness changes. Reports deterministic diagram-mode and
+  // geo-mode pin counts in plain copy. Before the image is ready or after the
+  // marker layer is cleared, falls back to the not-ready state.
+  _syncPreviewStatus() {
+    const statusEl = this._previewStatusEl;
+    if (!statusEl) return;
+
+    const img = this._naturalSizeImg;
+    const ready = !!(img && img.naturalWidth > 0 && img.naturalHeight > 0);
+    const records = this._activeChildStops;
+
+    if (!ready || !Array.isArray(records)) {
+      statusEl.textContent = PREVIEW_STATUS_NOT_READY;
+      return;
+    }
+
+    const diagramCount = records.filter((s) => s.positionMode === "diagram").length;
+    const geoCount = records.filter((s) => s.positionMode === "geo").length;
+    statusEl.textContent = previewStatusText(diagramCount, geoCount);
+  },
+
   _pushAlignmentEventIfValid(eventName) {
     const payload = this._computeAlignment();
     if (!payload) return;
@@ -1106,6 +1140,7 @@ const MapAlignmentHook = {
     });
 
     this._positionPins();
+    this._syncPreviewStatus();
   },
 
   _positionPins() {
@@ -1150,6 +1185,7 @@ const MapAlignmentHook = {
     if (this._activePinsRoot) this._activePinsRoot.innerHTML = "";
     this._activePinsRoot = null;
     this._activeChildStops = null;
+    this._syncPreviewStatus();
   }
 };
 
