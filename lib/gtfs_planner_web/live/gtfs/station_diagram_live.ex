@@ -683,21 +683,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     do: geo_stop_count > 0
 
   defp child_stop_marker(stop, badges_by_stop) do
-    case {marker_float(stop.stop_lat), marker_float(stop.stop_lon)} do
-      {lat, lon} when is_float(lat) and is_float(lon) ->
-        %{
-          stop_id: stop.stop_id,
-          stop_name: stop.stop_name,
-          platform_code: stop.platform_code,
-          location_type: stop.location_type,
-          lat: lat,
-          lon: lon,
-          badges: stop_badges(badges_by_stop, stop.id)
-        }
+    lat = marker_float(stop.stop_lat)
+    lon = marker_float(stop.stop_lon)
+    diagram_coordinate = marker_diagram_coordinate(stop)
+    has_geo? = is_float(lat) and is_float(lon)
 
-      _ ->
-        nil
+    if has_geo? or diagram_coordinate do
+      %{
+        stop_id: stop.stop_id,
+        stop_name: stop.stop_name,
+        platform_code: stop.platform_code,
+        location_type: stop.location_type,
+        lat: if(has_geo?, do: lat, else: nil),
+        lon: if(has_geo?, do: lon, else: nil),
+        diagram_coordinate: diagram_coordinate,
+        badges: stop_badges(badges_by_stop, stop.id)
+      }
     end
+  end
+
+  defp marker_diagram_coordinate(stop) do
+    Coordinates.normalize_point(stop.diagram_coordinate)
   end
 
   defp stop_badges(badges_by_stop, stop_id) do
