@@ -4,6 +4,7 @@ import MapAlignmentHook, {
   parseAlignmentPayload,
   readActiveAlignment,
 } from "../map_alignment_hook";
+import { previewPointForDiagramCoordinate } from "../floorplan_preview_points";
 import {
   DIAGRAM_BASE_COLOR,
   symbolForLocationType,
@@ -403,5 +404,105 @@ describe("map_alignment_hook active child stops rendering", () => {
 
     const plainPin = activePinsRoot.children[1];
     expect(plainPin.querySelectorAll("svg.map-stop-badge")).toHaveLength(0);
+  });
+});
+
+describe("map_alignment_hook active child stops positioning by mode", () => {
+  function buildPositioningHook() {
+    document.body.innerHTML = `
+      <div id="root" data-active-level-id="active-level">
+        <div id="map-alignment-overlay"><img id="overlay-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const img = document.getElementById("overlay-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const activePinsRoot = document.getElementById("map-alignment-pins-active");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 500, height: 400 });
+    Object.defineProperty(img, "naturalWidth", { value: 1000, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 800, configurable: true });
+
+    const latLngToContainerPoint = vi.fn(([lat, lon]) => ({ x: lon, y: lat }));
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      overlay,
+      leafletEl,
+      _activePinsRoot: activePinsRoot,
+      _activeChildStops: [],
+      transform: { tx: 12, ty: -8, rotation: 0, scale: 1 },
+      leafletMap: { latLngToContainerPoint },
+    };
+
+    return { hook, activePinsRoot, latLngToContainerPoint };
+  }
+
+  it("positions diagram-mode pins from preview pixels even when lat/lon is present", () => {
+    const { hook, activePinsRoot, latLngToContainerPoint } = buildPositioningHook();
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [
+        {
+          stop_id: "diagram-stop",
+          lat: 40.7,
+          lon: -74.0,
+          diagram_coordinate: { x: 50, y: 40 },
+        },
+      ],
+    });
+
+    const expected = previewPointForDiagramCoordinate({
+      coordinate: { x: 50, y: 40 },
+      transform: { tx: 12, ty: -8, rotation: 0, scale: 1 },
+      canvasWidth: 500,
+      canvasHeight: 400,
+      imageNaturalWidth: 1000,
+      imageNaturalHeight: 800,
+    });
+
+    const pin = activePinsRoot.children[0];
+    expect(pin.dataset.positionMode).toBe("diagram");
+    expect(pin.style.left).toBe(`${expected.x}px`);
+    expect(pin.style.top).toBe(`${expected.y}px`);
+    // lat/lon present but unused: Leaflet projection is not consulted.
+    expect(latLngToContainerPoint).not.toHaveBeenCalled();
+  });
+
+  it("positions geo-mode pins via Leaflet when diagram coordinate is absent", () => {
+    const { hook, activePinsRoot, latLngToContainerPoint } = buildPositioningHook();
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [{ stop_id: "geo-stop", lat: 50, lon: 100 }],
+    });
+
+    const pin = activePinsRoot.children[0];
+    expect(pin.dataset.positionMode).toBe("geo");
+    expect(latLngToContainerPoint).toHaveBeenCalledWith([50, 100]);
+    expect(pin.style.left).toBe("100px");
+    expect(pin.style.top).toBe("50px");
+  });
+
+  it("filters stops with neither diagram coordinate nor lat/lon", () => {
+    const { hook, activePinsRoot } = buildPositioningHook();
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [
+        { stop_id: "no-position", lat: "bad", lon: undefined },
+        { stop_id: "geo-stop", lat: 50, lon: 100 },
+      ],
+    });
+
+    expect(hook._activeChildStops.map((s) => s.stop_id)).toEqual(["geo-stop"]);
+    expect(activePinsRoot.children.length).toBe(1);
+    expect(activePinsRoot.children[0].dataset.positionMode).toBe("geo");
   });
 });

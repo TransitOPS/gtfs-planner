@@ -29,6 +29,10 @@
 
 import { createOtherLevelsLayers } from "./map_overlay_layers";
 import {
+  normalizeDiagramPoint,
+  previewPointForDiagramCoordinate,
+} from "./floorplan_preview_points";
+import {
   DIAGRAM_BASE_COLOR,
   appendStopBadges,
   symbolForLocationType,
@@ -996,7 +1000,25 @@ const MapAlignmentHook = {
       .map((s) => {
         const lat = typeof s?.lat === "number" ? s.lat : parseFloat(s?.lat);
         const lon = typeof s?.lon === "number" ? s.lon : parseFloat(s?.lon);
-        return Number.isFinite(lat) && Number.isFinite(lon) ? { ...s, lat, lon } : null;
+        const hasGeo = Number.isFinite(lat) && Number.isFinite(lon);
+        const diagramPoint = normalizeDiagramPoint(s?.diagram_coordinate);
+
+        let positionMode;
+        if (diagramPoint) {
+          positionMode = "diagram";
+        } else if (hasGeo) {
+          positionMode = "geo";
+        } else {
+          return null;
+        }
+
+        return {
+          ...s,
+          lat: hasGeo ? lat : null,
+          lon: hasGeo ? lon : null,
+          diagramPoint,
+          positionMode,
+        };
       })
       .filter(Boolean);
 
@@ -1006,6 +1028,7 @@ const MapAlignmentHook = {
       const pin = document.createElement("div");
       pin.className =
         "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
+      pin.dataset.positionMode = s.positionMode;
       pin.style.width = treatment.width;
       pin.style.height = treatment.height;
 
@@ -1035,9 +1058,36 @@ const MapAlignmentHook = {
   _positionPins() {
     if (!this.leafletMap) return;
 
+    // Read layout once per call; reuse across every marker (avoid per-marker
+    // layout thrash). Diagram-mode pins need canvas + natural image metrics.
+    const canvasRect = this._leafletRect();
+    const img = this.overlay ? this.overlay.querySelector("img") : null;
+    const metrics = {
+      transform: this.transform,
+      canvasWidth: canvasRect ? canvasRect.width : null,
+      canvasHeight: canvasRect ? canvasRect.height : null,
+      imageNaturalWidth: img ? img.naturalWidth : null,
+      imageNaturalHeight: img ? img.naturalHeight : null,
+    };
+
     (this._activeChildStops || []).forEach((s) => {
       if (!s._el) return;
-      const pt = this.leafletMap.latLngToContainerPoint([s.lat, s.lon]);
+
+      let pt = null;
+      if (s.positionMode === "diagram") {
+        pt = previewPointForDiagramCoordinate({
+          coordinate: s.diagramPoint,
+          transform: metrics.transform,
+          canvasWidth: metrics.canvasWidth,
+          canvasHeight: metrics.canvasHeight,
+          imageNaturalWidth: metrics.imageNaturalWidth,
+          imageNaturalHeight: metrics.imageNaturalHeight,
+        });
+      } else if (Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
+        pt = this.leafletMap.latLngToContainerPoint([s.lat, s.lon]);
+      }
+
+      if (!pt) return;
       s._el.style.left = `${pt.x}px`;
       s._el.style.top = `${pt.y}px`;
     });
