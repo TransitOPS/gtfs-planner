@@ -6,6 +6,7 @@ import MapAlignmentHook, {
 } from "../map_alignment_hook";
 import { previewPointForDiagramCoordinate } from "../floorplan_preview_points";
 import {
+  BADGE_SIZE_PX,
   DIAGRAM_BASE_COLOR,
   symbolForLocationType,
   treatmentForLocationType,
@@ -298,8 +299,10 @@ describe("map_alignment_hook active child stops rendering", () => {
       lon: -74.0021,
     });
     expect(activePinsRoot.children.length).toBe(1);
+    // Geo-only stop (lat/lon, no diagram coordinate) renders as a fallback pin,
+    // so its tooltip names the map-position source.
     const tooltip = activePinsRoot.children[0].lastChild;
-    expect(tooltip.textContent).toBe("A: valid-string");
+    expect(tooltip.textContent).toBe("A: valid-string (map position)");
     expect(hook._positionPins).toHaveBeenCalledTimes(1);
   });
 
@@ -404,6 +407,114 @@ describe("map_alignment_hook active child stops rendering", () => {
 
     const plainPin = activePinsRoot.children[1];
     expect(plainPin.querySelectorAll("svg.map-stop-badge")).toHaveLength(0);
+  });
+});
+
+describe("map_alignment_hook fallback geo-mode pin treatment", () => {
+  function buildRenderHook() {
+    document.body.innerHTML = `
+      <div id="root" data-active-level-id="active-level">
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const activePinsRoot = document.getElementById("map-alignment-pins-active");
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      _activePinsRoot: activePinsRoot,
+      _activeChildStops: [],
+      _positionPins: vi.fn(),
+    };
+
+    return { hook, activePinsRoot };
+  }
+
+  it("keeps PR #648 active treatment for diagram-mode pins without fallback markers", () => {
+    const { hook, activePinsRoot } = buildRenderHook();
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [
+        {
+          stop_id: "diagram-stop",
+          lat: 40.7,
+          lon: -74.0,
+          location_type: 0,
+          diagram_coordinate: { x: 10, y: 20 },
+        },
+      ],
+    });
+
+    const pin = activePinsRoot.children[0];
+    const dot = pin.firstChild;
+
+    expect(pin.dataset.positionMode).toBe("diagram");
+    expect(pin.dataset.positionFallback).toBeUndefined();
+    expect(pin.classList.contains("map-pin-fallback")).toBe(false);
+    expect(pin.style.opacity).toBe("");
+    expect(dot.style.borderStyle).not.toBe("dashed");
+    expect(pin.getAttribute("aria-label")).toBeNull();
+    // Shape grammar still comes from treatmentForLocationType.
+    expectPinTreatment(pin, 0);
+  });
+
+  it("gives geo-mode fallback pins reduced opacity, dashed border, and map-position text", () => {
+    const { hook, activePinsRoot } = buildRenderHook();
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [{ stop_id: "geo-stop", lat: 50, lon: 100, location_type: 0 }],
+    });
+
+    const pin = activePinsRoot.children[0];
+    const dot = pin.firstChild;
+    const tip = pin.querySelector(".group-hover\\:opacity-100");
+
+    expect(pin.dataset.positionMode).toBe("geo");
+    expect(pin.dataset.positionFallback).toBe("geo");
+    expect(pin.classList.contains("map-pin-fallback")).toBe(true);
+    expect(pin.style.opacity).toBe("0.6");
+    expect(dot.style.borderStyle).toBe("dashed");
+    expect(pin.getAttribute("aria-label")).toContain("map position");
+    expect(tip.textContent).toContain("map position");
+    // Degraded treatment never changes the shared shape grammar.
+    expectPinTreatment(pin, 0);
+  });
+
+  it("keeps cross-level badges attached and fixed-size for both modes", () => {
+    const { hook, activePinsRoot } = buildRenderHook();
+
+    hook._renderActiveChildStops({
+      level_id: "active-level",
+      stops: [
+        {
+          stop_id: "diagram-badged",
+          location_type: 0,
+          diagram_coordinate: { x: 10, y: 20 },
+          badges: [{ pathway_mode: 4 }],
+        },
+        {
+          stop_id: "geo-badged",
+          lat: 50,
+          lon: 100,
+          location_type: 0,
+          badges: [{ pathway_mode: 1 }],
+        },
+      ],
+    });
+
+    const diagramPin = activePinsRoot.children[0];
+    const geoPin = activePinsRoot.children[1];
+
+    [diagramPin, geoPin].forEach((pin) => {
+      const badges = pin.querySelectorAll("svg.map-stop-badge");
+      expect(badges).toHaveLength(1);
+      expect(badges[0].getAttribute("width")).toBe(String(BADGE_SIZE_PX));
+      expect(badges[0].getAttribute("height")).toBe(String(BADGE_SIZE_PX));
+    });
   });
 });
 

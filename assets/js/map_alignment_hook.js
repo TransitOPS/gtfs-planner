@@ -44,6 +44,13 @@ const SCALE_MAX = 4;
 const IDENTITY_TRANSFORM = Object.freeze({tx: 0, ty: 0, rotation: 0, scale: 1});
 const MAP_ALIGNMENT_HOOK_BUILD = "map-align-fix-v2";
 
+// Deterministic degraded-state opacity for geo-mode fallback pins (stops
+// positioned from stored geography rather than the floorplan image).
+const FALLBACK_PIN_OPACITY = "0.6";
+// Suffix appended to fallback pin text so the visible tooltip and the
+// aria-label both name the stop as map-positioned, not floorplan-positioned.
+const FALLBACK_POSITION_SUFFIX = " (map position)";
+
 function shouldEnableMapAlignmentDiagnostics(root) {
   if (root?.dataset?.mapAlignmentDebugLogging === "true") return true;
 
@@ -1051,6 +1058,22 @@ const MapAlignmentHook = {
       tip.textContent = stopTooltipLabel(s, "A");
       pin.appendChild(tip);
 
+      // Geo-mode fallback pins are positioned from stored lat/lon (no valid
+      // diagram coordinate), so they are NOT anchored to the floorplan image.
+      // Mark them as a degraded/fallback state per ux-states: reduced opacity +
+      // dashed border (deterministic), plus text that names the position source
+      // (color is never the sole signal). Diagram-mode pins are left exactly as
+      // PR #648 renders them.
+      if (s.positionMode === "geo") {
+        const fallbackLabel = fallbackTooltipLabel(s, "A");
+        pin.classList.add("map-pin-fallback");
+        pin.dataset.positionFallback = "geo";
+        pin.style.opacity = FALLBACK_PIN_OPACITY;
+        pin.setAttribute("aria-label", fallbackLabel);
+        dot.style.borderStyle = "dashed";
+        tip.textContent = fallbackLabel;
+      }
+
       appendStopBadges(pin, s.badges, DIAGRAM_BASE_COLOR);
 
       this._activePinsRoot.appendChild(pin);
@@ -1110,6 +1133,12 @@ function stopTooltipLabel(s, roleTag = "") {
   const platform = s.platform_code ? ` · Plat ${s.platform_code}` : "";
   const rolePrefix = roleTag ? `${roleTag}: ` : "";
   return `${rolePrefix}${name}${platform}`;
+}
+
+// Label for geo-mode fallback pins: the standard active label plus an explicit
+// "map position" suffix so visible tooltip and aria-label agree on the source.
+function fallbackTooltipLabel(s, roleTag = "") {
+  return `${stopTooltipLabel(s, roleTag)}${FALLBACK_POSITION_SUFFIX}`;
 }
 
 export {
