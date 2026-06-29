@@ -516,6 +516,7 @@ const MapAlignmentHook = {
         w: img.naturalWidth,
         h: img.naturalHeight
       });
+      this._positionPins();
       this._syncApplyButtonState();
       this._syncPreviewStatus();
     };

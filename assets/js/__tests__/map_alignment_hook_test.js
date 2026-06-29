@@ -349,6 +349,31 @@ describe("map_alignment_hook apply button enablement", () => {
     restore();
   });
 
+  it("repositions diagram-mode pins when image dimensions become ready after markers render", () => {
+    const { hook, activeImg, restore } = mountApplyHook({
+      complete: false,
+      naturalWidth: 0,
+      naturalHeight: 0,
+    });
+
+    hook._renderActiveChildStops({
+      stops: [{ stop_id: "diagram-late-image", diagram_coordinate: { x: 50, y: 40 } }],
+    });
+
+    const pin = document.querySelector("#map-alignment-pins-active .map-pin");
+    expect(pin.style.left).toBe("");
+    expect(pin.style.top).toBe("");
+
+    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
+    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+    activeImg.dispatchEvent(new Event("load"));
+
+    expect(pin.style.left).toBe("150px");
+    expect(pin.style.top).toBe("75px");
+
+    restore();
+  });
+
   it("does not push save_and_apply_alignment when apply is clicked while disabled", () => {
     const { hook, applyBtn, restore } = mountApplyHook({
       complete: false,

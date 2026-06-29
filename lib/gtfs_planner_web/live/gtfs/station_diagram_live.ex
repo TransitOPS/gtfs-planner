@@ -536,6 +536,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     level_stops
     |> Enum.map(&child_stop_marker(&1, badges_by_stop))
     |> Enum.reject(&is_nil/1)
+    |> Enum.filter(&marker_has_geo?/1)
   end
 
   defp level_child_stop_markers(_socket, _station, _level_id), do: []
@@ -705,6 +706,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp marker_diagram_coordinate(stop) do
     Coordinates.normalize_point(stop.diagram_coordinate)
   end
+
+  defp marker_has_geo?(%{lat: lat, lon: lon}) when is_float(lat) and is_float(lon), do: true
+  defp marker_has_geo?(_marker), do: false
 
   defp stop_badges(badges_by_stop, stop_id) do
     badges_by_stop

@@ -1866,6 +1866,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
           stop_lon: Decimal.new("-72.5005")
         })
 
+      _other_diagram_only_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ISO_OTHER_DIAGRAM_ONLY",
+          stop_name: "Isolation Other Diagram Only",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: other_level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0},
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -1909,6 +1921,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert other_marker != nil
       assert other_marker.lat == 41.5005
       assert other_marker.lon == -72.5005
+
+      # Other-level overlays are geography-only; diagram-only stops belong to
+      # the active floorplan preview where image-space positioning is available.
+      refute Enum.find(other.stops, &(&1.stop_id == "ISO_OTHER_DIAGRAM_ONLY"))
     end
   end
 
