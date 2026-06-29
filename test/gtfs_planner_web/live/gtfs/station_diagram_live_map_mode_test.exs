@@ -1398,6 +1398,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
 
+      # Drain the markers pushed on mode switch so the post-apply assertion below
+      # proves the re-push, not the initial push.
+      assert_push_event(view, "set_active_child_stops", %{stops: _})
+
       html =
         render_hook(view, "save_and_apply_alignment", %{
           "center_lat" => 40.7128,
@@ -1407,6 +1411,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         })
 
       assert html =~ "Set lat/lon for 1 child stops"
+
+      # Active marker payloads are re-pushed after apply so pins reflect the
+      # persisted geography.
+      assert_push_event(view, "set_active_child_stops", %{stops: _stops})
 
       reloaded_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
       assert reloaded_level.floorplan_center_lat == 40.7128

@@ -3257,6 +3257,55 @@ defmodule GtfsPlanner.GtfsTest do
       assert Decimal.equal?(reloaded_other_child.stop_lat, Decimal.new("3.0"))
       assert Decimal.equal?(reloaded_other_child.stop_lon, Decimal.new("4.0"))
     end
+
+    test "ignores active child stops without normalizable diagram_coordinate", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      valid_child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_APPLY_VALID_COORD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          # Image center for a 1000x800 image in width-normalized units.
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      bad_coord_child =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "SAVE_APPLY_BAD_COORD",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{foo: "bar"},
+          stop_lat: Decimal.new("3.0"),
+          stop_lon: Decimal.new("4.0")
+        })
+
+      attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.0060,
+        floorplan_scale_mpp: 0.25,
+        floorplan_rotation_deg: 0.0
+      }
+
+      assert {:ok, %{apply_result: %{touched_stop_count: 1}}} =
+               Gtfs.save_and_apply_stop_level_alignment(stop_level.id, attrs, 1000, 800)
+
+      reloaded_valid = Repo.get!(GtfsPlanner.Gtfs.Stop, valid_child.id)
+      assert_in_delta Decimal.to_float(reloaded_valid.stop_lat), 40.7128, 1.0e-9
+      assert_in_delta Decimal.to_float(reloaded_valid.stop_lon), -74.0060, 1.0e-9
+
+      reloaded_bad = Repo.get!(GtfsPlanner.Gtfs.Stop, bad_coord_child.id)
+      assert Decimal.equal?(reloaded_bad.stop_lat, Decimal.new("3.0"))
+      assert Decimal.equal?(reloaded_bad.stop_lon, Decimal.new("4.0"))
+    end
   end
 
   describe "derive_child_stop_coords/3" do
