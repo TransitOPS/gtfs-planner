@@ -5,6 +5,7 @@ import MapAlignmentHook, {
   readActiveAlignment,
 } from "../map_alignment_hook";
 import { previewPointForDiagramCoordinate } from "../floorplan_preview_points";
+import { createOtherLevelsLayers } from "../map_overlay_layers";
 import {
   BADGE_SIZE_PX,
   DIAGRAM_BASE_COLOR,
@@ -956,5 +957,113 @@ describe("map_alignment_hook _applyTransform repositioning", () => {
 
     expect(hook.leafletMap.setZoom).toHaveBeenCalledWith(17, { animate: false });
     expect(reposition).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("map_alignment_hook other-level isolation across active transform", () => {
+  // Step 4 already proves _applyTransform does not CALL other-level reposition.
+  // This is the complementary guarantee: an active transform leaves the
+  // other-level renderer's stored overlay transform and pin coordinates
+  // untouched, because the active transform never reaches the other-level
+  // layer through any side channel (AC-17).
+  it("leaves other-level overlay transform and pin coordinates untouched across an active _applyTransform", () => {
+    document.body.innerHTML = `
+      <div id="root" data-active-level-id="active-level">
+        <div id="map-alignment-overlay"><img id="overlay-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <div id="map-alignment-pins-active"></div>
+        <div id="map-other-overlays"></div>
+        <div id="map-other-pins"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const img = document.getElementById("overlay-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const activePinsRoot = document.getElementById("map-alignment-pins-active");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 500, height: 400 });
+    Object.defineProperty(img, "naturalWidth", { value: 1000, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 800, configurable: true });
+
+    // Real other-level renderer with spied injected callbacks. The renderer
+    // only recomputes overlay transforms / pin projections when its own
+    // update/reposition is invoked — never as a side effect of the hook.
+    const applyOverlayTransform = vi.fn();
+    const projectLatLng = vi.fn(() => ({ x: 42, y: 84 }));
+    const otherLevels = createOtherLevelsLayers({
+      overlaysRoot: document.getElementById("map-other-overlays"),
+      pinsRoot: document.getElementById("map-other-pins"),
+      applyOverlayTransform,
+      projectLatLng,
+    });
+
+    otherLevels.update({
+      active_level_id: "active-level",
+      levels: [
+        {
+          level_id: "other-a",
+          level_index: 1,
+          color: "#ff0000",
+          floorplan: {
+            url: "/a.png",
+            center_lat: 40.7,
+            center_lon: -74.0,
+            scale_mpp: 0.25,
+            rotation_deg: 0,
+          },
+          stops: [{ stop_id: "s1", lat: 40.7, lon: -74.0, location_type: 1 }],
+        },
+      ],
+    });
+
+    const otherPin = document
+      .getElementById("map-other-pins")
+      .querySelector(".map-pin");
+    const otherOverlayImg = document
+      .getElementById("map-other-overlays")
+      .querySelector("img");
+
+    const pinBefore = { left: otherPin.style.left, top: otherPin.style.top };
+    const overlayTransformBefore = otherOverlayImg.style.transform;
+
+    // Clear the spies so any NEW call would be attributable to the active
+    // transform, then change what the projection would return so an accidental
+    // re-projection would visibly move the pin.
+    applyOverlayTransform.mockClear();
+    projectLatLng.mockClear();
+    projectLatLng.mockReturnValue({ x: 999, y: 999 });
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      overlay,
+      leafletEl,
+      _activePinsRoot: activePinsRoot,
+      _activeChildStops: [],
+      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+      _otherLevels: otherLevels,
+      leafletMap: {
+        latLngToContainerPoint: vi.fn(([lat, lon]) => ({ x: lon, y: lat })),
+      },
+    };
+
+    hook.transform.tx = 75;
+    hook.transform.rotation = 45;
+    hook.transform.scale = 2;
+    hook._applyTransform();
+
+    // The other-level renderer was not asked to recompute anything.
+    expect(applyOverlayTransform).not.toHaveBeenCalled();
+    expect(projectLatLng).not.toHaveBeenCalled();
+
+    // And the other-level DOM still reflects its own saved alignment / stored
+    // geography, not the active transform.
+    expect(otherPin.style.left).toBe(pinBefore.left);
+    expect(otherPin.style.top).toBe(pinBefore.top);
+    expect(otherOverlayImg.style.transform).toBe(overlayTransformBefore);
+
+    otherLevels.destroy();
   });
 });

@@ -1802,6 +1802,114 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert Enum.find(stops, &(&1.stop_id == "NO_COORDS")) == nil
     end
+
+    test "set_other_levels payload shape is unchanged when active markers carry diagram_coordinate (AC-17)",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           stop_level: active_stop_level,
+           level: active_level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(active_stop_level, "map-diagram.png")
+
+      # Active-level child stop that DOES carry a diagram_coordinate (plus lat/lon).
+      # This is the new payload field; it must not perturb the other-level shape.
+      _active_diagram_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ISO_ACTIVE",
+          stop_name: "Isolation Active",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 40.0},
+          stop_lat: Decimal.new("40.7100"),
+          stop_lon: Decimal.new("-74.0100")
+        })
+
+      # Other level with a complete saved floorplan alignment and one geo-coded stop.
+      other_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "iso_other",
+          level_name: "Isolation Other",
+          level_index: 1.0
+        })
+
+      {:ok, other_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: other_level.id
+        })
+
+      {:ok, _} =
+        Gtfs.update_stop_level_alignment(other_stop_level, %{
+          floorplan_center_lat: 41.5,
+          floorplan_center_lon: -72.5,
+          floorplan_scale_mpp: 0.42,
+          floorplan_rotation_deg: 12.0
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(other_stop_level, "iso-other.png")
+
+      _other_geo_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ISO_OTHER_STOP",
+          stop_name: "Isolation Other Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: other_level.level_id,
+          stop_lat: Decimal.new("41.5005"),
+          stop_lon: Decimal.new("-72.5005")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      # Sanity: the active payload now carries diagram_coordinate.
+      assert_push_event(view, "set_active_child_stops", %{stops: active_stops})
+      active_marker = Enum.find(active_stops, &(&1.stop_id == "ISO_ACTIVE"))
+      assert active_marker.diagram_coordinate == %{x: 50.0, y: 40.0}
+
+      # Drain the mount-time set_other_levels push (empty levels) before toggling.
+      assert_push_event(view, "set_other_levels", %{levels: _mount_levels})
+
+      # Turn on the other level's floorplan and stops so it appears in the payload.
+      # Each toggle re-pushes set_other_levels; the stops toggle is the final state
+      # that carries both the floorplan and the stop marker.
+      render_click(element(view, floorplan_selector(other_level.id)))
+      assert_push_event(view, "set_other_levels", %{levels: _fp_levels})
+
+      render_click(element(view, stops_selector(other_level.id)))
+      assert_push_event(view, "set_other_levels", %{levels: levels})
+
+      other = Enum.find(levels, &(&1.level_id == other_level.id))
+      assert other != nil
+
+      # Level wrapper keeps its stable shape: id, color, floorplan, stops.
+      assert Map.keys(other) |> Enum.sort() ==
+               [:color, :floorplan, :level_id, :level_index, :stops]
+
+      # Other-level floorplan alignment reflects the SAVED stop_level columns,
+      # not any active floorplan transform.
+      assert other.floorplan.center_lat == 41.5
+      assert other.floorplan.center_lon == -72.5
+      assert other.floorplan.scale_mpp == 0.42
+      assert other.floorplan.rotation_deg == 12.0
+
+      # Other-level stop marker stays anchored to its stored geography.
+      other_marker = Enum.find(other.stops, &(&1.stop_id == "ISO_OTHER_STOP"))
+      assert other_marker != nil
+      assert other_marker.lat == 41.5005
+      assert other_marker.lon == -72.5005
+    end
   end
 
   # Creates an other level with a diagram and a complete alignment (floorplan-eligible)

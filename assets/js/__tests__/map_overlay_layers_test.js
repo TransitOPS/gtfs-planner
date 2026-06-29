@@ -474,6 +474,51 @@ describe("createOtherLevelsLayers opacity and teardown", () => {
   });
 });
 
+describe("createOtherLevelsLayers recompute isolation (AC-17)", () => {
+  // The other-level renderer is read-only: overlay transforms and pin positions
+  // change ONLY through an explicit update/reposition/setOpacity call, never as a
+  // side effect. This guards the active floorplan transform from leaking into
+  // other-level overlays through any implicit recompute.
+  it("does not recompute overlay transform or pin position until reposition is called", () => {
+    const deps = makeDeps({
+      projectLatLng: vi.fn(() => ({ x: 10, y: 20 })),
+    });
+    const layers = createOtherLevelsLayers(deps);
+
+    layers.update({
+      levels: [
+        level({
+          levelId: "a",
+          index: 1,
+          color: "#f00",
+          fp: floorplan("/a.png"),
+          stops: [stop("s1", 40.7, -74.0, "Stop 1")],
+        }),
+      ],
+    });
+
+    const marker = deps.pinsRoot.querySelector(".map-pin");
+    expect(marker.style.left).toBe("10px");
+    expect(marker.style.top).toBe("20px");
+
+    // Change what the injected math would produce. Absent an explicit
+    // reposition/update, the rendered position must not move.
+    deps.applyOverlayTransform.mockClear();
+    deps.projectLatLng.mockClear();
+    deps.projectLatLng.mockReturnValue({ x: 999, y: 999 });
+
+    expect(marker.style.left).toBe("10px");
+    expect(marker.style.top).toBe("20px");
+    expect(deps.applyOverlayTransform).not.toHaveBeenCalled();
+    expect(deps.projectLatLng).not.toHaveBeenCalled();
+
+    // The new projection only takes effect on an explicit reposition.
+    layers.reposition();
+    expect(marker.style.left).toBe("999px");
+    expect(marker.style.top).toBe("999px");
+  });
+});
+
 describe("createOtherLevelsLayers dependency validation", () => {
   it("throws when a required dependency is missing", () => {
     expect(() => createOtherLevelsLayers({ ...makeDeps(), overlaysRoot: undefined })).toThrow(
