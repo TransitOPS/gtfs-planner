@@ -949,7 +949,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#map-alignment-lat-input")
       assert has_element?(view, "#map-alignment-lon-input")
       assert has_element?(view, "#map-alignment-apply-center")
-      assert has_element?(view, "#map-alignment-save")
+      refute has_element?(view, "#map-alignment-save")
       assert has_element?(view, "#map-alignment-apply")
       refute has_element?(view, "#map-alignment-infer")
       refute has_element?(view, "#map-canvas-wrapper", "Infer from anchors")
@@ -957,6 +957,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#map-alignment-scale-handle")
       refute has_element?(view, "#map-alignment-reset")
       refute has_element?(view, "#map-alignment-clear")
+    end
+
+    test "map control row shows one primary save action with floorplan-and-stops copy", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      html = render(view)
+
+      assert html =~ "Save floorplan and stops"
+      assert has_element?(view, "#map-alignment-apply.btn-primary", "Save floorplan and stops")
+
+      # #map-alignment-save must not appear in the normal control row.
+      refute has_element?(view, "#map-alignment-save")
+
+      # Exactly one visible primary save action in the control row.
+      assert html
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query("#map-alignment-actions .btn-primary")
+             |> Enum.count() == 1
+
+      # Accessible preview-status region the hook can update.
+      assert has_element?(view, "#map-alignment-preview-status[aria-live='polite']")
     end
 
     test "save_alignment persists the four fields on the active stop_level", %{
@@ -1364,6 +1398,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
 
+      # Drain the markers pushed on mode switch so the post-apply assertion below
+      # proves the re-push, not the initial push.
+      assert_push_event(view, "set_active_child_stops", %{stops: _})
+
       html =
         render_hook(view, "save_and_apply_alignment", %{
           "center_lat" => 40.7128,
@@ -1373,6 +1411,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         })
 
       assert html =~ "Set lat/lon for 1 child stops"
+
+      # Active marker payloads are re-pushed after apply so pins reflect the
+      # persisted geography.
+      assert_push_event(view, "set_active_child_stops", %{stops: _stops})
 
       reloaded_level = Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id)
       assert reloaded_level.floorplan_center_lat == 40.7128
@@ -1649,6 +1691,240 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       marker = Enum.find(stops, &(&1.stop_id == "BADGE_NONE"))
 
       assert marker.badges == []
+    end
+
+    test "active child-stop payload includes diagram_coordinate for stops with diagram coords",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           stop_level: stop_level,
+           level: level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      _diagram_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIAGRAM_AND_GEO",
+          stop_name: "Diagram And Geo",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 40.0},
+          stop_lat: Decimal.new("40.7000"),
+          stop_lon: Decimal.new("-74.0000")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert_push_event(view, "set_active_child_stops", %{stops: stops})
+      marker = Enum.find(stops, &(&1.stop_id == "DIAGRAM_AND_GEO"))
+
+      assert marker.diagram_coordinate == %{x: 50.0, y: 40.0}
+    end
+
+    test "active child-stop payload includes diagram-only stops without lat/lon", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level,
+      level: level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      _diagram_only_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DIAGRAM_ONLY",
+          stop_name: "Diagram Only",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 25.0, "y" => 35.0},
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert_push_event(view, "set_active_child_stops", %{stops: stops})
+      marker = Enum.find(stops, &(&1.stop_id == "DIAGRAM_ONLY"))
+
+      assert marker.lat == nil
+      assert marker.lon == nil
+      assert marker.diagram_coordinate == %{x: 25.0, y: 35.0}
+    end
+
+    test "active child-stop payload excludes stops with neither diagram coord nor lat/lon", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level,
+      level: level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      _unlocated_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NO_COORDS",
+          stop_name: "No Coords",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: nil,
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert_push_event(view, "set_active_child_stops", %{stops: stops})
+
+      assert Enum.find(stops, &(&1.stop_id == "NO_COORDS")) == nil
+    end
+
+    test "set_other_levels payload shape is unchanged when active markers carry diagram_coordinate (AC-17)",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           stop_level: active_stop_level,
+           level: active_level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(active_stop_level, "map-diagram.png")
+
+      # Active-level child stop that DOES carry a diagram_coordinate (plus lat/lon).
+      # This is the new payload field; it must not perturb the other-level shape.
+      _active_diagram_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ISO_ACTIVE",
+          stop_name: "Isolation Active",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 40.0},
+          stop_lat: Decimal.new("40.7100"),
+          stop_lon: Decimal.new("-74.0100")
+        })
+
+      # Other level with a complete saved floorplan alignment and one geo-coded stop.
+      other_level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "iso_other",
+          level_name: "Isolation Other",
+          level_index: 1.0
+        })
+
+      {:ok, other_stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: other_level.id
+        })
+
+      {:ok, _} =
+        Gtfs.update_stop_level_alignment(other_stop_level, %{
+          floorplan_center_lat: 41.5,
+          floorplan_center_lon: -72.5,
+          floorplan_scale_mpp: 0.42,
+          floorplan_rotation_deg: 12.0
+        })
+
+      {:ok, _} = Gtfs.update_stop_level_diagram(other_stop_level, "iso-other.png")
+
+      _other_geo_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ISO_OTHER_STOP",
+          stop_name: "Isolation Other Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: other_level.level_id,
+          stop_lat: Decimal.new("41.5005"),
+          stop_lon: Decimal.new("-72.5005")
+        })
+
+      _other_diagram_only_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ISO_OTHER_DIAGRAM_ONLY",
+          stop_name: "Isolation Other Diagram Only",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: other_level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0},
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      # Sanity: the active payload now carries diagram_coordinate.
+      assert_push_event(view, "set_active_child_stops", %{stops: active_stops})
+      active_marker = Enum.find(active_stops, &(&1.stop_id == "ISO_ACTIVE"))
+      assert active_marker.diagram_coordinate == %{x: 50.0, y: 40.0}
+
+      # Drain the mount-time set_other_levels push (empty levels) before toggling.
+      assert_push_event(view, "set_other_levels", %{levels: _mount_levels})
+
+      # Turn on the other level's floorplan and stops so it appears in the payload.
+      # Each toggle re-pushes set_other_levels; the stops toggle is the final state
+      # that carries both the floorplan and the stop marker.
+      render_click(element(view, floorplan_selector(other_level.id)))
+      assert_push_event(view, "set_other_levels", %{levels: _fp_levels})
+
+      render_click(element(view, stops_selector(other_level.id)))
+      assert_push_event(view, "set_other_levels", %{levels: levels})
+
+      other = Enum.find(levels, &(&1.level_id == other_level.id))
+      assert other != nil
+
+      # Level wrapper keeps its stable shape: id, color, floorplan, stops.
+      assert Map.keys(other) |> Enum.sort() ==
+               [:color, :floorplan, :level_id, :level_index, :stops]
+
+      # Other-level floorplan alignment reflects the SAVED stop_level columns,
+      # not any active floorplan transform.
+      assert other.floorplan.center_lat == 41.5
+      assert other.floorplan.center_lon == -72.5
+      assert other.floorplan.scale_mpp == 0.42
+      assert other.floorplan.rotation_deg == 12.0
+
+      # Other-level stop marker stays anchored to its stored geography.
+      other_marker = Enum.find(other.stops, &(&1.stop_id == "ISO_OTHER_STOP"))
+      assert other_marker != nil
+      assert other_marker.lat == 41.5005
+      assert other_marker.lon == -72.5005
+
+      # Other-level overlays are geography-only; diagram-only stops belong to
+      # the active floorplan preview where image-space positioning is available.
+      refute Enum.find(other.stops, &(&1.stop_id == "ISO_OTHER_DIAGRAM_ONLY"))
     end
   end
 

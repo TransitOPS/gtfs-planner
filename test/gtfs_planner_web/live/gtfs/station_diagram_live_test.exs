@@ -12149,4 +12149,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert state.socket.assigns.rollback_preview == nil
     end
   end
+
+  describe "StationDiagramLive - other-level overlay color distinctness" do
+    alias GtfsPlannerWeb.Gtfs.StationDiagramLive
+
+    test "every other-level palette color stays distinct from the active level color" do
+      assert StationDiagramLive.other_level_palette_distinct?()
+    end
+
+    test "rejects a palette color too close to the active level color" do
+      active = StationDiagramLive.active_level_color()
+
+      # #2563eb is the saturated blue that previously clashed with the active
+      # level's #0080FF; it must read as "too similar".
+      assert StationDiagramLive.color_distance("#2563eb", active) <
+               StationDiagramLive.color_distance("#16a34a", active)
+    end
+
+    test "color_distance is zero for identical colors" do
+      assert StationDiagramLive.color_distance("#0080FF", "#0080FF") == 0.0
+    end
+  end
 end

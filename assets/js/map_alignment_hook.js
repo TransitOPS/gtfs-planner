@@ -29,6 +29,10 @@
 
 import { createOtherLevelsLayers } from "./map_overlay_layers";
 import {
+  normalizeDiagramPoint,
+  previewPointForDiagramCoordinate,
+} from "./floorplan_preview_points";
+import {
   DIAGRAM_BASE_COLOR,
   appendStopBadges,
   symbolForLocationType,
@@ -39,6 +43,29 @@ const SCALE_MIN = 0.25;
 const SCALE_MAX = 4;
 const IDENTITY_TRANSFORM = Object.freeze({tx: 0, ty: 0, rotation: 0, scale: 1});
 const MAP_ALIGNMENT_HOOK_BUILD = "map-align-fix-v2";
+
+// Deterministic degraded-state opacity for geo-mode fallback pins (stops
+// positioned from stored geography rather than the floorplan image).
+const FALLBACK_PIN_OPACITY = "0.6";
+// Suffix appended to fallback pin text so the visible tooltip and the
+// aria-label both name the stop as map-positioned, not floorplan-positioned.
+const FALLBACK_POSITION_SUFFIX = " (map position)";
+
+// Apply-button titles. The map root is phx-update="ignore", so the hook owns
+// enablement after mount; a disabled control must still explain why (ux-states).
+const APPLY_ENABLED_TITLE =
+  "Set lat/lon for child stops from the floorplan's current position on the map";
+const APPLY_DISABLED_TITLE = "Waiting for the floorplan image to load";
+
+// Preview status copy (operator-facing, plain language). Shown before the
+// floorplan image is ready or after the active marker layer is cleared.
+const PREVIEW_STATUS_NOT_READY = "Preview not ready";
+
+// Ready-state status: front-load the two deterministic counts. Diagram-mode pins
+// are anchored to the floorplan image; geo-mode pins fall back to map position.
+function previewStatusText(diagramCount, geoCount) {
+  return `${diagramCount} anchored to floorplan · ${geoCount} positioned from map`;
+}
 
 function shouldEnableMapAlignmentDiagnostics(root) {
   if (root?.dataset?.mapAlignmentDebugLogging === "true") return true;
@@ -168,6 +195,7 @@ const MapAlignmentHook = {
     this.zoomSlider = zoomSlider;
     this.saveBtn = saveBtn;
     this.applyBtn = applyBtn;
+    this._previewStatusEl = document.getElementById("map-alignment-preview-status");
     this._overlayRestoreDisposers = [];
 
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.7";
@@ -488,6 +516,9 @@ const MapAlignmentHook = {
         w: img.naturalWidth,
         h: img.naturalHeight
       });
+      this._positionPins();
+      this._syncApplyButtonState();
+      this._syncPreviewStatus();
     };
     if (img) {
       if (img.complete && img.naturalWidth > 0) {
@@ -500,10 +531,16 @@ const MapAlignmentHook = {
 
     if (applyBtn) {
       this._onApply = () => {
+        if (applyBtn.disabled) return;
         this._pushAlignmentEventIfValid("save_and_apply_alignment");
       };
       applyBtn.addEventListener("click", this._onApply);
     }
+
+    // Own apply enablement after mount. The static markup disables the button
+    // until image dims are known, but the ignored map root never receives a
+    // server patch — so set the starting state here and re-sync on image load.
+    this._syncApplyButtonState();
   },
 
   updated() {
@@ -889,6 +926,11 @@ const MapAlignmentHook = {
       this.overlay.style.transform =
         `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`;
     }
+    // Active markers live outside the transformed overlay; recompute their
+    // anchors so they track the floorplan as it translates/rotates/scales.
+    // Other-level overlays are intentionally NOT repositioned here — that
+    // fires only on the map move/zoom/view paths.
+    this._positionPins();
   },
 
   _leafletRect() {
@@ -912,6 +954,40 @@ const MapAlignmentHook = {
       center_lon <= 180 &&
       scale_mpp > 0
     );
+  },
+
+  _syncApplyButtonState() {
+    const applyBtn = this.applyBtn;
+    if (!applyBtn) return;
+
+    const img = this._naturalSizeImg;
+    const ready = !!(img && img.naturalWidth > 0 && img.naturalHeight > 0);
+
+    applyBtn.disabled = !ready;
+    applyBtn.setAttribute("aria-disabled", ready ? "false" : "true");
+    applyBtn.title = ready ? APPLY_ENABLED_TITLE : APPLY_DISABLED_TITLE;
+  },
+
+  // Keep #map-alignment-preview-status accurate after active markers render and
+  // after image readiness changes. Reports deterministic diagram-mode and
+  // geo-mode pin counts in plain copy. Before the image is ready or after the
+  // marker layer is cleared, falls back to the not-ready state.
+  _syncPreviewStatus() {
+    const statusEl = this._previewStatusEl;
+    if (!statusEl) return;
+
+    const img = this._naturalSizeImg;
+    const ready = !!(img && img.naturalWidth > 0 && img.naturalHeight > 0);
+    const records = this._activeChildStops;
+
+    if (!ready || !Array.isArray(records)) {
+      statusEl.textContent = PREVIEW_STATUS_NOT_READY;
+      return;
+    }
+
+    const diagramCount = records.filter((s) => s.positionMode === "diagram").length;
+    const geoCount = records.filter((s) => s.positionMode === "geo").length;
+    statusEl.textContent = previewStatusText(diagramCount, geoCount);
   },
 
   _pushAlignmentEventIfValid(eventName) {
@@ -996,7 +1072,25 @@ const MapAlignmentHook = {
       .map((s) => {
         const lat = typeof s?.lat === "number" ? s.lat : parseFloat(s?.lat);
         const lon = typeof s?.lon === "number" ? s.lon : parseFloat(s?.lon);
-        return Number.isFinite(lat) && Number.isFinite(lon) ? { ...s, lat, lon } : null;
+        const hasGeo = Number.isFinite(lat) && Number.isFinite(lon);
+        const diagramPoint = normalizeDiagramPoint(s?.diagram_coordinate);
+
+        let positionMode;
+        if (diagramPoint) {
+          positionMode = "diagram";
+        } else if (hasGeo) {
+          positionMode = "geo";
+        } else {
+          return null;
+        }
+
+        return {
+          ...s,
+          lat: hasGeo ? lat : null,
+          lon: hasGeo ? lon : null,
+          diagramPoint,
+          positionMode,
+        };
       })
       .filter(Boolean);
 
@@ -1006,6 +1100,7 @@ const MapAlignmentHook = {
       const pin = document.createElement("div");
       pin.className =
         "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
+      pin.dataset.positionMode = s.positionMode;
       pin.style.width = treatment.width;
       pin.style.height = treatment.height;
 
@@ -1023,6 +1118,22 @@ const MapAlignmentHook = {
       tip.textContent = stopTooltipLabel(s, "A");
       pin.appendChild(tip);
 
+      // Geo-mode fallback pins are positioned from stored lat/lon (no valid
+      // diagram coordinate), so they are NOT anchored to the floorplan image.
+      // Mark them as a degraded/fallback state per ux-states: reduced opacity +
+      // dashed border (deterministic), plus text that names the position source
+      // (color is never the sole signal). Diagram-mode pins are left exactly as
+      // PR #648 renders them.
+      if (s.positionMode === "geo") {
+        const fallbackLabel = fallbackTooltipLabel(s, "A");
+        pin.classList.add("map-pin-fallback");
+        pin.dataset.positionFallback = "geo";
+        pin.style.opacity = FALLBACK_PIN_OPACITY;
+        pin.setAttribute("aria-label", fallbackLabel);
+        dot.style.borderStyle = "dashed";
+        tip.textContent = fallbackLabel;
+      }
+
       appendStopBadges(pin, s.badges, DIAGRAM_BASE_COLOR);
 
       this._activePinsRoot.appendChild(pin);
@@ -1030,14 +1141,42 @@ const MapAlignmentHook = {
     });
 
     this._positionPins();
+    this._syncPreviewStatus();
   },
 
   _positionPins() {
     if (!this.leafletMap) return;
 
+    // Read layout once per call; reuse across every marker (avoid per-marker
+    // layout thrash). Diagram-mode pins need canvas + natural image metrics.
+    const canvasRect = this._leafletRect();
+    const img = this.overlay ? this.overlay.querySelector("img") : null;
+    const metrics = {
+      transform: this.transform,
+      canvasWidth: canvasRect ? canvasRect.width : null,
+      canvasHeight: canvasRect ? canvasRect.height : null,
+      imageNaturalWidth: img ? img.naturalWidth : null,
+      imageNaturalHeight: img ? img.naturalHeight : null,
+    };
+
     (this._activeChildStops || []).forEach((s) => {
       if (!s._el) return;
-      const pt = this.leafletMap.latLngToContainerPoint([s.lat, s.lon]);
+
+      let pt = null;
+      if (s.positionMode === "diagram") {
+        pt = previewPointForDiagramCoordinate({
+          coordinate: s.diagramPoint,
+          transform: metrics.transform,
+          canvasWidth: metrics.canvasWidth,
+          canvasHeight: metrics.canvasHeight,
+          imageNaturalWidth: metrics.imageNaturalWidth,
+          imageNaturalHeight: metrics.imageNaturalHeight,
+        });
+      } else if (Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
+        pt = this.leafletMap.latLngToContainerPoint([s.lat, s.lon]);
+      }
+
+      if (!pt) return;
       s._el.style.left = `${pt.x}px`;
       s._el.style.top = `${pt.y}px`;
     });
@@ -1047,6 +1186,7 @@ const MapAlignmentHook = {
     if (this._activePinsRoot) this._activePinsRoot.innerHTML = "";
     this._activePinsRoot = null;
     this._activeChildStops = null;
+    this._syncPreviewStatus();
   }
 };
 
@@ -1055,6 +1195,12 @@ function stopTooltipLabel(s, roleTag = "") {
   const platform = s.platform_code ? ` · Plat ${s.platform_code}` : "";
   const rolePrefix = roleTag ? `${roleTag}: ` : "";
   return `${rolePrefix}${name}${platform}`;
+}
+
+// Label for geo-mode fallback pins: the standard active label plus an explicit
+// "map position" suffix so visible tooltip and aria-label agree on the source.
+function fallbackTooltipLabel(s, roleTag = "") {
+  return `${stopTooltipLabel(s, roleTag)}${FALLBACK_POSITION_SUFFIX}`;
 }
 
 export {
