@@ -574,7 +574,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> Enum.reject(&is_nil/1)
   end
 
-  @other_level_palette ~w(#2563eb #16a34a #d97706 #db2777 #7c3aed #0891b2 #ca8a04 #dc2626)
+  # Active-level child stops always render in the diagram base blue
+  # (DIAGRAM_BASE_COLOR = "#0080FF" in assets/js/stop_icon_symbols.js). Blue is
+  # reserved for the level the operator is editing, so the other-level palette
+  # excludes the blue/cyan band entirely — an overlay must never be mistaken for
+  # the active level. `other_level_palette_distinct?/0` guards this invariant.
+  @active_level_color "#0080FF"
+  @other_level_palette ~w(#16a34a #d97706 #db2777 #7c3aed #ca8a04 #dc2626 #0d9488 #c026d3)
+
+  # Minimum straight RGB distance an other-level color must keep from the active
+  # color. The replaced blue (#2563eb) and cyan (#0891b2) sat at 51 and 79; every
+  # retained color is >= 121, so 100 cleanly separates "too similar" from "clear".
+  @min_active_color_distance 100
 
   defp build_other_levels(socket) do
     active_level_id =
@@ -673,6 +684,39 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp other_level_color(_level_index), do: List.first(@other_level_palette)
+
+  @doc """
+  Color reserved for the active level's overlay. Mirrors `DIAGRAM_BASE_COLOR`
+  in `assets/js/stop_icon_symbols.js`; other-level colors must stay distinct
+  from it so operators never confuse an overlay with the level they are editing.
+  """
+  def active_level_color, do: @active_level_color
+
+  @doc "Qualitative palette assigned to other-level overlays by level index."
+  def other_level_palette, do: @other_level_palette
+
+  @doc """
+  True when every other-level palette color stays at least
+  `#{@min_active_color_distance}` RGB units from `active_level_color/0`, keeping
+  overlays visually distinct from the active level.
+  """
+  def other_level_palette_distinct? do
+    Enum.all?(@other_level_palette, fn color ->
+      color_distance(color, @active_level_color) >= @min_active_color_distance
+    end)
+  end
+
+  @doc "Straight RGB Euclidean distance between two `#rrggbb` colors."
+  def color_distance(<<?#, _::binary>> = a, <<?#, _::binary>> = b) do
+    {ar, ag, ab} = rgb_channels(a)
+    {br, bg, bb} = rgb_channels(b)
+
+    :math.sqrt(:math.pow(ar - br, 2) + :math.pow(ag - bg, 2) + :math.pow(ab - bb, 2))
+  end
+
+  defp rgb_channels(<<?#, r::binary-2, g::binary-2, b::binary-2>>) do
+    {String.to_integer(r, 16), String.to_integer(g, 16), String.to_integer(b, 16)}
+  end
 
   defp other_level_floorplan_eligible?(%{
          has_diagram?: has_diagram?,
