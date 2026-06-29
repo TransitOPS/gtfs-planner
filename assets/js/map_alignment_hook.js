@@ -51,6 +51,12 @@ const FALLBACK_PIN_OPACITY = "0.6";
 // aria-label both name the stop as map-positioned, not floorplan-positioned.
 const FALLBACK_POSITION_SUFFIX = " (map position)";
 
+// Apply-button titles. The map root is phx-update="ignore", so the hook owns
+// enablement after mount; a disabled control must still explain why (ux-states).
+const APPLY_ENABLED_TITLE =
+  "Set lat/lon for child stops from the floorplan's current position on the map";
+const APPLY_DISABLED_TITLE = "Waiting for the floorplan image to load";
+
 function shouldEnableMapAlignmentDiagnostics(root) {
   if (root?.dataset?.mapAlignmentDebugLogging === "true") return true;
 
@@ -499,6 +505,7 @@ const MapAlignmentHook = {
         w: img.naturalWidth,
         h: img.naturalHeight
       });
+      this._syncApplyButtonState();
     };
     if (img) {
       if (img.complete && img.naturalWidth > 0) {
@@ -511,10 +518,16 @@ const MapAlignmentHook = {
 
     if (applyBtn) {
       this._onApply = () => {
+        if (applyBtn.disabled) return;
         this._pushAlignmentEventIfValid("save_and_apply_alignment");
       };
       applyBtn.addEventListener("click", this._onApply);
     }
+
+    // Own apply enablement after mount. The static markup disables the button
+    // until image dims are known, but the ignored map root never receives a
+    // server patch — so set the starting state here and re-sync on image load.
+    this._syncApplyButtonState();
   },
 
   updated() {
@@ -928,6 +941,18 @@ const MapAlignmentHook = {
       center_lon <= 180 &&
       scale_mpp > 0
     );
+  },
+
+  _syncApplyButtonState() {
+    const applyBtn = this.applyBtn;
+    if (!applyBtn) return;
+
+    const img = this._naturalSizeImg;
+    const ready = !!(img && img.naturalWidth > 0 && img.naturalHeight > 0);
+
+    applyBtn.disabled = !ready;
+    applyBtn.setAttribute("aria-disabled", ready ? "false" : "true");
+    applyBtn.title = ready ? APPLY_ENABLED_TITLE : APPLY_DISABLED_TITLE;
   },
 
   _pushAlignmentEventIfValid(eventName) {

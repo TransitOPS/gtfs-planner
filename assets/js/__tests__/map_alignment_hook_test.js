@@ -236,6 +236,171 @@ describe("map_alignment_hook zoom slider", () => {
   });
 });
 
+describe("map_alignment_hook apply button enablement", () => {
+  function mountApplyHook({ complete, naturalWidth, naturalHeight }) {
+    document.body.innerHTML = `
+      <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16">
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+        <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+        <input id="map-alignment-lat-input" value="40.7128" />
+        <input id="map-alignment-lon-input" value="-74.0060" />
+        <button id="map-alignment-apply-center"></button>
+        <input id="map-alignment-opacity" value="0.7" />
+        <input id="map-alignment-zoom" value="16" />
+        <button id="map-alignment-apply" disabled>Save floorplan and stops</button>
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const activeImg = document.getElementById("active-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const applyBtn = document.getElementById("map-alignment-apply");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    Object.defineProperty(activeImg, "complete", { value: complete, configurable: true });
+    Object.defineProperty(activeImg, "naturalWidth", { value: naturalWidth, configurable: true });
+    Object.defineProperty(activeImg, "naturalHeight", { value: naturalHeight, configurable: true });
+
+    const mapInstance = {
+      on: vi.fn(),
+      off: vi.fn(),
+      remove: vi.fn(),
+      invalidateSize: vi.fn(),
+      setZoom: vi.fn(),
+      getZoom: vi.fn(() => 16),
+      getMinZoom: vi.fn(() => 16),
+      getMaxZoom: vi.fn(() => 22),
+      setView: vi.fn(),
+      latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+      distance: vi.fn(() => 1),
+      removeLayer: vi.fn(),
+    };
+
+    const originalL = window.L;
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+    window.L = {
+      map: vi.fn(() => mapInstance),
+      tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+      geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+    };
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      pushEvent: vi.fn(),
+      handleEvent: vi.fn(),
+    };
+
+    hook.mounted();
+
+    const restore = () => {
+      window.L = originalL;
+      global.fetch = originalFetch;
+    };
+
+    return { hook, applyBtn, activeImg, restore };
+  }
+
+  it("starts apply disabled before the floorplan image loads", () => {
+    const { applyBtn, restore } = mountApplyHook({
+      complete: false,
+      naturalWidth: 0,
+      naturalHeight: 0,
+    });
+
+    expect(applyBtn.disabled).toBe(true);
+    expect(applyBtn.getAttribute("aria-disabled")).toBe("true");
+
+    restore();
+  });
+
+  it("enables apply when the image reports positive natural dimensions", () => {
+    const { applyBtn, restore } = mountApplyHook({
+      complete: true,
+      naturalWidth: 1000,
+      naturalHeight: 800,
+    });
+
+    expect(applyBtn.disabled).toBe(false);
+    expect(applyBtn.getAttribute("aria-disabled")).toBe("false");
+
+    restore();
+  });
+
+  it("keeps apply disabled when the image has invalid dimensions", () => {
+    const { applyBtn, activeImg, restore } = mountApplyHook({
+      complete: false,
+      naturalWidth: 0,
+      naturalHeight: 0,
+    });
+
+    activeImg.dispatchEvent(new Event("load"));
+
+    expect(applyBtn.disabled).toBe(true);
+
+    restore();
+  });
+
+  it("does not push save_and_apply_alignment when apply is clicked while disabled", () => {
+    const { hook, applyBtn, restore } = mountApplyHook({
+      complete: false,
+      naturalWidth: 0,
+      naturalHeight: 0,
+    });
+
+    applyBtn.dispatchEvent(new Event("click", { bubbles: true }));
+
+    expect(hook.pushEvent).not.toHaveBeenCalledWith(
+      "save_and_apply_alignment",
+      expect.anything()
+    );
+
+    restore();
+  });
+
+  it("pushes only the alignment payload fields when apply is clicked after enable", () => {
+    const { hook, applyBtn, restore } = mountApplyHook({
+      complete: true,
+      naturalWidth: 1000,
+      naturalHeight: 800,
+    });
+
+    hook._computeAlignment = vi.fn(() => ({
+      center_lat: 40.7,
+      center_lon: -74.0,
+      scale_mpp: 0.25,
+      rotation_deg: 10,
+    }));
+
+    applyBtn.dispatchEvent(new Event("click", { bubbles: true }));
+
+    expect(hook.pushEvent).toHaveBeenCalledWith("save_and_apply_alignment", {
+      center_lat: 40.7,
+      center_lon: -74.0,
+      scale_mpp: 0.25,
+      rotation_deg: 10,
+    });
+    const applyCall = hook.pushEvent.mock.calls.find(
+      ([name]) => name === "save_and_apply_alignment"
+    );
+    expect(Object.keys(applyCall[1]).sort()).toEqual([
+      "center_lat",
+      "center_lon",
+      "rotation_deg",
+      "scale_mpp",
+    ]);
+
+    restore();
+  });
+});
+
 describe("map_alignment_hook active child stops rendering", () => {
   it("ignores stale active child-stop payload for non-active level", () => {
     document.body.innerHTML = `
