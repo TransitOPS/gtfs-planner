@@ -949,7 +949,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#map-alignment-lat-input")
       assert has_element?(view, "#map-alignment-lon-input")
       assert has_element?(view, "#map-alignment-apply-center")
-      assert has_element?(view, "#map-alignment-save")
+      refute has_element?(view, "#map-alignment-save")
       assert has_element?(view, "#map-alignment-apply")
       refute has_element?(view, "#map-alignment-infer")
       refute has_element?(view, "#map-canvas-wrapper", "Infer from anchors")
@@ -957,6 +957,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#map-alignment-scale-handle")
       refute has_element?(view, "#map-alignment-reset")
       refute has_element?(view, "#map-alignment-clear")
+    end
+
+    test "map control row shows one primary save action with floorplan-and-stops copy", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      html = render(view)
+
+      assert html =~ "Save floorplan and stops"
+      assert has_element?(view, "#map-alignment-apply.btn-primary", "Save floorplan and stops")
+
+      # #map-alignment-save must not appear in the normal control row.
+      refute has_element?(view, "#map-alignment-save")
+
+      # Exactly one visible primary save action in the control row.
+      assert html
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query("#map-alignment-actions .btn-primary")
+             |> Enum.count() == 1
+
+      # Accessible preview-status region the hook can update.
+      assert has_element?(view, "#map-alignment-preview-status[aria-live='polite']")
     end
 
     test "save_alignment persists the four fields on the active stop_level", %{
