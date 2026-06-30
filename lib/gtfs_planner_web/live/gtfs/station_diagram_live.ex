@@ -1737,13 +1737,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
             {:noreply,
              socket
-             |> stream_insert(:child_stops, updated_stop)
-             |> refresh_lists()
-             |> assign(:pending_xy, nil)
-             |> assign(:selected_stop_id, nil)
-             |> assign(:active_point_id, nil)
-             |> assign(:child_stop_form, to_form(%{}))
-             |> maybe_refresh_history_entries("stop", updated_stop.id)}
+             |> close_child_stop_drawer_after_save()
+             |> apply_child_stop_save_refresh(stop, updated_stop)}
 
           {:error, changeset} ->
             {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
@@ -3950,7 +3945,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp apply_child_stop_refresh_plan(socket, :stop_only, new_stop) do
     socket
     |> replace_child_stop_in_list(new_stop)
-    |> stream_insert(:child_stops, %{new_stop | on_active_level: true})
+    |> stream_insert(:child_stops, Map.put(new_stop, :on_active_level, true))
     |> push_active_child_stop_markers()
   end
 
@@ -3971,7 +3966,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     socket
     |> replace_child_stop_in_list(new_stop)
-    |> stream_insert(:child_stops, %{new_stop | on_active_level: true})
+    |> stream_insert(:child_stops, Map.put(new_stop, :on_active_level, true))
     |> recompute_summary_counts()
     |> merge_pathways_in_list(touching_pathways)
     |> recompute_pathway_decoration()
@@ -4023,7 +4018,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp replace_child_stop_in_list(socket, stop) do
     list =
       Enum.map(socket.assigns.child_stops_list, fn existing ->
-        if existing.id == stop.id, do: %{stop | on_active_level: true}, else: existing
+        if existing.id == stop.id, do: Map.put(stop, :on_active_level, true), else: existing
       end)
 
     assign(socket, :child_stops_list, list)
