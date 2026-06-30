@@ -1062,6 +1062,8 @@ const MapAlignmentHook = {
     const current = map.getZoom();
     if (target === current) return;
 
+    this._markUserAdjusted();
+
     // Pin the floorplan to the map through the zoom: keep its center at
     // the same world lat/lon, and scale by 2^Δzoom so it tracks the tiles.
     const canvasRect = this._leafletRect();

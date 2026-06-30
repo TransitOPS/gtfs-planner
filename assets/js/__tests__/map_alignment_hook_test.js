@@ -985,6 +985,47 @@ describe("map_alignment_hook _applyTransform repositioning", () => {
   });
 });
 
+describe("map_alignment_hook _handleZoomSliderInput user-adjusted marking", () => {
+  const makeHook = (getZoom) => ({
+    ...MapAlignmentHook,
+    overlay: document.createElement("div"),
+    leafletEl: (() => {
+      const el = document.createElement("div");
+      el.getBoundingClientRect = () => ({ width: 500, height: 400 });
+      return el;
+    })(),
+    _activePinsRoot: null,
+    _activeChildStops: [],
+    transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+    _otherLevels: { reposition: vi.fn() },
+    _userAdjustedTransform: false,
+    leafletMap: {
+      getZoom: vi.fn(() => getZoom),
+      setZoom: vi.fn(),
+      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+      latLngToContainerPoint: vi.fn(({ lat, lng }) => ({ x: lng, y: lat })),
+    },
+  });
+
+  it("marks _userAdjustedTransform and applies the zoom update on a changed value", () => {
+    const hook = makeHook(16);
+
+    hook._handleZoomSliderInput({ target: { value: "17" } });
+
+    expect(hook._userAdjustedTransform).toBe(true);
+    expect(hook.leafletMap.setZoom).toHaveBeenCalledWith(17, { animate: false });
+  });
+
+  it("leaves _userAdjustedTransform false on a no-op value equal to the current zoom", () => {
+    const hook = makeHook(16);
+
+    hook._handleZoomSliderInput({ target: { value: "16" } });
+
+    expect(hook._userAdjustedTransform).toBe(false);
+    expect(hook.leafletMap.setZoom).not.toHaveBeenCalled();
+  });
+});
+
 describe("map_alignment_hook _markUserAdjusted", () => {
   it("sets the flag, runs every disposer once, and empties the array", () => {
     const spyA = vi.fn();
