@@ -4024,11 +4024,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     assign(socket, :child_stops_list, list)
   end
 
-  defp remove_child_stop_from_list(socket, stop) do
-    list = Enum.reject(socket.assigns.child_stops_list, &(&1.id == stop.id))
-    assign(socket, :child_stops_list, list)
-  end
-
   defp replace_pathway_in_list(socket, pathway) do
     list =
       Enum.map(socket.assigns.pathways_list, fn existing ->
@@ -4036,17 +4031,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       end)
 
     assign(socket, :pathways_list, list)
-  end
-
-  # Replace every same-level pathway for the unordered pair with the supplied
-  # reloaded pathways, preserving all other pathways in the list.
-  defp replace_pair_pathways_in_list(socket, pair_key, pathways) do
-    retained =
-      Enum.reject(socket.assigns.pathways_list, fn existing ->
-        normalize_pair_key(existing.from_stop_id, existing.to_stop_id) == pair_key
-      end)
-
-    assign(socket, :pathways_list, retained ++ pathways)
   end
 
   # Merge reloaded pathways touching a stop into :pathways_list by id, keeping
