@@ -3953,6 +3953,261 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> Enum.sort_by(&pathway_pair_sort_key/1, :asc)
   end
 
+  # Targeted save-refresh helpers (issue #652).
+  #
+  # These repair only the state a single child-stop or pathway mutation can
+  # invalidate, instead of falling back to the broad refresh_lists/1 path. They
+  # MUST NOT rebuild other-level overlay caches, walkability, platform options,
+  # or push other-level markers. Map-mode marker re-pushes go directly through
+  # set_active_child_stops (active_child_stop_payload/1), never
+  # push_child_stop_markers/1.
+
+  # Classify a child-stop edit by how widely it invalidates active-level state.
+  defp child_stop_refresh_plan(old_stop, new_stop, _active_level) do
+    cond do
+      old_stop.stop_id != new_stop.stop_id or
+        old_stop.level_id != new_stop.level_id or
+        old_stop.parent_station != new_stop.parent_station or
+          old_stop.location_type != new_stop.location_type ->
+        :full_level
+
+      old_stop.diagram_coordinate != new_stop.diagram_coordinate or
+        old_stop.stop_lat != new_stop.stop_lat or
+          old_stop.stop_lon != new_stop.stop_lon ->
+        :stop_and_pathways
+
+      true ->
+        :stop_only
+    end
+  end
+
+  defp apply_child_stop_save_refresh(socket, old_stop, new_stop) do
+    plan = child_stop_refresh_plan(old_stop, new_stop, socket.assigns.active_level)
+
+    socket
+    |> apply_child_stop_refresh_plan(plan, new_stop)
+    |> maybe_refresh_history_entries("stop", new_stop.id)
+  end
+
+  defp apply_child_stop_refresh_plan(socket, :stop_only, new_stop) do
+    socket
+    |> replace_child_stop_in_list(new_stop)
+    |> stream_insert(:child_stops, %{new_stop | on_active_level: true})
+    |> push_active_child_stop_markers()
+  end
+
+  defp apply_child_stop_refresh_plan(socket, :stop_and_pathways, new_stop) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+    active_level = socket.assigns.active_level
+
+    touching_pathways =
+      Gtfs.list_pathways_for_stop_on_level(
+        organization_id,
+        gtfs_version_id,
+        active_level.id,
+        station.id,
+        new_stop.stop_id
+      )
+
+    socket
+    |> replace_child_stop_in_list(new_stop)
+    |> stream_insert(:child_stops, %{new_stop | on_active_level: true})
+    |> recompute_summary_counts()
+    |> merge_pathways_in_list(touching_pathways)
+    |> recompute_pathway_decoration()
+    |> stream_same_level_pathways(touching_pathways)
+    |> recompute_cross_level_badges()
+    |> push_active_child_stop_markers()
+  end
+
+  defp apply_child_stop_refresh_plan(socket, :full_level, _new_stop) do
+    refresh_lists(socket)
+  end
+
+  defp apply_pathway_save_refresh(socket, _old_pathway, updated_pathway) do
+    active_level = socket.assigns.active_level
+
+    reloaded =
+      updated_pathway.id
+      |> Gtfs.get_pathway_with_stops!()
+      |> merge_active_level_flags(active_level)
+
+    badges_before = socket.assigns.cross_level_badges_by_stop
+
+    pair_key = normalize_pair_key(reloaded.from_stop_id, reloaded.to_stop_id)
+
+    socket =
+      socket
+      |> replace_pathway_in_list(reloaded)
+      |> recompute_pathway_decoration()
+      |> stream_same_level_pathways_for_pair(pair_key)
+      |> recompute_cross_level_badges()
+
+    socket
+    |> maybe_push_markers_on_badge_change(badges_before)
+    |> maybe_refresh_history_entries("pathway", updated_pathway.id)
+  end
+
+  # Re-push active child-stop markers in map mode only when cross-level badge
+  # content changed (a cross-level pathway_mode edit alters marker badges).
+  defp maybe_push_markers_on_badge_change(socket, badges_before) do
+    if socket.assigns.cross_level_badges_by_stop != badges_before do
+      push_active_child_stop_markers(socket)
+    else
+      socket
+    end
+  end
+
+  # --- granular list/stream/recompute repairs ---
+
+  defp replace_child_stop_in_list(socket, stop) do
+    list =
+      Enum.map(socket.assigns.child_stops_list, fn existing ->
+        if existing.id == stop.id, do: %{stop | on_active_level: true}, else: existing
+      end)
+
+    assign(socket, :child_stops_list, list)
+  end
+
+  defp remove_child_stop_from_list(socket, stop) do
+    list = Enum.reject(socket.assigns.child_stops_list, &(&1.id == stop.id))
+    assign(socket, :child_stops_list, list)
+  end
+
+  defp replace_pathway_in_list(socket, pathway) do
+    list =
+      Enum.map(socket.assigns.pathways_list, fn existing ->
+        if existing.id == pathway.id, do: pathway, else: existing
+      end)
+
+    assign(socket, :pathways_list, list)
+  end
+
+  # Replace every same-level pathway for the unordered pair with the supplied
+  # reloaded pathways, preserving all other pathways in the list.
+  defp replace_pair_pathways_in_list(socket, pair_key, pathways) do
+    retained =
+      Enum.reject(socket.assigns.pathways_list, fn existing ->
+        normalize_pair_key(existing.from_stop_id, existing.to_stop_id) == pair_key
+      end)
+
+    assign(socket, :pathways_list, retained ++ pathways)
+  end
+
+  # Merge reloaded pathways touching a stop into :pathways_list by id, keeping
+  # untouched pathways unchanged.
+  defp merge_pathways_in_list(socket, pathways) do
+    reloaded_ids = MapSet.new(pathways, & &1.id)
+
+    retained =
+      Enum.reject(socket.assigns.pathways_list, &MapSet.member?(reloaded_ids, &1.id))
+
+    assign(socket, :pathways_list, retained ++ pathways)
+  end
+
+  # Recompute same-level decoration and pair counts from :pathways_list and
+  # reset the :pathways stream, mirroring load_level_data/2.
+  defp recompute_pathway_decoration(socket) do
+    {same_level_pathways, pathway_pair_counts} =
+      decorate_same_level_pathways(socket.assigns.pathways_list)
+
+    socket
+    |> stream(:pathways, same_level_pathways, reset: true)
+    |> assign(:pathway_pair_counts, pathway_pair_counts)
+  end
+
+  # Stream the decorated same-level members of the affected unordered pairs for
+  # the supplied (raw) pathways, so paired display signage stays consistent.
+  defp stream_same_level_pathways(socket, pathways) do
+    pathways
+    |> Enum.map(&normalize_pair_key(&1.from_stop_id, &1.to_stop_id))
+    |> Enum.uniq()
+    |> Enum.reduce(socket, &stream_same_level_pathways_for_pair(&2, &1))
+  end
+
+  defp stream_same_level_pathways_for_pair(socket, pair_key) do
+    {decorated, _counts} = decorate_same_level_pathways(socket.assigns.pathways_list)
+
+    decorated
+    |> Enum.filter(&(normalize_pair_key(&1.from_stop_id, &1.to_stop_id) == pair_key))
+    |> Enum.reduce(socket, &stream_insert(&2, :pathways, &1))
+  end
+
+  # Recompute active-level summary counts from :child_stops_list and
+  # :pathways_list, mirroring load_level_data/2.
+  defp recompute_summary_counts(socket) do
+    child_stops_on_level =
+      Enum.filter(socket.assigns.child_stops_list, & &1.on_active_level)
+
+    child_stops_total = length(child_stops_on_level)
+
+    child_stops_with_geo =
+      Enum.count(child_stops_on_level, fn s ->
+        not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
+      end)
+
+    anchor_count =
+      Enum.count(child_stops_on_level, fn s ->
+        not is_nil(s.diagram_coordinate) and not is_nil(s.stop_lat) and not is_nil(s.stop_lon)
+      end)
+
+    cross_level_pathways = Enum.filter(socket.assigns.pathways_list, & &1.is_cross_level)
+    cross_level_pathway_total = length(cross_level_pathways)
+
+    cross_level_pathway_with_geo =
+      Enum.count(cross_level_pathways, fn p ->
+        other = if p.from_on_active_level, do: p.to_stop, else: p.from_stop
+        not is_nil(other.stop_lat) and not is_nil(other.stop_lon)
+      end)
+
+    socket
+    |> assign(:child_stops_total, child_stops_total)
+    |> assign(:child_stops_with_geo, child_stops_with_geo)
+    |> assign(:anchor_count, anchor_count)
+    |> assign(:cross_level_pathway_total, cross_level_pathway_total)
+    |> assign(:cross_level_pathway_with_geo, cross_level_pathway_with_geo)
+  end
+
+  # Recompute :cross_level_badges_by_stop from :pathways_list and the current
+  # active-level child stops, mirroring load_level_data/2.
+  defp recompute_cross_level_badges(socket) do
+    active_level_stop_ids =
+      socket.assigns.child_stops_list
+      |> Enum.filter(& &1.on_active_level)
+      |> Enum.map(& &1.id)
+      |> MapSet.new()
+
+    badges =
+      cross_level_badges_by_stop(socket.assigns.pathways_list, active_level_stop_ids)
+
+    assign(socket, :cross_level_badges_by_stop, badges)
+  end
+
+  # Re-derive the virtual active-level flags for a reloaded pathway from the
+  # current active level, matching list_pathways_for_level/4.
+  defp merge_active_level_flags(pathway, active_level) do
+    from_on_level = pathway.from_stop.level_id == active_level.level_id
+    to_on_level = pathway.to_stop.level_id == active_level.level_id
+
+    Map.merge(pathway, %{
+      is_cross_level: from_on_level != to_on_level,
+      from_on_active_level: from_on_level,
+      to_on_active_level: to_on_level
+    })
+  end
+
+  # Direct map-mode re-push of active child-stop markers. Never routes through
+  # push_child_stop_markers/1 (which also re-pushes other levels).
+  defp push_active_child_stop_markers(socket) do
+    if socket.assigns[:mode] == :map do
+      push_event(socket, "set_active_child_stops", active_child_stop_payload(socket))
+    else
+      socket
+    end
+  end
+
   defp pair_display_signage(pathway, [first, second]) do
     if pathway.pathway_id == first.pathway_id do
       {
