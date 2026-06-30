@@ -2862,52 +2862,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               attrs
             )
 
-            refreshed_socket = refresh_lists(socket)
-
-            pathway_pair =
-              pair_siblings_for(
-                %{from_stop_id: pathway.from_stop_id, to_stop_id: pathway.to_stop_id},
-                refreshed_socket.assigns.pathways_list
-              )
-
-            next_socket =
-              if length(pathway_pair) == 2 do
-                active_pathway =
-                  Enum.find(pathway_pair, fn sibling ->
-                    sibling.id == updated_pathway.id
-                  end) || hd(pathway_pair)
-
-                active_pathway = Gtfs.get_pathway_with_stops!(active_pathway.id)
-
-                active_pathway_tab =
-                  case pathway_pair do
-                    [_first_pathway, second_pathway] ->
-                      if active_pathway.id == second_pathway.id, do: :second, else: :first
-
-                    _ ->
-                      :first
-                  end
-
-                refreshed_socket
-                |> assign(:show_pathway_drawer, true)
-                |> assign(:editing_pathway_pair, pathway_pair)
-                |> assign(:active_pathway_tab, active_pathway_tab)
-                |> assign(:editing_pathway, active_pathway)
-                |> assign(:pathway_form, to_form(pathway_form_params(active_pathway)))
-              else
-                refreshed_socket
-                |> assign(:show_pathway_drawer, false)
-                |> assign(:editing_pathway, nil)
-                |> assign(:editing_pathway_pair, [])
-                |> assign(:active_pathway_tab, :first)
-                |> assign(:pathway_form, to_form(%{}))
-              end
-
             {:noreply,
-             next_socket
-             |> assign(:pathway_form_dirty, false)
-             |> assign(:pathway_error, nil)
-             |> maybe_refresh_history_entries("pathway", updated_pathway.id)}
+             socket
+             |> apply_pathway_save_refresh(pathway, updated_pathway)
+             |> close_pathway_drawer_after_save()}
 
           {:error, changeset} ->
             {:noreply, assign(socket, :pathway_form, to_form(changeset))}
