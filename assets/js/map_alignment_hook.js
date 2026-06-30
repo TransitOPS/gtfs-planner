@@ -762,6 +762,11 @@ const MapAlignmentHook = {
     // During the immersive CSS transition the canvas grows over ~300ms; running
     // mid-animation produces a scale tuned to a smaller canvas.
     const scheduleRestore = () => {
+      if (this._userAdjustedTransform) {
+        cleanup();
+        return;
+      }
+
       const rect = this._leafletRect();
       const imgReady = img.complete && img.naturalWidth > 0;
       if (!imgReady || !rect || !(rect.width > 0) || !(rect.height > 0)) return;
@@ -789,6 +794,8 @@ const MapAlignmentHook = {
   },
 
   _restoreOverlayAlignment(overlayEl, alignment, img, label) {
+    if (this._userAdjustedTransform) return;
+
     const map = this.leafletMap;
     if (!map || !overlayEl || !img || !img.naturalWidth || !img.naturalHeight) {
       this._logger.warn("MapAlignment: restore skipped, map or image not ready");

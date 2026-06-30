@@ -1041,6 +1041,94 @@ describe("map_alignment_hook _markUserAdjusted", () => {
   });
 });
 
+describe("map_alignment_hook saved-alignment restore guard", () => {
+  function buildRestoreHook() {
+    document.body.innerHTML = `
+      <div id="root">
+        <div id="map-alignment-overlay"><img id="overlay-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+      </div>
+    `;
+
+    const overlay = document.getElementById("map-alignment-overlay");
+    const img = document.getElementById("overlay-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 400, height: 200 });
+    Object.defineProperty(img, "complete", { value: true, configurable: true });
+    Object.defineProperty(img, "naturalWidth", { value: 200, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 100, configurable: true });
+
+    const alignment = {
+      centerLat: 40.7,
+      centerLon: -74.0,
+      scaleMpp: 0.5,
+      rotationDeg: 15,
+    };
+
+    const hook = {
+      ...MapAlignmentHook,
+      overlay,
+      leafletEl,
+      _logger: { warn: vi.fn() },
+      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+      _applyTransform: vi.fn(),
+      leafletMap: {
+        containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+        latLngToContainerPoint: vi.fn(([lat, lon]) => ({ x: lon, y: lat })),
+        distance: vi.fn(() => 0.5),
+      },
+    };
+
+    return { hook, overlay, img, alignment };
+  }
+
+  it("applies the restored transform when the operator has not adjusted the view", () => {
+    const { hook, overlay, img, alignment } = buildRestoreHook();
+    const before = hook.transform;
+    hook._userAdjustedTransform = false;
+
+    hook._restoreOverlayAlignment(overlay, alignment, img, "active");
+
+    expect(hook.transform).not.toBe(before);
+    expect(hook.transform.rotation).toBe(15);
+    expect(hook._applyTransform).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the transform unchanged when the operator has adjusted the view", () => {
+    const { hook, overlay, img, alignment } = buildRestoreHook();
+    const known = { tx: 11, ty: 22, rotation: 33, scale: 4 };
+    hook.transform = known;
+    hook._userAdjustedTransform = true;
+
+    hook._restoreOverlayAlignment(overlay, alignment, img, "active");
+
+    expect(hook.transform).toBe(known);
+    expect(hook.transform).toEqual({ tx: 11, ty: 22, rotation: 33, scale: 4 });
+    expect(hook._applyTransform).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule or run a restore once the operator has adjusted the view", () => {
+    vi.useFakeTimers();
+    try {
+      const { hook, overlay, img, alignment } = buildRestoreHook();
+      hook._userAdjustedTransform = true;
+      hook._restoreOverlayAlignment = vi.fn();
+      hook._overlayRestoreDisposers = [];
+
+      hook._scheduleOverlayAlignmentRestore(overlay, alignment, "active");
+
+      // The disposer was registered then immediately run by the bailing
+      // scheduleRestore, so no settle timer is armed.
+      vi.runAllTimers();
+
+      expect(hook._restoreOverlayAlignment).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("map_alignment_hook other-level isolation across active transform", () => {
   // Step 4 already proves _applyTransform does not CALL other-level reposition.
   // This is the complementary guarantee: an active transform leaves the
