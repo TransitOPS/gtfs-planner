@@ -918,6 +918,21 @@ const MapAlignmentHook = {
     this._otherLevels.setOpacity(parseFloat(this.otherOpacitySlider.value) || 0.7);
   },
 
+  // Mark that the operator has taken manual control of the overlay transform.
+  // Idempotent. On the first call it also tears down any pending saved-alignment
+  // restore (settle timer, ResizeObserver, image-load listener) via the existing
+  // disposer array so a late restore cannot clobber the live view.
+  _markUserAdjusted() {
+    if (this._userAdjustedTransform) return;
+    this._userAdjustedTransform = true;
+    if (Array.isArray(this._overlayRestoreDisposers)) {
+      this._overlayRestoreDisposers.forEach((dispose) => {
+        try { dispose(); } catch (_) { /* noop */ }
+      });
+      this._overlayRestoreDisposers = [];
+    }
+  },
+
   _applyTransform() {
     if (!this.overlay) return;
     const {tx, ty, rotation, scale} = this.transform;

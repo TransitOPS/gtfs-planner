@@ -985,6 +985,62 @@ describe("map_alignment_hook _applyTransform repositioning", () => {
   });
 });
 
+describe("map_alignment_hook _markUserAdjusted", () => {
+  it("sets the flag, runs every disposer once, and empties the array", () => {
+    const spyA = vi.fn();
+    const spyB = vi.fn();
+    const hook = {
+      ...MapAlignmentHook,
+      _userAdjustedTransform: false,
+      _overlayRestoreDisposers: [spyA, spyB],
+    };
+
+    hook._markUserAdjusted();
+
+    expect(hook._userAdjustedTransform).toBe(true);
+    expect(spyA).toHaveBeenCalledTimes(1);
+    expect(spyB).toHaveBeenCalledTimes(1);
+    expect(hook._overlayRestoreDisposers).toEqual([]);
+  });
+
+  it("is idempotent: a second call does not re-run disposers and leaves the flag true", () => {
+    const hook = {
+      ...MapAlignmentHook,
+      _userAdjustedTransform: false,
+      _overlayRestoreDisposers: [vi.fn()],
+    };
+
+    hook._markUserAdjusted();
+
+    const laterSpy = vi.fn();
+    hook._overlayRestoreDisposers = [laterSpy];
+
+    hook._markUserAdjusted();
+
+    expect(laterSpy).not.toHaveBeenCalled();
+    expect(hook._userAdjustedTransform).toBe(true);
+  });
+
+  it("sets the flag and runs other disposers when one disposer throws", () => {
+    const throwing = vi.fn(() => {
+      throw new Error("disposer boom");
+    });
+    const survivor = vi.fn();
+    const hook = {
+      ...MapAlignmentHook,
+      _userAdjustedTransform: false,
+      _overlayRestoreDisposers: [throwing, survivor],
+    };
+
+    hook._markUserAdjusted();
+
+    expect(hook._userAdjustedTransform).toBe(true);
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(survivor).toHaveBeenCalledTimes(1);
+    expect(hook._overlayRestoreDisposers).toEqual([]);
+  });
+});
+
 describe("map_alignment_hook other-level isolation across active transform", () => {
   // Step 4 already proves _applyTransform does not CALL other-level reposition.
   // This is the complementary guarantee: an active transform leaves the
