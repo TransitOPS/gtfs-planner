@@ -201,6 +201,7 @@ const MapAlignmentHook = {
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.7";
 
     this.transform = {...IDENTITY_TRANSFORM};
+    this._userAdjustedTransform = false;
 
     const mapCenterLat = activeAlignment ? activeAlignment.centerLat : initialLat;
     const mapCenterLon = activeAlignment ? activeAlignment.centerLon : initialLon;
