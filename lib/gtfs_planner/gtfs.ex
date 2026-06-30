@@ -2142,6 +2142,77 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns pathways that touch the given stop on the specified level.
+
+  Behaves like `list_pathways_for_level/4` but only includes pathways where
+  the given `stop_id` is one of the endpoints. Both endpoints must still belong
+  to the parent station descendant set and at least one endpoint must be on the
+  requested level. Endpoint stops and cross-level flags are populated the same
+  way as `list_pathways_for_level/4`.
+
+  ## Examples
+
+      iex> list_pathways_for_stop_on_level(org_id, version_id, level_id, parent_station_id, "stop_123")
+      [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
+  """
+  @spec list_pathways_for_stop_on_level(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t()
+        ) :: [GtfsPlanner.Gtfs.Pathway.t() | map()]
+  def list_pathways_for_stop_on_level(
+        organization_id,
+        gtfs_version_id,
+        level_id,
+        parent_station_id,
+        stop_id
+      ) do
+    parent_station = Repo.get!(Stop, parent_station_id)
+    level = Repo.get!(Level, level_id)
+
+    descendants =
+      descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
+
+    from(p in Pathway,
+      join: from_stop in Stop,
+      on:
+        p.from_stop_id == from_stop.stop_id and
+          from_stop.organization_id == ^organization_id and
+          from_stop.gtfs_version_id == ^gtfs_version_id,
+      join: to_stop in Stop,
+      on:
+        p.to_stop_id == to_stop.stop_id and
+          to_stop.organization_id == ^organization_id and
+          to_stop.gtfs_version_id == ^gtfs_version_id,
+      where:
+        p.organization_id == ^organization_id and
+          p.gtfs_version_id == ^gtfs_version_id and
+          (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id) and
+          (from_stop.level_id == ^level.level_id or to_stop.level_id == ^level.level_id) and
+          from_stop.stop_id in subquery(descendants) and
+          to_stop.stop_id in subquery(descendants),
+      order_by: [asc: p.pathway_id],
+      select: p,
+      select_merge: %{from_stop: from_stop, to_stop: to_stop}
+    )
+    |> Repo.all()
+    |> Enum.map(fn pathway ->
+      # Add flags indicating if this is a cross-level pathway
+      from_on_level = pathway.from_stop.level_id == level.level_id
+      to_on_level = pathway.to_stop.level_id == level.level_id
+      is_cross_level = from_on_level != to_on_level
+
+      Map.merge(pathway, %{
+        is_cross_level: is_cross_level,
+        from_on_active_level: from_on_level,
+        to_on_active_level: to_on_level
+      })
+    end)
+  end
+
+  @doc """
   Returns pathways where from_stop or to_stop is a child of the given station.
 
   ## Examples

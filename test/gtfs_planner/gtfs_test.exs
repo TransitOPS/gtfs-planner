@@ -4,6 +4,7 @@ defmodule GtfsPlanner.GtfsTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.StationEditingStatus
+  alias GtfsPlanner.Gtfs.Stop
 
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -2420,6 +2421,221 @@ defmodule GtfsPlanner.GtfsTest do
       assert listed_pathway.from_on_active_level == true
       assert listed_pathway.to_on_active_level == false
       assert listed_pathway.is_cross_level == true
+    end
+  end
+
+  describe "list_pathways_for_stop_on_level/5" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STOP_LVL_PARENT",
+          location_type: 1
+        })
+
+      level_a =
+        level_fixture(organization.id, gtfs_version.id, %{level_id: "SLVL_A", level_index: 0.0})
+
+      level_b =
+        level_fixture(organization.id, gtfs_version.id, %{level_id: "SLVL_B", level_index: 1.0})
+
+      target =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STOP_TARGET",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_a.level_id
+        })
+
+      neighbor_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STOP_NEIGHBOR_A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_a.level_id
+        })
+
+      neighbor_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STOP_NEIGHBOR_B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_b.level_id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level_a: level_a,
+        level_b: level_b,
+        target: target,
+        neighbor_a: neighbor_a,
+        neighbor_b: neighbor_b
+      }
+    end
+
+    test "returns a same-level pathway touching the stop", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level_a: level_a,
+      target: target,
+      neighbor_a: neighbor_a
+    } do
+      pathway =
+        pathway_fixture(org.id, version.id, target.stop_id, neighbor_a.stop_id, %{
+          pathway_id: "SP_SAME",
+          pathway_mode: 1
+        })
+
+      result =
+        Gtfs.list_pathways_for_stop_on_level(
+          org.id,
+          version.id,
+          level_a.id,
+          station.id,
+          target.stop_id
+        )
+
+      assert [listed] = result
+      assert listed.id == pathway.id
+      assert listed.is_cross_level == false
+      assert listed.from_on_active_level == true
+      assert listed.to_on_active_level == true
+    end
+
+    test "returns a cross-level pathway touching the stop", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level_a: level_a,
+      target: target,
+      neighbor_b: neighbor_b
+    } do
+      pathway =
+        pathway_fixture(org.id, version.id, target.stop_id, neighbor_b.stop_id, %{
+          pathway_id: "SP_CROSS",
+          pathway_mode: 2
+        })
+
+      result =
+        Gtfs.list_pathways_for_stop_on_level(
+          org.id,
+          version.id,
+          level_a.id,
+          station.id,
+          target.stop_id
+        )
+
+      assert [listed] = result
+      assert listed.id == pathway.id
+      assert listed.is_cross_level == true
+      assert listed.from_on_active_level == true
+      assert listed.to_on_active_level == false
+    end
+
+    test "excludes pathways that do not touch the stop", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level_a: level_a,
+      target: target,
+      neighbor_a: neighbor_a
+    } do
+      other =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "STOP_OTHER_SAME",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_a.level_id
+        })
+
+      _untouched =
+        pathway_fixture(org.id, version.id, neighbor_a.stop_id, other.stop_id, %{
+          pathway_id: "SP_UNTOUCHED",
+          pathway_mode: 1
+        })
+
+      result =
+        Gtfs.list_pathways_for_stop_on_level(
+          org.id,
+          version.id,
+          level_a.id,
+          station.id,
+          target.stop_id
+        )
+
+      assert result == []
+    end
+
+    test "excludes pathways outside the station descendant set", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level_a: level_a,
+      target: target
+    } do
+      other_station =
+        stop_fixture(org.id, version.id, %{stop_id: "STOP_OTHER_STATION", location_type: 1})
+
+      outside =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "STOP_OUTSIDE",
+          location_type: 0,
+          parent_station: other_station.stop_id,
+          level_id: level_a.level_id
+        })
+
+      # Pathway touches the target stop but the other endpoint is outside the
+      # parent station descendant set, so it must be excluded.
+      _cross_station =
+        pathway_fixture(org.id, version.id, target.stop_id, outside.stop_id, %{
+          pathway_id: "SP_OUTSIDE",
+          pathway_mode: 1
+        })
+
+      result =
+        Gtfs.list_pathways_for_stop_on_level(
+          org.id,
+          version.id,
+          level_a.id,
+          station.id,
+          target.stop_id
+        )
+
+      assert result == []
+    end
+
+    test "populates endpoint stops and active-level flags", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level_a: level_a,
+      target: target,
+      neighbor_a: neighbor_a
+    } do
+      pathway_fixture(org.id, version.id, target.stop_id, neighbor_a.stop_id, %{
+        pathway_id: "SP_FLAGS",
+        pathway_mode: 1
+      })
+
+      assert [listed] =
+               Gtfs.list_pathways_for_stop_on_level(
+                 org.id,
+                 version.id,
+                 level_a.id,
+                 station.id,
+                 target.stop_id
+               )
+
+      assert %Stop{stop_id: "STOP_TARGET"} = listed.from_stop
+      assert %Stop{stop_id: "STOP_NEIGHBOR_A"} = listed.to_stop
+      assert listed.is_cross_level == false
+      assert listed.from_on_active_level == true
+      assert listed.to_on_active_level == true
     end
   end
 

@@ -1364,6 +1364,280 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - child stop save refresh" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SAVE_REFRESH_STATION",
+          stop_name: "Save Refresh Station",
+          location_type: 1
+        })
+
+      level_1 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "SAVE_REFRESH_L1",
+          level_name: "Level 1",
+          level_index: 0.0
+        })
+
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "SAVE_REFRESH_L2",
+          level_name: "Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_1} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_1.id,
+          diagram_filename: "save-refresh-l1.png"
+        })
+
+      {:ok, _stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "save-refresh-l2.png"
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level_1: level_1,
+        level_2: level_2
+      }
+    end
+
+    test "display-only edit closes drawer and keeps the updated stop visible", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level_1: level_1
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SAVE_REFRESH_DISPLAY",
+          stop_name: "Original Name",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level_1.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => child_stop.stop_id,
+        "stop_name" => "Renamed Display",
+        "location_type" => Integer.to_string(child_stop.location_type),
+        "level_id" => level_1.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_submit()
+
+      refute has_element?(view, "#child-stop-form")
+
+      assert Gtfs.get_stop!(child_stop.id).stop_name == "Renamed Display"
+
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}", "Renamed Display")
+    end
+
+    test "coordinate edit closes drawer and keeps the touching pathway rendered", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level_1: level_1
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SAVE_REFRESH_GEO_A",
+          stop_name: "Geo A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_1.level_id,
+          stop_lat: Decimal.new("40.7128"),
+          stop_lon: Decimal.new("-74.0060"),
+          diagram_coordinate: %{"x" => 15.0, "y" => 15.0}
+        })
+
+      other_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SAVE_REFRESH_GEO_B",
+          stop_name: "Geo B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_1.level_id,
+          diagram_coordinate: %{"x" => 60.0, "y" => 60.0}
+        })
+
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, child_stop.stop_id, other_stop.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#pathways-#{pathway.id}")
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => child_stop.stop_id,
+        "stop_name" => child_stop.stop_name,
+        "location_type" => Integer.to_string(child_stop.location_type),
+        "level_id" => level_1.level_id,
+        "wheelchair_boarding" => "",
+        "stop_lat" => "40.046627198009965",
+        "stop_lon" => "-73.987654321098765"
+      })
+      |> render_submit()
+
+      refute has_element?(view, "#child-stop-form")
+
+      updated_stop = Gtfs.get_stop!(child_stop.id)
+      assert Decimal.equal?(updated_stop.stop_lat, Decimal.new("40.046627198009965"))
+      assert Decimal.equal?(updated_stop.stop_lon, Decimal.new("-73.987654321098765"))
+
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}")
+      assert has_element?(view, "#pathways-#{pathway.id}")
+    end
+
+    test "structural level change closes drawer and removes the stop from the active level", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level_1: level_1,
+      level_2: level_2
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SAVE_REFRESH_STRUCT",
+          stop_name: "Structural Move",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level_1.level_id,
+          diagram_coordinate: %{"x" => 25.0, "y" => 35.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#child-stop-row-#{child_stop.id}")
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_level_edit']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => child_stop.stop_id,
+        "stop_name" => child_stop.stop_name,
+        "location_type" => Integer.to_string(child_stop.location_type),
+        "level_id" => level_2.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_submit()
+
+      refute has_element?(view, "#child-stop-form")
+
+      assert Gtfs.get_stop!(child_stop.id).level_id == level_2.level_id
+
+      refute has_element?(view, "#child-stop-row-#{child_stop.id}")
+      refute has_element?(view, "#child_stops-#{child_stop.id}")
+    end
+
+    test "map-mode display-only edit re-pushes active child stops", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level_1: level_1
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SAVE_REFRESH_MAP",
+          stop_name: "Map Original",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_1.level_id,
+          diagram_coordinate: %{"x" => 18.0, "y" => 22.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      assert_push_event(view, "set_active_child_stops", _initial)
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => child_stop.stop_id,
+        "stop_name" => "Map Renamed",
+        "location_type" => Integer.to_string(child_stop.location_type),
+        "level_id" => level_1.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_submit()
+
+      refute has_element?(view, "#child-stop-form")
+      assert_push_event(view, "set_active_child_stops", _after_save)
+
+      assert Gtfs.get_stop!(child_stop.id).stop_name == "Map Renamed"
+    end
+  end
+
   describe "StationDiagramLive - edit_child_stop_id URL intent" do
     setup do
       organization = organization_fixture()
@@ -5603,6 +5877,46 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#lists-section", "Unauthorized pathway access.")
     end
 
+    test "saving a single pathway closes the drawer and the row reflects saved fields", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      nested_pathway: nested_pathway
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{nested_pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      assert has_element?(view, "#pathway-form")
+
+      view
+      |> form("#pathway-form", %{
+        "pathway_mode" => "5",
+        "is_bidirectional" => "true",
+        "traversal_time" => "63",
+        "length" => "",
+        "min_width" => "",
+        "signposted_as" => "Single Saved Sign",
+        "reversed_signposted_as" => ""
+      })
+      |> render_submit()
+
+      refute has_element?(view, "#pathway-form")
+
+      saved = Gtfs.get_pathway!(nested_pathway.id)
+      assert saved.pathway_mode == 5
+      assert saved.traversal_time == 63
+      assert saved.signposted_as == "Single Saved Sign"
+
+      assert has_element?(view, "#pathway-row-#{nested_pathway.id}")
+      assert has_element?(view, "#pathway-row-#{nested_pathway.id}", "Single Saved Sign")
+    end
+
     test "save_pathway authorization failure keeps submitted form values and shows drawer error",
          %{
            conn: conn,
@@ -5984,7 +6298,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
              )
     end
 
-    test "saving a pathway in a two-pathway pair keeps the drawer open", %{
+    test "saving a pathway in a two-pathway pair closes the drawer and keeps both siblings", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -6024,9 +6338,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       })
       |> render_submit()
 
-      assert has_element?(view, "#pathway-form")
-      assert has_element?(view, "#pathway-pair-tabs")
-      assert has_element?(view, "#pathway-tab-second[aria-selected='true']")
+      refute has_element?(view, "#pathway-form")
+      refute has_element?(view, "#pathway-pair-tabs")
+
+      assert has_element?(view, "#pathway-row-#{first.id}")
+      assert has_element?(view, "#pathway-row-#{second.id}")
+      assert has_element?(view, "#pathway-row-#{second.id}", "Saved While Paired")
 
       reloaded_first = Gtfs.get_pathway!(first.id)
       reloaded_second = Gtfs.get_pathway!(second.id)
@@ -6209,6 +6526,183 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                view,
                "#pathway-form input[name='pathway_id'][value='#{remaining.pathway_id}']"
              )
+    end
+  end
+
+  describe "StationDiagramLive - pathway save map-mode marker push" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MAP_PUSH_STATION",
+          stop_name: "Map Push Station",
+          location_type: 1
+        })
+
+      level_1 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "MAP_PUSH_L1",
+          level_name: "Map Push Level 1",
+          level_index: 0.0
+        })
+
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "MAP_PUSH_L2",
+          level_name: "Map Push Level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_1} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_1.id,
+          diagram_filename: "map-push-l1.png"
+        })
+
+      {:ok, _stop_level_2} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "map-push-l2.png"
+        })
+
+      l1_stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MAP_PUSH_L1_A",
+          stop_name: "Map Push L1 A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_1.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 12.0}
+        })
+
+      l1_stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MAP_PUSH_L1_B",
+          stop_name: "Map Push L1 B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_1.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 12.0}
+        })
+
+      l2_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MAP_PUSH_L2_A",
+          stop_name: "Map Push L2 A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level_2.level_id,
+          diagram_coordinate: %{"x" => 36.0, "y" => 42.0}
+        })
+
+      same_level_pathway =
+        pathway_fixture(organization.id, gtfs_version.id, l1_stop_a.stop_id, l1_stop_b.stop_id, %{
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      cross_level_pathway =
+        pathway_fixture(organization.id, gtfs_version.id, l1_stop_a.stop_id, l2_stop.stop_id, %{
+          pathway_mode: 2,
+          is_bidirectional: false
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        same_level_pathway: same_level_pathway,
+        cross_level_pathway: cross_level_pathway
+      }
+    end
+
+    test "saving a cross-level pathway mode in map mode re-pushes active child stops", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      cross_level_pathway: cross_level_pathway
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      assert_push_event(view, "set_active_child_stops", _initial)
+
+      render_hook(view, "edit_pathway", %{"id" => cross_level_pathway.id})
+
+      view
+      |> form("#pathway-form", %{
+        "pathway_mode" => "5",
+        "is_bidirectional" => "false",
+        "traversal_time" => "30",
+        "length" => "",
+        "stair_count" => "",
+        "min_width" => "",
+        "signposted_as" => ""
+      })
+      |> render_submit()
+
+      refute has_element?(view, "#pathway-form")
+      assert_push_event(view, "set_active_child_stops", _after_save)
+
+      assert Gtfs.get_pathway!(cross_level_pathway.id).pathway_mode == 5
+    end
+
+    test "saving a same-level pathway field in map mode does not re-push active child stops", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      same_level_pathway: same_level_pathway
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      assert_push_event(view, "set_active_child_stops", _initial)
+
+      render_hook(view, "edit_pathway", %{"id" => same_level_pathway.id})
+
+      view
+      |> form("#pathway-form", %{
+        "pathway_mode" => "1",
+        "is_bidirectional" => "true",
+        "traversal_time" => "99",
+        "length" => "",
+        "min_width" => "",
+        "signposted_as" => "",
+        "reversed_signposted_as" => ""
+      })
+      |> render_submit()
+
+      refute has_element?(view, "#pathway-form")
+      refute_push_event(view, "set_active_child_stops", _payload)
+
+      assert Gtfs.get_pathway!(same_level_pathway.id).traversal_time == 99
     end
   end
 
