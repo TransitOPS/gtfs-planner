@@ -384,6 +384,8 @@ const MapAlignmentHook = {
     this._rotateState = null;
     this._onRotatePointerDown = (e) => {
       if (e.button !== undefined && e.button !== 0) return;
+
+      this._markUserAdjusted();
       const center = overlayCenter(overlay);
       const startAngle = Math.atan2(e.clientY - center.y, e.clientX - center.x);
       this._rotateState = {
