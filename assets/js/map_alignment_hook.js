@@ -477,6 +477,9 @@ const MapAlignmentHook = {
 
       const canvasRect = this._leafletRect();
       if (!canvasRect) return;
+
+      this._markUserAdjusted();
+
       const cxBefore = canvasRect.width / 2 + this.transform.tx;
       const cyBefore = canvasRect.height / 2 + this.transform.ty;
       const worldCenter = this.leafletMap.containerPointToLatLng([cxBefore, cyBefore]);
