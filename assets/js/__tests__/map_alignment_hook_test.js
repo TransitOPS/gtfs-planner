@@ -985,6 +985,637 @@ describe("map_alignment_hook _applyTransform repositioning", () => {
   });
 });
 
+describe("map_alignment_hook _handleZoomSliderInput user-adjusted marking", () => {
+  const makeHook = (getZoom) => ({
+    ...MapAlignmentHook,
+    overlay: document.createElement("div"),
+    leafletEl: (() => {
+      const el = document.createElement("div");
+      el.getBoundingClientRect = () => ({ width: 500, height: 400 });
+      return el;
+    })(),
+    _activePinsRoot: null,
+    _activeChildStops: [],
+    transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+    _otherLevels: { reposition: vi.fn() },
+    _userAdjustedTransform: false,
+    leafletMap: {
+      getZoom: vi.fn(() => getZoom),
+      setZoom: vi.fn(),
+      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+      latLngToContainerPoint: vi.fn(({ lat, lng }) => ({ x: lng, y: lat })),
+    },
+  });
+
+  it("marks _userAdjustedTransform and applies the zoom update on a changed value", () => {
+    const hook = makeHook(16);
+
+    hook._handleZoomSliderInput({ target: { value: "17" } });
+
+    expect(hook._userAdjustedTransform).toBe(true);
+    expect(hook.leafletMap.setZoom).toHaveBeenCalledWith(17, { animate: false });
+  });
+
+  it("leaves _userAdjustedTransform false on a no-op value equal to the current zoom", () => {
+    const hook = makeHook(16);
+
+    hook._handleZoomSliderInput({ target: { value: "16" } });
+
+    expect(hook._userAdjustedTransform).toBe(false);
+    expect(hook.leafletMap.setZoom).not.toHaveBeenCalled();
+  });
+});
+
+describe("map_alignment_hook _markUserAdjusted", () => {
+  it("sets the flag, runs every disposer once, and empties the array", () => {
+    const spyA = vi.fn();
+    const spyB = vi.fn();
+    const hook = {
+      ...MapAlignmentHook,
+      _userAdjustedTransform: false,
+      _overlayRestoreDisposers: [spyA, spyB],
+    };
+
+    hook._markUserAdjusted();
+
+    expect(hook._userAdjustedTransform).toBe(true);
+    expect(spyA).toHaveBeenCalledTimes(1);
+    expect(spyB).toHaveBeenCalledTimes(1);
+    expect(hook._overlayRestoreDisposers).toEqual([]);
+  });
+
+  it("is idempotent: a second call does not re-run disposers and leaves the flag true", () => {
+    const hook = {
+      ...MapAlignmentHook,
+      _userAdjustedTransform: false,
+      _overlayRestoreDisposers: [vi.fn()],
+    };
+
+    hook._markUserAdjusted();
+
+    const laterSpy = vi.fn();
+    hook._overlayRestoreDisposers = [laterSpy];
+
+    hook._markUserAdjusted();
+
+    expect(laterSpy).not.toHaveBeenCalled();
+    expect(hook._userAdjustedTransform).toBe(true);
+  });
+
+  it("sets the flag and runs other disposers when one disposer throws", () => {
+    const throwing = vi.fn(() => {
+      throw new Error("disposer boom");
+    });
+    const survivor = vi.fn();
+    const hook = {
+      ...MapAlignmentHook,
+      _userAdjustedTransform: false,
+      _overlayRestoreDisposers: [throwing, survivor],
+    };
+
+    hook._markUserAdjusted();
+
+    expect(hook._userAdjustedTransform).toBe(true);
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(survivor).toHaveBeenCalledTimes(1);
+    expect(hook._overlayRestoreDisposers).toEqual([]);
+  });
+});
+
+describe("map_alignment_hook translate pointerdown marks control", () => {
+  function mountTranslateHook() {
+    document.body.innerHTML = `
+      <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16">
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+        <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+        <input id="map-alignment-lat-input" value="40.7128" />
+        <input id="map-alignment-lon-input" value="-74.0060" />
+        <button id="map-alignment-apply-center"></button>
+        <input id="map-alignment-opacity" value="0.7" />
+        <input id="map-alignment-zoom" value="16" />
+        <button id="map-alignment-save"></button>
+        <button id="map-alignment-apply"></button>
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const activeImg = document.getElementById("active-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
+    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
+    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+
+    const mapInstance = {
+      on: vi.fn(),
+      off: vi.fn(),
+      remove: vi.fn(),
+      invalidateSize: vi.fn(),
+      setZoom: vi.fn(),
+      getZoom: vi.fn(() => 16),
+      getMinZoom: vi.fn(() => 16),
+      getMaxZoom: vi.fn(() => 22),
+      setView: vi.fn(),
+      latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+      distance: vi.fn(() => 1),
+      removeLayer: vi.fn(),
+    };
+
+    const originalL = window.L;
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+    window.L = {
+      map: vi.fn(() => mapInstance),
+      tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+      geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+    };
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      pushEvent: vi.fn(),
+      handleEvent: vi.fn(),
+    };
+
+    hook.mounted();
+
+    const restore = () => {
+      window.L = originalL;
+      global.fetch = originalFetch;
+    };
+
+    return { hook, overlay, restore };
+  }
+
+  function pointerdown(button) {
+    const event = new Event("pointerdown", { bubbles: true });
+    event.button = button;
+    return event;
+  }
+
+  it("sets _userAdjustedTransform true on a left-button pointerdown", () => {
+    const { hook, overlay, restore } = mountTranslateHook();
+
+    overlay.dispatchEvent(pointerdown(0));
+
+    expect(hook._userAdjustedTransform).toBe(true);
+
+    restore();
+  });
+
+  it("leaves _userAdjustedTransform false on a non-primary pointerdown", () => {
+    const { hook, overlay, restore } = mountTranslateHook();
+
+    overlay.dispatchEvent(pointerdown(2));
+
+    expect(hook._userAdjustedTransform).toBe(false);
+
+    restore();
+  });
+});
+
+describe("map_alignment_hook rotate pointerdown marks control", () => {
+  function mountRotateHook() {
+    document.body.innerHTML = `
+      <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16">
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+        <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+        <input id="map-alignment-lat-input" value="40.7128" />
+        <input id="map-alignment-lon-input" value="-74.0060" />
+        <button id="map-alignment-apply-center"></button>
+        <input id="map-alignment-opacity" value="0.7" />
+        <input id="map-alignment-zoom" value="16" />
+        <button id="map-alignment-save"></button>
+        <button id="map-alignment-apply"></button>
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const rotateHandle = document.getElementById("map-alignment-rotate-handle");
+    const activeImg = document.getElementById("active-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
+    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
+    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+
+    const mapInstance = {
+      on: vi.fn(),
+      off: vi.fn(),
+      remove: vi.fn(),
+      invalidateSize: vi.fn(),
+      setZoom: vi.fn(),
+      getZoom: vi.fn(() => 16),
+      getMinZoom: vi.fn(() => 16),
+      getMaxZoom: vi.fn(() => 22),
+      setView: vi.fn(),
+      latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+      distance: vi.fn(() => 1),
+      removeLayer: vi.fn(),
+    };
+
+    const originalL = window.L;
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+    window.L = {
+      map: vi.fn(() => mapInstance),
+      tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+      geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+    };
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      pushEvent: vi.fn(),
+      handleEvent: vi.fn(),
+    };
+
+    hook.mounted();
+
+    const restore = () => {
+      window.L = originalL;
+      global.fetch = originalFetch;
+    };
+
+    return { hook, rotateHandle, restore };
+  }
+
+  function pointerdown(button) {
+    const event = new Event("pointerdown", { bubbles: true });
+    event.button = button;
+    return event;
+  }
+
+  it("sets _userAdjustedTransform true on a left-button pointerdown", () => {
+    const { hook, rotateHandle, restore } = mountRotateHook();
+
+    rotateHandle.dispatchEvent(pointerdown(0));
+
+    expect(hook._userAdjustedTransform).toBe(true);
+
+    restore();
+  });
+
+  it("leaves _userAdjustedTransform false on a non-primary pointerdown", () => {
+    const { hook, rotateHandle, restore } = mountRotateHook();
+
+    rotateHandle.dispatchEvent(pointerdown(2));
+
+    expect(hook._userAdjustedTransform).toBe(false);
+
+    restore();
+  });
+});
+
+describe("map_alignment_hook scale pointerdown marks control", () => {
+  function mountScaleHook() {
+    document.body.innerHTML = `
+      <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16">
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+        <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+        <input id="map-alignment-lat-input" value="40.7128" />
+        <input id="map-alignment-lon-input" value="-74.0060" />
+        <button id="map-alignment-apply-center"></button>
+        <input id="map-alignment-opacity" value="0.7" />
+        <input id="map-alignment-zoom" value="16" />
+        <button id="map-alignment-save"></button>
+        <button id="map-alignment-apply"></button>
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const scaleHandle = document.getElementById("map-alignment-scale-handle");
+    const activeImg = document.getElementById("active-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
+    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
+    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+
+    const mapInstance = {
+      on: vi.fn(),
+      off: vi.fn(),
+      remove: vi.fn(),
+      invalidateSize: vi.fn(),
+      setZoom: vi.fn(),
+      getZoom: vi.fn(() => 16),
+      getMinZoom: vi.fn(() => 16),
+      getMaxZoom: vi.fn(() => 22),
+      setView: vi.fn(),
+      latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+      distance: vi.fn(() => 1),
+      removeLayer: vi.fn(),
+    };
+
+    const originalL = window.L;
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+    window.L = {
+      map: vi.fn(() => mapInstance),
+      tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+      geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+    };
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      pushEvent: vi.fn(),
+      handleEvent: vi.fn(),
+    };
+
+    hook.mounted();
+
+    const restore = () => {
+      window.L = originalL;
+      global.fetch = originalFetch;
+    };
+
+    return { hook, scaleHandle, restore };
+  }
+
+  // Overlay center is {x:150, y:75} for the 300x150 rect above.
+  function pointerdown(button, clientX, clientY) {
+    const event = new Event("pointerdown", { bubbles: true });
+    event.button = button;
+    event.clientX = clientX;
+    event.clientY = clientY;
+    return event;
+  }
+
+  it("sets _userAdjustedTransform true on a nonzero-distance pointerdown", () => {
+    const { hook, scaleHandle, restore } = mountScaleHook();
+
+    scaleHandle.dispatchEvent(pointerdown(0, 200, 75));
+
+    expect(hook._userAdjustedTransform).toBe(true);
+
+    restore();
+  });
+
+  it("leaves _userAdjustedTransform false on a non-primary pointerdown", () => {
+    const { hook, scaleHandle, restore } = mountScaleHook();
+
+    scaleHandle.dispatchEvent(pointerdown(2, 200, 75));
+
+    expect(hook._userAdjustedTransform).toBe(false);
+
+    restore();
+  });
+
+  it("leaves _userAdjustedTransform false on a center (zero-distance) pointerdown", () => {
+    const { hook, scaleHandle, restore } = mountScaleHook();
+
+    scaleHandle.dispatchEvent(pointerdown(0, 150, 75));
+
+    expect(hook._userAdjustedTransform).toBe(false);
+
+    restore();
+  });
+});
+
+describe("map_alignment_hook recenter marks control", () => {
+  function mountRecenterHook() {
+    document.body.innerHTML = `
+      <div id="root" data-initial-lat="40.7128" data-initial-lon="-74.0060" data-initial-zoom="16">
+        <div id="map-alignment-overlay" data-editable-overlay="true"><img id="active-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+        <button id="map-alignment-rotate-handle" data-edit-target-overlay="active"></button>
+        <button id="map-alignment-scale-handle" data-edit-target-overlay="active"></button>
+        <input id="map-alignment-lat-input" value="40.7128" />
+        <input id="map-alignment-lon-input" value="-74.0060" />
+        <button id="map-alignment-apply-center"></button>
+        <input id="map-alignment-opacity" value="0.7" />
+        <input id="map-alignment-zoom" value="16" />
+        <button id="map-alignment-save"></button>
+        <button id="map-alignment-apply"></button>
+        <div id="map-alignment-pins-active"></div>
+      </div>
+    `;
+
+    const root = document.getElementById("root");
+    const overlay = document.getElementById("map-alignment-overlay");
+    const activeImg = document.getElementById("active-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+    const latInput = document.getElementById("map-alignment-lat-input");
+    const lonInput = document.getElementById("map-alignment-lon-input");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    overlay.getBoundingClientRect = () => ({ width: 300, height: 150, left: 0, top: 0 });
+    Object.defineProperty(activeImg, "complete", { value: true, configurable: true });
+    Object.defineProperty(activeImg, "naturalWidth", { value: 1000, configurable: true });
+    Object.defineProperty(activeImg, "naturalHeight", { value: 800, configurable: true });
+
+    const mapInstance = {
+      on: vi.fn(),
+      off: vi.fn(),
+      remove: vi.fn(),
+      invalidateSize: vi.fn(),
+      setZoom: vi.fn(),
+      getZoom: vi.fn(() => 16),
+      getMinZoom: vi.fn(() => 16),
+      getMaxZoom: vi.fn(() => 22),
+      setView: vi.fn(),
+      latLngToContainerPoint: vi.fn((pt) => ({ x: pt.lng, y: pt.lat })),
+      containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+      distance: vi.fn(() => 1),
+      removeLayer: vi.fn(),
+    };
+
+    const originalL = window.L;
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+    window.L = {
+      map: vi.fn(() => mapInstance),
+      tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
+      geoJSON: vi.fn(() => ({ addTo: vi.fn() })),
+    };
+
+    const hook = {
+      ...MapAlignmentHook,
+      el: root,
+      pushEvent: vi.fn(),
+      handleEvent: vi.fn(),
+    };
+
+    hook.mounted();
+
+    const restore = () => {
+      window.L = originalL;
+      global.fetch = originalFetch;
+    };
+
+    return { hook, mapInstance, latInput, lonInput, restore };
+  }
+
+  it("marks _userAdjustedTransform and recenters on valid lat/lon with a usable rect", () => {
+    const { hook, mapInstance, restore } = mountRecenterHook();
+
+    hook._onApplyCenter();
+
+    expect(hook._userAdjustedTransform).toBe(true);
+    expect(mapInstance.setView).toHaveBeenCalledWith(
+      [40.7128, -74.006],
+      16,
+      { animate: false },
+    );
+
+    restore();
+  });
+
+  it("leaves _userAdjustedTransform false on NaN input", () => {
+    const { hook, latInput, mapInstance, restore } = mountRecenterHook();
+    latInput.value = "not-a-number";
+
+    hook._onApplyCenter();
+
+    expect(hook._userAdjustedTransform).toBe(false);
+    expect(mapInstance.setView).not.toHaveBeenCalled();
+
+    restore();
+  });
+
+  it("leaves _userAdjustedTransform false when the Leaflet rect is null", () => {
+    const { hook, mapInstance, restore } = mountRecenterHook();
+    hook._leafletRect = () => null;
+
+    hook._onApplyCenter();
+
+    expect(hook._userAdjustedTransform).toBe(false);
+    expect(mapInstance.setView).not.toHaveBeenCalled();
+
+    restore();
+  });
+
+  it("blocks a later saved-alignment restore once recenter has marked control", () => {
+    const { hook, restore } = mountRecenterHook();
+
+    hook._onApplyCenter();
+    expect(hook._userAdjustedTransform).toBe(true);
+
+    const known = { tx: 11, ty: 22, rotation: 33, scale: 4 };
+    hook.transform = known;
+    hook._applyTransform = vi.fn();
+    const alignment = { centerLat: 40.7, centerLon: -74.0, scaleMpp: 0.5, rotationDeg: 15 };
+
+    hook._restoreOverlayAlignment(hook.overlay, alignment, hook.overlay.querySelector("img"), "active");
+
+    expect(hook.transform).toBe(known);
+    expect(hook.transform).toEqual({ tx: 11, ty: 22, rotation: 33, scale: 4 });
+    expect(hook._applyTransform).not.toHaveBeenCalled();
+
+    restore();
+  });
+});
+
+describe("map_alignment_hook saved-alignment restore guard", () => {
+  function buildRestoreHook() {
+    document.body.innerHTML = `
+      <div id="root">
+        <div id="map-alignment-overlay"><img id="overlay-img" /></div>
+        <div id="map-alignment-leaflet"></div>
+      </div>
+    `;
+
+    const overlay = document.getElementById("map-alignment-overlay");
+    const img = document.getElementById("overlay-img");
+    const leafletEl = document.getElementById("map-alignment-leaflet");
+
+    leafletEl.getBoundingClientRect = () => ({ width: 400, height: 200 });
+    Object.defineProperty(img, "complete", { value: true, configurable: true });
+    Object.defineProperty(img, "naturalWidth", { value: 200, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 100, configurable: true });
+
+    const alignment = {
+      centerLat: 40.7,
+      centerLon: -74.0,
+      scaleMpp: 0.5,
+      rotationDeg: 15,
+    };
+
+    const hook = {
+      ...MapAlignmentHook,
+      overlay,
+      leafletEl,
+      _logger: { warn: vi.fn() },
+      transform: { tx: 0, ty: 0, rotation: 0, scale: 1 },
+      _applyTransform: vi.fn(),
+      leafletMap: {
+        containerPointToLatLng: vi.fn(([x, y]) => ({ lat: y, lng: x })),
+        latLngToContainerPoint: vi.fn(([lat, lon]) => ({ x: lon, y: lat })),
+        distance: vi.fn(() => 0.5),
+      },
+    };
+
+    return { hook, overlay, img, alignment };
+  }
+
+  it("applies the restored transform when the operator has not adjusted the view", () => {
+    const { hook, overlay, img, alignment } = buildRestoreHook();
+    const before = hook.transform;
+    hook._userAdjustedTransform = false;
+
+    hook._restoreOverlayAlignment(overlay, alignment, img, "active");
+
+    expect(hook.transform).not.toBe(before);
+    expect(hook.transform.rotation).toBe(15);
+    expect(hook._applyTransform).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the transform unchanged when the operator has adjusted the view", () => {
+    const { hook, overlay, img, alignment } = buildRestoreHook();
+    const known = { tx: 11, ty: 22, rotation: 33, scale: 4 };
+    hook.transform = known;
+    hook._userAdjustedTransform = true;
+
+    hook._restoreOverlayAlignment(overlay, alignment, img, "active");
+
+    expect(hook.transform).toBe(known);
+    expect(hook.transform).toEqual({ tx: 11, ty: 22, rotation: 33, scale: 4 });
+    expect(hook._applyTransform).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule or run a restore once the operator has adjusted the view", () => {
+    vi.useFakeTimers();
+    try {
+      const { hook, overlay, img, alignment } = buildRestoreHook();
+      hook._userAdjustedTransform = true;
+      hook._restoreOverlayAlignment = vi.fn();
+      hook._overlayRestoreDisposers = [];
+
+      hook._scheduleOverlayAlignmentRestore(overlay, alignment, "active");
+
+      // The disposer was registered then immediately run by the bailing
+      // scheduleRestore, so no settle timer is armed.
+      vi.runAllTimers();
+
+      expect(hook._restoreOverlayAlignment).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("map_alignment_hook other-level isolation across active transform", () => {
   // Step 4 already proves _applyTransform does not CALL other-level reposition.
   // This is the complementary guarantee: an active transform leaves the

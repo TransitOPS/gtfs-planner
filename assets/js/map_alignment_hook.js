@@ -201,6 +201,7 @@ const MapAlignmentHook = {
     overlay.style.opacity = opacitySlider ? opacitySlider.value : "0.7";
 
     this.transform = {...IDENTITY_TRANSFORM};
+    this._userAdjustedTransform = false;
 
     const mapCenterLat = activeAlignment ? activeAlignment.centerLat : initialLat;
     const mapCenterLon = activeAlignment ? activeAlignment.centerLon : initialLon;
@@ -344,6 +345,7 @@ const MapAlignmentHook = {
     this._onOverlayPointerDown = (e) => {
       if (e.button !== undefined && e.button !== 0) return;
 
+      this._markUserAdjusted();
       this._translateState = {
         startX: e.clientX,
         startY: e.clientY,
@@ -382,6 +384,8 @@ const MapAlignmentHook = {
     this._rotateState = null;
     this._onRotatePointerDown = (e) => {
       if (e.button !== undefined && e.button !== 0) return;
+
+      this._markUserAdjusted();
       const center = overlayCenter(overlay);
       const startAngle = Math.atan2(e.clientY - center.y, e.clientX - center.x);
       this._rotateState = {
@@ -427,6 +431,8 @@ const MapAlignmentHook = {
       const dy = e.clientY - center.y;
       const initialDistance = Math.sqrt(dx * dx + dy * dy);
       if (!(initialDistance > 0)) return;
+
+      this._markUserAdjusted();
       this._scaleState = {
         centerX: center.x,
         centerY: center.y,
@@ -471,6 +477,9 @@ const MapAlignmentHook = {
 
       const canvasRect = this._leafletRect();
       if (!canvasRect) return;
+
+      this._markUserAdjusted();
+
       const cxBefore = canvasRect.width / 2 + this.transform.tx;
       const cyBefore = canvasRect.height / 2 + this.transform.ty;
       const worldCenter = this.leafletMap.containerPointToLatLng([cxBefore, cyBefore]);
@@ -761,6 +770,11 @@ const MapAlignmentHook = {
     // During the immersive CSS transition the canvas grows over ~300ms; running
     // mid-animation produces a scale tuned to a smaller canvas.
     const scheduleRestore = () => {
+      if (this._userAdjustedTransform) {
+        cleanup();
+        return;
+      }
+
       const rect = this._leafletRect();
       const imgReady = img.complete && img.naturalWidth > 0;
       if (!imgReady || !rect || !(rect.width > 0) || !(rect.height > 0)) return;
@@ -788,6 +802,8 @@ const MapAlignmentHook = {
   },
 
   _restoreOverlayAlignment(overlayEl, alignment, img, label) {
+    if (this._userAdjustedTransform) return;
+
     const map = this.leafletMap;
     if (!map || !overlayEl || !img || !img.naturalWidth || !img.naturalHeight) {
       this._logger.warn("MapAlignment: restore skipped, map or image not ready");
@@ -917,6 +933,21 @@ const MapAlignmentHook = {
     this._otherLevels.setOpacity(parseFloat(this.otherOpacitySlider.value) || 0.7);
   },
 
+  // Mark that the operator has taken manual control of the overlay transform.
+  // Idempotent. On the first call it also tears down any pending saved-alignment
+  // restore (settle timer, ResizeObserver, image-load listener) via the existing
+  // disposer array so a late restore cannot clobber the live view.
+  _markUserAdjusted() {
+    if (this._userAdjustedTransform) return;
+    this._userAdjustedTransform = true;
+    if (Array.isArray(this._overlayRestoreDisposers)) {
+      this._overlayRestoreDisposers.forEach((dispose) => {
+        try { dispose(); } catch (_) { /* noop */ }
+      });
+      this._overlayRestoreDisposers = [];
+    }
+  },
+
   _applyTransform() {
     if (!this.overlay) return;
     const {tx, ty, rotation, scale} = this.transform;
@@ -1033,6 +1064,8 @@ const MapAlignmentHook = {
     if (!Number.isFinite(target)) return;
     const current = map.getZoom();
     if (target === current) return;
+
+    this._markUserAdjusted();
 
     // Pin the floorplan to the map through the zoom: keep its center at
     // the same world lat/lon, and scale by 2^Δzoom so it tracks the tiles.
