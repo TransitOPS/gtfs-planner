@@ -345,6 +345,7 @@ const MapAlignmentHook = {
     this._onOverlayPointerDown = (e) => {
       if (e.button !== undefined && e.button !== 0) return;
 
+      this._markUserAdjusted();
       this._translateState = {
         startX: e.clientX,
         startY: e.clientY,
