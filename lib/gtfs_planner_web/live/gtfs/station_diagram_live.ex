@@ -1735,10 +1735,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               applied_attrs
             )
 
+            refresh_plan =
+              child_stop_refresh_plan(stop, updated_stop, socket.assigns.active_level)
+
             {:noreply,
              socket
              |> close_child_stop_drawer_after_save()
-             |> apply_child_stop_save_refresh(stop, updated_stop)}
+             |> apply_child_stop_save_refresh(refresh_plan, updated_stop)
+             |> maybe_refresh_history_entries("stop", updated_stop.id)}
 
           {:error, changeset} ->
             {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
@@ -2860,7 +2864,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              socket
              |> apply_pathway_save_refresh(pathway, updated_pathway)
-             |> close_pathway_drawer_after_save()}
+             |> close_pathway_drawer_after_save()
+             |> maybe_refresh_history_entries("pathway", updated_pathway.id)}
 
           {:error, changeset} ->
             {:noreply, assign(socket, :pathway_form, to_form(changeset))}
@@ -3934,12 +3939,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
-  defp apply_child_stop_save_refresh(socket, old_stop, new_stop) do
-    plan = child_stop_refresh_plan(old_stop, new_stop, socket.assigns.active_level)
-
-    socket
-    |> apply_child_stop_refresh_plan(plan, new_stop)
-    |> maybe_refresh_history_entries("stop", new_stop.id)
+  defp apply_child_stop_save_refresh(socket, plan, new_stop)
+       when plan in [:stop_only, :stop_and_pathways, :full_level] do
+    apply_child_stop_refresh_plan(socket, plan, new_stop)
   end
 
   defp apply_child_stop_refresh_plan(socket, :stop_only, new_stop) do
@@ -3998,9 +4000,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> stream_same_level_pathways_for_pair(pair_key)
       |> recompute_cross_level_badges()
 
-    socket
-    |> maybe_push_markers_on_badge_change(badges_before)
-    |> maybe_refresh_history_entries("pathway", updated_pathway.id)
+    maybe_push_markers_on_badge_change(socket, badges_before)
   end
 
   # Re-push active child-stop markers in map mode only when cross-level badge
