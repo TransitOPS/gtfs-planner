@@ -431,6 +431,8 @@ const MapAlignmentHook = {
       const dy = e.clientY - center.y;
       const initialDistance = Math.sqrt(dx * dx + dy * dy);
       if (!(initialDistance > 0)) return;
+
+      this._markUserAdjusted();
       this._scaleState = {
         centerX: center.x,
         centerY: center.y,
