@@ -4879,6 +4879,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp refresh_lists(socket), do: load_level_data(socket, socket.assigns.active_level)
 
+  # Mirrors the "close_drawer" handler assigns, without reloading entities or
+  # restreaming. Save flows perform their own targeted stream/list repairs.
+  defp close_child_stop_drawer_after_save(socket) do
+    socket
+    |> reset_reposition_state()
+    |> assign(:pending_xy, nil)
+    |> assign(:selected_stop_id, nil)
+    |> assign(:active_point_id, nil)
+    |> assign(:child_stop_form, to_form(%{}))
+  end
+
+  # Mirrors the "close_pathway_drawer" handler assigns, plus :pathway_error -> nil,
+  # without reloading entities or changing persisted data.
+  defp close_pathway_drawer_after_save(socket) do
+    socket
+    |> assign(:show_pathway_drawer, false)
+    |> assign(:editing_pathway_pair, [])
+    |> assign(:active_pathway_tab, :first)
+    |> assign(:pathway_form_dirty, false)
+    |> assign(:editing_pathway, nil)
+    |> assign(:pathway_form, to_form(%{}))
+    |> assign(:pathway_error, nil)
+  end
+
   defp restream_mode_dependent_layers(socket) do
     child_stops = socket.assigns[:child_stops_list] || []
     pathways = socket.assigns[:pathways_list] || []
