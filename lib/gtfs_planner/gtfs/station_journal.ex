@@ -5,8 +5,10 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto, Stop}
-  alias GtfsPlanner.Gtfs.StationJournal.Scope
+  alias GtfsPlanner.Gtfs.StationJournal.{PhotoStorage, Scope}
   alias GtfsPlanner.Repo
+
+  require Logger
 
   @type sync_error :: %{
           id: term(),
@@ -77,6 +79,139 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
       preload: [photos: ^photos]
     )
     |> Repo.all()
+  end
+
+  @spec create_photo(Scope.t(), map(), %{path: String.t(), filename: String.t(), content_type: String.t() | nil}) ::
+          {:ok, JournalPhoto.t()} | {:error, atom() | Ecto.Changeset.t()}
+  def create_photo(%Scope{} = scope, attrs, upload) when is_map(attrs) and is_map(upload) do
+    with {:ok, photo_id} <- cast_uuid(attr(attrs, :id)),
+         {:ok, entry_id} <- cast_uuid(attr(attrs, :journal_entry_id)),
+         {:ok, staged} <- PhotoStorage.stage(scope, photo_id, upload),
+         :ok <- validate_content_type_hint(attr(attrs, :content_type), staged.content_type),
+         :ok <- validate_dimension(attr(attrs, :width)),
+         :ok <- validate_dimension(attr(attrs, :height)) do
+      result = Repo.transaction(fn -> persist_photo(scope, photo_id, entry_id, attrs, staged) end)
+
+      case result do
+        {:ok, {:ok, photo}} -> {:ok, photo}
+        {:ok, {:error, reason}} -> PhotoStorage.discard(staged); {:error, reason}
+        {:error, %Ecto.Changeset{} = changeset} -> PhotoStorage.discard(staged); {:error, changeset}
+        {:error, reason} -> PhotoStorage.discard(staged); {:error, reason}
+      end
+    else
+      :error -> {:error, :invalid_id}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def create_photo(_scope, _attrs, _upload), do: {:error, :validation_error}
+
+  defp persist_photo(scope, photo_id, entry_id, attrs, staged) do
+    with %JournalEntry{} = entry <- locked_scoped_entry(scope, entry_id) do
+      case Repo.one(from(photo in JournalPhoto, where: photo.id == ^photo_id, lock: "FOR UPDATE")) do
+        nil -> create_or_adopt_photo(entry, photo_id, attrs, staged)
+        photo -> retry_photo(entry, photo, staged)
+      end
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp locked_scoped_entry(scope, entry_id) do
+    Repo.one(
+      from(entry in JournalEntry,
+        where:
+          entry.id == ^entry_id and entry.organization_id == ^scope.organization_id and
+            entry.gtfs_version_id == ^scope.gtfs_version_id and entry.station_id == ^scope.station_id,
+        lock: "FOR UPDATE"
+      )
+    )
+  end
+
+  defp create_or_adopt_photo(entry, photo_id, attrs, staged) do
+    if File.exists?(staged.final_path) and not PhotoStorage.final_matches?(staged) do
+      log_storage(:orphan_conflict, photo_id, entry.id)
+      {:error, :id_conflict}
+    else
+      photo_attrs = trusted_photo_attrs(photo_id, entry.id, attrs, staged)
+
+      case JournalPhoto.create_changeset(%JournalPhoto{}, photo_attrs)
+           |> Repo.insert(on_conflict: :nothing, conflict_target: :id) do
+        {:ok, _photo} ->
+          case Repo.one(from(photo in JournalPhoto, where: photo.id == ^photo_id, lock: "FOR UPDATE")) do
+            nil -> Repo.rollback(:photo_not_found)
+            photo ->
+              if photo.journal_entry_id == entry.id and photo.sha256 == staged.sha256 and
+                   photo.content_type == staged.content_type do
+                if File.exists?(staged.final_path) do
+                  PhotoStorage.discard(staged)
+                  log_storage(:orphan_adopted, photo_id, entry.id)
+                else
+                  finalize_or_rollback(photo_id, entry.id, staged)
+                end
+
+                {:ok, photo}
+              else
+                log_storage(:id_conflict, photo_id, entry.id)
+                {:error, :id_conflict}
+              end
+          end
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end
+  end
+
+  defp retry_photo(entry, photo, staged) do
+    if photo.journal_entry_id == entry.id and photo.sha256 == staged.sha256 and photo.content_type == staged.content_type do
+      if PhotoStorage.final_matches?(staged) do
+        PhotoStorage.discard(staged)
+      else
+        log_storage(:file_repaired, photo.id, entry.id)
+        case PhotoStorage.finalize(staged) do
+          :ok -> :ok
+          {:error, reason} -> log_storage(:rename_failed, photo.id, entry.id); Repo.rollback(reason)
+        end
+      end
+
+      {:ok, photo}
+    else
+      log_storage(:id_conflict, photo.id, entry.id)
+      {:error, :id_conflict}
+    end
+  end
+
+  defp finalize_or_rollback(photo_id, entry_id, staged) do
+    case PhotoStorage.finalize(staged) do
+      :ok -> :ok
+      {:error, reason} ->
+        log_storage(:rename_failed, photo_id, entry_id)
+        Repo.rollback(reason)
+    end
+  end
+
+  defp trusted_photo_attrs(photo_id, entry_id, attrs, staged) do
+    %{
+      id: photo_id,
+      journal_entry_id: entry_id,
+      filename: staged.filename,
+      content_type: staged.content_type,
+      byte_size: staged.byte_size,
+      sha256: staged.sha256,
+      width: attr(attrs, :width),
+      height: attr(attrs, :height),
+      captured_at: attr(attrs, :captured_at)
+    }
+  end
+
+  defp validate_content_type_hint(nil, _detected), do: :ok
+  defp validate_content_type_hint(hint, detected) when hint == detected, do: :ok
+  defp validate_content_type_hint(_hint, _detected), do: {:error, :validation_error}
+  defp validate_dimension(nil), do: :ok
+  defp validate_dimension(value) when is_integer(value) and value > 0, do: :ok
+  defp validate_dimension(_value), do: {:error, :validation_error}
+
+  defp log_storage(state, photo_id, entry_id) do
+    Logger.warning("station_journal_photo_storage state=#{state} photo_id=#{photo_id} entry_id=#{entry_id}")
   end
 
   defp target_index(scope) do

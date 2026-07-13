@@ -78,6 +78,14 @@ defmodule GtfsPlanner.Gtfs do
   @spec list_station_journal(Scope.t()) :: [JournalEntry.t()]
   def list_station_journal(%Scope{} = scope), do: StationJournal.list_entries(scope)
 
+  @spec create_journal_photo(
+          Scope.t(),
+          map(),
+          %{path: String.t(), filename: String.t(), content_type: String.t() | nil}
+        ) :: {:ok, GtfsPlanner.Gtfs.JournalPhoto.t()} | {:error, atom() | Ecto.Changeset.t()}
+  def create_journal_photo(%Scope{} = scope, attrs, upload),
+    do: StationJournal.create_photo(scope, attrs, upload)
+
   @doc """
   Returns the list of routes for an organization and GTFS version.
 
