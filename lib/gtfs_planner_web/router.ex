@@ -191,6 +191,7 @@ defmodule GtfsPlannerWeb.Router do
     pipe_through [:api_session, :api_editor]
 
     post "/versions/:version_id/stations/:station_id/sync", SyncController, :create
+    post "/versions/:version_id/stations/:station_id/journal-photos", JournalPhotoController, :create
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

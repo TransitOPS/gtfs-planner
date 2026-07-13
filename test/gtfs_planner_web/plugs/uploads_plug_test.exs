@@ -1,41 +1,42 @@
 defmodule GtfsPlannerWeb.UploadsPlugTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   import Plug.Test
   import Plug.Conn
 
   alias GtfsPlannerWeb.UploadsPlug
 
-  @uploads_path Path.join(System.tmp_dir!(), "uploads_plug_test_#{:rand.uniform(100_000)}")
-
   setup_all do
-    # Configure uploads path for tests
-    Application.put_env(:gtfs_planner, :uploads_path, @uploads_path)
+    previous = Application.get_env(:gtfs_planner, :uploads_path)
 
     on_exit(fn ->
-      # Cleanup test directory
-      File.rm_rf!(@uploads_path)
+      if is_nil(previous),
+        do: Application.delete_env(:gtfs_planner, :uploads_path),
+        else: Application.put_env(:gtfs_planner, :uploads_path, previous)
     end)
 
     :ok
   end
 
   setup do
-    # Ensure clean state for each test
-    File.rm_rf!(@uploads_path)
-    File.mkdir_p!(@uploads_path)
-    :ok
+    uploads_path = Path.join(System.tmp_dir!(), "uploads_plug_test_#{System.unique_integer([:positive])}")
+    Application.put_env(:gtfs_planner, :uploads_path, uploads_path)
+    File.mkdir_p!(uploads_path)
+
+    on_exit(fn -> File.rm_rf!(uploads_path) end)
+
+    %{uploads_path: uploads_path}
   end
 
   describe "call/2" do
-    test "serves file when it exists at /uploads path" do
+    test "serves file when it exists at /uploads path", %{uploads_path: uploads_path} do
       # Create test file with organization isolation
       org_id = "123"
       stop_id = "TEST_STATION"
       filename = "floor_plan.png"
       file_content = "fake png content"
 
-      file_dir = Path.join([@uploads_path, "diagrams", org_id, stop_id])
+      file_dir = Path.join([uploads_path, "diagrams", org_id, stop_id])
       File.mkdir_p!(file_dir)
       file_path = Path.join(file_dir, filename)
       File.write!(file_path, file_content)
@@ -50,12 +51,12 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn.resp_body == file_content
     end
 
-    test "adds CORS header when served to an allowed (localhost) origin" do
+    test "adds CORS header when served to an allowed (localhost) origin", %{uploads_path: uploads_path} do
       org_id = "123"
       stop_id = "TEST_STATION"
       filename = "floor_plan.png"
 
-      file_dir = Path.join([@uploads_path, "diagrams", org_id, stop_id])
+      file_dir = Path.join([uploads_path, "diagrams", org_id, stop_id])
       File.mkdir_p!(file_dir)
       File.write!(Path.join(file_dir, filename), "fake png content")
 
@@ -86,12 +87,12 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
              ]
     end
 
-    test "omits CORS header for a disallowed origin" do
+    test "omits CORS header for a disallowed origin", %{uploads_path: uploads_path} do
       org_id = "123"
       stop_id = "TEST_STATION"
       filename = "floor_plan.png"
 
-      file_dir = Path.join([@uploads_path, "diagrams", org_id, stop_id])
+      file_dir = Path.join([uploads_path, "diagrams", org_id, stop_id])
       File.mkdir_p!(file_dir)
       File.write!(Path.join(file_dir, filename), "fake png content")
 
@@ -123,14 +124,14 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn.status == nil
     end
 
-    test "provides tenant isolation - different org cannot access same stop_id" do
+    test "provides tenant isolation - different org cannot access same stop_id", %{uploads_path: uploads_path} do
       # Create file for org 1
       org1_id = "1"
       stop_id = "SHARED_STATION"
       filename = "diagram.png"
       file_content = "org 1 content"
 
-      file_dir = Path.join([@uploads_path, "diagrams", org1_id, stop_id])
+      file_dir = Path.join([uploads_path, "diagrams", org1_id, stop_id])
       File.mkdir_p!(file_dir)
       File.write!(Path.join(file_dir, filename), file_content)
 
@@ -154,9 +155,9 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn2.status == nil
     end
 
-    test "handles nested path segments correctly" do
+    test "handles nested path segments correctly", %{uploads_path: uploads_path} do
       # Create deeply nested file
-      file_dir = Path.join([@uploads_path, "diagrams", "org", "stop", "subdir"])
+      file_dir = Path.join([uploads_path, "diagrams", "org", "stop", "subdir"])
       File.mkdir_p!(file_dir)
       File.write!(Path.join(file_dir, "file.txt"), "nested content")
 
@@ -198,6 +199,35 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn.halted
       assert conn.status == 403
       assert conn.resp_body == "Forbidden"
+    end
+
+    test "serves only valid field captures with deterministic public image headers", %{uploads_path: uploads_path} do
+      organization_id = Ecto.UUID.generate()
+      photo_id = Ecto.UUID.generate()
+      file_dir = Path.join([uploads_path, "field-captures", organization_id, "STATION"])
+      File.mkdir_p!(file_dir)
+      File.write!(Path.join(file_dir, "#{photo_id}.png"), <<137, 80, 78, 71>>)
+
+      conn =
+        conn(:get, "/uploads/field-captures/#{organization_id}/STATION/#{photo_id}.png")
+        |> UploadsPlug.call([])
+
+      assert conn.status == 200
+      assert get_resp_header(conn, "content-type") == ["image/png"]
+      assert get_resp_header(conn, "cache-control") == ["public, max-age=31536000, immutable"]
+      assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+    end
+
+    test "does not apply field-capture image headers to an invalid field-capture filename", %{uploads_path: uploads_path} do
+      file_dir = Path.join([uploads_path, "field-captures", "organization", "STATION"])
+      File.mkdir_p!(file_dir)
+      File.write!(Path.join(file_dir, "untrusted.png"), "not a field capture")
+
+      conn = conn(:get, "/uploads/field-captures/organization/STATION/untrusted.png") |> UploadsPlug.call([])
+
+      assert conn.status == 200
+      assert get_resp_header(conn, "cache-control") == []
+      assert get_resp_header(conn, "x-content-type-options") == []
     end
   end
 end
