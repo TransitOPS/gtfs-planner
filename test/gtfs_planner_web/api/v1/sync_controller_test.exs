@@ -18,14 +18,14 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
     user = user_fixture()
     org = organization_fixture()
 
-    {:ok, _membership} =
+    {:ok, membership} =
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: org.id,
         roles: ["pathways_studio_editor"]
       })
 
-    %{user: user, org: org}
+    %{user: user, org: org, membership: membership}
   end
 
   defp authed_conn(conn, user) do
@@ -69,6 +69,55 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
 
   describe "create/2" do
     setup [:setup_user_with_org]
+
+    test "returns 401 before organization or editor authorization without a session", %{conn: conn} do
+      conn = post(conn, sync_url(Ecto.UUID.generate(), Ecto.UUID.generate()), %{"pathways" => []})
+
+      assert %{"error" => %{"code" => "unauthorized"}} = json_response(conn, 401)
+    end
+
+    test "rejects a selected non-editor membership without mutating pathways", %{
+      conn: conn,
+      user: user,
+      org: org,
+      membership: membership
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, pathway: pathway} = build_station_with_pathway(org.id, version.id)
+
+      {:ok, _membership} =
+        membership
+        |> Ecto.Changeset.change(%{roles: []})
+        |> Repo.update()
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), %{
+          "pathways" => [%{"id" => pathway.id, "traversal_time" => 45}]
+        })
+
+      assert %{"error" => %{"code" => "forbidden"}} = json_response(conn, 403)
+      assert Repo.get!(Pathway, pathway.id).traversal_time != 45
+    end
+
+    test "keeps protected reads available to an active non-editor membership", %{
+      conn: conn,
+      user: user,
+      membership: membership
+    } do
+      {:ok, _membership} =
+        membership
+        |> Ecto.Changeset.change(%{roles: []})
+        |> Repo.update()
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions")
+
+      assert %{"data" => _versions} = json_response(conn, 200)
+    end
 
     test "syncs editable fields successfully (traversal_time, signposted_as, field_notes, field_completed_at)",
          %{conn: conn, user: user, org: org} do
