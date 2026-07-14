@@ -100,7 +100,7 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganizationTest do
       org = organization_fixture()
       other_org = organization_fixture()
 
-      {:ok, membership1} =
+      {:ok, _membership} =
         GtfsPlanner.Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org.id,

@@ -111,11 +111,19 @@ defmodule GtfsPlannerWeb.Api.V1.StationJournalIntegrationTest do
         jpeg()
       )
 
-    assert %{
-             "data" =>
-               %{"id" => ^photo_id, "url" => public_url, "content_type" => "image/jpeg"} = photo
-           } =
-             json_response(upload, 201)
+    assert %{"data" => %{"photo" => photo}} = json_response(upload, 201)
+
+    assert photo == %{
+             "id" => photo_id,
+             "journal_entry_id" => station_entry["id"],
+             "url" => photo["url"],
+             "content_type" => "image/jpeg",
+             "width" => 1,
+             "height" => 1,
+             "captured_at" => "2026-07-13T10:00:00.000000Z"
+           }
+
+    public_url = photo["url"]
 
     public_get = get(build_conn(), URI.parse(public_url).path)
     assert public_get.status == 200
@@ -126,19 +134,41 @@ defmodule GtfsPlannerWeb.Api.V1.StationJournalIntegrationTest do
 
     refreshed = get(api_conn(conn, token, organization_id), bundle_url(version_id, station_id))
     assert %{"data" => refreshed_data} = json_response(refreshed, 200)
-    assert [%{"photos" => [^photo]}] = refreshed_data["journal_entries"]
 
-    assert %{"journal_entries" => [_]} =
-             Enum.find(refreshed_data["stops"], &(&1["id"] == node["id"]))
+    station_json =
+      expected_entry(station_entry, user.id, %{"target_id" => nil, "photos" => [photo]})
 
-    assert %{"journal_entries" => [_]} =
-             Enum.find(refreshed_data["pathways"], &(&1["id"] == pathway["id"]))
+    node_entry = Enum.find(entries, &(&1["target_type"] == "node"))
+    pathway_entry = Enum.find(entries, &(&1["target_type"] == "pathway"))
+    pin_entry = Enum.find(entries, &(&1["target_type"] == "pin"))
 
-    assert [%{"journal_entries" => [_]}] =
-             Enum.filter(
-               refreshed_data["levels"],
-               &(&1["stop_level_id"] == level["stop_level_id"])
-             )
+    node_json = expected_entry(node_entry, user.id, %{"target_id" => node["id"]})
+
+    pathway_json =
+      expected_entry(pathway_entry, user.id, %{"target_id" => pathway["id"]})
+
+    pin_json =
+      expected_entry(pin_entry, user.id, %{
+        "stop_level_id" => level["stop_level_id"],
+        "diagram_coordinate" => %{"x" => 50.0, "y" => 40.0},
+        "lat" => nil,
+        "lon" => nil
+      })
+
+    assert refreshed_data["journal_entries"] == [station_json]
+
+    assert Enum.find(refreshed_data["stops"], &(&1["id"] == node["id"]))[
+             "journal_entries"
+           ] == [node_json]
+
+    assert Enum.find(refreshed_data["pathways"], &(&1["id"] == pathway["id"]))[
+             "journal_entries"
+           ] == [pathway_json]
+
+    assert Enum.find(
+             refreshed_data["levels"],
+             &(&1["stop_level_id"] == level["stop_level_id"])
+           )["journal_entries"] == [pin_json]
 
     assert Enum.sort(journal_ids(refreshed_data)) == Enum.sort(Enum.map(entries, & &1["id"]))
 
@@ -158,13 +188,27 @@ defmodule GtfsPlannerWeb.Api.V1.StationJournalIntegrationTest do
         jpeg()
       )
 
-    assert %{"data" => ^photo} = json_response(retry_upload, 201)
+    assert %{"data" => %{"photo" => ^photo}} = json_response(retry_upload, 201)
 
     retried_bundle =
       get(api_conn(conn, token, organization_id), bundle_url(version_id, station_id))
 
-    assert %{"data" => retried_data = %{"journal_entries" => [%{"photos" => [^photo]}]}} =
-             json_response(retried_bundle, 200)
+    assert %{"data" => retried_data} = json_response(retried_bundle, 200)
+
+    assert retried_data["journal_entries"] == [station_json]
+
+    assert Enum.find(retried_data["stops"], &(&1["id"] == node["id"]))[
+             "journal_entries"
+           ] == [node_json]
+
+    assert Enum.find(retried_data["pathways"], &(&1["id"] == pathway["id"]))[
+             "journal_entries"
+           ] == [pathway_json]
+
+    assert Enum.find(
+             retried_data["levels"],
+             &(&1["stop_level_id"] == level["stop_level_id"])
+           )["journal_entries"] == [pin_json]
 
     assert Enum.sort(journal_ids(retried_data)) ==
              Enum.sort(Enum.map(entries, & &1["id"]))
@@ -314,6 +358,22 @@ defmodule GtfsPlannerWeb.Api.V1.StationJournalIntegrationTest do
         "captured_at" => "2026-07-13T10:00:00Z"
       },
       attrs
+    )
+  end
+
+  defp expected_entry(payload, author_id, extra) do
+    Map.merge(
+      %{
+        "id" => payload["id"],
+        "target_type" => payload["target_type"],
+        "body" => payload["body"],
+        "author_id" => author_id,
+        "captured_at" => "2026-07-13T10:00:00.000000Z",
+        "closed_at" => nil,
+        "closed_by" => nil,
+        "photos" => []
+      },
+      extra
     )
   end
 

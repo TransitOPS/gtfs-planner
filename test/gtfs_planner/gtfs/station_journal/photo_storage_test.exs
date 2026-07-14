@@ -171,6 +171,18 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
     refute Repo.get(JournalPhoto, photo_id)
   end
 
+  test "failed staging removes stale same-id temporary files", context do
+    photo_id = Ecto.UUID.generate()
+    stale_path = stale_temp_path(context.root, context.scope, photo_id)
+    File.mkdir_p!(Path.dirname(stale_path))
+    File.write!(stale_path, "stale")
+
+    invalid = upload(context.root, "invalid.jpg", "not an image")
+
+    assert {:error, :invalid_image} = PhotoStorage.stage(context.scope, photo_id, invalid)
+    assert [] == temporary_files(context.root, context.scope, photo_id)
+  end
+
   test "temporary-file/no-row retry creates the row and removes stale same-id files", context do
     photo_id = Ecto.UUID.generate()
     stale_path = stale_temp_path(context.root, context.scope, photo_id)
@@ -190,7 +202,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
     refute Repo.get(JournalPhoto, photo_id)
 
     log =
-      capture_log(fn ->
+      capture_log([metadata: [:state]], fn ->
         assert {:ok, %JournalPhoto{id: ^photo_id}} = create_photo(context, photo_id, @jpeg)
       end)
 
@@ -200,6 +212,22 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
     assert File.read!(staged.final_path) == @jpeg
   end
 
+  test "alternate-extension final-file/no-row retry returns a conflict", context do
+    photo_id = Ecto.UUID.generate()
+
+    png =
+      <<137, 80, 78, 71, 13, 10, 26, 10, "orphan", 0, 0, 0, 0, "IEND", 174, 66, 96, 130>>
+
+    source = write_upload(context.root, "orphan.png", png)
+    assert {:ok, staged} = PhotoStorage.stage(context.scope, photo_id, %{path: source})
+    assert :ok = PhotoStorage.finalize(staged)
+
+    assert {:error, :id_conflict} = create_photo(context, photo_id, @jpeg)
+    refute Repo.get(JournalPhoto, photo_id)
+    assert File.read!(staged.final_path) == png
+    refute File.exists?(final_path(context.root, context.scope, photo_id))
+  end
+
   test "row/no-file retry restores the missing materialization", context do
     photo_id = Ecto.UUID.generate()
     assert {:ok, photo} = create_photo(context, photo_id, @jpeg)
@@ -207,7 +235,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
     File.rm!(path)
 
     log =
-      capture_log(fn ->
+      capture_log([metadata: [:state]], fn ->
         assert {:ok, ^photo} = create_photo(context, photo_id, @jpeg)
       end)
 
@@ -229,6 +257,88 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
     assert [] == temporary_files(context.root, context.scope, photo_id)
   end
 
+  test "identical retry ignores changed optional metadata but still requires captured_at",
+       context do
+    photo_id = Ecto.UUID.generate()
+    assert {:ok, photo} = create_photo(context, photo_id, @jpeg)
+
+    changed_metadata =
+      photo_attrs(photo_id, context.entry.id, %{
+        "captured_at" => "2027-01-01T00:00:00Z",
+        "content_type" => "image/png",
+        "width" => -1,
+        "height" => "invalid"
+      })
+
+    assert {:ok, ^photo} =
+             Gtfs.create_journal_photo(
+               context.scope,
+               changed_metadata,
+               upload(context.root, "retry.jpg", @jpeg)
+             )
+
+    for captured_at <- [nil, "not-a-time"] do
+      attrs = photo_attrs(photo_id, context.entry.id, %{"captured_at" => captured_at})
+
+      assert {:error, :validation_error} =
+               Gtfs.create_journal_photo(
+                 context.scope,
+                 attrs,
+                 upload(context.root, "invalid-retry.jpg", @jpeg)
+               )
+    end
+
+    assert Repo.get!(JournalPhoto, photo_id) == photo
+  end
+
+  test "same-id staging serializes cleanup so one attempt cannot delete another", context do
+    photo_id = Ecto.UUID.generate()
+    first_source = write_upload(context.root, "first.jpg", @jpeg)
+    second_source = write_upload(context.root, "second.jpg", @jpeg)
+    parent = self()
+
+    first =
+      start_supervised!(%{
+        Task.child_spec(fn ->
+          {:ok, staged} = PhotoStorage.stage(context.scope, photo_id, %{path: first_source})
+          send(parent, {:first_staged, self(), staged.path})
+
+          receive do
+            :finalize -> send(parent, {:first_finalized, PhotoStorage.finalize(staged)})
+          end
+        end)
+        | id: make_ref()
+      })
+
+    assert_receive {:first_staged, ^first, first_path}
+    assert File.exists?(first_path)
+
+    second =
+      start_supervised!(%{
+        Task.child_spec(fn ->
+          send(parent, {:second_attempting, self()})
+          result = PhotoStorage.stage(context.scope, photo_id, %{path: second_source})
+
+          result =
+            case result do
+              {:ok, staged} -> {result, PhotoStorage.discard(staged)}
+              error -> {error, :not_staged}
+            end
+
+          send(parent, {:second_finished, self(), result})
+        end)
+        | id: make_ref()
+      })
+
+    assert_receive {:second_attempting, ^second}
+    refute_receive {:second_finished, ^second, _result}, 50
+    assert File.exists?(first_path)
+
+    send(first, :finalize)
+    assert_receive {:first_finalized, :ok}
+    assert_receive {:second_finished, ^second, {{:ok, _staged}, :ok}}
+  end
+
   test "row/wrong-file retry repairs from bytes matching the authoritative row", context do
     photo_id = Ecto.UUID.generate()
     assert {:ok, photo} = create_photo(context, photo_id, @jpeg)
@@ -236,7 +346,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
     File.write!(path, <<0xFF, 0xD8, "corrupt", 0xFF, 0xD9>>)
 
     log =
-      capture_log(fn ->
+      capture_log([metadata: [:state]], fn ->
         assert {:ok, ^photo} = create_photo(context, photo_id, @jpeg)
       end)
 
@@ -252,7 +362,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
     changed = <<0xFF, 0xD8, "private-changed-bytes", 0xFF, 0xD9>>
 
     log =
-      capture_log(fn ->
+      capture_log([metadata: [:state]], fn ->
         assert {:error, :id_conflict} = create_photo(context, photo_id, changed)
       end)
 

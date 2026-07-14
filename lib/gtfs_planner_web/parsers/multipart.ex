@@ -27,11 +27,12 @@ defmodule GtfsPlannerWeb.Parsers.Multipart do
 
   @impl Plug.Parsers
   def parse(conn, type, subtype, headers, opts) do
-    parser_opts = if journal_photo_request?(conn), do: opts.journal_photo, else: opts.default
+    journal_photo_request? = journal_photo_request?(conn)
+    parser_opts = if journal_photo_request?, do: opts.journal_photo, else: opts.default
 
     case @multipart.parse(conn, type, subtype, headers, parser_opts) do
       {:error, :too_large, conn} = result ->
-        if journal_photo_request?(conn),
+        if journal_photo_request?,
           do: {:ok, %{}, payload_too_large(conn)},
           else: result
 
@@ -42,8 +43,15 @@ defmodule GtfsPlannerWeb.Parsers.Multipart do
 
   defp journal_photo_request?(%Plug.Conn{
          method: "POST",
-         path_info:
-           ["api", "v1", "versions", _version_id, "stations", _station_id, "journal-photos"]
+         path_info: [
+           "api",
+           "v1",
+           "versions",
+           _version_id,
+           "stations",
+           _station_id,
+           "journal-photos"
+         ]
        }),
        do: true
 

@@ -7,14 +7,28 @@ defmodule GtfsPlannerWeb.Parsers.MultipartTest do
   alias GtfsPlannerWeb.Parsers.Multipart
 
   @boundary "station-journal-boundary"
-  @journal_path ["api", "v1", "versions", "version-id", "stations", "station-id", "journal-photos"]
+  @journal_path [
+    "api",
+    "v1",
+    "versions",
+    "version-id",
+    "stations",
+    "station-id",
+    "journal-photos"
+  ]
 
   describe "parse/5" do
     test "accepts exact journal-photo POST multipart bodies below the journal limit" do
       opts = Multipart.init(default_length: 100, journal_length: 1_000)
 
       assert {:ok, %{"metadata" => metadata}, conn} =
-               parse_multipart("POST", @journal_path, "metadata", String.duplicate("a", 101), opts)
+               parse_multipart(
+                 "POST",
+                 @journal_path,
+                 "metadata",
+                 String.duplicate("a", 101),
+                 opts
+               )
 
       assert metadata == String.duplicate("a", 101)
       refute conn.halted
@@ -47,7 +61,8 @@ defmodule GtfsPlannerWeb.Parsers.MultipartTest do
 
       for {method, path_info} <- [
             {"PUT", @journal_path},
-            {"POST", ["api", "v1", "versions", "version-id", "stations", "station-id", "journal-photo"]},
+            {"POST",
+             ["api", "v1", "versions", "version-id", "stations", "station-id", "journal-photo"]},
             {"POST", @journal_path ++ ["extra"]},
             {"POST", ["api", "v1", "unrelated", "multipart"]}
           ] do
@@ -67,7 +82,10 @@ defmodule GtfsPlannerWeb.Parsers.MultipartTest do
         json_decoder: Jason
       )
 
-    urlencoded = conn(:post, "/api/v1/example", "name=journal")
+    urlencoded =
+      conn(:post, "/api/v1/example", "name=journal")
+      |> put_req_header("content-type", "application/x-www-form-urlencoded")
+
     urlencoded = Plug.Parsers.call(urlencoded, parsers)
     assert urlencoded.body_params == %{"name" => "journal"}
 
@@ -87,7 +105,7 @@ defmodule GtfsPlannerWeb.Parsers.MultipartTest do
     |> put_req_header("content-type", "multipart/form-data; boundary=#{@boundary}")
     |> then(fn conn ->
       Enum.reduce(extra_headers, conn, fn {key, header_value}, conn ->
-        put_req_header(conn, key, header_value)
+        put_req_header(conn, to_string(key), header_value)
       end)
     end)
     |> Multipart.parse("multipart", "form-data", %{"boundary" => @boundary}, opts)

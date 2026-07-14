@@ -157,6 +157,25 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
       assert %DateTime{} = updated.field_completed_at
     end
 
+    test "applies duplicate pathway updates in request order", %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, pathway: pathway} = build_station_with_pathway(org.id, version.id)
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), %{
+          "pathways" => [
+            %{"id" => pathway.id, "traversal_time" => 10},
+            %{"id" => pathway.id, "traversal_time" => pathway.traversal_time}
+          ]
+        })
+
+      assert %{"data" => %{"synced_count" => 2} = data} = json_response(conn, 200)
+      refute Map.has_key?(data, "errors")
+      assert Repo.get!(Pathway, pathway.id).traversal_time == pathway.traversal_time
+    end
+
     test "does not modify read-only fields (pathway_mode)",
          %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)

@@ -12,7 +12,7 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoController do
          {:ok, photo} <- Gtfs.create_journal_photo(scope, metadata, upload) do
       conn
       |> put_status(:created)
-      |> json(%{data: JournalJSON.photo(photo, scope)})
+      |> json(%{data: %{photo: JournalJSON.photo(photo, scope)}})
     else
       {:error, :bad_request} ->
         bad_request(conn)

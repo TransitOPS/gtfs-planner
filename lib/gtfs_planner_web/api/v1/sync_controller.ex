@@ -87,25 +87,33 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
   end
 
   defp sync_pathways(updates, allowed_pathways) do
-    Enum.reduce(updates, %{synced_count: 0, errors: []}, fn update, results ->
-      sync_pathway(update, allowed_pathways, results)
-    end)
+    results =
+      Enum.reduce(
+        updates,
+        %{synced_count: 0, errors: [], pathways: allowed_pathways},
+        &sync_pathway/2
+      )
+
+    results
+    |> Map.update!(:errors, &Enum.reverse/1)
+    |> Map.delete(:pathways)
   end
 
-  defp sync_pathway(update, allowed_pathways, results) when is_map(update) do
+  defp sync_pathway(update, results) when is_map(update) do
     raw_id = Map.get(update, "id")
 
     with {:ok, pathway_id} <- Ecto.UUID.cast(raw_id),
-         %Pathway{} = pathway <- Map.get(allowed_pathways, pathway_id),
+         %Pathway{} = pathway <- Map.get(results.pathways, pathway_id),
          {:ok, endpoint_changes} <- endpoint_attrs(update, pathway),
-         {:ok, _pathway} <- update_pathway(pathway, update, endpoint_changes) do
-      %{results | synced_count: results.synced_count + 1}
+         {:ok, updated_pathway} <- update_pathway(pathway, update, endpoint_changes) do
+      %{
+        results
+        | synced_count: results.synced_count + 1,
+          pathways: Map.put(results.pathways, pathway_id, updated_pathway)
+      }
     else
       :error ->
         add_pathway_error(results, raw_id, "invalid_id", "Pathway id must be a valid UUID.")
-
-      false ->
-        add_pathway_error(results, raw_id, "not_found", "Pathway not found.")
 
       nil ->
         add_pathway_error(results, raw_id, "not_found", "Pathway not found.")
@@ -123,7 +131,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
     end
   end
 
-  defp sync_pathway(_update, _allowed_pathways, results),
+  defp sync_pathway(_update, results),
     do: add_pathway_error(results, nil, "validation_error", "Pathway update must be an object.")
 
   defp update_pathway(pathway, update, endpoint_changes) do
@@ -172,9 +180,10 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
     do: "Journal entry id conflicts with an existing entry."
 
   defp journal_error_message(:validation_error), do: "Journal entry is invalid."
+  defp journal_error_message(_code), do: "Journal entry could not be synchronized."
 
   defp add_pathway_error(results, id, code, message) do
-    %{results | errors: results.errors ++ [%{id: id, code: code, message: message}]}
+    %{results | errors: [%{id: id, code: code, message: message} | results.errors]}
   end
 
   # Validates the swap-only endpoint rule. Returns {:ok, changes} where

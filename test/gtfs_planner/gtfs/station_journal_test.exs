@@ -324,6 +324,83 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       assert %JournalEntry{body: "updated", target_type: "station"} = Repo.get!(JournalEntry, id)
     end
 
+    test "concurrent same-scope UUID claims keep one owner and a committed mutable value", %{
+      scope: scope
+    } do
+      id = Ecto.UUID.generate()
+
+      requests =
+        for body <- ["first concurrent body", "second concurrent body"] do
+          {scope, entry_attrs(%{id: id, target_type: "station", body: body})}
+        end
+
+      assert [
+               %{synced_count: 1, errors: []},
+               %{synced_count: 1, errors: []}
+             ] = run_concurrent_syncs(requests)
+
+      assert %JournalEntry{
+               organization_id: organization_id,
+               gtfs_version_id: gtfs_version_id,
+               station_id: station_id,
+               author_id: author_id,
+               body: body
+             } = Repo.get!(JournalEntry, id)
+
+      assert organization_id == scope.organization_id
+      assert gtfs_version_id == scope.gtfs_version_id
+      assert station_id == scope.station_id
+      assert author_id == scope.actor_id
+      assert body in ["first concurrent body", "second concurrent body"]
+      assert Repo.aggregate(from(entry in JournalEntry, where: entry.id == ^id), :count) == 1
+    end
+
+    test "concurrent competing-scope UUID claims never transfer ownership", %{scope: scope} do
+      other_organization = organization_fixture()
+      other_version = gtfs_version_fixture(other_organization.id)
+
+      other_station =
+        stop_fixture(other_organization.id, other_version.id,
+          stop_id: "station_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      other_scope = %Scope{
+        organization_id: other_organization.id,
+        gtfs_version_id: other_version.id,
+        station_id: other_station.id,
+        station_stop_id: other_station.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      id = Ecto.UUID.generate()
+
+      results =
+        run_concurrent_syncs([
+          {scope, entry_attrs(%{id: id, target_type: "station", body: "first scope"})},
+          {other_scope, entry_attrs(%{id: id, target_type: "station", body: "competing scope"})}
+        ])
+
+      assert Enum.count(results, &(&1 == %{synced_count: 1, errors: []})) == 1
+
+      assert Enum.count(results, fn result ->
+               result.synced_count == 0 and
+                 result.errors == [%{id: id, code: :id_conflict}]
+             end) == 1
+
+      entry = Repo.get!(JournalEntry, id)
+
+      assert {entry.organization_id, entry.gtfs_version_id, entry.station_id, entry.author_id,
+              entry.body} in [
+               {scope.organization_id, scope.gtfs_version_id, scope.station_id, scope.actor_id,
+                "first scope"},
+               {other_scope.organization_id, other_scope.gtfs_version_id, other_scope.station_id,
+                other_scope.actor_id, "competing scope"}
+             ]
+
+      assert Repo.aggregate(from(entry in JournalEntry, where: entry.id == ^id), :count) == 1
+    end
+
     test "reports non-object items without aborting valid siblings", %{scope: scope} do
       id = Ecto.UUID.generate()
 
@@ -474,5 +551,36 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
 
   defp entry_attrs(attrs) do
     Map.merge(%{id: @entry_id, captured_at: @captured_at}, attrs)
+  end
+
+  defp run_concurrent_syncs(requests) do
+    parent = self()
+
+    tasks =
+      Enum.map(requests, fn {scope, attrs} ->
+        start_supervised!(%{
+          Task.child_spec(fn ->
+            send(parent, {:sync_ready, self()})
+
+            receive do
+              :sync ->
+                result = Gtfs.sync_journal_entries(scope, [attrs])
+                send(parent, {:sync_finished, self(), result})
+            end
+          end)
+          | id: make_ref()
+        })
+      end)
+
+    Enum.each(tasks, fn task ->
+      assert_receive {:sync_ready, ^task}
+    end)
+
+    Enum.each(tasks, &send(&1, :sync))
+
+    Enum.map(tasks, fn task ->
+      assert_receive {:sync_finished, ^task, result}
+      result
+    end)
   end
 end

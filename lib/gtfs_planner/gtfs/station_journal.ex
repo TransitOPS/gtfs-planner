@@ -65,16 +65,18 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   def sync_entries(%Scope{} = scope, entries) when is_list(entries) do
     targets = target_index(scope)
 
-    entries
-    |> Enum.reduce(%{synced_count: 0, errors: []}, fn attrs, result ->
-      case sync_entry(scope, targets, attrs) do
-        :ok ->
-          %{result | synced_count: result.synced_count + 1}
+    result =
+      Enum.reduce(entries, %{synced_count: 0, errors: []}, fn attrs, result ->
+        case sync_entry(scope, targets, attrs) do
+          :ok ->
+            %{result | synced_count: result.synced_count + 1}
 
-        {:error, code} ->
-          %{result | errors: result.errors ++ [%{id: error_id(attrs), code: code}]}
-      end
-    end)
+          {:error, code} ->
+            %{result | errors: [%{id: error_id(attrs), code: code} | result.errors]}
+        end
+      end)
+
+    %{result | errors: Enum.reverse(result.errors)}
   end
 
   @spec list_entries(Scope.t()) :: [JournalEntry.t()]
@@ -152,9 +154,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   def create_photo(_scope, _attrs, _upload), do: {:error, :validation_error}
 
   defp create_staged_photo(scope, photo_id, entry_id, attrs, staged) do
-    with :ok <- validate_content_type_hint(attr(attrs, :content_type), staged.content_type),
-         :ok <- validate_dimension(attr(attrs, :width)),
-         :ok <- validate_dimension(attr(attrs, :height)) do
+    with :ok <- validate_captured_at(attr(attrs, :captured_at)) do
       result = Repo.transaction(fn -> persist_photo(scope, photo_id, entry_id, attrs, staged) end)
 
       case result do
@@ -183,8 +183,13 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   defp persist_photo(scope, photo_id, entry_id, attrs, staged) do
     with %JournalEntry{} = entry <- locked_scoped_entry(scope, entry_id) do
       case Repo.one(from(photo in JournalPhoto, where: photo.id == ^photo_id, lock: "FOR UPDATE")) do
-        nil -> create_or_adopt_photo(entry, photo_id, attrs, staged)
-        photo -> retry_photo(entry, photo, staged)
+        nil ->
+          with :ok <- validate_create_photo_metadata(attrs, staged) do
+            create_or_adopt_photo(entry, photo_id, attrs, staged)
+          end
+
+        photo ->
+          retry_photo(entry, photo, staged)
       end
     else
       nil -> {:error, :not_found}
@@ -204,7 +209,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   end
 
   defp create_or_adopt_photo(entry, photo_id, attrs, staged) do
-    if File.exists?(staged.final_path) and not PhotoStorage.final_matches?(staged) do
+    if PhotoStorage.canonical_conflict?(staged) do
       log_storage(:orphan_conflict, photo_id, entry.id)
       {:error, :id_conflict}
     else
@@ -295,13 +300,33 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   defp validate_content_type_hint(nil, _detected), do: :ok
   defp validate_content_type_hint(hint, detected) when hint == detected, do: :ok
   defp validate_content_type_hint(_hint, _detected), do: {:error, :validation_error}
+  defp validate_captured_at(nil), do: {:error, :validation_error}
+
+  defp validate_captured_at(value) do
+    case Ecto.Type.cast(:utc_datetime_usec, value) do
+      {:ok, _captured_at} -> :ok
+      :error -> {:error, :validation_error}
+    end
+  end
+
+  defp validate_create_photo_metadata(attrs, staged) do
+    with :ok <- validate_content_type_hint(attr(attrs, :content_type), staged.content_type),
+         :ok <- validate_dimension(attr(attrs, :width)),
+         :ok <- validate_dimension(attr(attrs, :height)) do
+      :ok
+    end
+  end
+
   defp validate_dimension(nil), do: :ok
   defp validate_dimension(value) when is_integer(value) and value > 0, do: :ok
   defp validate_dimension(_value), do: {:error, :validation_error}
 
   defp log_storage(state, photo_id, entry_id) do
     Logger.warning(
-      "station_journal_photo_storage state=#{state} photo_id=#{photo_id} entry_id=#{entry_id}"
+      "station_journal_photo_storage",
+      state: state,
+      photo_id: photo_id,
+      journal_entry_id: entry_id
     )
   end
 
@@ -354,15 +379,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
 
   defp sync_existing_entry(scope, targets, id, entry, attrs) do
     if owned_by_scope?(entry, scope) do
-      changeset = JournalEntry.sync_changeset(entry, attrs)
-
-      with true <- changeset.valid?,
-           :ok <- validate_target(targets, target_attrs(changeset)) do
-        sync_entry_transaction(fn -> persist_existing_entry(scope, id, attrs) end)
-      else
-        false -> {:error, :validation_error}
-        {:error, :invalid_target} -> {:error, :invalid_target}
-      end
+      sync_entry_transaction(fn -> persist_existing_entry(scope, targets, id, attrs) end)
     else
       {:error, :id_conflict}
     end
@@ -391,10 +408,28 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
     end
   end
 
-  defp persist_existing_entry(scope, id, attrs) do
+  defp persist_existing_entry(scope, targets, id, attrs) do
     case Repo.one(from(entry in JournalEntry, where: entry.id == ^id, lock: "FOR UPDATE")) do
-      nil -> {:error, :validation_error}
-      entry -> update_or_conflict(scope, entry, attrs)
+      nil ->
+        {:error, :validation_error}
+
+      entry ->
+        if owned_by_scope?(entry, scope) do
+          changeset = JournalEntry.sync_changeset(entry, attrs)
+
+          with true <- changeset.valid?,
+               :ok <- validate_target(targets, target_attrs(changeset)) do
+            case Repo.update(changeset) do
+              {:ok, _entry} -> :ok
+              {:error, _changeset} -> {:error, :validation_error}
+            end
+          else
+            false -> {:error, :validation_error}
+            {:error, :invalid_target} -> {:error, :invalid_target}
+          end
+        else
+          {:error, :id_conflict}
+        end
     end
   end
 

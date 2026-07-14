@@ -17,24 +17,27 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorage do
           filename: String.t(),
           content_type: String.t(),
           byte_size: pos_integer(),
-          sha256: binary()
+          sha256: binary(),
+          lock: term()
         }
 
   @spec stage(Scope.t(), Ecto.UUID.t(), %{path: String.t()}) ::
           {:ok, inspected()} | {:error, atom()}
   def stage(%Scope{} = scope, photo_id, %{path: source_path}) when is_binary(source_path) do
     with {:ok, base_path, id} <- final_path(scope, photo_id),
-         :ok <- ensure_directory(Path.dirname(base_path)),
-         {:ok, staged_path} <- temporary_path(base_path, photo_id),
-         {:ok, result} <- copy_and_inspect(source_path, staged_path) do
-      filename = id <> result.extension
+         :ok <- ensure_directory(Path.dirname(base_path)) do
+      lock = acquire_lock(scope, id)
+      cleanup_stale_path(base_path)
 
-      {:ok,
-       Map.merge(result, %{
-         path: staged_path,
-         final_path: base_path <> result.extension,
-         filename: filename
-       })}
+      case stage_file(source_path, base_path, photo_id, id) do
+        {:ok, staged} ->
+          {:ok, Map.put(staged, :lock, lock)}
+
+        {:error, reason} ->
+          cleanup_stale_path(base_path)
+          release_lock(lock)
+          {:error, reason}
+      end
     end
   end
 
@@ -42,16 +45,23 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorage do
 
   @spec discard(inspected()) :: :ok
   def discard(%{path: path} = staged) do
-    _ = File.rm(path)
-    cleanup_stale(staged)
-    :ok
+    try do
+      _ = File.rm(path)
+      :ok
+    after
+      release_lock(staged.lock)
+    end
   end
 
   @spec finalize(inspected()) :: :ok | {:error, term()}
   def finalize(%{path: path, final_path: final_path} = staged) do
-    case File.rename(path, final_path) do
-      :ok -> cleanup_stale(staged)
-      {:error, _reason} -> {:error, :rename_failed}
+    try do
+      case File.rename(path, final_path) do
+        :ok -> :ok
+        {:error, _reason} -> {:error, :rename_failed}
+      end
+    after
+      release_lock(staged.lock)
     end
   end
 
@@ -64,6 +74,16 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorage do
       {:error, _reason} ->
         false
     end
+  end
+
+  @spec canonical_conflict?(inspected()) :: boolean()
+  def canonical_conflict?(%{final_path: final_path} = staged) do
+    base_path = Path.rootname(final_path)
+
+    Enum.any?([".jpg", ".png"], fn extension ->
+      candidate = base_path <> extension
+      File.exists?(candidate) and (candidate != final_path or not final_matches?(staged))
+    end)
   end
 
   @spec inspect(String.t()) ::
@@ -110,9 +130,34 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorage do
     end
   end
 
-  defp cleanup_stale(%{final_path: final_path}) do
-    id = final_path |> Path.basename() |> Path.rootname()
-    pattern = Path.join(Path.dirname(final_path), "#{id}.*.tmp")
+  defp stage_file(source_path, base_path, photo_id, id) do
+    with {:ok, staged_path} <- temporary_path(base_path, photo_id),
+         {:ok, result} <- copy_and_inspect(source_path, staged_path) do
+      filename = id <> result.extension
+
+      {:ok,
+       Map.merge(result, %{
+         path: staged_path,
+         final_path: base_path <> result.extension,
+         filename: filename
+       })}
+    end
+  end
+
+  defp acquire_lock(scope, photo_id) do
+    lock = {{__MODULE__, scope.organization_id, scope.station_id, photo_id}, self()}
+    true = :global.set_lock(lock)
+    lock
+  end
+
+  defp release_lock(lock) do
+    :global.del_lock(lock)
+    :ok
+  end
+
+  defp cleanup_stale_path(base_path) do
+    id = Path.basename(base_path)
+    pattern = Path.join(Path.dirname(base_path), "#{id}.*.tmp")
 
     Enum.each(Path.wildcard(pattern), fn path ->
       _ = File.rm(path)
@@ -162,9 +207,6 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorage do
     case IO.binread(input, @chunk_size) do
       :eof when size == 0 ->
         {:error, :empty_file}
-
-      :eof when size > @max_bytes ->
-        {:error, :payload_too_large}
 
       :eof ->
         {:ok, %{byte_size: size, sha256: :crypto.hash_final(hash), prefix: prefix, tail: tail}}

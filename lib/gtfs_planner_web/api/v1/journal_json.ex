@@ -28,6 +28,7 @@ defmodule GtfsPlannerWeb.Api.V1.JournalJSON do
   def photo(%JournalPhoto{} = photo, %Scope{} = scope) do
     %{
       id: photo.id,
+      journal_entry_id: photo.journal_entry_id,
       url: "#{Endpoint.url()}#{PhotoStorage.public_path(scope, photo)}",
       content_type: photo.content_type,
       width: photo.width,

@@ -81,10 +81,20 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoControllerTest do
         "file" => upload
       })
 
-    assert %{"data" => %{"id" => ^photo_id, "content_type" => "image/jpeg", "url" => url}} =
-             json_response(conn, 201)
+    assert %{"data" => %{"photo" => photo}} = json_response(conn, 201)
 
-    assert url =~ "/uploads/field-captures/#{context.conn.assigns.current_organization_id}/"
+    assert photo == %{
+             "id" => photo_id,
+             "journal_entry_id" => context.entry.id,
+             "url" => photo["url"],
+             "content_type" => "image/jpeg",
+             "width" => nil,
+             "height" => nil,
+             "captured_at" => "2026-07-13T10:00:00.000000Z"
+           }
+
+    assert photo["url"] =~
+             "/uploads/field-captures/#{context.conn.assigns.current_organization_id}/"
   end
 
   test "accepts JSON-string metadata and returns the original representation on identical retry",
@@ -101,7 +111,7 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoControllerTest do
     }
 
     first = JournalPhotoController.create(context.conn, params)
-    assert %{"data" => first_data} = json_response(first, 201)
+    assert %{"data" => %{"photo" => first_photo}} = json_response(first, 201)
 
     retry_upload = upload(context.uploads_path, "retry.png", bytes)
 
@@ -113,7 +123,7 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoControllerTest do
           "file" => retry_upload
       })
 
-    assert %{"data" => ^first_data} = json_response(retry, 201)
+    assert %{"data" => %{"photo" => ^first_photo}} = json_response(retry, 201)
   end
 
   test "maps invalid URL, missing scope, conflicts, size, and validation failures", context do
@@ -149,6 +159,49 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoControllerTest do
       })
 
     assert %{"error" => %{"code" => "validation_error"}} = json_response(invalid_image, 422)
+
+    conflict_id = Ecto.UUID.generate()
+
+    first_conflict =
+      JournalPhotoController.create(context.conn, %{
+        "version_id" => context.version.id,
+        "station_id" => context.station.id,
+        "metadata" => metadata(conflict_id, context.entry.id),
+        "file" => upload(context.uploads_path, "first.jpg", <<0xFF, 0xD8, "first", 0xFF, 0xD9>>)
+      })
+
+    assert %{"data" => %{"photo" => %{"id" => ^conflict_id}}} =
+             json_response(first_conflict, 201)
+
+    conflict =
+      JournalPhotoController.create(context.conn, %{
+        "version_id" => context.version.id,
+        "station_id" => context.station.id,
+        "metadata" => metadata(conflict_id, context.entry.id),
+        "file" =>
+          upload(context.uploads_path, "changed.jpg", <<0xFF, 0xD8, "changed", 0xFF, 0xD9>>)
+      })
+
+    assert %{"error" => %{"code" => "id_conflict"}} = json_response(conflict, 409)
+
+    oversized_path = Path.join(context.uploads_path, "oversized.jpg")
+
+    {:ok, :ok} =
+      File.open(oversized_path, [:write, :binary], fn file ->
+        :ok = IO.binwrite(file, <<0xFF, 0xD8>>)
+        {:ok, _position} = :file.position(file, {:bof, 25 * 1024 * 1024 - 1})
+        IO.binwrite(file, <<0xFF, 0xD9>>)
+      end)
+
+    oversized =
+      JournalPhotoController.create(context.conn, %{
+        "version_id" => context.version.id,
+        "station_id" => context.station.id,
+        "metadata" => metadata(Ecto.UUID.generate(), context.entry.id),
+        "file" => %Plug.Upload{path: oversized_path, filename: "oversized.jpg", content_type: nil}
+      })
+
+    assert %{"error" => %{"code" => "payload_too_large"}} = json_response(oversized, 413)
   end
 
   test "maps storage failures to an internal storage error", context do
