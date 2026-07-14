@@ -16,7 +16,7 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganizationTest do
     test "assigns their org", %{conn: conn, user: user} do
       org = organization_fixture()
 
-      {:ok, _membership} =
+      {:ok, membership} =
         GtfsPlanner.Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org.id,
@@ -29,6 +29,7 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganizationTest do
 
       refute conn.halted
       assert conn.assigns[:current_organization_id] == org.id
+      assert conn.assigns[:current_organization_membership].id == membership.id
     end
   end
 
@@ -44,7 +45,7 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganizationTest do
           roles: ["pathways_studio_editor"]
         })
 
-      {:ok, _} =
+      {:ok, membership2} =
         GtfsPlanner.Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org2.id,
@@ -58,6 +59,7 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganizationTest do
 
       refute conn.halted
       assert conn.assigns[:current_organization_id] == org2.id
+      assert conn.assigns[:current_organization_membership].id == membership2.id
     end
   end
 
@@ -66,14 +68,14 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganizationTest do
       org1 = organization_fixture()
       org2 = organization_fixture()
 
-      {:ok, _} =
+      {:ok, _membership1} =
         GtfsPlanner.Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org1.id,
           roles: ["pathways_studio_editor"]
         })
 
-      {:ok, _} =
+      {:ok, _membership2} =
         GtfsPlanner.Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org2.id,
@@ -98,7 +100,7 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganizationTest do
       org = organization_fixture()
       other_org = organization_fixture()
 
-      {:ok, _} =
+      {:ok, _membership} =
         GtfsPlanner.Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org.id,
@@ -160,7 +162,7 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganizationTest do
       org1 = organization_fixture()
       org2 = organization_fixture()
 
-      {:ok, _} =
+      {:ok, membership1} =
         GtfsPlanner.Accounts.create_user_org_membership(%{
           user_id: user.id,
           organization_id: org1.id,
@@ -185,6 +187,7 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganizationTest do
       # Only one active membership, so it auto-assigns
       refute conn.halted
       assert conn.assigns[:current_organization_id] == org1.id
+      assert conn.assigns[:current_organization_membership].id == membership1.id
     end
   end
 end

@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Gtfs.JournalEntry
   alias GtfsPlanner.Gtfs.Pathway
 
   # ---------------------------------------------------------------------------
@@ -18,14 +19,14 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
     user = user_fixture()
     org = organization_fixture()
 
-    {:ok, _membership} =
+    {:ok, membership} =
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: org.id,
         roles: ["pathways_studio_editor"]
       })
 
-    %{user: user, org: org}
+    %{user: user, org: org, membership: membership}
   end
 
   defp authed_conn(conn, user) do
@@ -70,6 +71,57 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
   describe "create/2" do
     setup [:setup_user_with_org]
 
+    test "returns 401 before organization or editor authorization without a session", %{
+      conn: conn
+    } do
+      conn = post(conn, sync_url(Ecto.UUID.generate(), Ecto.UUID.generate()), %{"pathways" => []})
+
+      assert %{"error" => %{"code" => "unauthorized"}} = json_response(conn, 401)
+    end
+
+    test "rejects a selected non-editor membership without mutating pathways", %{
+      conn: conn,
+      user: user,
+      org: org,
+      membership: membership
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, pathway: pathway} = build_station_with_pathway(org.id, version.id)
+
+      {:ok, _membership} =
+        membership
+        |> Ecto.Changeset.change(%{roles: []})
+        |> Repo.update()
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), %{
+          "pathways" => [%{"id" => pathway.id, "traversal_time" => 45}]
+        })
+
+      assert %{"error" => %{"code" => "forbidden"}} = json_response(conn, 403)
+      assert Repo.get!(Pathway, pathway.id).traversal_time != 45
+    end
+
+    test "keeps protected reads available to an active non-editor membership", %{
+      conn: conn,
+      user: user,
+      membership: membership
+    } do
+      {:ok, _membership} =
+        membership
+        |> Ecto.Changeset.change(%{roles: []})
+        |> Repo.update()
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions")
+
+      assert %{"data" => _versions} = json_response(conn, 200)
+    end
+
     test "syncs editable fields successfully (traversal_time, signposted_as, field_notes, field_completed_at)",
          %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)
@@ -103,6 +155,25 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
       assert updated.signposted_as == "To Exit"
       assert updated.field_notes == "Handrail broken"
       assert %DateTime{} = updated.field_completed_at
+    end
+
+    test "applies duplicate pathway updates in request order", %{conn: conn, user: user, org: org} do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, pathway: pathway} = build_station_with_pathway(org.id, version.id)
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), %{
+          "pathways" => [
+            %{"id" => pathway.id, "traversal_time" => 10},
+            %{"id" => pathway.id, "traversal_time" => pathway.traversal_time}
+          ]
+        })
+
+      assert %{"data" => %{"synced_count" => 2} = data} = json_response(conn, 200)
+      refute Map.has_key?(data, "errors")
+      assert Repo.get!(Pathway, pathway.id).traversal_time == pathway.traversal_time
     end
 
     test "does not modify read-only fields (pathway_mode)",
@@ -339,7 +410,12 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         |> authed_conn(user)
         |> post(sync_url(version.id, station.id), %{"other_key" => "value"})
 
-      assert %{"error" => %{"code" => "bad_request"}} = json_response(conn, 400)
+      assert %{
+               "error" => %{
+                 "code" => "bad_request",
+                 "message" => "Request must include a 'pathways' array."
+               }
+             } = json_response(conn, 400)
     end
 
     test "partial failure: some pathways succeed, some fail",
@@ -368,6 +444,181 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
 
       updated = Repo.get!(Pathway, good_pathway.id)
       assert updated.traversal_time == 90
+    end
+
+    test "returns 400 for malformed URL IDs and malformed top-level lists before writes", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, pathway: pathway} = build_station_with_pathway(org.id, version.id)
+
+      malformed_url_conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url("not-a-uuid", station.id), %{
+          "pathways" => [%{"id" => pathway.id, "traversal_time" => 77}]
+        })
+
+      assert %{"error" => %{"code" => "bad_request"}} = json_response(malformed_url_conn, 400)
+      assert Repo.get!(Pathway, pathway.id).traversal_time != 77
+
+      malformed_list_conn =
+        build_conn()
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), %{"pathways" => [], "journal_entries" => %{}})
+
+      assert %{
+               "error" => %{
+                 "code" => "bad_request",
+                 "message" => "Request must include a 'journal_entries' array when provided."
+               }
+             } = json_response(malformed_list_conn, 400)
+    end
+
+    test "returns 404 for missing or cross-scope stations before processing items", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{pathway: pathway} = build_station_with_pathway(org.id, version.id)
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, Ecto.UUID.generate()), %{
+          "pathways" => [%{"id" => pathway.id, "traversal_time" => 77}]
+        })
+
+      assert %{"error" => %{"code" => "not_found"}} = json_response(conn, 404)
+      assert Repo.get!(Pathway, pathway.id).traversal_time != 77
+    end
+
+    test "accepts journal-only and mixed requests with independent counts and a server timestamp",
+         %{
+           conn: conn,
+           user: user,
+           org: org
+         } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, pathway: pathway} = build_station_with_pathway(org.id, version.id)
+
+      journal_id = Ecto.UUID.generate()
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), %{
+          "pathways" => [%{"id" => pathway.id, "traversal_time" => 31}],
+          "journal_entries" => [
+            %{
+              "id" => journal_id,
+              "target_type" => "station",
+              "body" => "Entrance inspection",
+              "captured_at" => "2025-06-01T12:00:00Z",
+              "organization_id" => Ecto.UUID.generate(),
+              "author_id" => Ecto.UUID.generate(),
+              "lat" => 99.0,
+              "closed_at" => "2025-06-01T13:00:00Z"
+            }
+          ]
+        })
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert data["synced_count"] == 1
+      assert data["journal_synced_count"] == 1
+      assert %DateTime{} = DateTime.from_iso8601(data["synced_at"]) |> elem(1)
+
+      entry = Repo.get!(JournalEntry, journal_id)
+      assert entry.organization_id == org.id
+      assert entry.author_id == user.id
+      assert is_nil(entry.lat)
+      assert is_nil(entry.closed_at)
+    end
+
+    test "accepts 100 journal entries and rejects 101 before any write", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station} = build_station_with_pathway(org.id, version.id)
+
+      entries =
+        for _ <- 1..100 do
+          %{
+            "id" => Ecto.UUID.generate(),
+            "target_type" => "station",
+            "captured_at" => "2025-06-01T12:00:00Z"
+          }
+        end
+
+      accepted_conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), %{
+          "pathways" => [],
+          "journal_entries" => entries
+        })
+
+      assert %{"data" => %{"journal_synced_count" => 100}} = json_response(accepted_conn, 200)
+
+      rejected_conn =
+        build_conn()
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), %{
+          "pathways" => [],
+          "journal_entries" => entries ++ [hd(entries)]
+        })
+
+      assert %{
+               "error" => %{
+                 "code" => "bad_request",
+                 "message" => "Request may include at most 100 journal entries."
+               }
+             } = json_response(rejected_conn, 400)
+
+      assert Repo.aggregate(JournalEntry, :count, :id) == 100
+    end
+
+    test "scopes pathways and keeps valid journal siblings when an invalid target is rejected", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station} = build_station_with_pathway(org.id, version.id)
+      %{pathway: outside_pathway} = build_station_with_pathway(org.id, version.id)
+      valid_journal_id = Ecto.UUID.generate()
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> post(sync_url(version.id, station.id), %{
+          "pathways" => [%{"id" => outside_pathway.id, "traversal_time" => 81}],
+          "journal_entries" => [
+            %{
+              "id" => valid_journal_id,
+              "target_type" => "station",
+              "captured_at" => "2025-06-01T12:00:00Z"
+            },
+            %{
+              "id" => Ecto.UUID.generate(),
+              "target_type" => "pathway",
+              "target_id" => outside_pathway.id,
+              "captured_at" => "2025-06-01T12:00:00Z"
+            }
+          ]
+        })
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert data["synced_count"] == 0
+      assert data["journal_synced_count"] == 1
+      assert Enum.map(data["errors"], & &1["code"]) == ["not_found", "invalid_target"]
+      assert %JournalEntry{id: ^valid_journal_id} = Repo.get(JournalEntry, valid_journal_id)
+      assert Repo.get!(Pathway, outside_pathway.id).traversal_time != 81
     end
   end
 end

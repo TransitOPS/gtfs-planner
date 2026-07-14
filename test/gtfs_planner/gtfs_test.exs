@@ -2,6 +2,8 @@ defmodule GtfsPlanner.GtfsTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.JournalEntry
+  alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.Stop
@@ -3342,6 +3344,67 @@ defmodule GtfsPlanner.GtfsTest do
       reloaded_child_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert_in_delta Decimal.to_float(reloaded_child_stop.stop_lat), 40.7128, 1.0e-9
       assert_in_delta Decimal.to_float(reloaded_child_stop.stop_lon), -74.0060, 1.0e-9
+    end
+
+    test "refreshes pin geography on alignment and re-alignment without changing its return shape",
+         %{
+           organization: organization,
+           gtfs_version: version,
+           station: station,
+           stop_level: stop_level
+         } do
+      scope = %Scope{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        station_id: station.id,
+        station_stop_id: station.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      pin_id = Ecto.UUID.generate()
+
+      assert %{synced_count: 1, errors: []} =
+               Gtfs.sync_journal_entries(scope, [
+                 %{
+                   id: pin_id,
+                   target_type: "pin",
+                   stop_level_id: stop_level.id,
+                   diagram_x: 50.0,
+                   diagram_y: 40.0,
+                   captured_at: ~U[2026-07-13 12:00:00Z]
+                 }
+               ])
+
+      assert %{lat: nil, lon: nil} = Repo.get!(JournalEntry, pin_id)
+
+      attrs = %{
+        floorplan_center_lat: 40.7128,
+        floorplan_center_lon: -74.0060,
+        floorplan_scale_mpp: 0.25,
+        floorplan_rotation_deg: 0.0
+      }
+
+      assert {:ok, %{active_stop_level: updated, apply_result: %{touched_stop_count: 0}}} =
+               Gtfs.save_and_apply_stop_level_alignment(stop_level.id, attrs, 1000, 800)
+
+      refreshed = Repo.get!(JournalEntry, pin_id)
+      assert refreshed.diagram_x == 50.0
+      assert refreshed.diagram_y == 40.0
+      assert_in_delta refreshed.lat, 40.7128, 1.0e-9
+      assert_in_delta refreshed.lon, -74.0060, 1.0e-9
+
+      realigned_attrs = %{attrs | floorplan_center_lat: 40.7138}
+      updated_id = updated.id
+
+      assert {:ok,
+              %{active_stop_level: %{id: ^updated_id}, apply_result: %{touched_stop_count: 0}}} =
+               Gtfs.save_and_apply_stop_level_alignment(stop_level.id, realigned_attrs, 1000, 800)
+
+      realigned = Repo.get!(JournalEntry, pin_id)
+      assert realigned.diagram_x == 50.0
+      assert realigned.diagram_y == 40.0
+      assert_in_delta realigned.lat, 40.7138, 1.0e-9
+      assert_in_delta realigned.lon, -74.0060, 1.0e-9
     end
 
     test "returns :not_found when active stop level does not exist" do

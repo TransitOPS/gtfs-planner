@@ -154,6 +154,10 @@ defmodule GtfsPlannerWeb.Router do
     plug GtfsPlannerWeb.Plugs.AssignApiOrganization
   end
 
+  pipeline :api_editor do
+    plug GtfsPlannerWeb.Plugs.RequireApiEditor
+  end
+
   # -- Companion API routes ----------------------------------------------------
 
   # CORS preflight — must be before authenticated routes
@@ -179,7 +183,18 @@ defmodule GtfsPlannerWeb.Router do
     get "/versions", VersionController, :index
     get "/versions/:version_id/stations", StationController, :index
     get "/versions/:version_id/stations/:station_id/bundle", StationController, :bundle
+  end
+
+  # Companion API writes require the role on the membership selected by the
+  # preceding API session pipeline. Reads above remain available to all members.
+  scope "/api/v1", GtfsPlannerWeb.Api.V1 do
+    pipe_through [:api_session, :api_editor]
+
     post "/versions/:version_id/stations/:station_id/sync", SyncController, :create
+
+    post "/versions/:version_id/stations/:station_id/journal-photos",
+         JournalPhotoController,
+         :create
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

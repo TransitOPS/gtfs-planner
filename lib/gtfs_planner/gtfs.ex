@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.Level
+  alias GtfsPlanner.Gtfs.JournalEntry
   alias GtfsPlanner.Gtfs.Location
   alias GtfsPlanner.Gtfs.Network
   alias GtfsPlanner.Gtfs.Pathway
@@ -36,6 +37,8 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.StationEditingStatus
+  alias GtfsPlanner.Gtfs.StationJournal
+  alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Gtfs.StationNaming
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopArea
@@ -60,6 +63,34 @@ defmodule GtfsPlanner.Gtfs do
           per_page: pos_integer() | nil,
           location_type: 0 | 1 | 2 | 3 | 4 | String.t() | nil
         ]
+
+  @spec resolve_station_journal_scope(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, Scope.t()} | {:error, :not_found | :invalid_id}
+  def resolve_station_journal_scope(organization_id, gtfs_version_id, station_id, actor_id),
+    do: StationJournal.resolve_scope(organization_id, gtfs_version_id, station_id, actor_id)
+
+  @spec sync_journal_entries(Scope.t(), [map()]) :: %{
+          synced_count: non_neg_integer(),
+          errors: [map()]
+        }
+  def sync_journal_entries(%Scope{} = scope, entries),
+    do: StationJournal.sync_entries(scope, entries)
+
+  @spec list_station_journal(Scope.t()) :: [JournalEntry.t()]
+  def list_station_journal(%Scope{} = scope), do: StationJournal.list_entries(scope)
+
+  @spec create_journal_photo(
+          Scope.t(),
+          map(),
+          %{path: String.t(), filename: String.t(), content_type: String.t() | nil}
+        ) :: {:ok, GtfsPlanner.Gtfs.JournalPhoto.t()} | {:error, atom() | Ecto.Changeset.t()}
+  def create_journal_photo(%Scope{} = scope, attrs, upload),
+    do: StationJournal.create_photo(scope, attrs, upload)
+
+  @spec refresh_pin_coordinates_for_stop_level(StopLevel.t(), pos_integer(), pos_integer()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def refresh_pin_coordinates_for_stop_level(%StopLevel{} = stop_level, image_w, image_h),
+    do: StationJournal.refresh_pin_coordinates_for_stop_level(stop_level, image_w, image_h)
 
   @doc """
   Returns the list of routes for an organization and GTFS version.
@@ -594,7 +625,9 @@ defmodule GtfsPlanner.Gtfs do
                      |> Repo.update(),
                    {:ok, active_derived} <-
                      derive_child_stop_coords(updated_stop_level, image_w, image_h),
-                   {:ok, active_updated_stops} <- persist_derived_coords_in_tx(active_derived) do
+                   {:ok, active_updated_stops} <- persist_derived_coords_in_tx(active_derived),
+                   {:ok, _refreshed_pin_count} <-
+                     refresh_pin_coordinates_for_stop_level(updated_stop_level, image_w, image_h) do
                 Logger.debug(fn ->
                   "[ALIGN_APPLY_DEBUG] active_stop_level_persisted " <>
                     inspect(%{

@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Gtfs.StopLevel
+  alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto, StopLevel}
   alias GtfsPlanner.Repo
 
   # ---------------------------------------------------------------------------
@@ -63,6 +63,20 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
     pathway = pathway_fixture(org_id, version_id, child1.stop_id, child2.stop_id)
 
     %{station: station, level: level, child1: child1, child2: child2, pathway: pathway}
+  end
+
+  defp journal_entry_fixture(org, version, station, user, attrs) do
+    defaults = %{
+      id: Ecto.UUID.generate(),
+      organization_id: org.id,
+      gtfs_version_id: version.id,
+      station_id: station.id,
+      author_id: user.id,
+      target_type: "station",
+      captured_at: ~U[2026-07-13 10:00:00.000000Z]
+    }
+
+    Repo.insert!(struct!(JournalEntry, Map.merge(defaults, attrs)))
   end
 
   # ---------------------------------------------------------------------------
@@ -331,6 +345,140 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert data["diagrams"] == []
 
       assert is_binary(data["downloaded_at"])
+    end
+
+    test "nests scoped journal history with ordered photos at documented bundle targets", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+
+      %{station: station, level: level, child1: child1, pathway: pathway} =
+        build_station_data(org.id, version.id)
+
+      {:ok, stop_level} =
+        %StopLevel{
+          stop_id: station.id,
+          level_id: level.id,
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        }
+        |> Repo.insert()
+
+      station_entry =
+        journal_entry_fixture(org, version, station, user, %{
+          body: "station entry",
+          captured_at: ~U[2026-07-13 09:00:00.000000Z],
+          closed_at: ~U[2026-07-13 09:30:00.000000Z],
+          closed_by: user.id
+        })
+
+      _node_entry =
+        journal_entry_fixture(org, version, station, user, %{
+          target_type: "node",
+          target_id: child1.id,
+          body: "node entry"
+        })
+
+      _pathway_entry =
+        journal_entry_fixture(org, version, station, user, %{
+          target_type: "pathway",
+          target_id: pathway.id,
+          body: "pathway entry"
+        })
+
+      _pin_entry =
+        journal_entry_fixture(org, version, station, user, %{
+          target_type: "pin",
+          stop_level_id: stop_level.id,
+          diagram_x: 12.5,
+          diagram_y: 40.0,
+          lat: 39.95,
+          lon: -75.16,
+          body: "pin entry"
+        })
+
+      earlier_photo =
+        Repo.insert!(%JournalPhoto{
+          id: Ecto.UUID.generate(),
+          journal_entry_id: station_entry.id,
+          filename: "#{Ecto.UUID.generate()}.jpg",
+          content_type: "image/jpeg",
+          byte_size: 3,
+          sha256: :crypto.strong_rand_bytes(32),
+          captured_at: ~U[2026-07-13 08:00:00.000000Z]
+        })
+
+      later_photo =
+        Repo.insert!(%JournalPhoto{
+          id: Ecto.UUID.generate(),
+          journal_entry_id: station_entry.id,
+          filename: "#{Ecto.UUID.generate()}.png",
+          content_type: "image/png",
+          byte_size: 3,
+          sha256: :crypto.strong_rand_bytes(32),
+          captured_at: ~U[2026-07-13 11:00:00.000000Z]
+        })
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert [station_json] = data["journal_entries"]
+      assert station_json["id"] == station_entry.id
+      assert station_json["closed_by"] == user.id
+      assert [photo, second_photo] = station_json["photos"]
+      assert photo["id"] == earlier_photo.id
+      assert second_photo["id"] == later_photo.id
+
+      assert String.starts_with?(
+               photo["url"],
+               "#{GtfsPlannerWeb.Endpoint.url()}/uploads/field-captures/#{org.id}/"
+             )
+
+      assert String.ends_with?(photo["url"], ".jpg")
+
+      assert [node_json] = Enum.find(data["stops"], &(&1["id"] == child1.id))["journal_entries"]
+      assert node_json["body"] == "node entry"
+
+      assert [pathway_json] =
+               Enum.find(data["pathways"], &(&1["id"] == pathway.id))["journal_entries"]
+
+      assert pathway_json["body"] == "pathway entry"
+
+      level_json = Enum.find(data["levels"], &(&1["id"] == level.id))
+      assert level_json["stop_level_id"] == stop_level.id
+      assert [pin_json] = level_json["journal_entries"]
+      assert pin_json["diagram_coordinate"] == %{"x" => 12.5, "y" => 40.0}
+      assert pin_json["lat"] == 39.95
+      assert pin_json["lon"] == -75.16
+    end
+
+    test "omits journal history whose target no longer appears in the bundle", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, child1: child1} = build_station_data(org.id, version.id)
+
+      _orphaned_node_entry =
+        journal_entry_fixture(org, version, station, user, %{
+          target_type: "node",
+          target_id: Ecto.UUID.generate(),
+          body: "deleted node history"
+        })
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert Enum.find(data["stops"], &(&1["id"] == child1.id))["journal_entries"] == []
     end
 
     test "level floorplan carries url + alignment when the stop_level is aligned", %{

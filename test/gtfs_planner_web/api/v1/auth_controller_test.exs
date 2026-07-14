@@ -53,7 +53,7 @@ defmodule GtfsPlannerWeb.Api.V1.AuthControllerTest do
   describe "login/2" do
     setup [:setup_user_with_org]
 
-    test "returns 200 with token, user, organization_id, and expires_at for valid credentials",
+    test "returns 200 with token, user, organization membership, and expires_at for valid credentials",
          %{conn: conn, user: user, org: org} do
       conn = call_login(conn, %{"email" => user.email, "password" => @password})
 
@@ -65,6 +65,7 @@ defmodule GtfsPlannerWeb.Api.V1.AuthControllerTest do
       assert data["user"]["id"] == user.id
       assert data["user"]["email"] == user.email
       assert data["organization_id"] == org.id
+      assert data["roles"] == ["pathways_studio_editor"]
       assert is_binary(data["expires_at"])
 
       # Verify expires_at is roughly 60 days from now

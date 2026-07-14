@@ -60,6 +60,7 @@ defmodule GtfsPlannerWeb.UploadsPlug do
 
       File.regular?(file_path_expanded) ->
         conn
+        |> put_field_capture_headers(rest)
         |> send_file(200, file_path_expanded)
         |> halt()
 
@@ -67,4 +68,42 @@ defmodule GtfsPlannerWeb.UploadsPlug do
         conn
     end
   end
+
+  # Field captures are the only files whose type and cache lifetime are a
+  # public API contract. Existing diagram and other upload delivery keeps its
+  # historical behavior, while this strict grammar prevents a filename from
+  # selecting headers for an arbitrary file under the uploads root.
+  defp put_field_capture_headers(conn, ["field-captures", organization_id, station_dir, filename]) do
+    case field_capture_type(organization_id, station_dir, filename) do
+      {:ok, content_type} ->
+        conn
+        |> put_resp_header("content-type", content_type)
+        |> put_resp_header("cache-control", "public, max-age=31536000, immutable")
+        |> put_resp_header("x-content-type-options", "nosniff")
+
+      :error ->
+        conn
+    end
+  end
+
+  defp put_field_capture_headers(conn, _rest), do: conn
+
+  defp field_capture_type(organization_id, station_dir, filename) do
+    with true <- safe_component?(organization_id),
+         true <- safe_component?(station_dir),
+         [id, extension] <- String.split(filename, ".", parts: 2),
+         {:ok, ^id} <- Ecto.UUID.cast(id),
+         content_type when is_binary(content_type) <- extension_type(extension) do
+      {:ok, content_type}
+    else
+      _ -> :error
+    end
+  end
+
+  defp safe_component?(value),
+    do: GtfsPlanner.Gtfs.Extensions.PathSafety.safe_path_component?(value)
+
+  defp extension_type("jpg"), do: "image/jpeg"
+  defp extension_type("png"), do: "image/png"
+  defp extension_type(_extension), do: nil
 end

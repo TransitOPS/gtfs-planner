@@ -3,7 +3,8 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganization do
   Plug to resolve and assign the current organization for API requests.
 
   Reads `X-Organization-Id` header. If present, verifies the authenticated user
-  has a membership in that organization and assigns `:current_organization_id`.
+  has a membership in that organization and assigns `:current_organization_id`
+  and `:current_organization_membership`.
   If absent, falls back to the user's sole membership when they belong to exactly
   one organization. Multi-org users without the header receive a 403 listing
   available org IDs. Users with no memberships receive a 403.
@@ -60,28 +61,30 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganization do
   end
 
   defp resolve_valid_org_id(conn, memberships, org_id) do
-    if Enum.any?(memberships, fn m -> m.organization_id == org_id end) do
-      assign(conn, :current_organization_id, org_id)
-    else
-      conn
-      |> put_resp_content_type("application/json")
-      |> send_resp(
-        403,
-        Jason.encode!(%{
-          error: %{
-            code: "forbidden",
-            message: "You do not have access to this organization."
-          }
-        })
-      )
-      |> halt()
+    case Enum.find(memberships, &(&1.organization_id == org_id)) do
+      nil ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(
+          403,
+          Jason.encode!(%{
+            error: %{
+              code: "forbidden",
+              message: "You do not have access to this organization."
+            }
+          })
+        )
+        |> halt()
+
+      membership ->
+        assign_selected_membership(conn, membership)
     end
   end
 
   defp resolve_without_header(conn, memberships) do
     case memberships do
       [single] ->
-        assign(conn, :current_organization_id, single.organization_id)
+        assign_selected_membership(conn, single)
 
       [] ->
         conn
@@ -114,5 +117,11 @@ defmodule GtfsPlannerWeb.Plugs.AssignApiOrganization do
         )
         |> halt()
     end
+  end
+
+  defp assign_selected_membership(conn, membership) do
+    conn
+    |> assign(:current_organization_id, membership.organization_id)
+    |> assign(:current_organization_membership, membership)
   end
 end
