@@ -336,7 +336,9 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
 
     send(first, :finalize)
     assert_receive {:first_finalized, :ok}
-    assert_receive {:second_finished, ^second, {{:ok, _staged}, :ok}}
+
+    # :global.set_lock/1 retries contention after a randomized backoff.
+    assert_receive {:second_finished, ^second, {{:ok, _staged}, :ok}}, 1_000
   end
 
   test "row/wrong-file retry repairs from bytes matching the authoritative row", context do
