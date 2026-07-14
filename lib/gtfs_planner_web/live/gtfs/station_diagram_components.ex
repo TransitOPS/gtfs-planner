@@ -4532,14 +4532,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <li
             :for={entry <- @visible_entries}
             id={"journal-entry-#{entry.id}"}
-            class={[
-              "rounded-lg border p-3",
-              # Open cards are white + lifted so they read as live items floating
-              # on the muted rail; closed cards blend back into it.
-              entry.closed_at && "border-base-300 bg-base-200/40 opacity-70",
-              !entry.closed_at && "border-base-300 bg-base-100 shadow-sm",
-              @focus_entry_id == entry.id && "ring-2 ring-amber-400"
-            ]}
+            class={
+              [
+                "rounded-lg border p-3",
+                # Open cards are white + lifted so they read as live items floating
+                # on the muted rail; closed cards blend back into it.
+                entry.closed_at && "border-base-300 bg-base-200/40 opacity-70",
+                !entry.closed_at && "border-base-300 bg-base-100 shadow-sm",
+                @focus_entry_id == entry.id && "ring-2 ring-amber-400"
+              ]
+            }
           >
             <div class="flex items-start justify-between gap-2">
               <.journal_target_chip

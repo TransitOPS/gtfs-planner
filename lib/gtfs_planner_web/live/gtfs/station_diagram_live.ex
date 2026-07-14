@@ -13,6 +13,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.StationJournal.PhotoStorage
+  alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Otp.Lifecycle
@@ -209,23 +211,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       station: station
     } = socket.assigns
 
+    # The journal domain (`StationJournal`) takes a trusted scope struct. The
+    # LiveView has already authorized the org/version and loaded the station,
+    # so the scope is built directly rather than re-resolved from the DB.
+    scope = %Scope{
+      organization_id: org_id,
+      gtfs_version_id: version_id,
+      station_id: station.id,
+      station_stop_id: station.stop_id,
+      actor_id: socket.assigns.current_user.id
+    }
+
     entries =
-      org_id
-      |> Gtfs.list_journal_entries_for_station(version_id, station.id)
+      scope
+      |> Gtfs.list_station_journal()
       |> Enum.reverse()
 
     photos_by_entry =
-      org_id
-      |> Gtfs.list_journal_photos_for_station(version_id, station.id)
-      |> Enum.group_by(& &1.journal_entry_id, fn p ->
-        %{
-          id: p.id,
-          filename: p.filename,
-          content_type: p.content_type,
-          width: p.width,
-          height: p.height,
-          url: journal_photo_url(org_id, station.stop_id, p.filename)
-        }
+      entries
+      |> Enum.reject(&(&1.photos == []))
+      |> Map.new(fn entry ->
+        {entry.id,
+         Enum.map(entry.photos, fn p ->
+           %{
+             id: p.id,
+             filename: p.filename,
+             content_type: p.content_type,
+             width: p.width,
+             height: p.height,
+             url: PhotoStorage.public_path(scope, p)
+           }
+         end)}
       end)
 
     user_names =
@@ -266,19 +282,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:ok, _} -> load_journal(socket)
           {:error, _} -> put_flash(socket, :error, "Couldn't update the journal entry.")
         end
-    end
-  end
-
-  # Static URL for a field-capture photo (mirrors the bundle's field_capture_url,
-  # but relative — LiveView serves from the same host). Served by UploadsPlug.
-  defp journal_photo_url(org_id, station_stop_id, filename) do
-    case PathSafety.stop_storage_dir(station_stop_id) do
-      dir when is_binary(dir) ->
-        encoded = URI.encode(filename, &URI.char_unreserved?/1)
-        "/uploads/field-captures/#{org_id}/#{dir}/#{encoded}"
-
-      _ ->
-        nil
     end
   end
 
@@ -460,8 +463,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:editing_walkability_test, nil)
     |> reset_reposition_state()
     |> load_station_stop_levels_cache()
-    |> assign_selectable_reference_stop_levels()
-    |> sync_reference_overlay_state(level)
     |> load_level_data(level)
   end
 

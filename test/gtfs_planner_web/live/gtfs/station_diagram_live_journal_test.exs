@@ -56,6 +56,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalTest do
     }
   end
 
+  # Inserts a journal entry struct directly (the companion's write path is the
+  # scoped sync API — see `StationJournal.sync_entries/2` — but these tests
+  # exercise the desktop read/close surface, so a plain row is all we need).
+  # `attrs` keeps the sync-body string-keyed shape used throughout the tests;
+  # datetime fields accept ISO 8601 strings.
   defp entry_fixture(org, version, station, author, attrs) do
     base = %{
       "id" => Ecto.UUID.generate(),
@@ -68,9 +73,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalTest do
       "captured_at" => "2026-06-20T10:00:00Z"
     }
 
-    {:ok, entry} = Gtfs.upsert_journal_entry(Map.merge(base, attrs))
-    entry
+    fields =
+      base
+      |> Map.merge(attrs)
+      |> Enum.map(fn {key, value} -> {String.to_existing_atom(key), cast_fixture(key, value)} end)
+
+    Repo.insert!(struct!(JournalEntry, fields))
   end
+
+  defp cast_fixture(key, value) when key in ["captured_at", "closed_at"] and is_binary(value) do
+    {:ok, datetime, 0} = DateTime.from_iso8601(value)
+    # The columns are utc_datetime_usec; a raw struct insert needs the
+    # DateTime to carry microsecond precision.
+    %{datetime | microsecond: {elem(datetime.microsecond, 0), 6}}
+  end
+
+  defp cast_fixture(_key, value), do: value
 
   defp open_diagram(conn, ctx) do
     conn = log_in_user(conn, ctx.user, organization: ctx.organization)
