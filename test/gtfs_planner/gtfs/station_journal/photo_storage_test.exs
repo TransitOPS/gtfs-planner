@@ -382,6 +382,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
 
   defp write_sparse_jpeg(root, filename, size) do
     path = Path.join(root, filename)
+    File.mkdir_p!(Path.dirname(path))
 
     {:ok, :ok} =
       File.open(path, [:write, :binary], fn file ->

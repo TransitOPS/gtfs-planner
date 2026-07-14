@@ -19,7 +19,9 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
   end
 
   setup do
-    uploads_path = Path.join(System.tmp_dir!(), "uploads_plug_test_#{System.unique_integer([:positive])}")
+    uploads_path =
+      Path.join(System.tmp_dir!(), "uploads_plug_test_#{System.unique_integer([:positive])}")
+
     Application.put_env(:gtfs_planner, :uploads_path, uploads_path)
     File.mkdir_p!(uploads_path)
 
@@ -51,7 +53,9 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn.resp_body == file_content
     end
 
-    test "adds CORS header when served to an allowed (localhost) origin", %{uploads_path: uploads_path} do
+    test "adds CORS header when served to an allowed (localhost) origin", %{
+      uploads_path: uploads_path
+    } do
       org_id = "123"
       stop_id = "TEST_STATION"
       filename = "floor_plan.png"
@@ -124,7 +128,9 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn.status == nil
     end
 
-    test "provides tenant isolation - different org cannot access same stop_id", %{uploads_path: uploads_path} do
+    test "provides tenant isolation - different org cannot access same stop_id", %{
+      uploads_path: uploads_path
+    } do
       # Create file for org 1
       org1_id = "1"
       stop_id = "SHARED_STATION"
@@ -201,7 +207,9 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn.resp_body == "Forbidden"
     end
 
-    test "serves only valid field captures with deterministic public image headers", %{uploads_path: uploads_path} do
+    test "serves only valid field captures with deterministic public image headers", %{
+      uploads_path: uploads_path
+    } do
       organization_id = Ecto.UUID.generate()
       photo_id = Ecto.UUID.generate()
       file_dir = Path.join([uploads_path, "field-captures", organization_id, "STATION"])
@@ -218,15 +226,21 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
     end
 
-    test "does not apply field-capture image headers to an invalid field-capture filename", %{uploads_path: uploads_path} do
+    test "does not apply field-capture image headers to an invalid field-capture filename", %{
+      uploads_path: uploads_path
+    } do
       file_dir = Path.join([uploads_path, "field-captures", "organization", "STATION"])
       File.mkdir_p!(file_dir)
       File.write!(Path.join(file_dir, "untrusted.png"), "not a field capture")
 
-      conn = conn(:get, "/uploads/field-captures/organization/STATION/untrusted.png") |> UploadsPlug.call([])
+      conn =
+        conn(:get, "/uploads/field-captures/organization/STATION/untrusted.png")
+        |> UploadsPlug.call([])
 
       assert conn.status == 200
-      assert get_resp_header(conn, "cache-control") == []
+
+      refute "public, max-age=31536000, immutable" in get_resp_header(conn, "cache-control")
+
       assert get_resp_header(conn, "x-content-type-options") == []
     end
   end

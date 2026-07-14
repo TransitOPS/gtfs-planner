@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.Plugs.RequireApiEditorTest do
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
 
-  defp membership_fixture(attrs \\ %{}) do
+  defp membership_fixture(attrs) do
     attrs = Map.new(attrs)
     user = user_fixture()
     organization = organization_fixture()
@@ -52,7 +52,10 @@ defmodule GtfsPlannerWeb.Plugs.RequireApiEditorTest do
     assert missing.halted
     assert missing.status == 403
 
-    deactivated = %{membership_fixture(roles: ["pathways_studio_editor"]) | deactivated_at: DateTime.utc_now()}
+    deactivated = %{
+      membership_fixture(roles: ["pathways_studio_editor"])
+      | deactivated_at: DateTime.utc_now()
+    }
 
     deactivated_conn =
       conn
