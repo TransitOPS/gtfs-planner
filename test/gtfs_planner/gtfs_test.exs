@@ -3346,12 +3346,13 @@ defmodule GtfsPlanner.GtfsTest do
       assert_in_delta Decimal.to_float(reloaded_child_stop.stop_lon), -74.0060, 1.0e-9
     end
 
-    test "refreshes pin geography on alignment and re-alignment without changing its return shape", %{
-      organization: organization,
-      gtfs_version: version,
-      station: station,
-      stop_level: stop_level
-    } do
+    test "refreshes pin geography on alignment and re-alignment without changing its return shape",
+         %{
+           organization: organization,
+           gtfs_version: version,
+           station: station,
+           stop_level: stop_level
+         } do
       scope = %Scope{
         organization_id: organization.id,
         gtfs_version_id: version.id,
@@ -3395,7 +3396,8 @@ defmodule GtfsPlanner.GtfsTest do
       realigned_attrs = %{attrs | floorplan_center_lat: 40.7138}
       updated_id = updated.id
 
-      assert {:ok, %{active_stop_level: %{id: ^updated_id}, apply_result: %{touched_stop_count: 0}}} =
+      assert {:ok,
+              %{active_stop_level: %{id: ^updated_id}, apply_result: %{touched_stop_count: 0}}} =
                Gtfs.save_and_apply_stop_level_alignment(stop_level.id, realigned_attrs, 1000, 800)
 
       realigned = Repo.get!(JournalEntry, pin_id)

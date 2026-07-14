@@ -353,6 +353,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       org: org
     } do
       version = gtfs_version_fixture(org.id)
+
       %{station: station, level: level, child1: child1, pathway: pathway} =
         build_station_data(org.id, version.id)
 
@@ -432,16 +433,20 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert [photo, second_photo] = station_json["photos"]
       assert photo["id"] == earlier_photo.id
       assert second_photo["id"] == later_photo.id
+
       assert String.starts_with?(
                photo["url"],
                "#{GtfsPlannerWeb.Endpoint.url()}/uploads/field-captures/#{org.id}/"
              )
+
       assert String.ends_with?(photo["url"], ".jpg")
 
       assert [node_json] = Enum.find(data["stops"], &(&1["id"] == child1.id))["journal_entries"]
       assert node_json["body"] == "node entry"
 
-      assert [pathway_json] = Enum.find(data["pathways"], &(&1["id"] == pathway.id))["journal_entries"]
+      assert [pathway_json] =
+               Enum.find(data["pathways"], &(&1["id"] == pathway.id))["journal_entries"]
+
       assert pathway_json["body"] == "pathway entry"
 
       level_json = Enum.find(data["levels"], &(&1["id"] == level.id))

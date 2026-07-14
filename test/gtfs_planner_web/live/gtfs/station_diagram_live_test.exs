@@ -1501,10 +1501,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       pathway =
-        pathway_fixture(organization.id, gtfs_version.id, child_stop.stop_id, other_stop.stop_id, %{
-          pathway_mode: 1,
-          is_bidirectional: true
-        })
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          child_stop.stop_id,
+          other_stop.stop_id,
+          %{
+            pathway_mode: 1,
+            is_bidirectional: true
+          }
+        )
 
       conn = log_in_user(conn, user, organization: organization)
 

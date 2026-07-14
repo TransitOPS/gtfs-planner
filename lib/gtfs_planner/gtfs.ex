@@ -73,7 +73,8 @@ defmodule GtfsPlanner.Gtfs do
           synced_count: non_neg_integer(),
           errors: [map()]
         }
-  def sync_journal_entries(%Scope{} = scope, entries), do: StationJournal.sync_entries(scope, entries)
+  def sync_journal_entries(%Scope{} = scope, entries),
+    do: StationJournal.sync_entries(scope, entries)
 
   @spec list_station_journal(Scope.t()) :: [JournalEntry.t()]
   def list_station_journal(%Scope{} = scope), do: StationJournal.list_entries(scope)

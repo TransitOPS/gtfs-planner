@@ -49,7 +49,15 @@ defmodule GtfsPlanner.Gtfs.JournalPhoto do
       :height,
       :captured_at
     ])
-    |> validate_required([:id, :journal_entry_id, :filename, :content_type, :byte_size, :sha256, :captured_at])
+    |> validate_required([
+      :id,
+      :journal_entry_id,
+      :filename,
+      :content_type,
+      :byte_size,
+      :sha256,
+      :captured_at
+    ])
     |> validate_inclusion(:content_type, @content_types)
     |> validate_number(:byte_size, greater_than: 0)
     |> validate_number(:width, greater_than: 0)

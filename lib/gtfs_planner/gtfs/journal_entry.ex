@@ -76,7 +76,14 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
   @spec sync_changeset(t(), map()) :: Ecto.Changeset.t()
   def sync_changeset(entry, client_attrs) do
     entry
-    |> cast(client_attrs, [:target_type, :target_id, :stop_level_id, :diagram_x, :diagram_y, :body])
+    |> cast(client_attrs, [
+      :target_type,
+      :target_id,
+      :stop_level_id,
+      :diagram_x,
+      :diagram_y,
+      :body
+    ])
     |> validate_entry_fields(required: false)
   end
 
@@ -90,7 +97,8 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
   end
 
   defp validate_entry_fields(changeset, options \\ []) do
-    required = if Keyword.get(options, :required, true), do: [:id, :target_type, :captured_at], else: []
+    required =
+      if Keyword.get(options, :required, true), do: [:id, :target_type, :captured_at], else: []
 
     changeset
     |> validate_required(required)
@@ -112,21 +120,29 @@ defmodule GtfsPlanner.Gtfs.JournalEntry do
 
     valid? =
       case target_type do
-        "station" -> is_nil(target_id) and is_nil(stop_level_id) and is_nil(diagram_x) and is_nil(diagram_y)
-        type when type in ["node", "pathway"] -> not is_nil(target_id) and is_nil(stop_level_id) and is_nil(diagram_x) and is_nil(diagram_y)
-        "pin" -> is_nil(target_id) and not is_nil(stop_level_id) and finite_non_negative?(diagram_x) and finite_non_negative?(diagram_y)
-        _ -> true
+        "station" ->
+          is_nil(target_id) and is_nil(stop_level_id) and is_nil(diagram_x) and is_nil(diagram_y)
+
+        type when type in ["node", "pathway"] ->
+          not is_nil(target_id) and is_nil(stop_level_id) and is_nil(diagram_x) and
+            is_nil(diagram_y)
+
+        "pin" ->
+          is_nil(target_id) and not is_nil(stop_level_id) and finite_non_negative?(diagram_x) and
+            finite_non_negative?(diagram_y)
+
+        _ ->
+          true
       end
 
-    if valid?, do: changeset, else: add_error(changeset, :target_type, "has an invalid target shape")
+    if valid?,
+      do: changeset,
+      else: add_error(changeset, :target_type, "has an invalid target shape")
   end
 
   defp finite_non_negative?(value) when is_integer(value), do: value >= 0
 
-  defp finite_non_negative?(value) when is_float(value) do
-    value >= 0 and value == value and
-      :erlang.float_to_binary(value, [:compact]) not in ["inf", "-inf", "nan"]
-  end
+  defp finite_non_negative?(value) when is_float(value), do: value >= 0
 
   defp finite_non_negative?(_), do: false
 end
