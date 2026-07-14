@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   import Ecto.Query
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto, Stop}
+  alias GtfsPlanner.Gtfs.{Coordinates, FloorplanTransform, JournalEntry, JournalPhoto, Stop, StopLevel}
   alias GtfsPlanner.Gtfs.StationJournal.{PhotoStorage, Scope}
   alias GtfsPlanner.Repo
 
@@ -80,6 +80,42 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
     )
     |> Repo.all()
   end
+
+  @spec refresh_pin_coordinates_for_stop_level(StopLevel.t(), pos_integer(), pos_integer()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def refresh_pin_coordinates_for_stop_level(%StopLevel{} = stop_level, image_w, image_h)
+      when is_integer(image_w) and image_w > 0 and is_integer(image_h) and image_h > 0 do
+    with {:ok, alignment} <- StopLevel.alignment_transform(stop_level) do
+      from(entry in JournalEntry,
+        where:
+          entry.organization_id == ^stop_level.organization_id and
+            entry.gtfs_version_id == ^stop_level.gtfs_version_id and
+            entry.station_id == ^stop_level.stop_id and entry.target_type == "pin" and
+            entry.stop_level_id == ^stop_level.id,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.all()
+      |> Enum.reduce_while({:ok, 0}, fn entry, {:ok, count} ->
+        case Coordinates.normalize_point(%{x: entry.diagram_x, y: entry.diagram_y}) do
+          nil ->
+            {:cont, {:ok, count}}
+
+          point ->
+            with {:ok, {lat, lon}} <- FloorplanTransform.svg_to_lat_lon(alignment, image_w, image_h, point),
+                 {:ok, _entry} <-
+                   entry
+                   |> JournalEntry.derived_coordinates_changeset(%{lat: lat, lon: lon})
+                   |> Repo.update() do
+              {:cont, {:ok, count + 1}}
+            else
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+        end
+      end)
+    end
+  end
+
+  def refresh_pin_coordinates_for_stop_level(_, _, _), do: {:error, :invalid_input}
 
   @spec create_photo(Scope.t(), map(), %{path: String.t(), filename: String.t(), content_type: String.t() | nil}) ::
           {:ok, JournalPhoto.t()} | {:error, atom() | Ecto.Changeset.t()}

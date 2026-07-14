@@ -86,6 +86,11 @@ defmodule GtfsPlanner.Gtfs do
   def create_journal_photo(%Scope{} = scope, attrs, upload),
     do: StationJournal.create_photo(scope, attrs, upload)
 
+  @spec refresh_pin_coordinates_for_stop_level(StopLevel.t(), pos_integer(), pos_integer()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def refresh_pin_coordinates_for_stop_level(%StopLevel{} = stop_level, image_w, image_h),
+    do: StationJournal.refresh_pin_coordinates_for_stop_level(stop_level, image_w, image_h)
+
   @doc """
   Returns the list of routes for an organization and GTFS version.
 
@@ -619,7 +624,9 @@ defmodule GtfsPlanner.Gtfs do
                      |> Repo.update(),
                    {:ok, active_derived} <-
                      derive_child_stop_coords(updated_stop_level, image_w, image_h),
-                   {:ok, active_updated_stops} <- persist_derived_coords_in_tx(active_derived) do
+                   {:ok, active_updated_stops} <- persist_derived_coords_in_tx(active_derived),
+                   {:ok, _refreshed_pin_count} <-
+                     refresh_pin_coordinates_for_stop_level(updated_stop_level, image_w, image_h) do
                 Logger.debug(fn ->
                   "[ALIGN_APPLY_DEBUG] active_stop_level_persisted " <>
                     inspect(%{

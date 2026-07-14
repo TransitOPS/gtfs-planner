@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto}
   alias GtfsPlanner.Gtfs.StationJournal.Scope
+  alias GtfsPlanner.Repo
 
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
@@ -324,6 +325,77 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
                ])
 
       assert Enum.map(Gtfs.list_station_journal(scope), & &1.id) == [earlier_id, later_id]
+    end
+
+    test "refreshes only scoped pin coordinates while preserving diagram coordinates", %{
+      scope: scope,
+      stop_level: stop_level
+    } do
+      pin_id = Ecto.UUID.generate()
+
+      assert %{synced_count: 1, errors: []} =
+               Gtfs.sync_journal_entries(scope, [
+                 entry_attrs(%{
+                   id: pin_id,
+                   target_type: "pin",
+                   stop_level_id: stop_level.id,
+                   diagram_x: 50.0,
+                   diagram_y: 40.0
+                 })
+               ])
+
+      [unrefreshed] = Gtfs.list_station_journal(scope)
+      assert is_nil(unrefreshed.lat)
+      assert is_nil(unrefreshed.lon)
+
+      {:ok, aligned_stop_level} =
+        Gtfs.update_stop_level_alignment(stop_level, %{
+          floorplan_center_lat: 40.7128,
+          floorplan_center_lon: -74.006,
+          floorplan_scale_mpp: 0.25,
+          floorplan_rotation_deg: 0.0
+        })
+
+      other_organization = organization_fixture()
+      other_version = gtfs_version_fixture(other_organization.id)
+
+      other_station =
+        stop_fixture(other_organization.id, other_version.id,
+          stop_id: "station_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      other_scope = %Scope{
+        organization_id: other_organization.id,
+        gtfs_version_id: other_version.id,
+        station_id: other_station.id,
+        station_stop_id: other_station.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      unrelated_pin =
+        JournalEntry.create_changeset(
+          %JournalEntry{},
+          entry_attrs(%{
+            id: Ecto.UUID.generate(),
+            target_type: "pin",
+            stop_level_id: stop_level.id,
+            diagram_x: 50.0,
+            diagram_y: 40.0
+          }),
+          other_scope
+        )
+        |> Repo.insert!()
+
+      assert {:ok, 1} = Gtfs.refresh_pin_coordinates_for_stop_level(aligned_stop_level, 1000, 800)
+
+      refreshed = Repo.get!(JournalEntry, pin_id)
+      assert refreshed.diagram_x == 50.0
+      assert refreshed.diagram_y == 40.0
+      assert_in_delta refreshed.lat, 40.7128, 1.0e-9
+      assert_in_delta refreshed.lon, -74.006, 1.0e-9
+
+      assert %{lat: nil, lon: nil} = Repo.get!(JournalEntry, unrelated_pin.id)
     end
   end
 
