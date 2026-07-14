@@ -42,7 +42,7 @@ defmodule GtfsPlannerWeb.Api.V1.AuthController do
         |> DateTime.add(@token_ttl_days * 24 * 60 * 60, :second)
         |> DateTime.truncate(:second)
 
-      {:ok, token, user, membership.organization_id, expires_at}
+      {:ok, token, user, membership, expires_at}
     else
       nil -> {:error, :invalid_credentials}
       {:error, _} = error -> error
@@ -58,12 +58,13 @@ defmodule GtfsPlannerWeb.Api.V1.AuthController do
     end
   end
 
-  defp send_login_response(conn, {:ok, token, user, organization_id, expires_at}) do
+  defp send_login_response(conn, {:ok, token, user, membership, expires_at}) do
     json(conn, %{
       data: %{
         token: token,
         user: %{id: user.id, email: user.email},
-        organization_id: organization_id,
+        organization_id: membership.organization_id,
+        roles: membership.roles,
         expires_at: DateTime.to_iso8601(expires_at)
       }
     })
