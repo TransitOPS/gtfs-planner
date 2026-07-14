@@ -25,7 +25,12 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
 
   describe "JournalEntry.create_changeset/3" do
     test "accepts every valid target shape with trusted scope and microsecond capture time" do
-      station = JournalEntry.create_changeset(%JournalEntry{}, entry_attrs(%{target_type: "station"}), @scope)
+      station =
+        JournalEntry.create_changeset(
+          %JournalEntry{},
+          entry_attrs(%{target_type: "station"}),
+          @scope
+        )
 
       node =
         JournalEntry.create_changeset(
@@ -44,7 +49,13 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       pin =
         JournalEntry.create_changeset(
           %JournalEntry{},
-          entry_attrs(%{id: Ecto.UUID.generate(), target_type: "pin", stop_level_id: @level_id, diagram_x: 50.0, diagram_y: 40.0}),
+          entry_attrs(%{
+            id: Ecto.UUID.generate(),
+            target_type: "pin",
+            stop_level_id: @level_id,
+            diagram_x: 50.0,
+            diagram_y: 40.0
+          }),
           @scope
         )
 
@@ -63,7 +74,13 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       changeset =
         JournalEntry.create_changeset(
           %JournalEntry{},
-          entry_attrs(%{target_type: "pin", target_id: @target_id, stop_level_id: @level_id, diagram_x: -1.0, diagram_y: 0.0}),
+          entry_attrs(%{
+            target_type: "pin",
+            target_id: @target_id,
+            stop_level_id: @level_id,
+            diagram_x: -1.0,
+            diagram_y: 0.0
+          }),
           @scope
         )
 
@@ -197,10 +214,16 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       actor_id = Ecto.UUID.generate()
 
       assert {:ok, %Scope{station_id: station_id, station_stop_id: station_stop_id}} =
-               Gtfs.resolve_station_journal_scope(organization.id, version.id, station.id, actor_id)
+               Gtfs.resolve_station_journal_scope(
+                 organization.id,
+                 version.id,
+                 station.id,
+                 actor_id
+               )
 
       assert station_id == station.id
       assert station_stop_id == station.stop_id
+
       assert {:error, :invalid_id} =
                Gtfs.resolve_station_journal_scope("invalid", version.id, station.id, actor_id)
 
@@ -249,7 +272,9 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       assert length(Gtfs.list_station_journal(scope)) == 3
     end
 
-    test "keeps scope and audit fields immutable while same-scope replay updates body", %{scope: scope} do
+    test "keeps scope and audit fields immutable while same-scope replay updates body", %{
+      scope: scope
+    } do
       id = Ecto.UUID.generate()
       captured_at = ~U[2026-07-13 12:00:00.123456Z]
 
@@ -278,6 +303,44 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       assert entry.body == "last"
       assert entry.captured_at == captured_at
       assert entry.author_id == scope.actor_id
+    end
+
+    test "accepts a partial same-scope replay without creation-only fields", %{scope: scope} do
+      id = Ecto.UUID.generate()
+
+      assert %{synced_count: 1, errors: []} =
+               Gtfs.sync_journal_entries(scope, [
+                 %{
+                   "id" => id,
+                   "target_type" => "station",
+                   "body" => "first",
+                   "captured_at" => "2026-07-13T12:00:00Z"
+                 }
+               ])
+
+      assert %{synced_count: 1, errors: []} =
+               Gtfs.sync_journal_entries(scope, [%{"id" => id, "body" => "updated"}])
+
+      assert %JournalEntry{body: "updated", target_type: "station"} = Repo.get!(JournalEntry, id)
+    end
+
+    test "reports non-object items without aborting valid siblings", %{scope: scope} do
+      id = Ecto.UUID.generate()
+
+      assert %{
+               synced_count: 1,
+               errors: [
+                 %{id: nil, code: :validation_error},
+                 %{id: nil, code: :validation_error}
+               ]
+             } =
+               Gtfs.sync_journal_entries(scope, [
+                 entry_attrs(%{id: id, target_type: "station"}),
+                 "not-an-object",
+                 nil
+               ])
+
+      assert %JournalEntry{id: ^id} = Repo.get(JournalEntry, id)
     end
 
     test "does not transfer an entry UUID across station scopes", %{scope: scope} do
@@ -314,14 +377,24 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       assert entry.body == "original"
     end
 
-    test "returns entries and photos in deterministic capture order including closed history", %{scope: scope} do
+    test "returns entries and photos in deterministic capture order including closed history", %{
+      scope: scope
+    } do
       later_id = Ecto.UUID.generate()
       earlier_id = Ecto.UUID.generate()
 
       assert %{synced_count: 2, errors: []} =
                Gtfs.sync_journal_entries(scope, [
-                 entry_attrs(%{id: later_id, target_type: "station", captured_at: ~U[2026-07-13 12:01:00Z]}),
-                 entry_attrs(%{id: earlier_id, target_type: "station", captured_at: ~U[2026-07-13 12:00:00Z]})
+                 entry_attrs(%{
+                   id: later_id,
+                   target_type: "station",
+                   captured_at: ~U[2026-07-13 12:01:00Z]
+                 }),
+                 entry_attrs(%{
+                   id: earlier_id,
+                   target_type: "station",
+                   captured_at: ~U[2026-07-13 12:00:00Z]
+                 })
                ])
 
       assert Enum.map(Gtfs.list_station_journal(scope), & &1.id) == [earlier_id, later_id]

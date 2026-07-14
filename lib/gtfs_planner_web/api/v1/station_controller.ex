@@ -3,6 +3,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Api.V1.JournalJSON
@@ -76,9 +77,15 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
          true <- station.organization_id == org_id,
          true <- station.gtfs_version_id == version_id,
          true <- station.location_type == 1,
-         true <- is_nil(station.parent_station),
-         {:ok, journal_scope} <-
-           Gtfs.resolve_station_journal_scope(org_id, version_id, station_id, conn.assigns.current_user_id) do
+         true <- is_nil(station.parent_station) do
+      journal_scope = %Scope{
+        organization_id: org_id,
+        gtfs_version_id: version_id,
+        station_id: station.id,
+        station_stop_id: station.stop_id,
+        actor_id: conn.assigns.current_user_id
+      }
+
       child_stops = Gtfs.list_child_stops_for_parent(org_id, version_id, station.id)
       levels = Gtfs.list_levels_for_station(org_id, version_id, station.id)
       pathways = Gtfs.list_pathways_for_station(org_id, version_id, station.id)
@@ -133,14 +140,6 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
         conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Not found."}})
 
       false ->
-        conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Not found."}})
-
-      {:error, :invalid_id} ->
-        conn
-        |> put_status(400)
-        |> json(%{error: %{code: "bad_request", message: "Invalid ID format."}})
-
-      {:error, :not_found} ->
         conn |> put_status(404) |> json(%{error: %{code: "not_found", message: "Not found."}})
     end
   end
@@ -298,5 +297,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
 
   defp entry_target(%{target_type: "pin", stop_level_id: stop_level_id}),
     do: {"pin", stop_level_id}
-  defp entry_target(%{target_type: target_type, target_id: target_id}), do: {target_type, target_id}
+
+  defp entry_target(%{target_type: target_type, target_id: target_id}),
+    do: {target_type, target_id}
 end

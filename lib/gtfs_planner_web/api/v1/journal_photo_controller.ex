@@ -14,11 +14,23 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoController do
       |> put_status(:created)
       |> json(%{data: JournalJSON.photo(photo, scope)})
     else
-      {:error, :bad_request} -> bad_request(conn)
-      {:error, :not_found} -> not_found(conn)
-      {:error, :id_conflict} -> error(conn, 409, "id_conflict")
-      {:error, :payload_too_large} -> error(conn, 413, "payload_too_large")
-      {:error, _reason} -> error(conn, 422, "validation_error")
+      {:error, :bad_request} ->
+        bad_request(conn)
+
+      {:error, :not_found} ->
+        not_found(conn)
+
+      {:error, :id_conflict} ->
+        error(conn, 409, "id_conflict")
+
+      {:error, :payload_too_large} ->
+        error(conn, 413, "payload_too_large")
+
+      {:error, reason} when reason in [:unsafe_path, :storage_error, :rename_failed] ->
+        error(conn, 500, "storage_error")
+
+      {:error, _reason} ->
+        error(conn, 422, "validation_error")
     end
   end
 

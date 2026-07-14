@@ -26,15 +26,27 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
         sync_response(pathway_results, journal_results, Map.has_key?(params, "journal_entries"))
       )
     else
-      {:error, :bad_request} -> bad_request(conn)
-      {:error, :not_found} -> not_found(conn)
+      {:error, :invalid_pathways} ->
+        bad_request(conn, "Request must include a 'pathways' array.")
+
+      {:error, :invalid_journal_entries} ->
+        bad_request(conn, "Request must include a 'journal_entries' array when provided.")
+
+      {:error, :journal_batch_too_large} ->
+        bad_request(conn, "Request may include at most 100 journal entries.")
+
+      {:error, :invalid_id} ->
+        bad_request(conn, "Invalid ID format.")
+
+      {:error, :not_found} ->
+        not_found(conn)
     end
   end
 
   defp required_list(params, key) do
     case Map.fetch(params, key) do
       {:ok, values} when is_list(values) -> {:ok, values}
-      _ -> {:error, :bad_request}
+      _ -> {:error, :invalid_pathways}
     end
   end
 
@@ -42,13 +54,13 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
     case Map.fetch(params, key) do
       :error -> {:ok, nil}
       {:ok, values} when is_list(values) -> {:ok, values}
-      _ -> {:error, :bad_request}
+      _ -> {:error, :invalid_journal_entries}
     end
   end
 
   defp journal_batch_within_limit(nil), do: :ok
   defp journal_batch_within_limit(entries) when length(entries) <= @max_journal_entries, do: :ok
-  defp journal_batch_within_limit(_entries), do: {:error, :bad_request}
+  defp journal_batch_within_limit(_entries), do: {:error, :journal_batch_too_large}
 
   defp resolve_scope(conn, %{"version_id" => version_id, "station_id" => station_id}) do
     case Gtfs.resolve_station_journal_scope(
@@ -58,12 +70,12 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
            conn.assigns.current_user_id
          ) do
       {:ok, scope} -> {:ok, scope}
-      {:error, :invalid_id} -> {:error, :bad_request}
+      {:error, :invalid_id} -> {:error, :invalid_id}
       {:error, :not_found} -> {:error, :not_found}
     end
   end
 
-  defp resolve_scope(_conn, _params), do: {:error, :bad_request}
+  defp resolve_scope(_conn, _params), do: {:error, :invalid_id}
 
   defp allowed_pathway_ids(scope) do
     pathways_by_id =
@@ -191,13 +203,13 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
     end
   end
 
-  defp bad_request(conn) do
+  defp bad_request(conn, message) do
     conn
     |> put_status(400)
     |> json(%{
       error: %{
         code: "bad_request",
-        message: "Request must include valid pathway and journal entry arrays."
+        message: message
       }
     })
   end

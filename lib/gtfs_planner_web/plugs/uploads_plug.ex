@@ -77,7 +77,7 @@ defmodule GtfsPlannerWeb.UploadsPlug do
     case field_capture_type(organization_id, station_dir, filename) do
       {:ok, content_type} ->
         conn
-        |> put_resp_content_type(content_type)
+        |> put_resp_header("content-type", content_type)
         |> put_resp_header("cache-control", "public, max-age=31536000, immutable")
         |> put_resp_header("x-content-type-options", "nosniff")
 
@@ -100,7 +100,9 @@ defmodule GtfsPlannerWeb.UploadsPlug do
     end
   end
 
-  defp safe_component?(value), do: GtfsPlanner.Gtfs.Extensions.PathSafety.safe_path_component?(value)
+  defp safe_component?(value),
+    do: GtfsPlanner.Gtfs.Extensions.PathSafety.safe_path_component?(value)
+
   defp extension_type("jpg"), do: "image/jpeg"
   defp extension_type("png"), do: "image/png"
   defp extension_type(_extension), do: nil

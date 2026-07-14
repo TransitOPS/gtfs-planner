@@ -24,7 +24,12 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoControllerTest do
   end
 
   setup %{conn: conn} do
-    uploads_path = Path.join(System.tmp_dir!(), "journal_photo_controller_#{System.unique_integer([:positive])}")
+    uploads_path =
+      Path.join(
+        System.tmp_dir!(),
+        "journal_photo_controller_#{System.unique_integer([:positive])}"
+      )
+
     Application.put_env(:gtfs_planner, :uploads_path, uploads_path)
     File.mkdir_p!(uploads_path)
 
@@ -54,7 +59,9 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoControllerTest do
     on_exit(fn -> File.rm_rf!(uploads_path) end)
 
     %{
-      conn: Plug.Conn.assign(conn, :current_organization_id, org.id) |> Plug.Conn.assign(:current_user_id, user.id),
+      conn:
+        Plug.Conn.assign(conn, :current_organization_id, org.id)
+        |> Plug.Conn.assign(:current_user_id, user.id),
       version: version,
       station: station,
       entry: entry,
@@ -80,10 +87,12 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoControllerTest do
     assert url =~ "/uploads/field-captures/#{context.conn.assigns.current_organization_id}/"
   end
 
-  test "accepts JSON-string metadata and returns the original representation on identical retry", context do
+  test "accepts JSON-string metadata and returns the original representation on identical retry",
+       context do
     photo_id = Ecto.UUID.generate()
     bytes = <<137, 80, 78, 71, 13, 10, 26, 10, "journal", 0, 0, 0, 0, "IEND", 174, 66, 96, 130>>
     first_upload = upload(context.uploads_path, "first.png", bytes)
+
     params = %{
       "version_id" => context.version.id,
       "station_id" => context.station.id,
@@ -99,7 +108,8 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoControllerTest do
     retry =
       JournalPhotoController.create(context.conn, %{
         params
-        | "metadata" => Jason.encode!(metadata(photo_id, context.entry.id, %{width: 20, height: 30})),
+        | "metadata" =>
+            Jason.encode!(metadata(photo_id, context.entry.id, %{width: 20, height: 30})),
           "file" => retry_upload
       })
 
@@ -139,6 +149,23 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoControllerTest do
       })
 
     assert %{"error" => %{"code" => "validation_error"}} = json_response(invalid_image, 422)
+  end
+
+  test "maps storage failures to an internal storage error", context do
+    upload = upload(context.uploads_path, "capture.jpg", <<0xFF, 0xD8, 0xFF, 0xD9>>)
+    blocking_path = Path.join(context.uploads_path, "blocking-file")
+    File.write!(blocking_path, "not a directory")
+    Application.put_env(:gtfs_planner, :uploads_path, blocking_path)
+
+    conn =
+      JournalPhotoController.create(context.conn, %{
+        "version_id" => context.version.id,
+        "station_id" => context.station.id,
+        "metadata" => metadata(Ecto.UUID.generate(), context.entry.id),
+        "file" => upload
+      })
+
+    assert %{"error" => %{"code" => "storage_error"}} = json_response(conn, 500)
   end
 
   defp metadata(photo_id, entry_id, overrides \\ %{}) do

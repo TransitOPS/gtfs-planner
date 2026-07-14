@@ -391,7 +391,12 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         |> authed_conn(user)
         |> post(sync_url(version.id, station.id), %{"other_key" => "value"})
 
-      assert %{"error" => %{"code" => "bad_request"}} = json_response(conn, 400)
+      assert %{
+               "error" => %{
+                 "code" => "bad_request",
+                 "message" => "Request must include a 'pathways' array."
+               }
+             } = json_response(conn, 400)
     end
 
     test "partial failure: some pathways succeed, some fail",
@@ -445,7 +450,12 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         |> authed_conn(user)
         |> post(sync_url(version.id, station.id), %{"pathways" => [], "journal_entries" => %{}})
 
-      assert %{"error" => %{"code" => "bad_request"}} = json_response(malformed_list_conn, 400)
+      assert %{
+               "error" => %{
+                 "code" => "bad_request",
+                 "message" => "Request must include a 'journal_entries' array when provided."
+               }
+             } = json_response(malformed_list_conn, 400)
     end
 
     test "returns 404 for missing or cross-scope stations before processing items", %{
@@ -544,7 +554,13 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
           "journal_entries" => entries ++ [hd(entries)]
         })
 
-      assert %{"error" => %{"code" => "bad_request"}} = json_response(rejected_conn, 400)
+      assert %{
+               "error" => %{
+                 "code" => "bad_request",
+                 "message" => "Request may include at most 100 journal entries."
+               }
+             } = json_response(rejected_conn, 400)
+
       assert Repo.aggregate(JournalEntry, :count, :id) == 100
     end
 
