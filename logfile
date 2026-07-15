@@ -1,7 +1,0 @@
-2025-12-14 13:56:26.544 EST [17056] LOG:  starting PostgreSQL 16.4 (Postgres.app) on aarch64-apple-darwin21.6.0, compiled by Apple clang version 14.0.0 (clang-1400.0.29.102), 64-bit
-2025-12-14 13:56:26.545 EST [17056] LOG:  listening on IPv6 address "::1", port 5432
-2025-12-14 13:56:26.545 EST [17056] LOG:  listening on IPv4 address "127.0.0.1", port 5432
-2025-12-14 13:56:26.546 EST [17056] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
-2025-12-14 13:56:26.548 EST [17059] LOG:  database system was shut down at 2025-12-14 13:56:11 EST
-2025-12-14 13:56:26.551 EST [17056] LOG:  database system is ready to accept connections
-2025-12-14 14:01:26.545 EST [17057] LOG:  checkpoint starting: time

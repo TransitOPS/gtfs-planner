@@ -49,7 +49,7 @@ fi
 
 # Generate SECRET_KEY_BASE if not set
 if [ -z "$SECRET_KEY_BASE" ]; then
-    SECRET_KEY_BASE="5uJvs+F2/74UQLBE3BTVhLMVtcyil+k5nw+iUc361oy9w7HD1XhioWJ0wWVxVlqZ"
+    SECRET_KEY_BASE="$(openssl rand -base64 48)"
 fi
 
 # Determine platform and set appropriate args
