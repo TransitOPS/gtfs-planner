@@ -297,10 +297,13 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
             <h2 class="text-xs font-semibold text-base-content/60 mb-2">{group}</h2>
             <ul class="menu menu-sm p-0 gap-1 w-full">
               <li :for={entry <- entries}>
+                <%!-- `menu-active`, not `active`: daisyUI 5 renamed the class, and the
+                      daisyUI 4 name matches no rule, so the current page carried no
+                      highlight at all. --%>
                 <.link
                   patch={~p"/design/#{entry.slug}"}
                   aria-current={@page.slug == entry.slug && "page"}
-                  class={["block", @page.slug == entry.slug && "active font-semibold"]}
+                  class={["block", @page.slug == entry.slug && "menu-active font-semibold"]}
                 >
                   {entry.title}
                 </.link>

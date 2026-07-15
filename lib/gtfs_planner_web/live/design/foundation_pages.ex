@@ -154,11 +154,64 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
       <p class="mt-2 text-base-content/70">
         Each background token has a matching foreground token —
         <code class="font-mono text-sm">bg-primary</code>
-        pairs with <code class="font-mono text-sm">text-primary-content</code>. The app
-        overrides one of them: <code class="font-mono text-sm">--color-primary-content</code>
-        is forced to pure white in <code class="font-mono text-sm">assets/css/app.css</code>
-        so text on primary buttons stays legible instead of taking the theme's computed
-        tint.
+        pairs with <code class="font-mono text-sm">text-primary-content</code>. Use the
+        pair. A background token with a hand-picked foreground is how contrast rots.
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Overrides</h2>
+      <p class="mt-2 text-base-content/70">
+        <code class="font-mono text-sm">assets/css/app.css</code>
+        replaces some of the stock <code class="font-mono text-sm">light</code>
+        values. Every state color is one of them, so the numbers below are the app's,
+        not daisyUI's.
+      </p>
+      <dl class="mt-3 divide-y divide-base-300 border-y border-base-300">
+        <div class="grid grid-cols-3 gap-4 py-2">
+          <dt class="font-mono text-sm">--color-primary-content</dt>
+          <dd class="col-span-2 text-base-content/70">
+            Forced to pure white, so text on a primary button stays legible instead of
+            taking the theme's computed tint. 8.3:1 on <code class="font-mono text-sm">bg-primary</code>.
+          </dd>
+        </div>
+        <div class="grid grid-cols-3 gap-4 py-2">
+          <dt class="font-mono text-sm">--depth</dt>
+          <dd class="col-span-2 text-base-content/70">
+            Set to <code class="font-mono text-sm">0</code>. daisyUI tints a button's
+            drop shadow with the button's own background color and scales it by this
+            value; zero resolves the glow away. A shadow that encodes nothing is
+            chartjunk.
+          </dd>
+        </div>
+        <div class="grid grid-cols-3 gap-4 py-2">
+          <dt class="font-mono text-sm">
+            --color-error<br />--color-warning<br />--color-success<br />--color-info
+          </dt>
+          <dd class="col-span-2 text-base-content/70">
+            Darkened to 5.2:1 against <code class="font-mono text-sm">bg-base-100</code>,
+            hue unchanged. The stock values are chosen to sit <em>behind</em>
+            dark text — <code class="font-mono text-sm">--color-warning</code>
+            was 1.76:1 on white — but the app also uses them <em>as</em>
+            text, and every one of those failed AA. Contrast is symmetric, so one value
+            fixes both directions: <code class="font-mono text-sm">text-error</code>
+            on white and white on <code class="font-mono text-sm">bg-error</code>
+            are both 5.2:1. Each matching <code class="font-mono text-sm">-content</code>
+            token is therefore white.
+          </dd>
+        </div>
+        <div class="grid grid-cols-3 gap-4 py-2">
+          <dt class="font-mono text-sm">--color-secondary</dt>
+          <dd class="col-span-2 text-base-content/70">
+            Darkened the same way. Its stock pairing with
+            <code class="font-mono text-sm">--color-secondary-content</code>
+            was 3.05:1 — a documented pair that failed AA.
+          </dd>
+        </div>
+      </dl>
+      <p class="mt-3 text-sm text-base-content/60">
+        <code class="font-mono text-sm">--color-accent</code>
+        is untouched and still fails as text: 1.9:1 on white. It is a background token —
+        pair it with <code class="font-mono text-sm">text-accent-content</code>
+        and never write <code class="font-mono text-sm">text-accent</code>.
       </p>
     </section>
     """

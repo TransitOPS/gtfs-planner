@@ -309,7 +309,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       assert has_element?(
                view,
-               ~s(#ds-page-badges span[style="background-color: #9E9E9E; color: #FFFFFF"]),
+               ~s(#ds-page-badges span[style="background-color: #9E9E9E; color: #000000"]),
                "—"
              )
     end

@@ -110,8 +110,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
       "lg" => "btn-lg"
     }
 
+    # The focus ring is solid and offset, not tinted. `ring-primary/30` resolved to
+    # 1.73:1 against base-100 — below the 3:1 WCAG 1.4.11 asks of a focus indicator —
+    # and this is the keyboard affordance for every button in the app. The offset
+    # keeps the ring readable on a filled button, where a ring in the button's own
+    # color would otherwise sit on top of it.
     base_classes =
-      "font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+      "font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
 
     assigns =
       assign_new(assigns, :class, fn ->

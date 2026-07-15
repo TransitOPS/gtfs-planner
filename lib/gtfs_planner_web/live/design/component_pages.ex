@@ -359,7 +359,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         <div class="grid grid-cols-4 items-center gap-4 py-3">
           <dt>
             <.route_badge route={
-              %{route_color: "9E9E9E", route_text_color: "FFFFFF", route_short_name: nil}
+              %{route_color: "9E9E9E", route_text_color: "000000", route_short_name: nil}
             } />
           </dt>
           <dd class="col-span-3">
@@ -367,7 +367,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
               phx-no-curly-interpolation
               class="ds-code-caption font-mono text-xs text-base-content/70"
             >
-              %{route_color: "9E9E9E", route_text_color: "FFFFFF", route_short_name: nil} → falls back to an em dash
+              %{route_color: "9E9E9E", route_text_color: "000000", route_short_name: nil} → falls back to an em dash
             </code>
           </dd>
         </div>
@@ -863,6 +863,14 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
   Unlike every other page here, this one calls a real external service. The events it
   emits (`live_select_change`, `address-form`, `save_location`, `delete_location`) are
   all handled by `DesignSystemLive`, which owns the state these assigns carry.
+
+  `option_class` deliberately sets no text color. LiveSelect appends
+  `active_option_class` to `option_class` on the same element
+  (`live_select/component.html.heex:128-136`), so a color in both leaves two
+  same-specificity utilities on the highlighted option and the winner is decided by
+  their order in the generated stylesheet, not by the order written here. The
+  options inherit `text-base-content` from `dropdown_class` instead, which leaves
+  `active_option_class` the only color on that element.
   """
   def autocomplete(assigns) do
     ~H"""
@@ -892,7 +900,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
                 placeholder="Type at least 3 characters..."
                 update_min_len={3}
                 dropdown_class="bg-base-300 border border-base-content/20 shadow-lg mt-1 text-base-content"
-                option_class="px-4 py-2.5 border-b border-base-content/10 last:border-b-0 text-base-content"
+                option_class="px-4 py-2.5 border-b border-base-content/10 last:border-b-0"
                 active_option_class="bg-primary text-primary-content"
                 available_option_class="hover:bg-base-content/10 cursor-pointer transition-colors"
                 text_input_class="input input-bordered w-full live-select-input"
@@ -909,11 +917,11 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
                   <div class="grid grid-cols-2 gap-4 text-sm">
                     <div>
                       <span class="text-base-content/70">Lat</span>
-                      <span class="ml-2 font-mono text-white">{@selected_lat}</span>
+                      <span class="ml-2 font-mono text-base-content">{@selected_lat}</span>
                     </div>
                     <div>
                       <span class="text-base-content/70">Lon</span>
-                      <span class="ml-2 font-mono text-white">{@selected_lon}</span>
+                      <span class="ml-2 font-mono text-base-content">{@selected_lon}</span>
                     </div>
                   </div>
                 </div>
