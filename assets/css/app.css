@@ -43,9 +43,54 @@
 
 /* This file is for your main application CSS */
 
-/* Override primary-content to ensure white text on primary buttons */
+/* Theme overrides.
+
+   These are deliberately unlayered. daisyUI emits its theme inside `@layer base`,
+   and unlayered CSS always beats layered CSS regardless of source order, so this
+   block wins without needing `!important` or a higher-specificity selector. */
 :root, [data-theme] {
   --color-primary-content: oklch(100% 0 0); /* pure white */
+
+  /* No button glow. daisyUI derives `--btn-shadow` from the button's own
+     background color and scales it by `--depth`, so a filled button (btn-primary,
+     btn-error) casts a shadow tinted with itself. `--depth: 0` resolves that
+     shadow — plus the inset highlight, the text-shadow, and the darkened border —
+     to nothing. The light theme ships `--depth: 1`.
+
+     This is theme-wide, not button-only: it also flattens the menu, badge, and
+     step shadows, which is the intent. A shadow that encodes no information is
+     chartjunk. */
+  --depth: 0;
+
+  /* State colors, darkened to carry text.
+
+     daisyUI's light theme picks state colors bright enough to sit behind dark
+     `-content` text: `--color-warning` is oklch(82%), which is 1.76:1 on white.
+     That pairing is fine, but the app also uses these tokens *as text* on white
+     — `text-error` on a validation message, `text-success` on a status dot — and
+     every one of those failed WCAG AA.
+
+     WCAG contrast is symmetric, so one value fixes both directions: at ~5.2:1
+     against white, `text-error` on base-100 and white-on-bg-error are the same
+     5.2:1, and both pass AA. Hue is preserved from the stock theme; lightness and
+     chroma are solved for the ratio.
+
+     Each `-content` token therefore flips to white. Several call sites had already
+     hand-patched `text-white` onto btn-error/btn-warning to work around the stock
+     pairing; those are now correct by default. */
+  --color-error: oklch(56% 0.2 13.428);        /* #CE2751 · 5.20:1 on base-100 */
+  --color-error-content: oklch(100% 0 0);
+  --color-warning: oklch(54% 0.11 84.429);     /* #8B6700 · 5.20:1 on base-100 */
+  --color-warning-content: oklch(100% 0 0);
+  --color-success: oklch(52% 0.112 163.223);   /* #007C56 · 5.20:1 on base-100 */
+  --color-success-content: oklch(100% 0 0);
+  --color-info: oklch(53% 0.109 232.661);      /* #00759F · 5.20:1 on base-100 */
+  --color-info-content: oklch(100% 0 0);
+
+  /* Secondary's stock pairing — `--color-secondary-content` on `--color-secondary`
+     — was 3.05:1, its own documented pairing failing AA. Solved to the same 5.2:1. */
+  --color-secondary: oklch(56% 0.232 354.308); /* #D2017E · 5.20:1 on base-100 */
+  --color-secondary-content: oklch(100% 0 0);
 }
 
 /* Improve font rendering and ensure full-height background */
@@ -195,6 +240,17 @@ body:has(#diagram-page[data-immersive="true"]) {
   overflow: hidden;
 }
 
+/* Design system flash containment (/design/feedback).
+   <.flash> hardcodes daisyUI's `toast` on its root and `toast` is position: fixed, so
+   no wrapper class can hold the examples inside their demo container — they would pin
+   themselves to the viewport corner and overlap the page. `toast-top`/`toast-end`
+   resolve both translate axes to 0, so neutralizing position is enough to return them
+   to normal flow, and the insets and z-index no longer apply. Scoped to the demo
+   container: the layout's real flashes still toast normally, here and everywhere. */
+#ds-flash-demo .toast {
+  position: static;
+}
+
 /* Disable pointer events on stops and pathways in Add Stop mode.
    Stream items don't re-render when @mode changes, so we override via CSS. */
 #diagram-overlay[data-mode="add"] #stops-svg g,
@@ -223,8 +279,8 @@ body:has(#diagram-page[data-immersive="true"]) {
   padding: 0.35rem 0.55rem;
   border-radius: 0.375rem;
   border: 1px solid transparent;
-  background: #0080FF;
-  color: #FFFFFF;
+  background: var(--color-neutral);
+  color: var(--color-neutral-content);
   font-size: 0.75rem;
   font-weight: 500;
   line-height: 1.25;

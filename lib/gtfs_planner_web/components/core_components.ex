@@ -56,7 +56,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       id={@id}
       phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
       role="alert"
-      class="toast toast-top toast-end z-50"
+      class="toast toast-top toast-end z-[60]"
       {@rest}
     >
       <div class={[
@@ -110,8 +110,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
       "lg" => "btn-lg"
     }
 
+    # The focus ring is solid and offset, not tinted. `ring-primary/30` resolved to
+    # 1.73:1 against base-100 — below the 3:1 WCAG 1.4.11 asks of a focus indicator —
+    # and this is the keyboard affordance for every button in the app. The offset
+    # keeps the ring readable on a filled button, where a ring in the button's own
+    # color would otherwise sit on top of it.
     base_classes =
-      "font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+      "font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
 
     assigns =
       assign_new(assigns, :class, fn ->
@@ -458,6 +463,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   slot :col, required: true do
     attr :label, :string
+    attr :align, :string, doc: "\"left\" (default) or \"right\""
+
+    attr :sort, :string,
+      doc: "\"asc\", \"desc\", or \"none\" — renders aria-sort and an indicator"
+
+    attr :sort_event, :string, doc: "event name that makes the header a sort button"
+    attr :sort_key, :string, doc: "value sent as phx-value-key with the sort event"
   end
 
   slot :action, doc: "the slot for showing user actions in the last table column"
@@ -472,7 +484,38 @@ defmodule GtfsPlannerWeb.CoreComponents do
     <table class="table">
       <thead>
         <tr>
-          <th :for={col <- @col}>{col[:label]}</th>
+          <th
+            :for={col <- @col}
+            class={if(col[:align] == "right", do: "text-right", else: "text-left")}
+            aria-sort={sort_aria(col[:sort])}
+          >
+            <button
+              :if={col[:sort_event]}
+              type="button"
+              class="inline-flex items-center gap-1"
+              phx-click={col[:sort_event]}
+              phx-value-key={col[:sort_key]}
+            >
+              {col[:label]}
+              <span
+                :if={col[:sort]}
+                class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
+                aria-hidden="true"
+              >
+                {sort_arrow(col[:sort])}
+              </span>
+            </button>
+            <span :if={!col[:sort_event]} class="inline-flex items-center gap-1">
+              {col[:label]}
+              <span
+                :if={col[:sort]}
+                class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
+                aria-hidden="true"
+              >
+                {sort_arrow(col[:sort])}
+              </span>
+            </span>
+          </th>
           <th :if={@action != []}>
             <span class="sr-only">{gettext("Actions")}</span>
           </th>
@@ -483,7 +526,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
           <td
             :for={col <- @col}
             phx-click={@row_click && @row_click.(row)}
-            class={@row_click && "hover:cursor-pointer"}
+            class={[
+              if(col[:align] == "right", do: "text-right", else: "text-left"),
+              @row_click && "hover:cursor-pointer"
+            ]}
           >
             {render_slot(col, @row_item.(row))}
           </td>
@@ -499,6 +545,15 @@ defmodule GtfsPlannerWeb.CoreComponents do
     </table>
     """
   end
+
+  defp sort_aria("asc"), do: "ascending"
+  defp sort_aria("desc"), do: "descending"
+  defp sort_aria("none"), do: "none"
+  defp sort_aria(_), do: nil
+
+  defp sort_arrow("asc"), do: "▲"
+  defp sort_arrow("desc"), do: "▼"
+  defp sort_arrow(_), do: "↕"
 
   @doc """
   Renders a data list.
@@ -557,6 +612,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :page, :integer, required: true
   attr :per_page, :integer, required: true
   attr :total, :integer, required: true
+  attr :entity, :string, default: nil, doc: "optional noun appended to the count, e.g. \"routes\""
 
   def pagination(assigns) do
     # Handle empty state: when total is 0, show 0-0 instead of 1-0
@@ -575,7 +631,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
     ~H"""
     <div class="flex items-center justify-between gap-4 py-3">
       <div class="text-sm text-base-content/70">
-        Showing {@start_item}–{@end_item} of {@total} routes
+        Showing {@start_item}–{@end_item} of {@total}{if @entity, do: " #{@entity}"}
       </div>
       <div class="flex gap-2">
         <button
@@ -723,6 +779,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
     <%!-- Drawer Panel --%>
     <aside
       id={@id}
+      phx-hook="DrawerFocus"
+      data-open={to_string(@open)}
+      data-on-close={@on_close}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={@title && "#{@id}-title"}
       class={[
         "fixed top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 z-50 transition-transform duration-300 overflow-x-hidden",
         @open && "translate-x-0",
@@ -732,9 +794,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
     >
       <div class="flex flex-col h-full">
         <%!-- Header --%>
-        <header class="flex items-center justify-between px-6 py-4 bg-emerald-50 border-b border-emerald-100">
+        <header class="flex items-center justify-between px-6 py-4 bg-base-200 border-b border-base-300">
           <div class="flex items-center gap-3">
-            <h2 :if={@title} class="text-lg font-semibold text-emerald-900">
+            <h2 :if={@title} id={"#{@id}-title"} class="text-lg font-semibold">
               {@title}
             </h2>
             {render_slot(@header_actions)}
@@ -743,7 +805,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           <button
             type="button"
             phx-click={@on_close}
-            class="btn btn-ghost btn-sm btn-circle text-emerald-900/70 hover:bg-emerald-200/50"
+            class="btn btn-ghost btn-sm btn-circle text-base-content/70 hover:bg-base-300/50"
             aria-label={gettext("close")}
           >
             <.icon name="hero-x-mark" class="size-5" />
@@ -900,7 +962,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               type="button"
               size="sm"
               variant="secondary"
-              class="border-gray-500 bg-gray-50 text-gray-800 hover:bg-gray-100"
+              class="border-base-300 bg-base-100 text-base-content hover:bg-base-200"
               phx-click="open_add_level"
             >
               Add level
@@ -911,7 +973,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               type="button"
               size="sm"
               variant="secondary"
-              class="border-gray-500 bg-gray-50 text-gray-800 hover:bg-gray-100"
+              class="border-base-300 bg-base-100 text-base-content hover:bg-base-200"
               phx-click="open_edit_level"
             >
               Edit level
@@ -921,7 +983,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               type="button"
               size="sm"
               variant="secondary"
-              class="border-gray-500 bg-gray-50 text-gray-800 hover:bg-gray-100"
+              class="border-base-300 bg-base-100 text-base-content hover:bg-base-200"
               phx-click="open_naming_drawer"
             >
               Apply naming
@@ -934,7 +996,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               id="diagram-upload-form-sub-nav"
               phx-change="upload_diagram"
             >
-              <label class="btn btn-sm btn-outline cursor-pointer border-gray-500 bg-gray-50 text-gray-800 hover:bg-gray-100">
+              <label class="btn btn-sm btn-outline cursor-pointer border-base-300 bg-base-100 text-base-content hover:bg-base-200">
                 {if @has_diagram, do: "Replace diagram", else: "Upload diagram"}
                 <.live_file_input
                   upload={@uploads.diagram}
@@ -1061,6 +1123,281 @@ defmodule GtfsPlannerWeb.CoreComponents do
       </div>
     </nav>
     """
+  end
+
+  @doc """
+  Renders an inline callout for view-level state the user must not miss.
+
+  Use one `kind` per notice. The state color appears on the left border only;
+  the title stays in `base-content`. Put any link or action inside the body.
+
+  ## Examples
+
+      <.callout kind="warning" title="3 stops have no coordinates">
+        They will not appear on the map. Fix them before publishing.
+        <.link navigate={~p"/stops"} class="text-primary underline">View stops</.link>
+      </.callout>
+  """
+  attr :kind, :string, required: true, values: ~w(info success warning error)
+  attr :title, :string, required: true
+  attr :rest, :global
+  slot :inner_block
+
+  def callout(assigns) do
+    wrappers = %{
+      "info" => "border-l-4 border-info bg-info/10 px-4 py-3",
+      "success" => "border-l-4 border-success bg-success/10 px-4 py-3",
+      "warning" => "border-l-4 border-warning bg-warning/10 px-4 py-3",
+      "error" => "border-l-4 border-error bg-error/10 px-4 py-3"
+    }
+
+    assigns = assign(assigns, :wrapper_class, Map.fetch!(wrappers, assigns.kind))
+
+    ~H"""
+    <div class={@wrapper_class} {@rest}>
+      <p class="font-medium text-base-content">{@title}</p>
+      <div :if={@inner_block != []} class="mt-0.5 text-sm text-base-content/70">
+        {render_slot(@inner_block)}
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders a status badge with a colored dot and a colored word.
+
+  One vocabulary for every status in the app. Status is normalized to a string,
+  so an atom or a string works. Unrecognized values (including `draft`) render
+  with the muted treatment rather than raising, so migrating a call site never
+  crashes on an unexpected value. Pass `label` to override the displayed word.
+
+  ## Examples
+
+      <.status_badge status={:pass} />
+      <.status_badge status="running" />
+      <.status_badge status={run.status} label="In progress" />
+  """
+  attr :status, :any, required: true, doc: "the status value, as a string or atom"
+  attr :label, :string, default: nil, doc: "overrides the displayed word"
+  attr :class, :any, default: nil, doc: "extra classes for sizing tweaks"
+  attr :rest, :global
+
+  def status_badge(assigns) do
+    status = to_string(assigns.status)
+
+    {dot_class, text_class} =
+      case status do
+        "pass" -> {"bg-success", "text-success"}
+        "completed" -> {"bg-success", "text-success"}
+        "warning" -> {"bg-warning", "text-warning"}
+        "failed" -> {"bg-error", "text-error"}
+        "error" -> {"bg-error", "text-error"}
+        "running" -> {"bg-info", "text-info"}
+        "info" -> {"bg-info", "text-info"}
+        "started" -> {"bg-base-content/40", "text-base-content/60"}
+        _ -> {"bg-base-content/40", "text-base-content/60"}
+      end
+
+    assigns =
+      assigns
+      |> assign(:dot_class, dot_class)
+      |> assign(:text_class, text_class)
+      |> assign(:word, assigns.label || String.capitalize(status))
+
+    ~H"""
+    <span
+      class={[
+        "inline-flex items-center gap-1.5 border border-base-300 px-2 py-0.5 text-sm",
+        @class
+      ]}
+      {@rest}
+    >
+      <span class={["size-1.5 rounded-full", @dot_class]} aria-hidden="true"></span>
+      <span class={["font-medium", @text_class]}>{@word}</span>
+    </span>
+    """
+  end
+
+  @doc """
+  Renders an empty state for a data view.
+
+  First-use empties explain what belongs here and give a primary CTA to create
+  or import the first item. Filtered/search empties repeat the query and offer
+  the undo of the filter (clear search) instead. The caller supplies the CTA in
+  the `action` slot.
+
+  ## Examples
+
+      <.empty_state title="No stations yet">
+        Stations appear here after you import a GTFS feed.
+        <:action><.button navigate={~p"/import"}>Import feed</.button></:action>
+      </.empty_state>
+  """
+  attr :title, :string, required: true
+  attr :class, :any, default: nil
+  attr :rest, :global
+  slot :inner_block
+  slot :action, doc: "one CTA; the caller supplies the button or link"
+
+  def empty_state(assigns) do
+    ~H"""
+    <div class={["border border-base-300 p-8 text-center", @class]} {@rest}>
+      <p class="font-semibold">{@title}</p>
+      <div :if={@inner_block != []} class="mt-1 text-sm text-base-content/70">
+        {render_slot(@inner_block)}
+      </div>
+      <div :if={@action != []} class="mt-4">
+        {render_slot(@action)}
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders a first-paint loading skeleton that mirrors a table layout.
+
+  Show it only for the first paint of a slow view, never to replace content
+  already on screen. The bars animate under `motion-safe:` and are hidden from
+  assistive tech; a visually-hidden live region announces `label` instead.
+  Callers needing exact column mirroring pass their own bars as the inner block.
+
+  ## Examples
+
+      <.skeleton rows={5} label="Loading routes" />
+  """
+  attr :rows, :integer, default: 3
+  attr :label, :string, default: "Loading", doc: "announced to assistive tech"
+  attr :class, :any, default: nil
+  attr :rest, :global
+  slot :inner_block, doc: "replaces the default bars for exact column mirroring"
+
+  def skeleton(assigns) do
+    ~H"""
+    <div class={@class} {@rest}>
+      <span class="sr-only" role="status">{@label}</span>
+      <div
+        :if={@inner_block == []}
+        class="space-y-3 motion-safe:animate-pulse"
+        aria-hidden="true"
+      >
+        <div :for={_row <- 1..@rows} class="flex gap-4">
+          <div class="h-4 w-10 bg-base-300"></div>
+          <div class="h-4 flex-1 bg-base-300"></div>
+          <div class="h-4 w-16 bg-base-300"></div>
+        </div>
+      </div>
+      <div :if={@inner_block != []} class="motion-safe:animate-pulse" aria-hidden="true">
+        {render_slot(@inner_block)}
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders a focused confirmation dialog for a destructive action.
+
+  Hidden by default; toggle it client-side with `show_confirm_dialog/2` and
+  `hide_confirm_dialog/2`. Opening moves focus to Cancel. Escape and a backdrop
+  click close it; the backdrop and Cancel also run `on_cancel`. State the
+  consequence with real numbers in the body, and repeat verb + object in
+  `confirm_label` (e.g. "Delete route").
+
+  ## Examples
+
+      <.confirm_dialog
+        id="delete-route"
+        title="Delete route 42?"
+        confirm_label="Delete route"
+        on_confirm="delete_route"
+      >
+        This removes the route and its 214 trips from version 2026-01. It cannot be undone.
+      </.confirm_dialog>
+
+      <.button variant="danger" phx-click={show_confirm_dialog("delete-route")}>Delete route</.button>
+  """
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :confirm_label, :string, required: true, doc: "repeats verb + object"
+  attr :on_confirm, :any, required: true, doc: "a JS command or event name"
+  attr :on_cancel, :any, default: nil, doc: "a JS command or event name run on cancel"
+  attr :rest, :global
+  slot :inner_block, required: true
+
+  def confirm_dialog(assigns) do
+    cancel_js =
+      case assigns.on_cancel do
+        nil -> JS.hide(to: "##{assigns.id}")
+        %JS{} = js -> JS.hide(js, to: "##{assigns.id}")
+        event when is_binary(event) -> JS.hide(JS.push(%JS{}, event), to: "##{assigns.id}")
+      end
+
+    assigns = assign(assigns, :cancel_js, cancel_js)
+
+    ~H"""
+    <div
+      id={@id}
+      class="hidden"
+      role="alertdialog"
+      aria-labelledby={"#{@id}-title"}
+      aria-describedby={"#{@id}-body"}
+      phx-window-keydown={hide_confirm_dialog(@id)}
+      phx-key="escape"
+      {@rest}
+    >
+      <div
+        class="fixed inset-0 bg-black/30 z-40"
+        aria-hidden="true"
+        phx-click={@cancel_js}
+      />
+      <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="w-full max-w-sm border border-base-300 bg-base-100 p-5">
+          <h3 id={"#{@id}-title"} class="font-semibold">{@title}</h3>
+          <div id={"#{@id}-body"} class="mt-1 text-sm text-base-content/70">
+            {render_slot(@inner_block)}
+          </div>
+          <div class="mt-4 flex justify-end gap-2">
+            <button
+              id={"#{@id}-cancel"}
+              type="button"
+              class="h-10 border border-base-300 px-4 text-sm font-semibold"
+              phx-click={@cancel_js}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="h-10 bg-error px-4 text-sm font-semibold text-error-content"
+              phx-click={@on_confirm}
+            >
+              {@confirm_label}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Shows a confirmation dialog and moves focus to its Cancel button.
+  """
+  def show_confirm_dialog(js \\ %JS{}, id) when is_binary(id) do
+    js
+    |> JS.show(
+      to: "##{id}",
+      transition: {"transition-opacity ease-out duration-200", "opacity-0", "opacity-100"}
+    )
+    |> JS.focus(to: "##{id}-cancel")
+  end
+
+  @doc """
+  Hides a confirmation dialog.
+  """
+  def hide_confirm_dialog(js \\ %JS{}, id) when is_binary(id) do
+    JS.hide(js,
+      to: "##{id}",
+      transition: {"transition-opacity ease-in duration-150", "opacity-100", "opacity-0"}
+    )
   end
 
   @doc """

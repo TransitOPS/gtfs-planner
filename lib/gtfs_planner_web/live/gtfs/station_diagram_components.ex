@@ -2986,14 +2986,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     </div>
 
     <div :if={@selected_stop_id} class="mt-4">
-      <div class="bg-error/5 border border-error/20 rounded-lg p-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <h3 class="text-zinc-700 font-medium">Delete Child Stop</h3>
-            <p class="text-xs text-zinc-500 mt-1">
-              This will also delete any pathways connected to this stop.
-            </p>
-          </div>
+      <.callout kind="error" title="Delete Child Stop">
+        <div class="flex items-center justify-between gap-4">
+          <p>This will also delete any pathways connected to this stop.</p>
           <button
             type="button"
             class="btn btn-error btn-sm btn-active text-white"
@@ -3004,7 +2999,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             Delete Stop
           </button>
         </div>
-      </div>
+      </.callout>
     </div>
     """
   end
