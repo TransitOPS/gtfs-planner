@@ -39,7 +39,8 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
      socket
      |> assign(:page, hd(@pages))
      |> assign(:demo_form, demo_form())
-     |> assign(:pagination_page, 1)}
+     |> assign(:pagination_page, 1)
+     |> assign(:drawer_open, false)}
   end
 
   # Demo state for every page lives here, in the LiveView that owns the events.
@@ -80,6 +81,18 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   # rendered by `ComponentPages.tables/1` — 5 pages.
   def handle_event("paginate", %{"page" => page}, socket) do
     {:noreply, assign(socket, :pagination_page, clamp_page(page))}
+  end
+
+  # The overlays page's `<.drawer>` demo. The drawer never closes itself: it renders
+  # from `open` and pushes `on_close`, so these two clauses are what make it work.
+  # `close_drawer` is the component's `on_close` default (`core_components.ex:706`) and
+  # arrives from both the header close button (`:745`) and the overlay click (`:721`).
+  def handle_event("open_drawer", _params, socket) do
+    {:noreply, assign(socket, :drawer_open, true)}
+  end
+
+  def handle_event("close_drawer", _params, socket) do
+    {:noreply, assign(socket, :drawer_open, false)}
   end
 
   @pagination_last_page 5
@@ -163,9 +176,12 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
 
   defp page_body(%{page: %{slug: "feedback"}} = assigns), do: ComponentPages.feedback(assigns)
 
-  # Temporary catch-all placeholder. Steps 7-8 replace it with one dispatch clause
-  # per slug and remove this clause, so an unregistered slug becomes a
-  # compile-visible gap.
+  defp page_body(%{page: %{slug: "navigation"}} = assigns), do: ComponentPages.navigation(assigns)
+
+  defp page_body(%{page: %{slug: "overlays"}} = assigns), do: ComponentPages.overlays(assigns)
+
+  # Temporary catch-all placeholder. Step 8 replaces it with the last dispatch clause
+  # and removes this clause, so an unregistered slug becomes a compile-visible gap.
   defp page_body(assigns) do
     ~H"""
     <section id={"ds-page-#{@page.slug}"}>

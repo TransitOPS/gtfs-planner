@@ -1,7 +1,7 @@
 defmodule GtfsPlannerWeb.Design.ComponentPages do
   @moduledoc ~S"""
   Components pages for the `/design` section: buttons, inputs & forms, badges,
-  tables & lists, and feedback.
+  tables & lists, feedback, navigation, and overlays.
 
   Every Tailwind/daisyUI class here is a literal string. Tailwind v4 scans source
   text, so an interpolated class name (`"btn-#{variant}"`) compiles but is silently
@@ -651,6 +651,202 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           The flash container is <code class="font-mono text-sm">aria-live="polite"</code>,
           so a screen reader announces a message without stealing focus. A state change
           the user cannot see must still be announced.
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  @doc ~S"""
+  `<.header>` with all three slots, and both sub-navigation bars.
+
+  The sub-navs take plain sample maps: their record attrs are declared `:map`
+  (`core_components.ex:789`, `:989`) and they read only `stop_name`/`stop_id` and
+  `route_short_name`/`route_long_name`/`route_id`. Their links are real `navigate`
+  links built from the sample IDs, so they point at records that do not exist.
+
+  `station_sub_nav` stays on `active_tab={:details}`. The `:diagram` tab renders the
+  level and upload controls at `core_components.ex:896-956`, which emit
+  `open_add_level`, `open_edit_level`, `open_naming_drawer`, and `upload_diagram` —
+  events this section deliberately does not wire.
+  """
+  def navigation(assigns) do
+    ~H"""
+    <section id="ds-page-navigation" class="max-w-4xl">
+      <h1 class="text-2xl font-bold">Navigation</h1>
+      <p class="mt-2 text-base-content/70">
+        Three components that answer "where am I". A page header names the current
+        record; the two sub-navigation bars carry the tabs for everything under a
+        station or a route.
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Header</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        A title, an optional subtitle, and an optional actions slot. The header only
+        takes the row layout when you fill <code class="font-mono text-sm">&lt;:actions&gt;</code>, so a title-only header
+        stays flush left.
+      </p>
+
+      <div id="ds-header-demo" class="mt-3 border border-base-300 p-4">
+        <.header>
+          Station detail
+          <:subtitle>GTFS version 2026-01</:subtitle>
+          <:actions>
+            <.button variant="secondary" size="sm">Edit station</.button>
+          </:actions>
+        </.header>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.header&gt;Station detail&lt;:subtitle&gt;…&lt;/:subtitle&gt;&lt;:actions&gt;…&lt;/:actions&gt;&lt;/.header&gt;
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Station sub-navigation</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Back button, station name, and the four station tabs. Both bars below are the
+        real component fed sample records, so their links are live but point at IDs
+        that do not exist — clicking a tab leaves the design system and lands on
+        nothing.
+      </p>
+
+      <div id="ds-station-nav-demo" class="mt-3 border border-base-300">
+        <.station_sub_nav
+          station={%{stop_id: "demo-stop", stop_name: "Demo Central"}}
+          gtfs_version_id="demo-version"
+          active_tab={:details}
+        />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.station_sub_nav station={@station} gtfs_version_id={@current_gtfs_version.id} active_tab={:details} /&gt; · the :diagram tab adds level and upload controls
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Route sub-navigation</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        The same shape with two tabs. The heading is <code class="font-mono text-sm">short_name - long_name</code>, falling back to
+        whichever exists and then to <code class="font-mono text-sm">route_id</code>.
+      </p>
+
+      <div id="ds-route-nav-demo" class="mt-3 border border-base-300">
+        <.route_sub_nav
+          route={%{route_id: "demo-route", route_short_name: "42", route_long_name: "Crosstown"}}
+          gtfs_version_id="demo-version"
+          active_tab={:details}
+        />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.route_sub_nav route={@route} gtfs_version_id={@current_gtfs_version.id} active_tab={:patterns} /&gt;
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Use</h2>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
+        <li>
+          Pass <code class="font-mono text-sm">active_tab</code>
+          on every page that renders a sub-nav. It is what marks the current tab <code class="font-mono text-sm">aria-current="page"</code>, so an omitted value
+          silently tells the user they are somewhere else.
+        </li>
+        <li>
+          The tabs are <code class="font-mono text-sm">navigate</code>
+          links, not events. They are real navigation and belong in the browser's
+          history — do not reimplement them as click handlers.
+        </li>
+        <li>
+          One header per view. The actions slot holds that view's primary action; if you
+          need two, the second is secondary and the third belongs in a menu.
+        </li>
+        <li>
+          Front-load the title with the record, not the section: "Demo Central" beats
+          "Station detail for Demo Central".
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  @doc ~S"""
+  The `<.drawer>` component, closed by default and driven by the page's own events.
+
+  The drawer is fixed-position and its overlay covers the viewport
+  (`core_components.ex:715-731`), so an open-by-default demo would bury the page
+  behind it. It renders with `open={@drawer_open}` instead, and the trigger,
+  the overlay, and the header close button push `open_drawer`/`close_drawer` —
+  all handled by `DesignSystemLive`, which owns the assign.
+
+  `on_close` is left at its `"close_drawer"` default (`core_components.ex:706`).
+  """
+  def overlays(assigns) do
+    ~H"""
+    <section id="ds-page-overlays" class="max-w-4xl">
+      <h1 class="text-2xl font-bold">Overlays</h1>
+      <p class="mt-2 text-base-content/70">
+        One overlay component. The drawer slides in from the right for editing a record
+        without losing the list behind it.
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Drawer</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        The drawer is fixed to the viewport and dims the page behind it, so this demo
+        starts closed — open it to see the real component. It closes on the header
+        button or on a click outside, both of which push
+        <code class="font-mono text-sm">on_close</code>
+        back to the LiveView that owns the open state.
+      </p>
+
+      <div id="ds-drawer-demo" class="mt-3 border border-base-300 p-4">
+        <.button phx-click="open_drawer">Open drawer</.button>
+        <.drawer id="ds-demo-drawer" open={@drawer_open} title="Demo drawer">
+          <p class="text-sm text-base-content/70">
+            Drawer content is usually a form. It scrolls independently of the page, so a
+            long form does not push the header off screen.
+          </p>
+          <p class="mt-4 text-sm text-base-content/70">
+            The panel is <code class="font-mono text-sm">max-w-[min(100vw,48rem)]</code>
+            by default; pass <code class="font-mono text-sm">class</code>
+            to narrow it.
+          </p>
+        </.drawer>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.drawer id="user-form" open={@show_form} on_close="close_form" title="Edit user"&gt;…&lt;/.drawer&gt;
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Use</h2>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
+        <li>
+          The LiveView owns the open state. The drawer renders from
+          <code class="font-mono text-sm">open</code>
+          and pushes <code class="font-mono text-sm">on_close</code>; it never closes
+          itself, so an unhandled close event leaves it stuck open.
+        </li>
+        <li>
+          Reach for a drawer when the context behind it matters — editing one row of a
+          list. When it does not, a full page is simpler and links better.
+        </li>
+        <li>
+          The overlay click and the close button are the only close paths. There is no
+          Escape binding, so do not tell users there is one.
+        </li>
+        <li>
+          Keep the title a noun phrase naming the record being edited, not the verb:
+          "Edit user" is the button, "User" is the drawer.
         </li>
       </ul>
     </section>

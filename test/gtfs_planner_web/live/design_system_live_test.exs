@@ -41,6 +41,10 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     {"231", "Harbor Shuttle", "Draft"}
   ]
 
+  # Every custom event any demo on any page can emit. DesignSystemLive owns a
+  # handle_event clause for each; an unhandled event crashes the LiveView.
+  @handled_events ~w(demo_form_submit paginate open_drawer close_drawer)
+
   setup do
     %{user: user_fixture()}
   end
@@ -705,6 +709,147 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     end
   end
 
+  describe "navigation page" do
+    # AC-13: the real <.header> with all three slots, not replica markup.
+    test "renders the header title, subtitle, and actions slot", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/navigation")
+
+      assert has_element?(view, "#ds-header-demo header h1", "Station detail")
+      assert has_element?(view, "#ds-header-demo header p", "GTFS version 2026-01")
+      assert has_element?(view, "#ds-header-demo header button.btn", "Edit station")
+    end
+
+    # AC-13: both sub-navs render from plain sample maps. The station nav roots at the
+    # id core_components.ex:811 hardcodes; the route nav has no id, so it is addressed
+    # by its aria-label (`:1013`).
+    test "renders both sub-nav root elements from the sample data", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/navigation")
+
+      assert has_element?(view, "#ds-page-navigation nav#station-sub-nav", "Demo Central")
+
+      assert has_element?(
+               view,
+               ~s(#ds-page-navigation nav[aria-label="Route navigation"]),
+               "42 - Crosstown"
+             )
+    end
+
+    # Hazard: the :diagram tab renders level/upload controls that emit open_add_level,
+    # open_edit_level, open_naming_drawer, and upload_diagram — events the styleguide
+    # must never wire (INV-4). Pinning the active tab keeps them unrendered.
+    test "keeps the station sub-nav on the details tab", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/navigation")
+
+      # HEEx renders `aria-selected={true}` as a valueless attribute, so the marked tab
+      # is `[aria-selected]`, never `[aria-selected="true"]`.
+      assert has_element?(
+               view,
+               ~s(#station-sub-nav a[role="tab"][aria-current="page"]),
+               "Details"
+             )
+
+      assert has_element?(view, ~s(#station-sub-nav a[role="tab"][aria-selected]), "Details")
+
+      refute has_element?(view, "#diagram-upload-form-sub-nav")
+      refute has_element?(view, "#station-sub-nav-upload")
+    end
+
+    # INV-4: an unhandled event crashes the LiveView for every page. On :details both
+    # sub-navs are links only, so this page's event surface must be empty.
+    test "emits no client events", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/navigation")
+
+      assert emitted_events(view, "#ds-page-navigation") == []
+    end
+  end
+
+  describe "overlays page" do
+    # AC-14: the drawer is fixed-position with a full-screen overlay, so an
+    # open-by-default demo would cover the page.
+    test "renders the drawer closed by default inside the demo container", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      assert has_element?(view, "#ds-drawer-demo aside#ds-demo-drawer")
+      assert "translate-x-full" in drawer_class_list(view)
+      refute "translate-x-0" in drawer_class_list(view)
+    end
+
+    test "opening the drawer from the trigger gives it the open-state class", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      view
+      |> element("#ds-drawer-demo button[phx-click='open_drawer']", "Open drawer")
+      |> render_click()
+
+      assert "translate-x-0" in drawer_class_list(view)
+      refute "translate-x-full" in drawer_class_list(view)
+    end
+
+    test "pushing close_drawer returns the drawer to the closed state", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      view |> element("#ds-drawer-demo button[phx-click='open_drawer']") |> render_click()
+      assert "translate-x-0" in drawer_class_list(view)
+
+      render_click(view, "close_drawer", %{})
+
+      assert "translate-x-full" in drawer_class_list(view)
+      refute "translate-x-0" in drawer_class_list(view)
+    end
+
+    # The drawer's own close button emits on_close, which defaults to "close_drawer"
+    # (core_components.ex:706). This drives the real component's control rather than
+    # pushing the event name directly.
+    test "the drawer's close button closes it through the real component", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      view |> element("#ds-drawer-demo button[phx-click='open_drawer']") |> render_click()
+
+      view |> element("#ds-demo-drawer button[phx-click='close_drawer']") |> render_click()
+
+      assert "translate-x-full" in drawer_class_list(view)
+    end
+
+    # INV-4: every event this page can emit must have a handler in DesignSystemLive.
+    # The drawer contributes two close_drawer emitters — the overlay (`:721`) and the
+    # header close button (`:745`).
+    test "emits only events the LiveView handles", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      events = emitted_events(view, "#ds-page-overlays")
+
+      assert Enum.sort(Enum.uniq(events)) == ["close_drawer", "open_drawer"]
+      assert Enum.all?(events, &(&1 in @handled_events))
+    end
+  end
+
   describe "page bodies" do
     for %{slug: slug, title: title} <- GtfsPlannerWeb.Design.DesignSystemLive.pages() do
       test "renders the #{slug} page body", %{conn: conn, user: user} do
@@ -716,5 +861,25 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
         assert has_element?(view, "#ds-page-#{unquote(slug)}", unquote(title))
       end
     end
+  end
+
+  # The drawer's open/closed state is carried by the class list on its aside
+  # (core_components.ex:728-729), so the state assertions read that list directly.
+  defp drawer_class_list(view) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#ds-drawer-demo aside#ds-demo-drawer")
+    |> LazyHTML.attribute("class")
+    |> Enum.flat_map(&String.split(&1, " ", trim: true))
+  end
+
+  # Every custom event the rendered page can push from a click, in DOM order.
+  defp emitted_events(view, scope) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#{scope} [phx-click]")
+    |> LazyHTML.attribute("phx-click")
   end
 end
