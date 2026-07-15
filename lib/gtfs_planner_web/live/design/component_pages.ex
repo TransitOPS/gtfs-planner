@@ -1,7 +1,7 @@
 defmodule GtfsPlannerWeb.Design.ComponentPages do
   @moduledoc ~S"""
-  Components pages for the `/design` section: buttons, inputs & forms, badges, and
-  tables & lists.
+  Components pages for the `/design` section: buttons, inputs & forms, badges,
+  tables & lists, and feedback.
 
   Every Tailwind/daisyUI class here is a literal string. Tailwind v4 scans source
   text, so an interpolated class name (`"btn-#{variant}"`) compiles but is silently
@@ -520,6 +520,137 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           renders each header as plain text from the <code class="font-mono text-sm">label</code>
           attribute, so a header cannot carry its own alignment. Right-aligned numeric
           columns keep their left-aligned header until the component grows the hook.
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  @doc ~S"""
+  `<.flash>` examples for both kinds, and the LiveView loading variants.
+
+  Both flash examples pass inner-block content and an explicit `id`. The content is
+  mandatory: `flash/1` renders only when a message resolves
+  (`core_components.ex:55`), and `@flash` is empty on a styleguide page. The ids are
+  mandatory too: the component defaults to `flash-#{kind}` (`:51`), which are the ids
+  the layout's own `<.flash_group>` uses on this very page.
+
+  `<.flash>` hardcodes `class="toast …"` on its root and daisyUI's `toast` is
+  `position: fixed`, so no wrapper class can contain it. The page-scoped rule
+  `#ds-flash-demo .toast { position: static; }` in `assets/css/app.css` returns the
+  examples to normal flow; `toast-top`/`toast-end` both resolve their translate axis
+  to `0`, so neutralizing `position` leaves no offset behind.
+  """
+  def feedback(assigns) do
+    ~H"""
+    <section id="ds-page-feedback" class="max-w-4xl">
+      <h1 class="text-2xl font-bold">Feedback</h1>
+      <p class="mt-2 text-base-content/70">
+        Every view has more than one state. This page shows the vocabulary the app uses
+        to tell a user what just happened, or what is happening now.
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Flash</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Two kinds: <code class="font-mono text-sm">:info</code>
+        for a background outcome that succeeded, <code class="font-mono text-sm">:error</code>
+        for one that failed. The layout renders the real flashes for you — a page never
+        calls <code class="font-mono text-sm">&lt;.flash_group&gt;</code>
+        itself. You raise one from the server with <code class="font-mono text-sm">put_flash/3</code>.
+      </p>
+      <p class="mt-2 text-sm text-base-content/60">
+        In the app these appear as a toast pinned to the top right. The two below are the
+        real component, shown in place by a page-scoped rule that returns them to normal
+        flow — see <code class="font-mono text-sm">#ds-flash-demo</code>
+        in <code class="font-mono text-sm">assets/css/app.css</code>. Clicking one
+        dismisses it exactly as it would in the app.
+      </p>
+
+      <div id="ds-flash-demo" class="mt-3 space-y-3 border border-base-300 p-4">
+        <.flash kind={:info} id="ds-flash-info">Sample info message</.flash>
+        <.flash kind={:error} id="ds-flash-error">Sample error message</.flash>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          put_flash(socket, :info, "Route saved") · the layout's &lt;.flash_group&gt; renders it · pass title={"…"} for a heading above the message
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Loading</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        LiveView adds a class to an element for as long as its event is in flight, so a
+        button can show progress without any assign. Both buttons below are the same
+        call; the right one carries the class LiveView would add, so the state is visible
+        here rather than for the 80ms a real round trip lasts.
+      </p>
+
+      <div id="ds-loading-demo" class="mt-3 border border-base-300 p-4">
+        <div class="flex flex-wrap items-center gap-8">
+          <div>
+            <p class="mb-2 text-xs font-semibold text-base-content/60">Idle</p>
+            <.button variant="primary" class="phx-click-loading:opacity-60">
+              <.icon
+                name="hero-arrow-path"
+                class="hidden size-4 motion-safe:animate-spin phx-click-loading:inline-block"
+              /> Save changes
+            </.button>
+          </div>
+          <div>
+            <p class="mb-2 text-xs font-semibold text-base-content/60">While the event runs</p>
+            <.button
+              variant="primary"
+              class="phx-click-loading phx-click-loading:opacity-60"
+            >
+              <.icon
+                name="hero-arrow-path"
+                class="hidden size-4 motion-safe:animate-spin phx-click-loading:inline-block"
+              /> Save changes
+            </.button>
+          </div>
+        </div>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          phx-click-loading:opacity-60 · phx-click-loading lands on the clicked element, phx-submit-loading on the submitting form, phx-change-loading on the changed one
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Use</h2>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
+        <li>
+          Design every state, not just the ideal one: empty, loading, error, and partial
+          are the ones that get skipped.
+        </li>
+        <li>
+          Toasts are for background outcomes. A validation error belongs on the field, and
+          a whole-view failure belongs in a banner — never in a flash the user can miss.
+        </li>
+        <li>
+          Say what failed and how to recover. An error code is secondary detail, never the
+          message.
+        </li>
+        <li>
+          Acknowledge a click within 100ms. The loading variants above cost nothing and
+          are enough for a fast action; anything slower needs progress the user can cancel.
+        </li>
+        <li>
+          Never blank out content that is already on screen to show a loader. Leave it up
+          and mark it as refreshing.
+        </li>
+        <li>
+          Prefer undo over a confirmation when the action is reversible. When it is not,
+          name the object on the confirm button.
+        </li>
+        <li>
+          The flash container is <code class="font-mono text-sm">aria-live="polite"</code>,
+          so a screen reader announces a message without stealing focus. A state change
+          the user cannot see must still be announced.
         </li>
       </ul>
     </section>

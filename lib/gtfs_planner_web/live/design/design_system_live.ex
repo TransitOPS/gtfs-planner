@@ -161,7 +161,9 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
 
   defp page_body(%{page: %{slug: "tables"}} = assigns), do: ComponentPages.tables(assigns)
 
-  # Temporary catch-all placeholder. Steps 6-8 replace it with one dispatch clause
+  defp page_body(%{page: %{slug: "feedback"}} = assigns), do: ComponentPages.feedback(assigns)
+
+  # Temporary catch-all placeholder. Steps 7-8 replace it with one dispatch clause
   # per slug and remove this clause, so an unregistered slug becomes a
   # compile-visible gap.
   defp page_body(assigns) do

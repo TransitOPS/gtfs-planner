@@ -195,6 +195,17 @@ body:has(#diagram-page[data-immersive="true"]) {
   overflow: hidden;
 }
 
+/* Design system flash containment (/design/feedback).
+   <.flash> hardcodes daisyUI's `toast` on its root and `toast` is position: fixed, so
+   no wrapper class can hold the examples inside their demo container — they would pin
+   themselves to the viewport corner and overlap the page. `toast-top`/`toast-end`
+   resolve both translate axes to 0, so neutralizing position is enough to return them
+   to normal flow, and the insets and z-index no longer apply. Scoped to the demo
+   container: the layout's real flashes still toast normally, here and everywhere. */
+#ds-flash-demo .toast {
+  position: static;
+}
+
 /* Disable pointer events on stops and pathways in Add Stop mode.
    Stream items don't re-render when @mode changes, so we override via CSS. */
 #diagram-overlay[data-mode="add"] #stops-svg g,

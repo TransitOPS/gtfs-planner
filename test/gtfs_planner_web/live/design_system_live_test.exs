@@ -587,6 +587,124 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     end
   end
 
+  describe "feedback page" do
+    # AC-12: both flash examples resolve inside the demo container rather than escaping
+    # it as a fixed-position toast.
+    test "renders the info and error flash examples inside the demo container", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/feedback")
+
+      assert has_element?(view, "#ds-flash-demo #ds-flash-info", "Sample info message")
+      assert has_element?(view, "#ds-flash-demo #ds-flash-error", "Sample error message")
+    end
+
+    # The examples must be the real <.flash>, not replica markup: these classes and the
+    # role come from core_components.ex and are what the page documents.
+    test "renders each example as the real flash component", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/feedback")
+
+      assert has_element?(view, ~s(#ds-flash-info[role="alert"] .alert.alert-info))
+      assert has_element?(view, ~s(#ds-flash-error[role="alert"] .alert.alert-error))
+    end
+
+    # The containment rule is `#ds-flash-demo .toast { position: static; }`. CSS is not
+    # observable from a LiveView test, so this pins the rule's DOM anchor: if <.flash>
+    # ever stopped emitting `toast`, or an example moved out of the container, the
+    # scoped rule would silently stop containing anything.
+    test "keeps every toast root inside the containment container", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/feedback")
+
+      document =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+
+      contained = document |> LazyHTML.query("#ds-flash-demo .toast") |> Enum.count()
+      on_page = document |> LazyHTML.query("#ds-page-feedback .toast") |> Enum.count()
+
+      assert contained == 2
+      assert on_page == contained
+    end
+
+    # Hazard: <.flash> defaults its id to "flash-#{kind}", which are the ids the layout's
+    # real flash_group uses. Dropping the explicit id would collide with them.
+    test "gives the examples ids distinct from the layout's real flash ids", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/feedback")
+
+      refute has_element?(view, "#ds-page-feedback #flash-info")
+      refute has_element?(view, "#ds-page-feedback #flash-error")
+
+      ids =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#ds-page-feedback [id]")
+        |> LazyHTML.attribute("id")
+
+      assert ids == Enum.uniq(ids)
+    end
+
+    test "renders the loading-variants sample button and caption", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/feedback")
+
+      assert has_element?(view, "#ds-loading-demo button.btn", "Save changes")
+      assert has_element?(view, "#ds-page-feedback .ds-code-caption", "phx-click-loading")
+      assert has_element?(view, "#ds-page-feedback .ds-code-caption", "phx-submit-loading")
+    end
+
+    # The loading state is demonstrated statically, by applying the class LiveView would
+    # add, rather than by fabricating a slow round trip.
+    test "shows the loading state with the class applied literally beside an idle button", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/feedback")
+
+      buttons =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#ds-loading-demo button")
+        |> LazyHTML.attribute("class")
+        |> Enum.map(&String.split(&1, " ", trim: true))
+
+      assert Enum.count(buttons) == 2
+      assert Enum.count(buttons, &("phx-click-loading" in &1)) == 1
+      assert Enum.all?(buttons, &("phx-click-loading:opacity-60" in &1))
+    end
+
+    # The demo emits no custom event: <.flash>'s root pushes the built-in
+    # `lv:clear-flash`, which LiveView handles internally. The examples render from their
+    # inner block, so dismissing one does not remove it.
+    test "dismissing a flash example does not crash the LiveView", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/feedback")
+
+      view |> element("#ds-flash-info") |> render_click()
+
+      assert has_element?(view, "#ds-flash-demo #ds-flash-info", "Sample info message")
+      assert has_element?(view, "#ds-flash-demo #ds-flash-error", "Sample error message")
+    end
+  end
+
   describe "page bodies" do
     for %{slug: slug, title: title} <- GtfsPlannerWeb.Design.DesignSystemLive.pages() do
       test "renders the #{slug} page body", %{conn: conn, user: user} do
