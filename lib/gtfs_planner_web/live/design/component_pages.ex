@@ -1,7 +1,7 @@
 defmodule GtfsPlannerWeb.Design.ComponentPages do
   @moduledoc ~S"""
   Components pages for the `/design` section: buttons, inputs & forms, badges,
-  tables & lists, feedback, navigation, and overlays.
+  tables & lists, feedback, navigation, overlays, and autocomplete.
 
   Every Tailwind/daisyUI class here is a literal string. Tailwind v4 scans source
   text, so an interpolated class name (`"btn-#{variant}"`) compiles but is silently
@@ -847,6 +847,191 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         <li>
           Keep the title a noun phrase naming the record being edited, not the verb:
           "Edit user" is the button, "User" is the drawer.
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  @doc """
+  The address autocomplete demo: `LiveSelect.Component` fed by `GtfsPlanner.Geocoding`.
+
+  Migrated from the retired `/components` page. The form id (`#address-form`), the
+  field id (`#address_autocomplete`), the LiveSelect invocation, and the saved-locations
+  table are preserved verbatim from that page — this is the same live demo, rehoused.
+
+  Unlike every other page here, this one calls a real external service. The events it
+  emits (`live_select_change`, `address-form`, `save_location`, `delete_location`) are
+  all handled by `DesignSystemLive`, which owns the state these assigns carry.
+  """
+  def autocomplete(assigns) do
+    ~H"""
+    <section id="ds-page-autocomplete" class="max-w-4xl">
+      <h1 class="text-2xl font-bold">Autocomplete</h1>
+      <p class="mt-2 text-base-content/70">
+        Address search backed by the geocoding service. This is the only page here that
+        talks to a live external API, so results depend on the network — and on the
+        3-character minimum before the first request goes out.
+      </p>
+
+      <section class="mb-8">
+        <h2 class="mt-8 text-lg font-semibold">Address Autocomplete</h2>
+
+        <div class="bg-base-100 border border-base-300 rounded-lg p-6">
+          <.form for={@form} id="address-form" phx-change="address-form">
+            <div class="mb-4">
+              <label for="address_autocomplete" class="block text-sm font-medium mb-2">
+                Search Address
+              </label>
+              <.live_component
+                module={LiveSelect.Component}
+                id="address_autocomplete"
+                field={@form[:address_autocomplete]}
+                options={[]}
+                debounce={300}
+                placeholder="Type at least 3 characters..."
+                update_min_len={3}
+                dropdown_class="bg-base-300 border border-base-content/20 shadow-lg mt-1 text-base-content"
+                option_class="px-4 py-2.5 border-b border-base-content/10 last:border-b-0 text-base-content"
+                active_option_class="bg-primary text-primary-content"
+                available_option_class="hover:bg-base-content/10 cursor-pointer transition-colors"
+                text_input_class="input input-bordered w-full live-select-input"
+              >
+                <:option :let={option}>
+                  <div class="flex flex-col">
+                    <span class="font-medium">{option.label}</span>
+                  </div>
+                </:option>
+              </.live_component>
+
+              <%= if @selected_lat && @selected_lon do %>
+                <div class="mt-2 border border-base-content/20 bg-base-200/50 px-3 py-2">
+                  <div class="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <span class="text-base-content/70">Lat</span>
+                      <span class="ml-2 font-mono text-white">{@selected_lat}</span>
+                    </div>
+                    <div>
+                      <span class="text-base-content/70">Lon</span>
+                      <span class="ml-2 font-mono text-white">{@selected_lon}</span>
+                    </div>
+                  </div>
+                </div>
+              <% end %>
+            </div>
+          </.form>
+
+          <%= if @selected_address do %>
+            <div class="mt-6 border-t border-base-300 pt-6">
+              <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-medium">Selected Location</h3>
+                <button
+                  type="button"
+                  phx-click="save_location"
+                  class="btn btn-primary btn-sm"
+                >
+                  Save Location
+                </button>
+              </div>
+              <dl class="divide-y divide-base-300">
+                <div class="py-3 grid grid-cols-3 gap-4">
+                  <dt class="text-sm font-medium text-base-content/70">Address</dt>
+                  <dd class="text-sm col-span-2">{@selected_address}</dd>
+                </div>
+                <div class="py-3 grid grid-cols-3 gap-4">
+                  <dt class="text-sm font-medium text-base-content/70">Latitude</dt>
+                  <dd class="text-sm col-span-2">{@selected_lat}</dd>
+                </div>
+                <div class="py-3 grid grid-cols-3 gap-4">
+                  <dt class="text-sm font-medium text-base-content/70">Longitude</dt>
+                  <dd class="text-sm col-span-2">{@selected_lon}</dd>
+                </div>
+                <%= if @selected_result.city do %>
+                  <div class="py-3 grid grid-cols-3 gap-4">
+                    <dt class="text-sm font-medium text-base-content/70">City</dt>
+                    <dd class="text-sm col-span-2">{@selected_result.city}</dd>
+                  </div>
+                <% end %>
+                <%= if @selected_result.state do %>
+                  <div class="py-3 grid grid-cols-3 gap-4">
+                    <dt class="text-sm font-medium text-base-content/70">State</dt>
+                    <dd class="text-sm col-span-2">{@selected_result.state}</dd>
+                  </div>
+                <% end %>
+                <%= if @selected_result.country do %>
+                  <div class="py-3 grid grid-cols-3 gap-4">
+                    <dt class="text-sm font-medium text-base-content/70">Country</dt>
+                    <dd class="text-sm col-span-2">{@selected_result.country}</dd>
+                  </div>
+                <% end %>
+              </dl>
+            </div>
+          <% end %>
+        </div>
+      </section>
+
+      <%= if @saved_locations != [] do %>
+        <section class="mb-8">
+          <h2 class="text-xl font-semibold mb-4">Saved Locations</h2>
+
+          <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden">
+            <table class="table w-full">
+              <thead class="bg-base-200">
+                <tr>
+                  <th class="border-b border-base-300">Address</th>
+                  <th class="border-b border-base-300">Latitude</th>
+                  <th class="border-b border-base-300">Longitude</th>
+                  <th class="border-b border-base-300">City</th>
+                  <th class="border-b border-base-300">State</th>
+                  <th class="border-b border-base-300">Country</th>
+                  <th class="border-b border-base-300"><span class="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                <%= for {location, index} <- Enum.with_index(@saved_locations) do %>
+                  <tr class="border-b border-base-300 last:border-b-0">
+                    <td class="py-3">{location.formatted_address}</td>
+                    <td class="py-3 font-mono text-sm">{location.lat}</td>
+                    <td class="py-3 font-mono text-sm">{location.lon}</td>
+                    <td class="py-3">{location.city || "—"}</td>
+                    <td class="py-3">{location.state || "—"}</td>
+                    <td class="py-3">{location.country || "—"}</td>
+                    <td class="py-3">
+                      <button
+                        type="button"
+                        phx-click="delete_location"
+                        phx-value-index={index}
+                        class="btn btn-ghost btn-sm text-error"
+                        aria-label={"Delete location: " <> location.formatted_address}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                <% end %>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      <% end %>
+
+      <h2 class="mt-8 text-lg font-semibold">Use</h2>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
+        <li>
+          The LiveView owns every piece of state here. LiveSelect pushes
+          <code class="font-mono text-sm">live_select_change</code>
+          on each keystroke and expects options back via <code class="font-mono text-sm">send_update/2</code>; it stores nothing itself.
+        </li>
+        <li>
+          <code class="font-mono text-sm">update_min_len</code>
+          and <code class="font-mono text-sm">debounce</code>
+          exist to protect the API quota. Lower them and every keystroke becomes a
+          billed request.
+        </li>
+        <li>
+          A geocoding failure clears the cached results rather than keeping stale ones,
+          so a selection can never resolve against an address the service no longer
+          returns.
         </li>
       </ul>
     </section>

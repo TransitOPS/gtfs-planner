@@ -9,8 +9,12 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  require Logger
+
+  alias GtfsPlanner.Geocoding
   alias GtfsPlannerWeb.Design.ComponentPages
   alias GtfsPlannerWeb.Design.FoundationPages
+  alias LiveSelect.Component, as: LiveSelectComponent
 
   @pages [
     %{slug: "introduction", title: "Introduction", group: "Foundations"},
@@ -40,12 +44,25 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
      |> assign(:page, hd(@pages))
      |> assign(:demo_form, demo_form())
      |> assign(:pagination_page, 1)
-     |> assign(:drawer_open, false)}
+     |> assign(:drawer_open, false)
+     |> assign(:form, address_form())
+     |> assign(:selected_address, nil)
+     |> assign(:selected_lat, nil)
+     |> assign(:selected_lon, nil)
+     |> assign(:selected_result, nil)
+     |> assign(:saved_locations, [])
+     |> assign(:last_results, [])}
   end
 
   # Demo state for every page lives here, in the LiveView that owns the events.
   defp demo_form do
     to_form(%{"name" => "", "kind" => "", "notes" => "", "active" => "false"}, as: :demo)
+  end
+
+  # `as: :address_search` is load-bearing: the autocomplete handlers below pattern-match
+  # on the `"address_search"` params key this name produces.
+  defp address_form do
+    to_form(%{"address_autocomplete" => ""}, as: :address_search)
   end
 
   @impl true
@@ -94,6 +111,161 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   def handle_event("close_drawer", _params, socket) do
     {:noreply, assign(socket, :drawer_open, false)}
   end
+
+  # The autocomplete page's LiveSelect demo, migrated from the retired `/components`
+  # page. These clauses fire only from that page's component, but they live here
+  # because the LiveView is shared across every page in the section.
+  #
+  # LiveSelect pushes `live_select_change` for both a keystroke and a selection; the
+  # selection payload carries the chosen option's `tag`, so that clause comes first.
+  def handle_event(
+        "live_select_change",
+        %{"text" => _text, "id" => _id, "field" => _field, "selection" => %{"tag" => selection}},
+        socket
+      ) do
+    case normalize_result(selection) do
+      {:ok, result} ->
+        {:noreply, apply_selected_result(socket, result)}
+
+      :error ->
+        {:noreply, clear_selected_result(socket)}
+    end
+  end
+
+  def handle_event("live_select_change", %{"text" => text, "id" => id}, socket) do
+    Logger.debug("Autocomplete search initiated for field: #{id}")
+
+    case Geocoding.autocomplete(text) do
+      {:ok, results} ->
+        Logger.debug("Autocomplete returned #{length(results)} results")
+
+        options =
+          Enum.map(results, fn result ->
+            %{
+              label: result.formatted_address,
+              value: result.formatted_address,
+              tag: result,
+              option: result.formatted_address
+            }
+          end)
+
+        send_update(LiveSelectComponent, id: id, options: options)
+
+        # Store results for later matching
+        {:noreply, assign(socket, :last_results, results)}
+
+      {:error, reason} ->
+        Logger.error("Geocoding autocomplete failed: #{inspect(reason)}")
+        send_update(LiveSelectComponent, id: id, options: [])
+        {:noreply, assign(socket, :last_results, [])}
+    end
+  end
+
+  def handle_event(
+        "change",
+        %{"address_search" => %{"address_autocomplete" => selection}},
+        socket
+      )
+      when is_binary(selection) and selection != "" do
+    Logger.debug("Address selection change event received for address_autocomplete field")
+
+    {:noreply, apply_selection_by_address(socket, selection)}
+  end
+
+  def handle_event("change", _params, socket) do
+    Logger.debug("Address form change event (no selection)")
+    {:noreply, clear_selected_result(socket)}
+  end
+
+  def handle_event(
+        "address-form",
+        %{"address_search" => %{"address_autocomplete" => selection}},
+        socket
+      ) do
+    Logger.debug("Address form change event for address_autocomplete field")
+    {:noreply, apply_selection_by_address(socket, selection)}
+  end
+
+  def handle_event("address-form", _params, socket) do
+    {:noreply, clear_selected_result(socket)}
+  end
+
+  def handle_event("live_select_blur", _params, socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event("save_location", _params, socket) do
+    case socket.assigns.selected_result do
+      nil ->
+        {:noreply, socket}
+
+      result ->
+        saved_locations = [result | socket.assigns.saved_locations]
+        {:noreply, assign(socket, :saved_locations, saved_locations)}
+    end
+  end
+
+  def handle_event("delete_location", %{"index" => index_str}, socket) do
+    index = String.to_integer(index_str)
+    saved_locations = List.delete_at(socket.assigns.saved_locations, index)
+    {:noreply, assign(socket, :saved_locations, saved_locations)}
+  end
+
+  # Resolves a typed/selected address string against the results the last autocomplete
+  # call cached. An unmatched string clears the selection rather than keeping a stale
+  # one, which is also what makes a failed geocoding call safe.
+  defp apply_selection_by_address(socket, selection) do
+    result =
+      Enum.find(socket.assigns.last_results, fn current_result ->
+        current_result.formatted_address == selection
+      end)
+
+    case result do
+      nil -> clear_selected_result(socket)
+      selected_result -> apply_selected_result(socket, selected_result)
+    end
+  end
+
+  defp apply_selected_result(socket, result) do
+    socket
+    |> assign(:selected_address, result.formatted_address)
+    |> assign(:selected_lat, result.lat)
+    |> assign(:selected_lon, result.lon)
+    |> assign(:selected_result, result)
+  end
+
+  defp clear_selected_result(socket) do
+    socket
+    |> assign(:selected_address, nil)
+    |> assign(:selected_lat, nil)
+    |> assign(:selected_lon, nil)
+    |> assign(:selected_result, nil)
+  end
+
+  # The selection payload arrives from the client as string-keyed JSON, so it is
+  # validated back into a Result rather than trusted.
+  defp normalize_result(%Geocoding.Result{} = result), do: {:ok, result}
+
+  defp normalize_result(%{} = result) do
+    with formatted_address when is_binary(formatted_address) <-
+           Map.get(result, "formatted_address"),
+         lat when is_float(lat) <- Map.get(result, "lat"),
+         lon when is_float(lon) <- Map.get(result, "lon") do
+      {:ok,
+       %Geocoding.Result{
+         formatted_address: formatted_address,
+         lat: lat,
+         lon: lon,
+         city: Map.get(result, "city"),
+         state: Map.get(result, "state"),
+         country: Map.get(result, "country")
+       }}
+    else
+      _ -> :error
+    end
+  end
+
+  defp normalize_result(_result), do: :error
 
   @pagination_last_page 5
 
@@ -180,14 +352,9 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
 
   defp page_body(%{page: %{slug: "overlays"}} = assigns), do: ComponentPages.overlays(assigns)
 
-  # Temporary catch-all placeholder. Step 8 replaces it with the last dispatch clause
-  # and removes this clause, so an unregistered slug becomes a compile-visible gap.
-  defp page_body(assigns) do
-    ~H"""
-    <section id={"ds-page-#{@page.slug}"}>
-      <h1 class="text-2xl font-semibold">{@page.title}</h1>
-      <p class="mt-2 text-base-content/70">Page under construction</p>
-    </section>
-    """
-  end
+  # No catch-all clause: every slug in the registry has a clause above, so adding a
+  # registry entry without a body raises a FunctionClauseError on that page rather
+  # than rendering a silent placeholder.
+  defp page_body(%{page: %{slug: "autocomplete"}} = assigns),
+    do: ComponentPages.autocomplete(assigns)
 end

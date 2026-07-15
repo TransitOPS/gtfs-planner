@@ -43,7 +43,22 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
   # Every custom event any demo on any page can emit. DesignSystemLive owns a
   # handle_event clause for each; an unhandled event crashes the LiveView.
-  @handled_events ~w(demo_form_submit paginate open_drawer close_drawer)
+  @handled_events ~w(
+    demo_form_submit paginate open_drawer close_drawer
+    live_select_change change address-form live_select_blur
+    save_location delete_location
+  )
+
+  # The one geocoding result every autocomplete test searches for. Mirrors the shape
+  # GtfsPlanner.Geocoding.autocomplete/2 returns from the real Geoapify adapter.
+  @regent %GtfsPlanner.Geocoding.Result{
+    formatted_address: "Regent Street, London, UK",
+    lat: 51.5105,
+    lon: -0.1367,
+    country: "UK",
+    state: "England",
+    city: "London"
+  }
 
   setup do
     %{user: user_fixture()}
@@ -850,6 +865,254 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     end
   end
 
+  # Ported from the retired GtfsPlannerWeb.ComponentsLiveTest. GtfsPlanner.GeocodingMock
+  # (config/test.exs:26) fakes only the final external boundary — the Geoapify HTTP
+  # call. Everything between the router and Geocoding.autocomplete/2 is production code.
+  describe "autocomplete page" do
+    # INV-5: these two ids are the contract the demo carries over from /components.
+    test "renders the address form and the LiveSelect field", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/autocomplete")
+
+      assert has_element?(view, "#ds-page-autocomplete form#address-form")
+      assert has_element?(view, "#ds-page-autocomplete #address_autocomplete")
+    end
+
+    test "does not display a selected location initially", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/autocomplete")
+
+      refute has_element?(view, "#ds-page-autocomplete h3", "Selected Location")
+      refute has_element?(view, "#ds-page-autocomplete dt", "Address")
+      refute has_element?(view, "#ds-page-autocomplete dt", "Latitude")
+      refute has_element?(view, "#ds-page-autocomplete dt", "Longitude")
+    end
+
+    test "updates on address selection", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/autocomplete")
+
+      refute has_element?(view, "#ds-page-autocomplete dt", "Address")
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Regent", _opts ->
+        {:ok, [@regent]}
+      end)
+
+      render_hook(view, "live_select_change", %{
+        "text" => "Regent",
+        "id" => "address_autocomplete"
+      })
+
+      render_change(view, "address-form", %{
+        "address_search" => %{"address_autocomplete" => "Regent Street, London, UK"}
+      })
+
+      assert has_element?(view, "#ds-page-autocomplete dt", "Address")
+      assert has_element?(view, "#ds-page-autocomplete dd", "Regent Street, London, UK")
+      assert has_element?(view, "#ds-page-autocomplete dd", "51.5105")
+      assert has_element?(view, "#ds-page-autocomplete dd", "-0.1367")
+    end
+
+    test "applies selection from live_select_change string-keyed payload", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/autocomplete")
+
+      render_hook(view, "live_select_change", %{
+        "text" => "Regent",
+        "id" => "address_autocomplete",
+        "field" => "address_search[address_autocomplete]",
+        "selection" => %{
+          "tag" => %{
+            "formatted_address" => "Regent Street, London, UK",
+            "lat" => 51.5105,
+            "lon" => -0.1367,
+            "country" => "UK",
+            "state" => "England",
+            "city" => "London"
+          }
+        }
+      })
+
+      assert has_element?(view, "#ds-page-autocomplete dt", "Address")
+      assert has_element?(view, "#ds-page-autocomplete dd", "Regent Street, London, UK")
+    end
+
+    test "unmatched non-empty input clears selected state", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/autocomplete")
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Regent", _opts ->
+        {:ok, [@regent]}
+      end)
+
+      render_hook(view, "live_select_change", %{
+        "text" => "Regent",
+        "id" => "address_autocomplete"
+      })
+
+      render_change(view, "address-form", %{
+        "address_search" => %{"address_autocomplete" => "Regent Street, London, UK"}
+      })
+
+      assert has_element?(view, "#ds-page-autocomplete dt", "Address")
+
+      render_change(view, "address-form", %{
+        "address_search" => %{"address_autocomplete" => "Unknown Place"}
+      })
+
+      refute has_element?(view, "#ds-page-autocomplete h3", "Selected Location")
+    end
+
+    test "autocomplete error clears cached results and stale selection is not reapplied", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/autocomplete")
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Regent", _opts ->
+        {:ok, [@regent]}
+      end)
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Regent next", _opts ->
+        {:error, :network_error}
+      end)
+
+      render_hook(view, "live_select_change", %{
+        "text" => "Regent",
+        "id" => "address_autocomplete"
+      })
+
+      render_change(view, "address-form", %{
+        "address_search" => %{"address_autocomplete" => "Regent Street, London, UK"}
+      })
+
+      assert has_element?(view, "#ds-page-autocomplete dt", "Address")
+
+      render_hook(view, "live_select_change", %{
+        "text" => "Regent next",
+        "id" => "address_autocomplete"
+      })
+
+      render_change(view, "address-form", %{
+        "address_search" => %{"address_autocomplete" => "Regent Street, London, UK"}
+      })
+
+      refute has_element?(view, "#ds-page-autocomplete h3", "Selected Location")
+    end
+
+    test "saves the selected location to the table and deletes it again", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/autocomplete")
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Regent", _opts ->
+        {:ok, [@regent]}
+      end)
+
+      render_hook(view, "live_select_change", %{
+        "text" => "Regent",
+        "id" => "address_autocomplete"
+      })
+
+      render_change(view, "address-form", %{
+        "address_search" => %{"address_autocomplete" => "Regent Street, London, UK"}
+      })
+
+      refute has_element?(view, "#ds-page-autocomplete h2", "Saved Locations")
+
+      view
+      |> element("#ds-page-autocomplete button[phx-click='save_location']")
+      |> render_click()
+
+      assert has_element?(view, "#ds-page-autocomplete h2", "Saved Locations")
+      assert has_element?(view, "#ds-page-autocomplete td", "Regent Street, London, UK")
+      assert has_element?(view, "#ds-page-autocomplete td", "London")
+
+      view
+      |> element("#ds-page-autocomplete button[phx-click='delete_location']")
+      |> render_click()
+
+      refute has_element?(view, "#ds-page-autocomplete td", "Regent Street, London, UK")
+      refute has_element?(view, "#ds-page-autocomplete h2", "Saved Locations")
+    end
+
+    # save_location is a no-op without a selection: the button cannot be clicked in that
+    # state, so this drives the handler directly (the step-005 finding-2 pattern).
+    test "saving with no selection adds no row", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/autocomplete")
+
+      render_click(view, "save_location", %{})
+
+      refute has_element?(view, "#ds-page-autocomplete h2", "Saved Locations")
+    end
+
+    # INV-4: every event this page pushes to the LiveView must have a clause, including
+    # the ones LiveSelect emits from inside itself. Events carrying phx-target are the
+    # component's own and never reach DesignSystemLive.
+    test "emits only events the LiveView handles", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/autocomplete")
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Regent", _opts ->
+        {:ok, [@regent]}
+      end)
+
+      render_hook(view, "live_select_change", %{
+        "text" => "Regent",
+        "id" => "address_autocomplete"
+      })
+
+      render_change(view, "address-form", %{
+        "address_search" => %{"address_autocomplete" => "Regent Street, London, UK"}
+      })
+
+      view
+      |> element("#ds-page-autocomplete button[phx-click='save_location']")
+      |> render_click()
+
+      events = untargeted_events(view, "#ds-page-autocomplete")
+
+      assert "save_location" in events
+      assert "delete_location" in events
+      assert Enum.all?(events, &(&1 in @handled_events))
+    end
+  end
+
+  describe "retired /components route" do
+    # A plain string path, not ~p"/components": the sigil no longer compiles once the
+    # route is gone, which is itself the point of the deletion.
+    #
+    # Not assert_error_sent/2: Phoenix renders NoRouteError and then deliberately does
+    # NOT reraise it (`maybe_raise(:error, %NoRouteError{}, _)` in
+    # phoenix/endpoint/render_errors.ex), so the request returns a plain sent 404 and
+    # assert_error_sent flunks with "response sent 404 without error". The status is the
+    # observable fact anyway. The user is logged in so a 404 cannot be an auth redirect
+    # in disguise: this same request returned the demo page before the route was deleted.
+    test "no longer routes", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      conn = get(conn, "/components")
+
+      assert conn.status == 404
+    end
+  end
+
   describe "page bodies" do
     for %{slug: slug, title: title} <- GtfsPlannerWeb.Design.DesignSystemLive.pages() do
       test "renders the #{slug} page body", %{conn: conn, user: user} do
@@ -880,6 +1143,16 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     |> render()
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("#{scope} [phx-click]")
+    |> LazyHTML.attribute("phx-click")
+  end
+
+  # Click events the page pushes to the LiveView itself. A phx-target routes the event
+  # to a live component instead, so those are excluded — DesignSystemLive never sees them.
+  defp untargeted_events(view, scope) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#{scope} [phx-click]:not([phx-target])")
     |> LazyHTML.attribute("phx-click")
   end
 end
