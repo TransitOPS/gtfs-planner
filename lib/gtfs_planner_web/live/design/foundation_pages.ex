@@ -25,6 +25,12 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
         <code class="font-mono text-sm">core_components.ex</code>
         — what you see here is what ships.
       </p>
+      <p class="mt-2 text-base-content/70">
+        The one exception is the Proposals group: those pages are recommendations,
+        mocked in plain HTML, and nothing on them ships until it lands in
+        <code class="font-mono text-sm">core_components.ex</code>
+        and earns a Components page.
+      </p>
 
       <h2 class="mt-8 text-lg font-semibold">Stack</h2>
       <dl class="mt-3 divide-y divide-base-300 border-y border-base-300">

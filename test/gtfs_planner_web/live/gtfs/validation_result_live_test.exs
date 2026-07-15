@@ -348,7 +348,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert has_element?(view, "span.font-mono", "missing_required_field")
 
       # Should display severity badge
-      assert has_element?(view, "div.badge-error", "ERROR")
+      assert has_element?(view, ".text-error", "ERROR")
     end
 
     test "displays no issues message when validation has no notices", %{
@@ -628,7 +628,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
                "FAIL"
              )
 
-      assert has_element?(view, "#pathways-case-row-0 .badge-error", "FAILED")
+      assert has_element?(view, "#pathways-case-row-0 .text-error", "FAILED")
       assert render(view |> element("#pathways-case-row-0")) =~ "Traversability check failed"
     end
 
@@ -885,7 +885,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      assert has_element?(view, "#pathways-case-row-0 .badge-error", "FAILED")
+      assert has_element?(view, "#pathways-case-row-0 .text-error", "FAILED")
     end
 
     test "renders per-test status as PASS when no criteria fail", %{
@@ -923,7 +923,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      assert has_element?(view, "#pathways-case-row-0 .badge-success", "PASS")
+      assert has_element?(view, "#pathways-case-row-0 .text-success", "PASS")
       assert render(view |> element("#pathways-case-row-0")) =~ "All criteria passed"
     end
 
@@ -968,7 +968,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      assert has_element?(view, "#pathways-case-row-0 .badge-warning", "WARNING")
+      assert has_element?(view, "#pathways-case-row-0 .text-warning", "WARNING")
       assert render(view |> element("#pathways-case-row-0")) =~ "Duration outside expected range"
     end
 
@@ -989,7 +989,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      assert has_element?(view, "div.badge-info", "RUNNING")
+      assert has_element?(view, ".text-info", "RUNNING")
 
       run_result = %{
         suite_meta: %{total_candidates: 1, selected_count: 1, malformed_count: 0},
@@ -1013,7 +1013,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
 
       send(view.pid, {:poll_pathways_trip_test_status, run.id})
 
-      assert has_element?(view, "div.badge-success.badge-outline", "COMPLETED")
+      assert has_element?(view, ".text-success", "COMPLETED")
       assert has_element?(view, "#pathways-case-row-0", walkability_test.id)
       refute render(view) =~ "Validation in progress..."
     end

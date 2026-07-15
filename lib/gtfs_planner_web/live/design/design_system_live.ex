@@ -14,6 +14,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   alias GtfsPlanner.Geocoding
   alias GtfsPlannerWeb.Design.ComponentPages
   alias GtfsPlannerWeb.Design.FoundationPages
+  alias GtfsPlannerWeb.Design.ProposalPages
   alias LiveSelect.Component, as: LiveSelectComponent
 
   @pages [
@@ -28,7 +29,10 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
     %{slug: "navigation", title: "Navigation", group: "Components"},
     %{slug: "badges", title: "Badges", group: "Components"},
     %{slug: "overlays", title: "Overlays", group: "Components"},
-    %{slug: "autocomplete", title: "Autocomplete", group: "Components"}
+    %{slug: "autocomplete", title: "Autocomplete", group: "Components"},
+    %{slug: "improvements", title: "Improvements", group: "Proposals"},
+    %{slug: "content", title: "Content & IA", group: "Proposals"},
+    %{slug: "transit", title: "Transit patterns", group: "Proposals"}
   ]
 
   @doc """
@@ -355,9 +359,16 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
 
   defp page_body(%{page: %{slug: "overlays"}} = assigns), do: ComponentPages.overlays(assigns)
 
+  defp page_body(%{page: %{slug: "autocomplete"}} = assigns),
+    do: ComponentPages.autocomplete(assigns)
+
+  defp page_body(%{page: %{slug: "improvements"}} = assigns),
+    do: ProposalPages.improvements(assigns)
+
+  defp page_body(%{page: %{slug: "content"}} = assigns), do: ProposalPages.content(assigns)
+
   # No catch-all clause: every slug in the registry has a clause above, so adding a
   # registry entry without a body raises a FunctionClauseError on that page rather
   # than rendering a silent placeholder.
-  defp page_body(%{page: %{slug: "autocomplete"}} = assigns),
-    do: ComponentPages.autocomplete(assigns)
+  defp page_body(%{page: %{slug: "transit"}} = assigns), do: ProposalPages.transit(assigns)
 end

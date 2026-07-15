@@ -91,16 +91,17 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       end
     end
 
-    test "renders both group headings", %{conn: conn, user: user} do
+    test "renders all three group headings", %{conn: conn, user: user} do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/introduction")
 
       assert has_element?(view, "#design-sidebar", "Foundations")
       assert has_element?(view, "#design-sidebar", "Components")
+      assert has_element?(view, "#design-sidebar", "Proposals")
     end
 
-    test "orders Foundations before Components", %{conn: conn, user: user} do
+    test "orders Foundations, Components, Proposals", %{conn: conn, user: user} do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/introduction")
@@ -112,7 +113,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
         |> LazyHTML.query("#design-sidebar h2")
         |> LazyHTML.text()
 
-      assert headings == "FoundationsComponents"
+      assert headings == "FoundationsComponentsProposals"
     end
   end
 
@@ -481,7 +482,13 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
         |> render()
         |> LazyHTML.from_fragment()
         |> LazyHTML.query("#ds-page-tables table.table thead th")
-        |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
+        # The ID column carries a sort indicator, so strip the arrow glyph to compare labels.
+        |> Enum.map(
+          &(&1
+            |> LazyHTML.text()
+            |> String.replace(["▲", "▼", "↕"], "")
+            |> String.trim())
+        )
 
       assert headers == ["ID", "Name", "Status", "Actions"]
     end
@@ -492,7 +499,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/design/tables")
 
-      assert has_element?(view, "#ds-demo-table td div.text-right.tabular-nums", "108")
+      assert has_element?(view, "#ds-demo-table td.text-right span.tabular-nums", "108")
     end
 
     # table-row-design.md: status is colour + text, never colour alone.
@@ -850,15 +857,20 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       assert "translate-x-full" in drawer_class_list(view)
     end
 
-    # INV-4: every event this page can emit must have a handler in DesignSystemLive.
-    # The drawer contributes two close_drawer emitters — the overlay (`:721`) and the
-    # header close button (`:745`).
+    # INV-4: every server event this page can emit must have a handler in
+    # DesignSystemLive. The drawer contributes two close_drawer emitters — the overlay
+    # and the header close button. The confirm dialog toggles entirely client-side, so
+    # every phx-click it renders is an encoded JS command (a JSON array), never an event
+    # name; those reach the client only and are excluded here.
     test "emits only events the LiveView handles", %{conn: conn, user: user} do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/overlays")
 
-      events = emitted_events(view, "#ds-page-overlays")
+      events =
+        view
+        |> emitted_events("#ds-page-overlays")
+        |> Enum.reject(&String.starts_with?(&1, "["))
 
       assert Enum.sort(Enum.uniq(events)) == ["close_drawer", "open_drawer"]
       assert Enum.all?(events, &(&1 in @handled_events))
@@ -1110,6 +1122,66 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       conn = get(conn, "/components")
 
       assert conn.status == 404
+    end
+  end
+
+  describe "proposals pages" do
+    # These pages are recommendations mocked in plain HTML. The assertions pin the
+    # demo containers each page promises, not the mockups' markup: a proposal's
+    # implementation is free to change, but a section silently vanishing is not.
+    test "improvements page renders the gap table", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/improvements")
+
+      assert has_element?(view, "#ds-page-improvements")
+      assert has_element?(view, "#ds-gaps-table")
+    end
+
+    test "content page renders the tables and wayfinding demos", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/content")
+
+      for id <-
+            ~w(ds-version-chip-demo ds-breadcrumb-demo ds-search-demo
+               ds-terminology-table ds-formats-table ds-microcopy-demo) do
+        assert has_element?(view, "##{id}")
+      end
+
+      assert has_element?(view, "#ds-breadcrumb-demo [aria-current='page']", "Platform A")
+    end
+
+    test "transit page renders every pattern demo", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/transit")
+
+      for id <-
+            ~w(ds-route-guard-demo ds-stop-sequence-demo ds-service-day-demo
+               ds-calendar-demo ds-tri-state-demo ds-pathway-demo ds-diff-demo
+               ds-severity-demo) do
+        assert has_element?(view, "##{id}")
+      end
+    end
+
+    test "service-day times keep the next-day marker", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/transit")
+
+      assert has_element?(view, "#ds-service-day-demo", "25:14:00")
+      assert has_element?(view, "#ds-service-day-demo", "+1")
+    end
+
+    test "proposal pages emit no untargeted events", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      for slug <- ~w(improvements content transit) do
+        {:ok, view, _html} = live(conn, ~p"/design/#{slug}")
+
+        assert untargeted_events(view, "#ds-page-#{slug}") == []
+      end
     end
   end
 

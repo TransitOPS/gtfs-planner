@@ -121,12 +121,24 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
   end
 
   describe "pagination/1" do
-    test "renders correct range with items" do
+    test "omits the noun when no entity is given" do
       assigns = %{page: 1, per_page: 10, total: 25}
 
       html =
         rendered_to_string(~H"""
         <.pagination page={@page} per_page={@per_page} total={@total} />
+        """)
+
+      assert html =~ "Showing 1–10 of 25"
+      refute html =~ "routes"
+    end
+
+    test "appends the entity noun when given" do
+      assigns = %{page: 1, per_page: 10, total: 25}
+
+      html =
+        rendered_to_string(~H"""
+        <.pagination page={@page} per_page={@per_page} total={@total} entity="routes" />
         """)
 
       assert html =~ "Showing 1–10 of 25 routes"
@@ -139,7 +151,7 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
 
       html =
         rendered_to_string(~H"""
-        <.pagination page={@page} per_page={@per_page} total={@total} />
+        <.pagination page={@page} per_page={@per_page} total={@total} entity="routes" />
         """)
 
       assert html =~ "Showing 11–20 of 25 routes"
@@ -150,7 +162,7 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
 
       html =
         rendered_to_string(~H"""
-        <.pagination page={@page} per_page={@per_page} total={@total} />
+        <.pagination page={@page} per_page={@per_page} total={@total} entity="routes" />
         """)
 
       assert html =~ "Showing 21–25 of 25 routes"
@@ -161,7 +173,7 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
 
       html =
         rendered_to_string(~H"""
-        <.pagination page={@page} per_page={@per_page} total={@total} />
+        <.pagination page={@page} per_page={@per_page} total={@total} entity="routes" />
         """)
 
       assert html =~ "Showing 0–0 of 0 routes"

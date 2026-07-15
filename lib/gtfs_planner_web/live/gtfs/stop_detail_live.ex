@@ -152,31 +152,27 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       <:sub_header>
         <%= if @station_editing_status do %>
           <div class="w-full px-4 sm:px-6 lg:px-8 pt-3">
-            <section
+            <.callout
+              kind="info"
               id="station-editing-status-banner"
               role="status"
-              class="border-l-4 border-info bg-info/10 px-4 py-3"
+              title={
+                if editing_status_owner?(@station_editing_status, @current_user),
+                  do: "You're editing this Station.",
+                  else: "#{@station_editing_status.user.email} is editing this Station."
+              }
             >
-              <div class="min-w-0">
-                <p class="text-sm font-semibold text-base-content">
-                  <%= if editing_status_owner?(@station_editing_status, @current_user) do %>
-                    You're editing this Station.
-                  <% else %>
-                    {@station_editing_status.user.email} is editing this Station.
-                  <% end %>
-                </p>
-                <p class="mt-1 text-sm text-base-content/70">
-                  <%= if editing_status_owner?(@station_editing_status, @current_user) do %>
-                    Others have been notified. Remember to clear this when you're done.
-                  <% else %>
-                    You can view it, but it's best to wait before making changes.
-                  <% end %>
-                </p>
-                <p class="mt-1 text-xs font-medium text-base-content/60">
-                  Started {relative_started_at(@station_editing_status.started_at)}
-                </p>
-              </div>
-            </section>
+              <p>
+                <%= if editing_status_owner?(@station_editing_status, @current_user) do %>
+                  Others have been notified. Remember to clear this when you're done.
+                <% else %>
+                  You can view it, but it's best to wait before making changes.
+                <% end %>
+              </p>
+              <p class="mt-1 text-xs font-medium text-base-content/60">
+                Started {relative_started_at(@station_editing_status.started_at)}
+              </p>
+            </.callout>
           </div>
         <% end %>
 

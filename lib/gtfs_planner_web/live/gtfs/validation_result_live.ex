@@ -191,9 +191,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
           <%!-- Status Badge --%>
           <div class="mt-6">
-            <div class={["badge badge-lg", status_badge_class(@run.status)]}>
-              {String.upcase(@run.status)}
-            </div>
+            <.status_badge status={@run.status} label={String.upcase(@run.status)} class="text-base" />
           </div>
 
           <%= cond do %>
@@ -419,12 +417,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                         <tr id={"pathways-case-row-#{row.order_index}"} class="bg-base-100">
                           <td class="font-mono text-xs">{row.walkability_test_id}</td>
                           <td>
-                            <span class={[
-                              "badge badge-sm",
-                              case_status_badge_class(pathways_case_display_status(row))
-                            ]}>
-                              {String.upcase(to_string(pathways_case_display_status(row)))}
-                            </span>
+                            <.status_badge
+                              status={pathways_case_display_status(row)}
+                              label={String.upcase(to_string(pathways_case_display_status(row)))}
+                            />
                           </td>
                           <td>
                             <ol class="list-decimal list-inside text-xs leading-5 space-y-0.5 marker:text-base-content/60">
@@ -665,12 +661,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                     />
                     <div class="collapse-title pr-12">
                       <div class="flex items-center gap-3">
-                        <div class={[
-                          "badge badge-sm font-semibold",
-                          severity_badge_class(notice_group["severity"])
-                        ]}>
-                          {String.upcase(notice_group["severity"])}
-                        </div>
+                        <.status_badge
+                          status={notice_group["severity"]}
+                          label={String.upcase(notice_group["severity"])}
+                        />
                         <span class="font-mono text-sm font-medium">{notice_group["code"]}</span>
                       </div>
                       <div class="mt-1 text-sm text-base-content/70 flex items-center gap-2 flex-wrap">
@@ -753,9 +747,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                     <div class="text-sm text-base-content/60">
                       {Calendar.strftime(run.started_at, "%Y-%m-%d %H:%M:%S")}
                     </div>
-                    <div class={["badge badge-sm", status_badge_class(run.status)]}>
-                      {run.status}
-                    </div>
+                    <.status_badge status={run.status} label={run.status} />
                   </div>
                   <%= if run.status == "completed" do %>
                     <div class="flex gap-4 text-xs">
@@ -1177,26 +1169,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp pathways_criteria_overview_kind(_criterion), do: "criterion"
 
-  defp severity_badge_class("error"), do: "badge-error"
-  defp severity_badge_class("warning"), do: "badge-warning"
-  defp severity_badge_class("info"), do: "badge-info"
-  defp severity_badge_class(_), do: "badge-ghost"
-
   defp severity_border_class("error"), do: "border-error"
   defp severity_border_class("warning"), do: "border-warning"
   defp severity_border_class("info"), do: "border-info"
   defp severity_border_class(_), do: "border-base-300"
-
-  defp status_badge_class("started"), do: "badge-neutral"
-  defp status_badge_class("running"), do: "badge-info"
-  defp status_badge_class("completed"), do: "badge-success badge-outline"
-  defp status_badge_class("failed"), do: "badge-error"
-  defp status_badge_class(_), do: "badge-ghost"
-
-  defp case_status_badge_class("pass"), do: "badge-success"
-  defp case_status_badge_class("warning"), do: "badge-warning"
-  defp case_status_badge_class("failed"), do: "badge-error"
-  defp case_status_badge_class(_), do: "badge-ghost"
 
   defp pathways_case_display_status(row) do
     mismatch_map = pathways_mismatch_map(row.details_json)

@@ -419,14 +419,17 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
 
       <h2 class="mt-8 text-lg font-semibold">Table</h2>
       <p class="mt-1 text-sm text-base-content/60">
-        Sample routes. Ids are right-aligned with tabular numerals so digits line up;
-        status carries text beside its color, never color alone.
+        Sample routes. The ID column passes <code class="font-mono text-sm">align="right"</code>,
+        which right-aligns the header and the cells together, and <code class="font-mono text-sm">sort="asc"</code>, which marks the sorted column
+        with <code class="font-mono text-sm">aria-sort</code>
+        and an arrow; tabular numerals keep the digits in line. Status carries text beside
+        its color, never color alone.
       </p>
 
       <div class="mt-3 border border-base-300">
         <.table id="ds-demo-table" rows={sample_routes()}>
-          <:col :let={route} label="ID">
-            <div class="text-right tabular-nums">{route.id}</div>
+          <:col :let={route} label="ID" align="right" sort="asc">
+            <span class="tabular-nums">{route.id}</span>
           </:col>
           <:col :let={route} label="Name">{route.name}</:col>
           <:col :let={route} label="Status">
@@ -447,7 +450,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           phx-no-curly-interpolation
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
-          &lt;.table id="routes" rows={@routes}&gt;&lt;:col :let={route} label="Name"&gt;{route.name}&lt;/:col&gt;&lt;/.table&gt;
+          &lt;:col :let={route} label="ID" align="right" sort="asc"&gt;{route.id}&lt;/:col&gt; · sort_event="sort_routes" sort_key="id" turns the header into a sort button
         </code>
       </p>
 
@@ -480,14 +483,14 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
 
       <div id="ds-pagination-demo" class="mt-3 border border-base-300 px-4">
-        <.pagination page={@pagination_page} per_page={10} total={45} />
+        <.pagination page={@pagination_page} per_page={10} total={45} entity="routes" />
       </div>
       <p class="mt-3">
         <code
           phx-no-curly-interpolation
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
-          &lt;.pagination page={@page} per_page={10} total={45} /&gt; · emits phx-click="paginate" with phx-value-page
+          &lt;.pagination page={@page} per_page={10} total={45} entity="routes" /&gt; · entity is the noun in the count · emits phx-click="paginate" with phx-value-page
         </code>
       </p>
 
@@ -510,16 +513,21 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         <li>
           <code class="font-mono text-sm">&lt;.pagination&gt;</code>
           hardcodes <code class="font-mono text-sm">phx-click="paginate"</code>
-          and counts in "routes". It needs a matching
+          and appends the optional <code class="font-mono text-sm">entity</code>
+          noun to the count. It needs a matching
           <code class="font-mono text-sm">handle_event("paginate", …)</code>
           that parses <code class="font-mono text-sm">phx-value-page</code>
           — it arrives as a string — and clamps it before assigning.
         </li>
         <li>
-          <code class="font-mono text-sm">&lt;.table&gt;</code>
-          renders each header as plain text from the <code class="font-mono text-sm">label</code>
-          attribute, so a header cannot carry its own alignment. Right-aligned numeric
-          columns keep their left-aligned header until the component grows the hook.
+          Align a column with <code class="font-mono text-sm">align="right"</code>, which
+          moves the header and its cells together — no separate wrapper needed. Mark a
+          sorted column with <code class="font-mono text-sm">sort="asc"</code>, <code class="font-mono text-sm">"desc"</code>, or
+          <code class="font-mono text-sm">"none"</code>
+          for the <code class="font-mono text-sm">aria-sort</code>
+          state and the arrow; add <code class="font-mono text-sm">sort_event</code>
+          and <code class="font-mono text-sm">sort_key</code>
+          to make the header an interactive sort button.
         </li>
       </ul>
     </section>
@@ -527,7 +535,13 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
   end
 
   @doc ~S"""
-  `<.flash>` examples for both kinds, and the LiveView loading variants.
+  `<.flash>` examples for both kinds, the LiveView loading variants, and the
+  `<.callout>`, `<.status_badge>`, `<.skeleton>`, and `<.empty_state>` components.
+
+  The four graduated components take literal values and emit no events, so they render
+  statically: every `<.callout>` kind, the full `<.status_badge>` vocabulary (including
+  the muted fallback an unknown status gets), a `<.skeleton>`, and both empty states —
+  first-use with a primary CTA and filtered-empty with a clear-search undo.
 
   Both flash examples pass inner-block content and an explicit `id`. The content is
   mandatory: `flash/1` renders only when a message resolves
@@ -621,11 +635,132 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </p>
 
+      <h2 class="mt-8 text-lg font-semibold">Callout</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        View-level state the user must not miss, in the flow of the page rather than a
+        toast that can be missed. Four kinds carry the state color on the left border
+        only; the title stays in <code class="font-mono text-sm">base-content</code>
+        so the message reads first and the color classifies it.
+      </p>
+
+      <div id="ds-callout-demo" class="mt-3 space-y-3 border border-base-300 p-4">
+        <.callout kind="info" title="Version 2026-01 is read-only">
+          Published versions cannot be edited. Clone it to make changes.
+        </.callout>
+        <.callout kind="success" title="Feed imported">
+          412 routes and 9,204 stops are ready to review.
+        </.callout>
+        <.callout kind="warning" title="3 stops have no coordinates">
+          They will not appear on the map. Fix them before publishing.
+        </.callout>
+        <.callout kind="error" title="Import failed">
+          The archive is missing stops.txt. Check the feed and try again.
+        </.callout>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.callout kind="warning" title="…"&gt;…&lt;/.callout&gt; · kind is info, success, warning, or error · state color on the border, title in base-content
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Status badge</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        One vocabulary for every status in the app: a colored dot beside a colored word,
+        never color alone. An unrecognized value renders muted rather than crashing, so a
+        new status never breaks a page.
+      </p>
+
+      <div id="ds-status-badge-demo" class="mt-3 flex flex-wrap gap-2 border border-base-300 p-4">
+        <.status_badge status={:pass} />
+        <.status_badge status={:completed} />
+        <.status_badge status={:running} />
+        <.status_badge status={:info} />
+        <.status_badge status={:warning} />
+        <.status_badge status={:failed} />
+        <.status_badge status={:error} />
+        <.status_badge status={:started} />
+        <.status_badge status={:draft} />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.status_badge status={run.status} /&gt; · pass and completed read success, failed and error read error, an unknown status falls back to muted · pass label="…" to override the word
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Skeleton</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        For the first paint of a slow view, never to replace content already on screen.
+        The bars mirror the table layout so nothing jumps when the rows arrive; they
+        animate only under <code class="font-mono text-sm">motion-safe:</code>
+        and a visually hidden live region announces the label.
+      </p>
+
+      <div id="ds-skeleton-demo" class="mt-3 border border-base-300 p-4">
+        <.skeleton rows={3} label="Loading routes" />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.skeleton rows={5} label="Loading routes" /&gt; · pass an inner block to mirror exact columns · label is announced, the bars are hidden from assistive tech
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Empty state</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        A data view that renders nothing is a bug, not a blank. First use and a
+        filtered-empty result are different states: first use names what belongs here and
+        offers the primary action; a filtered-empty repeats the query and offers the undo
+        of the filter.
+      </p>
+
+      <div id="ds-empty-demo" class="mt-3 grid gap-4 border border-base-300 p-4 sm:grid-cols-2">
+        <.empty_state title="No stations yet">
+          Stations appear here after you import a GTFS feed.
+          <:action>
+            <.button variant="primary">Import feed</.button>
+          </:action>
+        </.empty_state>
+        <.empty_state title="No stations match “harbor”">
+          Check the spelling or clear the search.
+          <:action>
+            <.button variant="secondary">Clear search</.button>
+          </:action>
+        </.empty_state>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.empty_state title="No stations yet"&gt;…&lt;:action&gt;&lt;.button&gt;Import feed&lt;/.button&gt;&lt;/:action&gt;&lt;/.empty_state&gt; · first use gets the primary CTA, filtered-empty gets clear search
+        </code>
+      </p>
+
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>
           Design every state, not just the ideal one: empty, loading, error, and partial
-          are the ones that get skipped.
+          are the ones that get skipped. <code class="font-mono text-sm">&lt;.empty_state&gt;</code>, <code class="font-mono text-sm">&lt;.skeleton&gt;</code>, and
+          <code class="font-mono text-sm">&lt;.callout&gt;</code>
+          cover the first three.
+        </li>
+        <li>
+          A callout is view-level state in the flow of the page; a toast is a background
+          outcome that scrolls away. Put a failure the user must act on in a callout, not
+          a flash they can miss.
+        </li>
+        <li>
+          Use <code class="font-mono text-sm">&lt;.status_badge&gt;</code>, not a bare
+          colored dot, for run and check status: the word survives a screenshot and a
+          colorblind reader, and one vocabulary keeps every status reading the same.
         </li>
         <li>
           Toasts are for background outcomes. A validation error belongs on the field, and
@@ -777,32 +912,40 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
   end
 
   @doc ~S"""
-  The `<.drawer>` component, closed by default and driven by the page's own events.
+  The `<.drawer>` and `<.confirm_dialog>` overlays.
 
-  The drawer is fixed-position and its overlay covers the viewport
-  (`core_components.ex:715-731`), so an open-by-default demo would bury the page
-  behind it. It renders with `open={@drawer_open}` instead, and the trigger,
-  the overlay, and the header close button push `open_drawer`/`close_drawer` —
-  all handled by `DesignSystemLive`, which owns the assign.
+  The drawer is fixed-position and its overlay covers the viewport, so an
+  open-by-default demo would bury the page behind it. It renders with
+  `open={@drawer_open}` instead, and the trigger, the overlay, and the header close
+  button push `open_drawer`/`close_drawer` — all handled by `DesignSystemLive`, which
+  owns the assign. `on_close` is left at its `"close_drawer"` default.
 
-  `on_close` is left at its `"close_drawer"` default (`core_components.ex:706`).
+  The confirm dialog is toggled entirely client-side: `show_confirm_dialog/2` on the
+  trigger, `hide_confirm_dialog/2` on Escape/Cancel/backdrop, and — for this demo only —
+  on the confirm button too, so the showcase pushes no server event. In a real call
+  site `on_confirm` carries the destructive event. Every `phx-click` it renders is an
+  encoded `JS` command, not an event name, so the page's server-event surface stays
+  `open_drawer`/`close_drawer`.
   """
   def overlays(assigns) do
     ~H"""
     <section id="ds-page-overlays" class="max-w-4xl">
       <h1 class="text-2xl font-bold">Overlays</h1>
       <p class="mt-2 text-base-content/70">
-        One overlay component. The drawer slides in from the right for editing a record
-        without losing the list behind it.
+        Two overlays. The drawer slides in from the right for editing a record without
+        losing the list behind it; the confirm dialog is a small modal that gates a
+        destructive action.
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Drawer</h2>
       <p class="mt-1 text-sm text-base-content/60">
         The drawer is fixed to the viewport and dims the page behind it, so this demo
         starts closed — open it to see the real component. It closes on the header
-        button or on a click outside, both of which push
+        button, a click outside, or the Escape key, all of which push
         <code class="font-mono text-sm">on_close</code>
-        back to the LiveView that owns the open state.
+        back to the LiveView that owns the open state. While it is open the
+        <code class="font-mono text-sm">DrawerFocus</code>
+        hook traps Tab inside the panel and restores focus to the opener on close.
       </p>
 
       <div id="ds-drawer-demo" class="mt-3 border border-base-300 p-4">
@@ -828,6 +971,37 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </p>
 
+      <h2 class="mt-8 text-lg font-semibold">Confirm dialog</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        A focused modal for a destructive action. It states the consequence with real
+        numbers, repeats verb + object on the confirm button, and lands focus on Cancel.
+        Escape, the backdrop, and Cancel all close it. Toggling is client-side, so this
+        demo opens without a round trip; in the app <code class="font-mono text-sm">on_confirm</code>
+        carries the delete event.
+      </p>
+
+      <div id="ds-confirm-demo" class="mt-3 border border-base-300 p-4">
+        <.button variant="danger" phx-click={show_confirm_dialog("ds-demo-confirm")}>
+          Delete route
+        </.button>
+        <.confirm_dialog
+          id="ds-demo-confirm"
+          title="Delete route 42?"
+          confirm_label="Delete route"
+          on_confirm={hide_confirm_dialog("ds-demo-confirm")}
+        >
+          This removes the route and its 214 trips from version 2026-01. It cannot be undone.
+        </.confirm_dialog>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.button phx-click={show_confirm_dialog("delete-route")}&gt;Delete route&lt;/.button&gt; · &lt;.confirm_dialog id="delete-route" confirm_label="Delete route" on_confirm="delete_route"&gt;…&lt;/.confirm_dialog&gt;
+        </code>
+      </p>
+
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>
@@ -841,12 +1015,18 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           list. When it does not, a full page is simpler and links better.
         </li>
         <li>
-          The overlay click and the close button are the only close paths. There is no
-          Escape binding, so do not tell users there is one.
+          The drawer closes on the overlay click, the close button, or Escape, and traps
+          focus while open — the <code class="font-mono text-sm">DrawerFocus</code>
+          hook owns both. A confirm dialog closes the same three ways.
         </li>
         <li>
-          Keep the title a noun phrase naming the record being edited, not the verb:
-          "Edit user" is the button, "User" is the drawer.
+          Keep the drawer title a noun phrase naming the record being edited, not the
+          verb: "Edit user" is the button, "User" is the drawer.
+        </li>
+        <li>
+          Reach for a confirm dialog only when the action is irreversible. When it can be
+          undone, act immediately and offer undo instead of asking first. State the
+          consequence with real numbers and repeat verb + object on the confirm button.
         </li>
       </ul>
     </section>

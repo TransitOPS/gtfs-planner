@@ -922,12 +922,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               </div>
 
               <%= if @diff_parse_errors != [] do %>
-                <div class="rounded-lg border border-warning/30 bg-warning/10 p-4">
-                  <h3 class="font-semibold text-sm mb-2">Parse Errors</h3>
+                <.callout kind="warning" title="Parse Errors">
                   <div class="space-y-1 text-xs">
                     <p :for={error <- @diff_parse_errors}>{format_diff_parse_error(error)}</p>
                   </div>
-                </div>
+                </.callout>
               <% end %>
 
               <%!-- Decision table --%>

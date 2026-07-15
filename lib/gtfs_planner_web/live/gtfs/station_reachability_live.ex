@@ -414,12 +414,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
                         {pathways_case_description(row)}
                       </td>
                       <td class="px-3 py-2">
-                        <span class={[
-                          "badge badge-sm",
-                          case_status_badge_class(pathways_case_display_status(row))
-                        ]}>
-                          {String.upcase(to_string(pathways_case_display_status(row)))}
-                        </span>
+                        <.status_badge
+                          status={pathways_case_display_status(row)}
+                          label={String.upcase(to_string(pathways_case_display_status(row)))}
+                        />
                       </td>
                       <td class="px-3 py-2 text-gray-700">{List.first(pathways_case_issues(row))}</td>
                       <td class="px-3 py-2 font-mono tabular-nums text-gray-700">
@@ -1176,11 +1174,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   end
 
   defp pathways_case_description(_row), do: "—"
-
-  defp case_status_badge_class("pass"), do: "badge-success"
-  defp case_status_badge_class("warning"), do: "badge-warning"
-  defp case_status_badge_class("failed"), do: "badge-error"
-  defp case_status_badge_class(_status), do: "badge-ghost"
 
   defp format_pathways_distance(nil), do: "-"
 
