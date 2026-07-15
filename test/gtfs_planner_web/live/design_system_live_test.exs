@@ -17,6 +17,21 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     hero-user-group hero-chevron-left hero-exclamation-circle
   )
 
+  @button_combos for variant <- ~w(primary secondary quiet danger),
+                     size <- ~w(sm md lg),
+                     do: {variant, size}
+
+  # Pinned independently of core_components.ex: the mapping is the contract the
+  # buttons page documents, so the test must fail if either side drifts.
+  @variant_classes %{
+    "primary" => "btn-primary",
+    "secondary" => "btn-outline",
+    "quiet" => "btn-ghost",
+    "danger" => "btn-error"
+  }
+
+  @size_classes %{"sm" => "btn-sm", "md" => nil, "lg" => "btn-lg"}
+
   setup do
     %{user: user_fixture()}
   end
@@ -170,6 +185,105 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       {:ok, view, _html} = live(conn, ~p"/design/icons")
 
       assert has_element?(view, "#ds-page-icons", "size-4")
+    end
+  end
+
+  describe "buttons page" do
+    for {variant, size} <- @button_combos do
+      variant_class = @variant_classes[variant]
+      size_class = @size_classes[size]
+
+      selector =
+        "#ds-page-buttons button.btn." <>
+          variant_class <> if(size_class, do: "." <> size_class, else: "")
+
+      label = "#{variant} / #{size}"
+
+      test "renders the #{label} combination with its daisyUI classes", %{conn: conn, user: user} do
+        conn = log_in_user(conn, user)
+
+        {:ok, view, _html} = live(conn, ~p"/design/buttons")
+
+        assert has_element?(view, unquote(selector), unquote(label))
+      end
+    end
+
+    test "renders a disabled button example", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/buttons")
+
+      assert has_element?(view, "#ds-page-buttons button.btn[disabled]")
+    end
+
+    test "renders a button with an icon beside its label", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/buttons")
+
+      assert has_element?(view, "#ds-page-buttons button.btn span.hero-arrow-path")
+    end
+
+    test "captions each group with the call that produces it", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/buttons")
+
+      assert has_element?(view, "#ds-page-buttons .ds-code-caption", ~s(variant="primary"))
+      assert has_element?(view, "#ds-page-buttons .ds-code-caption", ~s(variant="danger"))
+    end
+  end
+
+  describe "badges page" do
+    test "renders at least three route badges", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/badges")
+
+      badges =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query(~s(#ds-page-badges span[style^="background-color:"]))
+        |> Enum.count()
+
+      assert badges >= 3
+    end
+
+    test "applies each sample route's colors to its badge", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/badges")
+
+      assert has_element?(
+               view,
+               ~s(#ds-page-badges span[style="background-color: #D32F2F; color: #FFFFFF"]),
+               "42"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#ds-page-badges span[style="background-color: #1976D2; color: #FFFFFF"]),
+               "A"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#ds-page-badges span[style="background-color: #43A047; color: #000000"]),
+               "7X"
+             )
+    end
+
+    test "falls back to an em dash for a route with no short name", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/badges")
+
+      assert has_element?(
+               view,
+               ~s(#ds-page-badges span[style="background-color: #9E9E9E; color: #FFFFFF"]),
+               "—"
+             )
     end
   end
 

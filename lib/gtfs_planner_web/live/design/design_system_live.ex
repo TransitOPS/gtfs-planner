@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlannerWeb.Design.ComponentPages
   alias GtfsPlannerWeb.Design.FoundationPages
 
   @pages [
@@ -111,7 +112,11 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
 
   defp page_body(%{page: %{slug: "icons"}} = assigns), do: FoundationPages.icons(assigns)
 
-  # Temporary catch-all placeholder. Steps 3-8 replace it with one dispatch clause
+  defp page_body(%{page: %{slug: "buttons"}} = assigns), do: ComponentPages.buttons(assigns)
+
+  defp page_body(%{page: %{slug: "badges"}} = assigns), do: ComponentPages.badges(assigns)
+
+  # Temporary catch-all placeholder. Steps 4-8 replace it with one dispatch clause
   # per slug and remove this clause, so an unregistered slug becomes a
   # compile-visible gap.
   defp page_body(assigns) do
