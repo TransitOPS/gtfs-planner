@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Design.ComponentPages do
   @moduledoc ~S"""
-  Components pages for the `/design` section: buttons and badges.
+  Components pages for the `/design` section: buttons, inputs & forms, and badges.
 
   Every Tailwind/daisyUI class here is a literal string. Tailwind v4 scans source
   text, so an interpolated class name (`"btn-#{variant}"`) compiles but is silently
@@ -152,6 +152,139 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           <code class="font-mono text-sm">href</code>
           renders an anchor instead of a button — use it for navigation, not for actions.
         </li>
+      </ul>
+    </section>
+    """
+  end
+
+  @doc """
+  The `<.input>` clauses, `<.checkbox_group>`, and a `<.simple_form>` with an error example.
+
+  The error example passes `errors={["can't be blank"]}` explicitly. Field-derived
+  errors cannot be shown here: `input/1` gates them behind
+  `Phoenix.Component.used_input?/1`, which is false for every field on a form the
+  user has not touched, so a changeset with errors would still render clean. It also
+  needs its own `id` — it reuses the `:name` field, and two inputs from one field
+  would otherwise emit duplicate DOM ids.
+  """
+  def inputs(assigns) do
+    ~H"""
+    <section id="ds-page-inputs" class="max-w-4xl">
+      <h1 class="text-2xl font-bold">Inputs &amp; Forms</h1>
+      <p class="mt-2 text-base-content/70">
+        <code class="font-mono text-sm">&lt;.input&gt;</code>
+        is the only way to render a form field in this app. It owns the label, the help
+        text, the error, and the daisyUI classes, so a hand-rolled
+        <code class="font-mono text-sm">&lt;input&gt;</code>
+        drifts from every other form. Pass it a <code class="font-mono text-sm">field</code>
+        from a form and a <code class="font-mono text-sm">type</code>.
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">The clauses</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        One live form, one column, labels above fields. The form below submits to a
+        no-op handler — it is a demo, not a real record.
+      </p>
+
+      <div class="mt-3 border border-base-300 p-4">
+        <.simple_form
+          for={@demo_form}
+          id="ds-inputs-demo-form"
+          phx-submit="demo_form_submit"
+          class="max-w-xl"
+        >
+          <.input
+            field={@demo_form[:name]}
+            type="text"
+            label="Name"
+            help="Help text sits under the field and is wired to it with aria-describedby."
+          />
+          <.input
+            field={@demo_form[:kind]}
+            type="select"
+            label="Kind"
+            prompt="Choose a kind"
+            options={[Bus: "bus", Rail: "rail"]}
+            help="A prompt gives the empty value a name instead of a blank first row."
+          />
+          <.input field={@demo_form[:notes]} type="textarea" label="Notes" />
+          <.input field={@demo_form[:active]} type="checkbox" label="Active" />
+          <:actions>
+            <.button variant="primary">Save changes</.button>
+          </:actions>
+        </.simple_form>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.input field={@form[:name]} type="text" label="Name" help="…" /&gt; · types: text, select, textarea, checkbox
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Error state</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        The field turns <code class="font-mono text-sm">input-error</code>
+        and the message renders below it. Say what to do, not just what broke.
+      </p>
+      <div class="mt-3 max-w-xl border border-base-300 p-4">
+        <.input
+          field={@demo_form[:name]}
+          type="text"
+          label="Name (error state)"
+          id="demo_name_error"
+          errors={["can't be blank"]}
+        />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.input … id="demo_name_error" errors={["can't be blank"]} /&gt; · explicit errors always render
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Checkbox group</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        A fieldset with a legend for multi-select options. It takes a bare
+        <code class="font-mono text-sm">name</code>
+        and a selected list, not a form field.
+      </p>
+      <div class="mt-3 max-w-xl border border-base-300 p-4">
+        <.checkbox_group
+          name="demo[roles][]"
+          label="Roles"
+          options={[{"Admin", "admin"}, {"Editor", "editor"}]}
+          selected={["admin"]}
+          help="The name ends in [] so the params arrive as a list."
+        />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.checkbox_group name="demo[roles][]" label="Roles" options={[{"Admin", "admin"}]} selected={@roles} /&gt;
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Use</h2>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
+        <li>Every field is a cost. Remove it before you design it.</li>
+        <li>One column, labels above fields. Placeholders are hints, never labels.</li>
+        <li>
+          Errors follow interaction: <code class="font-mono text-sm">&lt;.input&gt;</code>
+          hides field errors until the input is used, so an untouched form is never
+          pre-reddened. Pass <code class="font-mono text-sm">errors</code>
+          explicitly only to document the state, as above.
+        </li>
+        <li>
+          Mark optional fields rather than required ones, and never signal either with
+          color alone.
+        </li>
+        <li>One primary action per form. Do not disable submit to hide errors.</li>
       </ul>
     </section>
     """

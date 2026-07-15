@@ -287,6 +287,122 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     end
   end
 
+  describe "inputs page" do
+    test "renders text, select, textarea, and checkbox inputs inside the demo form", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/inputs")
+
+      assert has_element?(view, ~s(#ds-inputs-demo-form input#demo_name[type="text"]))
+      assert has_element?(view, "#ds-inputs-demo-form select#demo_kind")
+      assert has_element?(view, "#ds-inputs-demo-form textarea#demo_notes")
+      assert has_element?(view, ~s(#ds-inputs-demo-form input#demo_active[type="checkbox"]))
+    end
+
+    test "names each demo input under the demo form scope", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/inputs")
+
+      assert has_element?(view, ~s(#ds-inputs-demo-form input[name="demo[name]"]))
+      assert has_element?(view, ~s(#ds-inputs-demo-form select[name="demo[kind]"]))
+      assert has_element?(view, ~s(#ds-inputs-demo-form textarea[name="demo[notes]"]))
+    end
+
+    test "renders the select prompt and both options", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/inputs")
+
+      assert has_element?(view, ~s(#demo_kind option[value="bus"]), "Bus")
+      assert has_element?(view, ~s(#demo_kind option[value="rail"]), "Rail")
+    end
+
+    test "carries exactly one form on the page and it is the demo form", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/inputs")
+
+      forms =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#ds-page-inputs form")
+
+      assert Enum.count(forms) == 1
+      assert forms |> LazyHTML.attribute("id") == ["ds-inputs-demo-form"]
+    end
+
+    test "renders the checkbox_group fieldset with its legend and options", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/inputs")
+
+      assert has_element?(view, "#ds-page-inputs fieldset legend", "Roles")
+
+      assert has_element?(
+               view,
+               ~s(#ds-page-inputs fieldset input[type="checkbox"][value="admin"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#ds-page-inputs fieldset input[type="checkbox"][value="editor"])
+             )
+    end
+
+    test "renders the forced error message on the error-state input", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/inputs")
+
+      assert has_element?(view, "#ds-page-inputs p.text-error", "can't be blank")
+      assert has_element?(view, "#ds-page-inputs input#demo_name_error.input-error")
+    end
+
+    # The error example reuses the :name field, so it must carry a distinct id or the
+    # page would emit two elements with id="demo_name".
+    test "gives the error-state input a distinct id from the plain name input", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/inputs")
+
+      ids =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#ds-page-inputs [id]")
+        |> LazyHTML.attribute("id")
+
+      assert Enum.count(ids, &(&1 == "demo_name")) == 1
+      assert Enum.count(ids, &(&1 == "demo_name_error")) == 1
+      assert ids == Enum.uniq(ids)
+    end
+
+    # INV-4: an unhandled phx-* event from a demo crashes the LiveView for every page.
+    test "submitting the demo form does not crash the LiveView", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/inputs")
+
+      view
+      |> form("#ds-inputs-demo-form", demo: %{name: "Route 42", kind: "bus", notes: "hello"})
+      |> render_submit()
+
+      assert has_element?(view, "#ds-page-inputs")
+      assert has_element?(view, "#ds-inputs-demo-form")
+    end
+  end
+
   describe "page bodies" do
     for %{slug: slug, title: title} <- GtfsPlannerWeb.Design.DesignSystemLive.pages() do
       test "renders the #{slug} page body", %{conn: conn, user: user} do

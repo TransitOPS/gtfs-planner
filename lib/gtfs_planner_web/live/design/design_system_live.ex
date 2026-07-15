@@ -35,7 +35,15 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, :page, hd(@pages))}
+    {:ok,
+     socket
+     |> assign(:page, hd(@pages))
+     |> assign(:demo_form, demo_form())}
+  end
+
+  # Demo state for every page lives here, in the LiveView that owns the events.
+  defp demo_form do
+    to_form(%{"name" => "", "kind" => "", "notes" => "", "active" => "false"}, as: :demo)
   end
 
   @impl true
@@ -54,6 +62,15 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
          |> assign(:page, page)
          |> assign(:page_title, page.title <> " · Design System")}
     end
+  end
+
+  # The inputs page's demo form is a showcase, not a record: it validates nothing and
+  # persists nothing. The clause exists because a `phx-submit` with no handler would
+  # crash the LiveView, and without `phx-submit` the browser would issue a full-page
+  # POST and leave the section.
+  @impl true
+  def handle_event("demo_form_submit", _params, socket) do
+    {:noreply, socket}
   end
 
   @impl true
@@ -114,9 +131,11 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
 
   defp page_body(%{page: %{slug: "buttons"}} = assigns), do: ComponentPages.buttons(assigns)
 
+  defp page_body(%{page: %{slug: "inputs"}} = assigns), do: ComponentPages.inputs(assigns)
+
   defp page_body(%{page: %{slug: "badges"}} = assigns), do: ComponentPages.badges(assigns)
 
-  # Temporary catch-all placeholder. Steps 4-8 replace it with one dispatch clause
+  # Temporary catch-all placeholder. Steps 5-8 replace it with one dispatch clause
   # per slug and remove this clause, so an unregistered slug becomes a
   # compile-visible gap.
   defp page_body(assigns) do
