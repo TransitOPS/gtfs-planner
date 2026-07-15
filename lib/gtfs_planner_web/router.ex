@@ -78,6 +78,8 @@ defmodule GtfsPlannerWeb.Router do
       live "/", DashboardLive, :index
       live "/users/settings", UserSettingsLive, :edit
       live "/components", ComponentsLive, :index
+      live "/design", Design.DesignSystemLive, :index
+      live "/design/:page", Design.DesignSystemLive, :show
     end
   end
 
