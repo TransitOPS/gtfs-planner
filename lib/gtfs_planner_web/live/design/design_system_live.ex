@@ -38,7 +38,8 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
     {:ok,
      socket
      |> assign(:page, hd(@pages))
-     |> assign(:demo_form, demo_form())}
+     |> assign(:demo_form, demo_form())
+     |> assign(:pagination_page, 1)}
   end
 
   # Demo state for every page lives here, in the LiveView that owns the events.
@@ -71,6 +72,29 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   @impl true
   def handle_event("demo_form_submit", _params, socket) do
     {:noreply, socket}
+  end
+
+  # The tables page's `<.pagination>` demo. The component hardcodes the event name
+  # (`core_components.ex:584`), so this clause name is not negotiable, and it sends
+  # `phx-value-page` as a string. The demo range is the `total={45}` / `per_page={10}`
+  # rendered by `ComponentPages.tables/1` — 5 pages.
+  def handle_event("paginate", %{"page" => page}, socket) do
+    {:noreply, assign(socket, :pagination_page, clamp_page(page))}
+  end
+
+  @pagination_last_page 5
+
+  # Clamped rather than trusted: the page value arrives from the client, and an
+  # out-of-range page would render a nonsense count ("Showing 91–100 of 45"). Parsing
+  # leniently keeps a malformed value from crashing the LiveView for every page.
+  defp clamp_page(page) when is_integer(page),
+    do: page |> max(1) |> min(@pagination_last_page)
+
+  defp clamp_page(page) when is_binary(page) do
+    case Integer.parse(page) do
+      {number, _rest} -> clamp_page(number)
+      :error -> 1
+    end
   end
 
   @impl true
@@ -135,7 +159,9 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
 
   defp page_body(%{page: %{slug: "badges"}} = assigns), do: ComponentPages.badges(assigns)
 
-  # Temporary catch-all placeholder. Steps 5-8 replace it with one dispatch clause
+  defp page_body(%{page: %{slug: "tables"}} = assigns), do: ComponentPages.tables(assigns)
+
+  # Temporary catch-all placeholder. Steps 6-8 replace it with one dispatch clause
   # per slug and remove this clause, so an unregistered slug becomes a
   # compile-visible gap.
   defp page_body(assigns) do

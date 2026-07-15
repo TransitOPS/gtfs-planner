@@ -1,6 +1,7 @@
 defmodule GtfsPlannerWeb.Design.ComponentPages do
   @moduledoc ~S"""
-  Components pages for the `/design` section: buttons, inputs & forms, and badges.
+  Components pages for the `/design` section: buttons, inputs & forms, badges, and
+  tables & lists.
 
   Every Tailwind/daisyUI class here is a literal string. Tailwind v4 scans source
   text, so an interpolated class name (`"btn-#{variant}"`) compiles but is silently
@@ -393,4 +394,152 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
     </section>
     """
   end
+
+  @doc """
+  `<.table>` over static sample routes, `<.list>` definition pairs, and a live
+  `<.pagination>` demo.
+
+  The pagination demo is driven by the `:pagination_page` assign and emits the
+  `paginate` event that `DesignSystemLive` handles; `<.pagination>` hardcodes both the
+  event name and `phx-value-page` (`core_components.ex:584-585`), so the demo range
+  here (`total={45}`, `per_page={10}` → 5 pages) must stay in step with the clamp in
+  `DesignSystemLive.handle_event("paginate", ...)`. A test pins the two together.
+  """
+  def tables(assigns) do
+    ~H"""
+    <section id="ds-page-tables" class="max-w-4xl">
+      <h1 class="text-2xl font-bold">Tables &amp; Lists</h1>
+      <p class="mt-2 text-base-content/70">
+        A table exists to find, compare, or act — not to store everything known about a
+        record. <code class="font-mono text-sm">&lt;.table&gt;</code>
+        takes an <code class="font-mono text-sm">id</code>, a list of <code class="font-mono text-sm">rows</code>, and one
+        <code class="font-mono text-sm">&lt;:col&gt;</code>
+        slot per column. Rows can be a plain list, as below, or a LiveView stream.
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Table</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Sample routes. Ids are right-aligned with tabular numerals so digits line up;
+        status carries text beside its color, never color alone.
+      </p>
+
+      <div class="mt-3 border border-base-300">
+        <.table id="ds-demo-table" rows={sample_routes()}>
+          <:col :let={route} label="ID">
+            <div class="text-right tabular-nums">{route.id}</div>
+          </:col>
+          <:col :let={route} label="Name">{route.name}</:col>
+          <:col :let={route} label="Status">
+            <span class={["inline-flex items-center gap-1.5", status_class(route.status)]}>
+              <span class="size-1.5 rounded-full bg-current" aria-hidden="true"></span>
+              {route.status}
+            </span>
+          </:col>
+          <:action :let={route}>
+            <.button variant="quiet" size="sm" aria-label={"Edit route #{route.name}"}>
+              Edit
+            </.button>
+          </:action>
+        </.table>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.table id="routes" rows={@routes}&gt;&lt;:col :let={route} label="Name"&gt;{route.name}&lt;/:col&gt;&lt;/.table&gt;
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">List</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Definition pairs for one record. Use it where a table would have one row and
+        the columns would read better stacked.
+      </p>
+
+      <div class="mt-3 border border-base-300 px-4">
+        <.list>
+          <:item title="Route">42 · Airport Express</:item>
+          <:item title="Agency">Metro Transit</:item>
+          <:item title="Last updated">2026-07-14</:item>
+        </.list>
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.list&gt;&lt;:item title="Route"&gt;{@route.name}&lt;/:item&gt;&lt;/.list&gt;
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Pagination</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Live: the buttons below move a real assign. Previous and Next disable at the
+        ends of the range rather than disappearing, so the controls never shift position.
+      </p>
+
+      <div id="ds-pagination-demo" class="mt-3 border border-base-300 px-4">
+        <.pagination page={@pagination_page} per_page={10} total={45} />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.pagination page={@page} per_page={10} total={45} /&gt; · emits phx-click="paginate" with phx-value-page
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Use</h2>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
+        <li>
+          Every column is a cost. If a column is never used to find, compare, or act,
+          delete it or fold it into a subtitle under the primary identifier.
+        </li>
+        <li>Text left, numbers right. Tabular numerals keep digits in a column.</li>
+        <li>
+          Status is color plus text. Color alone fails for colorblind users and
+          disappears in a screenshot.
+        </li>
+        <li>
+          One or two inline actions per row; three or more belong in a menu. Repeat the
+          row's identity in the action's <code class="font-mono text-sm">aria-label</code>
+          so "Edit" is not the only thing announced.
+        </li>
+        <li>
+          <code class="font-mono text-sm">&lt;.pagination&gt;</code>
+          hardcodes <code class="font-mono text-sm">phx-click="paginate"</code>
+          and counts in "routes". It needs a matching
+          <code class="font-mono text-sm">handle_event("paginate", …)</code>
+          that parses <code class="font-mono text-sm">phx-value-page</code>
+          — it arrives as a string — and clamps it before assigning.
+        </li>
+        <li>
+          <code class="font-mono text-sm">&lt;.table&gt;</code>
+          renders each header as plain text from the <code class="font-mono text-sm">label</code>
+          attribute, so a header cannot carry its own alignment. Right-aligned numeric
+          columns keep their left-aligned header until the component grows the hook.
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  # Static demo data. A design system page shows the component, so these rows are
+  # literals rather than a query: the page must render identically on an empty database.
+  defp sample_routes do
+    [
+      %{id: "7", name: "Crosstown Local", status: "Active"},
+      %{id: "42", name: "Airport Express", status: "Active"},
+      %{id: "108", name: "Night Owl", status: "Suspended"},
+      %{id: "231", name: "Harbor Shuttle", status: "Draft"}
+    ]
+  end
+
+  # Literal class strings, selected rather than built: Tailwind v4 scans source text,
+  # so "text-#{tone}" would compile and then be missing from the bundle.
+  defp status_class("Active"), do: "text-success"
+  defp status_class("Suspended"), do: "text-warning"
+  defp status_class("Draft"), do: "text-base-content/60"
 end

@@ -32,6 +32,15 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
   @size_classes %{"sm" => "btn-sm", "md" => nil, "lg" => "btn-lg"}
 
+  # The demo route rows the tables page renders. Pinned here so the page cannot
+  # quietly lose a row.
+  @sample_route_rows [
+    {"7", "Crosstown Local", "Active"},
+    {"42", "Airport Express", "Active"},
+    {"108", "Night Owl", "Suspended"},
+    {"231", "Harbor Shuttle", "Draft"}
+  ]
+
   setup do
     %{user: user_fixture()}
   end
@@ -400,6 +409,181 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       assert has_element?(view, "#ds-page-inputs")
       assert has_element?(view, "#ds-inputs-demo-form")
+    end
+  end
+
+  describe "tables page" do
+    for {id, name, status} <- @sample_route_rows do
+      test "renders the #{name} sample row", %{conn: conn, user: user} do
+        conn = log_in_user(conn, user)
+
+        {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+        row =
+          view
+          |> render()
+          |> LazyHTML.from_fragment()
+          |> LazyHTML.query("#ds-demo-table tr")
+          |> Enum.map(&LazyHTML.text/1)
+          |> Enum.find(&String.contains?(&1, unquote(name)))
+
+        assert row, "no row containing #{unquote(name)}"
+        assert String.contains?(row, unquote(id))
+        assert String.contains?(row, unquote(status))
+      end
+    end
+
+    test "renders exactly the sample rows in a real table body", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      assert has_element?(view, "#ds-page-tables table.table tbody#ds-demo-table")
+
+      rows =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#ds-demo-table tr")
+
+      assert Enum.count(rows) == length(@sample_route_rows)
+    end
+
+    test "labels every column header, including the screen-reader action header", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      headers =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#ds-page-tables table.table thead th")
+        |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
+
+      assert headers == ["ID", "Name", "Status", "Actions"]
+    end
+
+    # table-row-design.md: numbers right-aligned with tabular numerals so digits line up.
+    test "right-aligns the numeric id column with tabular numerals", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      assert has_element?(view, "#ds-demo-table td div.text-right.tabular-nums", "108")
+    end
+
+    # table-row-design.md: status is colour + text, never colour alone.
+    test "pairs each status colour with its status text", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      assert has_element?(view, "#ds-demo-table td span.text-success", "Active")
+      assert has_element?(view, "#ds-demo-table td span.text-warning", "Suspended")
+    end
+
+    test "renders the definition list as a real ul.list of titled pairs", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      assert has_element?(view, "#ds-page-tables ul.list")
+
+      items =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#ds-page-tables ul.list li.list-row")
+
+      assert Enum.count(items) == 3
+    end
+
+    test "shows the initial pagination range", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      assert has_element?(view, "#ds-pagination-demo", "Showing 1–10 of 45")
+    end
+
+    test "disables Previous on the first page and leaves Next clickable", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      assert has_element?(view, "#ds-pagination-demo button[disabled]", "Previous")
+      refute has_element?(view, "#ds-pagination-demo button[disabled]", "Next")
+    end
+
+    # Drives the real DOM contract: <.pagination> hardcodes phx-click="paginate" and
+    # sends phx-value-page as a string.
+    test "advances the range when Next is clicked", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      view
+      |> element("#ds-pagination-demo button", "Next")
+      |> render_click()
+
+      assert has_element?(view, "#ds-pagination-demo", "Showing 11–20 of 45")
+      refute has_element?(view, "#ds-pagination-demo button[disabled]", "Previous")
+    end
+
+    test "steps back to the first page when Previous is clicked", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      view |> element("#ds-pagination-demo button", "Next") |> render_click()
+      view |> element("#ds-pagination-demo button", "Previous") |> render_click()
+
+      assert has_element?(view, "#ds-pagination-demo", "Showing 1–10 of 45")
+    end
+
+    # The clamp ceiling in DesignSystemLive and the total/per_page rendered by the page
+    # are declared in different modules; this pins them to the same demo range.
+    test "clamps a page above the demo range to the last page", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      render_click(view, "paginate", %{"page" => "99"})
+
+      assert has_element?(view, "#ds-pagination-demo", "Showing 41–45 of 45")
+      assert has_element?(view, "#ds-pagination-demo button[disabled]", "Next")
+    end
+
+    test "clamps a page below the first page to page one", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      render_click(view, "paginate", %{"page" => "0"})
+
+      assert has_element?(view, "#ds-pagination-demo", "Showing 1–10 of 45")
+    end
+
+    # INV-4: a demo event must never crash the LiveView, including for a page value no
+    # <.pagination> button would emit.
+    test "falls back to the first page for a non-numeric page value", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/tables")
+
+      render_click(view, "paginate", %{"page" => "not-a-page"})
+
+      assert has_element?(view, "#ds-pagination-demo", "Showing 1–10 of 45")
     end
   end
 
