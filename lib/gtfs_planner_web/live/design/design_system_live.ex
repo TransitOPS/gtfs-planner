@@ -9,6 +9,8 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlannerWeb.Design.FoundationPages
+
   @pages [
     %{slug: "introduction", title: "Introduction", group: "Foundations"},
     %{slug: "colors", title: "Colors", group: "Foundations"},
@@ -99,7 +101,17 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
     |> Enum.map(&{&1, grouped[&1]})
   end
 
-  # Temporary catch-all placeholder. Steps 2-8 replace it with one dispatch clause
+  defp page_body(%{page: %{slug: "introduction"}} = assigns),
+    do: FoundationPages.introduction(assigns)
+
+  defp page_body(%{page: %{slug: "colors"}} = assigns), do: FoundationPages.colors(assigns)
+
+  defp page_body(%{page: %{slug: "typography"}} = assigns),
+    do: FoundationPages.typography(assigns)
+
+  defp page_body(%{page: %{slug: "icons"}} = assigns), do: FoundationPages.icons(assigns)
+
+  # Temporary catch-all placeholder. Steps 3-8 replace it with one dispatch clause
   # per slug and remove this clause, so an unregistered slug becomes a
   # compile-visible gap.
   defp page_body(assigns) do

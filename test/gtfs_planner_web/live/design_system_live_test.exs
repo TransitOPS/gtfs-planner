@@ -6,6 +6,17 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
   alias GtfsPlannerWeb.Design.DesignSystemLive
 
+  @color_tokens ~w(
+    primary secondary accent neutral
+    base-100 base-200 base-300
+    info success warning error
+  )
+
+  @icon_names ~w(
+    hero-x-mark hero-map-pin hero-arrow-path
+    hero-user-group hero-chevron-left hero-exclamation-circle
+  )
+
   setup do
     %{user: user_fixture()}
   end
@@ -81,6 +92,84 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       {:ok, view, _html} = conn |> live(~p"/design/does-not-exist") |> follow_redirect(conn)
 
       assert has_element?(view, "#design-page-content #ds-page-introduction")
+    end
+  end
+
+  describe "colors page" do
+    for token <- @color_tokens do
+      test "renders a #{token} swatch labeled with its class name", %{conn: conn, user: user} do
+        conn = log_in_user(conn, user)
+
+        {:ok, view, _html} = live(conn, ~p"/design/colors")
+
+        assert has_element?(view, "#ds-page-colors .ds-swatch.bg-#{unquote(token)}")
+        assert has_element?(view, "#ds-page-colors .ds-swatch-label", "bg-#{unquote(token)}")
+      end
+    end
+
+    test "notes the primary-content white override", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/colors")
+
+      assert has_element?(view, "#ds-page-colors", "--color-primary-content")
+    end
+  end
+
+  describe "typography page" do
+    test "names the Inter typeface", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/typography")
+
+      assert has_element?(view, "#ds-page-typography", "Inter")
+    end
+
+    test "renders heading, body, and mono scale samples", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/typography")
+
+      assert has_element?(view, "#ds-page-typography .ds-type-sample.text-2xl.font-bold")
+      assert has_element?(view, "#ds-page-typography .ds-type-sample.text-xl.font-semibold")
+      assert has_element?(view, "#ds-page-typography .ds-type-sample.text-lg.font-semibold")
+      assert has_element?(view, "#ds-page-typography .ds-type-sample.font-mono.text-sm")
+    end
+  end
+
+  describe "icons page" do
+    test "renders at least six heroicon samples", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/icons")
+
+      icons =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query(~s(#ds-page-icons span[class^="hero-"]))
+        |> Enum.count()
+
+      assert icons >= 6
+    end
+
+    for name <- @icon_names do
+      test "renders the #{name} sample with a visible name label", %{conn: conn, user: user} do
+        conn = log_in_user(conn, user)
+
+        {:ok, view, _html} = live(conn, ~p"/design/icons")
+
+        assert has_element?(view, "#ds-page-icons span.#{unquote(name)}")
+        assert has_element?(view, "#ds-page-icons .ds-icon-label", unquote(name))
+      end
+    end
+
+    test "states the icon size convention", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/icons")
+
+      assert has_element?(view, "#ds-page-icons", "size-4")
     end
   end
 
