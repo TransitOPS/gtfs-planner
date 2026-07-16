@@ -125,7 +125,11 @@ defmodule GtfsPlanner.Versions.GtfsVersion do
     changeset
     |> change()
     |> put_change(:publication_status, status)
-    |> put_change(:published_at, published_at)
+    # force_change guarantees the column is always emitted in the INSERT/UPDATE so
+    # the database column default (CURRENT_TIMESTAMP for published_at) is never
+    # applied to a staging/importing/failed row, which would violate the
+    # state/timestamp check constraint.
+    |> force_change(:published_at, published_at)
   end
 
   defp validate_lifecycle(changeset) do
