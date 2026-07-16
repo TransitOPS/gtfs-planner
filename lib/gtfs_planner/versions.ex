@@ -20,7 +20,7 @@ defmodule GtfsPlanner.Versions do
   """
   def create_gtfs_version(organization_id, attrs) do
     %GtfsVersion{organization_id: organization_id}
-    |> GtfsVersion.changeset(attrs)
+    |> GtfsVersion.published_create_changeset(attrs)
     |> Repo.insert()
   end
 
