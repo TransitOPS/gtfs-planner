@@ -291,7 +291,9 @@ defmodule GtfsPlanner.Versions do
               v.id == ^version_id and
                 v.organization_id == ^organization_id and
                 v.publication_status == ^expected,
-            update: [set: [publication_status: ^target, published_at: fragment("CURRENT_TIMESTAMP")]]
+            update: [
+              set: [publication_status: ^target, published_at: fragment("CURRENT_TIMESTAMP")]
+            ]
           )
 
         nil ->
@@ -338,7 +340,12 @@ defmodule GtfsPlanner.Versions do
       failure_class: nil
     }
 
-    Logger.metadata(version_id: version.id, organization_id: organization_id, transition: new_state)
+    Logger.metadata(
+      version_id: version.id,
+      organization_id: organization_id,
+      transition: new_state
+    )
+
     :telemetry.execute(@telemetry_event, %{}, metadata)
   end
 end

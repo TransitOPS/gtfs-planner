@@ -35,9 +35,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddPublicationLifecycleToGtfsVersions do
       "ALTER TABLE #{qualified_table()} ALTER COLUMN publication_status SET DEFAULT 'published'"
     )
 
-    execute(
-      "ALTER TABLE #{qualified_table()} ALTER COLUMN publication_status SET NOT NULL"
-    )
+    execute("ALTER TABLE #{qualified_table()} ALTER COLUMN publication_status SET NOT NULL")
 
     execute(
       "ALTER TABLE #{qualified_table()} ALTER COLUMN published_at SET DEFAULT CURRENT_TIMESTAMP"

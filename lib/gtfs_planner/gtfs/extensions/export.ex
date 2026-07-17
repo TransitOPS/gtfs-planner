@@ -31,7 +31,9 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
       {:ok, []}
     else
       image_manifest_entries = build_image_manifest(stop_levels)
-      image_zip_entries = collect_image_entries(organization_id, gtfs_version_id, image_manifest_entries)
+
+      image_zip_entries =
+        collect_image_entries(organization_id, gtfs_version_id, image_manifest_entries)
 
       manifest =
         Manifest.build(coords, stop_levels, route_flags, image_manifest_entries)

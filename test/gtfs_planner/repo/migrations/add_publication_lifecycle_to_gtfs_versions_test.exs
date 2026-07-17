@@ -24,17 +24,17 @@ defmodule GtfsPlanner.Repo.Migrations.AddPublicationLifecycleToGtfsVersionsTest 
   # Resolve the single generated migration file rather than hard-coding a
   # timestamp, then load it so its module becomes available.
   @migration_path (
-                     matches =
-                       Path.wildcard(Path.expand(@migration_glob, __DIR__))
+                    matches =
+                      Path.wildcard(Path.expand(@migration_glob, __DIR__))
 
-                     case matches do
-                       [path] ->
-                         path
+                    case matches do
+                      [path] ->
+                        path
 
-                       other ->
-                         raise "expected exactly one lifecycle migration file, got: #{inspect(other)}"
-                     end
-                   )
+                      other ->
+                        raise "expected exactly one lifecycle migration file, got: #{inspect(other)}"
+                    end
+                  )
 
   Code.require_file(@migration_path)
 

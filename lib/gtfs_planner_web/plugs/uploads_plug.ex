@@ -84,7 +84,13 @@ defmodule GtfsPlannerWeb.UploadsPlug do
   # closed on a non-UUID), so a malformed version id is denied rather than served.
   # Any other shape — including historical four-segment diagram URLs and legacy
   # nested paths whose organization segment is not a UUID — keeps static delivery.
-  defp versioned_diagram_request(["diagrams", organization_id, gtfs_version_id, _station, _filename]) do
+  defp versioned_diagram_request([
+         "diagrams",
+         organization_id,
+         gtfs_version_id,
+         _station,
+         _filename
+       ]) do
     case Ecto.UUID.cast(organization_id) do
       {:ok, _} -> {:versioned, organization_id, gtfs_version_id}
       :error -> :legacy

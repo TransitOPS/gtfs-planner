@@ -382,7 +382,14 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
 
       # Even if a file physically exists under the foreign org's versioned dir,
       # the org does not own the supplied version, so it is treated as missing.
-      write_versioned_file(uploads_path, foreign_org.id, version.id, "STATION_A", "floor.png", "x")
+      write_versioned_file(
+        uploads_path,
+        foreign_org.id,
+        version.id,
+        "STATION_A",
+        "floor.png",
+        "x"
+      )
 
       conn =
         conn(:get, "/uploads/diagrams/#{foreign_org.id}/#{version.id}/STATION_A/floor.png")
