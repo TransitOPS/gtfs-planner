@@ -57,11 +57,25 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
           scale_meters_per_unit: Decimal.new("0.35")
         })
 
-      # Write a fake diagram image
-      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
-      img_dir = Path.join([uploads_path, "diagrams", org_a.id, "station_main"])
-      File.mkdir_p!(img_dir)
-      File.write!(Path.join(img_dir, "floor_L1.png"), "PNG_BINARY_DATA")
+      # Write a fake diagram image to a unique upload root for this test.
+      previous = Application.get_env(:gtfs_planner, :uploads_path)
+      uploads_path = Path.join(System.tmp_dir!(), "ext_rt_#{System.unique_integer([:positive])}")
+      Application.put_env(:gtfs_planner, :uploads_path, uploads_path)
+
+      on_exit(fn ->
+        File.rm_rf!(uploads_path)
+
+        if is_nil(previous) do
+          Application.delete_env(:gtfs_planner, :uploads_path)
+        else
+          Application.put_env(:gtfs_planner, :uploads_path, previous)
+        end
+      end)
+
+      # Export reads legacy-shaped files when no versioned write exists yet.
+      legacy_dir = Path.join([uploads_path, "diagrams", org_a.id, "station_main"])
+      File.mkdir_p!(legacy_dir)
+      File.write!(Path.join(legacy_dir, "floor_L1.png"), "PNG_BINARY_DATA")
 
       # -- Export from org A (full export includes routes.txt) -----------------
       assert {:ok, zip_binary} = Export.export_to_zip(org_a.id, version_a.id, :full)
@@ -81,8 +95,10 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
           %{filename: to_string(name), content: content}
         end)
 
-      assert {:ok, {counts, _unrecognized, _topic, []}} =
+      assert {:ok, import_result} =
                Import.import_files(org_b.id, version_b.id, import_files)
+
+      counts = import_result.counts
 
       # Standard GTFS data imported
       assert counts.stops >= 2
@@ -93,6 +109,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
       assert counts.extensions_stop_levels == 1
       assert counts.extensions_route_flags == 1
       assert counts.extensions_images == 1
+      assert import_result.extensions == :complete
+      assert Import.Result.publishable?(import_result)
 
       # -- Verify restored DB state --------------------------------------------
       imported_child = Gtfs.get_stop_by_stop_id(org_b.id, version_b.id, "platform_north")
@@ -113,8 +131,16 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
       assert Decimal.equal?(imported_sl.scale_meters_per_unit, Decimal.new("0.35"))
 
       # -- Verify restored image -----------------------------------------------
+      # The image is written into org B's immutable version namespace.
       dest_path =
-        Path.join([uploads_path, "diagrams", org_b.id, "station_main", "floor_L1.png"])
+        Path.join([
+          uploads_path,
+          "diagrams",
+          org_b.id,
+          version_b.id,
+          "station_main",
+          "floor_L1.png"
+        ])
 
       assert File.read!(dest_path) == "PNG_BINARY_DATA"
     after
@@ -134,12 +160,14 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
         %{filename: "stops.txt", content: stops_content}
       ]
 
-      assert {:ok, {counts, [], _topic, []}} = Import.import_files(org.id, version.id, files)
+      assert {:ok, import_result} = Import.import_files(org.id, version.id, files)
 
+      counts = import_result.counts
       assert counts.levels == 1
       assert counts.stops == 1
       # No extensions keys present (they're only added when manifest exists)
       refute Map.has_key?(counts, :extensions_stop_coordinates)
+      assert import_result.extensions == :not_present
     end
   end
 end

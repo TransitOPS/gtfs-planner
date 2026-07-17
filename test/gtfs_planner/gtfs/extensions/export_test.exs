@@ -12,6 +12,21 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
     organization = organization_fixture()
     gtfs_version = gtfs_version_fixture(organization.id)
 
+    # Own a unique upload root so fixtures never touch the shared path.
+    previous = Application.get_env(:gtfs_planner, :uploads_path)
+    root = Path.join(System.tmp_dir!(), "ext_export_#{System.unique_integer([:positive])}")
+    Application.put_env(:gtfs_planner, :uploads_path, root)
+
+    on_exit(fn ->
+      File.rm_rf!(root)
+
+      if is_nil(previous) do
+        Application.delete_env(:gtfs_planner, :uploads_path)
+      else
+        Application.put_env(:gtfs_planner, :uploads_path, previous)
+      end
+    end)
+
     %{
       org_id: organization.id,
       version_id: gtfs_version.id
@@ -102,10 +117,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       assert is_binary(sl_entry["scale_meters_per_unit"])
     end
 
-    test "emits image entries for stop levels with diagram filenames", %{
-      org_id: org_id,
-      version_id: version_id
-    } do
+    test "emits image entries for stop levels with diagram filenames in the versioned namespace",
+         %{org_id: org_id, version_id: version_id} do
       station = stop_fixture(org_id, version_id, stop_id: "station_main", location_type: 1)
       level = level_fixture(org_id, version_id, level_id: "L1")
 
@@ -118,9 +131,9 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
           diagram_filename: "floor.png"
         })
 
-      # Write a fake image to the uploads path
+      # Write a fake image into the immutable org/version namespace.
       uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
-      image_dir = Path.join([uploads_path, "diagrams", org_id, "station_main"])
+      image_dir = Path.join([uploads_path, "diagrams", org_id, version_id, "station_main"])
       File.mkdir_p!(image_dir)
       image_path = Path.join(image_dir, "floor.png")
       File.write!(image_path, "fake png data")
@@ -147,6 +160,92 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
     after
       uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
       File.rm_rf(Path.join(uploads_path, "diagrams"))
+    end
+
+    test "falls back to a referenced legacy image when the versioned file is absent", %{
+      org_id: org_id,
+      version_id: version_id
+    } do
+      station = stop_fixture(org_id, version_id, stop_id: "station_main", location_type: 1)
+      level = level_fixture(org_id, version_id, level_id: "L1")
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: level.id,
+          organization_id: org_id,
+          gtfs_version_id: version_id,
+          diagram_filename: "floor.png"
+        })
+
+      # Only a legacy file exists (no versioned write yet).
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+      legacy_dir = Path.join([uploads_path, "diagrams", org_id, "station_main"])
+      File.mkdir_p!(legacy_dir)
+      File.write!(Path.join(legacy_dir, "floor.png"), "legacy png data")
+
+      assert {:ok, entries} = Export.build_zip_entries(org_id, version_id)
+
+      image_entry =
+        Enum.find(entries, fn {n, _} ->
+          to_string(n) == "_pathways_extensions/diagrams/station_main/floor.png"
+        end)
+
+      assert image_entry != nil
+      {_, binary} = image_entry
+      assert binary == "legacy png data"
+    after
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+      File.rm_rf(Path.join(uploads_path, "diagrams"))
+    end
+
+    test "does not export a legacy image referenced only by another published version", %{
+      org_id: org_id,
+      version_id: selected_version_id
+    } do
+      historical_version = gtfs_version_fixture(org_id)
+
+      selected_station =
+        stop_fixture(org_id, selected_version_id,
+          stop_id: "shared_station",
+          location_type: 1
+        )
+
+      {:ok, _} = Gtfs.update_stop_diagram_coordinate(selected_station, %{x: 12.0, y: 24.0})
+
+      historical_station =
+        stop_fixture(org_id, historical_version.id,
+          stop_id: selected_station.stop_id,
+          location_type: 1
+        )
+
+      historical_level = level_fixture(org_id, historical_version.id, level_id: "L1")
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          stop_id: historical_station.id,
+          level_id: historical_level.id,
+          organization_id: org_id,
+          gtfs_version_id: historical_version.id,
+          diagram_filename: "retired.png"
+        })
+
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+      legacy_dir = Path.join([uploads_path, "diagrams", org_id, selected_station.stop_id])
+      File.mkdir_p!(legacy_dir)
+      File.write!(Path.join(legacy_dir, "retired.png"), "legacy png data")
+
+      assert {:ok, entries} = Export.build_zip_entries(org_id, selected_version_id)
+
+      {_, manifest_json} =
+        Enum.find(entries, fn {name, _content} -> name == ~c"_pathways_extensions.json" end)
+
+      manifest = Jason.decode!(manifest_json)
+      assert manifest["diagram_images"] == []
+
+      refute Enum.any?(entries, fn {name, _content} ->
+               String.contains?(to_string(name), "retired.png")
+             end)
     end
 
     test "skips missing image files with warning", %{

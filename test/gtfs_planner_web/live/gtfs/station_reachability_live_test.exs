@@ -237,6 +237,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       assert_redirect(view, "/gtfs/#{version2.id}/stops/#{station.stop_id}/reachability")
     end
 
+    test "does not navigate on gtfs_version_loaded for an unavailable version", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, staging} =
+        GtfsPlanner.Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
+
+      {:ok, importing} =
+        GtfsPlanner.Versions.claim_staging_gtfs_version(organization.id, staging.id)
+
+      other_org = organization_fixture()
+      foreign = gtfs_version_fixture(other_org.id)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability")
+
+      for bad_id <- [
+            to_string(staging.id),
+            to_string(importing.id),
+            to_string(foreign.id),
+            "not-a-uuid"
+          ] do
+        render_hook(view, "gtfs_version_loaded", %{"version_id" => bad_id})
+        refute_redirected(view)
+      end
+    end
+
     test "redirects with flash when station is missing", %{
       conn: conn,
       user: user,

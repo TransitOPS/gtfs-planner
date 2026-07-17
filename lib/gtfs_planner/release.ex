@@ -9,7 +9,23 @@ defmodule GtfsPlanner.Release do
     load_app()
 
     for repo <- repos() do
-      {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :up, all: true))
+      {:ok, _, _} =
+        Ecto.Migrator.with_repo(repo, fn repo ->
+          Ecto.Migrator.run(repo, :up, all: true)
+          backfill_legacy_diagrams!(repo)
+        end)
+    end
+
+    :ok
+  end
+
+  defp backfill_legacy_diagrams!(repo) do
+    case GtfsPlanner.Gtfs.DiagramStorage.migrate_legacy_assets(repo) do
+      {:ok, _count} ->
+        :ok
+
+      {:error, reason} ->
+        raise "legacy diagram backfill failed: #{inspect(reason)}"
     end
   end
 

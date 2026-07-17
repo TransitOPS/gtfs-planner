@@ -31,10 +31,8 @@ defmodule GtfsPlannerWeb.AssignGtfsVersion do
   def on_mount(:default, %{"version" => version_id}, _session, socket) do
     current_organization = socket.assigns[:current_organization]
 
-    try do
-      version = Versions.get_gtfs_version!(version_id)
-
-      if version.organization_id == current_organization.id do
+    case Versions.get_published_gtfs_version_for_org(current_organization.id, version_id) do
+      %Versions.GtfsVersion{} = version ->
         # Get available versions for dropdown
         available_versions = Versions.list_gtfs_versions_for_dropdown(current_organization.id)
 
@@ -44,16 +42,8 @@ defmodule GtfsPlannerWeb.AssignGtfsVersion do
           |> assign(:available_versions, available_versions)
 
         {:cont, socket}
-      else
-        socket =
-          socket
-          |> put_flash(:error, "GTFS version not found")
-          |> redirect(to: "/")
 
-        {:halt, socket}
-      end
-    rescue
-      Ecto.NoResultsError ->
+      nil ->
         socket =
           socket
           |> put_flash(:error, "GTFS version not found")

@@ -11,7 +11,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.{Stop, StopLevel, Level, Route}
   alias GtfsPlanner.Gtfs.Extensions.Manifest
-  alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.DiagramStorage
 
   require Logger
 
@@ -160,10 +160,18 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
     case result do
       {:ok, counts} ->
-        image_count =
-          restore_images(organization_id, manifest.diagram_images, image_files_by_zip_path)
+        case restore_images(
+               organization_id,
+               gtfs_version_id,
+               manifest.diagram_images,
+               image_files_by_zip_path
+             ) do
+          {:ok, image_count} ->
+            {:ok, Map.put(counts, :extensions_images, image_count)}
 
-        {:ok, Map.put(counts, :extensions_images, image_count)}
+          {:error, reason} ->
+            {:error, {:image_restore_failed, reason}}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -234,52 +242,42 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
   # -- image restore ----------------------------------------------------------
 
-  defp restore_images(organization_id, diagram_images, image_files_by_zip_path) do
-    uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
-    uploads_root = Path.expand(Path.join([uploads_path, "diagrams", organization_id]))
+  defp restore_images(
+         organization_id,
+         gtfs_version_id,
+         diagram_images,
+         image_files_by_zip_path
+       ) do
+    result =
+      Enum.reduce_while(diagram_images, 0, fn entry, acc ->
+        case Map.fetch(image_files_by_zip_path, entry.zip_path) do
+          {:ok, binary} ->
+            case DiagramStorage.store_import_image(
+                   organization_id,
+                   gtfs_version_id,
+                   entry.station_stop_id,
+                   entry.filename,
+                   binary
+                 ) do
+              :ok ->
+                {:cont, acc + 1}
 
-    Enum.count(diagram_images, fn entry ->
-      case Map.fetch(image_files_by_zip_path, entry.zip_path) do
-        {:ok, binary} ->
-          write_image_file(uploads_root, entry, binary)
+              {:error, reason} ->
+                {:halt, {:error, {:write_failed, entry.zip_path, reason}}}
+            end
 
-        :error ->
-          Logger.warning("Extensions import: missing image binary for #{entry.zip_path}")
-          false
-      end
-    end)
+          :error ->
+            {:halt, {:error, {:missing_binary, entry.zip_path}}}
+        end
+      end)
+
+    case result do
+      count when is_integer(count) -> {:ok, count}
+      {:error, _} = error -> error
+    end
   end
 
   # -- helpers ----------------------------------------------------------------
-
-  defp write_image_file(uploads_root, entry, binary) do
-    station_dir = PathSafety.stop_storage_dir(entry.station_stop_id)
-
-    if is_nil(station_dir) or not PathSafety.safe_path_component?(entry.filename) do
-      Logger.warning(
-        "Extensions import: rejected unsafe image path components for #{entry.zip_path}"
-      )
-
-      false
-    else
-      dest_dir = Path.join(uploads_root, station_dir)
-      dest_path = Path.join(dest_dir, entry.filename)
-
-      with :ok <- PathSafety.ensure_within_root(uploads_root, dest_dir),
-           :ok <- PathSafety.ensure_within_root(uploads_root, dest_path),
-           :ok <- File.mkdir_p(dest_dir),
-           :ok <- File.write(dest_path, binary) do
-        true
-      else
-        {:error, reason} ->
-          Logger.warning(
-            "Extensions import: failed to restore image #{entry.zip_path}: #{inspect(reason)}"
-          )
-
-          false
-      end
-    end
-  end
 
   defp parse_decimal(nil), do: nil
 

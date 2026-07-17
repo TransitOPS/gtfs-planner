@@ -106,7 +106,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     stop_id = socket.assigns[:stop_id]
 
     if version_id && version_id != current_version_id &&
-         valid_version_for_org?(version_id, current_organization.id) do
+         Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       path =
         if stop_id,
           do: "/gtfs/#{version_id}/stops/#{stop_id}/report",
@@ -421,17 +421,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
       />
     </Layouts.app>
     """
-  end
-
-  defp valid_version_for_org?(version_id, organization_id) do
-    try do
-      case Versions.get_gtfs_version(version_id) do
-        nil -> false
-        version -> version.organization_id == organization_id
-      end
-    rescue
-      Ecto.Query.CastError -> false
-    end
   end
 
   defp rebuild_report(socket) do

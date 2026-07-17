@@ -436,6 +436,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp floorplan_disabled_reason(_row), do: "Not yet aligned"
 
   attr :organization_id, :string, required: true
+  attr :gtfs_version_id, :string, required: true
   attr :station, :any, required: true
   attr :active_level, :any, default: nil
   attr :active_stop_level, :any, default: nil
@@ -454,7 +455,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   def map_canvas(assigns) do
     floorplan_url =
-      diagram_image_href(assigns.organization_id, assigns.station, assigns.active_stop_level)
+      diagram_image_href(
+        assigns.organization_id,
+        assigns.gtfs_version_id,
+        assigns.station,
+        assigns.active_stop_level
+      )
 
     initial_lat = assigns.station.stop_lat || 0
     initial_lon = assigns.station.stop_lon || 0
@@ -696,6 +702,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :cross_level_badges_by_stop, :map, default: %{}
   attr :diagram_error, :string, default: nil
   attr :organization_id, :string, required: true
+  attr :gtfs_version_id, :string, required: true
   attr :ruler_point_a, :any, default: nil
   attr :ruler_point_b, :any, default: nil
   attr :scale_point_a, :any, default: nil
@@ -706,7 +713,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     canvas_key = diagram_canvas_key(assigns.active_level, assigns.active_stop_level)
 
     image_href =
-      diagram_image_href(assigns.organization_id, assigns.station, assigns.active_stop_level)
+      diagram_image_href(
+        assigns.organization_id,
+        assigns.gtfs_version_id,
+        assigns.station,
+        assigns.active_stop_level
+      )
 
     assigns =
       assigns
@@ -778,15 +790,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     "#{safe_level}-#{safe_file}"
   end
 
-  defp diagram_image_href(organization_id, station, active_stop_level) do
+  # Renders the versioned diagram URL for the editor. The version id is part of the
+  # public path shape (`/uploads/diagrams/<org>/<version>/<station>/<file>`), and
+  # `UploadsPlug` gates delivery by the version's database publication status. This
+  # keeps the relative path plus `?v=` cache-buster the editor relies on rather than
+  # the disk-checked absolute resolver, so a freshly persisted filename renders
+  # immediately.
+  defp diagram_image_href(organization_id, gtfs_version_id, station, active_stop_level) do
     case active_stop_level do
       %{diagram_filename: filename} when is_binary(filename) ->
         station_dir = PathSafety.stop_storage_dir(station.stop_id)
         token = URI.encode_www_form(filename)
         encoded_filename = URI.encode(filename)
 
-        if is_binary(station_dir) do
-          "/uploads/diagrams/#{organization_id}/#{station_dir}/#{encoded_filename}?v=#{token}"
+        if is_binary(station_dir) and is_binary(gtfs_version_id) do
+          "/uploads/diagrams/#{organization_id}/#{gtfs_version_id}/#{station_dir}/#{encoded_filename}?v=#{token}"
         else
           nil
         end

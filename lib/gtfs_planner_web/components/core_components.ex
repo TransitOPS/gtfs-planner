@@ -223,14 +223,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
         explicit_errors
       else
         errors = if Phoenix.Component.used_input?(field), do: field.errors, else: []
-        Enum.map(errors, &translate_error(&1))
+        Enum.map(errors, &translate_error/1)
       end
 
     assigns
     |> assign(field: nil, id: assigns.id || field.id)
     |> assign(:errors, translated_errors)
     |> assign_new(:name, fn -> if assigns.multiple, do: field.name <> "[]", else: field.name end)
-    |> assign_new(:value, fn -> field.value end)
+    |> assign(:value, field.value)
     |> input()
   end
 
@@ -245,6 +245,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
       assign_new(assigns, :checked, fn ->
         Phoenix.HTML.Form.normalize_value("checkbox", assigns[:value])
       end)
+
+    assigns =
+      with_error_ids(assigns)
 
     ~H"""
     <div class="fieldset mb-2">
@@ -264,17 +267,21 @@ defmodule GtfsPlannerWeb.CoreComponents do
             value="true"
             checked={@checked}
             class={@class || "checkbox"}
+            aria-invalid={to_string(@errors != [])}
+            aria-describedby={@describedby}
             {@rest}
           />{@label}
         </span>
       </label>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
   end
 
   def input(%{type: "select"} = assigns) do
-    assigns = assign_new(assigns, :help_id, fn -> if assigns.help, do: "#{assigns.id}-help" end)
+    assigns = assign_new(assigns, :value, fn -> nil end)
+    assigns = with_error_ids(assigns)
 
     ~H"""
     <div class="fieldset mb-2">
@@ -288,7 +295,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
             @errors != [] && (@error_class || "select-error")
           ]}
           multiple={@multiple}
-          aria-describedby={@help_id}
+          aria-invalid={to_string(@errors != [])}
+          aria-describedby={@describedby}
           {@rest}
         >
           <option :if={@prompt} value="">{@prompt}</option>
@@ -296,13 +304,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </select>
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
   end
 
   def input(%{type: "textarea"} = assigns) do
-    assigns = assign_new(assigns, :help_id, fn -> if assigns.help, do: "#{assigns.id}-help" end)
+    assigns = assign_new(assigns, :value, fn -> nil end)
+    assigns = with_error_ids(assigns)
 
     ~H"""
     <div class="fieldset mb-2">
@@ -315,20 +324,21 @@ defmodule GtfsPlannerWeb.CoreComponents do
             @class || "w-full textarea textarea-lg",
             @errors != [] && (@error_class || "textarea-error")
           ]}
-          aria-describedby={@help_id}
+          aria-invalid={to_string(@errors != [])}
+          aria-describedby={@describedby}
           {@rest}
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
   end
 
   # All other inputs text, datetime-local, url, password, etc. are handled here...
   def input(assigns) do
-    # Generate a unique ID for aria-describedby when help text is present
-    assigns = assign_new(assigns, :help_id, fn -> if assigns.help, do: "#{assigns.id}-help" end)
+    assigns = assign_new(assigns, :value, fn -> nil end)
+    assigns = with_error_ids(assigns)
 
     ~H"""
     <div class="fieldset mb-2">
@@ -343,14 +353,37 @@ defmodule GtfsPlannerWeb.CoreComponents do
             @class || "w-full input input-lg",
             @errors != [] && (@error_class || "input-error")
           ]}
-          aria-describedby={@help_id}
+          aria-invalid={to_string(@errors != [])}
+          aria-describedby={@describedby}
           {@rest}
         />
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
+  end
+
+  # Derives stable help/error IDs and a combined `aria-describedby` value so the
+  # control references every applicable description. Help and error IDs are
+  # deterministic from the input id; `aria-describedby` is nil when neither is
+  # present so no empty attribute is emitted.
+  defp with_error_ids(assigns) do
+    help_id = if assigns.help, do: "#{assigns.id}-help"
+    error_id = if assigns.errors != [], do: "#{assigns.id}-error"
+
+    describedby =
+      [help_id, error_id]
+      |> Enum.reject(&is_nil/1)
+      |> case do
+        [] -> nil
+        ids -> Enum.join(ids, " ")
+      end
+
+    assigns
+    |> assign(:help_id, help_id)
+    |> assign(:error_id, error_id)
+    |> assign(:describedby, describedby)
   end
 
   @doc """
@@ -408,12 +441,25 @@ defmodule GtfsPlannerWeb.CoreComponents do
     """
   end
 
-  # Helper used by inputs to generate form errors
+  # Helper used by inputs to generate form errors. All messages for a field are
+  # rendered inside one referenced alert container carrying the deterministic
+  # error id the control points at via aria-describedby.
+  attr :id, :string, default: nil
+  attr :errors, :list, default: []
+
   defp error(assigns) do
     ~H"""
-    <p class="mt-1.5 flex gap-2 items-center text-sm text-error">
-      <.icon name="hero-exclamation-circle" class="size-5" />
-      {render_slot(@inner_block)}
+    <p
+      :if={@errors != []}
+      id={@id}
+      class="mt-1.5 flex flex-col gap-1 text-sm text-error"
+      role="alert"
+      aria-live="assertive"
+    >
+      <span :for={msg <- @errors} class="flex gap-2 items-center">
+        <.icon name="hero-exclamation-circle" class="size-5" />
+        {msg}
+      </span>
     </p>
     """
   end
@@ -1402,6 +1448,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   @doc """
   Translates an error message using gettext.
+
+  Accepts the `{msg, opts}` tuple produced by Ecto changesets as well as a
+  bare string (used by callers that pass explicit error text), so a field may
+  carry either shape without raising.
   """
   def translate_error({msg, opts}) do
     # When using gettext, we typically pass the strings we want
@@ -1420,6 +1470,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
       Gettext.dgettext(GtfsPlannerWeb.Gettext, "errors", msg, opts)
     end
   end
+
+  def translate_error(msg) when is_binary(msg), do: msg
 
   @doc """
   Translates the errors for a field from a keyword list of errors.

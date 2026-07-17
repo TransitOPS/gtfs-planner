@@ -2,12 +2,11 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
   use GtfsPlannerWeb, :controller
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Api.V1.JournalJSON
-  alias GtfsPlannerWeb.Endpoint
 
   @default_page 1
   @default_per_page 25
@@ -18,8 +17,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     org_id = conn.assigns[:current_organization_id]
 
     with {:ok, _} <- Ecto.UUID.cast(version_id),
-         %{} = version <- Versions.get_gtfs_version(version_id),
-         true <- version.organization_id == org_id do
+         %{} = _version <- Versions.get_published_gtfs_version_for_org(org_id, version_id) do
       search = params["search"]
       page = parse_page(params)
       per_page = parse_per_page(params)
@@ -57,11 +55,6 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
         conn
         |> put_status(404)
         |> json(%{error: %{code: "not_found", message: "Version not found."}})
-
-      false ->
-        conn
-        |> put_status(404)
-        |> json(%{error: %{code: "not_found", message: "Version not found."}})
     end
   end
 
@@ -71,8 +64,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
 
     with {:ok, _} <- Ecto.UUID.cast(version_id),
          {:ok, _} <- Ecto.UUID.cast(station_id),
-         %{} = version <- Versions.get_gtfs_version(version_id),
-         true <- version.organization_id == org_id,
+         %{} = _version <- Versions.get_published_gtfs_version_for_org(org_id, version_id),
          %{} = station <- Gtfs.get_stop(station_id),
          true <- station.organization_id == org_id,
          true <- station.gtfs_version_id == version_id,
@@ -113,7 +105,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
           levels:
             Enum.map(
               levels,
-              &serialize_level(&1, org_id, station.stop_id, entries_by_target)
+              &serialize_level(&1, org_id, version_id, station.stop_id, entries_by_target)
             ),
           stops:
             Enum.map(
@@ -144,17 +136,31 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     end
   end
 
-  defp serialize_level(%{level: level} = level_data, org_id, station_stop_id, entries_by_target) do
+  defp serialize_level(
+         %{level: level} = level_data,
+         org_id,
+         version_id,
+         station_stop_id,
+         entries_by_target
+       ) do
     serialize_level(
       level,
       Map.get(level_data, :stop_level),
       org_id,
+      version_id,
       station_stop_id,
       entries_by_target
     )
   end
 
-  defp serialize_level(%{id: _} = level, stop_level, org_id, station_stop_id, entries_by_target) do
+  defp serialize_level(
+         %{id: _} = level,
+         stop_level,
+         org_id,
+         version_id,
+         station_stop_id,
+         entries_by_target
+       ) do
     stop_level_id = stop_level_id(stop_level)
 
     %{
@@ -163,7 +169,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
       level_index: level.level_index,
       level_name: level.level_name,
       stop_level_id: stop_level_id,
-      floorplan: serialize_floorplan(stop_level, org_id, station_stop_id),
+      floorplan: serialize_floorplan(stop_level, org_id, version_id, station_stop_id),
       journal_entries: Map.get(entries_by_target, {"pin", stop_level_id}, [])
     }
   end
@@ -181,10 +187,11 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
   defp serialize_floorplan(
          %StopLevel{diagram_filename: filename} = stop_level,
          org_id,
+         version_id,
          station_stop_id
        )
        when is_binary(filename) and filename != "" do
-    case floorplan_url(org_id, station_stop_id, filename) do
+    case floorplan_url(org_id, version_id, station_stop_id, filename) do
       nil ->
         nil
 
@@ -193,6 +200,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
 
         %{
           filename: filename,
+          version_id: version_id,
           url: url,
           center_lat: if(aligned?, do: stop_level.floorplan_center_lat),
           center_lon: if(aligned?, do: stop_level.floorplan_center_lon),
@@ -202,19 +210,17 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     end
   end
 
-  defp serialize_floorplan(_stop_level, _org_id, _station_stop_id), do: nil
+  defp serialize_floorplan(_stop_level, _org_id, _version_id, _station_stop_id), do: nil
 
   # Floorplan images are served as static files under /uploads (see UploadsPlug),
-  # not via an /api/v1 endpoint. Return an absolute URL the client can GET directly.
-  defp floorplan_url(org_id, station_stop_id, filename) do
-    case PathSafety.stop_storage_dir(station_stop_id) do
-      dir when is_binary(dir) ->
-        encoded_filename = URI.encode(filename, &URI.char_unreserved?/1)
-
-        "#{Endpoint.url()}/uploads/diagrams/#{org_id}/#{dir}/#{encoded_filename}"
-
-      _ ->
-        nil
+  # not via an /api/v1 endpoint. `DiagramStorage.public_url_path/4` is the single
+  # resolver: it prefers the versioned file (URL carries the version id) and falls
+  # back to the legacy historical URL only when a referenced historical file has not
+  # yet been backfilled. The version is already gated as published in `bundle/2`.
+  defp floorplan_url(org_id, version_id, station_stop_id, filename) do
+    case DiagramStorage.public_url_path(org_id, version_id, station_stop_id, filename) do
+      {:ok, url} -> url
+      {:error, _reason} -> nil
     end
   end
 

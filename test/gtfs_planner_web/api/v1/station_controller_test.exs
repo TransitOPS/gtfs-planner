@@ -7,8 +7,10 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto, StopLevel}
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
 
   # ---------------------------------------------------------------------------
   # Helpers
@@ -79,6 +81,49 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
     Repo.insert!(struct!(JournalEntry, Map.merge(defaults, attrs)))
   end
 
+  # Writes a versioned diagram file so `DiagramStorage.public_url_path/4` (used by
+  # the controller) resolves to the versioned URL. Files are written under the
+  # configured (shared, per-run) uploads root at unique org/version dirs and cleaned
+  # up after the test.
+  defp write_versioned_diagram(org_id, version_id, station_stop_id, filename) do
+    uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+    station_dir = PathSafety.stop_storage_dir(station_stop_id)
+    dir = Path.join([uploads_path, "diagrams", org_id, version_id, station_dir])
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, filename), "diagram bytes")
+    on_exit(fn -> File.rm_rf!(Path.join([uploads_path, "diagrams", org_id])) end)
+    :ok
+  end
+
+  defp write_legacy_diagram(org_id, station_stop_id, filename) do
+    uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+    station_dir = PathSafety.stop_storage_dir(station_stop_id)
+    dir = Path.join([uploads_path, "diagrams", org_id, station_dir])
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, filename), "legacy diagram bytes")
+    on_exit(fn -> File.rm_rf!(Path.join([uploads_path, "diagrams", org_id])) end)
+    :ok
+  end
+
+  # Build a version that is not publicly readable: staging, importing, or failed.
+  defp unavailable_version(org_id, status) do
+    {:ok, staging} =
+      Versions.create_staging_gtfs_version(org_id, %{name: "Unavailable #{status}"})
+
+    case status do
+      "staging" ->
+        staging
+
+      "importing" ->
+        {:ok, importing} = Versions.claim_staging_gtfs_version(org_id, staging.id)
+        importing
+
+      "failed" ->
+        {:ok, failed} = Versions.fail_unpublished_gtfs_version(org_id, staging.id)
+        failed
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # GET /api/v1/versions/:version_id/stations (index)
   # ---------------------------------------------------------------------------
@@ -136,6 +181,19 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         |> get("/api/v1/versions/not-a-uuid/stations")
 
       assert %{"error" => %{"code" => "bad_request"}} = json_response(conn, 400)
+    end
+
+    for status <- ["staging", "importing", "failed"] do
+      test "returns 404 for a #{status} version", %{conn: conn, user: user, org: org} do
+        version = unavailable_version(org.id, unquote(status))
+
+        conn =
+          conn
+          |> authed_conn(user)
+          |> get("/api/v1/versions/#{version.id}/stations")
+
+        assert %{"error" => %{"code" => "not_found"}} = json_response(conn, 404)
+      end
     end
 
     test "default list returns only location_type=1 rows and meta.total reflects filtered count",
@@ -481,7 +539,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert Enum.find(data["stops"], &(&1["id"] == child1.id))["journal_entries"] == []
     end
 
-    test "level floorplan carries url + alignment when the stop_level is aligned", %{
+    test "level floorplan carries versioned url + alignment when the stop_level is aligned", %{
       conn: conn,
       user: user,
       org: org
@@ -495,13 +553,15 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
           level_id: level.id,
           organization_id: org.id,
           gtfs_version_id: version.id,
-          diagram_filename: "B1/busway plan.png",
+          diagram_filename: "busway_plan.png",
           floorplan_center_lat: 39.9536,
           floorplan_center_lon: -75.1632,
           floorplan_scale_mpp: 0.05,
           floorplan_rotation_deg: 12.5
         }
         |> Repo.insert()
+
+      write_versioned_diagram(org.id, version.id, station.stop_id, "busway_plan.png")
 
       conn =
         conn
@@ -511,21 +571,66 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert %{"data" => data} = json_response(conn, 200)
       floorplan = Enum.find(data["levels"], &(&1["id"] == level.id))["floorplan"]
 
-      assert floorplan["filename"] == "B1/busway plan.png"
+      assert floorplan["filename"] == "busway_plan.png"
+      assert floorplan["version_id"] == version.id
       assert floorplan["center_lat"] == 39.9536
       assert floorplan["center_lon"] == -75.1632
       assert floorplan["scale_mpp"] == 0.05
       assert floorplan["rotation_deg"] == 12.5
       assert is_binary(floorplan["url"])
       assert String.contains?(floorplan["url"], "/uploads/diagrams/")
-      assert String.contains?(floorplan["url"], "B1%2Fbusway%20plan.png")
+      # The public production URL includes the selected GTFS version ID.
+      assert String.contains?(floorplan["url"], version.id)
+      assert String.contains?(floorplan["url"], "busway_plan.png")
     end
 
-    test "level floorplan url uses the encoded storage directory for unsafe station stop_id", %{
+    test "does not expose a legacy floorplan referenced only by another published version", %{
       conn: conn,
       user: user,
       org: org
     } do
+      historical_version = gtfs_version_fixture(org.id)
+      selected_version = gtfs_version_fixture(org.id)
+
+      %{station: selected_station, level: selected_level} =
+        build_station_data(org.id, selected_version.id)
+
+      historical_station =
+        stop_fixture(org.id, historical_version.id,
+          stop_id: selected_station.stop_id,
+          location_type: 1
+        )
+
+      historical_level =
+        level_fixture(org.id, historical_version.id, level_id: selected_level.level_id)
+
+      {:ok, _} =
+        GtfsPlanner.Gtfs.create_stop_level(%{
+          stop_id: historical_station.id,
+          level_id: historical_level.id,
+          organization_id: org.id,
+          gtfs_version_id: historical_version.id,
+          diagram_filename: "retired.png"
+        })
+
+      write_legacy_diagram(org.id, selected_station.stop_id, "retired.png")
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{selected_version.id}/stations/#{selected_station.id}/bundle")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      selected_level_json = Enum.find(data["levels"], &(&1["id"] == selected_level.id))
+      assert selected_level_json["floorplan"] == nil
+    end
+
+    test "level floorplan url uses the versioned encoded storage directory for unsafe station stop_id",
+         %{
+           conn: conn,
+           user: user,
+           org: org
+         } do
       version = gtfs_version_fixture(org.id)
       level = level_fixture(org.id, version.id)
 
@@ -550,6 +655,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         }
         |> Repo.insert()
 
+      write_versioned_diagram(org.id, version.id, station.stop_id, "concourse.png")
+
       conn =
         conn
         |> authed_conn(user)
@@ -560,10 +667,11 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert %{"data" => data} = json_response(conn, 200)
       floorplan = Enum.find(data["levels"], &(&1["id"] == level.id))["floorplan"]
 
-      assert floorplan["url"] =~ "/uploads/diagrams/#{org.id}/#{encoded_dir}/concourse.png"
+      assert floorplan["url"] =~
+               "/uploads/diagrams/#{org.id}/#{version.id}/#{encoded_dir}/concourse.png"
     end
 
-    test "level floorplan carries the image with null alignment when the stop_level has a diagram but incomplete alignment",
+    test "level floorplan carries the versioned image with null alignment when the stop_level has a diagram but incomplete alignment",
          %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)
       %{station: station, level: level} = build_station_data(org.id, version.id)
@@ -578,6 +686,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         }
         |> Repo.insert()
 
+      write_versioned_diagram(org.id, version.id, station.stop_id, "B1_busway.png")
+
       conn =
         conn
         |> authed_conn(user)
@@ -589,8 +699,10 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       # The diagram image is emitted independent of alignment so the client can
       # render it in diagram space; the alignment fields are null.
       assert floorplan["filename"] == "B1_busway.png"
+      assert floorplan["version_id"] == version.id
       assert is_binary(floorplan["url"])
       assert String.contains?(floorplan["url"], "/uploads/diagrams/")
+      assert String.contains?(floorplan["url"], version.id)
       assert floorplan["center_lat"] == nil
       assert floorplan["center_lon"] == nil
       assert floorplan["scale_mpp"] == nil
@@ -785,6 +897,31 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         |> get("/api/v1/versions/not-a-uuid/stations/#{Ecto.UUID.generate()}/bundle")
 
       assert %{"error" => %{"code" => "bad_request"}} = json_response(conn, 400)
+    end
+
+    for status <- ["staging", "importing", "failed"] do
+      test "returns 404 for a #{status} version", %{conn: conn, user: user, org: org} do
+        version = unavailable_version(org.id, unquote(status))
+
+        conn =
+          conn
+          |> authed_conn(user)
+          |> get("/api/v1/versions/#{version.id}/stations/#{Ecto.UUID.generate()}/bundle")
+
+        assert %{"error" => %{"code" => "not_found"}} = json_response(conn, 404)
+      end
+    end
+
+    test "returns 404 for a version belonging to another org", %{conn: conn, user: user} do
+      other_org = organization_fixture()
+      other_version = gtfs_version_fixture(other_org.id)
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{other_version.id}/stations/#{Ecto.UUID.generate()}/bundle")
+
+      assert %{"error" => %{"code" => "not_found"}} = json_response(conn, 404)
     end
 
     test "returns 404 for location_type=0 stop even when parent_station is nil", %{

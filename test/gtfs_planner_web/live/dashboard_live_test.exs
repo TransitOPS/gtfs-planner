@@ -79,7 +79,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       {non_current_id, _name} =
         Enum.find(assigns_before.available_versions, fn {id, _name} -> id != current_id_before end)
 
-      non_current = Versions.get_gtfs_version!(non_current_id)
+      non_current = Versions.get_published_gtfs_version_for_org!(organization.id, non_current_id)
       original_name = non_current.name
 
       {:ok, renamed_other} = Versions.update_gtfs_version(non_current, %{name: "Renamed Other"})

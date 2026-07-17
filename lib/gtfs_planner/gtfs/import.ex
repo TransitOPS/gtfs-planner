@@ -37,7 +37,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   """
 
   alias GtfsPlanner.{Repo, Gtfs}
-  alias GtfsPlanner.Gtfs.Import.{BatchProcessor, RowParser}
+  alias GtfsPlanner.Gtfs.Import.{Result, BatchProcessor, RowParser}
   alias GtfsPlanner.Gtfs.Extensions
 
   require Logger
@@ -121,18 +121,19 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   ## Returns
 
-    - `{:ok, {counts, unrecognized_files, topic, archive_warnings}}` on success
+    - `{:ok, %Import.Result{}}` on success
       - `counts` - map with keys for each file type containing import counts
       - `unrecognized_files` - list of unrecognized filenames
       - `topic` - PubSub topic for progress updates
       - `archive_warnings` - list of `%{filename, reason, detail}` maps for archives that could not be expanded
+      - `extensions` - `:not_present` when no extension manifest was supplied, or `:complete` when the extension phase finished fully
     - `{:error, reason}` on failure
 
   ## Examples
 
       iex> files = [%{filename: "routes.txt", content: "route_id,route_type\\nR1,3"}]
       iex> import_files(org_id, version_id, files)
-      {:ok, {%{routes: 1, stops: 0, ...}, [], "import:123456", []}}
+      {:ok, %Import.Result{counts: %{routes: 1, stops: 0, ...}, unrecognized_files: [], topic: "import:123456", archive_warnings: [], extensions: :not_present}}
   """
   def import_files(organization_id, gtfs_version_id, files, topic \\ nil) do
     # Expand any uploaded .zip archives into individual file entries
@@ -186,8 +187,21 @@ defmodule GtfsPlanner.Gtfs.Import do
         case phase_2_result do
           {:ok, counts} ->
             counts = Enum.reduce(@supported_count_keys, counts, &Map.put_new(&2, &1, 0))
-            counts = import_extensions_phase(organization_id, gtfs_version_id, extensions, counts)
-            {:ok, {counts, unrecognized_files, topic, archive_warnings}}
+
+            case import_extensions_phase(organization_id, gtfs_version_id, extensions, counts) do
+              {:ok, extensions_status, counts} ->
+                {:ok,
+                 %Result{
+                   counts: counts,
+                   unrecognized_files: unrecognized_files,
+                   topic: topic,
+                   archive_warnings: archive_warnings,
+                   extensions: extensions_status
+                 }}
+
+              {:error, reason} ->
+                {:error, reason}
+            end
 
           {:error, reason} ->
             {:error, reason}
@@ -788,10 +802,12 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   # Runs the extensions import phase after standard GTFS phases complete.
-  # On failure, logs warning and returns counts unchanged.
+  # When no extension manifest is present the phase is absent and counts are
+  # returned unchanged. On extension failure the error is propagated so the
+  # overall import result is an error rather than a silently incomplete import.
   defp import_extensions_phase(_organization_id, _gtfs_version_id, extensions, counts)
        when not is_map_key(extensions, :json) do
-    counts
+    {:ok, :not_present, counts}
   end
 
   defp import_extensions_phase(organization_id, gtfs_version_id, extensions, counts) do
@@ -804,11 +820,10 @@ defmodule GtfsPlanner.Gtfs.Import do
            image_files
          ) do
       {:ok, ext_counts} ->
-        Map.merge(counts, ext_counts)
+        {:ok, :complete, Map.merge(counts, ext_counts)}
 
       {:error, reason} ->
-        Logger.warning("Extensions import failed: #{inspect(reason)}")
-        counts
+        {:error, reason}
     end
   end
 

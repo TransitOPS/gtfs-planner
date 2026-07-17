@@ -160,6 +160,52 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       # Should trigger navigation to new version
       assert_redirect(view, "/gtfs/#{version2.id}/stops")
     end
+
+    test "switch_gtfs_version does not navigate to an unavailable version", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version1
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, staging} =
+        GtfsPlanner.Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
+
+      other_org = organization_fixture()
+      foreign = gtfs_version_fixture(other_org.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version1.id}/stops")
+
+      for bad_id <- [to_string(staging.id), to_string(foreign.id), "not-a-uuid"] do
+        html = render_hook(view, "switch_gtfs_version", %{"version" => bad_id})
+        assert html =~ "Stations"
+        refute_redirected(view)
+      end
+    end
+
+    test "gtfs_version_loaded does not navigate to an unavailable version", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version1
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, staging} =
+        GtfsPlanner.Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
+
+      other_org = organization_fixture()
+      foreign = gtfs_version_fixture(other_org.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version1.id}/stops")
+
+      for bad_id <- [to_string(staging.id), to_string(foreign.id), "not-a-uuid"] do
+        html = render_hook(view, "gtfs_version_loaded", %{"version_id" => bad_id})
+        assert html =~ "Stations"
+        refute_redirected(view)
+      end
+    end
   end
 
   describe "route filtering" do

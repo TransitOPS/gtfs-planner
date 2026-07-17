@@ -12,6 +12,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Coordinates
+  alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
@@ -479,13 +480,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp other_level_diagram_url(socket, %StopLevel{diagram_filename: filename})
        when is_binary(filename) and filename != "" do
     organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns[:station]
     station_dir = station && PathSafety.stop_storage_dir(station.stop_id)
 
-    if is_binary(station_dir) do
+    if is_binary(station_dir) and is_binary(gtfs_version_id) do
       token = URI.encode_www_form(filename)
       encoded_filename = URI.encode(filename)
-      "/uploads/diagrams/#{organization_id}/#{station_dir}/#{encoded_filename}?v=#{token}"
+
+      "/uploads/diagrams/#{organization_id}/#{gtfs_version_id}/#{station_dir}/#{encoded_filename}?v=#{token}"
     end
   end
 
@@ -869,6 +872,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 active_level={@active_level}
                 active_stop_level={@active_stop_level}
                 organization_id={@current_organization.id}
+                gtfs_version_id={@current_gtfs_version.id}
                 align_center_lat={@active_stop_level && @active_stop_level.floorplan_center_lat}
                 align_center_lon={@active_stop_level && @active_stop_level.floorplan_center_lon}
                 align_scale_mpp={@active_stop_level && @active_stop_level.floorplan_scale_mpp}
@@ -898,6 +902,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 cross_level_badges_by_stop={@cross_level_badges_by_stop}
                 diagram_error={@diagram_error}
                 organization_id={@current_organization.id}
+                gtfs_version_id={@current_gtfs_version.id}
                 ruler_point_a={@ruler_point_a}
                 ruler_point_b={@ruler_point_b}
                 scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
@@ -1018,7 +1023,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     stop_id = socket.assigns[:stop_id]
 
     if version_id && stop_id && version_id != current_version_id &&
-         valid_version_for_org?(version_id, current_organization.id) do
+         Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       path = "/gtfs/#{version_id}/stops/#{stop_id}/diagram"
       {:noreply, push_navigate(socket, to: path)}
     else
@@ -4515,27 +4520,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             assign(socket, :diagram_error, "Failed to associate level with station")
 
           {:ok, stop_level} ->
-            case consume_uploaded_entry(socket, entry, fn %{path: path} ->
-                   uploads_base = Application.get_env(:gtfs_planner, :uploads_path)
-                   station_dir = PathSafety.stop_storage_dir(station.stop_id)
+            organization_id = socket.assigns.current_organization.id
+            gtfs_version_id = socket.assigns.current_gtfs_version.id
 
+            case consume_uploaded_entry(socket, entry, fn %{path: path} ->
                    storage_filename =
                      build_diagram_storage_filename(stop_level.level_id, entry.client_name)
 
-                   with true <- is_binary(station_dir),
-                        true <- PathSafety.safe_path_component?(storage_filename),
-                        diagrams_root <-
-                          Path.join([
-                            uploads_base,
-                            "diagrams",
-                            to_string(socket.assigns.current_organization.id)
-                          ]),
-                        dest_dir <- Path.join(diagrams_root, station_dir),
-                        dest_path <- Path.join(dest_dir, storage_filename),
-                        :ok <- PathSafety.ensure_within_root(diagrams_root, dest_dir),
-                        :ok <- PathSafety.ensure_within_root(diagrams_root, dest_path),
-                        :ok <- File.mkdir_p(dest_dir),
-                        :ok <- File.cp(path, dest_path) do
+                   # Route the manual write through DiagramStorage so it lands in the
+                   # immutable `<org>/<version>/<station>/<file>` namespace. A write for
+                   # the current published version can never alter another version's
+                   # bytes (INV-005).
+                   with true <- PathSafety.safe_path_component?(storage_filename),
+                        {:ok, binary} <- File.read(path),
+                        :ok <-
+                          DiagramStorage.store_import_image(
+                            to_string(organization_id),
+                            to_string(gtfs_version_id),
+                            station.stop_id,
+                            storage_filename,
+                            binary
+                          ) do
                      {:ok, {:saved, storage_filename}}
                    else
                      false -> {:ok, {:error, :unsafe_path_component}}
@@ -4633,17 +4638,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> assign(:active_point_id, nil)
            |> assign(:pathway_error, "Failed to create pathway")}
       end
-    end
-  end
-
-  defp valid_version_for_org?(version_id, organization_id) do
-    try do
-      case Versions.get_gtfs_version(version_id) do
-        nil -> false
-        version -> version.organization_id == organization_id
-      end
-    rescue
-      _ -> false
     end
   end
 
