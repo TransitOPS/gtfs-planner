@@ -22,6 +22,11 @@ defmodule GtfsPlanner.VersionsTest do
       assert version.organization_id == organization.id
       assert version.publication_status == @published_status
       assert not is_nil(version.published_at)
+
+      assert {:ok, %{rows: [[database_now]]}} =
+               Repo.query("SELECT CURRENT_TIMESTAMP::timestamp")
+
+      assert DateTime.to_naive(version.published_at) == database_now
     end
 
     test "create_gtfs_version/2 returns error with invalid attrs" do
@@ -482,6 +487,74 @@ defmodule GtfsPlanner.VersionsTest do
       # No uploaded content may surface in telemetry metadata.
       refute Map.has_key?(create_meta, :content)
       refute Map.has_key?(create_meta, :file)
+    end
+
+    test "failed transitions report the status captured before the locked update" do
+      organization = organization_fixture()
+      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staged"})
+
+      handler_id = make_ref()
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:gtfs_planner, :import_publication, :transition],
+        fn event, measurements, meta, _config ->
+          send(test_pid, {:telemetry, event, measurements, meta})
+        end,
+        %{}
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:ok, _failed} =
+               Versions.fail_unpublished_gtfs_version(organization.id, staging.id)
+
+      assert_receive {:telemetry, _, _, meta}
+      assert meta.version_id == staging.id
+      assert meta.prior_state == @staging_status
+      assert meta.new_state == @failed_status
+      assert is_nil(meta.failure_class)
+    end
+
+    test "invalid and missing transitions emit scoped failure telemetry with actual state" do
+      organization = organization_fixture()
+      {:ok, published} = Versions.create_gtfs_version(organization.id, %{name: "Published"})
+      missing_id = Ecto.UUID.generate()
+
+      handler_id = make_ref()
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:gtfs_planner, :import_publication, :transition],
+        fn event, measurements, meta, _config ->
+          send(test_pid, {:telemetry, event, measurements, meta})
+        end,
+        %{}
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:error, :invalid_status_transition} =
+               Versions.claim_staging_gtfs_version(organization.id, published.id)
+
+      assert {:error, :not_found} =
+               Versions.claim_staging_gtfs_version(organization.id, missing_id)
+
+      assert_receive {:telemetry, _, _, invalid_meta}
+      assert invalid_meta.organization_id == organization.id
+      assert invalid_meta.version_id == published.id
+      assert invalid_meta.prior_state == @published_status
+      assert invalid_meta.new_state == @published_status
+      assert invalid_meta.failure_class == :invalid_status_transition
+
+      assert_receive {:telemetry, _, _, missing_meta}
+      assert missing_meta.organization_id == organization.id
+      assert missing_meta.version_id == missing_id
+      assert missing_meta.prior_state == "unknown"
+      assert missing_meta.new_state == "unknown"
+      assert missing_meta.failure_class == :not_found
     end
   end
 

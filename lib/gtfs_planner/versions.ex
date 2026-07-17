@@ -29,9 +29,29 @@ defmodule GtfsPlanner.Versions do
   @spec create_gtfs_version(Ecto.UUID.t(), map()) ::
           {:ok, GtfsVersion.t()} | {:error, Ecto.Changeset.t()}
   def create_gtfs_version(organization_id, attrs) do
-    %GtfsVersion{organization_id: organization_id}
-    |> GtfsVersion.published_create_changeset(attrs)
-    |> Repo.insert()
+    result =
+      Repo.transaction(fn ->
+        case Repo.insert(
+               GtfsVersion.published_create_changeset(
+                 %GtfsVersion{organization_id: organization_id},
+                 attrs
+               )
+             ) do
+          {:ok, version} ->
+            from(v in GtfsVersion,
+              where: v.id == ^version.id,
+              update: [set: [published_at: fragment("CURRENT_TIMESTAMP")]]
+            )
+            |> Repo.update_all([])
+
+            Repo.get!(GtfsVersion, version.id)
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+      end)
+
+    result
     |> emit_transition(organization_id, nil, @published_status)
   end
 
@@ -91,16 +111,13 @@ defmodule GtfsPlanner.Versions do
   @spec publish_importing_gtfs_version(Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, GtfsVersion.t()} | {:error, :invalid_status_transition | :not_found}
   def publish_importing_gtfs_version(organization_id, version_id) do
-    case conditional_transition(
-           organization_id,
-           version_id,
-           @importing_status,
-           @published_status,
-           :database_now
-         ) do
-      {:ok, version} -> {:ok, version}
-      {:error, reason} -> {:error, reason}
-    end
+    conditional_transition(
+      organization_id,
+      version_id,
+      @importing_status,
+      @published_status,
+      :database_now
+    )
   end
 
   @doc """
@@ -113,27 +130,39 @@ defmodule GtfsPlanner.Versions do
   @spec fail_unpublished_gtfs_version(Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, GtfsVersion.t()} | {:error, :invalid_status_transition | :not_found}
   def fail_unpublished_gtfs_version(organization_id, version_id) do
-    query =
-      from(v in GtfsVersion,
-        where:
-          v.id == ^version_id and
-            v.organization_id == ^organization_id and
-            v.publication_status in ^[@staging_status, @importing_status],
-        update: [set: [publication_status: ^@failed_status, published_at: nil]]
-      )
+    result =
+      Repo.transaction(fn ->
+        version =
+          from(v in GtfsVersion,
+            where: v.id == ^version_id and v.organization_id == ^organization_id,
+            lock: "FOR UPDATE"
+          )
+          |> Repo.one()
 
-    case Repo.update_all(query, []) do
-      {0, nil} ->
-        case existence(organization_id, version_id) do
-          nil -> {:error, :not_found}
-          _ -> {:error, :invalid_status_transition}
+        case version do
+          nil ->
+            {:error, :not_found, nil}
+
+          %GtfsVersion{publication_status: prior}
+          when prior in [@staging_status, @importing_status] ->
+            from(v in GtfsVersion, where: v.id == ^version_id)
+            |> Repo.update_all(set: [publication_status: @failed_status, published_at: nil])
+
+            {:ok, Repo.get!(GtfsVersion, version_id), prior}
+
+          %GtfsVersion{publication_status: prior} ->
+            {:error, :invalid_status_transition, prior}
         end
+      end)
 
-      {_n, nil} ->
-        version = Repo.get!(GtfsVersion, version_id)
-        prior = version.publication_status
+    case result do
+      {:ok, {:ok, version, prior}} ->
         emit_transition(:ok, organization_id, version, prior, @failed_status)
         {:ok, version}
+
+      {:ok, {:error, reason, current_state}} ->
+        emit_transition_error(organization_id, version_id, current_state, reason)
+        {:error, reason}
     end
   end
 
@@ -143,12 +172,7 @@ defmodule GtfsPlanner.Versions do
   Returns the list of GTFS versions for an organization (published only).
   """
   def list_gtfs_versions(organization_id) do
-    from(v in GtfsVersion,
-      where: v.organization_id == ^organization_id,
-      where: v.publication_status == ^@published_status,
-      order_by: [desc: v.published_at, desc: v.inserted_at, desc: v.id]
-    )
-    |> Repo.all()
+    list_published_gtfs_versions(organization_id)
   end
 
   @doc """
@@ -274,10 +298,10 @@ defmodule GtfsPlanner.Versions do
 
   # --- private --------------------------------------------------------------
 
-  defp existence(organization_id, version_id) do
+  defp lifecycle_state(organization_id, version_id) do
     from(v in GtfsVersion,
       where: v.id == ^version_id and v.organization_id == ^organization_id,
-      select: v.id
+      select: v.publication_status
     )
     |> Repo.one()
   end
@@ -310,10 +334,10 @@ defmodule GtfsPlanner.Versions do
 
     case updated do
       {0, nil} ->
-        case existence(organization_id, version_id) do
-          nil -> {:error, :not_found}
-          _ -> {:error, :invalid_status_transition}
-        end
+        current_state = lifecycle_state(organization_id, version_id)
+        reason = if is_nil(current_state), do: :not_found, else: :invalid_status_transition
+        emit_transition_error(organization_id, version_id, current_state, reason)
+        {:error, reason}
 
       {_n, nil} ->
         version = Repo.get!(GtfsVersion, version_id)
@@ -332,18 +356,40 @@ defmodule GtfsPlanner.Versions do
   end
 
   defp emit_transition(:ok, organization_id, version, prior_state, new_state) do
+    emit_transition_metadata(
+      organization_id,
+      version.id,
+      prior_state,
+      new_state,
+      nil
+    )
+  end
+
+  defp emit_transition_error(organization_id, version_id, current_state, failure_class) do
+    state = current_state || "unknown"
+    emit_transition_metadata(organization_id, version_id, state, state, failure_class)
+  end
+
+  defp emit_transition_metadata(
+         organization_id,
+         version_id,
+         prior_state,
+         new_state,
+         failure_class
+       ) do
     metadata = %{
       organization_id: organization_id,
-      version_id: version.id,
+      version_id: version_id,
       prior_state: prior_state,
       new_state: new_state,
-      failure_class: nil
+      failure_class: failure_class
     }
 
     Logger.metadata(
-      version_id: version.id,
+      version_id: version_id,
       organization_id: organization_id,
-      transition: new_state
+      transition: new_state,
+      failure_class: failure_class
     )
 
     :telemetry.execute(@telemetry_event, %{}, metadata)

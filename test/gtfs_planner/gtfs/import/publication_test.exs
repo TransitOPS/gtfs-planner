@@ -466,8 +466,41 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       assert meta.organization_id == organization.id
       assert meta.version_id == staging.id
       assert meta.failure_class == :publication_failed
-      assert not is_nil(meta.prior_state)
-      assert not is_nil(meta.new_state)
+      assert meta.prior_state == "importing"
+      assert meta.new_state == "importing"
+    end
+
+    test "a losing claim reports the unchanged persisted state", %{
+      organization: organization,
+      staging: staging
+    } do
+      {:ok, _claimed} = Versions.claim_staging_gtfs_version(organization.id, staging.id)
+
+      handler_id = make_ref()
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        @telemetry_event,
+        fn event, _measurements, meta, _config ->
+          send(test_pid, {:telemetry, event, meta})
+        end,
+        %{}
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:error, _target, :invalid_status_transition} =
+               Publication.run(staging, [], "import:claim-telemetry")
+
+      assert {_event, meta} =
+               receive_telemetry(fn {_event, meta} ->
+                 meta.version_id == staging.id and
+                   meta.failure_class == :invalid_status_transition
+               end)
+
+      assert meta.prior_state == "importing"
+      assert meta.new_state == "importing"
     end
   end
 

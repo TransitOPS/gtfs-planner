@@ -17,6 +17,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
   """
 
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Repo
 
   require Logger
 
@@ -29,8 +30,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
   @spec store_import_image(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t(), binary()) ::
           :ok | {:error, term()}
   def store_import_image(organization_id, gtfs_version_id, station_stop_id, filename, binary)
-      when is_binary(organization_id) and is_binary(gtfs_version_id) and is_binary(filename) and
-             is_binary(binary) do
+      when is_binary(organization_id) and is_binary(gtfs_version_id) and
+             is_binary(station_stop_id) and is_binary(filename) and is_binary(binary) do
     with {:ok, org_dir} <- safe_org_dir(organization_id),
          {:ok, station_dir} <- safe_station_dir(station_stop_id),
          {:ok, dest_dir} <- versioned_dir(org_dir, gtfs_version_id, station_dir),
@@ -83,13 +84,14 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
          "#{endpoint_url()}/uploads/diagrams/#{organization_id}/#{gtfs_version_id}/#{encoded_station_dir(station_stop_id)}/#{URI.encode(filename, &URI.char_unreserved?/1)}"}
 
       {:error, :not_found} ->
-        case legacy_path(organization_id, station_stop_id, filename) do
-          {:ok, legacy_path} ->
-            if File.exists?(legacy_path) do
-              {:ok, legacy_url(organization_id, station_stop_id, filename)}
-            else
-              {:error, :not_found}
-            end
+        case referenced_legacy_path(
+               organization_id,
+               gtfs_version_id,
+               station_stop_id,
+               filename
+             ) do
+          {:ok, _legacy_path} ->
+            {:ok, legacy_url(organization_id, station_stop_id, filename)}
 
           {:error, reason} ->
             {:error, reason}
@@ -135,7 +137,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
                          {:ok, _} <- File.copy(legacy_path, dest_path) do
                       acc + 1
                     else
-                      _ -> acc
+                      {:error, reason} -> repo.rollback(reason)
                     end
                   end
 
@@ -245,13 +247,14 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
         File.read(path)
 
       {:error, :not_found} ->
-        case legacy_path(organization_id, station_stop_id, filename) do
+        case referenced_legacy_path(
+               organization_id,
+               gtfs_version_id,
+               station_stop_id,
+               filename
+             ) do
           {:ok, legacy_path} ->
-            if File.exists?(legacy_path) do
-              File.read(legacy_path)
-            else
-              {:error, :not_found}
-            end
+            File.read(legacy_path)
 
           {:error, reason} ->
             {:error, reason}
@@ -284,6 +287,48 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
 
   defp endpoint_url do
     GtfsPlannerWeb.Endpoint.url()
+  end
+
+  defp referenced_legacy_path(organization_id, gtfs_version_id, station_stop_id, filename) do
+    if published_diagram_reference?(
+         organization_id,
+         gtfs_version_id,
+         station_stop_id,
+         filename
+       ) do
+      case legacy_path(organization_id, station_stop_id, filename) do
+        {:ok, path} -> if File.exists?(path), do: {:ok, path}, else: {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp published_diagram_reference?(
+         organization_id,
+         gtfs_version_id,
+         station_stop_id,
+         filename
+       ) do
+    from(sl in GtfsPlanner.Gtfs.StopLevel,
+      join: v in GtfsPlanner.Versions.GtfsVersion,
+      on: sl.gtfs_version_id == v.id,
+      join: s in GtfsPlanner.Gtfs.Stop,
+      on: sl.stop_id == s.id,
+      where:
+        v.id == ^gtfs_version_id and
+          v.organization_id == ^organization_id and
+          v.publication_status == "published" and
+          sl.organization_id == ^organization_id and
+          sl.gtfs_version_id == ^gtfs_version_id and
+          s.stop_id == ^station_stop_id and
+          sl.diagram_filename == ^filename,
+      select: true,
+      limit: 1
+    )
+    |> Repo.one()
+    |> Kernel.==(true)
   end
 
   # -- legacy backfill query ------------------------------------------------

@@ -494,6 +494,17 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
           location_type: 1
         )
 
+      level = level_fixture(org.id, version.id)
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "plan.png",
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
+
       legacy_dir =
         Path.join([
           uploads_path,

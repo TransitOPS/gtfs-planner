@@ -146,16 +146,37 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       # Nothing was created under the versioned namespace root.
       assert [] == Path.wildcard(Path.join([uploads_root(org.id), "**", "*.png"]))
     end
+
+    test "returns badarg for a non-binary station stop id",
+         %{organization: org, version: version} do
+      assert {:error, :badarg} =
+               DiagramStorage.store_import_image(
+                 org.id,
+                 version.id,
+                 123,
+                 "plan.png",
+                 @import_bytes_a
+               )
+    end
   end
 
   describe "published_path/4 and public_url_path/4" do
     test "returns the versioned path/url and falls back only to an existing referenced legacy file",
-         %{organization: org, version: version, station: station} do
+         %{organization: org, version: version, station: station, level: level} do
       # Seed a legacy file for this station.
       legacy_dir = Path.join([uploads_root(org.id), PathSafety.stop_storage_dir(station.stop_id)])
       File.mkdir_p!(legacy_dir)
       legacy_path = Path.join(legacy_dir, "plan.png")
       File.write!(legacy_path, @legacy_bytes)
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "plan.png",
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
 
       # No versioned file yet -> published_path fails, public_url_path falls back to legacy.
       assert {:error, :not_found} =
@@ -195,6 +216,29 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       # Legacy source is preserved.
       assert File.read!(legacy_path) == @legacy_bytes
+    end
+
+    test "does not expose an unreferenced legacy file to another published version",
+         %{organization: org, version: version, station: station} do
+      legacy_dir = Path.join([uploads_root(org.id), PathSafety.stop_storage_dir(station.stop_id)])
+      File.mkdir_p!(legacy_dir)
+      File.write!(Path.join(legacy_dir, "retired.png"), @legacy_bytes)
+
+      assert {:error, :not_found} =
+               DiagramStorage.public_url_path(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 "retired.png"
+               )
+
+      assert {:error, :not_found} =
+               DiagramStorage.read_image(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 "retired.png"
+               )
     end
 
     test "rejects unsafe components for path and url resolution",
@@ -295,6 +339,35 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
         })
 
       assert {:ok, 0} = DiagramStorage.migrate_legacy_assets(Repo)
+    end
+
+    test "returns the filesystem error when a referenced destination cannot be created",
+         %{organization: org, version: version, station: station, level: level} do
+      legacy_dir = Path.join([uploads_root(org.id), PathSafety.stop_storage_dir(station.stop_id)])
+      File.mkdir_p!(legacy_dir)
+      File.write!(Path.join(legacy_dir, "plan.png"), @legacy_bytes)
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "plan.png",
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
+
+      blocked_destination =
+        Path.join([
+          uploads_root(org.id),
+          version.id,
+          PathSafety.stop_storage_dir(station.stop_id)
+        ])
+
+      File.mkdir_p!(Path.dirname(blocked_destination))
+      File.write!(blocked_destination, "not a directory")
+
+      assert {:error, reason} = DiagramStorage.migrate_legacy_assets(Repo)
+      assert reason in [:eexist, :enotdir]
     end
   end
 

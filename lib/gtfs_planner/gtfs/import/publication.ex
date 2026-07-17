@@ -30,6 +30,7 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
   require Logger
 
   @telemetry_event [:gtfs_planner, :import_publication, :transition]
+  @importing_status "importing"
 
   @spec run(GtfsVersion.t(), [map()], String.t()) ::
           {:ok, GtfsVersion.t(), Result.t()}
@@ -41,7 +42,7 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
     # 1. Re-read the target through the organization-scoped lifecycle getter.
     case Versions.get_gtfs_version_for_lifecycle(organization_id, version_id) do
       nil ->
-        emit_failure(nil, organization_id, version_id, :not_found)
+        emit_failure(nil, organization_id, version_id, "unknown", :not_found)
         {:error, nil, :not_found}
 
       target ->
@@ -58,11 +59,18 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
 
       {:error, :invalid_status_transition} ->
         # Losing claim returns before any import write.
-        emit_failure(target, organization_id, version_id, :invalid_status_transition)
+        emit_failure(
+          target,
+          organization_id,
+          version_id,
+          target.publication_status,
+          :invalid_status_transition
+        )
+
         {:error, target, :invalid_status_transition}
 
       {:error, :not_found} ->
-        emit_failure(nil, organization_id, version_id, :not_found)
+        emit_failure(nil, organization_id, version_id, "unknown", :not_found)
         {:error, nil, :not_found}
     end
   end
@@ -93,7 +101,15 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
           # Database publication failure AFTER all asset writes: leave the target
           # importing (externally unavailable) and return a distinct error for
           # Package 3 reconciliation. Do NOT mark it failed.
-          emit_failure(claimed, organization_id, version_id, :publication_failed, reason)
+          emit_failure(
+            claimed,
+            organization_id,
+            version_id,
+            @importing_status,
+            :publication_failed,
+            reason
+          )
+
           {:error, claimed, {:publication_failed, reason}}
       end
     rescue
@@ -102,30 +118,72 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
       # {:error, :invalid_status_transition}. Leave the target importing and
       # return a distinct error for reconciliation. Do NOT mark it failed.
       e in PostgrexError ->
-        emit_failure(claimed, organization_id, version_id, :publication_failed, e)
+        emit_failure(
+          claimed,
+          organization_id,
+          version_id,
+          @importing_status,
+          :publication_failed,
+          e
+        )
+
         {:error, claimed, {:publication_failed, e}}
     end
   end
 
   defp fail_target(claimed, organization_id, version_id, reason) do
-    emit_failure(claimed, organization_id, version_id, :import_failed, reason)
-
     case Versions.fail_unpublished_gtfs_version(organization_id, version_id) do
-      {:ok, failed} -> {:error, failed, reason}
-      {:error, fail_reason} -> {:error, claimed, {:failed_transition, reason, fail_reason}}
+      {:ok, failed} ->
+        emit_failure(
+          claimed,
+          organization_id,
+          version_id,
+          failed.publication_status,
+          :import_failed,
+          reason
+        )
+
+        {:error, failed, reason}
+
+      {:error, fail_reason} ->
+        emit_failure(
+          claimed,
+          organization_id,
+          version_id,
+          claimed.publication_status,
+          :failed_transition,
+          {reason, fail_reason}
+        )
+
+        {:error, claimed, {:failed_transition, reason, fail_reason}}
     end
   end
 
-  defp emit_failure(target, organization_id, version_id, failure_class, inner_reason \\ nil)
+  defp emit_failure(
+         target,
+         organization_id,
+         version_id,
+         new_state,
+         failure_class,
+         inner_reason \\ nil
+       )
 
-  defp emit_failure(nil, organization_id, version_id, failure_class, _inner_reason) do
-    emit_failure_metadata(organization_id, version_id, "unknown", "unknown", failure_class)
+  defp emit_failure(
+         nil,
+         organization_id,
+         version_id,
+         new_state,
+         failure_class,
+         _inner_reason
+       ) do
+    emit_failure_metadata(organization_id, version_id, "unknown", new_state, failure_class)
   end
 
   defp emit_failure(
          %GtfsVersion{} = target,
          organization_id,
          version_id,
+         new_state,
          failure_class,
          inner_reason
        ) do
@@ -133,7 +191,7 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
       organization_id,
       version_id,
       target.publication_status,
-      "failed",
+      new_state,
       failure_class,
       inner_reason
     )

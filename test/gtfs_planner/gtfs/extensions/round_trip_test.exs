@@ -61,7 +61,16 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
       previous = Application.get_env(:gtfs_planner, :uploads_path)
       uploads_path = Path.join(System.tmp_dir!(), "ext_rt_#{System.unique_integer([:positive])}")
       Application.put_env(:gtfs_planner, :uploads_path, uploads_path)
-      on_exit(fn -> File.rm_rf!(uploads_path) end)
+
+      on_exit(fn ->
+        File.rm_rf!(uploads_path)
+
+        if is_nil(previous) do
+          Application.delete_env(:gtfs_planner, :uploads_path)
+        else
+          Application.put_env(:gtfs_planner, :uploads_path, previous)
+        end
+      end)
 
       # Export reads legacy-shaped files when no versioned write exists yet.
       legacy_dir = Path.join([uploads_path, "diagrams", org_a.id, "station_main"])
