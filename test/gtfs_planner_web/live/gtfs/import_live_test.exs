@@ -313,12 +313,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       refute final =~ "Importing"
     end
 
-    test "success announces the published version and links to it while keeping the diff destination", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: route_version
-    } do
+    test "success announces the published version and links to it while keeping the diff destination",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: route_version
+         } do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
 
@@ -342,12 +343,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert has_element?(view, "#diff-destination")
     end
 
-    test "validation failure uses the shared input exactly once and preserves keyboard correction", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: route_version
-    } do
+    test "validation failure uses the shared input exactly once and preserves keyboard correction",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: route_version
+         } do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, existing} = Versions.create_gtfs_version(organization.id, %{name: "Taken"})
 

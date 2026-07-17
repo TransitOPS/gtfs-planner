@@ -134,7 +134,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       |> assign(:form, form)
       |> assign(:unrecognized_upload_files, unrecognized_files)
 
-    socket = if errors != [], do: push_event(socket, "focus_first_error", %{selector: "#gtfs-import-version-name"}), else: socket
+    socket =
+      if errors != [],
+        do: push_event(socket, "focus_first_error", %{selector: "#gtfs-import-version-name"}),
+        else: socket
 
     {:noreply, socket}
   end
@@ -1001,25 +1004,25 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     organization_id = socket.assigns.current_organization.id
 
     case Versions.create_staging_gtfs_version(organization_id, %{name: version_name}) do
-       {:error, changeset} ->
-         # Pre-consumption changeset error (blank/duplicate name): return to the
-         # form, preserve every upload entry, focus/announce the error,
-         # and start no task. No lifecycle row was created.
-         socket =
-           socket
-           |> assign(:version_name_touched, true)
-           |> assign(
-             :form,
-             to_form(%{"version_name" => version_name},
-               as: :gtfs_import_form,
-               errors: changeset_errors(changeset)
-             )
-           )
-           |> assign(:import_result, nil)
+      {:error, changeset} ->
+        # Pre-consumption changeset error (blank/duplicate name): return to the
+        # form, preserve every upload entry, focus/announce the error,
+        # and start no task. No lifecycle row was created.
+        socket =
+          socket
+          |> assign(:version_name_touched, true)
+          |> assign(
+            :form,
+            to_form(%{"version_name" => version_name},
+              as: :gtfs_import_form,
+              errors: changeset_errors(changeset)
+            )
+          )
+          |> assign(:import_result, nil)
 
-         socket = push_event(socket, "focus_first_error", %{selector: "#gtfs-import-version-name"})
+        socket = push_event(socket, "focus_first_error", %{selector: "#gtfs-import-version-name"})
 
-         {:noreply, socket}
+        {:noreply, socket}
 
       {:ok, target} ->
         # Bind the persisted target before touching uploads so every downstream

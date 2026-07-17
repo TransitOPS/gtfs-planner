@@ -248,7 +248,13 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
 
       html =
         rendered_to_string(~H"""
-        <.input id="name" name="name" label="Name" help="Pick a memorable name" errors={["can't be blank"]} />
+        <.input
+          id="name"
+          name="name"
+          label="Name"
+          help="Pick a memorable name"
+          errors={["can't be blank"]}
+        />
         """)
 
       assert html =~ "id=\"name-help\""
@@ -293,7 +299,14 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
 
       select_html =
         rendered_to_string(~H"""
-        <.input id="role" name="role" type="select" label="Role" options={[{"Admin", "admin"}]} errors={["is invalid"]} />
+        <.input
+          id="role"
+          name="role"
+          type="select"
+          label="Role"
+          options={[{"Admin", "admin"}]}
+          errors={["is invalid"]}
+        />
         """)
 
       textarea_html =
