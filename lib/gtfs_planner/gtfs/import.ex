@@ -355,28 +355,6 @@ defmodule GtfsPlanner.Gtfs.Import do
     @supported_count_keys
   end
 
-  @doc """
-  Parses a single CSV line into a list of field values.
-
-  Handles quoted fields and escaped quotes per GTFS specification.
-
-  ## Parameters
-
-    - `line` - String containing a single CSV line
-
-  ## Returns
-
-    - `{:ok, fields}` - List of field values
-    - `{:error, reason}` - Parse error
-
-  ## Examples
-
-      iex> parse_csv_line("value1,value2,value3")
-      {:ok, ["value1", "value2", "value3"]}
-
-      iex> parse_csv_line(~s(value1,"quoted,value",value3))
-      {:ok, ["value1", "quoted,value", "value3"]}
-  """
   @max_zip_entries 10_000
   @default_max_zip_uncompressed_bytes 500 * 1024 * 1024
   @default_max_zip_entry_uncompressed_bytes 500 * 1024 * 1024
@@ -424,36 +402,26 @@ defmodule GtfsPlanner.Gtfs.Import do
           limits = zip_limits()
 
           case check_zip_archive_metadata_against_limits(file, limits) do
-            :ok ->
+            {:ok, preflight_warnings} ->
               case :zip.unzip(file.content, [:memory]) do
                 {:ok, entries} ->
                   entry_sizes = Enum.map(entries, fn {_name, content} -> byte_size(content) end)
 
                   case check_zip_entry_sizes_against_limits(entry_sizes, limits) do
                     {:ok, _entries_count, _total_bytes} ->
-                      {normalized_entries, nested_warnings} =
-                        Enum.flat_map_reduce(entries, [], fn {name, content}, acc ->
+                      normalized_entries =
+                        Enum.flat_map(entries, fn {name, content} ->
                           filename = normalize_uploaded_filename(to_string(name))
 
                           cond do
                             ignore_zip_entry?(filename) ->
-                              {[], acc}
+                              []
 
                             String.ends_with?(String.downcase(filename), ".zip") ->
-                              Logger.warning(
-                                "Rejecting nested zip entry #{filename} in archive #{file.filename}"
-                              )
-
-                              warning = %{
-                                filename: file.filename,
-                                reason: :nested_archive,
-                                detail: "nested archive rejected: #{filename}"
-                              }
-
-                              {[], [warning | acc]}
+                              []
 
                             true ->
-                              {[%{filename: filename, content: content}], acc}
+                              [%{filename: filename, content: content}]
                           end
                         end)
 
@@ -462,7 +430,7 @@ defmodule GtfsPlanner.Gtfs.Import do
                           [entry | acc]
                         end)
 
-                      {files_acc, nested_warnings ++ warnings_acc}
+                      {files_acc, Enum.reverse(preflight_warnings) ++ warnings_acc}
 
                     {:error, reason, entries_count, total_bytes, entry_bytes} ->
                       Logger.warning(
@@ -480,7 +448,7 @@ defmodule GtfsPlanner.Gtfs.Import do
                           "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
                       }
 
-                      {files_acc, [warning | warnings_acc]}
+                      {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
                   end
 
                 {:error, reason} ->
@@ -494,10 +462,10 @@ defmodule GtfsPlanner.Gtfs.Import do
                     detail: "archive could not be read (#{inspect(reason)})"
                   }
 
-                  {files_acc, [warning | warnings_acc]}
+                  {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
               end
 
-            {:error, reason, entries_count, total_bytes, entry_bytes} ->
+            {:error, reason, entries_count, total_bytes, entry_bytes, preflight_warnings} ->
               Logger.warning(
                 "Zip archive #{file.filename} exceeds safety limits " <>
                   "(reason=#{reason}, entries=#{entries_count}, bytes=#{total_bytes}, " <>
@@ -513,9 +481,9 @@ defmodule GtfsPlanner.Gtfs.Import do
                   "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
               }
 
-              {files_acc, [warning | warnings_acc]}
+              {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
 
-            {:error, reason} ->
+            {:error, reason, preflight_warnings} ->
               Logger.warning(
                 "Failed to preflight zip archive #{file.filename}: #{inspect(reason)}"
               )
@@ -526,7 +494,7 @@ defmodule GtfsPlanner.Gtfs.Import do
                 detail: "archive could not be read (#{inspect(reason)})"
               }
 
-              {files_acc, [warning | warnings_acc]}
+              {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
           end
         else
           {[file | files_acc], warnings_acc}
@@ -567,35 +535,52 @@ defmodule GtfsPlanner.Gtfs.Import do
     with_temp_file(file.content, ".zip", fn path ->
       case :zip.list_dir(String.to_charlist(path)) do
         {:ok, entries} ->
-          entry_sizes =
-            Enum.flat_map(entries, fn
-              {:zip_file, name, file_info, _comment, _offset, _comp_size} ->
+          {entry_sizes, nested_warnings} =
+            Enum.reduce(entries, {[], []}, fn
+              {:zip_file, name, file_info, _comment, _offset, _comp_size},
+              {entry_sizes, nested_warnings} ->
                 filename = normalize_uploaded_filename(to_string(name))
 
-                if String.ends_with?(String.downcase(filename), ".zip") do
-                  Logger.warning(
-                    "Rejecting nested zip entry #{filename} in archive #{file.filename}"
-                  )
-                end
+                nested_warnings =
+                  if String.ends_with?(String.downcase(filename), ".zip") do
+                    Logger.warning(
+                      "Rejecting nested zip entry #{filename} in archive #{file.filename}"
+                    )
 
-                [zip_entry_uncompressed_size(file_info)]
+                    warning = %{
+                      filename: file.filename,
+                      reason: :nested_archive,
+                      detail: "nested archive rejected: #{filename}"
+                    }
 
-              _ ->
-                []
+                    [warning | nested_warnings]
+                  else
+                    nested_warnings
+                  end
+
+                {[zip_entry_uncompressed_size(file_info) | entry_sizes], nested_warnings}
+
+              _, acc ->
+                acc
             end)
 
-          case check_zip_entry_sizes_against_limits(entry_sizes, limits) do
-            {:ok, _, _} = ok -> ok
-            {:error, _, _, _, _} = error -> error
+          nested_warnings = Enum.reverse(nested_warnings)
+
+          case check_zip_entry_sizes_against_limits(Enum.reverse(entry_sizes), limits) do
+            {:ok, _, _} ->
+              {:ok, nested_warnings}
+
+            {:error, reason, entries_count, total_bytes, entry_bytes} ->
+              {:error, reason, entries_count, total_bytes, entry_bytes, nested_warnings}
           end
 
         {:error, reason} ->
-          {:error, reason}
+          {:error, reason, []}
       end
     end)
     |> case do
-      {:ok, _entries_count, _total_bytes} -> :ok
-      other -> other
+      {:error, reason} -> {:error, reason, []}
+      result -> result
     end
   end
 
@@ -700,6 +685,28 @@ defmodule GtfsPlanner.Gtfs.Import do
   # production parsing paths (parse_csv_content/1 and
   # parse_csv_content_with_count/1) remain until their callers are retired in
   # later steps.
+  @doc """
+  Parses a single CSV line into a list of field values.
+
+  Handles quoted fields and escaped quotes per GTFS specification.
+
+  ## Parameters
+
+    - `line` - String containing a single CSV line
+
+  ## Returns
+
+    - `{:ok, fields}` - List of field values
+    - `{:error, reason}` - Parse error
+
+  ## Examples
+
+      iex> parse_csv_line("value1,value2,value3")
+      {:ok, ["value1", "value2", "value3"]}
+
+      iex> parse_csv_line(~s(value1,"quoted,value",value3))
+      {:ok, ["value1", "quoted,value", "value3"]}
+  """
   def parse_csv_line(line) when is_binary(line) do
     GtfsPlanner.Gtfs.Import.CsvParser.parse_line(line)
   end

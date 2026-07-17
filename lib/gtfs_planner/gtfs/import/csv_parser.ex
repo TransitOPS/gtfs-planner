@@ -36,23 +36,28 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParser do
         {:error, %ParseError{file: file, reason: :empty_content}}
       else
         {records, source_row_count} = split_records(content)
-        {_line_number, header_line} = hd(records)
-        headers = parse_header(file, header_line)
 
-        case headers do
-          {:ok, headers} ->
-            data_records = tl(records)
+        if records == [] do
+          {:error, %ParseError{file: file, reason: :empty_content}}
+        else
+          {_line_number, header_line} = hd(records)
+          headers = parse_header(file, header_line)
 
-            events =
-              data_records
-              |> Stream.map(fn {row, line} ->
-                parse_row(file, headers, line, row)
-              end)
+          case headers do
+            {:ok, headers} ->
+              data_records = tl(records)
 
-            {:ok, %{headers: headers, source_row_count: source_row_count, events: events}}
+              events =
+                data_records
+                |> Stream.map(fn {row, line} ->
+                  parse_row(file, headers, line, row)
+                end)
 
-          {:error, error} ->
-            {:error, error}
+              {:ok, %{headers: headers, source_row_count: source_row_count, events: events}}
+
+            {:error, error} ->
+              {:error, error}
+          end
         end
       end
     else
@@ -82,6 +87,7 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParser do
   end
 
   defp trim_cr(<<>>), do: <<>>
+
   defp trim_cr(line) do
     size = byte_size(line)
     last = :binary.part(line, size - 1, 1)
@@ -141,7 +147,7 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParser do
 
   @doc false
   def parse_line(line) when is_binary(line) do
-    parse_csv_fields(line, [], "", false, 0, "", 0)
+    parse_csv_fields(line, [], "", false, 0, "", nil)
   end
 
   defp parse_csv_fields(line, file, row) do

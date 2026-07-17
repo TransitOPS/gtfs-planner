@@ -701,7 +701,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
 
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Interrupted"})
+      {:ok, staging} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Interrupted"})
+
       {:ok, importing} = Versions.claim_staging_gtfs_version(organization.id, staging.id)
 
       ref = make_ref()

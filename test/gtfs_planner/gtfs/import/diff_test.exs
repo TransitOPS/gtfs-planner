@@ -20,13 +20,18 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
     test "creates add decisions for uploaded keys missing in DB" do
       uploaded =
         default_uploaded(%{
-          levels: ok_entity(:level, %{"L1" => %{level_id: "L1", level_index: 1.0, level_name: "Platform"}})
+          levels:
+            ok_entity(:level, %{
+              "L1" => %{level_id: "L1", level_index: 1.0, level_name: "Platform"}
+            })
         })
 
       %{applicable: applicable, preview: preview} = Diff.compute(uploaded, default_db())
 
       assert preview == []
-      assert [%{id: "level:L1", action: :add, entity_type: :level, dependency_keys: []}] = applicable
+
+      assert [%{id: "level:L1", action: :add, entity_type: :level, dependency_keys: []}] =
+               applicable
     end
 
     test "creates remove decisions for DB keys missing in upload (AC-9)" do
@@ -44,7 +49,8 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
 
       uploaded =
         default_uploaded(%{
-          levels: ok_entity(:level, %{"L1" => %{level_id: "L1", level_index: 0.0, level_name: "New"}})
+          levels:
+            ok_entity(:level, %{"L1" => %{level_id: "L1", level_index: 0.0, level_name: "New"}})
         })
 
       %{applicable: [decision]} = Diff.compute(uploaded, db)
@@ -63,7 +69,8 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
 
       uploaded =
         default_uploaded(%{
-          levels: ok_entity(:level, %{"L1" => %{level_id: "L1", level_index: 0.0, level_name: "New"}})
+          levels:
+            ok_entity(:level, %{"L1" => %{level_id: "L1", level_index: 0.0, level_name: "New"}})
         })
 
       %{applicable: [decision]} = Diff.compute(uploaded, db)
@@ -78,7 +85,10 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
 
       uploaded =
         default_uploaded(%{
-          levels: ok_entity(:level, %{"L1" => %{level_id: "L1", level_index: 0.0, level_name: "Platform"}})
+          levels:
+            ok_entity(:level, %{
+              "L1" => %{level_id: "L1", level_index: 0.0, level_name: "Platform"}
+            })
         })
 
       %{applicable: applicable, preview: preview} = Diff.compute(uploaded, db)
@@ -90,8 +100,10 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
     test "returns stable entity ordering levels ++ stops ++ pathways" do
       uploaded =
         default_uploaded(%{
-          levels: ok_entity(:level, %{"L2" => %{level_id: "L2", level_index: 2.0, level_name: nil}}),
-          stops: ok_entity(:stop, %{"S2" => stop_attrs("S2", %{level_id: nil, parent_station: nil})}),
+          levels:
+            ok_entity(:level, %{"L2" => %{level_id: "L2", level_index: 2.0, level_name: nil}}),
+          stops:
+            ok_entity(:stop, %{"S2" => stop_attrs("S2", %{level_id: nil, parent_station: nil})}),
           pathways:
             ok_entity(:pathway, %{
               "P2" => pathway_attrs("P2", %{from_stop_id: "S2", to_stop_id: "S3"})
@@ -113,7 +125,11 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
 
       uploaded =
         default_uploaded(%{
-          stops: ok_entity(:stop, %{"S1" => stop_attrs("S1", %{stop_lat: Decimal.new("40.00"), stop_lon: Decimal.new("-74.0")})})
+          stops:
+            ok_entity(:stop, %{
+              "S1" =>
+                stop_attrs("S1", %{stop_lat: Decimal.new("40.00"), stop_lon: Decimal.new("-74.0")})
+            })
         })
 
       %{applicable: applicable, preview: preview} = Diff.compute(uploaded, db)
@@ -136,9 +152,14 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
     test "populates dependency keys for stops and pathways" do
       uploaded =
         default_uploaded(%{
-          stops: ok_entity(:stop, %{"S1" => stop_attrs("S1", %{level_id: "L1", parent_station: "STATION"})}),
+          stops:
+            ok_entity(:stop, %{
+              "S1" => stop_attrs("S1", %{level_id: "L1", parent_station: "STATION"})
+            }),
           pathways:
-            ok_entity(:pathway, %{"P1" => pathway_attrs("P1", %{from_stop_id: "S1", to_stop_id: "S2"})})
+            ok_entity(:pathway, %{
+              "P1" => pathway_attrs("P1", %{from_stop_id: "S1", to_stop_id: "S2"})
+            })
         })
 
       %{applicable: decisions} = Diff.compute(uploaded, default_db())
@@ -152,18 +173,21 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
 
   describe "compute/2 failed-upload preview behavior" do
     test "failed entity produces add/modify/conflict previews only, no removals (AC-10)" do
-      db = default_db(%{
-        levels: [level(%{level_id: "L1", level_name: "Old"})],
-        stops: [stop(%{stop_id: "STOP_REMOVED"})]
-      })
+      db =
+        default_db(%{
+          levels: [level(%{level_id: "L1", level_name: "Old"})],
+          stops: [stop(%{stop_id: "STOP_REMOVED"})]
+        })
 
       uploaded =
         default_uploaded(%{
-          levels: error_entity(:level, %{"L1" => %{level_id: "L1", level_index: 0.0, level_name: "New"}}),
+          levels:
+            error_entity(:level, %{"L1" => %{level_id: "L1", level_index: 0.0, level_name: "New"}}),
           stops: error_entity(:stop, %{})
         })
 
-      %{applicable: applicable, preview: preview, blocked_entities: blocked} = Diff.compute(uploaded, db)
+      %{applicable: applicable, preview: preview, blocked_entities: blocked} =
+        Diff.compute(uploaded, db)
 
       assert applicable == []
       assert Map.fetch!(blocked, :level) == :parse_failed
@@ -180,21 +204,26 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
 
       uploaded =
         default_uploaded(%{
-          stops: error_entity(:stop, %{"S2" => stop_attrs("S2", %{level_id: nil, parent_station: nil})})
+          stops:
+            error_entity(:stop, %{"S2" => stop_attrs("S2", %{level_id: nil, parent_station: nil})})
         })
 
       %{applicable: applicable, preview: preview} = Diff.compute(uploaded, db)
 
       assert applicable == []
       refute Enum.any?(preview, &(&1.action == :remove))
-      refute Enum.any?([applicable, preview] |> List.flatten(), fn d -> d.id == "stop:STOP_ABSENT" end)
+
+      refute Enum.any?([applicable, preview] |> List.flatten(), fn d ->
+               d.id == "stop:STOP_ABSENT"
+             end)
     end
 
     test "complete empty entity produces removal decisions for every DB key (AC-9)" do
-      db = default_db(%{
-        levels: [level(%{level_id: "L1"}), level(%{level_id: "L2"})],
-        stops: [stop(%{stop_id: "S1"})]
-      })
+      db =
+        default_db(%{
+          levels: [level(%{level_id: "L1"}), level(%{level_id: "L2"})],
+          stops: [stop(%{stop_id: "S1"})]
+        })
 
       uploaded = default_uploaded(%{levels: ok_entity(:level, %{})})
 
@@ -214,10 +243,12 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
       uploaded =
         default_uploaded(%{
           levels: error_entity(:level, %{}),
-          stops: ok_entity(:stop, %{"S1" => stop_attrs("S1", %{level_id: "L1", parent_station: nil})})
+          stops:
+            ok_entity(:stop, %{"S1" => stop_attrs("S1", %{level_id: "L1", parent_station: nil})})
         })
 
-      %{applicable: applicable, preview: preview, blocked_entities: blocked} = Diff.compute(uploaded, db)
+      %{applicable: applicable, preview: preview, blocked_entities: blocked} =
+        Diff.compute(uploaded, db)
 
       assert applicable == []
       assert Map.fetch!(blocked, :level) == :parse_failed
@@ -230,12 +261,17 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
 
       uploaded =
         default_uploaded(%{
-          levels: ok_entity(:level, %{"L1" => %{level_id: "L1", level_index: 0.0, level_name: "x"}}),
+          levels:
+            ok_entity(:level, %{"L1" => %{level_id: "L1", level_index: 0.0, level_name: "x"}}),
           stops: error_entity(:stop, %{}),
-          pathways: ok_entity(:pathway, %{"P1" => pathway_attrs("P1", %{from_stop_id: "S1", to_stop_id: "S2"})})
+          pathways:
+            ok_entity(:pathway, %{
+              "P1" => pathway_attrs("P1", %{from_stop_id: "S1", to_stop_id: "S2"})
+            })
         })
 
-      %{applicable: applicable, preview: preview, blocked_entities: blocked} = Diff.compute(uploaded, db)
+      %{applicable: applicable, preview: preview, blocked_entities: blocked} =
+        Diff.compute(uploaded, db)
 
       assert Enum.all?(applicable, &(&1.entity_type == :level))
       assert Enum.all?(preview, &(&1.entity_type == :pathway))
@@ -248,10 +284,14 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
         default_uploaded(%{
           levels: error_entity(:level, %{}),
           stops: error_entity(:stop, %{}),
-          pathways: ok_entity(:pathway, %{"P1" => pathway_attrs("P1", %{from_stop_id: "S1", to_stop_id: "S2"})})
+          pathways:
+            ok_entity(:pathway, %{
+              "P1" => pathway_attrs("P1", %{from_stop_id: "S1", to_stop_id: "S2"})
+            })
         })
 
-      %{applicable: applicable, preview: preview, blocked_entities: blocked} = Diff.compute(uploaded, db_no_records())
+      %{applicable: applicable, preview: preview, blocked_entities: blocked} =
+        Diff.compute(uploaded, db_no_records())
 
       assert applicable == []
       assert Enum.all?(preview, &(&1.entity_type == :pathway))
@@ -264,14 +304,32 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
       uploaded =
         default_uploaded(%{
           levels: :not_uploaded,
-          stops: ok_entity(:stop, %{"S1" => stop_attrs("S1", %{level_id: nil, parent_station: nil})})
+          stops:
+            ok_entity(:stop, %{"S1" => stop_attrs("S1", %{level_id: nil, parent_station: nil})})
         })
 
-      %{applicable: applicable, preview: preview, blocked_entities: blocked} = Diff.compute(uploaded, default_db())
+      %{applicable: applicable, preview: preview, blocked_entities: blocked} =
+        Diff.compute(uploaded, default_db())
 
       assert preview == []
       assert Enum.all?(applicable, &(&1.entity_type == :stop))
       refute Map.has_key?(blocked, :stop)
+    end
+
+    test "failed levels do not taint stops that were not uploaded" do
+      uploaded = default_uploaded(%{levels: error_entity(:level, %{})})
+
+      %{blocked_entities: blocked} = Diff.compute(uploaded, default_db())
+
+      assert blocked == %{level: :parse_failed}
+    end
+
+    test "failed stops do not taint pathways that were not uploaded" do
+      uploaded = default_uploaded(%{stops: error_entity(:stop, %{})})
+
+      %{blocked_entities: blocked} = Diff.compute(uploaded, default_db())
+
+      assert blocked == %{stop: :parse_failed}
     end
 
     test "complete entity outside failed dependency closure stays applicable" do
@@ -279,11 +337,13 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
 
       uploaded =
         default_uploaded(%{
-          levels: ok_entity(:level, %{"L2" => %{level_id: "L2", level_index: 0.0, level_name: "New"}}),
+          levels:
+            ok_entity(:level, %{"L2" => %{level_id: "L2", level_index: 0.0, level_name: "New"}}),
           stops: error_entity(:stop, %{})
         })
 
-      %{applicable: applicable, preview: preview, blocked_entities: blocked} = Diff.compute(uploaded, db)
+      %{applicable: applicable, preview: preview, blocked_entities: blocked} =
+        Diff.compute(uploaded, db)
 
       assert Enum.any?(applicable, fn d -> d.id == "level:L2" and d.action == :add end)
       assert preview == []
@@ -319,7 +379,13 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
   end
 
   defp ok_entity(entity_type, records_by_key) do
-    {:ok, %ParsedEntity{entity_type: entity_type, filename: "#{entity_type}.txt", records_by_key: records_by_key, source_row_count: map_size(records_by_key)}}
+    {:ok,
+     %ParsedEntity{
+       entity_type: entity_type,
+       filename: "#{entity_type}.txt",
+       records_by_key: records_by_key,
+       source_row_count: map_size(records_by_key)
+     }}
   end
 
   defp error_entity(entity_type, preview_records_by_key) do

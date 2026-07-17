@@ -7,7 +7,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import
-  alias GtfsPlanner.Gtfs.Import.{Result, Diff, DiffDecision, RowParser, ParsedEntity, ParseError, ParseFailure}
+
+  alias GtfsPlanner.Gtfs.Import.{
+    Result,
+    Diff,
+    DiffDecision,
+    RowParser,
+    ParsedEntity,
+    ParseError,
+    ParseFailure
+  }
+
   alias GtfsPlanner.Gtfs.Import.Publication
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
@@ -66,16 +76,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:import_progress, nil)
      |> assign(:importing, false)
      |> assign(:unrecognized_upload_files, [])
-      |> assign(:diff_step, :upload)
-      |> assign(:diff_summary, empty_diff_summary())
-      |> assign(:diff_filter, :all)
-      |> assign(:diff_parse_failures, [])
-      |> assign(:diff_blockers, [])
-      |> assign(:diff_preview_count, 0)
-      |> assign(:apply_results, [])
-      |> assign(:decisions_by_id, %{})
-      |> stream(:diff_decisions, [])
-      |> stream(:diff_preview_decisions, [])}
+     |> assign(:diff_step, :upload)
+     |> assign(:diff_summary, empty_diff_summary())
+     |> assign(:diff_filter, :all)
+     |> assign(:diff_parse_failures, [])
+     |> assign(:diff_blockers, [])
+     |> assign(:diff_preview_count, 0)
+     |> assign(:apply_results, [])
+     |> assign(:decisions_by_id, %{})
+     |> stream(:diff_decisions, [])
+     |> stream(:diff_preview_decisions, [])}
   end
 
   @impl true
@@ -204,18 +214,18 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       {:error, duplicate_errors} ->
         blockers = Enum.map(duplicate_errors, &normalize_duplicate_blocker/1)
 
-         {:noreply,
-          socket
-          |> assign(:diff_blockers, blockers)
-          |> assign(:diff_parse_failures, [])
-          |> assign(:diff_preview_count, 0)
-          |> assign(:diff_step, :upload)
-          |> assign(:diff_filter, :all)
-          |> assign(:diff_summary, empty_diff_summary())
-          |> assign(:apply_results, [])
-          |> assign(:decisions_by_id, %{})
-          |> stream(:diff_decisions, [], reset: true)
-          |> stream(:diff_preview_decisions, [], reset: true)}
+        {:noreply,
+         socket
+         |> assign(:diff_blockers, blockers)
+         |> assign(:diff_parse_failures, [])
+         |> assign(:diff_preview_count, 0)
+         |> assign(:diff_step, :upload)
+         |> assign(:diff_filter, :all)
+         |> assign(:diff_summary, empty_diff_summary())
+         |> assign(:apply_results, [])
+         |> assign(:decisions_by_id, %{})
+         |> stream(:diff_decisions, [], reset: true)
+         |> stream(:diff_preview_decisions, [], reset: true)}
 
       {:ok, categorized_files} ->
         organization_id = socket.assigns.current_organization.id
@@ -243,7 +253,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               :level,
               "levels.txt",
               :level_id,
-              fn row_map -> RowParser.level_row_to_attrs(row_map, organization_id, gtfs_version_id) end
+              fn row_map ->
+                RowParser.level_row_to_attrs(row_map, organization_id, gtfs_version_id)
+              end
             )
 
           stops_result =
@@ -252,7 +264,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               :stop,
               "stops.txt",
               :stop_id,
-              fn row_map -> RowParser.stop_row_to_attrs(row_map, organization_id, gtfs_version_id) end
+              fn row_map ->
+                RowParser.stop_row_to_attrs(row_map, organization_id, gtfs_version_id)
+              end
             )
 
           db_levels = Gtfs.list_levels(organization_id, gtfs_version_id)
@@ -298,10 +312,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
           {:noreply,
            socket
-          |> assign(:diff_blockers, [])
-          |> assign(:diff_parse_failures, parse_failures)
-          |> assign(:diff_preview_count, length(preview_decisions))
-          |> assign(:diff_summary, summary)
+           |> assign(:diff_blockers, [])
+           |> assign(:diff_parse_failures, parse_failures)
+           |> assign(:diff_preview_count, length(preview_decisions))
+           |> assign(:diff_summary, summary)
            |> assign(:diff_filter, :all)
            |> assign(:apply_results, [])
            |> assign(:decisions_by_id, decisions_by_id)
@@ -874,10 +888,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
               <%= if @diff_parse_failures != [] do %>
                 <div id="diff-degraded-region" role="status" aria-live="polite" class="space-y-3">
-                  <.callout :for={failure <- @diff_parse_failures} kind="error" title="Incomplete file">
+                  <.callout
+                    :for={failure <- @diff_parse_failures}
+                    kind="error"
+                    title="Incomplete file"
+                  >
                     <p class="text-sm font-medium">{failure.filename}</p>
                     <p class="text-xs text-base-content/70 mt-0.5">
-                      <%= format_failure_summary(failure) %>
+                      {format_failure_summary(failure)}
                     </p>
                     <ul class="mt-1 space-y-1 text-xs list-disc list-inside">
                       <li :for={error <- Enum.take(failure.diagnostics, 100)}>

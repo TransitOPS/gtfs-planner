@@ -103,14 +103,24 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
 
     dependency_taint =
       %{}
-      |> then(fn acc -> if levels_failed, do: Map.put(acc, :stops, :dependency_failed), else: acc end)
-      |> then(fn acc -> if stops_failed, do: Map.put(acc, :pathways, :dependency_failed), else: acc end)
+      |> then(fn acc ->
+        if levels_failed and Map.fetch!(uploaded, :stops) != :not_uploaded,
+          do: Map.put(acc, :stops, :dependency_failed),
+          else: acc
+      end)
+      |> then(fn acc ->
+        if stops_failed and Map.fetch!(uploaded, :pathways) != :not_uploaded,
+          do: Map.put(acc, :pathways, :dependency_failed),
+          else: acc
+      end)
 
     parse_failed =
       %{}
       |> then(fn acc -> if levels_failed, do: Map.put(acc, :levels, :parse_failed), else: acc end)
       |> then(fn acc -> if stops_failed, do: Map.put(acc, :stops, :parse_failed), else: acc end)
-      |> then(fn acc -> if pathways_failed, do: Map.put(acc, :pathways, :parse_failed), else: acc end)
+      |> then(fn acc ->
+        if pathways_failed, do: Map.put(acc, :pathways, :parse_failed), else: acc
+      end)
 
     Map.merge(dependency_taint, parse_failed)
   end
@@ -120,7 +130,12 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
 
   defp entity_decisions(_entity_type, :not_uploaded, _db_records, _block_reason), do: []
 
-  defp entity_decisions(entity_type, {:ok, %ParsedEntity{records_by_key: records_by_key}}, db_records, block_reason) do
+  defp entity_decisions(
+         entity_type,
+         {:ok, %ParsedEntity{records_by_key: records_by_key}},
+         db_records,
+         block_reason
+       ) do
     decisions = diff_entity(entity_type, records_by_key, db_records)
 
     case block_reason do
@@ -132,7 +147,12 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
     end
   end
 
-  defp entity_decisions(entity_type, {:error, %ParseFailure{preview_records_by_key: preview_records_by_key}}, db_records, _block_reason) do
+  defp entity_decisions(
+         entity_type,
+         {:error, %ParseFailure{preview_records_by_key: preview_records_by_key}},
+         db_records,
+         _block_reason
+       ) do
     decisions =
       diff_preview_entity(entity_type, preview_records_by_key, db_records)
 
@@ -152,7 +172,10 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
     do: remove_decisions(entity_type, db_records)
 
   defp diff_entity(entity_type, records_by_key, db_records) do
-    db_by_key = Map.new(db_records, fn record -> {Map.fetch!(record, natural_key_field(entity_type)), record} end)
+    db_by_key =
+      Map.new(db_records, fn record ->
+        {Map.fetch!(record, natural_key_field(entity_type)), record}
+      end)
 
     uploaded_keys = records_by_key |> Map.keys() |> MapSet.new()
     db_keys = db_by_key |> Map.keys() |> MapSet.new()
@@ -161,23 +184,25 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
     remove_keys = MapSet.difference(db_keys, uploaded_keys) |> sorted_keys()
     intersection_keys = MapSet.intersection(uploaded_keys, db_keys) |> sorted_keys()
 
-    add_decisions = Enum.map(add_keys, fn natural_key ->
-      uploaded_attrs = Map.fetch!(records_by_key, natural_key)
+    add_decisions =
+      Enum.map(add_keys, fn natural_key ->
+        uploaded_attrs = Map.fetch!(records_by_key, natural_key)
 
-      build_decision(entity_type, natural_key, :add,
-        uploaded_attrs: uploaded_attrs,
-        dependency_keys: dependency_keys(entity_type, :add, uploaded_attrs)
-      )
-    end)
+        build_decision(entity_type, natural_key, :add,
+          uploaded_attrs: uploaded_attrs,
+          dependency_keys: dependency_keys(entity_type, :add, uploaded_attrs)
+        )
+      end)
 
-    remove_decisions = Enum.map(remove_keys, fn natural_key ->
-      current_record = Map.fetch!(db_by_key, natural_key)
+    remove_decisions =
+      Enum.map(remove_keys, fn natural_key ->
+        current_record = Map.fetch!(db_by_key, natural_key)
 
-      build_decision(entity_type, natural_key, :remove,
-        current_record: current_record,
-        dependency_keys: []
-      )
-    end)
+        build_decision(entity_type, natural_key, :remove,
+          current_record: current_record,
+          dependency_keys: []
+        )
+      end)
 
     intersection_decisions =
       Enum.flat_map(intersection_keys, fn natural_key ->
@@ -225,7 +250,10 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
        do: []
 
   defp diff_preview_entity(entity_type, preview_records_by_key, db_records) do
-    db_by_key = Map.new(db_records, fn record -> {Map.fetch!(record, natural_key_field(entity_type)), record} end)
+    db_by_key =
+      Map.new(db_records, fn record ->
+        {Map.fetch!(record, natural_key_field(entity_type)), record}
+      end)
 
     uploaded_keys = preview_records_by_key |> Map.keys() |> MapSet.new()
     db_keys = db_by_key |> Map.keys() |> MapSet.new()
@@ -233,14 +261,15 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
     add_keys = MapSet.difference(uploaded_keys, db_keys) |> sorted_keys()
     intersection_keys = MapSet.intersection(uploaded_keys, db_keys) |> sorted_keys()
 
-    add_decisions = Enum.map(add_keys, fn natural_key ->
-      uploaded_attrs = Map.fetch!(preview_records_by_key, natural_key)
+    add_decisions =
+      Enum.map(add_keys, fn natural_key ->
+        uploaded_attrs = Map.fetch!(preview_records_by_key, natural_key)
 
-      build_decision(entity_type, natural_key, :add,
-        uploaded_attrs: uploaded_attrs,
-        dependency_keys: dependency_keys(entity_type, :add, uploaded_attrs)
-      )
-    end)
+        build_decision(entity_type, natural_key, :add,
+          uploaded_attrs: uploaded_attrs,
+          dependency_keys: dependency_keys(entity_type, :add, uploaded_attrs)
+        )
+      end)
 
     intersection_decisions =
       Enum.flat_map(intersection_keys, fn natural_key ->

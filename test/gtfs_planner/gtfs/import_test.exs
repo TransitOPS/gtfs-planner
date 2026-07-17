@@ -721,6 +721,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert expanded == []
 
       assert [
+               %{filename: "too_many_ignored.zip", reason: :nested_archive},
                %{
                  filename: "too_many_ignored.zip",
                  reason: :archive_too_large,

@@ -349,6 +349,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
         |> Repo.aggregate(:count)
 
       assert persisted >= 2 * 1000
+      assert persisted <= 2 * 1000
       assert persisted < total_data_rows
 
       # The incomplete target is never published (AC-14, INV-3).

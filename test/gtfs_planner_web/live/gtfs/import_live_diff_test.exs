@@ -184,7 +184,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       # so it degrades into a read-only preview only.
       levels_content = "level_id,level_index,level_name\nL1,0.0,Level 1"
 
-      stops_content = "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0\nS1,Duplicate,40.1,-74.1,0"
+      stops_content =
+        "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0\nS1,Duplicate,40.1,-74.1,0"
 
       {:ok, {_name, zip_binary}} =
         :zip.create(
@@ -387,7 +388,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       # natural key so it degrades into read-only preview decisions.
       levels_content = "level_id,level_index,level_name\nL1,0.0,Level 1"
 
-      stops_content = "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0\nS1,Duplicate,40.1,-74.1,0"
+      stops_content =
+        "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0\nS1,Duplicate,40.1,-74.1,0"
 
       {:ok, {_name, zip_binary}} =
         :zip.create(
@@ -458,7 +460,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       # it degrades to read-only preview only (no applicable stop decision).
       levels_content = "level_id,level_index,level_name\nL1,0.0,Level 1"
 
-      stops_content = "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0\nS1,Duplicate,40.1,-74.1,0"
+      stops_content =
+        "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0\nS1,Duplicate,40.1,-74.1,0"
 
       {:ok, {_name, zip_binary}} =
         :zip.create(
@@ -587,7 +590,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     } do
       # A degraded upload populates parse failures and a preview region.
       levels_content = "level_id,level_index,level_name\nL1,0.0,Level 1"
-      stops_content = "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0\nS1,Duplicate,40.1,-74.1,0"
+
+      stops_content =
+        "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0\nS1,Duplicate,40.1,-74.1,0"
 
       {:ok, {_name, zip_binary}} =
         :zip.create(
@@ -724,11 +729,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       render_upload(upload, "levels.txt")
       view |> form("#diff-upload-form") |> render_submit()
 
-      html = render(view)
-
       # Exactly the sample cap (100) of diagnostic rows render under the
       # degraded region (each row is summarized as "levels.txt row N: ...").
-      row_diagnostics = length(Regex.scan(~r/levels\.txt row /, html))
+      row_diagnostics =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#diff-degraded-region li")
+        |> Enum.count()
+
       assert row_diagnostics == 100
 
       # The aggregate total count element reports the true total (150).
@@ -746,7 +755,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       # pathways.txt is an independent complete entity and keeps applicable controls.
       bad_levels = "level_index,level_name\n0.0,Ground"
       good_stops = "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0"
-      good_pathways = "pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional\nP1,S1,S1,1,1"
+
+      good_pathways =
+        "pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional\nP1,S1,S1,1,1"
 
       {:ok, {_name, zip_binary}} =
         :zip.create(
@@ -773,6 +784,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
 
       # The tainted stops upload renders a read-only preview with no approve buttons.
       assert has_element?(view, "#diff-preview-region")
+
       refute has_element?(
                view,
                "button[phx-click='approve-decision'][phx-value-id='stop:S1']"
@@ -848,7 +860,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
 
     test "nested zip archive blocks diff globally and names the affected file", %{view: view} do
       {:ok, {_inner_name, inner_binary}} =
-        :zip.create(~c"inner.zip", [{~c"levels.txt", "level_id,level_index,level_name\nL1,0.0,Level 1"}], [:memory])
+        :zip.create(
+          ~c"inner.zip",
+          [{~c"levels.txt", "level_id,level_index,level_name\nL1,0.0,Level 1"}],
+          [:memory]
+        )
 
       {:ok, {_outer_name, outer_binary}} =
         :zip.create(~c"outer.zip", [{~c"inner.zip", inner_binary}], [:memory])

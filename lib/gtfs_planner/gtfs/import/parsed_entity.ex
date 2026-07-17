@@ -32,15 +32,21 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
 
   def parse(nil, _entity_type, _filename, _natural_key_field, _row_parser), do: :not_uploaded
 
-  def parse(%{filename: filename, content: content}, entity_type, filename, natural_key_field, row_parser) do
+  def parse(
+        %{filename: upload_filename, content: content},
+        entity_type,
+        canonical_filename,
+        natural_key_field,
+        row_parser
+      ) do
     natural_key_header = Atom.to_string(natural_key_field)
 
-    case CsvParser.stream(filename, content) do
+    case CsvParser.stream(canonical_filename, content) do
       {:error, error} ->
         {:error,
          %ParseFailure{
            entity_type: entity_type,
-           filename: filename,
+           filename: canonical_filename,
            preview_records_by_key: %{},
            diagnostics: [error],
            total_error_count: 1,
@@ -53,7 +59,7 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
       {:ok, %{headers: headers, source_row_count: source_row_count, events: events}} ->
         unless Enum.member?(headers, natural_key_header) do
           error = %ParseError{
-            file: filename,
+            file: canonical_filename,
             reason: :missing_natural_key_header,
             metadata: %{header: natural_key_header}
           }
@@ -61,7 +67,7 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
           {:error,
            %ParseFailure{
              entity_type: entity_type,
-             filename: filename,
+             filename: canonical_filename,
              preview_records_by_key: %{},
              diagnostics: [error],
              total_error_count: 1,
@@ -71,12 +77,30 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
              last_error_row: nil
            }}
         else
-          scan(events, entity_type, filename, natural_key_field, natural_key_header, row_parser, source_row_count)
+          scan(
+            events,
+            entity_type,
+            upload_filename,
+            canonical_filename,
+            natural_key_field,
+            natural_key_header,
+            row_parser,
+            source_row_count
+          )
         end
     end
   end
 
-  defp scan(events, entity_type, filename, natural_key_field, natural_key_header, row_parser, source_row_count) do
+  defp scan(
+         events,
+         entity_type,
+         upload_filename,
+         canonical_filename,
+         natural_key_field,
+         natural_key_header,
+         row_parser,
+         source_row_count
+       ) do
     initial = %{
       records_by_key: %{},
       seen_keys: MapSet.new(),
@@ -88,18 +112,26 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
     }
 
     acc =
-      Enum.reduce_while(events, initial, fn event, acc ->
-        case process_event(event, entity_type, filename, natural_key_field, natural_key_header, row_parser, acc) do
-          {:cont, acc} -> {:cont, acc}
-          {:halt, acc} -> {:halt, acc}
-        end
+      Enum.reduce(events, initial, fn event, acc ->
+        {:cont, acc} =
+          process_event(
+            event,
+            entity_type,
+            canonical_filename,
+            natural_key_field,
+            natural_key_header,
+            row_parser,
+            acc
+          )
+
+        acc
       end)
 
     if acc.total_error_count == 0 do
       {:ok,
        %__MODULE__{
          entity_type: entity_type,
-         filename: filename,
+         filename: upload_filename,
          records_by_key: acc.records_by_key,
          source_row_count: source_row_count
        }}
@@ -116,7 +148,7 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
       {:error,
        %ParseFailure{
          entity_type: entity_type,
-         filename: filename,
+         filename: canonical_filename,
          preview_records_by_key: acc.preview_records_by_key,
          diagnostics: diagnostics,
          total_error_count: acc.total_error_count,
@@ -128,8 +160,16 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
     end
   end
 
-  defp process_event({:ok, row, row_map}, entity_type, filename, natural_key_field, _natural_key_header, row_parser, acc) do
-        case convert_row(row_map, row_parser, filename, entity_type) do
+  defp process_event(
+         {:ok, row, row_map},
+         entity_type,
+         filename,
+         natural_key_field,
+         _natural_key_header,
+         row_parser,
+         acc
+       ) do
+    case convert_row(row_map, row_parser, filename, entity_type) do
       {:ok, attrs} ->
         key = Map.get(attrs, natural_key_field)
 
@@ -142,7 +182,11 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
               if Map.has_key?(acc.preview_records_by_key, key) do
                 acc
               else
-                Map.update!(acc, :preview_records_by_key, &Map.put(&1, key, Map.get(acc.records_by_key, key, attrs)))
+                Map.update!(
+                  acc,
+                  :preview_records_by_key,
+                  &Map.put(&1, key, Map.get(acc.records_by_key, key, attrs))
+                )
               end
 
             add_error(acc, filename, :duplicate_natural_key, row, %{key: key}, nil)
@@ -169,7 +213,15 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
     end
   end
 
-  defp process_event({:error, error}, _entity_type, _filename, _natural_key_field, _natural_key_header, _row_parser, acc) do
+  defp process_event(
+         {:error, error},
+         _entity_type,
+         _filename,
+         _natural_key_field,
+         _natural_key_header,
+         _row_parser,
+         acc
+       ) do
     add_error(acc, error.file, error.reason, error.row, error.metadata, nil)
   end
 

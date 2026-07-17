@@ -9,25 +9,28 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserTest do
   describe "stream/2 valid content" do
     test "LF content yields case-sensitive headers, exact count, one event per nonblank record, rows from 2" do
       content = "stop_id,Stop Name,stop_lat\nS1,Main St,1.0\nS2,Second Ave,2.0"
+
       {:ok, %{headers: headers, source_row_count: count, events: events}} =
         CsvParser.stream(@filename, content)
 
       assert headers == ["stop_id", "Stop Name", "stop_lat"]
       assert count == 2
+
       assert Enum.to_list(events) == [
-        {:ok, 2, %{"stop_id" => "S1", "Stop Name" => "Main St", "stop_lat" => "1.0"}},
-        {:ok, 3, %{"stop_id" => "S2", "Stop Name" => "Second Ave", "stop_lat" => "2.0"}}
-      ]
+               {:ok, 2, %{"stop_id" => "S1", "Stop Name" => "Main St", "stop_lat" => "1.0"}},
+               {:ok, 3, %{"stop_id" => "S2", "Stop Name" => "Second Ave", "stop_lat" => "2.0"}}
+             ]
     end
 
     test "CRLF content is accepted" do
       content = "a,b\r\n1,2\r\n3,4\r\n"
       {:ok, %{source_row_count: count, events: events}} = CsvParser.stream(@filename, content)
       assert count == 2
+
       assert Enum.to_list(events) == [
-        {:ok, 2, %{"a" => "1", "b" => "2"}},
-        {:ok, 3, %{"a" => "3", "b" => "4"}}
-      ]
+               {:ok, 2, %{"a" => "1", "b" => "2"}},
+               {:ok, 3, %{"a" => "3", "b" => "4"}}
+             ]
     end
 
     test "leading UTF-8 BOM is stripped" do
@@ -40,19 +43,21 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserTest do
       content = "a,b\n\n1,2\n\n3,4\n"
       {:ok, %{source_row_count: count, events: events}} = CsvParser.stream(@filename, content)
       assert count == 2
+
       assert Enum.to_list(events) == [
-        {:ok, 3, %{"a" => "1", "b" => "2"}},
-        {:ok, 5, %{"a" => "3", "b" => "4"}}
-      ]
+               {:ok, 3, %{"a" => "1", "b" => "2"}},
+               {:ok, 5, %{"a" => "3", "b" => "4"}}
+             ]
     end
 
     test "quoted commas, doubled quotes, and empty fields parse exactly" do
       content = ~s(id,name,note\n1,"quoted,value","say ""hi"""\n2,,plain)
       {:ok, %{events: events}} = CsvParser.stream(@filename, content)
+
       assert Enum.to_list(events) == [
-        {:ok, 2, %{"id" => "1", "name" => "quoted,value", "note" => ~s(say "hi")}},
-        {:ok, 3, %{"id" => "2", "name" => "", "note" => "plain"}}
-      ]
+               {:ok, 2, %{"id" => "1", "name" => "quoted,value", "note" => ~s(say "hi")}},
+               {:ok, 3, %{"id" => "2", "name" => "", "note" => "plain"}}
+             ]
     end
 
     test "BOM anywhere other than the start is not stripped" do
@@ -67,6 +72,11 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserTest do
     test "empty content returns :empty_content" do
       assert {:error, %ParseError{file: @filename, reason: :empty_content}} =
                CsvParser.stream(@filename, "")
+    end
+
+    test "blank-only content returns :empty_content" do
+      assert {:error, %ParseError{file: @filename, reason: :empty_content}} =
+               CsvParser.stream(@filename, "\n\r\n")
     end
 
     test "invalid UTF-8 returns :invalid_utf8" do
@@ -87,40 +97,69 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserTest do
     test "wrong field count returns :wrong_field_count per row, no row loss" do
       content = "a,b,c\n1,2\n3,4,5\n6,7,8"
       {:ok, %{events: events}} = CsvParser.stream(@filename, content)
+
       assert Enum.to_list(events) == [
-        {:error, %ParseError{file: @filename, row: 2, reason: :wrong_field_count, metadata: %{expected: 3, actual: 2}}},
-        {:ok, 3, %{"a" => "3", "b" => "4", "c" => "5"}},
-        {:ok, 4, %{"a" => "6", "b" => "7", "c" => "8"}}
-      ]
+               {:error,
+                %ParseError{
+                  file: @filename,
+                  row: 2,
+                  reason: :wrong_field_count,
+                  metadata: %{expected: 3, actual: 2}
+                }},
+               {:ok, 3, %{"a" => "3", "b" => "4", "c" => "5"}},
+               {:ok, 4, %{"a" => "6", "b" => "7", "c" => "8"}}
+             ]
     end
 
     test "unterminated open quote returns :unterminated_quote" do
       content = "a,b\n1,\"unterminated"
       {:ok, %{events: events}} = CsvParser.stream(@filename, content)
+
       assert Enum.to_list(events) == [
-        {:error, %ParseError{file: @filename, row: 2, reason: :unterminated_quote, metadata: %{position: :end_of_line}}}
-      ]
+               {:error,
+                %ParseError{
+                  file: @filename,
+                  row: 2,
+                  reason: :unterminated_quote,
+                  metadata: %{position: :end_of_line}
+                }}
+             ]
     end
 
     test "dangling quote mid-field returns :unterminated_quote" do
       content = "a,b\n1,val\"ue"
       {:ok, %{events: events}} = CsvParser.stream(@filename, content)
+
       assert Enum.to_list(events) == [
-        {:error, %ParseError{file: @filename, row: 2, reason: :unterminated_quote, metadata: %{position: :end_of_line}}}
-      ]
+               {:error,
+                %ParseError{
+                  file: @filename,
+                  row: 2,
+                  reason: :unterminated_quote,
+                  metadata: %{position: :end_of_line}
+                }}
+             ]
     end
 
     test "embedded tab in value returns :forbidden_control_character" do
       content = "a,b\n1,\t2"
       {:ok, %{events: events}} = CsvParser.stream(@filename, content)
-      assert [{:error, %ParseError{file: @filename, row: 2, reason: :forbidden_control_character}}] =
+
+      assert [
+               {:error,
+                %ParseError{file: @filename, row: 2, reason: :forbidden_control_character}}
+             ] =
                Enum.to_list(events)
     end
 
     test "embedded CR in value returns :forbidden_control_character" do
       content = "a,b\n1,\r2"
       {:ok, %{events: events}} = CsvParser.stream(@filename, content)
-      assert [{:error, %ParseError{file: @filename, row: 2, reason: :forbidden_control_character}}] =
+
+      assert [
+               {:error,
+                %ParseError{file: @filename, row: 2, reason: :forbidden_control_character}}
+             ] =
                Enum.to_list(events)
     end
   end
@@ -130,7 +169,8 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserTest do
       for ending <- ["\n", "\r\n"],
           header <- ["a,b", "a,B", "a,a"],
           row <- ["1,2", "3,4", "x,y", "1,\"quoted,comma\"", "m,n", ""] do
-        content = header <> ending <> Enum.join(row_cases(row, ending), ending)
+        content = header <> ending <> Enum.join(row_cases(row), ending)
+
         case CsvParser.stream(@filename, content) do
           {:error, _} ->
             :ok
@@ -144,7 +184,7 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserTest do
       end
     end
 
-    defp row_cases(row, ending) do
+    defp row_cases(row) do
       case row do
         "" -> []
         other -> [other]
@@ -175,6 +215,11 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserTest do
 
     test "trailing comma" do
       assert CsvParser.parse_line("value1,value2,") == {:ok, ["value1", "value2", ""]}
+    end
+
+    test "malformed lines return an error without a source row" do
+      assert {:error, %ParseError{row: nil, reason: :unterminated_quote}} =
+               CsvParser.parse_line(~s("unterminated))
     end
   end
 end
