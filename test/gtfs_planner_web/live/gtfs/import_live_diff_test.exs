@@ -647,4 +647,273 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       refute has_element?(view, "#diff-reset-btn")
     end
   end
+
+  describe "incomplete-import invariant regressions" do
+    setup %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/import")
+
+      %{view: view, organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "database key only on a malformed row stays unremovable and unchanged", %{
+      view: view,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      # Seed a level whose id appears in the upload ONLY on a row with a wrong
+      # field count. The valid rows make levels.txt a ParseFailure (degraded),
+      # not a header failure, so it renders with a preview and diagnostics.
+      level = level_fixture(organization.id, gtfs_version.id, %{level_id: "LKEEP"})
+
+      good_rows = "L1,0.0,Level 1\nL2,1.0,Level 2"
+      malformed_row = "LKEEP,0.0"
+      levels_content = "level_id,level_index,level_name\n#{good_rows}\n#{malformed_row}"
+
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "levels.txt", content: levels_content, type: "text/plain"}
+        ])
+
+      render_upload(upload, "levels.txt")
+      view |> form("#diff-upload-form") |> render_submit()
+
+      # The entity renders degraded (ParseFailure) with diagnostics (INV-5: the
+      # malformed raw row content is never echoed back into the UI).
+      assert has_element?(view, "#diff-degraded-region")
+      refute has_element?(view, "#diff-degraded-region", "LKEEP")
+
+      # No applicable removal row or approval control exists for LKEEP.
+      refute has_element?(
+               view,
+               "button[phx-click='approve-decision'][phx-value-id='level:LKEEP']"
+             )
+
+      # A crafted approve / apply sequence must not mutate the seeded record.
+      render_click(view, "approve-decision", %{"id" => "level:LKEEP"})
+      render_click(view, "apply-decisions")
+
+      assert Gtfs.get_level_by_level_id(organization.id, gtfs_version.id, "LKEEP")
+      assert Gtfs.get_level_by_level_id(organization.id, gtfs_version.id, "LKEEP").id == level.id
+    end
+
+    test "diagnostics cap at 100 samples while total error count reports the true total", %{
+      view: view
+    } do
+      # 150 malformed rows, each with a wrong field count.
+      malformed_rows =
+        Enum.map_join(1..150, "\n", fn i -> "BAD#{i},0.0" end)
+
+      levels_content = "level_id,level_index,level_name\n#{malformed_rows}"
+
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "levels.txt", content: levels_content, type: "text/plain"}
+        ])
+
+      render_upload(upload, "levels.txt")
+      view |> form("#diff-upload-form") |> render_submit()
+
+      html = render(view)
+
+      # Exactly the sample cap (100) of diagnostic rows render under the
+      # degraded region (each row is summarized as "levels.txt row N: ...").
+      row_diagnostics = length(Regex.scan(~r/levels\.txt row /, html))
+      assert row_diagnostics == 100
+
+      # The aggregate total count element reports the true total (150).
+      assert has_element?(view, "#diff-degraded-region", "150 errors across")
+    end
+
+    test "failed levels upload makes uploaded stops read-only but keeps independent complete entity applicable",
+         %{
+           view: view,
+           organization: organization,
+           gtfs_version: gtfs_version
+         } do
+      # levels.txt fails (missing required header). stops.txt is complete and
+      # uploaded, so it should be read-only via dependency taint (INV-1).
+      # pathways.txt is an independent complete entity and keeps applicable controls.
+      bad_levels = "level_index,level_name\n0.0,Ground"
+      good_stops = "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0"
+      good_pathways = "pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional\nP1,S1,S1,1,1"
+
+      {:ok, {_name, zip_binary}} =
+        :zip.create(
+          ~c"tainted.zip",
+          [
+            {~c"levels.txt", bad_levels},
+            {~c"stops.txt", good_stops},
+            {~c"pathways.txt", good_pathways}
+          ],
+          [:memory]
+        )
+
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "tainted.zip", content: zip_binary, type: "application/zip"}
+        ])
+
+      render_upload(upload, "tainted.zip")
+      view |> form("#diff-upload-form", %{}) |> render_submit()
+
+      # Failed levels degrades the source.
+      assert has_element?(view, "#diff-degraded-region")
+      assert has_element?(view, "#diff-degraded-region", "levels.txt")
+
+      # The tainted stops upload renders a read-only preview with no approve buttons.
+      assert has_element?(view, "#diff-preview-region")
+      refute has_element?(
+               view,
+               "button[phx-click='approve-decision'][phx-value-id='stop:S1']"
+             )
+
+      # The independent complete pathways entity keeps applicable controls.
+      assert has_element?(
+               view,
+               "button[phx-click='approve-decision'][phx-value-id='pathway:P1']"
+             )
+
+      _ = {organization, gtfs_version}
+    end
+
+    test "oversized archive blocks diff globally and offers recovery", %{
+      view: view,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      prior_limit =
+        Application.get_env(:gtfs_planner, :import_max_zip_uncompressed_bytes)
+
+      on_exit(fn ->
+        if prior_limit == nil do
+          Application.delete_env(:gtfs_planner, :import_max_zip_uncompressed_bytes)
+        else
+          Application.put_env(:gtfs_planner, :import_max_zip_uncompressed_bytes, prior_limit)
+        end
+      end)
+
+      # Shrink the runtime-read limit so a small zip exceeds it.
+      Application.put_env(:gtfs_planner, :import_max_zip_uncompressed_bytes, 10)
+
+      oversized =
+        "level_id,level_index,level_name\n" <>
+          Enum.map_join(1..50, "\n", fn i -> "L#{i},0.0,Level #{i}" end)
+
+      {:ok, {_name, zip_binary}} =
+        :zip.create(~c"big.zip", [{~c"levels.txt", oversized}], [:memory])
+
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "big.zip", content: zip_binary, type: "application/zip"}
+        ])
+
+      render_upload(upload, "big.zip")
+      view |> form("#diff-upload-form", %{}) |> render_submit()
+
+      # Global blocker suppresses review regions and the decision table.
+      assert has_element?(view, "#diff-blockers")
+      assert has_element?(view, "#diff-choose-corrected-files", "Choose corrected files")
+      refute has_element?(view, "#diff-decisions")
+      refute has_element?(view, "#diff-preview-region")
+
+      _ = {organization, gtfs_version}
+    end
+
+    test "unreadable zip bytes block diff globally and name the affected file", %{
+      view: view
+    } do
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "broken.zip", content: "this is not a real zip", type: "application/zip"}
+        ])
+
+      render_upload(upload, "broken.zip")
+      view |> form("#diff-upload-form", %{}) |> render_submit()
+
+      assert has_element?(view, "#diff-blockers")
+      assert has_element?(view, "#diff-blockers", "broken.zip")
+      assert has_element?(view, "#diff-choose-corrected-files", "Choose corrected files")
+    end
+
+    test "nested zip archive blocks diff globally and names the affected file", %{view: view} do
+      {:ok, {_inner_name, inner_binary}} =
+        :zip.create(~c"inner.zip", [{~c"levels.txt", "level_id,level_index,level_name\nL1,0.0,Level 1"}], [:memory])
+
+      {:ok, {_outer_name, outer_binary}} =
+        :zip.create(~c"outer.zip", [{~c"inner.zip", inner_binary}], [:memory])
+
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "outer.zip", content: outer_binary, type: "application/zip"}
+        ])
+
+      render_upload(upload, "outer.zip")
+      view |> form("#diff-upload-form", %{}) |> render_submit()
+
+      assert has_element?(view, "#diff-blockers")
+      assert has_element?(view, "#diff-blockers", "outer.zip")
+      assert has_element?(view, "#diff-choose-corrected-files", "Choose corrected files")
+    end
+
+    test "corrected recompute after blocked state restores legitimate removal", %{
+      view: view,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      # Seed a level that becomes a removal once a complete levels file omits it.
+      level_fixture(organization.id, gtfs_version.id, %{level_id: "LREMOVE", level_name: "Drop"})
+
+      # First upload: garbage bytes -> global blocker.
+      bad_upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "broken.zip", content: "not a zip", type: "application/zip"}
+        ])
+
+      render_upload(bad_upload, "broken.zip")
+      view |> form("#diff-upload-form", %{}) |> render_submit()
+      assert has_element?(view, "#diff-blockers")
+
+      # Reset so the corrected file replaces the blocked state entirely.
+      view |> element("#diff-choose-corrected-files") |> render_click()
+
+      refute has_element?(view, "#diff-blockers")
+
+      # Corrected upload: complete levels.txt that omits LREMOVE -> removal.
+      good_levels = "level_id,level_index,level_name\nL2,1.0,Level 2"
+
+      good_upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "levels.txt", content: good_levels, type: "text/plain"}
+        ])
+
+      render_upload(good_upload, "levels.txt")
+      view |> form("#diff-upload-form") |> render_submit()
+
+      # The legitimate removal decision returns for the now-absent LREMOVE.
+      assert has_element?(
+               view,
+               "button[phx-click='approve-decision'][phx-value-id='level:LREMOVE']"
+             )
+
+      # Approve the removal and apply.
+      view
+      |> element("button[phx-click='approve-decision'][phx-value-id='level:LREMOVE']")
+      |> render_click()
+
+      view |> element("#diff-apply-btn") |> render_click()
+
+      refute Gtfs.get_level_by_level_id(organization.id, gtfs_version.id, "LREMOVE")
+    end
+  end
 end
