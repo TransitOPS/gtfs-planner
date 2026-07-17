@@ -125,6 +125,103 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       refute has_element?(view, "#diff-reset-btn")
     end
 
+    test "duplicate entity file blocks diff globally and offers recovery", %{view: view} do
+      {:ok, {_name, zip_binary}} =
+        :zip.create(
+          ~c"dup.zip",
+          [
+            {~c"levels.txt", "level_id,level_index,level_name\nL1,0.0,Level 1"},
+            {~c"levels.txt", "level_id,level_index,level_name\nL2,1.0,Level 2"}
+          ],
+          [:memory]
+        )
+
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "dup.zip", content: zip_binary, type: "application/zip"}
+        ])
+
+      render_upload(upload, "dup.zip")
+      view |> form("#diff-upload-form") |> render_submit()
+
+      # Global blocker suppresses both review regions and the decision table.
+      assert has_element?(view, "#diff-blockers")
+      assert has_element?(view, "#diff-choose-corrected-files", "Choose corrected files")
+      refute has_element?(view, "#diff-decisions")
+      refute has_element?(view, "#diff-preview-region")
+      refute has_element?(view, "#diff-apply-btn")
+    end
+
+    test "incomplete levels.txt renders degraded region with bounded diagnostics", %{
+      view: view
+    } do
+      # levels.txt missing the required level_id header fails structural completeness.
+      levels_content = "level_index,level_name\n0.0,Ground"
+
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "levels.txt", content: levels_content, type: "text/plain"}
+        ])
+
+      render_upload(upload, "levels.txt")
+      view |> form("#diff-upload-form") |> render_submit()
+
+      assert has_element?(view, "#diff-degraded-region")
+      assert has_element?(view, "#diff-degraded-region", "levels.txt")
+      # The degraded region names the entity type and error count.
+      assert has_element?(view, "#diff-degraded-region", "Levels")
+      # The apply button is suppressed while a file is degraded (no applicable decisions).
+      assert has_element?(view, "#diff-apply-btn[disabled]")
+      refute has_element?(view, "#diff-preview-region")
+    end
+
+    test "failed entity renders read-only preview while complete entity stays applicable", %{
+      view: view,
+      gtfs_version: gtfs_version,
+      organization: organization
+    } do
+      # levels.txt is complete and applicable; stops.txt is missing its header
+      # so it degrades into a read-only preview only.
+      levels_content = "level_id,level_index,level_name\nL1,0.0,Level 1"
+
+      stops_content = "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0\nS1,Duplicate,40.1,-74.1,0"
+
+      {:ok, {_name, zip_binary}} =
+        :zip.create(
+          ~c"mixed.zip",
+          [
+            {~c"levels.txt", levels_content},
+            {~c"stops.txt", stops_content}
+          ],
+          [:memory]
+        )
+
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "mixed.zip", content: zip_binary, type: "application/zip"}
+        ])
+
+      render_upload(upload, "mixed.zip")
+      view |> form("#diff-upload-form", %{}) |> render_submit()
+
+      # Complete level decision keeps its approval controls (applicable).
+      assert has_element?(view, "button[phx-click='approve-decision'][phx-value-id='level:L1']")
+
+      # Degraded stops produces a read-only preview region with no action buttons.
+      assert has_element?(view, "#diff-preview-region")
+      assert has_element?(view, "#diff-preview-decisions", "stop")
+
+      # The preview row for the failed stop has no approve/reject controls.
+      refute has_element?(
+               view,
+               "#diff-preview-decisions button[phx-click='approve-decision'][phx-value-id='stop:S1']"
+             )
+
+      # The full-feed / applicable apply button still exists for the applicable level.
+      assert has_element?(view, "#diff-apply-btn")
+      _ = {organization, gtfs_version}
+    end
+
     test "computes diff decisions from uploaded files", %{view: view} do
       {:ok, {_name, zip_binary}} =
         :zip.create(

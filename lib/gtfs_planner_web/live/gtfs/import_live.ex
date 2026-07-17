@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import
-  alias GtfsPlanner.Gtfs.Import.{Result, Diff, DiffDecision, RowParser}
+  alias GtfsPlanner.Gtfs.Import.{Result, Diff, DiffDecision, RowParser, ParsedEntity, ParseError, ParseFailure}
   alias GtfsPlanner.Gtfs.Import.Publication
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
@@ -66,13 +66,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:import_progress, nil)
      |> assign(:importing, false)
      |> assign(:unrecognized_upload_files, [])
-     |> assign(:diff_step, :upload)
-     |> assign(:diff_summary, empty_diff_summary())
-     |> assign(:diff_filter, :all)
-     |> assign(:diff_parse_errors, [])
-     |> assign(:apply_results, [])
-     |> assign(:decisions_by_id, %{})
-     |> stream(:diff_decisions, [])}
+      |> assign(:diff_step, :upload)
+      |> assign(:diff_summary, empty_diff_summary())
+      |> assign(:diff_filter, :all)
+      |> assign(:diff_parse_failures, [])
+      |> assign(:diff_blockers, [])
+      |> assign(:diff_preview_count, 0)
+      |> assign(:apply_results, [])
+      |> assign(:decisions_by_id, %{})
+      |> stream(:diff_decisions, [])
+      |> stream(:diff_preview_decisions, [])}
   end
 
   @impl true
@@ -195,78 +198,117 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         {:ok, %{filename: entry.client_name, content: File.read!(path)}}
       end)
 
-    {expanded_files, _archive_warnings} = Import.expand_archives(uploaded_files)
+    {expanded_files, archive_warnings} = Import.expand_archives(uploaded_files)
 
     case categorize_diff_files(expanded_files) do
       {:error, duplicate_errors} ->
-        {:noreply,
-         socket
-         |> assign(:diff_parse_errors, duplicate_errors)
-         |> assign(:diff_step, :upload)
-         |> assign(:diff_filter, :all)
-         |> assign(:diff_summary, empty_diff_summary())
-         |> assign(:apply_results, [])
-         |> assign(:decisions_by_id, %{})
-         |> stream(:diff_decisions, [], reset: true)}
+        blockers = Enum.map(duplicate_errors, &normalize_duplicate_blocker/1)
+
+         {:noreply,
+          socket
+          |> assign(:diff_blockers, blockers)
+          |> assign(:diff_parse_failures, [])
+          |> assign(:diff_preview_count, 0)
+          |> assign(:diff_step, :upload)
+          |> assign(:diff_filter, :all)
+          |> assign(:diff_summary, empty_diff_summary())
+          |> assign(:apply_results, [])
+          |> assign(:decisions_by_id, %{})
+          |> stream(:diff_decisions, [], reset: true)
+          |> stream(:diff_preview_decisions, [], reset: true)}
 
       {:ok, categorized_files} ->
         organization_id = socket.assigns.current_organization.id
         gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-        {levels_upload, level_errors} =
-          parse_uploaded_entity_file(categorized_files.levels, "levels.txt", fn row_map ->
-            RowParser.level_row_to_attrs(row_map, organization_id, gtfs_version_id)
-          end)
+        archive_blockers = normalize_archive_warnings(archive_warnings)
 
-        {stops_upload, stop_errors} =
-          parse_uploaded_entity_file(categorized_files.stops, "stops.txt", fn row_map ->
-            RowParser.stop_row_to_attrs(row_map, organization_id, gtfs_version_id)
-          end)
-
-        db_levels = Gtfs.list_levels(organization_id, gtfs_version_id)
-        db_stops = Gtfs.list_stops(organization_id, gtfs_version_id)
-        db_pathways = Gtfs.list_pathways(organization_id, gtfs_version_id)
-
-        stop_validation_map = build_stop_validation_map(db_stops, stops_upload)
-
-        {pathways_upload, pathway_errors} =
-          parse_uploaded_entity_file(categorized_files.pathways, "pathways.txt", fn row_map ->
-            RowParser.pathway_row_to_attrs(
-              row_map,
-              organization_id,
-              gtfs_version_id,
-              stop_validation_map
+        if archive_blockers != [] do
+          {:noreply,
+           socket
+           |> assign(:diff_blockers, archive_blockers)
+           |> assign(:diff_parse_failures, [])
+           |> assign(:diff_preview_count, 0)
+           |> assign(:diff_step, :upload)
+           |> assign(:diff_filter, :all)
+           |> assign(:diff_summary, empty_diff_summary())
+           |> assign(:apply_results, [])
+           |> assign(:decisions_by_id, %{})
+           |> stream(:diff_decisions, [], reset: true)
+           |> stream(:diff_preview_decisions, [], reset: true)}
+        else
+          levels_result =
+            ParsedEntity.parse(
+              categorized_files.levels,
+              :level,
+              "levels.txt",
+              :level_id,
+              fn row_map -> RowParser.level_row_to_attrs(row_map, organization_id, gtfs_version_id) end
             )
-          end)
 
-        parse_errors = level_errors ++ stop_errors ++ pathway_errors
+          stops_result =
+            ParsedEntity.parse(
+              categorized_files.stops,
+              :stop,
+              "stops.txt",
+              :stop_id,
+              fn row_map -> RowParser.stop_row_to_attrs(row_map, organization_id, gtfs_version_id) end
+            )
 
-        uploaded = %{
-          levels: to_parsed_result(levels_upload, :level),
-          stops: to_parsed_result(stops_upload, :stop),
-          pathways: to_parsed_result(pathways_upload, :pathway)
-        }
+          db_levels = Gtfs.list_levels(organization_id, gtfs_version_id)
+          db_stops = Gtfs.list_stops(organization_id, gtfs_version_id)
+          db_pathways = Gtfs.list_pathways(organization_id, gtfs_version_id)
 
-        db = %{
-          levels: db_levels,
-          stops: db_stops,
-          pathways: db_pathways
-        }
+          stop_validation_map =
+            build_stop_validation_map(db_stops, stops_result, categorized_files.stops)
 
-        diff_result = Diff.compute(uploaded, db)
-        decisions = diff_result.applicable
-        decisions_by_id = Map.new(decisions, fn decision -> {decision.id, decision} end)
-        summary = Diff.summary(decisions)
+          pathways_result =
+            ParsedEntity.parse(
+              categorized_files.pathways,
+              :pathway,
+              "pathways.txt",
+              :pathway_id,
+              fn row_map ->
+                RowParser.pathway_row_to_attrs(
+                  row_map,
+                  organization_id,
+                  gtfs_version_id,
+                  stop_validation_map
+                )
+              end
+            )
 
-        {:noreply,
-         socket
-         |> assign(:diff_parse_errors, parse_errors)
-         |> assign(:diff_summary, summary)
-         |> assign(:diff_filter, :all)
-         |> assign(:apply_results, [])
-         |> assign(:decisions_by_id, decisions_by_id)
-         |> assign(:diff_step, :review)
-         |> stream(:diff_decisions, decisions, reset: true)}
+          parse_failures =
+            Enum.flat_map([levels_result, stops_result, pathways_result], fn result ->
+              case result do
+                {:error, %ParseFailure{} = failure} -> [failure]
+                _ -> []
+              end
+            end)
+
+          uploaded = %{levels: levels_result, stops: stops_result, pathways: pathways_result}
+
+          db = %{levels: db_levels, stops: db_stops, pathways: db_pathways}
+
+          diff_result = Diff.compute(uploaded, db)
+          decisions = diff_result.applicable
+          decisions_by_id = Map.new(decisions, fn decision -> {decision.id, decision} end)
+          preview_decisions = diff_result.preview
+          summary = Diff.summary(decisions)
+
+          {:noreply,
+           socket
+          |> assign(:diff_blockers, [])
+          |> assign(:diff_parse_failures, parse_failures)
+          |> assign(:diff_preview_count, length(preview_decisions))
+          |> assign(:diff_summary, summary)
+           |> assign(:diff_filter, :all)
+           |> assign(:apply_results, [])
+           |> assign(:decisions_by_id, decisions_by_id)
+           |> assign(:diff_step, :review)
+           |> stream(:diff_decisions, decisions, reset: true)
+           |> stream(:diff_preview_decisions, preview_decisions, reset: true)}
+        end
     end
   end
 
@@ -352,10 +394,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:diff_step, :upload)
      |> assign(:diff_summary, empty_diff_summary())
      |> assign(:diff_filter, :all)
-     |> assign(:diff_parse_errors, [])
+     |> assign(:diff_parse_failures, [])
+     |> assign(:diff_blockers, [])
+     |> assign(:diff_preview_count, 0)
      |> assign(:apply_results, [])
      |> assign(:decisions_by_id, %{})
-     |> stream(:diff_decisions, [], reset: true)}
+     |> stream(:diff_decisions, [], reset: true)
+     |> stream(:diff_preview_decisions, [], reset: true)}
   end
 
   @impl true
@@ -750,6 +795,25 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             </div>
           </.form>
 
+          <%= if @diff_blockers != [] do %>
+            <.callout kind="error" id="diff-blockers" title="Cannot compute review">
+              <p class="text-sm">
+                One or more uploaded files could not be processed. Choose corrected files to continue.
+              </p>
+              <ul class="mt-1 space-y-1 text-xs list-disc list-inside">
+                <li :for={error <- @diff_blockers}>{format_parse_error(error)}</li>
+              </ul>
+              <button
+                type="button"
+                id="diff-choose-corrected-files"
+                class="btn btn-primary btn-sm mt-3"
+                phx-click="reset-diff"
+              >
+                Choose corrected files
+              </button>
+            </.callout>
+          <% end %>
+
           <%= if @diff_step == :review do %>
             <div class="mt-8 border-t border-base-300 pt-6 space-y-4">
               <%!-- Filter tabs + bulk actions --%>
@@ -808,12 +872,77 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                 </div>
               </div>
 
-              <%= if @diff_parse_errors != [] do %>
-                <.callout kind="warning" title="Parse Errors">
-                  <div class="space-y-1 text-xs">
-                    <p :for={error <- @diff_parse_errors}>{format_diff_parse_error(error)}</p>
+              <%= if @diff_parse_failures != [] do %>
+                <div id="diff-degraded-region" role="status" aria-live="polite" class="space-y-3">
+                  <.callout :for={failure <- @diff_parse_failures} kind="error" title="Incomplete file">
+                    <p class="text-sm font-medium">{failure.filename}</p>
+                    <p class="text-xs text-base-content/70 mt-0.5">
+                      <%= format_failure_summary(failure) %>
+                    </p>
+                    <ul class="mt-1 space-y-1 text-xs list-disc list-inside">
+                      <li :for={error <- Enum.take(failure.diagnostics, 100)}>
+                        {format_parse_error(error)}
+                      </li>
+                    </ul>
+                    <%= if failure.truncated? do %>
+                      <p class="text-xs text-base-content/60 mt-1">
+                        Showing first 100 of {failure.total_error_count} errors; further rows have the same issues.
+                      </p>
+                    <% end %>
+                  </.callout>
+                </div>
+              <% end %>
+
+              <%= if @diff_preview_count != 0 do %>
+                <div
+                  id="diff-preview-region"
+                  role="status"
+                  aria-live="polite"
+                  class="mt-4 rounded-lg border border-base-300 p-4 bg-base-200"
+                >
+                  <h3 class="text-sm font-semibold">Read-only preview</h3>
+                  <p class="text-xs text-base-content/70 mt-0.5">
+                    The following rows came from files that could not be fully validated. They are shown for reference only and cannot be approved, rejected, or applied until you upload corrected files.
+                  </p>
+                  <div class="overflow-x-auto mt-3">
+                    <table class="table table-xs w-full">
+                      <thead>
+                        <tr class="text-xs uppercase tracking-wide text-base-content/60">
+                          <th>Type</th>
+                          <th>ID</th>
+                          <th>Action</th>
+                          <th>Details</th>
+                        </tr>
+                      </thead>
+                      <tbody
+                        id="diff-preview-decisions"
+                        phx-update="stream"
+                      >
+                        <tr
+                          :for={{dom_id, decision} <- @streams.diff_preview_decisions}
+                          id={dom_id}
+                          class="hover:bg-base-200/50"
+                        >
+                          <td class="text-xs font-medium">{decision.entity_type}</td>
+                          <td class="font-mono text-xs">{decision.natural_key}</td>
+                          <td>
+                            <span class="inline-flex items-center gap-1.5">
+                              <span class={[
+                                "inline-block w-2 h-2 rounded-full shrink-0",
+                                action_dot_color(decision.action)
+                              ]}>
+                              </span>
+                              <span class="text-xs font-medium">{decision.action}</span>
+                            </span>
+                          </td>
+                          <td class="text-xs max-w-md truncate">
+                            {format_decision_details(decision)}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
                   </div>
-                </.callout>
+                </div>
               <% end %>
 
               <%!-- Decision table --%>
@@ -1229,53 +1358,49 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp single_optional_file([]), do: nil
   defp single_optional_file([file]), do: file
 
-  defp to_parsed_result(:not_uploaded, _entity_type), do: :not_uploaded
-
-  defp to_parsed_result(attrs_list, entity_type) do
-    natural_key_field = natural_key_field(entity_type)
-
-    records_by_key =
-      Enum.reduce(attrs_list, %{}, fn attrs, acc ->
-        key = Map.get(attrs, natural_key_field)
-        if is_nil(key) or key == "", do: acc, else: Map.put(acc, key, attrs)
-      end)
-
-    {:ok, %GtfsPlanner.Gtfs.Import.ParsedEntity{entity_type: entity_type, filename: "", records_by_key: records_by_key, source_row_count: length(attrs_list)}}
-  end
-
-  defp natural_key_field(:level), do: :level_id
-  defp natural_key_field(:stop), do: :stop_id
-  defp natural_key_field(:pathway), do: :pathway_id
-
-  defp parse_uploaded_entity_file(nil, _filename, _parser_fun), do: {:not_uploaded, []}
-
-  defp parse_uploaded_entity_file(file, filename, parser_fun) do
-    {attrs, parse_errors} =
-      file.content
-      |> Import.parse_csv_content()
-      |> Enum.with_index(2)
-      |> Enum.reduce({[], []}, fn {row_map, row_number}, {attrs_acc, errors_acc} ->
-        case parser_fun.(row_map) do
-          {:ok, attrs} ->
-            {[attrs | attrs_acc], errors_acc}
-
-          {:error, reason} ->
-            error = %{file: filename, row: row_number, reason: to_string(reason)}
-            {attrs_acc, [error | errors_acc]}
+  defp normalize_archive_warnings(warnings) when is_list(warnings) do
+    Enum.map(warnings, fn warning ->
+      reason =
+        case warning.reason do
+          :unzip_failed -> :archive_unreadable
+          :archive_too_large -> :archive_too_large
+          :nested_archive -> :nested_archive
+          other -> other
         end
-      end)
 
-    {Enum.reverse(attrs), Enum.reverse(parse_errors)}
+      %ParseError{
+        file: warning.filename,
+        reason: reason,
+        metadata: %{detail: warning.detail}
+      }
+    end)
   end
 
-  defp build_stop_validation_map(db_stops, uploaded_stops) do
+  defp normalize_duplicate_blocker(%{file: nil, reason: reason}) when is_binary(reason) do
+    %ParseError{file: nil, reason: :duplicate_entity_file, metadata: %{detail: reason}}
+  end
+
+  defp normalize_duplicate_blocker(duplicate) do
+    %ParseError{
+      file: Map.get(duplicate, :file),
+      reason: :duplicate_entity_file,
+      metadata: %{detail: Map.get(duplicate, :reason, "duplicate entity upload")}
+    }
+  end
+
+  defp build_stop_validation_map(db_stops, stops_result, _categorized) do
     db_ids = Enum.map(db_stops, & &1.stop_id)
 
     uploaded_ids =
-      if uploaded_stops == :not_uploaded do
-        []
-      else
-        Enum.map(uploaded_stops, &Map.get(&1, :stop_id))
+      case stops_result do
+        {:ok, %ParsedEntity{records_by_key: records_by_key}} ->
+          Map.values(records_by_key) |> Enum.map(&Map.get(&1, :stop_id))
+
+        {:error, %ParseFailure{preview_records_by_key: preview_records_by_key}} ->
+          Map.values(preview_records_by_key) |> Enum.map(&Map.get(&1, :stop_id))
+
+        :not_uploaded ->
+          []
       end
 
     (db_ids ++ uploaded_ids)
@@ -1604,17 +1729,55 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     (summary.add || 0) + (summary.modify || 0) + (summary.conflict || 0) + (summary.remove || 0)
   end
 
-  defp format_diff_parse_error(%{file: nil, row: nil, reason: reason}), do: reason
+  defp format_parse_error(%ParseError{file: nil, reason: reason, metadata: metadata}) do
+    detail = Map.get(metadata, :detail)
+    if detail, do: detail, else: parse_reason_label(reason)
+  end
 
-  defp format_diff_parse_error(%{file: file, row: row, reason: reason})
-       when is_binary(file) and is_integer(row),
-       do: "#{file} row #{row}: #{reason}"
+  defp format_parse_error(%ParseError{file: file, row: nil, reason: reason, metadata: metadata})
+       when is_binary(file) do
+    detail = Map.get(metadata, :detail)
+    base = "#{file}: #{parse_reason_label(reason)}"
+    if detail, do: "#{base} (#{detail})", else: base
+  end
 
-  defp format_diff_parse_error(%{file: file, reason: reason}) when is_binary(file),
-    do: "#{file}: #{reason}"
+  defp format_parse_error(%ParseError{file: file, row: row, reason: reason, metadata: metadata})
+       when is_binary(file) and is_integer(row) do
+    detail = Map.get(metadata, :detail)
+    base = "#{file} row #{row}: #{parse_reason_label(reason)}"
+    if detail, do: "#{base} (#{detail})", else: base
+  end
 
-  defp format_diff_parse_error(%{reason: reason}), do: reason
-  defp format_diff_parse_error(other), do: inspect(other)
+  defp format_parse_error(%ParseError{reason: reason}), do: parse_reason_label(reason)
+  defp format_parse_error(other), do: inspect(other)
+
+  defp parse_reason_label(:archive_unreadable), do: "Archive could not be read"
+  defp parse_reason_label(:archive_too_large), do: "Archive exceeds size limits"
+  defp parse_reason_label(:nested_archive), do: "Archive contains a nested archive"
+  defp parse_reason_label(:duplicate_entity_file), do: "Duplicate entity file"
+  defp parse_reason_label(:missing_natural_key_header), do: "Missing required column"
+  defp parse_reason_label(:duplicate_natural_key), do: "Duplicate key"
+  defp parse_reason_label(:blank_natural_key), do: "Missing key value"
+  defp parse_reason_label(:semantic_row), do: "Invalid row value"
+  defp parse_reason_label(:unexpected_parser_failure), do: "Unexpected parse failure"
+  defp parse_reason_label(reason) when is_atom(reason), do: to_string(reason)
+  defp parse_reason_label(reason) when is_binary(reason), do: reason
+
+  defp format_failure_summary(%ParseFailure{
+         entity_type: entity_type,
+         total_error_count: total_error_count,
+         source_row_count: source_row_count
+       }) do
+    "#{entity_type_label(entity_type)} file could not be fully parsed: #{total_error_count} " <>
+      "#{pluralize(total_error_count, "error")} across #{source_row_count} rows."
+  end
+
+  defp entity_type_label(:level), do: "Levels"
+  defp entity_type_label(:stop), do: "Stops"
+  defp entity_type_label(:pathway), do: "Pathways"
+
+  defp pluralize(1, singular), do: singular
+  defp pluralize(_count, singular), do: "#{singular}s"
 
   defp format_apply_reason(%Ecto.Changeset{} = changeset) do
     errors =
