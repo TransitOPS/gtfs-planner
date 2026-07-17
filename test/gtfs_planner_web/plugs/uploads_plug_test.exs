@@ -9,7 +9,12 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
   import Plug.Conn
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
+  import GtfsPlanner.GtfsFixtures
 
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.DiagramStorage
+  alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.UploadsPlug
 
@@ -425,6 +430,91 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn.status == 200
       assert conn.resp_body == "legacy bytes"
       assert get_resp_header(conn, "access-control-allow-origin") == ["http://localhost:51091"]
+    end
+
+    test "legacy backfill copies a referenced image into the published versioned destination without overwriting, stays idempotent, and is served once copied",
+         %{uploads_path: uploads_path, org: org, version: version} do
+      station =
+        stop_fixture(org.id, version.id,
+          stop_id: "legacy_station_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      level = level_fixture(org.id, version.id)
+
+      legacy_dir =
+        Path.join([
+          uploads_path,
+          "diagrams",
+          org.id,
+          PathSafety.stop_storage_dir(station.stop_id)
+        ])
+
+      File.mkdir_p!(legacy_dir)
+      legacy_path = Path.join(legacy_dir, "plan.png")
+      File.write!(legacy_path, "legacy diagram bytes")
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "plan.png",
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
+
+      # Backfill copies the referenced legacy file into the versioned destination.
+      assert {:ok, 1} = DiagramStorage.migrate_legacy_assets(Repo)
+
+      {:ok, dest} = DiagramStorage.published_path(org.id, version.id, station.stop_id, "plan.png")
+      assert File.read!(dest) == "legacy diagram bytes"
+
+      # Idempotent: a second run copies nothing new.
+      assert {:ok, 0} = DiagramStorage.migrate_legacy_assets(Repo)
+      assert File.read!(dest) == "legacy diagram bytes"
+
+      # Legacy source remains intact (non-destructive).
+      assert File.read!(legacy_path) == "legacy diagram bytes"
+
+      # The backfilled versioned file is served through the public delivery path.
+      versioned_url =
+        "/uploads/diagrams/#{org.id}/#{version.id}/#{PathSafety.stop_storage_dir(station.stop_id)}/plan.png"
+
+      conn = conn(:get, versioned_url) |> UploadsPlug.call([])
+      assert conn.halted
+      assert conn.status == 200
+      assert conn.resp_body == "legacy diagram bytes"
+    end
+
+    test "versioned delivery falls back to the historical legacy url only when no versioned copy exists",
+         %{uploads_path: uploads_path, org: org, version: version} do
+      station =
+        stop_fixture(org.id, version.id,
+          stop_id: "fallback_station_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      legacy_dir =
+        Path.join([
+          uploads_path,
+          "diagrams",
+          org.id,
+          PathSafety.stop_storage_dir(station.stop_id)
+        ])
+
+      File.mkdir_p!(legacy_dir)
+      File.write!(Path.join(legacy_dir, "plan.png"), "only legacy bytes")
+
+      # No versioned copy exists yet, so public_url_path resolves to the legacy url.
+      assert {:ok, url} =
+               DiagramStorage.public_url_path(org.id, version.id, station.stop_id, "plan.png")
+
+      refute url =~ version.id
+
+      conn = conn(:get, url) |> UploadsPlug.call([])
+      assert conn.halted
+      assert conn.status == 200
+      assert conn.resp_body == "only legacy bytes"
     end
   end
 end
