@@ -510,10 +510,6 @@ defmodule GtfsPlanner.Gtfs.Import do
       iex> parse_csv_line(~s(value1,"quoted,value",value3))
       {:ok, ["value1", "quoted,value", "value3"]}
   """
-  def parse_csv_line(line) do
-    parse_csv_fields(line)
-  end
-
   @max_zip_entries 10_000
   @default_max_zip_uncompressed_bytes 500 * 1024 * 1024
   @default_max_zip_entry_uncompressed_bytes 500 * 1024 * 1024
@@ -827,44 +823,11 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   end
 
-  # Recursive CSV field parser that handles quoted fields and escaped quotes
-  defp parse_csv_fields(line) do
-    parse_csv_fields(line, [], "", false, 0)
-  end
-
-  defp parse_csv_fields("", fields, current, _in_quotes, _pos) do
-    {:ok, Enum.reverse([current | fields])}
-  end
-
-  defp parse_csv_fields(<<char::utf8, rest::binary>>, fields, current, in_quotes, pos) do
-    case {char, in_quotes} do
-      # Start quote
-      {?", false} ->
-        parse_csv_fields(rest, fields, current, true, pos + 1)
-
-      # End quote or escaped quote
-      {?", true} ->
-        case rest do
-          # Escaped quote (double quote)
-          <<?\", rest2::binary>> ->
-            parse_csv_fields(rest2, fields, current <> <<"\"">>, true, pos + 2)
-
-          # End quote
-          _ ->
-            parse_csv_fields(rest, fields, current, false, pos + 1)
-        end
-
-      # Comma outside quotes (field separator)
-      {?,, false} ->
-        parse_csv_fields(rest, [current | fields], "", false, pos + 1)
-
-      # Any character inside quotes
-      {char, true} ->
-        parse_csv_fields(rest, fields, current <> <<char>>, true, pos + 1)
-
-      # Any character outside quotes
-      {char, false} ->
-        parse_csv_fields(rest, fields, current <> <<char>>, false, pos + 1)
-    end
+  # Delegates to the strict field parser owned by CsvParser. The permissive
+  # production parsing paths (parse_csv_content/1 and
+  # parse_csv_content_with_count/1) remain until their callers are retired in
+  # later steps.
+  def parse_csv_line(line) when is_binary(line) do
+    GtfsPlanner.Gtfs.Import.CsvParser.parse_line(line)
   end
 end
