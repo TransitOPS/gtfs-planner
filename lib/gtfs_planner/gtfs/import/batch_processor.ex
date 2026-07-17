@@ -42,26 +42,8 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
   `{:import_progress, %{file: file_name, processed: count, total: total}}`
   """
   def insert_batched(repo, schema, rows_stream, row_to_attrs_fn, opts) do
-    organization_id = Keyword.fetch!(opts, :organization_id)
-    gtfs_version_id = Keyword.fetch!(opts, :gtfs_version_id)
-    file_name = Keyword.fetch!(opts, :file_name)
-    topic = Keyword.fetch!(opts, :topic)
-    batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
-    total_rows = Keyword.get(opts, :total_rows, 0)
-
-    process_events(
-      repo,
-      schema,
-      rows_stream,
-      row_to_attrs_fn,
-      organization_id,
-      gtfs_version_id,
-      file_name,
-      topic,
-      batch_size,
-      total_rows,
-      false
-    )
+    config = build_config(repo, schema, opts, false)
+    process_events(rows_stream, row_to_attrs_fn, config)
   end
 
   @doc """
@@ -99,89 +81,67 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
   `{:import_progress, %{file: file_name, processed: count, total: total}}`
   """
   def insert_batched_with_transactions(repo, schema, rows_stream, row_to_attrs_fn, opts) do
-    organization_id = Keyword.fetch!(opts, :organization_id)
-    gtfs_version_id = Keyword.fetch!(opts, :gtfs_version_id)
-    file_name = Keyword.fetch!(opts, :file_name)
-    topic = Keyword.fetch!(opts, :topic)
-    batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
-    total_rows = Keyword.get(opts, :total_rows, 0)
-
-    process_events(
-      repo,
-      schema,
-      rows_stream,
-      row_to_attrs_fn,
-      organization_id,
-      gtfs_version_id,
-      file_name,
-      topic,
-      batch_size,
-      total_rows,
-      true
-    )
+    config = build_config(repo, schema, opts, true)
+    process_events(rows_stream, row_to_attrs_fn, config)
   end
 
   # Private Functions
 
-  defp process_events(
-         repo,
-         schema,
-         rows_stream,
-         row_to_attrs_fn,
-         organization_id,
-         gtfs_version_id,
-         file_name,
-         topic,
-         batch_size,
-         total_rows,
-         transactional?
-       ) do
+  defp build_config(repo, schema, opts, transactional?) do
+    %{
+      repo: repo,
+      schema: schema,
+      organization_id: Keyword.fetch!(opts, :organization_id),
+      gtfs_version_id: Keyword.fetch!(opts, :gtfs_version_id),
+      file_name: Keyword.fetch!(opts, :file_name),
+      topic: Keyword.fetch!(opts, :topic),
+      batch_size: Keyword.get(opts, :batch_size, @default_batch_size),
+      total_rows: Keyword.get(opts, :total_rows, 0),
+      transactional?: transactional?
+    }
+  end
+
+  defp process_events(rows_stream, row_to_attrs_fn, config) do
     rows_stream
-    |> Enum.reduce_while({:ok, 0, [], 0}, fn event, {:ok, inserted, attrs, attrs_count} ->
-      case convert_event(event, row_to_attrs_fn, organization_id, gtfs_version_id, file_name) do
-        {:ok, attr} when attrs_count + 1 == batch_size ->
-          case flush_batch(
-                 repo,
-                 schema,
-                 Enum.reverse([attr | attrs]),
-                 file_name,
-                 topic,
-                 inserted,
-                 total_rows,
-                 transactional?
-               ) do
-            {:ok, batch_count} -> {:cont, {:ok, inserted + batch_count, [], 0}}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-
-        {:ok, attr} ->
-          {:cont, {:ok, inserted, [attr | attrs], attrs_count + 1}}
-
-        {:error, reason} ->
-          {:halt, {:error, reason}}
-      end
+    |> Enum.reduce_while({:ok, 0, [], 0}, fn event, state ->
+      reduce_event(event, state, row_to_attrs_fn, config)
     end)
-    |> case do
-      {:ok, inserted, [], 0} ->
-        {:ok, inserted}
+    |> finalize_batches(config)
+  end
 
-      {:ok, inserted, attrs, _attrs_count} ->
-        case flush_batch(
-               repo,
-               schema,
-               Enum.reverse(attrs),
-               file_name,
-               topic,
-               inserted,
-               total_rows,
-               transactional?
-             ) do
-          {:ok, batch_count} -> {:ok, inserted + batch_count}
-          {:error, reason} -> {:error, reason}
-        end
+  defp reduce_event(event, {:ok, inserted, attrs, attrs_count}, row_to_attrs_fn, config) do
+    event
+    |> convert_event(
+      row_to_attrs_fn,
+      config.organization_id,
+      config.gtfs_version_id,
+      config.file_name
+    )
+    |> accumulate_event(inserted, attrs, attrs_count, config)
+  end
 
-      {:error, reason} ->
-        {:error, reason}
+  defp accumulate_event({:error, reason}, _inserted, _attrs, _attrs_count, _config),
+    do: {:halt, {:error, reason}}
+
+  defp accumulate_event({:ok, attr}, inserted, attrs, attrs_count, config)
+       when attrs_count + 1 == config.batch_size do
+    case flush_batch(Enum.reverse([attr | attrs]), inserted, config) do
+      {:ok, batch_count} -> {:cont, {:ok, inserted + batch_count, [], 0}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp accumulate_event({:ok, attr}, inserted, attrs, attrs_count, _config) do
+    {:cont, {:ok, inserted, [attr | attrs], attrs_count + 1}}
+  end
+
+  defp finalize_batches({:error, reason}, _config), do: {:error, reason}
+  defp finalize_batches({:ok, inserted, [], 0}, _config), do: {:ok, inserted}
+
+  defp finalize_batches({:ok, inserted, attrs, _attrs_count}, config) do
+    case flush_batch(Enum.reverse(attrs), inserted, config) do
+      {:ok, batch_count} -> {:ok, inserted + batch_count}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -207,41 +167,35 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
        ),
        do: {:error, parse_error}
 
-  defp flush_batch(
-         repo,
-         schema,
-         attrs,
-         file_name,
-         topic,
-         processed_count,
-         total_rows,
-         transactional?
-       ) do
-    insert = fn -> insert_converted_batch(repo, schema, attrs, file_name) end
-
-    result =
-      if transactional? do
-        repo.transaction(fn ->
-          case insert.() do
-            {:ok, batch_count} -> batch_count
-            {:error, reason} -> repo.rollback(reason)
-          end
-        end)
-      else
-        insert.()
-      end
-
-    case result do
-      {:ok, batch_count} when transactional? ->
-        broadcast_progress(topic, file_name, processed_count + batch_count, total_rows)
-        {:ok, batch_count}
-
+  defp flush_batch(attrs, processed_count, config) do
+    case insert_batch_result(attrs, config) do
       {:ok, batch_count} ->
-        broadcast_progress(topic, file_name, processed_count + batch_count, total_rows)
+        broadcast_progress(
+          config.topic,
+          config.file_name,
+          processed_count + batch_count,
+          config.total_rows
+        )
+
         {:ok, batch_count}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp insert_batch_result(attrs, %{transactional?: true} = config) do
+    config.repo.transaction(fn -> insert_or_rollback(attrs, config) end)
+  end
+
+  defp insert_batch_result(attrs, config) do
+    insert_converted_batch(config.repo, config.schema, attrs, config.file_name)
+  end
+
+  defp insert_or_rollback(attrs, config) do
+    case insert_converted_batch(config.repo, config.schema, attrs, config.file_name) do
+      {:ok, batch_count} -> batch_count
+      {:error, reason} -> config.repo.rollback(reason)
     end
   end
 

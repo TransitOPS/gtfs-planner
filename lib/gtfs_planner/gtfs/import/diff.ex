@@ -209,29 +209,7 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
       end)
 
     intersection_decisions =
-      Enum.flat_map(intersection_keys, fn natural_key ->
-        current_record = Map.fetch!(db_by_key, natural_key)
-        uploaded_attrs = Map.fetch!(records_by_key, natural_key)
-
-        changed_fields = changed_fields(entity_type, current_record, uploaded_attrs)
-
-        if changed_fields == [] do
-          []
-        else
-          user_edited = user_edited?(current_record)
-          action = if user_edited, do: :conflict, else: :modify
-
-          [
-            build_decision(entity_type, natural_key, action,
-              current_record: current_record,
-              uploaded_attrs: uploaded_attrs,
-              changed_fields: changed_fields,
-              user_edited: user_edited,
-              dependency_keys: dependency_keys(entity_type, action, uploaded_attrs)
-            )
-          ]
-        end
-      end)
+      changed_decisions(entity_type, intersection_keys, records_by_key, db_by_key)
 
     add_decisions ++ remove_decisions ++ intersection_decisions
   end
@@ -278,31 +256,38 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
       end)
 
     intersection_decisions =
-      Enum.flat_map(intersection_keys, fn natural_key ->
-        current_record = Map.fetch!(db_by_key, natural_key)
-        uploaded_attrs = Map.fetch!(preview_records_by_key, natural_key)
-
-        changed_fields = changed_fields(entity_type, current_record, uploaded_attrs)
-
-        if changed_fields == [] do
-          []
-        else
-          user_edited = user_edited?(current_record)
-          action = if user_edited, do: :conflict, else: :modify
-
-          [
-            build_decision(entity_type, natural_key, action,
-              current_record: current_record,
-              uploaded_attrs: uploaded_attrs,
-              changed_fields: changed_fields,
-              user_edited: user_edited,
-              dependency_keys: dependency_keys(entity_type, action, uploaded_attrs)
-            )
-          ]
-        end
-      end)
+      changed_decisions(entity_type, intersection_keys, preview_records_by_key, db_by_key)
 
     add_decisions ++ intersection_decisions
+  end
+
+  defp changed_decisions(entity_type, natural_keys, uploaded_by_key, db_by_key) do
+    Enum.flat_map(natural_keys, fn natural_key ->
+      current_record = Map.fetch!(db_by_key, natural_key)
+      uploaded_attrs = Map.fetch!(uploaded_by_key, natural_key)
+      changed_decision(entity_type, natural_key, current_record, uploaded_attrs)
+    end)
+  end
+
+  defp changed_decision(entity_type, natural_key, current_record, uploaded_attrs) do
+    changed_fields = changed_fields(entity_type, current_record, uploaded_attrs)
+
+    if changed_fields == [] do
+      []
+    else
+      user_edited = user_edited?(current_record)
+      action = if user_edited, do: :conflict, else: :modify
+
+      [
+        build_decision(entity_type, natural_key, action,
+          current_record: current_record,
+          uploaded_attrs: uploaded_attrs,
+          changed_fields: changed_fields,
+          user_edited: user_edited,
+          dependency_keys: dependency_keys(entity_type, action, uploaded_attrs)
+        )
+      ]
+    end
   end
 
   defp build_decision(entity_type, natural_key, action, attrs) do

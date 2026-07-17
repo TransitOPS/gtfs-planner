@@ -59,7 +59,17 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
          }}
 
       {:ok, %{headers: headers, source_row_count: source_row_count, events: events}} ->
-        unless Enum.member?(headers, natural_key_header) do
+        if Enum.member?(headers, natural_key_header) do
+          scan(
+            events,
+            entity_type,
+            upload_filename,
+            canonical_filename,
+            natural_key_field,
+            row_parser,
+            source_row_count
+          )
+        else
           error = %ParseError{
             file: canonical_filename,
             reason: :missing_natural_key_header,
@@ -78,17 +88,6 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
              first_error_row: nil,
              last_error_row: nil
            }}
-        else
-          scan(
-            events,
-            entity_type,
-            upload_filename,
-            canonical_filename,
-            natural_key_field,
-            natural_key_header,
-            row_parser,
-            source_row_count
-          )
         end
     end
   end
@@ -99,7 +98,6 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
          upload_filename,
          canonical_filename,
          natural_key_field,
-         natural_key_header,
          row_parser,
          source_row_count
        ) do
@@ -121,7 +119,6 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
             entity_type,
             canonical_filename,
             natural_key_field,
-            natural_key_header,
             row_parser,
             acc
           )
@@ -160,48 +157,15 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
          entity_type,
          filename,
          natural_key_field,
-         _natural_key_header,
          row_parser,
          acc
        ) do
     case convert_row(row_map, row_parser, filename, entity_type) do
       {:ok, attrs} ->
-        key = Map.get(attrs, natural_key_field)
-
-        cond do
-          is_nil(key) or key == "" ->
-            add_error(acc, filename, :blank_natural_key, row, %{})
-
-          MapSet.member?(acc.seen_keys, key) ->
-            acc =
-              if Map.has_key?(acc.preview_records_by_key, key) do
-                acc
-              else
-                Map.update!(
-                  acc,
-                  :preview_records_by_key,
-                  &Map.put(&1, key, Map.get(acc.records_by_key, key, attrs))
-                )
-              end
-
-            add_error(acc, filename, :duplicate_natural_key, row, %{key: bounded_key(key)})
-
-          true ->
-            {:cont,
-             acc
-             |> Map.update!(:records_by_key, &Map.put(&1, key, attrs))
-             |> Map.update!(:seen_keys, &MapSet.put(&1, key))}
-        end
+        process_attrs(attrs, natural_key_field, filename, row, acc)
 
       {:error, reason} ->
-        metadata =
-          case reason do
-            reason when is_atom(reason) -> %{cause: reason}
-            reason when is_binary(reason) and byte_size(reason) <= 64 -> %{cause: reason}
-            _ -> %{}
-          end
-
-        add_error(acc, filename, :semantic_row, row, metadata)
+        add_error(acc, filename, :semantic_row, row, semantic_error_metadata(reason))
 
       :unexpected ->
         add_error(acc, filename, :unexpected_parser_failure, row, %{})
@@ -213,12 +177,53 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
          _entity_type,
          _filename,
          _natural_key_field,
-         _natural_key_header,
          _row_parser,
          acc
        ) do
     add_error(acc, error.file, error.reason, error.row, error.metadata)
   end
+
+  defp process_attrs(attrs, natural_key_field, filename, row, acc) do
+    key = Map.get(attrs, natural_key_field)
+
+    cond do
+      is_nil(key) or key == "" ->
+        add_error(acc, filename, :blank_natural_key, row, %{})
+
+      MapSet.member?(acc.seen_keys, key) ->
+        process_duplicate_key(attrs, key, filename, row, acc)
+
+      true ->
+        {:cont,
+         acc
+         |> Map.update!(:records_by_key, &Map.put(&1, key, attrs))
+         |> Map.update!(:seen_keys, &MapSet.put(&1, key))}
+    end
+  end
+
+  defp process_duplicate_key(attrs, key, filename, row, acc) do
+    acc = maybe_add_preview_record(acc, key, attrs)
+    add_error(acc, filename, :duplicate_natural_key, row, %{key: bounded_key(key)})
+  end
+
+  defp maybe_add_preview_record(acc, key, attrs) do
+    if Map.has_key?(acc.preview_records_by_key, key) do
+      acc
+    else
+      Map.update!(
+        acc,
+        :preview_records_by_key,
+        &Map.put(&1, key, Map.get(acc.records_by_key, key, attrs))
+      )
+    end
+  end
+
+  defp semantic_error_metadata(reason) when is_atom(reason), do: %{cause: reason}
+
+  defp semantic_error_metadata(reason) when is_binary(reason) and byte_size(reason) <= 64,
+    do: %{cause: reason}
+
+  defp semantic_error_metadata(_reason), do: %{}
 
   defp convert_row(row_map, row_parser, filename, entity_type) do
     try do

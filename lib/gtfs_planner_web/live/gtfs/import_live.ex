@@ -216,112 +216,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         blockers =
           Enum.map(duplicate_errors, &normalize_duplicate_blocker/1) ++ archive_blockers
 
-        {:noreply,
-         socket
-         |> assign(:diff_blockers, blockers)
-         |> assign(:diff_parse_failures, [])
-         |> assign(:diff_preview_count, 0)
-         |> assign(:diff_step, :upload)
-         |> assign(:diff_filter, :all)
-         |> assign(:diff_summary, empty_diff_summary())
-         |> assign(:apply_results, [])
-         |> assign(:decisions_by_id, %{})
-         |> stream(:diff_decisions, [], reset: true)
-         |> stream(:diff_preview_decisions, [], reset: true)}
+        {:noreply, block_diff_review(socket, blockers)}
+
+      {:ok, _categorized_files} when archive_blockers != [] ->
+        {:noreply, block_diff_review(socket, archive_blockers)}
 
       {:ok, categorized_files} ->
-        organization_id = socket.assigns.current_organization.id
-        gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-        if archive_blockers != [] do
-          {:noreply,
-           socket
-           |> assign(:diff_blockers, archive_blockers)
-           |> assign(:diff_parse_failures, [])
-           |> assign(:diff_preview_count, 0)
-           |> assign(:diff_step, :upload)
-           |> assign(:diff_filter, :all)
-           |> assign(:diff_summary, empty_diff_summary())
-           |> assign(:apply_results, [])
-           |> assign(:decisions_by_id, %{})
-           |> stream(:diff_decisions, [], reset: true)
-           |> stream(:diff_preview_decisions, [], reset: true)}
-        else
-          levels_result =
-            ParsedEntity.parse(
-              categorized_files.levels,
-              :level,
-              "levels.txt",
-              :level_id,
-              fn row_map ->
-                RowParser.level_row_to_attrs(row_map, organization_id, gtfs_version_id)
-              end
-            )
-
-          stops_result =
-            ParsedEntity.parse(
-              categorized_files.stops,
-              :stop,
-              "stops.txt",
-              :stop_id,
-              fn row_map ->
-                RowParser.stop_row_to_attrs(row_map, organization_id, gtfs_version_id)
-              end
-            )
-
-          db_levels = Gtfs.list_levels(organization_id, gtfs_version_id)
-          db_stops = Gtfs.list_stops(organization_id, gtfs_version_id)
-          db_pathways = Gtfs.list_pathways(organization_id, gtfs_version_id)
-
-          stop_validation_map = build_stop_validation_map(db_stops, stops_result)
-
-          pathways_result =
-            ParsedEntity.parse(
-              categorized_files.pathways,
-              :pathway,
-              "pathways.txt",
-              :pathway_id,
-              fn row_map ->
-                RowParser.pathway_row_to_attrs(
-                  row_map,
-                  organization_id,
-                  gtfs_version_id,
-                  stop_validation_map
-                )
-              end
-            )
-
-          parse_failures =
-            Enum.flat_map([levels_result, stops_result, pathways_result], fn result ->
-              case result do
-                {:error, %ParseFailure{} = failure} -> [failure]
-                _ -> []
-              end
-            end)
-
-          uploaded = %{levels: levels_result, stops: stops_result, pathways: pathways_result}
-
-          db = %{levels: db_levels, stops: db_stops, pathways: db_pathways}
-
-          diff_result = Diff.compute(uploaded, db)
-          decisions = diff_result.applicable
-          decisions_by_id = Map.new(decisions, fn decision -> {decision.id, decision} end)
-          preview_decisions = diff_result.preview
-          summary = Diff.summary(decisions)
-
-          {:noreply,
-           socket
-           |> assign(:diff_blockers, [])
-           |> assign(:diff_parse_failures, parse_failures)
-           |> assign(:diff_preview_count, length(preview_decisions))
-           |> assign(:diff_summary, summary)
-           |> assign(:diff_filter, :all)
-           |> assign(:apply_results, [])
-           |> assign(:decisions_by_id, decisions_by_id)
-           |> assign(:diff_step, :review)
-           |> stream(:diff_decisions, decisions, reset: true)
-           |> stream(:diff_preview_decisions, preview_decisions, reset: true)}
-        end
+        {:noreply, compute_diff_review(socket, categorized_files)}
     end
   end
 
@@ -448,6 +349,95 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:import_result, {:error, target, :process_crashed})
      |> assign(:importing, false)
      |> assign(:import_task, nil)}
+  end
+
+  defp block_diff_review(socket, blockers) do
+    socket
+    |> assign(:diff_blockers, blockers)
+    |> assign(:diff_parse_failures, [])
+    |> assign(:diff_preview_count, 0)
+    |> assign(:diff_step, :upload)
+    |> assign(:diff_filter, :all)
+    |> assign(:diff_summary, empty_diff_summary())
+    |> assign(:apply_results, [])
+    |> assign(:decisions_by_id, %{})
+    |> stream(:diff_decisions, [], reset: true)
+    |> stream(:diff_preview_decisions, [], reset: true)
+  end
+
+  defp compute_diff_review(socket, categorized_files) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    levels_result =
+      ParsedEntity.parse(
+        categorized_files.levels,
+        :level,
+        "levels.txt",
+        :level_id,
+        fn row_map ->
+          RowParser.level_row_to_attrs(row_map, organization_id, gtfs_version_id)
+        end
+      )
+
+    stops_result =
+      ParsedEntity.parse(
+        categorized_files.stops,
+        :stop,
+        "stops.txt",
+        :stop_id,
+        fn row_map ->
+          RowParser.stop_row_to_attrs(row_map, organization_id, gtfs_version_id)
+        end
+      )
+
+    db_levels = Gtfs.list_levels(organization_id, gtfs_version_id)
+    db_stops = Gtfs.list_stops(organization_id, gtfs_version_id)
+    db_pathways = Gtfs.list_pathways(organization_id, gtfs_version_id)
+    stop_validation_map = build_stop_validation_map(db_stops, stops_result)
+
+    pathways_result =
+      ParsedEntity.parse(
+        categorized_files.pathways,
+        :pathway,
+        "pathways.txt",
+        :pathway_id,
+        fn row_map ->
+          RowParser.pathway_row_to_attrs(
+            row_map,
+            organization_id,
+            gtfs_version_id,
+            stop_validation_map
+          )
+        end
+      )
+
+    parse_failures = parse_failures([levels_result, stops_result, pathways_result])
+    uploaded = %{levels: levels_result, stops: stops_result, pathways: pathways_result}
+    db = %{levels: db_levels, stops: db_stops, pathways: db_pathways}
+    diff_result = Diff.compute(uploaded, db)
+    decisions = diff_result.applicable
+    decisions_by_id = Map.new(decisions, fn decision -> {decision.id, decision} end)
+    preview_decisions = diff_result.preview
+
+    socket
+    |> assign(:diff_blockers, [])
+    |> assign(:diff_parse_failures, parse_failures)
+    |> assign(:diff_preview_count, length(preview_decisions))
+    |> assign(:diff_summary, Diff.summary(decisions))
+    |> assign(:diff_filter, :all)
+    |> assign(:apply_results, [])
+    |> assign(:decisions_by_id, decisions_by_id)
+    |> assign(:diff_step, :review)
+    |> stream(:diff_decisions, decisions, reset: true)
+    |> stream(:diff_preview_decisions, preview_decisions, reset: true)
+  end
+
+  defp parse_failures(results) do
+    Enum.flat_map(results, fn
+      {:error, %ParseFailure{} = failure} -> [failure]
+      _result -> []
+    end)
   end
 
   @impl true

@@ -37,7 +37,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   """
 
   alias GtfsPlanner.{Repo, Gtfs}
-  alias GtfsPlanner.Gtfs.Import.{Result, BatchProcessor, RowParser, CsvParser, ParseError}
+  alias GtfsPlanner.Gtfs.Import.{Result, BatchProcessor, RowParser, CsvParser}
   alias GtfsPlanner.Gtfs.Extensions
 
   require Logger
@@ -222,38 +222,17 @@ defmodule GtfsPlanner.Gtfs.Import do
          schema,
          row_to_attrs_fn
        ) do
-    total_count =
-      Enum.reduce_while(files, 0, fn file, acc ->
-        case CsvParser.stream(file.filename, file.content) do
-          {:ok, parsed} ->
-            case BatchProcessor.insert_batched_with_transactions(
-                   Repo,
-                   schema,
-                   parsed.events,
-                   row_to_attrs_fn,
-                   organization_id: organization_id,
-                   gtfs_version_id: gtfs_version_id,
-                   file_name: file.filename,
-                   topic: topic,
-                   batch_size: @batch_size,
-                   total_rows: parsed.source_row_count
-                 ) do
-              {:ok, count} ->
-                {:cont, acc + count}
-
-              {:error, reason} ->
-                {:halt, {:error, reason}}
-            end
-
-          {:error, %ParseError{} = reason} ->
-            {:halt, {:error, reason}}
-        end
-      end)
-
-    case total_count do
-      {:error, _} = error -> error
-      count -> {:ok, count}
+    insert = fn file, parsed ->
+      BatchProcessor.insert_batched_with_transactions(
+        Repo,
+        schema,
+        parsed.events,
+        row_to_attrs_fn,
+        batch_options(file, parsed, organization_id, gtfs_version_id, topic)
+      )
     end
+
+    process_category_files(files, insert)
   end
 
   # Processes a category of files using batch insertion
@@ -266,38 +245,46 @@ defmodule GtfsPlanner.Gtfs.Import do
          schema,
          row_to_attrs_fn
        ) do
-    total_count =
-      Enum.reduce_while(files, 0, fn file, acc ->
-        case CsvParser.stream(file.filename, file.content) do
-          {:ok, parsed} ->
-            case BatchProcessor.insert_batched(
-                   Repo,
-                   schema,
-                   parsed.events,
-                   row_to_attrs_fn,
-                   organization_id: organization_id,
-                   gtfs_version_id: gtfs_version_id,
-                   file_name: file.filename,
-                   topic: topic,
-                   batch_size: @batch_size,
-                   total_rows: parsed.source_row_count
-                 ) do
-              {:ok, count} ->
-                {:cont, acc + count}
-
-              {:error, reason} ->
-                {:halt, {:error, reason}}
-            end
-
-          {:error, %ParseError{} = reason} ->
-            {:halt, {:error, reason}}
-        end
-      end)
-
-    case total_count do
-      {:error, _} = error -> error
-      count -> {:ok, count}
+    insert = fn file, parsed ->
+      BatchProcessor.insert_batched(
+        Repo,
+        schema,
+        parsed.events,
+        row_to_attrs_fn,
+        batch_options(file, parsed, organization_id, gtfs_version_id, topic)
+      )
     end
+
+    process_category_files(files, insert)
+  end
+
+  defp process_category_files(files, insert) do
+    files
+    |> Enum.reduce_while(0, fn file, count -> process_category_file(file, count, insert) end)
+    |> normalize_category_count()
+  end
+
+  defp process_category_file(file, count, insert) do
+    with {:ok, parsed} <- CsvParser.stream(file.filename, file.content),
+         {:ok, inserted} <- insert.(file, parsed) do
+      {:cont, count + inserted}
+    else
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp normalize_category_count({:error, _} = error), do: error
+  defp normalize_category_count(count), do: {:ok, count}
+
+  defp batch_options(file, parsed, organization_id, gtfs_version_id, topic) do
+    [
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id,
+      file_name: file.filename,
+      topic: topic,
+      batch_size: @batch_size,
+      total_rows: parsed.source_row_count
+    ]
   end
 
   # Categorizes files by filename into file type buckets.
@@ -397,111 +384,160 @@ defmodule GtfsPlanner.Gtfs.Import do
   """
   def expand_archives(files) do
     {files_acc, warnings_acc} =
-      Enum.reduce(files, {[], []}, fn file, {files_acc, warnings_acc} ->
-        if String.ends_with?(String.downcase(file.filename), ".zip") do
-          limits = zip_limits()
-
-          case check_zip_archive_metadata_against_limits(file, limits) do
-            {:ok, preflight_warnings} ->
-              case :zip.unzip(file.content, [:memory]) do
-                {:ok, entries} ->
-                  entry_sizes = Enum.map(entries, fn {_name, content} -> byte_size(content) end)
-
-                  case check_zip_entry_sizes_against_limits(entry_sizes, limits) do
-                    {:ok, _entries_count, _total_bytes} ->
-                      normalized_entries =
-                        Enum.flat_map(entries, fn {name, content} ->
-                          filename = normalize_uploaded_filename(to_string(name))
-
-                          cond do
-                            ignore_zip_entry?(filename) ->
-                              []
-
-                            String.ends_with?(String.downcase(filename), ".zip") ->
-                              []
-
-                            true ->
-                              [%{filename: filename, content: content}]
-                          end
-                        end)
-
-                      files_acc =
-                        Enum.reduce(normalized_entries, files_acc, fn entry, acc ->
-                          [entry | acc]
-                        end)
-
-                      {files_acc, Enum.reverse(preflight_warnings) ++ warnings_acc}
-
-                    {:error, reason, entries_count, total_bytes, entry_bytes} ->
-                      Logger.warning(
-                        "Zip archive #{file.filename} exceeds safety limits after expansion " <>
-                          "(reason=#{reason}, entries=#{entries_count}, bytes=#{total_bytes}, " <>
-                          "entry_bytes=#{entry_bytes}, max_entries=#{limits.max_entries}, " <>
-                          "max_total_bytes=#{limits.max_total_bytes}, " <>
-                          "max_entry_bytes=#{limits.max_entry_bytes}), skipping expansion"
-                      )
-
-                      warning = %{
-                        filename: file.filename,
-                        reason: :archive_too_large,
-                        detail:
-                          "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
-                      }
-
-                      {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
-                  end
-
-                {:error, reason} ->
-                  Logger.warning(
-                    "Failed to expand zip archive #{file.filename}: #{inspect(reason)}"
-                  )
-
-                  warning = %{
-                    filename: file.filename,
-                    reason: :unzip_failed,
-                    detail: "archive could not be read (#{inspect(reason)})"
-                  }
-
-                  {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
-              end
-
-            {:error, reason, entries_count, total_bytes, entry_bytes, preflight_warnings} ->
-              Logger.warning(
-                "Zip archive #{file.filename} exceeds safety limits " <>
-                  "(reason=#{reason}, entries=#{entries_count}, bytes=#{total_bytes}, " <>
-                  "entry_bytes=#{entry_bytes}, max_entries=#{limits.max_entries}, " <>
-                  "max_total_bytes=#{limits.max_total_bytes}, " <>
-                  "max_entry_bytes=#{limits.max_entry_bytes}), skipping expansion"
-              )
-
-              warning = %{
-                filename: file.filename,
-                reason: :archive_too_large,
-                detail:
-                  "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
-              }
-
-              {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
-
-            {:error, reason, preflight_warnings} ->
-              Logger.warning(
-                "Failed to preflight zip archive #{file.filename}: #{inspect(reason)}"
-              )
-
-              warning = %{
-                filename: file.filename,
-                reason: :unzip_failed,
-                detail: "archive could not be read (#{inspect(reason)})"
-              }
-
-              {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
-          end
-        else
-          {[file | files_acc], warnings_acc}
-        end
-      end)
+      Enum.reduce(files, {[], []}, &expand_archive_file/2)
 
     {Enum.reverse(files_acc), Enum.reverse(warnings_acc)}
+  end
+
+  defp expand_archive_file(file, acc) do
+    if String.ends_with?(String.downcase(file.filename), ".zip") do
+      expand_zip_archive(file, acc, zip_limits())
+    else
+      {files_acc, warnings_acc} = acc
+      {[file | files_acc], warnings_acc}
+    end
+  end
+
+  defp expand_zip_archive(file, acc, limits) do
+    file
+    |> check_zip_archive_metadata_against_limits(limits)
+    |> handle_zip_preflight(file, acc, limits)
+  end
+
+  defp handle_zip_preflight({:ok, preflight_warnings}, file, acc, limits) do
+    file.content
+    |> :zip.unzip([:memory])
+    |> handle_zip_expansion(file, acc, limits, preflight_warnings)
+  end
+
+  defp handle_zip_preflight(
+         {:error, reason, entries_count, total_bytes, entry_bytes, preflight_warnings},
+         file,
+         acc,
+         limits
+       ) do
+    add_archive_too_large_warning(
+      file,
+      acc,
+      limits,
+      preflight_warnings,
+      {reason, entries_count, total_bytes, entry_bytes},
+      ""
+    )
+  end
+
+  defp handle_zip_preflight({:error, reason, preflight_warnings}, file, acc, _limits) do
+    add_unreadable_archive_warning(file, acc, preflight_warnings, reason, "preflight")
+  end
+
+  defp handle_zip_expansion(
+         {:ok, entries},
+         file,
+         acc,
+         limits,
+         preflight_warnings
+       ) do
+    entry_sizes = Enum.map(entries, fn {_name, content} -> byte_size(content) end)
+
+    entry_sizes
+    |> check_zip_entry_sizes_against_limits(limits)
+    |> handle_expanded_entry_sizes(file, entries, acc, limits, preflight_warnings)
+  end
+
+  defp handle_zip_expansion(
+         {:error, reason},
+         file,
+         acc,
+         _limits,
+         preflight_warnings
+       ) do
+    add_unreadable_archive_warning(file, acc, preflight_warnings, reason, "expand")
+  end
+
+  defp handle_expanded_entry_sizes(
+         {:ok, _entries_count, _total_bytes},
+         _file,
+         entries,
+         {files_acc, warnings_acc},
+         _limits,
+         preflight_warnings
+       ) do
+    files_acc = Enum.reduce(normalize_zip_entries(entries), files_acc, &[&1 | &2])
+    {files_acc, Enum.reverse(preflight_warnings) ++ warnings_acc}
+  end
+
+  defp handle_expanded_entry_sizes(
+         {:error, reason, entries_count, total_bytes, entry_bytes},
+         file,
+         _entries,
+         acc,
+         limits,
+         preflight_warnings
+       ) do
+    add_archive_too_large_warning(
+      file,
+      acc,
+      limits,
+      preflight_warnings,
+      {reason, entries_count, total_bytes, entry_bytes},
+      " after expansion"
+    )
+  end
+
+  defp normalize_zip_entries(entries) do
+    Enum.flat_map(entries, fn {name, content} ->
+      filename = normalize_uploaded_filename(to_string(name))
+
+      if ignore_zip_entry?(filename) or String.ends_with?(String.downcase(filename), ".zip") do
+        []
+      else
+        [%{filename: filename, content: content}]
+      end
+    end)
+  end
+
+  defp add_archive_too_large_warning(
+         file,
+         {files_acc, warnings_acc},
+         limits,
+         preflight_warnings,
+         {reason, entries_count, total_bytes, entry_bytes},
+         phase
+       ) do
+    Logger.warning(
+      "Zip archive #{file.filename} exceeds safety limits#{phase} " <>
+        "(reason=#{reason}, entries=#{entries_count}, bytes=#{total_bytes}, " <>
+        "entry_bytes=#{entry_bytes}, max_entries=#{limits.max_entries}, " <>
+        "max_total_bytes=#{limits.max_total_bytes}, " <>
+        "max_entry_bytes=#{limits.max_entry_bytes}), skipping expansion"
+    )
+
+    warning = %{
+      filename: file.filename,
+      reason: :archive_too_large,
+      detail:
+        "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
+    }
+
+    {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
+  end
+
+  defp add_unreadable_archive_warning(
+         file,
+         {files_acc, warnings_acc},
+         preflight_warnings,
+         reason,
+         phase
+       ) do
+    Logger.warning("Failed to #{phase} zip archive #{file.filename}: #{inspect(reason)}")
+
+    warning = %{
+      filename: file.filename,
+      reason: :unzip_failed,
+      detail: "archive could not be read (#{inspect(reason)})"
+    }
+
+    {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
   end
 
   @doc false

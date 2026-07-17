@@ -30,40 +30,35 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParser do
 
   def stream(file, content) when is_binary(content) do
     if String.valid?(content) do
-      content = strip_bom(content)
-
-      if content == "" do
-        {:error, %ParseError{file: file, reason: :empty_content}}
-      else
-        {records, source_row_count} = split_records(content)
-
-        if records == [] do
-          {:error, %ParseError{file: file, reason: :empty_content}}
-        else
-          {_line_number, header_line} = hd(records)
-          headers = parse_header(file, header_line)
-
-          case headers do
-            {:ok, headers} ->
-              data_records = tl(records)
-
-              events =
-                data_records
-                |> Stream.map(fn {row, line} ->
-                  parse_row(file, headers, line, row)
-                end)
-
-              {:ok, %{headers: headers, source_row_count: source_row_count, events: events}}
-
-            {:error, error} ->
-              {:error, error}
-          end
-        end
-      end
+      content
+      |> strip_bom()
+      |> stream_valid_content(file)
     else
-      {:error, %ParseError{file: file, reason: :invalid_utf8}}
+      parse_error(file, :invalid_utf8)
     end
   end
+
+  defp stream_valid_content("", file), do: parse_error(file, :empty_content)
+
+  defp stream_valid_content(content, file) do
+    {records, source_row_count} = split_records(content)
+    stream_records(records, source_row_count, file)
+  end
+
+  defp stream_records([], _source_row_count, file), do: parse_error(file, :empty_content)
+
+  defp stream_records([{_line_number, header_line} | data_records], source_row_count, file) do
+    with {:ok, headers} <- parse_header(file, header_line) do
+      events =
+        Stream.map(data_records, fn {row, line} ->
+          parse_row(file, headers, line, row)
+        end)
+
+      {:ok, %{headers: headers, source_row_count: source_row_count, events: events}}
+    end
+  end
+
+  defp parse_error(file, reason), do: {:error, %ParseError{file: file, reason: reason}}
 
   defp strip_bom(<<0xEF, 0xBB, 0xBF, rest::binary>>), do: rest
   defp strip_bom(content), do: content
