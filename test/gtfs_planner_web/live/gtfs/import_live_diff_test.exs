@@ -446,9 +446,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       after_level = Gtfs.get_level_by_level_id(organization.id, gtfs_version.id, "L1")
 
       assert before_level.level_name == after_level.level_name
-      # The apply step transitions to done even with zero approved decisions.
-      refute has_element?(view, "#diff-apply-btn")
-      assert has_element?(view, "#diff-reset-btn")
+      assert has_element?(view, "#diff-apply-btn", "Apply Approved (0)")
+      assert has_element?(view, "button[phx-click='approve-decision'][phx-value-id='level:L1']")
     end
 
     test "crafted apply-decisions with preview-only stops performs zero mutations", %{
@@ -494,6 +493,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       assert before_stops == after_stops
       # The preview stop never reaches the database.
       refute Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "S1")
+      assert has_element?(view, "#diff-apply-btn", "Apply Approved (0)")
+      assert has_element?(view, "#diff-preview-region")
     end
 
     test "approve-all only marks decisions present in the applicable map", %{
@@ -756,12 +757,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       view |> form("#diff-upload-form", %{}) |> render_submit()
 
       assert has_element?(view, "#diff-degraded-region", "levels.txt")
-      assert has_element?(view, "#diff-degraded-region", "empty_content")
+      assert has_element?(view, "#diff-degraded-region", "File is empty")
+      assert has_element?(view, "#diff-degraded-choose-corrected-files", "Choose corrected files")
       refute has_element?(view, "#diff-preview-region")
       refute has_element?(view, "button[phx-click='approve-decision']")
     end
 
-    test "failed levels upload makes uploaded stops read-only but keeps independent complete entity applicable",
+    test "failed levels upload transitively makes uploaded stops and pathways read-only",
          %{
            view: view,
            organization: organization,
@@ -769,7 +771,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
          } do
       # levels.txt fails (missing required header). stops.txt is complete and
       # uploaded, so it should be read-only via dependency taint (INV-1).
-      # pathways.txt is an independent complete entity and keeps applicable controls.
+      # pathways.txt is downstream of the uploaded stops and is transitively tainted.
       bad_levels = "level_index,level_name\n0.0,Ground"
       good_stops = "stop_id,stop_name,stop_lat,stop_lon,location_type\nS1,Stop 1,40.0,-74.0,0"
 
@@ -807,11 +809,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
                "button[phx-click='approve-decision'][phx-value-id='stop:S1']"
              )
 
-      # The independent complete pathways entity keeps applicable controls.
-      assert has_element?(
+      refute has_element?(
                view,
                "button[phx-click='approve-decision'][phx-value-id='pathway:P1']"
              )
+
+      assert has_element?(view, "#diff-preview-decisions", "P1")
 
       _ = {organization, gtfs_version}
     end
@@ -852,6 +855,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
 
       # Global blocker suppresses review regions and the decision table.
       assert has_element?(view, "#diff-blockers")
+      assert has_element?(view, "#diff-blockers", "big.zip")
       assert has_element?(view, "#diff-choose-corrected-files", "Choose corrected files")
       refute has_element?(view, "#diff-decisions")
       refute has_element?(view, "#diff-preview-region")
@@ -872,6 +876,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
 
       assert has_element?(view, "#diff-blockers")
       assert has_element?(view, "#diff-blockers", "broken.zip")
+      refute has_element?(view, "#diff-blockers", "bad_eocd")
       assert has_element?(view, "#diff-choose-corrected-files", "Choose corrected files")
     end
 
@@ -897,6 +902,40 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       assert has_element?(view, "#diff-blockers")
       assert has_element?(view, "#diff-blockers", "outer.zip")
       assert has_element?(view, "#diff-choose-corrected-files", "Choose corrected files")
+    end
+
+    test "duplicate entity and archive blockers are reported together", %{view: view} do
+      levels = "level_id,level_index,level_name\nL1,0.0,Level 1"
+
+      {:ok, {_name, zip_binary}} =
+        :zip.create(
+          ~c"mixed-blockers.zip",
+          [
+            {~c"first/levels.txt", levels},
+            {~c"second/levels.txt", levels},
+            {~c"nested.zip", "not expanded"}
+          ],
+          [:memory]
+        )
+
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "mixed-blockers.zip", content: zip_binary, type: "application/zip"}
+        ])
+
+      render_upload(upload, "mixed-blockers.zip")
+      view |> form("#diff-upload-form", %{}) |> render_submit()
+
+      assert has_element?(view, "#diff-blockers", "levels.txt: Duplicate entity file")
+
+      assert has_element?(
+               view,
+               "#diff-blockers",
+               "mixed-blockers.zip: Archive contains a nested archive"
+             )
+
+      assert has_element?(view, "#diff-choose-corrected-files", "Choose corrected files")
+      refute has_element?(view, "#diff-decisions")
     end
 
     test "nested archive remains identified when metadata preflight also rejects its size", %{

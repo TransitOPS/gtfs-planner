@@ -542,7 +542,8 @@ defmodule GtfsPlanner.Gtfs.Import do
                 filename = normalize_uploaded_filename(to_string(name))
 
                 nested_warnings =
-                  if String.ends_with?(String.downcase(filename), ".zip") do
+                  if not ignore_zip_entry?(filename) and
+                       String.ends_with?(String.downcase(filename), ".zip") do
                     Logger.warning(
                       "Rejecting nested zip entry #{filename} in archive #{file.filename}"
                     )
@@ -681,10 +682,7 @@ defmodule GtfsPlanner.Gtfs.Import do
     end
   end
 
-  # Delegates to the strict field parser owned by CsvParser. The permissive
-  # production parsing paths (parse_csv_content/1 and
-  # parse_csv_content_with_count/1) remain until their callers are retired in
-  # later steps.
+  # Delegates to the strict field parser owned by CsvParser.
   @doc """
   Parses a single CSV line into a list of field values.
 

@@ -100,16 +100,20 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
     levels_failed = failed_reason(Map.fetch!(uploaded, :levels))
     stops_failed = failed_reason(Map.fetch!(uploaded, :stops))
     pathways_failed = failed_reason(Map.fetch!(uploaded, :pathways))
+    stops_uploaded = Map.fetch!(uploaded, :stops) != :not_uploaded
+    pathways_uploaded = Map.fetch!(uploaded, :pathways) != :not_uploaded
+    stops_dependency_failed = levels_failed and stops_uploaded
+    stops_tainted = stops_failed or stops_dependency_failed
 
     dependency_taint =
       %{}
       |> then(fn acc ->
-        if levels_failed and Map.fetch!(uploaded, :stops) != :not_uploaded,
+        if stops_dependency_failed,
           do: Map.put(acc, :stops, :dependency_failed),
           else: acc
       end)
       |> then(fn acc ->
-        if stops_failed and Map.fetch!(uploaded, :pathways) != :not_uploaded,
+        if stops_tainted and pathways_uploaded,
           do: Map.put(acc, :pathways, :dependency_failed),
           else: acc
       end)
@@ -235,7 +239,9 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
   defp remove_decisions(entity_type, db_records) do
     natural_key_field = natural_key_field(entity_type)
 
-    Enum.map(db_records, fn record ->
+    db_records
+    |> Enum.sort_by(&Map.fetch!(&1, natural_key_field))
+    |> Enum.map(fn record ->
       natural_key = Map.fetch!(record, natural_key_field)
 
       build_decision(entity_type, natural_key, :remove,

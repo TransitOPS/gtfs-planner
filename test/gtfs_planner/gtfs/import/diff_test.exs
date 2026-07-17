@@ -256,6 +256,31 @@ defmodule GtfsPlanner.Gtfs.Import.DiffTest do
       assert Enum.all?(preview, &(&1.entity_type == :stop))
     end
 
+    test "failed levels taints uploaded pathways transitively through uploaded stops (AC-11)" do
+      uploaded =
+        default_uploaded(%{
+          levels: error_entity(:level, %{}),
+          stops:
+            ok_entity(:stop, %{"S1" => stop_attrs("S1", %{level_id: "L1", parent_station: nil})}),
+          pathways:
+            ok_entity(:pathway, %{
+              "P1" => pathway_attrs("P1", %{from_stop_id: "S1", to_stop_id: "S1"})
+            })
+        })
+
+      %{applicable: applicable, preview: preview, blocked_entities: blocked} =
+        Diff.compute(uploaded, default_db())
+
+      assert applicable == []
+      assert Enum.map(preview, & &1.entity_type) == [:stop, :pathway]
+
+      assert blocked == %{
+               level: :parse_failed,
+               stop: :dependency_failed,
+               pathway: :dependency_failed
+             }
+    end
+
     test "failed stops taints uploaded pathways to preview (AC-11)" do
       db = default_db(%{levels: [level(%{level_id: "L1"})]})
 

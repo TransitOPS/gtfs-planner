@@ -126,7 +126,7 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserTest do
              ]
     end
 
-    test "dangling quote mid-field returns :unterminated_quote" do
+    test "quote in an unquoted field returns :malformed_quote" do
       content = "a,b\n1,val\"ue"
       {:ok, %{events: events}} = CsvParser.stream(@filename, content)
 
@@ -135,10 +135,30 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserTest do
                 %ParseError{
                   file: @filename,
                   row: 2,
-                  reason: :unterminated_quote,
-                  metadata: %{position: :end_of_line}
+                  reason: :malformed_quote
                 }}
              ]
+    end
+
+    test "text after a closing quote returns :malformed_quote" do
+      content = ~s(a,b\n1,"closed"trailing)
+      {:ok, %{events: events}} = CsvParser.stream(@filename, content)
+
+      assert [{:error, %ParseError{row: 2, reason: :malformed_quote}}] =
+               Enum.to_list(events)
+    end
+
+    test "embedded LF in a quoted value is one forbidden-control event and preserves later physical rows" do
+      content = "a,b\n1,\"two\nlines\"\n3,4"
+
+      {:ok, %{source_row_count: count, events: events}} = CsvParser.stream(@filename, content)
+
+      assert count == 2
+
+      assert [
+               {:error, %ParseError{row: 2, reason: :forbidden_control_character}},
+               {:ok, 4, %{"a" => "3", "b" => "4"}}
+             ] = Enum.to_list(events)
     end
 
     test "embedded tab in value returns :forbidden_control_character" do
@@ -160,6 +180,13 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserTest do
                {:error,
                 %ParseError{file: @filename, row: 2, reason: :forbidden_control_character}}
              ] =
+               Enum.to_list(events)
+    end
+
+    test "lone terminal CR is not stripped as a record ending" do
+      {:ok, %{events: events}} = CsvParser.stream(@filename, "a,b\n1,2\r")
+
+      assert [{:error, %ParseError{row: 2, reason: :forbidden_control_character}}] =
                Enum.to_list(events)
     end
   end
@@ -220,6 +247,9 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserTest do
     test "malformed lines return an error without a source row" do
       assert {:error, %ParseError{row: nil, reason: :unterminated_quote}} =
                CsvParser.parse_line(~s("unterminated))
+
+      assert {:error, %ParseError{row: nil, reason: :malformed_quote}} =
+               CsvParser.parse_line(~s(value"quote))
     end
   end
 end

@@ -10,6 +10,8 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
   require Logger
 
   @max_diagnostics 100
+  @max_metadata_value_bytes 64
+  @truncation_marker "...[truncated]"
 
   @opaque t :: %__MODULE__{
             entity_type: :level | :stop | :pathway,
@@ -136,13 +138,6 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
          source_row_count: source_row_count
        }}
     else
-      diagnostics =
-        if length(acc.diagnostics) > @max_diagnostics do
-          Enum.take(acc.diagnostics, @max_diagnostics)
-        else
-          Enum.reverse(acc.diagnostics)
-        end
-
       truncated? = acc.total_error_count > @max_diagnostics
 
       {:error,
@@ -150,7 +145,7 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
          entity_type: entity_type,
          filename: canonical_filename,
          preview_records_by_key: acc.preview_records_by_key,
-         diagnostics: diagnostics,
+         diagnostics: Enum.reverse(acc.diagnostics),
          total_error_count: acc.total_error_count,
          truncated?: truncated?,
          source_row_count: source_row_count,
@@ -175,7 +170,7 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
 
         cond do
           is_nil(key) or key == "" ->
-            add_error(acc, filename, :blank_natural_key, row, %{}, nil)
+            add_error(acc, filename, :blank_natural_key, row, %{})
 
           MapSet.member?(acc.seen_keys, key) ->
             acc =
@@ -189,7 +184,7 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
                 )
               end
 
-            add_error(acc, filename, :duplicate_natural_key, row, %{key: key}, nil)
+            add_error(acc, filename, :duplicate_natural_key, row, %{key: bounded_key(key)})
 
           true ->
             {:cont,
@@ -206,10 +201,10 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
             _ -> %{}
           end
 
-        add_error(acc, filename, :semantic_row, row, metadata, nil)
+        add_error(acc, filename, :semantic_row, row, metadata)
 
       :unexpected ->
-        add_error(acc, filename, :unexpected_parser_failure, row, %{}, nil)
+        add_error(acc, filename, :unexpected_parser_failure, row, %{})
     end
   end
 
@@ -222,7 +217,7 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
          _row_parser,
          acc
        ) do
-    add_error(acc, error.file, error.reason, error.row, error.metadata, nil)
+    add_error(acc, error.file, error.reason, error.row, error.metadata)
   end
 
   defp convert_row(row_map, row_parser, filename, entity_type) do
@@ -259,7 +254,7 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
   defp unexpected_class({:throw, _}), do: "throw"
   defp unexpected_class(_), do: "exit"
 
-  defp add_error(acc, file, reason, row, metadata, _extra) do
+  defp add_error(acc, file, reason, row, metadata) do
     error = %ParseError{file: file, row: row, reason: reason, metadata: metadata}
     first_error_row = if is_nil(acc.first_error_row), do: row, else: acc.first_error_row
 
@@ -277,4 +272,21 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
      |> Map.put(:first_error_row, first_error_row)
      |> Map.put(:last_error_row, row)}
   end
+
+  defp bounded_key(key) when is_binary(key) and byte_size(key) <= @max_metadata_value_bytes,
+    do: key
+
+  defp bounded_key(key) when is_binary(key) do
+    prefix_bytes = @max_metadata_value_bytes - byte_size(@truncation_marker)
+    safe_binary_prefix(key, prefix_bytes) <> @truncation_marker
+  end
+
+  defp bounded_key(_key), do: "[non-string key]"
+
+  defp safe_binary_prefix(value, bytes) when bytes > 0 do
+    prefix = binary_part(value, 0, min(bytes, byte_size(value)))
+    if String.valid?(prefix), do: prefix, else: safe_binary_prefix(value, bytes - 1)
+  end
+
+  defp safe_binary_prefix(_value, 0), do: ""
 end

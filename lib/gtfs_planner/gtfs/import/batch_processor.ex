@@ -18,7 +18,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
 
     * `repo` - The Ecto repository module
     * `schema` - The Ecto schema module to insert into
-    * `rows_stream` - A stream of row maps to process
+    * `rows_stream` - A stream of `CsvParser.row_event()` values to process
     * `row_to_attrs_fn` - Function to convert row map to attrs map. Should accept
       (row, organization_id, gtfs_version_id) and return `{:ok, attrs}` or `{:error, reason}`
     * `opts` - Keyword list of options:
@@ -49,35 +49,19 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     total_rows = Keyword.get(opts, :total_rows, 0)
 
-    # Process stream directly in chunks without materializing entire file
-    # This reduces memory pressure for large files (e.g., stop_times.txt with millions of rows)
-    rows_stream
-    |> Stream.chunk_every(batch_size)
-    |> Stream.with_index()
-    |> Enum.reduce_while({:ok, 0, 0}, fn {chunk, batch_index}, {:ok, acc_count, _} ->
-      case process_batch(
-             repo,
-             schema,
-             chunk,
-             row_to_attrs_fn,
-             organization_id,
-             gtfs_version_id,
-             file_name,
-             topic,
-             acc_count,
-             total_rows
-           ) do
-        {:ok, batch_count} ->
-          {:cont, {:ok, acc_count + batch_count, batch_index + 1}}
-
-        {:error, reason} ->
-          {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, total_count, _batch_count} -> {:ok, total_count}
-      {:error, _} = error -> error
-    end
+    process_events(
+      repo,
+      schema,
+      rows_stream,
+      row_to_attrs_fn,
+      organization_id,
+      gtfs_version_id,
+      file_name,
+      topic,
+      batch_size,
+      total_rows,
+      false
+    )
   end
 
   @doc """
@@ -91,7 +75,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
 
     * `repo` - The Ecto repository module
     * `schema` - The Ecto schema module to insert into
-    * `rows_stream` - A stream of row maps to process
+    * `rows_stream` - A stream of `CsvParser.row_event()` values to process
     * `row_to_attrs_fn` - Function to convert row map to attrs map. Should accept
       (row, organization_id, gtfs_version_id) and return `{:ok, attrs}` or `{:error, reason}`
     * `opts` - Keyword list of options:
@@ -122,88 +106,78 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     total_rows = Keyword.get(opts, :total_rows, 0)
 
-    # Process stream in chunks, wrapping each batch in its own transaction
+    process_events(
+      repo,
+      schema,
+      rows_stream,
+      row_to_attrs_fn,
+      organization_id,
+      gtfs_version_id,
+      file_name,
+      topic,
+      batch_size,
+      total_rows,
+      true
+    )
+  end
+
+  # Private Functions
+
+  defp process_events(
+         repo,
+         schema,
+         rows_stream,
+         row_to_attrs_fn,
+         organization_id,
+         gtfs_version_id,
+         file_name,
+         topic,
+         batch_size,
+         total_rows,
+         transactional?
+       ) do
     rows_stream
-    |> Stream.chunk_every(batch_size)
-    |> Stream.with_index()
-    |> Enum.reduce_while({:ok, 0, 0}, fn {chunk, batch_index}, {:ok, acc_count, _} ->
-      # Wrap this batch in its own transaction
-      result =
-        repo.transaction(fn ->
-          case process_batch(
+    |> Enum.reduce_while({:ok, 0, [], 0}, fn event, {:ok, inserted, attrs, attrs_count} ->
+      case convert_event(event, row_to_attrs_fn, organization_id, gtfs_version_id, file_name) do
+        {:ok, attr} when attrs_count + 1 == batch_size ->
+          case flush_batch(
                  repo,
                  schema,
-                 chunk,
-                 row_to_attrs_fn,
-                 organization_id,
-                 gtfs_version_id,
+                 Enum.reverse([attr | attrs]),
                  file_name,
                  topic,
-                 acc_count,
-                 total_rows
+                 inserted,
+                 total_rows,
+                 transactional?
                ) do
-            {:ok, batch_count} ->
-              batch_count
-
-            {:error, reason} ->
-              repo.rollback(reason)
+            {:ok, batch_count} -> {:cont, {:ok, inserted + batch_count, [], 0}}
+            {:error, reason} -> {:halt, {:error, reason}}
           end
-        end)
 
-      case result do
-        {:ok, batch_count} ->
-          {:cont, {:ok, acc_count + batch_count, batch_index + 1}}
+        {:ok, attr} ->
+          {:cont, {:ok, inserted, [attr | attrs], attrs_count + 1}}
 
         {:error, reason} ->
           {:halt, {:error, reason}}
       end
     end)
     |> case do
-      {:ok, total_count, _batch_count} -> {:ok, total_count}
-      {:error, _} = error -> error
-    end
-  end
+      {:ok, inserted, [], 0} ->
+        {:ok, inserted}
 
-  # Private Functions
-
-  defp process_batch(
-         repo,
-         schema,
-         chunk,
-         row_to_attrs_fn,
-         organization_id,
-         gtfs_version_id,
-         file_name,
-         topic,
-         processed_count,
-         total_rows
-       ) do
-    # Convert rows to attrs (pass processed_count as batch_start for accurate row indexing)
-    case convert_rows_to_attrs(
-           chunk,
-           row_to_attrs_fn,
-           organization_id,
-           gtfs_version_id,
-           file_name,
-           processed_count
-         ) do
-      {:ok, attrs_list} ->
-        # Add timestamps since insert_all doesn't auto-generate them
-        now = DateTime.utc_now()
-
-        attrs_with_timestamps =
-          Enum.map(attrs_list, &Map.merge(&1, %{inserted_at: now, updated_at: now}))
-
-        # Insert batch
-        case insert_batch(repo, schema, attrs_with_timestamps, file_name) do
-          {:ok, batch_count} ->
-            # Broadcast progress
-            new_processed = processed_count + batch_count
-            broadcast_progress(topic, file_name, new_processed, total_rows)
-            {:ok, batch_count}
-
-          {:error, reason} ->
-            {:error, reason}
+      {:ok, inserted, attrs, _attrs_count} ->
+        case flush_batch(
+               repo,
+               schema,
+               Enum.reverse(attrs),
+               file_name,
+               topic,
+               inserted,
+               total_rows,
+               transactional?
+             ) do
+          {:ok, batch_count} -> {:ok, inserted + batch_count}
+          {:error, reason} -> {:error, reason}
         end
 
       {:error, reason} ->
@@ -211,38 +185,70 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     end
   end
 
-  defp convert_rows_to_attrs(
-         rows,
+  defp convert_event(
+         {:ok, row_number, row_map},
          row_to_attrs_fn,
          organization_id,
          gtfs_version_id,
-         file_name,
-         _batch_start
+         file_name
        ) do
-    rows
-    |> Enum.reduce_while({:ok, []}, fn event, {:ok, acc} ->
-      case event do
-        {:ok, row_number, row_map} ->
-          case row_to_attrs_fn.(row_map, organization_id, gtfs_version_id) do
-            {:ok, attrs} ->
-              {:cont, {:ok, [attrs | acc]}}
-
-            {:error, reason} ->
-              # Report the physical source row carried by the event, not the
-              # inserted-row offset.
-              {:halt, {:error, %{file: file_name, row: row_number, reason: reason}}}
-          end
-
-        {:error, %ParseError{} = parse_error} ->
-          # Structural event: halt before inserting this chunk. The ParseError
-          # already carries the physical row.
-          {:halt, {:error, parse_error}}
-      end
-    end)
-    |> case do
-      {:ok, attrs_list} -> {:ok, Enum.reverse(attrs_list)}
-      {:error, _} = error -> error
+    case row_to_attrs_fn.(row_map, organization_id, gtfs_version_id) do
+      {:ok, attrs} -> {:ok, attrs}
+      {:error, reason} -> {:error, %{file: file_name, row: row_number, reason: reason}}
     end
+  end
+
+  defp convert_event(
+         {:error, %ParseError{} = parse_error},
+         _row_to_attrs_fn,
+         _organization_id,
+         _gtfs_version_id,
+         _file_name
+       ),
+       do: {:error, parse_error}
+
+  defp flush_batch(
+         repo,
+         schema,
+         attrs,
+         file_name,
+         topic,
+         processed_count,
+         total_rows,
+         transactional?
+       ) do
+    insert = fn -> insert_converted_batch(repo, schema, attrs, file_name) end
+
+    result =
+      if transactional? do
+        repo.transaction(fn ->
+          case insert.() do
+            {:ok, batch_count} -> batch_count
+            {:error, reason} -> repo.rollback(reason)
+          end
+        end)
+      else
+        insert.()
+      end
+
+    case result do
+      {:ok, batch_count} when transactional? ->
+        broadcast_progress(topic, file_name, processed_count + batch_count, total_rows)
+        {:ok, batch_count}
+
+      {:ok, batch_count} ->
+        broadcast_progress(topic, file_name, processed_count + batch_count, total_rows)
+        {:ok, batch_count}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp insert_converted_batch(repo, schema, attrs, file_name) do
+    now = DateTime.utc_now()
+    attrs = Enum.map(attrs, &Map.merge(&1, %{inserted_at: now, updated_at: now}))
+    insert_batch(repo, schema, attrs, file_name)
   end
 
   defp insert_batch(repo, schema, attrs_list, file_name) do

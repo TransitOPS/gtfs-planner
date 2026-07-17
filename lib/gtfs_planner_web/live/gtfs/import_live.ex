@@ -209,10 +209,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       end)
 
     {expanded_files, archive_warnings} = Import.expand_archives(uploaded_files)
+    archive_blockers = normalize_archive_warnings(archive_warnings)
 
     case categorize_diff_files(expanded_files) do
       {:error, duplicate_errors} ->
-        blockers = Enum.map(duplicate_errors, &normalize_duplicate_blocker/1)
+        blockers =
+          Enum.map(duplicate_errors, &normalize_duplicate_blocker/1) ++ archive_blockers
 
         {:noreply,
          socket
@@ -230,8 +232,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       {:ok, categorized_files} ->
         organization_id = socket.assigns.current_organization.id
         gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-        archive_blockers = normalize_archive_warnings(archive_warnings)
 
         if archive_blockers != [] do
           {:noreply,
@@ -273,8 +273,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           db_stops = Gtfs.list_stops(organization_id, gtfs_version_id)
           db_pathways = Gtfs.list_pathways(organization_id, gtfs_version_id)
 
-          stop_validation_map =
-            build_stop_validation_map(db_stops, stops_result, categorized_files.stops)
+          stop_validation_map = build_stop_validation_map(db_stops, stops_result)
 
           pathways_result =
             ParsedEntity.parse(
@@ -385,15 +384,19 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       |> Enum.filter(fn decision -> decision.status == :approved end)
       |> order_apply_decisions()
 
-    apply_results =
-      Enum.map(approved_decisions, fn decision ->
-        {decision.id, apply_decision(decision)}
-      end)
+    if socket.assigns.diff_step == :review and approved_decisions != [] do
+      apply_results =
+        Enum.map(approved_decisions, fn decision ->
+          {decision.id, apply_decision(decision)}
+        end)
 
-    {:noreply,
-     socket
-     |> assign(:apply_results, apply_results)
-     |> assign(:diff_step, :done)}
+      {:noreply,
+       socket
+       |> assign(:apply_results, apply_results)
+       |> assign(:diff_step, :done)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -810,7 +813,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           </.form>
 
           <%= if @diff_blockers != [] do %>
-            <.callout kind="error" id="diff-blockers" title="Cannot compute review">
+            <.callout
+              kind="error"
+              id="diff-blockers"
+              title="Cannot compute review"
+              role="alert"
+              aria-live="assertive"
+            >
               <p class="text-sm">
                 One or more uploaded files could not be processed. Choose corrected files to continue.
               </p>
@@ -890,6 +899,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                 <div id="diff-degraded-region" role="status" aria-live="polite" class="space-y-3">
                   <.callout
                     :for={failure <- @diff_parse_failures}
+                    id={"diff-failure-#{failure.entity_type}"}
                     kind="error"
                     title="Incomplete file"
                   >
@@ -898,7 +908,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       {format_failure_summary(failure)}
                     </p>
                     <ul class="mt-1 space-y-1 text-xs list-disc list-inside">
-                      <li :for={error <- Enum.take(failure.diagnostics, 100)}>
+                      <li
+                        :for={{error, index} <- Enum.with_index(failure.diagnostics, 1)}
+                        id={"diff-diagnostic-#{failure.entity_type}-#{index}"}
+                      >
                         {format_parse_error(error)}
                       </li>
                     </ul>
@@ -908,6 +921,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       </p>
                     <% end %>
                   </.callout>
+                  <button
+                    type="button"
+                    id="diff-degraded-choose-corrected-files"
+                    class="btn btn-primary btn-sm"
+                    phx-click="reset-diff"
+                  >
+                    Choose corrected files
+                  </button>
                 </div>
               <% end %>
 
@@ -1354,9 +1375,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
           [
             %{
-              file: nil,
+              file: basenames,
               row: nil,
-              reason: "Duplicate entity upload detected (#{basenames})"
+              reason: :duplicate_entity_file
             }
           ]
       end)
@@ -1383,30 +1404,26 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           :unzip_failed -> :archive_unreadable
           :archive_too_large -> :archive_too_large
           :nested_archive -> :nested_archive
-          other -> other
+          _unknown -> :archive_unreadable
         end
 
       %ParseError{
         file: warning.filename,
         reason: reason,
-        metadata: %{detail: warning.detail}
+        metadata: %{}
       }
     end)
-  end
-
-  defp normalize_duplicate_blocker(%{file: nil, reason: reason}) when is_binary(reason) do
-    %ParseError{file: nil, reason: :duplicate_entity_file, metadata: %{detail: reason}}
   end
 
   defp normalize_duplicate_blocker(duplicate) do
     %ParseError{
       file: Map.get(duplicate, :file),
       reason: :duplicate_entity_file,
-      metadata: %{detail: Map.get(duplicate, :reason, "duplicate entity upload")}
+      metadata: %{}
     }
   end
 
-  defp build_stop_validation_map(db_stops, stops_result, _categorized) do
+  defp build_stop_validation_map(db_stops, stops_result) do
     db_ids = Enum.map(db_stops, & &1.stop_id)
 
     uploaded_ids =
@@ -1747,27 +1764,30 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     (summary.add || 0) + (summary.modify || 0) + (summary.conflict || 0) + (summary.remove || 0)
   end
 
-  defp format_parse_error(%ParseError{file: nil, reason: reason, metadata: metadata}) do
-    detail = Map.get(metadata, :detail)
-    if detail, do: detail, else: parse_reason_label(reason)
-  end
+  defp format_parse_error(%ParseError{file: nil, reason: reason}), do: parse_reason_label(reason)
 
-  defp format_parse_error(%ParseError{file: file, row: nil, reason: reason, metadata: metadata})
+  defp format_parse_error(%ParseError{file: file, row: nil, reason: reason})
        when is_binary(file) do
-    detail = Map.get(metadata, :detail)
-    base = "#{file}: #{parse_reason_label(reason)}"
-    if detail, do: "#{base} (#{detail})", else: base
+    "#{file}: #{parse_reason_label(reason)}"
   end
 
-  defp format_parse_error(%ParseError{file: file, row: row, reason: reason, metadata: metadata})
+  defp format_parse_error(%ParseError{file: file, row: row, reason: reason})
        when is_binary(file) and is_integer(row) do
-    detail = Map.get(metadata, :detail)
-    base = "#{file} row #{row}: #{parse_reason_label(reason)}"
-    if detail, do: "#{base} (#{detail})", else: base
+    "#{file} row #{row}: #{parse_reason_label(reason)}"
   end
 
   defp format_parse_error(%ParseError{reason: reason}), do: parse_reason_label(reason)
-  defp format_parse_error(other), do: inspect(other)
+
+  defp parse_reason_label(:empty_content), do: "File is empty"
+  defp parse_reason_label(:invalid_utf8), do: "File uses an unsupported text encoding"
+  defp parse_reason_label(:blank_header), do: "Column name is blank"
+  defp parse_reason_label(:duplicate_header), do: "Column name is duplicated"
+  defp parse_reason_label(:wrong_field_count), do: "Row has the wrong number of values"
+  defp parse_reason_label(:unterminated_quote), do: "Quoted value is not closed"
+  defp parse_reason_label(:malformed_quote), do: "Quoted value is malformed"
+
+  defp parse_reason_label(:forbidden_control_character),
+    do: "Row contains an invalid line break or tab"
 
   defp parse_reason_label(:archive_unreadable), do: "Archive could not be read"
   defp parse_reason_label(:archive_too_large), do: "Archive exceeds size limits"
@@ -1778,8 +1798,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp parse_reason_label(:blank_natural_key), do: "Missing key value"
   defp parse_reason_label(:semantic_row), do: "Invalid row value"
   defp parse_reason_label(:unexpected_parser_failure), do: "Unexpected parse failure"
-  defp parse_reason_label(reason) when is_atom(reason), do: to_string(reason)
-  defp parse_reason_label(reason) when is_binary(reason), do: reason
 
   defp format_failure_summary(%ParseFailure{
          entity_type: entity_type,

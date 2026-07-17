@@ -288,5 +288,26 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntityTest do
       assert {:error, failure} = result
       assert failure.preview_records_by_key == %{"L1" => %{level_id: "L1", level_name: "First"}}
     end
+
+    test "duplicate-key diagnostic metadata bounds an uploaded natural key" do
+      long_key = String.duplicate("K", 500)
+      content = "level_id,level_name\n#{long_key},First\n#{long_key},Second\n"
+
+      assert {:error, failure} =
+               ParsedEntity.parse(
+                 %{filename: "levels.txt", content: content},
+                 :level,
+                 "levels.txt",
+                 :level_id,
+                 fn row -> {:ok, atomize(row)} end
+               )
+
+      assert [%ParseError{reason: :duplicate_natural_key, metadata: %{key: key}}] =
+               failure.diagnostics
+
+      assert byte_size(key) <= 64
+      assert String.ends_with?(key, "...[truncated]")
+      refute key == long_key
+    end
   end
 end

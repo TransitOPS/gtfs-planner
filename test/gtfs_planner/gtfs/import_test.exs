@@ -732,6 +732,24 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert detail =~ "too_many_entries"
     end
 
+    test "ignored system zip entries count toward limits without becoming nested blockers" do
+      {:ok, {_name, zip_binary}} =
+        :zip.create(
+          ~c"system-entry.zip",
+          [
+            {~c"levels.txt", "level_id,level_index,level_name\nL1,0.0,Ground"},
+            {~c"__MACOSX/ignored.zip", "metadata"}
+          ],
+          [:memory]
+        )
+
+      {expanded, warnings} =
+        Import.expand_archives([%{filename: "system-entry.zip", content: zip_binary}])
+
+      assert Enum.map(expanded, & &1.filename) == ["levels.txt"]
+      assert warnings == []
+    end
+
     test "expand_archives returns archive_too_large when extracted bytes exceed limits" do
       original_total_limit =
         Application.get_env(:gtfs_planner, :import_max_zip_uncompressed_bytes)

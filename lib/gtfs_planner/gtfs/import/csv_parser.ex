@@ -69,30 +69,76 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParser do
   defp strip_bom(content), do: content
 
   defp split_records(content) do
-    lines = String.split(content, "\n")
-
-    {records, nonblank_count, _physical} =
-      Enum.reduce(lines, {[], 0, 0}, fn line, {acc, count, physical} ->
-        line = trim_cr(line)
-        physical = physical + 1
-
-        if line == "" do
-          {acc, count, physical}
-        else
-          {[{physical, line} | acc], count + 1, physical}
-        end
-      end)
-
-    {Enum.reverse(records), max(nonblank_count - 1, 0)}
+    records = split_records(content, :field_start, [], [], 1, 1)
+    {records, max(length(records) - 1, 0)}
   end
 
-  defp trim_cr(<<>>), do: <<>>
-
-  defp trim_cr(line) do
-    size = byte_size(line)
-    last = :binary.part(line, size - 1, 1)
-    if last == "\r", do: :binary.part(line, 0, size - 1), else: line
+  defp split_records(<<>>, _state, current, records, record_row, _physical_row) do
+    records
+    |> add_record(record_row, current)
+    |> Enum.reverse()
   end
+
+  defp split_records(<<?\n, rest::binary>>, :quoted, current, records, record_row, physical_row) do
+    split_records(rest, :quoted, ["\n" | current], records, record_row, physical_row + 1)
+  end
+
+  defp split_records(<<?\n, rest::binary>>, _state, current, records, record_row, physical_row) do
+    records = add_record(records, record_row, trim_crlf_cr(current))
+
+    split_records(rest, :field_start, [], records, physical_row + 1, physical_row + 1)
+  end
+
+  defp split_records(<<?", ?", rest::binary>>, :quoted, current, records, record_row, row) do
+    split_records(rest, :quoted, ["\"", "\"" | current], records, record_row, row)
+  end
+
+  defp split_records(<<?", rest::binary>>, state, current, records, record_row, row) do
+    next_state =
+      case state do
+        :field_start -> :quoted
+        :quoted -> :after_quote
+        :unquoted -> :malformed
+        :after_quote -> :malformed
+        :malformed -> :malformed
+      end
+
+    split_records(rest, next_state, ["\"" | current], records, record_row, row)
+  end
+
+  defp split_records(<<?,, rest::binary>>, state, current, records, record_row, row) do
+    next_state =
+      case state do
+        :quoted -> :quoted
+        :malformed -> :malformed
+        _ -> :field_start
+      end
+
+    split_records(rest, next_state, ["," | current], records, record_row, row)
+  end
+
+  defp split_records(<<char::utf8, rest::binary>>, state, current, records, record_row, row) do
+    next_state =
+      case state do
+        :field_start -> :unquoted
+        :after_quote -> :malformed
+        other -> other
+      end
+
+    split_records(rest, next_state, [<<char::utf8>> | current], records, record_row, row)
+  end
+
+  defp add_record(records, _row, []), do: records
+
+  defp add_record(records, row, reversed_chars) do
+    line = reversed_chars |> Enum.reverse() |> IO.iodata_to_binary()
+    if line == "", do: records, else: [{row, line} | records]
+  end
+
+  # The reverse accumulator starts with CR only when the LF that ended this
+  # record was part of CRLF. A lone terminal CR reaches the field parser.
+  defp trim_crlf_cr(["\r" | rest]), do: rest
+  defp trim_crlf_cr(current), do: current
 
   defp parse_header(file, line) do
     case parse_csv_fields(line, file, 1) do
@@ -147,18 +193,19 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParser do
 
   @doc false
   def parse_line(line) when is_binary(line) do
-    parse_csv_fields(line, [], "", false, 0, "", nil)
+    parse_csv_fields(line, [], "", :field_start, "", nil)
   end
 
   defp parse_csv_fields(line, file, row) do
-    parse_csv_fields(line, [], "", false, 0, file, row)
+    parse_csv_fields(line, [], "", :field_start, file, row)
   end
 
-  defp parse_csv_fields("", fields, current, false, _pos, _file, _row) do
+  defp parse_csv_fields("", fields, current, state, _file, _row)
+       when state in [:field_start, :unquoted, :after_quote] do
     {:ok, Enum.reverse([current | fields])}
   end
 
-  defp parse_csv_fields("", _fields, _current, true, _pos, file, row) do
+  defp parse_csv_fields("", _fields, _current, :quoted, file, row) do
     {:error,
      %ParseError{
        file: file,
@@ -168,49 +215,59 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParser do
      }}
   end
 
-  defp parse_csv_fields(<<char::utf8, rest::binary>>, fields, current, in_quotes, pos, file, row) do
-    case {char, in_quotes} do
-      {?\", false} ->
-        parse_csv_fields(rest, fields, current, true, pos + 1, file, row)
+  defp parse_csv_fields("", _fields, _current, :malformed, file, row) do
+    malformed_quote(file, row)
+  end
 
-      {?\", true} ->
-        case rest do
-          <<?\", rest2::binary>> ->
-            parse_csv_fields(rest2, fields, current <> "\"", true, pos + 2, file, row)
+  defp parse_csv_fields(<<?\", rest::binary>>, fields, current, :field_start, file, row) do
+    parse_csv_fields(rest, fields, current, :quoted, file, row)
+  end
 
-          _ ->
-            parse_csv_fields(rest, fields, current, false, pos + 1, file, row)
-        end
+  defp parse_csv_fields(<<?\", ?\", rest::binary>>, fields, current, :quoted, file, row) do
+    parse_csv_fields(rest, fields, current <> "\"", :quoted, file, row)
+  end
 
-      {?,, false} ->
-        parse_csv_fields(rest, [current | fields], "", false, pos + 1, file, row)
+  defp parse_csv_fields(<<?\", rest::binary>>, fields, current, :quoted, file, row) do
+    parse_csv_fields(rest, fields, current, :after_quote, file, row)
+  end
 
-      {char, true} ->
-        if forbidden_control?(char) do
-          {:error,
-           %ParseError{
-             file: file,
-             row: row,
-             reason: :forbidden_control_character,
-             metadata: %{character: char}
-           }}
-        else
-          parse_csv_fields(rest, fields, current <> <<char::utf8>>, true, pos + 1, file, row)
-        end
+  defp parse_csv_fields(<<?,, rest::binary>>, fields, current, state, file, row)
+       when state in [:field_start, :unquoted, :after_quote] do
+    parse_csv_fields(rest, [current | fields], "", :field_start, file, row)
+  end
 
-      {char, false} ->
-        if forbidden_control?(char) do
-          {:error,
-           %ParseError{
-             file: file,
-             row: row,
-             reason: :forbidden_control_character,
-             metadata: %{character: char}
-           }}
-        else
-          parse_csv_fields(rest, fields, current <> <<char::utf8>>, false, pos + 1, file, row)
-        end
+  defp parse_csv_fields(<<?\", _rest::binary>>, _fields, _current, state, file, row)
+       when state in [:unquoted, :after_quote, :malformed] do
+    malformed_quote(file, row)
+  end
+
+  defp parse_csv_fields(<<char::utf8, _rest::binary>>, _fields, _current, :after_quote, file, row) do
+    if forbidden_control?(char),
+      do: forbidden_control(file, row, char),
+      else: malformed_quote(file, row)
+  end
+
+  defp parse_csv_fields(<<char::utf8, rest::binary>>, fields, current, state, file, row) do
+    if forbidden_control?(char) do
+      forbidden_control(file, row, char)
+    else
+      next_state = if state == :field_start, do: :unquoted, else: state
+      parse_csv_fields(rest, fields, current <> <<char::utf8>>, next_state, file, row)
     end
+  end
+
+  defp malformed_quote(file, row) do
+    {:error, %ParseError{file: file, row: row, reason: :malformed_quote}}
+  end
+
+  defp forbidden_control(file, row, char) do
+    {:error,
+     %ParseError{
+       file: file,
+       row: row,
+       reason: :forbidden_control_character,
+       metadata: %{character: char}
+     }}
   end
 
   defp forbidden_control?(?\t), do: true

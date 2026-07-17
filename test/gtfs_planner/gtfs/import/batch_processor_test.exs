@@ -132,10 +132,10 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
       topic: topic
     } do
       events = [
-        {:ok, 1, %{"level_id" => "L1", "level_index" => "1.0"}},
-        {:ok, 2, %{"level_id" => "L2", "level_index" => "2.0"}},
-        {:ok, 3, %{"level_id" => "", "level_index" => "3.0"}},
-        {:ok, 4, %{"level_id" => "L4", "level_index" => "4.0"}}
+        {:ok, 2, %{"level_id" => "L1", "level_index" => "1.0"}},
+        {:ok, 10, %{"level_id" => "L2", "level_index" => "2.0"}},
+        {:ok, 27, %{"level_id" => "", "level_index" => "3.0"}},
+        {:ok, 99, %{"level_id" => "L4", "level_index" => "4.0"}}
       ]
 
       row_to_attrs_fn = fn row, org_id, version_id ->
@@ -167,7 +167,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
           batch_size: 3
         )
 
-      assert {:error, %{file: "levels.txt", row: 3, reason: "missing required field: level_id"}} =
+      assert {:error, %{file: "levels.txt", row: 27, reason: "missing required field: level_id"}} =
                result
     end
 
@@ -346,6 +346,71 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
                {:ok, 2},
                {:error, 3}
              ]
+    end
+  end
+
+  describe "insert_batched_with_transactions/5" do
+    test "commits complete batches, discards the error batch, and stops consuming", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id,
+      topic: topic
+    } do
+      events =
+        [
+          {:ok, 2, %{"level_id" => "L1", "level_index" => "1.0"}},
+          {:ok, 3, %{"level_id" => "L2", "level_index" => "2.0"}},
+          {:ok, 4, %{"level_id" => "L3", "level_index" => "3.0"}},
+          {:error,
+           %GtfsPlanner.Gtfs.Import.ParseError{
+             file: "levels.txt",
+             row: 5,
+             reason: :wrong_field_count
+           }},
+          {:ok, 6, %{"level_id" => "L4", "level_index" => "4.0"}}
+        ]
+        |> Stream.map(fn event ->
+          Process.put(:bp_transaction_consumed, [
+            event | Process.get(:bp_transaction_consumed, [])
+          ])
+
+          event
+        end)
+
+      row_to_attrs_fn = fn row, organization_id, gtfs_version_id ->
+        {level_index, _} = Float.parse(row["level_index"])
+
+        {:ok,
+         %{
+           level_id: row["level_id"],
+           level_index: level_index,
+           organization_id: organization_id,
+           gtfs_version_id: gtfs_version_id
+         }}
+      end
+
+      Process.put(:bp_transaction_consumed, [])
+
+      assert {:error, %GtfsPlanner.Gtfs.Import.ParseError{row: 5}} =
+               BatchProcessor.insert_batched_with_transactions(
+                 Repo,
+                 Level,
+                 events,
+                 row_to_attrs_fn,
+                 organization_id: org_id,
+                 gtfs_version_id: version_id,
+                 file_name: "levels.txt",
+                 topic: topic,
+                 batch_size: 2
+               )
+
+      assert Repo.all(Level) |> Enum.map(& &1.level_id) |> Enum.sort() == ["L1", "L2"]
+
+      assert Process.get(:bp_transaction_consumed, [])
+             |> Enum.reverse()
+             |> Enum.map(fn
+               {:ok, row, _} -> {:ok, row}
+               {:error, %GtfsPlanner.Gtfs.Import.ParseError{row: row}} -> {:error, row}
+             end) == [{:ok, 2}, {:ok, 3}, {:ok, 4}, {:error, 5}]
     end
   end
 end
