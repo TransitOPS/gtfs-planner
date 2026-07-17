@@ -7570,6 +7570,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           uploads_path,
           "diagrams",
           to_string(organization.id),
+          to_string(gtfs_version.id),
           station_dir,
           stop_level.diagram_filename
         ])
@@ -12668,6 +12669,139 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
     test "color_distance is zero for identical colors" do
       assert StationDiagramLive.color_distance("#0080FF", "#0080FF") == 0.0
+    end
+  end
+
+  describe "StationDiagramLive - versioned diagram assets" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VERSIONED_STATION",
+          stop_name: "Versioned Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "VL1",
+          level_name: "Versioned Level 1",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    @tag :dsa_versioned_diagrams
+    test "rendered station diagram image href contains the selected GTFS version ID", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      upload_diagram(view, "floorplan.png", "versioned payload")
+
+      assert has_element?(
+               view,
+               "image[href*='/uploads/diagrams/#{organization.id}/#{gtfs_version.id}/']"
+             )
+    end
+
+    @tag :dsa_versioned_diagrams
+    test "manual upload writes beneath the current version and cannot alter another version", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      other_version = gtfs_version_fixture(organization.id)
+
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+      station_dir = PathSafety.stop_storage_dir(station.stop_id)
+
+      # Pre-seed a file under the OTHER version's namespace for the same station.
+      other_dir =
+        Path.join([uploads_path, "diagrams", organization.id, other_version.id, station_dir])
+
+      File.mkdir_p!(other_dir)
+      other_file = Path.join(other_dir, "sentinel.png")
+      File.write!(other_file, "other-version-bytes")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      upload_diagram(view, "floorplan.png", "current-version payload")
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      assert stop_level.diagram_filename != nil
+
+      current_path =
+        Path.join([
+          uploads_path,
+          "diagrams",
+          organization.id,
+          gtfs_version.id,
+          station_dir,
+          stop_level.diagram_filename
+        ])
+
+      # The manual write lands only beneath the current published version.
+      assert File.exists?(current_path)
+      assert File.read!(current_path) == "current-version payload"
+
+      # The same station filename under the other version is never written.
+      other_version_same_filename =
+        Path.join([
+          uploads_path,
+          "diagrams",
+          organization.id,
+          other_version.id,
+          station_dir,
+          stop_level.diagram_filename
+        ])
+
+      refute File.exists?(other_version_same_filename)
+
+      # The other version's pre-existing bytes are untouched (INV-005).
+      assert File.read!(other_file) == "other-version-bytes"
+
+      on_exit(fn ->
+        File.rm_rf!(Path.join([uploads_path, "diagrams", organization.id]))
+      end)
     end
   end
 end

@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto, StopLevel}
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -78,6 +79,20 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
     }
 
     Repo.insert!(struct!(JournalEntry, Map.merge(defaults, attrs)))
+  end
+
+  # Writes a versioned diagram file so `DiagramStorage.public_url_path/4` (used by
+  # the controller) resolves to the versioned URL. Files are written under the
+  # configured (shared, per-run) uploads root at unique org/version dirs and cleaned
+  # up after the test.
+  defp write_versioned_diagram(org_id, version_id, station_stop_id, filename) do
+    uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+    station_dir = PathSafety.stop_storage_dir(station_stop_id)
+    dir = Path.join([uploads_path, "diagrams", org_id, version_id, station_dir])
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, filename), "diagram bytes")
+    on_exit(fn -> File.rm_rf!(Path.join([uploads_path, "diagrams", org_id])) end)
+    :ok
   end
 
   # Build a version that is not publicly readable: staging, importing, or failed.
@@ -514,7 +529,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert Enum.find(data["stops"], &(&1["id"] == child1.id))["journal_entries"] == []
     end
 
-    test "level floorplan carries url + alignment when the stop_level is aligned", %{
+    test "level floorplan carries versioned url + alignment when the stop_level is aligned", %{
       conn: conn,
       user: user,
       org: org
@@ -528,13 +543,15 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
           level_id: level.id,
           organization_id: org.id,
           gtfs_version_id: version.id,
-          diagram_filename: "B1/busway plan.png",
+          diagram_filename: "busway_plan.png",
           floorplan_center_lat: 39.9536,
           floorplan_center_lon: -75.1632,
           floorplan_scale_mpp: 0.05,
           floorplan_rotation_deg: 12.5
         }
         |> Repo.insert()
+
+      write_versioned_diagram(org.id, version.id, station.stop_id, "busway_plan.png")
 
       conn =
         conn
@@ -544,21 +561,25 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert %{"data" => data} = json_response(conn, 200)
       floorplan = Enum.find(data["levels"], &(&1["id"] == level.id))["floorplan"]
 
-      assert floorplan["filename"] == "B1/busway plan.png"
+      assert floorplan["filename"] == "busway_plan.png"
+      assert floorplan["version_id"] == version.id
       assert floorplan["center_lat"] == 39.9536
       assert floorplan["center_lon"] == -75.1632
       assert floorplan["scale_mpp"] == 0.05
       assert floorplan["rotation_deg"] == 12.5
       assert is_binary(floorplan["url"])
       assert String.contains?(floorplan["url"], "/uploads/diagrams/")
-      assert String.contains?(floorplan["url"], "B1%2Fbusway%20plan.png")
+      # The public production URL includes the selected GTFS version ID.
+      assert String.contains?(floorplan["url"], version.id)
+      assert String.contains?(floorplan["url"], "busway_plan.png")
     end
 
-    test "level floorplan url uses the encoded storage directory for unsafe station stop_id", %{
-      conn: conn,
-      user: user,
-      org: org
-    } do
+    test "level floorplan url uses the versioned encoded storage directory for unsafe station stop_id",
+         %{
+           conn: conn,
+           user: user,
+           org: org
+         } do
       version = gtfs_version_fixture(org.id)
       level = level_fixture(org.id, version.id)
 
@@ -583,6 +604,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         }
         |> Repo.insert()
 
+      write_versioned_diagram(org.id, version.id, station.stop_id, "concourse.png")
+
       conn =
         conn
         |> authed_conn(user)
@@ -593,10 +616,11 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert %{"data" => data} = json_response(conn, 200)
       floorplan = Enum.find(data["levels"], &(&1["id"] == level.id))["floorplan"]
 
-      assert floorplan["url"] =~ "/uploads/diagrams/#{org.id}/#{encoded_dir}/concourse.png"
+      assert floorplan["url"] =~
+               "/uploads/diagrams/#{org.id}/#{version.id}/#{encoded_dir}/concourse.png"
     end
 
-    test "level floorplan carries the image with null alignment when the stop_level has a diagram but incomplete alignment",
+    test "level floorplan carries the versioned image with null alignment when the stop_level has a diagram but incomplete alignment",
          %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)
       %{station: station, level: level} = build_station_data(org.id, version.id)
@@ -611,6 +635,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         }
         |> Repo.insert()
 
+      write_versioned_diagram(org.id, version.id, station.stop_id, "B1_busway.png")
+
       conn =
         conn
         |> authed_conn(user)
@@ -622,8 +648,10 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       # The diagram image is emitted independent of alignment so the client can
       # render it in diagram space; the alignment fields are null.
       assert floorplan["filename"] == "B1_busway.png"
+      assert floorplan["version_id"] == version.id
       assert is_binary(floorplan["url"])
       assert String.contains?(floorplan["url"], "/uploads/diagrams/")
+      assert String.contains?(floorplan["url"], version.id)
       assert floorplan["center_lat"] == nil
       assert floorplan["center_lon"] == nil
       assert floorplan["scale_mpp"] == nil
