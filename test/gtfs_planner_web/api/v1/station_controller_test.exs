@@ -95,6 +95,16 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
     :ok
   end
 
+  defp write_legacy_diagram(org_id, station_stop_id, filename) do
+    uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+    station_dir = PathSafety.stop_storage_dir(station_stop_id)
+    dir = Path.join([uploads_path, "diagrams", org_id, station_dir])
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, filename), "legacy diagram bytes")
+    on_exit(fn -> File.rm_rf!(Path.join([uploads_path, "diagrams", org_id])) end)
+    :ok
+  end
+
   # Build a version that is not publicly readable: staging, importing, or failed.
   defp unavailable_version(org_id, status) do
     {:ok, staging} =
@@ -572,6 +582,47 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       # The public production URL includes the selected GTFS version ID.
       assert String.contains?(floorplan["url"], version.id)
       assert String.contains?(floorplan["url"], "busway_plan.png")
+    end
+
+    test "does not expose a legacy floorplan referenced only by another published version", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      historical_version = gtfs_version_fixture(org.id)
+      selected_version = gtfs_version_fixture(org.id)
+
+      %{station: selected_station, level: selected_level} =
+        build_station_data(org.id, selected_version.id)
+
+      historical_station =
+        stop_fixture(org.id, historical_version.id,
+          stop_id: selected_station.stop_id,
+          location_type: 1
+        )
+
+      historical_level =
+        level_fixture(org.id, historical_version.id, level_id: selected_level.level_id)
+
+      {:ok, _} =
+        GtfsPlanner.Gtfs.create_stop_level(%{
+          stop_id: historical_station.id,
+          level_id: historical_level.id,
+          organization_id: org.id,
+          gtfs_version_id: historical_version.id,
+          diagram_filename: "retired.png"
+        })
+
+      write_legacy_diagram(org.id, selected_station.stop_id, "retired.png")
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{selected_version.id}/stations/#{selected_station.id}/bundle")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      selected_level_json = Enum.find(data["levels"], &(&1["id"] == selected_level.id))
+      assert selected_level_json["floorplan"] == nil
     end
 
     test "level floorplan url uses the versioned encoded storage directory for unsafe station stop_id",

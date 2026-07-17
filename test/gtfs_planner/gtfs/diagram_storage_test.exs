@@ -398,6 +398,39 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       assert File.read!(dest) == @legacy_bytes
       assert File.read!(legacy_path) == @legacy_bytes
     end
+
+    @tag :release
+    test "raises when the legacy backfill cannot create a versioned destination",
+         %{organization: org, version: version, station: station, level: level} do
+      legacy_dir = Path.join([uploads_root(org.id), PathSafety.stop_storage_dir(station.stop_id)])
+      File.mkdir_p!(legacy_dir)
+      File.write!(Path.join(legacy_dir, "plan.png"), @legacy_bytes)
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "plan.png",
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
+
+      blocked_destination =
+        Path.join([
+          uploads_root(org.id),
+          version.id,
+          PathSafety.stop_storage_dir(station.stop_id)
+        ])
+
+      File.mkdir_p!(Path.dirname(blocked_destination))
+      File.write!(blocked_destination, "not a directory")
+
+      capture_log(fn ->
+        assert_raise RuntimeError,
+                     ~r/legacy diagram backfill failed: :(?:eexist|enotdir)/,
+                     fn -> GtfsPlanner.Release.migrate() end
+      end)
+    end
   end
 
   defp uploads_root(organization_id) do

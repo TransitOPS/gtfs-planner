@@ -199,6 +199,55 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       File.rm_rf(Path.join(uploads_path, "diagrams"))
     end
 
+    test "does not export a legacy image referenced only by another published version", %{
+      org_id: org_id,
+      version_id: selected_version_id
+    } do
+      historical_version = gtfs_version_fixture(org_id)
+
+      selected_station =
+        stop_fixture(org_id, selected_version_id,
+          stop_id: "shared_station",
+          location_type: 1
+        )
+
+      {:ok, _} = Gtfs.update_stop_diagram_coordinate(selected_station, %{x: 12.0, y: 24.0})
+
+      historical_station =
+        stop_fixture(org_id, historical_version.id,
+          stop_id: selected_station.stop_id,
+          location_type: 1
+        )
+
+      historical_level = level_fixture(org_id, historical_version.id, level_id: "L1")
+
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          stop_id: historical_station.id,
+          level_id: historical_level.id,
+          organization_id: org_id,
+          gtfs_version_id: historical_version.id,
+          diagram_filename: "retired.png"
+        })
+
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+      legacy_dir = Path.join([uploads_path, "diagrams", org_id, selected_station.stop_id])
+      File.mkdir_p!(legacy_dir)
+      File.write!(Path.join(legacy_dir, "retired.png"), "legacy png data")
+
+      assert {:ok, entries} = Export.build_zip_entries(org_id, selected_version_id)
+
+      {_, manifest_json} =
+        Enum.find(entries, fn {name, _content} -> name == ~c"_pathways_extensions.json" end)
+
+      manifest = Jason.decode!(manifest_json)
+      assert manifest["diagram_images"] == []
+
+      refute Enum.any?(entries, fn {name, _content} ->
+               String.contains?(to_string(name), "retired.png")
+             end)
+    end
+
     test "skips missing image files with warning", %{
       org_id: org_id,
       version_id: version_id

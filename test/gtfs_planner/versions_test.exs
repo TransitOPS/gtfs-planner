@@ -338,6 +338,71 @@ defmodule GtfsPlanner.VersionsTest do
       assert not is_nil(elem(final, 1))
     end
 
+    test "concurrent publish and fail produce one terminal state with matching telemetry" do
+      organization = organization_fixture()
+      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staged"})
+      {:ok, _claimed} = Versions.claim_staging_gtfs_version(organization.id, staging.id)
+
+      handler_id = make_ref()
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:gtfs_planner, :import_publication, :transition],
+        fn _event, _measurements, meta, _config ->
+          send(test_pid, {:terminal_race_telemetry, meta})
+        end,
+        %{}
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      parent = self()
+      supervisor = start_supervised!(Task.Supervisor)
+
+      publish_task =
+        Task.Supervisor.async_nolink(supervisor, fn ->
+          Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+          Versions.publish_importing_gtfs_version(organization.id, staging.id)
+        end)
+
+      fail_task =
+        Task.Supervisor.async_nolink(supervisor, fn ->
+          Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+          Versions.fail_unpublished_gtfs_version(organization.id, staging.id)
+        end)
+
+      results = Task.await_many([publish_task, fail_task], 5000)
+
+      assert Enum.count(results, &match?({:ok, %GtfsVersion{}}, &1)) == 1
+      assert Enum.count(results, &match?({:error, :invalid_status_transition}, &1)) == 1
+
+      final = Repo.get!(GtfsVersion, staging.id)
+      assert final.publication_status in [@published_status, @failed_status]
+
+      if final.publication_status == @published_status do
+        assert not is_nil(final.published_at)
+      else
+        assert is_nil(final.published_at)
+      end
+
+      telemetry =
+        for _ <- 1..2 do
+          assert_receive {:terminal_race_telemetry, meta}, 1000
+          meta
+        end
+
+      assert success_meta = Enum.find(telemetry, &is_nil(&1.failure_class))
+      assert success_meta.prior_state == @importing_status
+      assert success_meta.new_state == final.publication_status
+
+      assert invalid_meta =
+               Enum.find(telemetry, &(&1.failure_class == :invalid_status_transition))
+
+      assert invalid_meta.prior_state == final.publication_status
+      assert invalid_meta.new_state == final.publication_status
+    end
+
     test "fail_unpublished_gtfs_version/2 transitions staging -> failed" do
       organization = organization_fixture()
       {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staged"})
