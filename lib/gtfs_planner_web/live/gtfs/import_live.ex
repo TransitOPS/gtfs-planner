@@ -242,9 +242,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         parse_errors = level_errors ++ stop_errors ++ pathway_errors
 
         uploaded = %{
-          levels: levels_upload,
-          stops: stops_upload,
-          pathways: pathways_upload
+          levels: to_parsed_result(levels_upload, :level),
+          stops: to_parsed_result(stops_upload, :stop),
+          pathways: to_parsed_result(pathways_upload, :pathway)
         }
 
         db = %{
@@ -253,7 +253,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           pathways: db_pathways
         }
 
-        decisions = Diff.compute(uploaded, db)
+        diff_result = Diff.compute(uploaded, db)
+        decisions = diff_result.applicable
         decisions_by_id = Map.new(decisions, fn decision -> {decision.id, decision} end)
         summary = Diff.summary(decisions)
 
@@ -1227,6 +1228,24 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   defp single_optional_file([]), do: nil
   defp single_optional_file([file]), do: file
+
+  defp to_parsed_result(:not_uploaded, _entity_type), do: :not_uploaded
+
+  defp to_parsed_result(attrs_list, entity_type) do
+    natural_key_field = natural_key_field(entity_type)
+
+    records_by_key =
+      Enum.reduce(attrs_list, %{}, fn attrs, acc ->
+        key = Map.get(attrs, natural_key_field)
+        if is_nil(key) or key == "", do: acc, else: Map.put(acc, key, attrs)
+      end)
+
+    {:ok, %GtfsPlanner.Gtfs.Import.ParsedEntity{entity_type: entity_type, filename: "", records_by_key: records_by_key, source_row_count: length(attrs_list)}}
+  end
+
+  defp natural_key_field(:level), do: :level_id
+  defp natural_key_field(:stop), do: :stop_id
+  defp natural_key_field(:pathway), do: :pathway_id
 
   defp parse_uploaded_entity_file(nil, _filename, _parser_fun), do: {:not_uploaded, []}
 
