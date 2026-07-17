@@ -11,7 +11,11 @@ config :gtfs_planner,
   ecto_repos: [GtfsPlanner.Repo],
   generators: [timestamp_type: :utc_datetime],
   validator_module: GtfsPlanner.Gtfs.Validator,
-  geocoding_service: GtfsPlanner.Geocoding.Geoapify
+  geocoding_service: GtfsPlanner.Geocoding.Geoapify,
+  # Narrow external-boundary adapter used to read consumed upload files during a
+  # full-feed import. Production reads with Elixir's `File`; tests can swap this
+  # for a deterministic read-error stub. The adapter must expose `read/1`.
+  import_file_reader: File
 
 # Configure the endpoint
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,

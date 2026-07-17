@@ -8,7 +8,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.{Result, Diff, DiffDecision, RowParser}
+  alias GtfsPlanner.Gtfs.Import.Publication
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Versions.GtfsVersion
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_editor}
 
@@ -54,9 +56,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      )
      |> assign(
        :form,
-       to_form(%{"create_version" => false, "version_name" => ""}, as: :gtfs_import_form)
+       to_form(%{"version_name" => ""}, as: :gtfs_import_form)
      )
      |> assign(:import_result, nil)
+     |> assign(:import_target, nil)
+     |> assign(:published_version, nil)
      |> assign(:version_name_touched, false)
      |> assign(:import_task, nil)
      |> assign(:import_progress, nil)
@@ -102,12 +106,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   @impl true
   def handle_event("validate", params, socket) do
     form_data = params["gtfs_import_form"] || %{}
-    create_version = form_data["create_version"] == "true"
     version_name = form_data["version_name"] || ""
 
-    # Only show validation errors if user has touched the field
+    # Only surface the required-name error once the field has been touched
+    # (blur or a prior submit); a blank name is never hidden behind a disabled
+    # button.
     errors =
-      if create_version && String.trim(version_name) == "" && socket.assigns.version_name_touched do
+      if String.trim(version_name) == "" && socket.assigns.version_name_touched do
         [version_name: "Version name is required"]
       else
         []
@@ -124,15 +129,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         MapSet.member?(@recognized_gtfs_files, lower) or String.ends_with?(lower, ".zip")
       end)
 
-    # Reset version_name_touched when not creating a new version, so that
-    # re-enabling "Create a new GTFS version" doesn't immediately show errors.
     socket =
       socket
       |> assign(:form, form)
-      |> assign(
-        :version_name_touched,
-        if(create_version, do: socket.assigns.version_name_touched, else: false)
-      )
       |> assign(:unrecognized_upload_files, unrecognized_files)
 
     {:noreply, socket}
@@ -160,69 +159,27 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   @impl true
   def handle_event("import", params, socket) do
-    # Extract form data (nested under gtfs_import_form)
     form_data = params["gtfs_import_form"] || %{}
-    create_version = form_data["create_version"] == "true"
     version_name = form_data["version_name"] || ""
 
-    # Validate required fields
-    if create_version && String.trim(version_name) == "" do
-      {:noreply,
-       socket
-       |> assign(:version_name_touched, true)
-       |> assign(
-         :form,
-         to_form(form_data,
-           as: :gtfs_import_form,
-           errors: [version_name: "Version name is required"]
-         )
-       )}
-    else
-      # Determine GTFS version ID
-      gtfs_version_id =
-        if create_version && version_name != "" do
-          case Versions.create_gtfs_version(socket.assigns.current_organization.id, %{
-                 name: version_name
-               }) do
-            {:ok, version} ->
-              version.id
+    cond do
+      # Reject a crafted submission while an import is already active so a
+      # replayed event cannot bypass the disabled-button state or start a
+      # duplicate task for a target already being written.
+      socket.assigns.importing ->
+        {:noreply, socket}
 
-            {:error, _changeset} ->
-              # If version creation fails, fall back to current version
-              socket.assigns.current_gtfs_version.id
-          end
-        else
-          socket.assigns.current_gtfs_version.id
-        end
+      # Reject an empty-file submission (no upload entries) so a crafted event
+      # cannot start an import with nothing to write.
+      socket.assigns.uploads.gtfs_files.entries == [] ->
+        {:noreply,
+         socket
+         |> assign(:version_name_touched, true)
+         |> assign(:form, to_form(form_data, as: :gtfs_import_form))
+         |> assign(:import_result, {:error, nil, :no_files_selected})}
 
-      # Consume uploaded files
-      uploaded_files =
-        consume_uploaded_entries(socket, :gtfs_files, fn %{path: path}, entry ->
-          {:ok, %{filename: entry.client_name, content: File.read!(path)}}
-        end)
-
-      # Generate unique topic for progress updates and subscribe immediately
-      # This must happen BEFORE starting the async task to ensure we receive all progress messages
-      topic = "import:#{:erlang.unique_integer()}"
-      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
-
-      # Run import in async task to avoid blocking LiveView process
-      task =
-        Task.async(fn ->
-          GtfsPlanner.Gtfs.Import.import_files(
-            socket.assigns.current_organization.id,
-            gtfs_version_id,
-            uploaded_files,
-            topic
-          )
-        end)
-
-      {:noreply,
-       socket
-       |> assign(:import_task, task.ref)
-       |> assign(:importing, true)
-       |> assign(:import_result, nil)
-       |> assign(:import_progress, nil)}
+      true ->
+        create_and_start_import(socket, form_data, version_name)
     end
   end
 
@@ -402,50 +359,27 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   @impl true
   def handle_info({ref, result}, socket) when socket.assigns.import_task == ref do
-    # Task completed successfully
+    # The supervised publication task finished; stop monitoring its process.
     Process.demonitor(ref, [:flush])
 
-    socket =
-      case result do
-        {:ok, %Result{} = import_result} ->
-          # Note: We already subscribed to the topic before starting the task
-          # so we don't need to subscribe again here
-
-          socket
-          |> assign(:import_result, {:ok, import_result})
-          |> assign(:importing, false)
-          |> assign(:import_task, nil)
-
-        {:error, error_msg} when is_binary(error_msg) ->
-          socket
-          |> assign(:import_result, {:error, error_msg})
-          |> assign(:importing, false)
-          |> assign(:import_task, nil)
-
-        {:error, %{} = error_map} ->
-          # Handle map-format errors from BatchProcessor
-          error_msg = format_error_map(error_map)
-
-          socket
-          |> assign(:import_result, {:error, error_msg})
-          |> assign(:importing, false)
-          |> assign(:import_task, nil)
-      end
-
-    {:noreply, socket}
+    {:noreply, apply_import_result(socket, result)}
   end
 
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, socket)
       when socket.assigns.import_task == ref do
-    # Task crashed or was killed
-    socket =
-      socket
-      |> assign(:import_result, {:error, "Import process failed unexpectedly"})
-      |> assign(:importing, false)
-      |> assign(:import_task, nil)
+    # The supervised publication task crashed before returning a result.
+    # Best-effort close the exact target we bound this run to: a still-staging
+    # or importing target is failed, while a published or failed terminal state
+    # is never overwritten (the conditional transition is a no-op there).
+    target = fail_target_best_effort(socket.assigns[:import_target])
 
-    {:noreply, socket}
+    {:noreply,
+     socket
+     |> assign(:import_target, target)
+     |> assign(:import_result, {:error, target, :process_crashed})
+     |> assign(:importing, false)
+     |> assign(:import_task, nil)}
   end
 
   @impl true
@@ -476,6 +410,46 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             phx-change="validate"
             phx-submit="import"
           >
+            <div
+              id="gtfs-import-destination"
+              class="rounded-lg border border-base-300 p-4 bg-base-200"
+            >
+              <p class="text-sm font-medium">
+                Destination: New version “{destination_name(@form)}”
+              </p>
+              <p class="text-xs text-base-content/70 mt-0.5">
+                “{version_display_name(@current_gtfs_version)}” remains available until import succeeds.
+              </p>
+            </div>
+
+            <div class="form-control">
+              <label class="label" for="gtfs-import-version-name">
+                <span class="label-text">Version name</span>
+              </label>
+              <input
+                type="text"
+                id="gtfs-import-version-name"
+                name="gtfs_import_form[version_name]"
+                class={[
+                  "input input-bordered w-full",
+                  @form[:version_name].errors != [] && "input-error"
+                ]}
+                placeholder="e.g., Spring 2025 Schedule"
+                value={@form[:version_name].value}
+                phx-blur="version_name_blur"
+                aria-invalid={to_string(@form[:version_name].errors != [])}
+                aria-describedby="gtfs-import-version-name-error"
+              />
+              <p
+                :if={@form[:version_name].errors != []}
+                id="gtfs-import-version-name-error"
+                class="text-error text-sm mt-1"
+                role="alert"
+              >
+                {Enum.join(@form[:version_name].errors, ", ")}
+              </p>
+            </div>
+
             <div class="form-control">
               <label class="label">
                 <span class="label-text">GTFS Files</span>
@@ -493,52 +467,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                 <.live_file_input upload={@uploads.gtfs_files} class="sr-only" />
               </label>
             </div>
-
-            <div class="form-control">
-              <label class="label cursor-pointer justify-start gap-4">
-                <input
-                  type="checkbox"
-                  name="gtfs_import_form[create_version]"
-                  value="true"
-                  class="toggle toggle-primary"
-                  checked={@form[:create_version].value}
-                />
-                <div>
-                  <span class="label-text font-medium">Create a new GTFS version</span>
-                  <p class="text-xs text-base-content/60 mt-0.5">
-                    Import into a new version instead of the current one
-                  </p>
-                </div>
-              </label>
-            </div>
-
-            <%= if @form[:create_version].value do %>
-              <div class="form-control pl-14">
-                <label class="label">
-                  <span class="label-text">Version Name</span>
-                </label>
-                <input
-                  type="text"
-                  name="gtfs_import_form[version_name]"
-                  class={[
-                    "input input-bordered w-full",
-                    @form[:version_name].errors != [] && "input-error"
-                  ]}
-                  placeholder="e.g., Spring 2025 Schedule"
-                  value={@form[:version_name].value}
-                  phx-blur="version_name_blur"
-                />
-                <%= if @form[:version_name].errors != [] do %>
-                  <p class="text-error text-sm mt-1">
-                    {Enum.join(@form[:version_name].errors, ", ")}
-                  </p>
-                <% else %>
-                  <p class="text-base-content/50 text-xs mt-1">
-                    Give this version a descriptive name
-                  </p>
-                <% end %>
-              </div>
-            <% end %>
 
             <%!-- Unrecognized files warning --%>
             <%= if @unrecognized_upload_files != [] do %>
@@ -591,13 +519,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             <div class="form-control">
               <button
                 type="submit"
+                id="gtfs-import-submit"
                 class="btn btn-primary"
                 disabled={@uploads.gtfs_files.entries == [] || @importing}
               >
                 <%= if @importing do %>
-                  <span class="loading loading-spinner loading-sm"></span> Importing...
+                  <span class="loading loading-spinner loading-sm"></span> Importing…
                 <% else %>
-                  Import Files
+                  Import feed
                 <% end %>
               </button>
             </div>
@@ -643,125 +572,85 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             <% end %>
           </.form>
 
-          <%= if @importing && @import_progress do %>
-            <div class="mt-6 pt-6 border-t border-base-300">
-              <div class="space-y-4">
-                <div>
-                  <div class="flex justify-between mb-2">
-                    <span class="text-sm font-medium">
-                      Processing: {@import_progress.file}
-                    </span>
-                    <span class="text-sm text-base-content/60">
-                      {@import_progress.processed} / {@import_progress.total} rows
-                    </span>
+          <div id="gtfs-import-status" aria-live="polite" role="status">
+            <%= if @importing && @import_progress do %>
+              <div class="mt-6 pt-6 border-t border-base-300">
+                <div class="space-y-4">
+                  <div>
+                    <div class="flex justify-between mb-2">
+                      <span class="text-sm font-medium">
+                        Processing: {@import_progress.file}
+                      </span>
+                      <span class="text-sm text-base-content/60">
+                        {@import_progress.processed} / {@import_progress.total} rows
+                      </span>
+                    </div>
+                    <progress
+                      class="progress progress-primary w-full"
+                      value={@import_progress.processed}
+                      max={@import_progress.total}
+                    >
+                    </progress>
                   </div>
-                  <progress
-                    class="progress progress-primary w-full"
-                    value={@import_progress.processed}
-                    max={@import_progress.total}
-                  >
-                  </progress>
                 </div>
               </div>
-            </div>
-          <% end %>
+            <% end %>
+          </div>
 
           <%= if @import_result do %>
-            <div class="mt-6 pt-6 border-t border-base-300">
+            <div
+              id="gtfs-import-result"
+              class="mt-6 pt-6 border-t border-base-300"
+              aria-live="assertive"
+            >
               <%= case @import_result do %>
-                <% {:ok, %Import.Result{counts: counts, unrecognized_files: unrecognized, archive_warnings: archive_warnings}} -> %>
-                  <%= if archive_warnings != [] and all_counts_zero?(counts) do %>
-                    <div class="alert alert-error alert-soft">
-                      <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
-                      <div>
-                        <h3 class="font-bold">Import failed</h3>
-                        <div class="text-xs">
-                          No data was imported.
-                          <%= for w <- archive_warnings do %>
-                            <p class="mt-1">
-                              {w.filename}: {w.detail}
-                            </p>
-                          <% end %>
-                        </div>
-                      </div>
-                    </div>
-                  <% else %>
-                    <div class="alert border border-green-300 bg-green-100 text-black">
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        class="stroke-current shrink-0 h-6 w-6"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                        />
-                      </svg>
-                      <div>
-                        <h3 class="font-bold">Import Successful</h3>
-                        <div class="text-xs">
-                          Imported {counts.agencies} agencies, {counts.areas} areas, {counts.attributions} attributions, {counts.booking_rules} booking rules, {counts.calendars} calendars, {counts.calendar_dates} calendar dates, {counts.fare_attributes} fare attributes, {counts.fare_leg_join_rules} fare leg join rules, {counts.fare_leg_rules} fare leg rules, {counts.fare_media} fare media, {counts.fare_products} fare products, {counts.fare_rules} fare rules, {counts.fare_transfer_rules} fare transfer rules, {counts.feed_info} feed info, {counts.frequencies} frequencies, {counts.levels} levels, {counts.locations} locations, {counts.networks} networks, {counts.pathways} pathways, {counts.rider_categories} rider categories, {counts.route_networks} route networks, {counts.route_patterns} route patterns, {counts.routes} routes, {counts.shapes} shapes, {counts.stop_areas} stop areas, {counts.stop_times} stop times, {counts.stops} stops, {counts.timeframes} timeframes, {counts.transfers} transfers, {counts.translations} translations, {counts.trips} trips.
-                        </div>
-                        <%= if Map.get(counts, :extensions_stop_coordinates, 0) + Map.get(counts, :extensions_stop_levels, 0) + Map.get(counts, :extensions_route_flags, 0) + Map.get(counts, :extensions_images, 0) > 0 do %>
-                          <div class="text-xs mt-1">
-                            Extensions: {Map.get(counts, :extensions_stop_coordinates, 0)} diagram coordinates, {Map.get(
-                              counts,
-                              :extensions_stop_levels,
-                              0
-                            )} stop levels, {Map.get(counts, :extensions_route_flags, 0)} route flags, {Map.get(
-                              counts,
-                              :extensions_images,
-                              0
-                            )} images.
-                          </div>
-                        <% end %>
-                      </div>
-                    </div>
-                    <%= for w <- archive_warnings do %>
-                      <div class="alert alert-warning alert-soft mt-2">
-                        <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
-                        <div class="text-base-content">
-                          <h3 class="font-bold">Archive not expanded</h3>
-                          <div class="text-xs">
-                            {w.filename}: {w.detail}
-                          </div>
-                        </div>
-                      </div>
-                    <% end %>
-                  <% end %>
-                  <%= if unrecognized != [] do %>
-                    <div class="alert alert-warning alert-soft mt-2">
-                      <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
-                      <div class="text-base-content">
-                        <h3 class="font-bold">Unrecognized files skipped</h3>
-                        <div class="text-xs">
-                          {Enum.join(unrecognized, ", ")}
-                        </div>
-                      </div>
-                    </div>
-                  <% end %>
-                <% {:error, error_msg} -> %>
-                  <div class="alert alert-error alert-soft">
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      class="stroke-current shrink-0 h-6 w-6"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                      />
-                    </svg>
+                <% {:ok, published, %Import.Result{counts: counts, unrecognized_files: unrecognized}} -> %>
+                  <div class="alert border border-green-300 bg-green-100 text-black">
+                    <.icon name="hero-check-circle" class="shrink-0 h-6 w-6" />
                     <div>
-                      <h3 class="font-bold">Import Failed</h3>
+                      <h3 class="font-bold">Import successful</h3>
                       <div class="text-xs">
-                        {error_msg}
+                        Imported into new version “{published.name}”: {counts.levels} levels, {counts.stops} stops, {counts.pathways} pathways.
+                      </div>
+                      <div :if={unrecognized != []} class="text-xs mt-1">
+                        Unrecognized files skipped: {Enum.join(unrecognized, ", ")}
+                      </div>
+                      <.link
+                        id="gtfs-import-view-version"
+                        navigate={~p"/gtfs/#{published.id}/routes"}
+                        class="link link-primary text-sm mt-2 inline-block"
+                      >
+                        View version
+                      </.link>
+                    </div>
+                  </div>
+                <% {:error, target, {:publication_failed, _reason}} -> %>
+                  <div class="alert alert-error alert-soft">
+                    <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
+                    <div>
+                      <h3 class="font-bold">Publication failed</h3>
+                      <div class="text-xs">
+                        Version “{target_name(target)}” finished importing but could not be published. It remains unavailable for reconciliation.
+                      </div>
+                    </div>
+                  </div>
+                <% {:error, nil, :no_files_selected} -> %>
+                  <div class="alert alert-error alert-soft">
+                    <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
+                    <div>
+                      <h3 class="font-bold">Import failed</h3>
+                      <div class="text-xs">Select at least one file to import.</div>
+                    </div>
+                  </div>
+                <% {:error, target, reason} -> %>
+                  <div class="alert alert-error alert-soft">
+                    <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
+                    <div>
+                      <h3 class="font-bold">Import failed</h3>
+                      <div class="text-xs">
+                        Version “{target_name(target)}” was not published. {format_import_error(
+                          reason
+                        )}
                       </div>
                     </div>
                   </div>
@@ -777,6 +666,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             <h2 class="text-xl font-semibold">Update Station Data</h2>
             <p class="text-sm text-base-content/70">
               Upload `levels.txt`, `stops.txt`, and/or `pathways.txt` to review and apply station data diffs.
+            </p>
+            <p id="diff-destination" class="text-xs text-base-content/60">
+              Reviewed changes apply to version “{version_display_name(@current_gtfs_version)}”.
             </p>
           </div>
 
@@ -1102,6 +994,175 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     </Layouts.app>
     """
   end
+
+  # Create exactly one staging target, bind it as `:import_target`, consume the
+  # uploads into memory, and hand the persisted target to `Publication.run/3`.
+  # The route/current version is never a write destination.
+  defp create_and_start_import(socket, _form_data, version_name) do
+    organization_id = socket.assigns.current_organization.id
+
+    case Versions.create_staging_gtfs_version(organization_id, %{name: version_name}) do
+      {:error, changeset} ->
+        # Pre-consumption changeset error (blank/duplicate name): return to the
+        # form, preserve every selected upload entry, focus/announce the error,
+        # and start no task. No lifecycle row was created.
+        {:noreply,
+         socket
+         |> assign(:version_name_touched, true)
+         |> assign(
+           :form,
+           to_form(%{"version_name" => version_name},
+             as: :gtfs_import_form,
+             errors: changeset_errors(changeset)
+           )
+         )
+         |> assign(:import_result, nil)}
+
+      {:ok, target} ->
+        # Bind the persisted target before touching uploads so every downstream
+        # path (consume error, task, result, :DOWN) closes this exact version.
+        socket = assign(socket, :import_target, target)
+
+        case consume_import_files(socket) do
+          {:ok, uploaded_files} ->
+            start_import_task(socket, target, uploaded_files)
+
+          {:error, reason} ->
+            # Post-create consumption/read error: fail the exact staging target,
+            # start no task, and render target-specific feedback.
+            failed = fail_target_best_effort(target)
+
+            {:noreply,
+             socket
+             |> assign(:import_target, failed)
+             |> assign(:import_result, {:error, failed, {:upload_consumption_failed, reason}})
+             |> assign(:importing, false)
+             |> assign(:import_task, nil)
+             |> assign(:import_progress, nil)}
+        end
+    end
+  end
+
+  defp start_import_task(socket, %GtfsVersion{} = target, uploaded_files) do
+    # Subscribe to the progress topic BEFORE starting the task so no progress
+    # message is missed.
+    topic = "import:#{:erlang.unique_integer()}"
+    Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
+
+    task =
+      Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
+        Publication.run(target, uploaded_files, topic)
+      end)
+
+    {:noreply,
+     socket
+     |> assign(:import_task, task.ref)
+     |> assign(:importing, true)
+     |> assign(:import_result, nil)
+     |> assign(:published_version, nil)
+     |> assign(:import_progress, nil)}
+  end
+
+  # Consume upload entries by reading each temporary path through the configured
+  # production file adapter (`File` by default). Reads use `read/1`, never
+  # `read!/1`, so a read failure is a value we can act on rather than a raise.
+  defp consume_import_files(socket) do
+    reader = import_file_reader()
+
+    results =
+      consume_uploaded_entries(socket, :gtfs_files, fn %{path: path}, entry ->
+        case reader.read(path) do
+          {:ok, content} -> {:ok, {:ok, %{filename: entry.client_name, content: content}}}
+          {:error, reason} -> {:ok, {:error, reason}}
+        end
+      end)
+
+    case Enum.find(results, &match?({:error, _}, &1)) do
+      {:error, reason} -> {:error, reason}
+      nil -> {:ok, for({:ok, file} <- results, do: file)}
+    end
+  end
+
+  defp import_file_reader do
+    Application.get_env(:gtfs_planner, :import_file_reader, File)
+  end
+
+  # Best-effort conditional closure of a still-unpublished target. A published
+  # or failed target is left untouched (the transition is a no-op there).
+  defp fail_target_best_effort(%GtfsVersion{} = target) do
+    case Versions.fail_unpublished_gtfs_version(target.organization_id, target.id) do
+      {:ok, failed} -> failed
+      {:error, _reason} -> target
+    end
+  end
+
+  defp fail_target_best_effort(_), do: nil
+
+  defp apply_import_result(socket, {:ok, %GtfsVersion{} = published, %Result{} = result}) do
+    socket
+    |> assign(:import_result, {:ok, published, result})
+    |> assign(:import_target, published)
+    |> assign(:published_version, published)
+    |> assign(:importing, false)
+    |> assign(:import_task, nil)
+  end
+
+  defp apply_import_result(socket, {:error, target, {:publication_failed, reason}}) do
+    socket
+    |> assign(:import_result, {:error, target, {:publication_failed, reason}})
+    |> assign(:import_target, target)
+    |> assign(:importing, false)
+    |> assign(:import_task, nil)
+  end
+
+  defp apply_import_result(socket, {:error, target, reason}) do
+    socket
+    |> assign(:import_result, {:error, target, reason})
+    |> assign(:import_target, target)
+    |> assign(:importing, false)
+    |> assign(:import_task, nil)
+  end
+
+  # The version name is edited under the form field `:version_name`, while the
+  # schema validates the `:name` column. Remap so the inline error renders
+  # against the field the user actually sees.
+  defp changeset_errors(%Ecto.Changeset{} = changeset) do
+    for {field, {message, _opts}} <- changeset.errors do
+      case field do
+        :name -> {:version_name, message}
+        other -> {other, message}
+      end
+    end
+  end
+
+  defp target_name(%GtfsVersion{name: name}), do: name
+  defp target_name(_), do: "the requested version"
+
+  defp destination_name(form) do
+    case form[:version_name].value do
+      value when is_binary(value) and value != "" -> value
+      _ -> "unnamed"
+    end
+  end
+
+  defp version_display_name(%GtfsVersion{name: name}), do: name
+  defp version_display_name(%{name: name}) when is_binary(name), do: name
+  defp version_display_name(_), do: "current"
+
+  defp format_import_error({:upload_consumption_failed, reason}),
+    do: "The uploaded files could not be read (#{inspect(reason)})."
+
+  defp format_import_error({:import_not_publishable, _result}),
+    do: "The import completed with errors and was not published."
+
+  defp format_import_error(:invalid_status_transition),
+    do: "The version could not be claimed for import."
+
+  defp format_import_error(:not_found), do: "The target version could not be found."
+  defp format_import_error(:process_crashed), do: "The import process failed unexpectedly."
+  defp format_import_error(:no_files_selected), do: "Select at least one file to import."
+  defp format_import_error(reason) when is_binary(reason), do: reason
+  defp format_import_error(reason), do: inspect(reason)
 
   defp empty_diff_summary do
     %{add: 0, modify: 0, remove: 0, conflict: 0}
@@ -1559,28 +1620,4 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp diff_upload_error_to_string({:error, reason}), do: reason
   defp diff_upload_error_to_string(error) when is_binary(error), do: error
   defp diff_upload_error_to_string(_), do: "Upload error"
-
-  # Format error maps from BatchProcessor into user-friendly strings
-  defp format_error_map(%{file: file, row: row, reason: reason}),
-    do: "Error in #{file} at row #{row}: #{reason}"
-
-  defp format_error_map(%{file: file, constraint: constraint, message: msg})
-       when not is_nil(constraint),
-       do: "Constraint error in #{file} (#{constraint}): #{msg}"
-
-  defp format_error_map(%{file: file, error: error}),
-    do: "Error in #{file}: #{error}"
-
-  defp format_error_map(%{file: file, message: msg}),
-    do: "Error in #{file}: #{msg}"
-
-  defp format_error_map(%{} = map),
-    do: inspect(map)
-
-  defp all_counts_zero?(counts) do
-    counts
-    |> Map.values()
-    |> Enum.filter(&is_number/1)
-    |> Enum.all?(&(&1 == 0))
-  end
 end

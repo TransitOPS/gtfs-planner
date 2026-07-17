@@ -9,6 +9,97 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Versions
+
+  defp await_import_task(view) do
+    for pid <- Task.Supervisor.children(GtfsPlanner.TaskSupervisor) do
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 15_000
+    end
+
+    render(view)
+  end
+
+  describe "reviewed diff isolation after a full-feed publication" do
+    setup %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+      route_version = gtfs_version_fixture(organization.id)
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      %{view: view, organization: organization, route_version: route_version}
+    end
+
+    test "diff still targets the route version after a new version is published", %{
+      view: view,
+      organization: organization,
+      route_version: route_version
+    } do
+      # First, run a successful full-feed import that publishes a new version.
+      upload =
+        file_input(view, "#gtfs-import-form", :gtfs_files, [
+          %{
+            name: "levels.txt",
+            content: "level_id,level_index,level_name\nL1,0.0,Ground",
+            type: "text/plain"
+          }
+        ])
+
+      render_upload(upload, "levels.txt")
+
+      view
+      |> form("#gtfs-import-form", %{
+        "gtfs_import_form" => %{"version_name" => "Published Import"}
+      })
+      |> render_submit()
+
+      await_import_task(view)
+
+      published = Enum.find(all_versions(organization.id), &(&1.name == "Published Import"))
+      assert published.publication_status == "published"
+      assert published.id != route_version.id
+
+      # The reviewed-diff destination remains anchored to the route version.
+      assert has_element?(view, "#diff-destination", route_version.name)
+
+      # A reviewed diff apply writes to the route version, not the published one.
+      levels_content = "level_id,level_index,level_name\nDIFFLVL,2.0,Diff Level"
+
+      diff_upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "levels.txt", content: levels_content, type: "text/plain"}
+        ])
+
+      render_upload(diff_upload, "levels.txt")
+
+      view |> form("#diff-upload-form", %{}) |> render_submit()
+
+      view
+      |> element("button[phx-click='approve-all'][phx-value-action='add']")
+      |> render_click()
+
+      view |> element("#diff-apply-btn") |> render_click()
+
+      assert Gtfs.get_level_by_level_id(organization.id, route_version.id, "DIFFLVL")
+      refute Gtfs.get_level_by_level_id(organization.id, published.id, "DIFFLVL")
+    end
+  end
+
+  defp all_versions(organization_id) do
+    import Ecto.Query
+
+    GtfsPlanner.Repo.all(
+      from(v in Versions.GtfsVersion, where: v.organization_id == ^organization_id)
+    )
+  end
 
   describe "station diff workflow" do
     setup %{conn: conn} do
