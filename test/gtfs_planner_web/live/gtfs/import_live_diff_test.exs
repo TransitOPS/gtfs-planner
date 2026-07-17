@@ -744,6 +744,23 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       assert has_element?(view, "#diff-degraded-region", "150 errors across")
     end
 
+    test "blank-only entity upload degrades safely without decisions or approval controls", %{
+      view: view
+    } do
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "levels.txt", content: "\n\n", type: "text/plain"}
+        ])
+
+      render_upload(upload, "levels.txt")
+      view |> form("#diff-upload-form", %{}) |> render_submit()
+
+      assert has_element?(view, "#diff-degraded-region", "levels.txt")
+      assert has_element?(view, "#diff-degraded-region", "empty_content")
+      refute has_element?(view, "#diff-preview-region")
+      refute has_element?(view, "button[phx-click='approve-decision']")
+    end
+
     test "failed levels upload makes uploaded stops read-only but keeps independent complete entity applicable",
          %{
            view: view,
@@ -880,6 +897,48 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       assert has_element?(view, "#diff-blockers")
       assert has_element?(view, "#diff-blockers", "outer.zip")
       assert has_element?(view, "#diff-choose-corrected-files", "Choose corrected files")
+    end
+
+    test "nested archive remains identified when metadata preflight also rejects its size", %{
+      view: view
+    } do
+      prior_limit =
+        Application.get_env(:gtfs_planner, :import_max_zip_uncompressed_bytes)
+
+      on_exit(fn ->
+        if prior_limit == nil do
+          Application.delete_env(:gtfs_planner, :import_max_zip_uncompressed_bytes)
+        else
+          Application.put_env(:gtfs_planner, :import_max_zip_uncompressed_bytes, prior_limit)
+        end
+      end)
+
+      Application.put_env(:gtfs_planner, :import_max_zip_uncompressed_bytes, 10)
+
+      {:ok, {_inner_name, inner_binary}} =
+        :zip.create(
+          ~c"inner.zip",
+          [{~c"levels.txt", "level_id,level_index,level_name\nL1,0.0,Level 1"}],
+          [:memory]
+        )
+
+      {:ok, {_outer_name, outer_binary}} =
+        :zip.create(~c"outer.zip", [{~c"inner.zip", inner_binary}], [:memory])
+
+      upload =
+        file_input(view, "#diff-upload-form", :diff_files, [
+          %{name: "outer.zip", content: outer_binary, type: "application/zip"}
+        ])
+
+      render_upload(upload, "outer.zip")
+      view |> form("#diff-upload-form", %{}) |> render_submit()
+
+      assert has_element?(view, "#diff-blockers", "outer.zip")
+      assert has_element?(view, "#diff-blockers", "Archive contains a nested archive")
+      assert has_element?(view, "#diff-blockers", "Archive exceeds size limits")
+      assert has_element?(view, "#diff-choose-corrected-files", "Choose corrected files")
+      refute has_element?(view, "#diff-decisions")
+      refute has_element?(view, "#diff-preview-region")
     end
 
     test "corrected recompute after blocked state restores legitimate removal", %{
