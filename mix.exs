@@ -65,6 +65,8 @@ defmodule GtfsPlanner.MixProject do
       {:swoosh, "~> 1.16"},
       {:gen_smtp, "~> 1.0"},
       {:phoenix_swoosh, "~> 1.2"},
+      {:ex_aws, "~> 2.1"},
+      {:sweet_xml, "~> 0.6"},
       {:req, "~> 0.5"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
