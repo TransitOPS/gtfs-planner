@@ -1,9 +1,12 @@
 defmodule GtfsPlanner.Gtfs.Import.Diff do
   @moduledoc """
   Pure diff engine for station-data GTFS imports.
+
+  Consumes capability-bearing reviewed parse results and returns separate
+  applicable and read-only preview decision collections with dependency tainting.
   """
 
-  alias GtfsPlanner.Gtfs.Import.DiffDecision
+  alias GtfsPlanner.Gtfs.Import.{DiffDecision, ParsedEntity, ParseFailure}
 
   @level_fields [:level_index, :level_name]
 
@@ -33,16 +36,131 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
     :to_stop_id
   ]
 
+  @entity_order [:level, :stop, :pathway]
+
+  @type uploaded :: %{
+          levels: ParsedEntity.result(),
+          stops: ParsedEntity.result(),
+          pathways: ParsedEntity.result()
+        }
+
+  @type result :: %{
+          applicable: [DiffDecision.t()],
+          preview: [DiffDecision.t()],
+          blocked_entities: %{optional(:level | :stop | :pathway) => atom()}
+        }
+
   @doc """
-  Computes diff decisions between uploaded station files and current DB records.
+  Computes applicable and read-only preview diff decisions between reviewed
+  upload results and current DB records.
+
+  Dependency taint (conservative, entity-wide, transitive): a failed uploaded
+  levels source makes uploaded stop decisions read-only; a failed uploaded
+  stops source makes uploaded pathway decisions read-only. `:not_uploaded` is
+  intentional omission and does not taint a downstream file.
   """
-  def compute(
-        %{levels: uploaded_levels, stops: uploaded_stops, pathways: uploaded_pathways},
-        %{levels: db_levels, stops: db_stops, pathways: db_pathways}
-      ) do
-    diff_entity(:level, uploaded_levels, db_levels) ++
-      diff_entity(:stop, uploaded_stops, db_stops) ++
-      diff_entity(:pathway, uploaded_pathways, db_pathways)
+  @spec compute(uploaded(), %{levels: [struct()], stops: [struct()], pathways: [struct()]}) ::
+          result()
+  def compute(uploaded, db) do
+    taint = compute_taint(uploaded)
+
+    results =
+      Enum.flat_map(@entity_order, fn entity_type ->
+        uploaded_key = entity_key(entity_type)
+        uploaded_result = Map.fetch!(uploaded, uploaded_key)
+        db_records = Map.fetch!(db, uploaded_key)
+        block_reason = Map.get(taint, uploaded_key)
+
+        entity_decisions(entity_type, uploaded_result, db_records, block_reason)
+      end)
+
+    applicable = Enum.filter(results, &(&1.source == :applicable)) |> Enum.map(& &1.decision)
+    preview = Enum.filter(results, &(&1.source == :preview)) |> Enum.map(& &1.decision)
+
+    blocked_entities =
+      Enum.reduce(@entity_order, %{}, fn entity_type, acc ->
+        uploaded_key = entity_key(entity_type)
+        reason = Map.get(taint, uploaded_key)
+
+        if reason && reason in [:parse_failed, :dependency_failed] do
+          Map.put(acc, entity_type, reason)
+        else
+          acc
+        end
+      end)
+
+    %{applicable: applicable, preview: preview, blocked_entities: blocked_entities}
+  end
+
+  defp entity_key(:level), do: :levels
+  defp entity_key(:stop), do: :stops
+  defp entity_key(:pathway), do: :pathways
+
+  defp compute_taint(uploaded) do
+    levels_failed = failed_reason(Map.fetch!(uploaded, :levels))
+    stops_failed = failed_reason(Map.fetch!(uploaded, :stops))
+    pathways_failed = failed_reason(Map.fetch!(uploaded, :pathways))
+    stops_uploaded = Map.fetch!(uploaded, :stops) != :not_uploaded
+    pathways_uploaded = Map.fetch!(uploaded, :pathways) != :not_uploaded
+    stops_dependency_failed = levels_failed and stops_uploaded
+    stops_tainted = stops_failed or stops_dependency_failed
+
+    dependency_taint =
+      %{}
+      |> then(fn acc ->
+        if stops_dependency_failed,
+          do: Map.put(acc, :stops, :dependency_failed),
+          else: acc
+      end)
+      |> then(fn acc ->
+        if stops_tainted and pathways_uploaded,
+          do: Map.put(acc, :pathways, :dependency_failed),
+          else: acc
+      end)
+
+    parse_failed =
+      %{}
+      |> then(fn acc -> if levels_failed, do: Map.put(acc, :levels, :parse_failed), else: acc end)
+      |> then(fn acc -> if stops_failed, do: Map.put(acc, :stops, :parse_failed), else: acc end)
+      |> then(fn acc ->
+        if pathways_failed, do: Map.put(acc, :pathways, :parse_failed), else: acc
+      end)
+
+    Map.merge(dependency_taint, parse_failed)
+  end
+
+  defp failed_reason({:error, _failure}), do: true
+  defp failed_reason(_), do: false
+
+  defp entity_decisions(_entity_type, :not_uploaded, _db_records, _block_reason), do: []
+
+  defp entity_decisions(
+         entity_type,
+         {:ok, %ParsedEntity{records_by_key: records_by_key}},
+         db_records,
+         block_reason
+       ) do
+    decisions = diff_entity(entity_type, records_by_key, db_records)
+
+    case block_reason do
+      :dependency_failed ->
+        Enum.map(decisions, &%{source: :preview, decision: &1})
+
+      _ ->
+        Enum.map(decisions, &%{source: :applicable, decision: &1})
+    end
+  end
+
+  defp entity_decisions(
+         entity_type,
+         {:error, %ParseFailure{preview_records_by_key: preview_records_by_key}},
+         db_records,
+         _block_reason
+       ) do
+    decisions =
+      diff_preview_entity(entity_type, preview_records_by_key, db_records)
+
+    Enum.map(decisions, &%{source: :preview, decision: &1})
   end
 
   @doc """
@@ -54,39 +172,25 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
     end)
   end
 
-  defp diff_entity(_entity_type, :not_uploaded, _db_records), do: []
+  defp diff_entity(entity_type, records_by_key, db_records) when records_by_key == %{},
+    do: remove_decisions(entity_type, db_records)
 
-  defp diff_entity(entity_type, uploaded_records, db_records)
-       when is_list(uploaded_records) and is_list(db_records) do
-    natural_key_field = natural_key_field(entity_type)
-
-    uploaded_by_key =
-      Map.new(uploaded_records, fn attrs -> {Map.fetch!(attrs, natural_key_field), attrs} end)
-
+  defp diff_entity(entity_type, records_by_key, db_records) do
     db_by_key =
-      Map.new(db_records, fn record -> {Map.fetch!(record, natural_key_field), record} end)
+      Map.new(db_records, fn record ->
+        {Map.fetch!(record, natural_key_field(entity_type)), record}
+      end)
 
-    uploaded_keys = uploaded_by_key |> Map.keys() |> MapSet.new()
+    uploaded_keys = records_by_key |> Map.keys() |> MapSet.new()
     db_keys = db_by_key |> Map.keys() |> MapSet.new()
 
-    add_keys =
-      uploaded_keys
-      |> MapSet.difference(db_keys)
-      |> sorted_keys()
-
-    remove_keys =
-      db_keys
-      |> MapSet.difference(uploaded_keys)
-      |> sorted_keys()
-
-    intersection_keys =
-      uploaded_keys
-      |> MapSet.intersection(db_keys)
-      |> sorted_keys()
+    add_keys = MapSet.difference(uploaded_keys, db_keys) |> sorted_keys()
+    remove_keys = MapSet.difference(db_keys, uploaded_keys) |> sorted_keys()
+    intersection_keys = MapSet.intersection(uploaded_keys, db_keys) |> sorted_keys()
 
     add_decisions =
       Enum.map(add_keys, fn natural_key ->
-        uploaded_attrs = Map.fetch!(uploaded_by_key, natural_key)
+        uploaded_attrs = Map.fetch!(records_by_key, natural_key)
 
         build_decision(entity_type, natural_key, :add,
           uploaded_attrs: uploaded_attrs,
@@ -105,31 +209,85 @@ defmodule GtfsPlanner.Gtfs.Import.Diff do
       end)
 
     intersection_decisions =
-      Enum.flat_map(intersection_keys, fn natural_key ->
-        current_record = Map.fetch!(db_by_key, natural_key)
-        uploaded_attrs = Map.fetch!(uploaded_by_key, natural_key)
-
-        changed_fields = changed_fields(entity_type, current_record, uploaded_attrs)
-
-        if changed_fields == [] do
-          []
-        else
-          user_edited = user_edited?(current_record)
-          action = if user_edited, do: :conflict, else: :modify
-
-          [
-            build_decision(entity_type, natural_key, action,
-              current_record: current_record,
-              uploaded_attrs: uploaded_attrs,
-              changed_fields: changed_fields,
-              user_edited: user_edited,
-              dependency_keys: dependency_keys(entity_type, action, uploaded_attrs)
-            )
-          ]
-        end
-      end)
+      changed_decisions(entity_type, intersection_keys, records_by_key, db_by_key)
 
     add_decisions ++ remove_decisions ++ intersection_decisions
+  end
+
+  defp remove_decisions(entity_type, db_records) do
+    natural_key_field = natural_key_field(entity_type)
+
+    db_records
+    |> Enum.sort_by(&Map.fetch!(&1, natural_key_field))
+    |> Enum.map(fn record ->
+      natural_key = Map.fetch!(record, natural_key_field)
+
+      build_decision(entity_type, natural_key, :remove,
+        current_record: record,
+        dependency_keys: []
+      )
+    end)
+  end
+
+  defp diff_preview_entity(_entity_type, preview_records_by_key, _db_records)
+       when preview_records_by_key == %{},
+       do: []
+
+  defp diff_preview_entity(entity_type, preview_records_by_key, db_records) do
+    db_by_key =
+      Map.new(db_records, fn record ->
+        {Map.fetch!(record, natural_key_field(entity_type)), record}
+      end)
+
+    uploaded_keys = preview_records_by_key |> Map.keys() |> MapSet.new()
+    db_keys = db_by_key |> Map.keys() |> MapSet.new()
+
+    add_keys = MapSet.difference(uploaded_keys, db_keys) |> sorted_keys()
+    intersection_keys = MapSet.intersection(uploaded_keys, db_keys) |> sorted_keys()
+
+    add_decisions =
+      Enum.map(add_keys, fn natural_key ->
+        uploaded_attrs = Map.fetch!(preview_records_by_key, natural_key)
+
+        build_decision(entity_type, natural_key, :add,
+          uploaded_attrs: uploaded_attrs,
+          dependency_keys: dependency_keys(entity_type, :add, uploaded_attrs)
+        )
+      end)
+
+    intersection_decisions =
+      changed_decisions(entity_type, intersection_keys, preview_records_by_key, db_by_key)
+
+    add_decisions ++ intersection_decisions
+  end
+
+  defp changed_decisions(entity_type, natural_keys, uploaded_by_key, db_by_key) do
+    Enum.flat_map(natural_keys, fn natural_key ->
+      current_record = Map.fetch!(db_by_key, natural_key)
+      uploaded_attrs = Map.fetch!(uploaded_by_key, natural_key)
+      changed_decision(entity_type, natural_key, current_record, uploaded_attrs)
+    end)
+  end
+
+  defp changed_decision(entity_type, natural_key, current_record, uploaded_attrs) do
+    changed_fields = changed_fields(entity_type, current_record, uploaded_attrs)
+
+    if changed_fields == [] do
+      []
+    else
+      user_edited = user_edited?(current_record)
+      action = if user_edited, do: :conflict, else: :modify
+
+      [
+        build_decision(entity_type, natural_key, action,
+          current_record: current_record,
+          uploaded_attrs: uploaded_attrs,
+          changed_fields: changed_fields,
+          user_edited: user_edited,
+          dependency_keys: dependency_keys(entity_type, action, uploaded_attrs)
+        )
+      ]
+    end
   end
 
   defp build_decision(entity_type, natural_key, action, attrs) do

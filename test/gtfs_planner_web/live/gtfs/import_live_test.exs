@@ -691,6 +691,40 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert current.publication_status == "importing"
     end
 
+    test "a task interruption preserves the visible version and never surfaces the target as published",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: route_version
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      {:ok, staging} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Interrupted"})
+
+      {:ok, importing} = Versions.claim_staging_gtfs_version(organization.id, staging.id)
+
+      ref = make_ref()
+      put_socket_assigns(view, %{import_task: ref, import_target: importing, importing: true})
+
+      # A monitored task interruption (parser process failure / crash) rather than
+      # a returned result.
+      send(view.pid, {:DOWN, ref, :process, self(), :killed})
+      render(view)
+
+      # The interrupted target is never externally available as published (AC-15,
+      # INV-3) — asserted without requiring a terminal failed status.
+      refute Versions.published_gtfs_version_for_org?(organization.id, importing.id)
+
+      # The visible/current route version is preserved and stays published.
+      assert Versions.published_gtfs_version_for_org?(organization.id, route_version.id)
+
+      # The destination region still promises the current version remains available.
+      assert has_element?(view, "#gtfs-import-destination")
+    end
+
     test "import/claim error result names the failed target", %{
       conn: conn,
       user: user,
