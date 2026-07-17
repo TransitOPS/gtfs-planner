@@ -93,21 +93,6 @@ defmodule GtfsPlanner.VersionsTest do
       assert Enum.all?(published, fn v -> v.publication_status == @published_status end)
     end
 
-    test "get_gtfs_version!/1 returns the version with the given id" do
-      organization = organization_fixture()
-      {:ok, version} = Versions.create_gtfs_version(organization.id, %{name: "Test Version"})
-
-      fetched_version = Versions.get_gtfs_version!(version.id)
-      assert fetched_version.id == version.id
-      assert fetched_version.name == "Test Version"
-    end
-
-    test "get_gtfs_version!/1 raises for non-existent id" do
-      assert_raise Ecto.NoResultsError, fn ->
-        Versions.get_gtfs_version!(Ecto.UUID.generate())
-      end
-    end
-
     test "get_latest_gtfs_version/1 returns latest published version when multiple exist" do
       organization = organization_without_version_fixture()
 
@@ -153,7 +138,12 @@ defmodule GtfsPlanner.VersionsTest do
       # 2 published + 1 from fixture (First Version, published_at ~now is newest)
       assert length(versions) == 3
       refute Enum.any?(versions, fn {id, _} -> id == staging.id end)
-      assert Enum.map(versions, fn {_id, name} -> name end) == ["First Version", "Version 2", "Version 1"]
+
+      assert Enum.map(versions, fn {_id, name} -> name end) == [
+               "First Version",
+               "Version 2",
+               "Version 1"
+             ]
     end
 
     test "list_gtfs_versions_for_dropdown/1 excludes staging with org without auto version" do
@@ -188,7 +178,10 @@ defmodule GtfsPlanner.VersionsTest do
       {:ok, published} = Versions.create_gtfs_version(org1.id, %{name: "Org1 Published"})
 
       assert nil == Versions.get_published_gtfs_version_for_org(org2.id, published.id)
-      assert %GtfsVersion{} = found = Versions.get_published_gtfs_version_for_org(org1.id, published.id)
+
+      assert %GtfsVersion{} =
+               found = Versions.get_published_gtfs_version_for_org(org1.id, published.id)
+
       assert found.id == published.id
     end
 
@@ -259,6 +252,7 @@ defmodule GtfsPlanner.VersionsTest do
       {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staged"})
 
       parent = self()
+
       task_fn = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
         Versions.claim_staging_gtfs_version(organization.id, staging.id)
@@ -314,6 +308,7 @@ defmodule GtfsPlanner.VersionsTest do
       {:ok, _claimed} = Versions.claim_staging_gtfs_version(organization.id, staging.id)
 
       parent = self()
+
       task_fn = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
         Versions.publish_importing_gtfs_version(organization.id, staging.id)
@@ -328,7 +323,10 @@ defmodule GtfsPlanner.VersionsTest do
       assert length(winners) == 1
 
       final =
-        from(v in GtfsVersion, where: v.id == ^staging.id, select: {v.publication_status, v.published_at})
+        from(v in GtfsVersion,
+          where: v.id == ^staging.id,
+          select: {v.publication_status, v.published_at}
+        )
         |> Repo.one!()
 
       assert elem(final, 0) == @published_status
@@ -430,12 +428,14 @@ defmodule GtfsPlanner.VersionsTest do
       handler_id = make_ref()
       test_pid = self()
 
-      :telemetry.attach(handler_id, [:gtfs_planner, :import_publication, :transition], fn event,
-                                                                                          measurements,
-                                                                                          meta,
-                                                                                          _config ->
-        send(test_pid, {:telemetry, event, measurements, meta})
-      end, %{})
+      :telemetry.attach(
+        handler_id,
+        [:gtfs_planner, :import_publication, :transition],
+        fn event, measurements, meta, _config ->
+          send(test_pid, {:telemetry, event, measurements, meta})
+        end,
+        %{}
+      )
 
       on_exit(fn -> :telemetry.detach(handler_id) end)
 

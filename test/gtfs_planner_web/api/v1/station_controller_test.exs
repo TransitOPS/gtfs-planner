@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto, StopLevel}
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
 
   # ---------------------------------------------------------------------------
   # Helpers
@@ -79,6 +80,25 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
     Repo.insert!(struct!(JournalEntry, Map.merge(defaults, attrs)))
   end
 
+  # Build a version that is not publicly readable: staging, importing, or failed.
+  defp unavailable_version(org_id, status) do
+    {:ok, staging} =
+      Versions.create_staging_gtfs_version(org_id, %{name: "Unavailable #{status}"})
+
+    case status do
+      "staging" ->
+        staging
+
+      "importing" ->
+        {:ok, importing} = Versions.claim_staging_gtfs_version(org_id, staging.id)
+        importing
+
+      "failed" ->
+        {:ok, failed} = Versions.fail_unpublished_gtfs_version(org_id, staging.id)
+        failed
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # GET /api/v1/versions/:version_id/stations (index)
   # ---------------------------------------------------------------------------
@@ -136,6 +156,19 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         |> get("/api/v1/versions/not-a-uuid/stations")
 
       assert %{"error" => %{"code" => "bad_request"}} = json_response(conn, 400)
+    end
+
+    for status <- ["staging", "importing", "failed"] do
+      test "returns 404 for a #{status} version", %{conn: conn, user: user, org: org} do
+        version = unavailable_version(org.id, unquote(status))
+
+        conn =
+          conn
+          |> authed_conn(user)
+          |> get("/api/v1/versions/#{version.id}/stations")
+
+        assert %{"error" => %{"code" => "not_found"}} = json_response(conn, 404)
+      end
     end
 
     test "default list returns only location_type=1 rows and meta.total reflects filtered count",
@@ -785,6 +818,31 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         |> get("/api/v1/versions/not-a-uuid/stations/#{Ecto.UUID.generate()}/bundle")
 
       assert %{"error" => %{"code" => "bad_request"}} = json_response(conn, 400)
+    end
+
+    for status <- ["staging", "importing", "failed"] do
+      test "returns 404 for a #{status} version", %{conn: conn, user: user, org: org} do
+        version = unavailable_version(org.id, unquote(status))
+
+        conn =
+          conn
+          |> authed_conn(user)
+          |> get("/api/v1/versions/#{version.id}/stations/#{Ecto.UUID.generate()}/bundle")
+
+        assert %{"error" => %{"code" => "not_found"}} = json_response(conn, 404)
+      end
+    end
+
+    test "returns 404 for a version belonging to another org", %{conn: conn, user: user} do
+      other_org = organization_fixture()
+      other_version = gtfs_version_fixture(other_org.id)
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{other_version.id}/stations/#{Ecto.UUID.generate()}/bundle")
+
+      assert %{"error" => %{"code" => "not_found"}} = json_response(conn, 404)
     end
 
     test "returns 404 for location_type=0 stop even when parent_station is nil", %{

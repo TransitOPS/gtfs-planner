@@ -104,6 +104,31 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       assert_redirect(view, "/gtfs/#{version2.id}/import")
     end
+
+    test "crafted version events do not navigate to unavailable versions", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version1
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, staging} =
+        GtfsPlanner.Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
+
+      other_org = organization_fixture()
+      foreign = gtfs_version_fixture(other_org.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version1.id}/import")
+
+      for bad_id <- [to_string(staging.id), to_string(foreign.id), "not-a-uuid"] do
+        render_hook(view, "switch_gtfs_version", %{"version" => bad_id})
+        refute_redirected(view)
+
+        render_hook(view, "gtfs_version_loaded", %{"version_id" => bad_id})
+        refute_redirected(view)
+      end
+    end
   end
 
   describe "ImportLive form validation" do

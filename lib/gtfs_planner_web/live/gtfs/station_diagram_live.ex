@@ -1018,7 +1018,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     stop_id = socket.assigns[:stop_id]
 
     if version_id && stop_id && version_id != current_version_id &&
-         valid_version_for_org?(version_id, current_organization.id) do
+         Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       path = "/gtfs/#{version_id}/stops/#{stop_id}/diagram"
       {:noreply, push_navigate(socket, to: path)}
     else
@@ -4633,17 +4633,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> assign(:active_point_id, nil)
            |> assign(:pathway_error, "Failed to create pathway")}
       end
-    end
-  end
-
-  defp valid_version_for_org?(version_id, organization_id) do
-    try do
-      case Versions.get_gtfs_version(version_id) do
-        nil -> false
-        version -> version.organization_id == organization_id
-      end
-    rescue
-      _ -> false
     end
   end
 

@@ -113,7 +113,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     stop_id = socket.assigns[:stop_id]
 
     if version_id && version_id != current_version_id &&
-         valid_version_for_org?(version_id, current_organization.id) do
+         Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       path =
         if stop_id, do: "/gtfs/#{version_id}/stops/#{stop_id}", else: "/gtfs/#{version_id}/stops"
 
@@ -125,16 +125,21 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
 
   @impl true
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
+    current_organization = socket.assigns.current_organization
     stop_id = socket.assigns[:stop_id]
 
-    # Push event to JS hook to update localStorage
-    socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
+    if Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
+      # Push event to JS hook to update localStorage
+      socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
 
-    # Navigate to new version
-    path =
-      if stop_id, do: "/gtfs/#{version_id}/stops/#{stop_id}", else: "/gtfs/#{version_id}/stops"
+      # Navigate to new version
+      path =
+        if stop_id, do: "/gtfs/#{version_id}/stops/#{stop_id}", else: "/gtfs/#{version_id}/stops"
 
-    {:noreply, push_navigate(socket, to: path)}
+      {:noreply, push_navigate(socket, to: path)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -367,17 +372,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       </div>
     </Layouts.app>
     """
-  end
-
-  defp valid_version_for_org?(version_id, organization_id) do
-    try do
-      case Versions.get_gtfs_version(version_id) do
-        nil -> false
-        version -> version.organization_id == organization_id
-      end
-    rescue
-      _ -> false
-    end
   end
 
   defp editing_status_owner?(nil, _current_user), do: false

@@ -208,13 +208,21 @@ defmodule GtfsPlanner.Versions do
   @spec get_published_gtfs_version_for_org(Ecto.UUID.t(), Ecto.UUID.t()) ::
           GtfsVersion.t() | nil
   def get_published_gtfs_version_for_org(organization_id, version_id) do
-    from(v in GtfsVersion,
-      where:
-        v.id == ^version_id and
-          v.organization_id == ^organization_id and
-          v.publication_status == ^@published_status
-    )
-    |> Repo.one()
+    # Fail closed on a malformed (non-UUID) identity: a crafted route, event, or
+    # request must be treated exactly like a missing version, never a 500.
+    case Ecto.UUID.cast(version_id) do
+      {:ok, id} ->
+        from(v in GtfsVersion,
+          where:
+            v.id == ^id and
+              v.organization_id == ^organization_id and
+              v.publication_status == ^@published_status
+        )
+        |> Repo.one()
+
+      :error ->
+        nil
+    end
   end
 
   @doc """
@@ -251,14 +259,6 @@ defmodule GtfsPlanner.Versions do
   def published_gtfs_version_for_org?(organization_id, version_id) do
     not is_nil(get_published_gtfs_version_for_org(organization_id, version_id))
   end
-
-  # --- retained generic getters (removed in Step 3) ------------------------
-
-  @doc false
-  def get_gtfs_version(id), do: Repo.get(GtfsVersion, id)
-
-  @doc false
-  def get_gtfs_version!(id), do: Repo.get!(GtfsVersion, id)
 
   @doc false
   def update_gtfs_version(%GtfsVersion{} = version, attrs) do

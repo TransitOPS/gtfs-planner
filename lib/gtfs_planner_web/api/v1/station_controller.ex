@@ -18,8 +18,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     org_id = conn.assigns[:current_organization_id]
 
     with {:ok, _} <- Ecto.UUID.cast(version_id),
-         %{} = version <- Versions.get_gtfs_version(version_id),
-         true <- version.organization_id == org_id do
+         %{} = _version <- Versions.get_published_gtfs_version_for_org(org_id, version_id) do
       search = params["search"]
       page = parse_page(params)
       per_page = parse_per_page(params)
@@ -57,11 +56,6 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
         conn
         |> put_status(404)
         |> json(%{error: %{code: "not_found", message: "Version not found."}})
-
-      false ->
-        conn
-        |> put_status(404)
-        |> json(%{error: %{code: "not_found", message: "Version not found."}})
     end
   end
 
@@ -71,8 +65,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
 
     with {:ok, _} <- Ecto.UUID.cast(version_id),
          {:ok, _} <- Ecto.UUID.cast(station_id),
-         %{} = version <- Versions.get_gtfs_version(version_id),
-         true <- version.organization_id == org_id,
+         %{} = _version <- Versions.get_published_gtfs_version_for_org(org_id, version_id),
          %{} = station <- Gtfs.get_stop(station_id),
          true <- station.organization_id == org_id,
          true <- station.gtfs_version_id == version_id,

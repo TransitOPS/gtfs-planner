@@ -6,6 +6,7 @@ defmodule GtfsPlannerWeb.Api.V1.VersionControllerTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Versions
 
   # ---------------------------------------------------------------------------
   # Helpers
@@ -66,6 +67,34 @@ defmodule GtfsPlannerWeb.Api.V1.VersionControllerTest do
       assert %{"data" => data} = json_response(conn, 200)
       ids = Enum.map(data, & &1["id"])
       refute other_version.id in ids
+    end
+
+    test "lists only published versions, excluding staging, importing, and failed", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      published = gtfs_version_fixture(org.id, %{name: "Published"})
+
+      {:ok, staging} = Versions.create_staging_gtfs_version(org.id, %{name: "Staging"})
+
+      {:ok, importing_staging} =
+        Versions.create_staging_gtfs_version(org.id, %{name: "Importing"})
+
+      {:ok, importing} = Versions.claim_staging_gtfs_version(org.id, importing_staging.id)
+
+      {:ok, failed_staging} = Versions.create_staging_gtfs_version(org.id, %{name: "Failed"})
+      {:ok, failed} = Versions.fail_unpublished_gtfs_version(org.id, failed_staging.id)
+
+      conn = conn |> authed_conn(user) |> get("/api/v1/versions")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      ids = Enum.map(data, & &1["id"])
+
+      assert published.id in ids
+      refute staging.id in ids
+      refute importing.id in ids
+      refute failed.id in ids
     end
 
     test "returns 401 without auth token", %{conn: conn} do

@@ -172,7 +172,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
 
     if version_id && version_id != current_version_id &&
-         valid_version_for_org?(version_id, current_organization.id) do
+         Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/routes")}
     else
       {:noreply, socket}
@@ -181,8 +181,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   @impl true
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
-    socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
-    {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/routes")}
+    current_organization = socket.assigns.current_organization
+
+    if Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
+      socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
+      {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/routes")}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -398,17 +404,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       </div>
     </Layouts.app>
     """
-  end
-
-  defp valid_version_for_org?(version_id, organization_id) do
-    try do
-      case Versions.get_gtfs_version(version_id) do
-        nil -> false
-        version -> version.organization_id == organization_id
-      end
-    rescue
-      _ -> false
-    end
   end
 
   defp parse_route_type(nil), do: nil

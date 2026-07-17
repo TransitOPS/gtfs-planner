@@ -136,7 +136,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
 
     if version_id && version_id != current_version_id &&
-         valid_version_for_org?(version_id, current_organization.id) do
+         Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       validation_id = socket.assigns[:validation_id]
 
       if validation_id do
@@ -2417,17 +2417,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   end
 
   defp load_pathways_render_data(run), do: {run, []}
-
-  defp valid_version_for_org?(version_id, organization_id) do
-    try do
-      case Versions.get_gtfs_version(version_id) do
-        nil -> false
-        version -> version.organization_id == organization_id
-      end
-    rescue
-      _ -> false
-    end
-  end
 
   defp validation_subtitle(%{run_type: "station_reachability"}) do
     "Results of Open Trip Planner GTFS validation."

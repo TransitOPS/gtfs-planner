@@ -38,7 +38,9 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
     def handle_info({:gtfs_version_renamed, _}, socket) do
       org_id = socket.assigns.organization_id
       versions = Versions.list_gtfs_versions_for_dropdown(org_id)
-      current = Versions.get_gtfs_version!(socket.assigns.current_version.id)
+
+      current =
+        Versions.get_published_gtfs_version_for_org!(org_id, socket.assigns.current_version.id)
 
       {:noreply,
        socket
@@ -47,7 +49,9 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
     end
 
     def handle_info({:swap_current_version, version_id}, socket) do
-      version = Versions.get_gtfs_version!(version_id)
+      version =
+        Versions.get_published_gtfs_version_for_org!(socket.assigns.organization_id, version_id)
+
       {:noreply, Phoenix.Component.assign(socket, :current_version, version)}
     end
 
@@ -148,7 +152,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       |> render_click()
 
       refute has_element?(view, "#gtfs-version-rename-form")
-      assert Versions.get_gtfs_version!(current.id).name == current.name
+      assert Versions.get_published_gtfs_version_for_org!(org.id, current.id).name == current.name
     end
   end
 
@@ -170,7 +174,9 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
 
       refute has_element?(view, "#gtfs-version-rename-form")
       assert has_element?(view, "#gtfs-version-select option", "Renamed Version")
-      assert Versions.get_gtfs_version!(current.id).name == "Renamed Version"
+
+      assert Versions.get_published_gtfs_version_for_org!(org.id, current.id).name ==
+               "Renamed Version"
     end
 
     test "duplicate name keeps form visible and does not modify the DB", %{
@@ -192,7 +198,9 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
 
       assert html =~ "A version with this name already exists"
       assert has_element?(view, "#gtfs-version-rename-form")
-      assert Versions.get_gtfs_version!(current.id).name == "Current Version"
+
+      assert Versions.get_published_gtfs_version_for_org!(org.id, current.id).name ==
+               "Current Version"
     end
 
     test "trims surrounding whitespace before persisting", %{
@@ -211,7 +219,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       |> render_submit()
 
       refute has_element?(view, "#gtfs-version-rename-form")
-      assert Versions.get_gtfs_version!(current.id).name == "Renamed"
+      assert Versions.get_published_gtfs_version_for_org!(org.id, current.id).name == "Renamed"
     end
 
     test "submitting the unchanged current name succeeds without a duplicate error", %{
@@ -232,7 +240,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
 
       refute html =~ "A version with this name already exists"
       refute has_element?(view, "#gtfs-version-rename-form")
-      assert Versions.get_gtfs_version!(current.id).name == current.name
+      assert Versions.get_published_gtfs_version_for_org!(org.id, current.id).name == current.name
     end
   end
 
@@ -258,6 +266,35 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
 
       form_html = view |> element("#gtfs-version-switcher") |> render()
       assert form_html =~ "Other Version"
+    end
+  end
+
+  describe "published-only options" do
+    test "switcher options exclude staging, importing, and failed versions", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, staging} = Versions.create_staging_gtfs_version(org.id, %{name: "Staging Version"})
+
+      {:ok, importing_staging} =
+        Versions.create_staging_gtfs_version(org.id, %{name: "Importing Version"})
+
+      {:ok, _importing} = Versions.claim_staging_gtfs_version(org.id, importing_staging.id)
+
+      {:ok, failed_staging} =
+        Versions.create_staging_gtfs_version(org.id, %{name: "Failed Version"})
+
+      {:ok, _failed} = Versions.fail_unpublished_gtfs_version(org.id, failed_staging.id)
+
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      assert has_element?(view, "#gtfs-version-select option", "Current Version")
+      assert has_element?(view, "#gtfs-version-select option", "Other Version")
+      refute has_element?(view, "#gtfs-version-select option", "Staging Version")
+      refute has_element?(view, "#gtfs-version-select option", "Importing Version")
+      refute has_element?(view, "#gtfs-version-select option", "Failed Version")
+      refute has_element?(view, ~s(#gtfs-version-select option[value="#{staging.id}"]))
     end
   end
 

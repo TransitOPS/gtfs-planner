@@ -67,7 +67,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     route_id = socket.assigns[:route_id]
 
     if version_id && version_id != current_version_id &&
-         valid_version_for_org?(version_id, current_organization.id) do
+         Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       path =
         if route_id,
           do: "/gtfs/#{version_id}/routes/#{route_id}",
@@ -81,16 +81,21 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
   @impl true
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
+    current_organization = socket.assigns.current_organization
     route_id = socket.assigns[:route_id]
 
-    socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
+    if Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
+      socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
 
-    path =
-      if route_id,
-        do: "/gtfs/#{version_id}/routes/#{route_id}",
-        else: "/gtfs/#{version_id}/routes"
+      path =
+        if route_id,
+          do: "/gtfs/#{version_id}/routes/#{route_id}",
+          else: "/gtfs/#{version_id}/routes"
 
-    {:noreply, push_navigate(socket, to: path)}
+      {:noreply, push_navigate(socket, to: path)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -225,16 +230,5 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       <% end %>
     </Layouts.app>
     """
-  end
-
-  defp valid_version_for_org?(version_id, organization_id) do
-    try do
-      case Versions.get_gtfs_version(version_id) do
-        nil -> false
-        version -> version.organization_id == organization_id
-      end
-    rescue
-      _ -> false
-    end
   end
 end
