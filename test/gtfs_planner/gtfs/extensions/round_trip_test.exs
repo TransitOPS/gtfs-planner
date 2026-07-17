@@ -86,8 +86,10 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
           %{filename: to_string(name), content: content}
         end)
 
-      assert {:ok, {counts, _unrecognized, _topic, []}} =
+      assert {:ok, import_result} =
                Import.import_files(org_b.id, version_b.id, import_files)
+
+      counts = import_result.counts
 
       # Standard GTFS data imported
       assert counts.stops >= 2
@@ -98,6 +100,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
       assert counts.extensions_stop_levels == 1
       assert counts.extensions_route_flags == 1
       assert counts.extensions_images == 1
+      assert import_result.extensions == :complete
+      assert Import.Result.publishable?(import_result)
 
       # -- Verify restored DB state --------------------------------------------
       imported_child = Gtfs.get_stop_by_stop_id(org_b.id, version_b.id, "platform_north")
@@ -147,12 +151,14 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
         %{filename: "stops.txt", content: stops_content}
       ]
 
-      assert {:ok, {counts, [], _topic, []}} = Import.import_files(org.id, version.id, files)
+      assert {:ok, import_result} = Import.import_files(org.id, version.id, files)
 
+      counts = import_result.counts
       assert counts.levels == 1
       assert counts.stops == 1
       # No extensions keys present (they're only added when manifest exists)
       refute Map.has_key?(counts, :extensions_stop_coordinates)
+      assert import_result.extensions == :not_present
     end
   end
 end

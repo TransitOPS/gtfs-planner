@@ -367,7 +367,10 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
 
       # Verify file was written to the immutable org/version namespace (not shared path).
       uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
-      dest = Path.join([uploads_path, "diagrams", org_id, version_id, "station_main", "floor.png"])
+
+      dest =
+        Path.join([uploads_path, "diagrams", org_id, version_id, "station_main", "floor.png"])
+
       assert File.read!(dest) == "fake png"
     end
 
@@ -412,7 +415,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
         "_pathways_extensions/diagrams/station_main/floor.png" => "version-one-bytes"
       }
 
-      assert {:ok, _} = Import.import_extensions(org_id, version_id, build_manifest.(version_id), images)
+      assert {:ok, _} =
+               Import.import_extensions(org_id, version_id, build_manifest.(version_id), images)
 
       images_b = %{
         "_pathways_extensions/diagrams/station_main/floor.png" => "version-two-bytes"

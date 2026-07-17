@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import
-  alias GtfsPlanner.Gtfs.Import.{Diff, DiffDecision, RowParser}
+  alias GtfsPlanner.Gtfs.Import.{Result, Diff, DiffDecision, RowParser}
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_editor}
@@ -407,12 +407,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     socket =
       case result do
-        {:ok, {counts, unrecognized, _topic, archive_warnings}} ->
+        {:ok, %Result{} = import_result} ->
           # Note: We already subscribed to the topic before starting the task
           # so we don't need to subscribe again here
 
           socket
-          |> assign(:import_result, {:ok, counts, unrecognized, archive_warnings})
+          |> assign(:import_result, {:ok, import_result})
           |> assign(:importing, false)
           |> assign(:import_task, nil)
 
@@ -669,7 +669,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           <%= if @import_result do %>
             <div class="mt-6 pt-6 border-t border-base-300">
               <%= case @import_result do %>
-                <% {:ok, counts, unrecognized, archive_warnings} -> %>
+                <% {:ok, %Import.Result{counts: counts, unrecognized_files: unrecognized, archive_warnings: archive_warnings}} -> %>
                   <%= if archive_warnings != [] and all_counts_zero?(counts) do %>
                     <div class="alert alert-error alert-soft">
                       <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />

@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.Import
+  alias GtfsPlanner.Gtfs.Import.Result
   alias GtfsPlanner.Gtfs
 
   describe "ImportLive" do
@@ -650,8 +651,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
         view.pid,
         {ref,
          {:ok,
-          {counts, [], "import:test",
-           [%{filename: "bad.zip", detail: "archive could not be read"}]}}}
+          %Import.Result{
+            counts: counts,
+            unrecognized_files: [],
+            topic: "import:test",
+            archive_warnings: [%{filename: "bad.zip", detail: "archive could not be read"}],
+            extensions: :not_present
+          }}}
       )
 
       html = render(view)
@@ -682,8 +688,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
         view.pid,
         {ref,
          {:ok,
-          {counts, [], "import:test",
-           [%{filename: "bad.zip", detail: "archive could not be read"}]}}}
+          %Import.Result{
+            counts: counts,
+            unrecognized_files: [],
+            topic: "import:test",
+            archive_warnings: [%{filename: "bad.zip", detail: "archive could not be read"}],
+            extensions: :complete
+          }}}
       )
 
       html = render(view)

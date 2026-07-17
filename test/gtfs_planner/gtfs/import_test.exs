@@ -4,6 +4,8 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlannerWeb.Gtfs.ImportLive
 
+  import GtfsPlanner.GtfsFixtures
+
   describe "parse_csv_content/1" do
     test "parses simple CSV with header and rows" do
       content = """
@@ -191,14 +193,20 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "stops.txt", content: stops_content}
       ]
 
-      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
+      counts = result.counts
       assert counts.routes == 0
       assert counts.levels == 2
       assert counts.stops == 2
       assert counts.pathways == 0
       assert counts.route_patterns == 0
+      assert result.unrecognized_files == []
+      assert is_binary(result.topic)
+      assert result.archive_warnings == []
+      assert result.extensions == :not_present
+      assert Import.Result.publishable?(result)
 
       # Verify levels were created
       levels = Gtfs.list_levels(organization.id, gtfs_version.id)
@@ -239,7 +247,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:ok, {_counts, _unrecognized, _topic, _archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
       # Verify pathways were created
@@ -325,10 +333,10 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
-      assert counts.pathways == 1
+      assert result.counts.pathways == 1
 
       # Verify pathway was created with nil traversal_time
       pathways = Gtfs.list_pathways(organization.id, gtfs_version.id)
@@ -364,10 +372,10 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
-      assert counts.pathways == 1
+      assert result.counts.pathways == 1
 
       # Verify pathway was created with nil length
       pathways = Gtfs.list_pathways(organization.id, gtfs_version.id)
@@ -390,10 +398,10 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "agency.txt", content: agency_content}
       ]
 
-      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
-      assert counts.agencies == 1
+      assert result.counts.agencies == 1
 
       agencies =
         GtfsPlanner.Repo.all(Gtfs.Agency)
@@ -421,10 +429,10 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "shapes.txt", content: shapes_content}
       ]
 
-      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
-      assert counts.shapes == 1
+      assert result.counts.shapes == 1
 
       shapes =
         GtfsPlanner.Repo.all(Gtfs.Shape)
@@ -442,11 +450,14 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       organization: organization,
       gtfs_version: gtfs_version
     } do
-      assert {:ok, {counts, _unrecognized, _topic, _archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, [])
 
+      counts = result.counts
       assert MapSet.new(Map.keys(counts)) == MapSet.new(Import.supported_count_keys())
       assert Enum.all?(counts, fn {_key, count} -> count == 0 end)
+      assert result.extensions == :not_present
+      assert Import.Result.publishable?(result)
     end
 
     @tag :skip
@@ -518,12 +529,12 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
-      assert {:ok, {counts, unrecognized, _topic, _archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
-      assert counts.levels == 1
-      assert counts.stops == 1
-      assert unrecognized == []
+      assert result.counts.levels == 1
+      assert result.counts.stops == 1
+      assert result.unrecognized_files == []
     end
 
     test "zip with extensions files categorizes them separately", %{
@@ -547,12 +558,12 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
       # Should not error - extensions with no references are logged and skipped
-      assert {:ok, {counts, unrecognized, _topic, _archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
-      assert counts.levels == 1
+      assert result.counts.levels == 1
       # Extensions files should not appear in unrecognized
-      assert unrecognized == []
+      assert result.unrecognized_files == []
     end
 
     test "zip with top-level folder imports extensions and restores image files", %{
@@ -607,15 +618,17 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
-      assert {:ok, {counts, unrecognized, _topic, _archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
-      assert counts.levels == 1
-      assert counts.stops == 1
-      assert counts.extensions_stop_coordinates == 1
-      assert counts.extensions_stop_levels == 1
-      assert counts.extensions_images == 1
-      assert unrecognized == []
+      assert result.counts.levels == 1
+      assert result.counts.stops == 1
+      assert result.counts.extensions_stop_coordinates == 1
+      assert result.counts.extensions_stop_levels == 1
+      assert result.counts.extensions_images == 1
+      assert result.unrecognized_files == []
+      assert result.extensions == :complete
+      assert Import.Result.publishable?(result)
 
       uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
 
@@ -683,15 +696,17 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
-      assert {:ok, {counts, unrecognized, _topic, _archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
-      assert counts.levels == 1
-      assert counts.stops == 1
-      assert counts.extensions_stop_coordinates == 1
-      assert counts.extensions_stop_levels == 1
-      assert counts.extensions_images == 1
-      assert unrecognized == []
+      assert result.counts.levels == 1
+      assert result.counts.stops == 1
+      assert result.counts.extensions_stop_coordinates == 1
+      assert result.counts.extensions_stop_levels == 1
+      assert result.counts.extensions_images == 1
+      assert result.unrecognized_files == []
+      assert result.extensions == :complete
+      assert Import.Result.publishable?(result)
 
       uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
 
@@ -721,11 +736,12 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
     } do
       files = [%{filename: "bad.zip", content: "not a real zip"}]
 
-      assert {:ok, {_counts, unrecognized, _topic, archive_warnings}} =
+      assert {:ok, result} =
                Import.import_files(organization.id, gtfs_version.id, files)
 
-      assert unrecognized == []
-      assert [%{filename: "bad.zip", reason: :unzip_failed}] = archive_warnings
+      assert result.unrecognized_files == []
+      assert [%{filename: "bad.zip", reason: :unzip_failed}] = result.archive_warnings
+      refute Import.Result.publishable?(result)
     end
 
     test "ignored and nested zip entries count toward archive limits" do
@@ -865,6 +881,213 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       }
 
       refute Import.zip_entry_sizes_within_limits?([100 * 1024 * 1024 + 1], limits)
+    end
+  end
+
+  describe "import_files/4 extensions phase" do
+    setup do
+      organization = GtfsPlanner.OrganizationsFixtures.organization_fixture()
+      gtfs_version = GtfsPlanner.VersionsFixtures.gtfs_version_fixture(organization.id)
+
+      # Own a unique upload root so version isolation/cleanup never touches the shared root.
+      previous = Application.get_env(:gtfs_planner, :uploads_path)
+
+      root =
+        Path.join(System.tmp_dir!(), "import_ext_phase_#{System.unique_integer([:positive])}")
+
+      Application.put_env(:gtfs_planner, :uploads_path, root)
+
+      on_exit(fn ->
+        File.rm_rf!(root)
+
+        if is_nil(previous) do
+          Application.delete_env(:gtfs_planner, :uploads_path)
+        else
+          Application.put_env(:gtfs_planner, :uploads_path, previous)
+        end
+      end)
+
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    defp full_feed_with_extensions(manifest_json, image_files, opts \\ []) do
+      levels_content = "level_id,level_index,level_name\n32095_BUSWAY,0.0,Busway"
+
+      stops_content =
+        "stop_id,stop_name,stop_lat,stop_lon,location_type\n32095,Olney,40.0,-75.0,1"
+
+      image_entry =
+        if Keyword.get(opts, :omit_image, false) do
+          []
+        else
+          [
+            {~c"_pathways_extensions/diagrams/32095/lvl.png",
+             Map.get(image_files, "_pathways_extensions/diagrams/32095/lvl.png", "")}
+          ]
+        end
+
+      {:ok, {_name, zip_binary}} =
+        :zip.create(
+          ~c"gtfs.zip",
+          [
+            {~c"levels.txt", levels_content},
+            {~c"stops.txt", stops_content},
+            {~c"_pathways_extensions.json", manifest_json}
+            | image_entry
+          ],
+          [:memory]
+        )
+
+      zip_binary
+    end
+
+    defp manifest_with_image do
+      Jason.encode!(%{
+        "version" => 1,
+        "exported_at" => "2026-02-25T00:00:00Z",
+        "stop_diagram_coordinates" => [],
+        "stop_levels" => [
+          %{
+            "stop_id" => "32095",
+            "level_id" => "32095_BUSWAY",
+            "diagram_filename" => "lvl.png",
+            "scale_point_a" => %{"x" => 10.0, "y" => 20.0},
+            "scale_point_b" => %{"x" => 20.0, "y" => 20.0},
+            "scale_distance_meters" => "3.0",
+            "scale_meters_per_unit" => "0.3"
+          }
+        ],
+        "route_active_flags" => [],
+        "diagram_images" => [
+          %{
+            "station_stop_id" => "32095",
+            "filename" => "lvl.png",
+            "zip_path" => "_pathways_extensions/diagrams/32095/lvl.png"
+          }
+        ]
+      })
+    end
+
+    test "complete extension import returns extensions :complete and is publishable", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      zip_binary =
+        full_feed_with_extensions(manifest_with_image(), %{
+          "_pathways_extensions/diagrams/32095/lvl.png" => "fake png"
+        })
+
+      assert {:ok, result} =
+               Import.import_files(organization.id, gtfs_version.id, [
+                 %{filename: "gtfs.zip", content: zip_binary}
+               ])
+
+      assert result.extensions == :complete
+      assert result.counts.extensions_images == 1
+      assert Import.Result.publishable?(result)
+    end
+
+    test "missing image binary fails the whole import", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      # Reference an image but provide no binary for it (image entry omitted from zip).
+      manifest = manifest_with_image()
+      zip_binary = full_feed_with_extensions(manifest, %{}, omit_image: true)
+
+      assert {:error, {:image_restore_failed, {:missing_binary, zip_path}}} =
+               Import.import_files(organization.id, gtfs_version.id, [
+                 %{filename: "gtfs.zip", content: zip_binary}
+               ])
+
+      assert zip_path == "_pathways_extensions/diagrams/32095/lvl.png"
+    end
+
+    test "unsafe image path fails the whole import", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      # Pre-create the referenced station and level via fixtures so the extension
+      # manifest validation passes; the standard import below does not recreate them.
+      stop_fixture(organization.id, gtfs_version.id, stop_id: "station_main", location_type: 1)
+      level_fixture(organization.id, gtfs_version.id, level_id: "L1")
+
+      manifest =
+        Jason.encode!(%{
+          "version" => 1,
+          "exported_at" => "2026-02-25T00:00:00Z",
+          "stop_diagram_coordinates" => [],
+          "stop_levels" => [
+            %{
+              "stop_id" => "station_main",
+              "level_id" => "L1",
+              "diagram_filename" => "../escape.png",
+              "scale_point_a" => nil,
+              "scale_point_b" => nil,
+              "scale_distance_meters" => nil,
+              "scale_meters_per_unit" => nil
+            }
+          ],
+          "route_active_flags" => [],
+          "diagram_images" => [
+            %{
+              "station_stop_id" => "station_main",
+              "filename" => "../escape.png",
+              "zip_path" => "_pathways_extensions/diagrams/station_main/../escape.png"
+            }
+          ]
+        })
+
+      # The unsafe filename must match the manifest's referenced path.
+      image_entry =
+        {~c"_pathways_extensions/diagrams/station_main/../escape.png", "fake png"}
+
+      # Standard files reference a DIFFERENT level/stop than the fixtures.
+      levels_content = "level_id,level_index,level_name\n32095_BUSWAY,0.0,Busway"
+
+      stops_content =
+        "stop_id,stop_name,stop_lat,stop_lon,location_type\n32095,Olney,40.0,-75.0,1"
+
+      {:ok, {_name, zip_binary}} =
+        :zip.create(
+          ~c"gtfs.zip",
+          [
+            {~c"levels.txt", levels_content},
+            {~c"stops.txt", stops_content},
+            {~c"_pathways_extensions.json", manifest},
+            image_entry
+          ],
+          [:memory]
+        )
+
+      assert {:error, {:image_restore_failed, {:write_failed, _zip_path, :unsafe_path}}} =
+               Import.import_files(organization.id, gtfs_version.id, [
+                 %{filename: "gtfs.zip", content: zip_binary}
+               ])
+    end
+
+    test "extension database failure (missing reference) fails the whole import", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      manifest =
+        Jason.encode!(%{
+          "version" => 1,
+          "exported_at" => "2026-02-25T00:00:00Z",
+          "stop_diagram_coordinates" => [
+            %{"stop_id" => "MISSING_STOP", "diagram_coordinate" => %{"x" => 1, "y" => 2}}
+          ],
+          "stop_levels" => [],
+          "route_active_flags" => [],
+          "diagram_images" => []
+        })
+
+      zip_binary = full_feed_with_extensions(manifest, %{})
+
+      assert {:error, {:missing_references, _refs}} =
+               Import.import_files(organization.id, gtfs_version.id, [
+                 %{filename: "gtfs.zip", content: zip_binary}
+               ])
     end
   end
 
