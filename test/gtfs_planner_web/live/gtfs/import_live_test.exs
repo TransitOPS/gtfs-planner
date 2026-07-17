@@ -237,6 +237,156 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
     end
   end
 
+  describe "destination + state rendering" do
+    setup :editor_context
+
+    test "idle form names both the route version and the prospective destination", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, html} = live(conn, "/gtfs/#{version.id}/import")
+
+      # The persistent destination summary appears before file selection.
+      assert has_element?(view, "#gtfs-import-destination")
+
+      # It names the prospective new version and the currently available one.
+      assert html =~ "Destination: New version"
+      assert html =~ version.name
+      assert html =~ "remains available until import succeeds"
+
+      # The reviewed-diff destination separately names the existing-version target.
+      assert has_element?(view, "#diff-destination")
+      assert render(view) =~ "Reviewed changes apply to version"
+    end
+
+    test "version name input has a programmatic label and error association", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      # The shared input owns one alert container with a stable id.
+      view |> element("#gtfs-import-version-name") |> render_blur()
+
+      view
+      |> element("#gtfs-import-form")
+      |> render_change(%{"gtfs_import_form" => %{"version_name" => ""}})
+
+      html = render(view)
+
+      assert html =~ "id=\"gtfs-import-version-name-error\""
+      assert html =~ ~r/aria-describedby="gtfs-import-version-name-error"/
+      assert html =~ ~r/aria-invalid="true"/
+      assert html =~ ~r/role="alert"/
+      assert html =~ "Version name is required"
+    end
+
+    test "primary CTA shows pending state and disables while publication is active", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
+
+      # The synchronous post-submit render reflects the in-flight publication:
+      # the CTA is disabled and shows the pending label.
+      html = submit_import(view, "Pending State")
+
+      assert html =~ "Importing"
+      assert html =~ ~r/id="gtfs-import-submit"[^>]*disabled/
+
+      # The polite live region is present to surface progress.
+      assert html =~ ~r/id="gtfs-import-status"[^>]*aria-live="polite"/
+
+      # After completion the CTA returns to its idle label.
+      final = await_import_task(view)
+      refute final =~ "Importing"
+    end
+
+    test "success announces the published version and links to it while keeping the diff destination", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [
+        gtfs_zip([{"levels.txt", @levels_content}, {"stops.txt", @stops_content}])
+      ])
+
+      submit_import(view, "Announced Version")
+      html = await_import_task(view)
+
+      # The published outcome is announced in an assertive live region.
+      assert has_element?(view, "#gtfs-import-result[aria-live='assertive']")
+      assert html =~ "Import successful"
+      assert html =~ "Announced Version"
+
+      # View version is a navigation link to the published target.
+      target = version_by_name(organization.id, "Announced Version")
+      assert has_element?(view, "#gtfs-import-view-version[href='/gtfs/#{target.id}/routes']")
+
+      # The route-version diff destination is preserved alongside the result.
+      assert has_element?(view, "#diff-destination")
+    end
+
+    test "validation failure uses the shared input exactly once and preserves keyboard correction", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, existing} = Versions.create_gtfs_version(organization.id, %{name: "Taken"})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
+
+      html = submit_import(view, existing.name)
+
+      # One alert container associated with the field; no duplicate markup.
+      assert length(Regex.scan(~r/id="gtfs-import-version-name-error"/, html)) == 1
+      assert html =~ "already exists"
+
+      # The form is still keyboard-reachable for correction.
+      assert has_element?(view, "#gtfs-import-version-name")
+      assert has_element?(view, "#gtfs-import-submit")
+    end
+
+    test "validation failure pushes a first-error focus event for keyboard correction", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      view |> element("#gtfs-import-version-name") |> render_blur()
+
+      view
+      |> element("#gtfs-import-form")
+      |> render_change(%{"gtfs_import_form" => %{"version_name" => ""}})
+
+      # The server pushes a focus command (handled client-side by the colocated
+      # .ImportErrorFocus hook) so assistive tech lands on the offending field.
+      assert_push_event(view, "focus_first_error", %{selector: "#gtfs-import-version-name"})
+    end
+  end
+
   describe "valid full-feed import" do
     setup :editor_context
 

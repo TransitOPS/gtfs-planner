@@ -134,6 +134,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       |> assign(:form, form)
       |> assign(:unrecognized_upload_files, unrecognized_files)
 
+    socket = if errors != [], do: push_event(socket, "focus_first_error", %{selector: "#gtfs-import-version-name"}), else: socket
+
     {:noreply, socket}
   end
 
@@ -409,6 +411,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             class="space-y-6"
             phx-change="validate"
             phx-submit="import"
+            phx-hook=".ImportErrorFocus"
           >
             <div
               id="gtfs-import-destination"
@@ -423,31 +426,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             </div>
 
             <div class="form-control">
-              <label class="label" for="gtfs-import-version-name">
-                <span class="label-text">Version name</span>
-              </label>
-              <input
-                type="text"
+              <.input
                 id="gtfs-import-version-name"
-                name="gtfs_import_form[version_name]"
-                class={[
-                  "input input-bordered w-full",
-                  @form[:version_name].errors != [] && "input-error"
-                ]}
+                field={@form[:version_name]}
+                label="Version name"
                 placeholder="e.g., Spring 2025 Schedule"
-                value={@form[:version_name].value}
                 phx-blur="version_name_blur"
-                aria-invalid={to_string(@form[:version_name].errors != [])}
-                aria-describedby="gtfs-import-version-name-error"
               />
-              <p
-                :if={@form[:version_name].errors != []}
-                id="gtfs-import-version-name-error"
-                class="text-error text-sm mt-1"
-                role="alert"
-              >
-                {Enum.join(@form[:version_name].errors, ", ")}
-              </p>
             </div>
 
             <div class="form-control">
@@ -992,6 +977,20 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         </div>
       </div>
     </Layouts.app>
+
+    <%!-- Move focus to the first invalid field when validation produces an error,
+         using a colocated hook (no embedded script) so keyboard and screen-reader
+         users land on the fixable control. --%>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".ImportErrorFocus">
+      export default {
+        mounted() {
+          this.handleEvent("focus_first_error", ({selector}) => {
+            const el = this.el.querySelector(selector)
+            if (el) el.focus()
+          })
+        }
+      }
+    </script>
     """
   end
 
@@ -1002,21 +1001,25 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     organization_id = socket.assigns.current_organization.id
 
     case Versions.create_staging_gtfs_version(organization_id, %{name: version_name}) do
-      {:error, changeset} ->
-        # Pre-consumption changeset error (blank/duplicate name): return to the
-        # form, preserve every selected upload entry, focus/announce the error,
-        # and start no task. No lifecycle row was created.
-        {:noreply,
-         socket
-         |> assign(:version_name_touched, true)
-         |> assign(
-           :form,
-           to_form(%{"version_name" => version_name},
-             as: :gtfs_import_form,
-             errors: changeset_errors(changeset)
+       {:error, changeset} ->
+         # Pre-consumption changeset error (blank/duplicate name): return to the
+         # form, preserve every upload entry, focus/announce the error,
+         # and start no task. No lifecycle row was created.
+         socket =
+           socket
+           |> assign(:version_name_touched, true)
+           |> assign(
+             :form,
+             to_form(%{"version_name" => version_name},
+               as: :gtfs_import_form,
+               errors: changeset_errors(changeset)
+             )
            )
-         )
-         |> assign(:import_result, nil)}
+           |> assign(:import_result, nil)
+
+         socket = push_event(socket, "focus_first_error", %{selector: "#gtfs-import-version-name"})
+
+         {:noreply, socket}
 
       {:ok, target} ->
         # Bind the persisted target before touching uploads so every downstream

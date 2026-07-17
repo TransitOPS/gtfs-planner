@@ -227,4 +227,104 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert html =~ "phx-value-page=\"3\""
     end
   end
+
+  describe "input/1 accessibility" do
+    test "points aria-describedby only at help text when there are no errors" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.input id="name" name="name" label="Name" help="Pick a memorable name" />
+        """)
+
+      assert html =~ "id=\"name-help\""
+      assert html =~ ~r/aria-describedby="name-help"/
+      refute html =~ "name-error"
+      assert html =~ ~r/aria-invalid="false"/
+    end
+
+    test "combine help and error IDs in aria-describedby when both are present" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.input id="name" name="name" label="Name" help="Pick a memorable name" errors={["can't be blank"]} />
+        """)
+
+      assert html =~ "id=\"name-help\""
+      assert html =~ "id=\"name-error\""
+      assert html =~ ~r/aria-describedby="name-help name-error"/
+    end
+
+    test "error container owns a stable id and alert semantics" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.input id="name" name="name" label="Name" errors={["can't be blank"]} />
+        """)
+
+      assert html =~ "id=\"name-error\""
+      assert html =~ ~r/role="alert"/
+      assert html =~ ~r/aria-live="assertive"/
+      assert html =~ ~r/aria-describedby="name-error"/
+    end
+
+    test "sets aria-invalid when errors exist and clears it otherwise" do
+      assigns = %{}
+
+      valid =
+        rendered_to_string(~H"""
+        <.input id="name" name="name" label="Name" />
+        """)
+
+      refute valid =~ ~r/aria-invalid="true"/
+
+      invalid =
+        rendered_to_string(~H"""
+        <.input id="name" name="name" label="Name" errors={["can't be blank"]} />
+        """)
+
+      assert invalid =~ ~r/aria-invalid="true"/
+    end
+
+    test "select and textarea inputs expose the same error association contract" do
+      assigns = %{}
+
+      select_html =
+        rendered_to_string(~H"""
+        <.input id="role" name="role" type="select" label="Role" options={[{"Admin", "admin"}]} errors={["is invalid"]} />
+        """)
+
+      textarea_html =
+        rendered_to_string(~H"""
+        <.input id="notes" name="notes" type="textarea" label="Notes" errors={["is invalid"]} />
+        """)
+
+      assert select_html =~ "id=\"role-error\""
+      assert select_html =~ ~r/aria-invalid="true"/
+      assert select_html =~ ~r/role="alert"/
+      assert select_html =~ ~r/aria-describedby="role-error"/
+
+      assert textarea_html =~ "id=\"notes-error\""
+      assert textarea_html =~ ~r/aria-invalid="true"/
+      assert textarea_html =~ ~r/role="alert"/
+      assert textarea_html =~ ~r/aria-describedby="notes-error"/
+    end
+
+    test "multiple errors render inside one referenced alert container" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.input id="name" name="name" label="Name" errors={["can't be blank", "too short"]} />
+        """)
+
+      # Both messages render inside exactly one alert container.
+      assert html =~ ~r/<p id="name-error"/
+      assert length(Regex.scan(~r/<p id="name-error"/, html)) == 1
+      assert html =~ "can&#39;t be blank"
+      assert html =~ "too short"
+    end
+  end
 end
