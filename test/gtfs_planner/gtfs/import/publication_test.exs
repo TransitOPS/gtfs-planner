@@ -290,6 +290,104 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
     end
   end
 
+  describe "late Phase 2 failure after committed batches never publishes (AC-4, AC-14)" do
+    setup do
+      organization = organization_fixture()
+      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "New Feed"})
+
+      # A prior published version whose rows must remain untouched by the failed run.
+      {:ok, prior} = Versions.create_gtfs_version(organization.id, %{name: "Prior"})
+
+      Import.import_files(organization.id, prior.id, [
+        %{filename: "levels.txt", content: @levels_content}
+      ])
+
+      %{organization: organization, staging: staging, prior: prior}
+    end
+
+    test "a semantic error after two committed batches quarantines partial rows and names the source row",
+         %{organization: organization, staging: staging} do
+      # @batch_size is compile-time 1000 with no test override, so generate more
+      # than two batch sizes of valid rows followed by one malformed row. The
+      # malformed row's chunk is rejected before insertion, so only the two full
+      # committed batches persist.
+      valid_row_count = 2100
+
+      valid_rows =
+        Enum.map_join(1..valid_row_count, "", fn n ->
+          "T1,S#{n},#{n},08:00:00,08:00:00\n"
+        end)
+
+      stop_times =
+        "trip_id,stop_id,stop_sequence,arrival_time,departure_time\n" <>
+          valid_rows <>
+          "T1,SBAD,not_a_number,08:00:00,08:00:00\n"
+
+      total_data_rows = valid_row_count + 1
+      # Header is physical row 1; data rows begin at physical row 2, so the bad
+      # record (data row 2101) sits at physical row 2102.
+      bad_physical_row = total_data_rows + 1
+
+      files = [
+        %{filename: "levels.txt", content: @levels_content},
+        %{filename: "stops.txt", content: @stops_content},
+        %{filename: "stop_times.txt", content: stop_times}
+      ]
+
+      assert {:error, target, error} = Publication.run(staging, files, "import:phase2-late")
+      assert target.id == staging.id
+
+      # The failure names the source file and the exact physical source row of the
+      # bad record (AC-4), not an inserted-row offset.
+      assert error.file == "stop_times.txt"
+      assert error.row == bad_physical_row
+
+      # At least two committed batches persisted, scoped to the claimed staging
+      # target, and strictly fewer than the total (the error chunk never inserts).
+      persisted =
+        from(st in GtfsPlanner.Gtfs.StopTime, where: st.gtfs_version_id == ^staging.id)
+        |> Repo.aggregate(:count)
+
+      assert persisted >= 2 * 1000
+      assert persisted < total_data_rows
+
+      # The incomplete target is never published (AC-14, INV-3).
+      assert %GtfsVersion{} =
+               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, staging.id)
+
+      assert failed.publication_status == "failed"
+      assert is_nil(failed.published_at)
+      refute Versions.published_gtfs_version_for_org?(organization.id, staging.id)
+    end
+
+    test "the prior published version and its records remain unchanged after the failed run",
+         %{organization: organization, staging: staging, prior: prior} do
+      valid_rows =
+        Enum.map_join(1..2100, "", fn n -> "T1,S#{n},#{n},08:00:00,08:00:00\n" end)
+
+      stop_times =
+        "trip_id,stop_id,stop_sequence,arrival_time,departure_time\n" <>
+          valid_rows <>
+          "T1,SBAD,not_a_number,08:00:00,08:00:00\n"
+
+      files = [
+        %{filename: "levels.txt", content: @levels_content},
+        %{filename: "stops.txt", content: @stops_content},
+        %{filename: "stop_times.txt", content: stop_times}
+      ]
+
+      assert {:error, _target, _error} = Publication.run(staging, files, "import:phase2-prior")
+
+      # Published-only lookup still returns the prior version.
+      assert %GtfsVersion{} =
+               Versions.get_published_gtfs_version_for_org(organization.id, prior.id)
+
+      # Its records are untouched.
+      assert length(GtfsPlanner.Gtfs.list_levels(organization.id, prior.id)) == 1
+      assert GtfsPlanner.Gtfs.list_stops(organization.id, prior.id) == []
+    end
+  end
+
   describe "database publication failure after asset writes" do
     setup do
       organization = organization_fixture()
