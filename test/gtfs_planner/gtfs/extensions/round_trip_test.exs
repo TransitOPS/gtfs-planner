@@ -57,11 +57,16 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
           scale_meters_per_unit: Decimal.new("0.35")
         })
 
-      # Write a fake diagram image
-      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
-      img_dir = Path.join([uploads_path, "diagrams", org_a.id, "station_main"])
-      File.mkdir_p!(img_dir)
-      File.write!(Path.join(img_dir, "floor_L1.png"), "PNG_BINARY_DATA")
+      # Write a fake diagram image to a unique upload root for this test.
+      previous = Application.get_env(:gtfs_planner, :uploads_path)
+      uploads_path = Path.join(System.tmp_dir!(), "ext_rt_#{System.unique_integer([:positive])}")
+      Application.put_env(:gtfs_planner, :uploads_path, uploads_path)
+      on_exit(fn -> File.rm_rf!(uploads_path) end)
+
+      # Export reads legacy-shaped files when no versioned write exists yet.
+      legacy_dir = Path.join([uploads_path, "diagrams", org_a.id, "station_main"])
+      File.mkdir_p!(legacy_dir)
+      File.write!(Path.join(legacy_dir, "floor_L1.png"), "PNG_BINARY_DATA")
 
       # -- Export from org A (full export includes routes.txt) -----------------
       assert {:ok, zip_binary} = Export.export_to_zip(org_a.id, version_a.id, :full)
@@ -113,8 +118,16 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
       assert Decimal.equal?(imported_sl.scale_meters_per_unit, Decimal.new("0.35"))
 
       # -- Verify restored image -----------------------------------------------
+      # The image is written into org B's immutable version namespace.
       dest_path =
-        Path.join([uploads_path, "diagrams", org_b.id, "station_main", "floor_L1.png"])
+        Path.join([
+          uploads_path,
+          "diagrams",
+          org_b.id,
+          version_b.id,
+          "station_main",
+          "floor_L1.png"
+        ])
 
       assert File.read!(dest_path) == "PNG_BINARY_DATA"
     after

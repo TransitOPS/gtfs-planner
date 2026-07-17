@@ -12,6 +12,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
   alias GtfsPlanner.Gtfs.{Stop, StopLevel, Level, Route}
   alias GtfsPlanner.Gtfs.Extensions.Manifest
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.DiagramStorage
 
   require Logger
 
@@ -30,7 +31,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
       {:ok, []}
     else
       image_manifest_entries = build_image_manifest(stop_levels)
-      image_zip_entries = collect_image_entries(organization_id, image_manifest_entries)
+      image_zip_entries = collect_image_entries(organization_id, gtfs_version_id, image_manifest_entries)
 
       manifest =
         Manifest.build(coords, stop_levels, route_flags, image_manifest_entries)
@@ -134,10 +135,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
     end)
   end
 
-  defp collect_image_entries(organization_id, image_manifest_entries) do
-    uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
-    uploads_root = Path.expand(Path.join([uploads_path, "diagrams", organization_id]))
-
+  defp collect_image_entries(organization_id, gtfs_version_id, image_manifest_entries) do
     Enum.flat_map(image_manifest_entries, fn entry ->
       station_dir = PathSafety.stop_storage_dir(entry.station_stop_id)
 
@@ -148,12 +146,15 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
 
         []
       else
-        disk_path = Path.join([uploads_root, station_dir, entry.filename])
+        case DiagramStorage.read_image(
+               organization_id,
+               gtfs_version_id,
+               entry.station_stop_id,
+               entry.filename
+             ) do
+          {:ok, binary} ->
+            [{String.to_charlist(entry.zip_path), binary}]
 
-        with :ok <- PathSafety.ensure_within_root(uploads_root, disk_path),
-             {:ok, binary} <- File.read(disk_path) do
-          [{String.to_charlist(entry.zip_path), binary}]
-        else
           {:error, reason} ->
             Logger.warning(
               "Extensions export: skipping image #{entry.zip_path}: #{inspect(reason)}"

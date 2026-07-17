@@ -306,7 +306,29 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
   end
 
   describe "import_extensions/5 - image restore" do
-    test "restores images from zip path map", %{org_id: org_id, version_id: version_id} do
+    setup do
+      # Own a unique upload root so version isolation/cleanup never touches the shared root.
+      previous = Application.get_env(:gtfs_planner, :uploads_path)
+      root = Path.join(System.tmp_dir!(), "ext_import_#{System.unique_integer([:positive])}")
+      Application.put_env(:gtfs_planner, :uploads_path, root)
+
+      on_exit(fn ->
+        File.rm_rf!(root)
+
+        if is_nil(previous) do
+          Application.delete_env(:gtfs_planner, :uploads_path)
+        else
+          Application.put_env(:gtfs_planner, :uploads_path, previous)
+        end
+      end)
+
+      :ok
+    end
+
+    test "restores images directly into the versioned namespace", %{
+      org_id: org_id,
+      version_id: version_id
+    } do
       stop_fixture(org_id, version_id, stop_id: "station_main", location_type: 1)
       level_fixture(org_id, version_id, level_id: "L1")
 
@@ -343,16 +365,88 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
       assert {:ok, counts} = Import.import_extensions(org_id, version_id, json, images)
       assert counts.extensions_images == 1
 
-      # Verify file was written
+      # Verify file was written to the immutable org/version namespace (not shared path).
       uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
-      dest = Path.join([uploads_path, "diagrams", org_id, "station_main", "floor.png"])
+      dest = Path.join([uploads_path, "diagrams", org_id, version_id, "station_main", "floor.png"])
       assert File.read!(dest) == "fake png"
-    after
-      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
-      File.rm_rf(Path.join(uploads_path, "diagrams"))
     end
 
-    test "warns and continues when referenced image binary is missing", %{
+    test "writes the same station/filename into two versions as independent files", %{
+      org_id: org_id,
+      version_id: version_id
+    } do
+      other_version = gtfs_version_fixture(org_id)
+      stop_fixture(org_id, version_id, stop_id: "station_main", location_type: 1)
+      level_fixture(org_id, version_id, level_id: "L1")
+      stop_fixture(org_id, other_version.id, stop_id: "station_main", location_type: 1)
+      level_fixture(org_id, other_version.id, level_id: "L1")
+
+      build_manifest = fn v_id ->
+        Manifest.encode(
+          Manifest.build(
+            [],
+            [
+              %{
+                stop_id: "station_main",
+                level_id: "L1",
+                diagram_filename: "floor.png",
+                scale_point_a: nil,
+                scale_point_b: nil,
+                scale_distance_meters: nil,
+                scale_meters_per_unit: nil
+              }
+            ],
+            [],
+            [
+              %{
+                station_stop_id: "station_main",
+                filename: "floor.png",
+                zip_path: "_pathways_extensions/diagrams/station_main/floor.png"
+              }
+            ]
+          )
+        )
+      end
+
+      images = %{
+        "_pathways_extensions/diagrams/station_main/floor.png" => "version-one-bytes"
+      }
+
+      assert {:ok, _} = Import.import_extensions(org_id, version_id, build_manifest.(version_id), images)
+
+      images_b = %{
+        "_pathways_extensions/diagrams/station_main/floor.png" => "version-two-bytes"
+      }
+
+      assert {:ok, _} =
+               Import.import_extensions(
+                 org_id,
+                 other_version.id,
+                 build_manifest.(other_version.id),
+                 images_b
+               )
+
+      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+
+      dest_a =
+        Path.join([uploads_path, "diagrams", org_id, version_id, "station_main", "floor.png"])
+
+      dest_b =
+        Path.join([
+          uploads_path,
+          "diagrams",
+          org_id,
+          other_version.id,
+          "station_main",
+          "floor.png"
+        ])
+
+      refute dest_a == dest_b
+      assert File.read!(dest_a) == "version-one-bytes"
+      assert File.read!(dest_b) == "version-two-bytes"
+    end
+
+    test "returns an explicit error when the referenced image binary is missing", %{
       org_id: org_id,
       version_id: version_id
     } do
@@ -385,13 +479,14 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
 
       json = Manifest.encode(manifest)
 
-      # Pass empty image map - should warn but not fail
-      assert {:ok, counts} = Import.import_extensions(org_id, version_id, json, %{})
-      assert counts.extensions_images == 0
-      assert counts.extensions_stop_levels == 1
+      # Pass empty image map - the extension phase must fail now, not count down.
+      assert {:error, {:image_restore_failed, {:missing_binary, zip_path}}} =
+               Import.import_extensions(org_id, version_id, json, %{})
+
+      assert zip_path == "_pathways_extensions/diagrams/station_main/floor.png"
     end
 
-    test "rejects unsafe filename path traversal attempts", %{
+    test "returns an explicit error for an unsafe filename path traversal attempt", %{
       org_id: org_id,
       version_id: version_id
     } do
@@ -426,16 +521,11 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
         "_pathways_extensions/diagrams/station_main/../escape.png" => "fake png"
       }
 
-      assert {:ok, counts} =
+      assert {:error, {:image_restore_failed, {:write_failed, _zip_path, :unsafe_path}}} =
                Import.import_extensions(org_id, version_id, Manifest.encode(manifest), images)
-
-      assert counts.extensions_images == 0
 
       uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
       refute File.exists?(Path.join([uploads_path, "diagrams", org_id, "escape.png"]))
-    after
-      uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
-      File.rm_rf(Path.join(uploads_path, "diagrams"))
     end
   end
 end

@@ -232,6 +232,36 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     "#{endpoint_url()}/uploads/diagrams/#{organization_id}/#{encoded_station_dir(station_stop_id)}/#{URI.encode(filename, &URI.char_unreserved?/1)}"
   end
 
+  @doc """
+  Reads the bytes of a diagram image, preferring the versioned file and falling back to a
+  referenced historical legacy file only when the versioned file is absent. Returns
+  `{:ok, binary}` or `{:error, term()}`.
+  """
+  @spec read_image(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t()) ::
+          {:ok, binary()} | {:error, term()}
+  def read_image(organization_id, gtfs_version_id, station_stop_id, filename) do
+    case published_path(organization_id, gtfs_version_id, station_stop_id, filename) do
+      {:ok, path} ->
+        File.read(path)
+
+      {:error, :not_found} ->
+        case legacy_path(organization_id, station_stop_id, filename) do
+          {:ok, legacy_path} ->
+            if File.exists?(legacy_path) do
+              File.read(legacy_path)
+            else
+              {:error, :not_found}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp org_root(organization_id) do
     Path.join([uploads_root(), "diagrams", organization_id])
   end

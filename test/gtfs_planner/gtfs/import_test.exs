@@ -618,7 +618,17 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert unrecognized == []
 
       uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
-      restored = Path.join([uploads_path, "diagrams", organization.id, "32095", "lvl_busway.png"])
+
+      restored =
+        Path.join([
+          uploads_path,
+          "diagrams",
+          organization.id,
+          gtfs_version.id,
+          "32095",
+          "lvl_busway.png"
+        ])
+
       assert File.read!(restored) == "fake png"
     end
 
@@ -686,7 +696,14 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
 
       restored =
-        Path.join([uploads_path, "diagrams", organization.id, "32095", "lvl_busway_no_root.png"])
+        Path.join([
+          uploads_path,
+          "diagrams",
+          organization.id,
+          gtfs_version.id,
+          "32095",
+          "lvl_busway_no_root.png"
+        ])
 
       assert File.read!(restored) == "fake png no root"
     end
