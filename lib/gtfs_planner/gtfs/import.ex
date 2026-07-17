@@ -37,7 +37,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   """
 
   alias GtfsPlanner.{Repo, Gtfs}
-  alias GtfsPlanner.Gtfs.Import.{Result, BatchProcessor, RowParser}
+  alias GtfsPlanner.Gtfs.Import.{Result, BatchProcessor, RowParser, CsvParser, ParseError}
   alias GtfsPlanner.Gtfs.Extensions
 
   require Logger
@@ -224,24 +224,28 @@ defmodule GtfsPlanner.Gtfs.Import do
        ) do
     total_count =
       Enum.reduce_while(files, 0, fn file, acc ->
-        {rows_stream, total_rows} = parse_csv_content_with_count(file.content)
+        case CsvParser.stream(file.filename, file.content) do
+          {:ok, parsed} ->
+            case BatchProcessor.insert_batched_with_transactions(
+                   Repo,
+                   schema,
+                   parsed.events,
+                   row_to_attrs_fn,
+                   organization_id: organization_id,
+                   gtfs_version_id: gtfs_version_id,
+                   file_name: file.filename,
+                   topic: topic,
+                   batch_size: @batch_size,
+                   total_rows: parsed.source_row_count
+                 ) do
+              {:ok, count} ->
+                {:cont, acc + count}
 
-        case BatchProcessor.insert_batched_with_transactions(
-               Repo,
-               schema,
-               rows_stream,
-               row_to_attrs_fn,
-               organization_id: organization_id,
-               gtfs_version_id: gtfs_version_id,
-               file_name: file.filename,
-               topic: topic,
-               batch_size: @batch_size,
-               total_rows: total_rows
-             ) do
-          {:ok, count} ->
-            {:cont, acc + count}
+              {:error, reason} ->
+                {:halt, {:error, reason}}
+            end
 
-          {:error, reason} ->
+          {:error, %ParseError{} = reason} ->
             {:halt, {:error, reason}}
         end
       end)
@@ -264,24 +268,28 @@ defmodule GtfsPlanner.Gtfs.Import do
        ) do
     total_count =
       Enum.reduce_while(files, 0, fn file, acc ->
-        {rows_stream, total_rows} = parse_csv_content_with_count(file.content)
+        case CsvParser.stream(file.filename, file.content) do
+          {:ok, parsed} ->
+            case BatchProcessor.insert_batched(
+                   Repo,
+                   schema,
+                   parsed.events,
+                   row_to_attrs_fn,
+                   organization_id: organization_id,
+                   gtfs_version_id: gtfs_version_id,
+                   file_name: file.filename,
+                   topic: topic,
+                   batch_size: @batch_size,
+                   total_rows: parsed.source_row_count
+                 ) do
+              {:ok, count} ->
+                {:cont, acc + count}
 
-        case BatchProcessor.insert_batched(
-               Repo,
-               schema,
-               rows_stream,
-               row_to_attrs_fn,
-               organization_id: organization_id,
-               gtfs_version_id: gtfs_version_id,
-               file_name: file.filename,
-               topic: topic,
-               batch_size: @batch_size,
-               total_rows: total_rows
-             ) do
-          {:ok, count} ->
-            {:cont, acc + count}
+              {:error, reason} ->
+                {:halt, {:error, reason}}
+            end
 
-          {:error, reason} ->
+          {:error, %ParseError{} = reason} ->
             {:halt, {:error, reason}}
         end
       end)
@@ -345,78 +353,6 @@ defmodule GtfsPlanner.Gtfs.Import do
   """
   def supported_count_keys do
     @supported_count_keys
-  end
-
-  @doc """
-  Parses CSV content into a stream of row maps with total row count.
-
-  Takes binary CSV content with a header row and returns a tuple with the stream
-  and the total number of data rows (excluding header).
-
-  ## Parameters
-
-    - `content` - Binary string containing CSV data with header row
-
-  ## Returns
-
-  `{stream, total_rows}` - Tuple with stream of row maps and total count
-
-  ## Examples
-
-      iex> content = "level_id,level_name\\nL1,Ground Floor\\nL2,Platform"
-      iex> {stream, total} = parse_csv_content_with_count(content)
-      iex> {Enum.to_list(stream), total}
-      {[%{"level_id" => "L1", ...}], 2}
-  """
-  def parse_csv_content_with_count(content) when is_binary(content) do
-    lines =
-      content
-      |> String.split("\n")
-      |> Enum.map(&String.trim/1)
-      |> Enum.filter(&(&1 != ""))
-
-    # Count total data rows (subtract 1 for header)
-    total_rows = max(length(lines) - 1, 0)
-
-    # Create stream from lines
-    stream =
-      lines
-      |> Stream.transform({:no_header, nil}, fn
-        line, {:no_header, nil} ->
-          # First line is header
-          case parse_csv_line(line) do
-            {:ok, header} ->
-              {[], {:has_header, header}}
-
-            {:error, _reason} ->
-              {[], {:has_header, []}}
-          end
-
-        _line, {:has_header, header} when header == [] ->
-          # No valid header, skip all rows
-          {[], {:has_header, []}}
-
-        line, {:has_header, header} ->
-          case parse_csv_line(line) do
-            {:ok, fields} when length(fields) == length(header) ->
-              row_map = Enum.zip(header, fields) |> Map.new()
-              {[row_map], {:has_header, header}}
-
-            {:ok, _fields} ->
-              # Skip malformed lines silently
-              {[], {:has_header, header}}
-
-            {:error, _reason} ->
-              # Skip malformed lines silently
-              {[], {:has_header, header}}
-          end
-      end)
-      |> Stream.filter(fn
-        row_map when is_map(row_map) -> true
-        _ -> false
-      end)
-
-    {stream, total_rows}
   end
 
   @doc """
@@ -564,23 +500,29 @@ defmodule GtfsPlanner.Gtfs.Import do
 
                   case check_zip_entry_sizes_against_limits(entry_sizes, limits) do
                     {:ok, _entries_count, _total_bytes} ->
-                      normalized_entries =
-                        Enum.flat_map(entries, fn {name, content} ->
+                      {normalized_entries, nested_warnings} =
+                        Enum.flat_map_reduce(entries, [], fn {name, content}, acc ->
                           filename = normalize_uploaded_filename(to_string(name))
 
                           cond do
                             ignore_zip_entry?(filename) ->
-                              []
+                              {[], acc}
 
                             String.ends_with?(String.downcase(filename), ".zip") ->
                               Logger.warning(
                                 "Rejecting nested zip entry #{filename} in archive #{file.filename}"
                               )
 
-                              []
+                              warning = %{
+                                filename: file.filename,
+                                reason: :nested_archive,
+                                detail: "nested archive rejected: #{filename}"
+                              }
+
+                              {[], [warning | acc]}
 
                             true ->
-                              [%{filename: filename, content: content}]
+                              {[%{filename: filename, content: content}], acc}
                           end
                         end)
 
@@ -589,7 +531,7 @@ defmodule GtfsPlanner.Gtfs.Import do
                           [entry | acc]
                         end)
 
-                      {files_acc, warnings_acc}
+                      {files_acc, nested_warnings ++ warnings_acc}
 
                     {:error, reason, entries_count, total_bytes, entry_bytes} ->
                       Logger.warning(

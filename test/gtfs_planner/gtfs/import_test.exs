@@ -495,6 +495,99 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
     end
   end
 
+  describe "strict full-feed parsing" do
+    alias GtfsPlanner.Gtfs
+
+    setup do
+      organization = GtfsPlanner.OrganizationsFixtures.organization_fixture()
+      gtfs_version = GtfsPlanner.VersionsFixtures.gtfs_version_fixture(organization.id)
+
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "Phase 1 header failure returns structured ParseError and rolls back earlier files", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      levels_content = "level_id,level_id,level_name\nL1,0.0,Ground Floor"
+
+      stops_content = """
+      stop_id,stop_name,stop_lat,stop_lon,level_id
+      S1,Main Station,40.7128,-74.0060,L1
+      """
+
+      files = [
+        %{filename: "levels.txt", content: levels_content},
+        %{filename: "stops.txt", content: stops_content}
+      ]
+
+      assert {:error, %Import.ParseError{file: "levels.txt", reason: :duplicate_header}} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      # No levels and no stops were inserted: the Phase 1 transaction rolled back.
+      assert Gtfs.list_levels(organization.id, gtfs_version.id) == []
+      assert Gtfs.list_stops(organization.id, gtfs_version.id) == []
+    end
+
+    test "Phase 2 header failure returns structured ParseError without publishing", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      levels_content = """
+      level_id,level_index,level_name
+      L1,0.0,Ground Floor
+      """
+
+      shapes_content = "shape_id,shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence"
+
+      files = [
+        %{filename: "levels.txt", content: levels_content},
+        %{filename: "shapes.txt", content: shapes_content}
+      ]
+
+      assert {:error, %Import.ParseError{file: "shapes.txt", reason: :duplicate_header}} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      shapes =
+        GtfsPlanner.Repo.all(Gtfs.Shape)
+        |> Enum.filter(
+          &(&1.organization_id == organization.id && &1.gtfs_version_id == gtfs_version.id)
+        )
+
+      assert shapes == []
+    end
+
+    test "expand_archives emits a structured warning for a nested archive", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      outer_levels = "level_id,level_index,level_name\nL1,0.0,Ground Floor"
+
+      {:ok, {_name, nested_zip}} = :zip.create(~c"nested.zip", [{~c"x.txt", "x"}], [:memory])
+
+      {:ok, {_name, outer_zip}} =
+        :zip.create(
+          ~c"gtfs.zip",
+          [
+            {~c"levels.txt", outer_levels},
+            {~c"nested.zip", nested_zip}
+          ],
+          [:memory]
+        )
+
+      files = [%{filename: "gtfs.zip", content: outer_zip}]
+
+      {expanded, warnings} = Import.expand_archives(files)
+
+      assert [%{filename: "gtfs.zip", reason: :nested_archive}] = warnings
+
+      # The nested archive is not expanded into the file list.
+      assert Enum.all?(expanded, fn entry ->
+               not String.ends_with?(String.downcase(entry.filename), ".zip")
+             end)
+    end
+  end
+
   describe "registry coverage" do
     test "import and liveview recognized filename sets match" do
       assert MapSet.new(Import.supported_filenames()) == ImportLive.recognized_gtfs_filenames()

@@ -9,6 +9,8 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
 
   @default_batch_size 1000
 
+  alias GtfsPlanner.Gtfs.Import.ParseError
+
   @doc """
   Inserts rows in batches using `Repo.insert_all/3`.
 
@@ -215,18 +217,26 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
          organization_id,
          gtfs_version_id,
          file_name,
-         batch_start
+         _batch_start
        ) do
     rows
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {row, index}, {:ok, acc} ->
-      case row_to_attrs_fn.(row, organization_id, gtfs_version_id) do
-        {:ok, attrs} ->
-          {:cont, {:ok, [attrs | acc]}}
+    |> Enum.reduce_while({:ok, []}, fn event, {:ok, acc} ->
+      case event do
+        {:ok, row_number, row_map} ->
+          case row_to_attrs_fn.(row_map, organization_id, gtfs_version_id) do
+            {:ok, attrs} ->
+              {:cont, {:ok, [attrs | acc]}}
 
-        {:error, reason} ->
-          # Report global row index: batch_start + index_in_batch + 1 (1-indexed for users)
-          {:halt, {:error, %{file: file_name, row: batch_start + index + 1, reason: reason}}}
+            {:error, reason} ->
+              # Report the physical source row carried by the event, not the
+              # inserted-row offset.
+              {:halt, {:error, %{file: file_name, row: row_number, reason: reason}}}
+          end
+
+        {:error, %ParseError{} = parse_error} ->
+          # Structural event: halt before inserting this chunk. The ParseError
+          # already carries the physical row.
+          {:halt, {:error, parse_error}}
       end
     end)
     |> case do

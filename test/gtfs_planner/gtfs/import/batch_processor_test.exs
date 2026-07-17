@@ -21,6 +21,12 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
   end
 
   describe "insert_batched/5" do
+    defp rows_to_events(rows) do
+      rows
+      |> Enum.with_index(1)
+      |> Enum.map(fn {row, n} -> {:ok, n, row} end)
+    end
+
     test "inserts all rows with small dataset and batch size", %{
       organization_id: org_id,
       gtfs_version_id: version_id,
@@ -55,7 +61,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
           BatchProcessor.insert_batched(
             Repo,
             Level,
-            rows,
+            rows_to_events(rows),
             row_to_attrs_fn,
             organization_id: org_id,
             gtfs_version_id: version_id,
@@ -102,7 +108,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
         BatchProcessor.insert_batched(
           Repo,
           Level,
-          rows,
+          rows_to_events(rows),
           row_to_attrs_fn,
           organization_id: org_id,
           gtfs_version_id: version_id,
@@ -120,16 +126,16 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
       assert_receive {:import_progress, %{file: "levels.txt", processed: 10, total: _}}
     end
 
-    test "returns error when row conversion fails", %{
+    test "returns error with physical source row when row conversion fails", %{
       organization_id: org_id,
       gtfs_version_id: version_id,
       topic: topic
     } do
-      rows = [
-        %{"level_id" => "L1", "level_index" => "1.0"},
-        %{"level_id" => "L2", "level_index" => "2.0"},
-        %{"level_id" => "", "level_index" => "3.0"},
-        %{"level_id" => "L4", "level_index" => "4.0"}
+      events = [
+        {:ok, 1, %{"level_id" => "L1", "level_index" => "1.0"}},
+        {:ok, 2, %{"level_id" => "L2", "level_index" => "2.0"}},
+        {:ok, 3, %{"level_id" => "", "level_index" => "3.0"}},
+        {:ok, 4, %{"level_id" => "L4", "level_index" => "4.0"}}
       ]
 
       row_to_attrs_fn = fn row, org_id, version_id ->
@@ -152,7 +158,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
         BatchProcessor.insert_batched(
           Repo,
           Level,
-          rows,
+          events,
           row_to_attrs_fn,
           organization_id: org_id,
           gtfs_version_id: version_id,
@@ -180,9 +186,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
         })
 
       # Now try to insert duplicate level_id via batch processor
-      rows = [
-        %{"level_id" => "L1", "level_index" => "1.0"}
-      ]
+      events = [{:ok, 1, %{"level_id" => "L1", "level_index" => "1.0"}}]
 
       row_to_attrs_fn = fn row, org_id, version_id ->
         {level_index, _} = Float.parse(row["level_index"])
@@ -200,7 +204,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
         BatchProcessor.insert_batched(
           Repo,
           Level,
-          rows,
+          events,
           row_to_attrs_fn,
           organization_id: org_id,
           gtfs_version_id: version_id,
@@ -217,11 +221,11 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
       topic: topic
     } do
       # First batch succeeds, second batch fails
-      rows = [
-        %{"level_id" => "L1", "level_index" => "1.0"},
-        %{"level_id" => "L2", "level_index" => "2.0"},
-        %{"level_id" => "L3", "level_index" => "3.0"},
-        %{"level_id" => "", "level_index" => "4.0"}
+      events = [
+        {:ok, 1, %{"level_id" => "L1", "level_index" => "1.0"}},
+        {:ok, 2, %{"level_id" => "L2", "level_index" => "2.0"}},
+        {:ok, 3, %{"level_id" => "L3", "level_index" => "3.0"}},
+        {:ok, 4, %{"level_id" => "", "level_index" => "4.0"}}
       ]
 
       row_to_attrs_fn = fn row, org_id, version_id ->
@@ -246,7 +250,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
           case BatchProcessor.insert_batched(
                  Repo,
                  Level,
-                 rows,
+                 events,
                  row_to_attrs_fn,
                  organization_id: org_id,
                  gtfs_version_id: version_id,
@@ -264,6 +268,84 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
       # Verify no levels were inserted (transaction rolled back)
       levels = Repo.all(Level)
       assert levels == []
+    end
+
+    test "halts before inserting a structural error chunk and consumes no later events", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id,
+      topic: topic
+    } do
+      # Track which events are realized from the lazy source stream.
+      events =
+        [
+          {:ok, 1, %{"level_id" => "L1", "level_index" => "1.0"}},
+          {:ok, 2, %{"level_id" => "L2", "level_index" => "2.0"}},
+          {:error,
+           %GtfsPlanner.Gtfs.Import.ParseError{
+             file: "levels.txt",
+             row: 3,
+             reason: :wrong_field_count
+           }},
+          {:ok, 4, %{"level_id" => "L4", "level_index" => "4.0"}}
+        ]
+        |> Stream.map(fn event ->
+          Process.put(:bp_consumed, [event | Process.get(:bp_consumed, [])])
+          event
+        end)
+
+      row_to_attrs_fn = fn row, org_id, version_id ->
+        {level_index, _} = Float.parse(row["level_index"])
+
+        {:ok,
+         %{
+           level_id: row["level_id"],
+           level_index: level_index,
+           organization_id: org_id,
+           gtfs_version_id: version_id
+         }}
+      end
+
+      Process.put(:bp_consumed, [])
+
+      result =
+        BatchProcessor.insert_batched(
+          Repo,
+          Level,
+          events,
+          row_to_attrs_fn,
+          organization_id: org_id,
+          gtfs_version_id: version_id,
+          file_name: "levels.txt",
+          topic: topic,
+          batch_size: 3
+        )
+
+      # The structural event rejects the chunk; no rows are inserted.
+      assert {:error,
+              %GtfsPlanner.Gtfs.Import.ParseError{
+                file: "levels.txt",
+                row: 3,
+                reason: :wrong_field_count
+              }} = result
+
+      levels = Repo.all(Level)
+      assert levels == []
+
+      # Only the events before and including the structural error were realized;
+      # the event after it (row 4) is never consumed.
+      realized =
+        Process.get(:bp_consumed, [])
+        |> Enum.reverse()
+        |> Enum.map(fn
+          {:ok, n, _row} -> {:ok, n}
+          {:error, %GtfsPlanner.Gtfs.Import.ParseError{row: n}} -> {:error, n}
+        end)
+
+      assert realized == [
+               {:ok, 1},
+               {:ok, 2},
+               {:error, 3}
+             ]
     end
   end
 end
