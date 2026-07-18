@@ -69,20 +69,7 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
   end
 
   def handle_event("setup", %{"admin" => admin_params}, socket) do
-    user_attrs = %{
-      "email" => admin_params["email"],
-      "password" => admin_params["password"],
-      "password_confirmation" => admin_params["password_confirmation"]
-    }
-
-    org_attrs = %{
-      "name" => admin_params["organization_name"],
-      "alias" =>
-        admin_params["organization_alias"] ||
-          generate_alias(admin_params["organization_name"])
-    }
-
-    case Accounts.register_first_admin(user_attrs, org_attrs) do
+    case Accounts.register_first_admin(admin_params) do
       {:ok, _user} ->
         {:noreply,
          socket
@@ -105,16 +92,6 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
       )
       |> Map.put(:action, :validate)
 
-    # Use raw params to preserve ALL fields, pass changeset errors for validation
     {:noreply, assign(socket, form: to_form(admin_params, as: "admin", errors: changeset.errors))}
-  end
-
-  defp generate_alias(name) do
-    name
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9\s-]/, "")
-    |> String.replace(~r/\s+/, "-")
-    |> String.replace(~r/-+/, "-")
-    |> String.trim("-")
   end
 end

@@ -6,7 +6,7 @@ defmodule GtfsPlanner.Accounts do
   import Ecto.Query, warn: false
   alias GtfsPlanner.Repo
 
-  alias GtfsPlanner.Accounts.{User, UserToken, UserOrgMembership}
+  alias GtfsPlanner.Accounts.{FirstAdminForm, User, UserOrgMembership, UserToken}
   alias GtfsPlanner.Accounts.UserNotifier
   alias GtfsPlanner.Organizations.Organization
 
@@ -614,6 +614,23 @@ defmodule GtfsPlanner.Accounts do
   end
 
   @doc """
+  Returns an `%Ecto.Changeset{}` for tracking first-admin setup changes.
+
+  Builds a composite `FirstAdminForm` changeset that composes user and
+  organization validation behind the five browser-facing fields.
+
+  ## Examples
+
+      iex> change_first_admin(%{email: "admin@example.com"})
+      %Ecto.Changeset{data: %FirstAdminForm{}}
+
+  """
+  @spec change_first_admin(map()) :: Ecto.Changeset.t()
+  def change_first_admin(attrs \\ %{}) do
+    FirstAdminForm.changeset(attrs)
+  end
+
+  @doc """
   Registers the first administrator user along with their organization.
 
   Creates a user, organization, default GTFS version, user-organization membership
@@ -622,36 +639,61 @@ defmodule GtfsPlanner.Accounts do
 
   ## Examples
 
-      iex> register_first_admin(%{email: "admin@example.com", password: "password123", password_confirmation: "password123"}, %{name: "My Org", alias: "my-org"})
+      iex> register_first_admin(%{email: "admin@example.com", password: "password123", password_confirmation: "password123", organization_name: "My Org", organization_alias: "my-org"})
       {:ok, %User{}}
 
-      iex> register_first_admin(%{email: "invalid"}, %{name: "My Org"})
+      iex> register_first_admin(%{email: "invalid"})
       {:error, %Ecto.Changeset{}}
 
   """
-  def register_first_admin(user_attrs, org_attrs) do
-    Ecto.Multi.new()
-    |> Ecto.Multi.insert(:user, User.registration_changeset(%User{}, user_attrs))
-    |> Ecto.Multi.insert(:org, Organization.changeset(%Organization{}, org_attrs))
-    |> Ecto.Multi.run(:version, fn _repo, %{org: org} ->
-      GtfsPlanner.Versions.create_default_version(org.id)
-    end)
-    |> Ecto.Multi.insert(:membership, fn %{user: user, org: org} ->
-      UserOrgMembership.changeset(%UserOrgMembership{}, %{
-        user_id: user.id,
-        organization_id: org.id,
-        roles: ["administrator"]
-      })
-    end)
-    |> Ecto.Multi.update(:confirm_user, fn %{user: user} ->
-      User.confirm_changeset(user)
-    end)
-    |> Repo.transaction()
-    |> case do
-      {:ok, %{user: user}} -> {:ok, user}
-      {:error, :user, changeset, _} -> {:error, changeset}
-      {:error, :org, changeset, _} -> {:error, changeset}
-      {:error, _, _, _} -> {:error, :transaction_failed}
+  @spec register_first_admin(map()) :: {:ok, User.t()} | {:error, Ecto.Changeset.t()}
+  def register_first_admin(attrs) do
+    changeset = FirstAdminForm.changeset(attrs)
+
+    if changeset.valid? do
+      registration = FirstAdminForm.registration_attrs(changeset)
+
+      Ecto.Multi.new()
+      |> Ecto.Multi.insert(:user, User.registration_changeset(%User{}, registration.user))
+      |> Ecto.Multi.insert(
+        :org,
+        Organization.changeset(%Organization{}, registration.organization)
+      )
+      |> Ecto.Multi.run(:version, fn _repo, %{org: org} ->
+        GtfsPlanner.Versions.create_default_version(org.id)
+      end)
+      |> Ecto.Multi.insert(:membership, fn %{user: user, org: org} ->
+        UserOrgMembership.changeset(%UserOrgMembership{}, %{
+          user_id: user.id,
+          organization_id: org.id,
+          roles: ["administrator"]
+        })
+      end)
+      |> Ecto.Multi.update(:confirm_user, fn %{user: user} ->
+        User.confirm_changeset(user)
+      end)
+      |> Repo.transaction()
+      |> case do
+        {:ok, %{confirm_user: user}} ->
+          {:ok, user}
+
+        {:error, :user, reason, _} ->
+          {:error,
+           FirstAdminForm.from_transaction_error(changeset, :user, reason)
+           |> Map.put(:action, :insert)}
+
+        {:error, :org, reason, _} ->
+          {:error,
+           FirstAdminForm.from_transaction_error(changeset, :org, reason)
+           |> Map.put(:action, :insert)}
+
+        {:error, op, reason, _} ->
+          {:error,
+           FirstAdminForm.from_transaction_error(changeset, op, reason)
+           |> Map.put(:action, :insert)}
+      end
+    else
+      {:error, %{changeset | action: :insert}}
     end
   end
 
