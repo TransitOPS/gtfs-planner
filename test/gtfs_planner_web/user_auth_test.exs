@@ -2,6 +2,7 @@ defmodule GtfsPlannerWeb.UserAuthTest do
   use GtfsPlannerWeb.ConnCase
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserToken
   alias GtfsPlanner.AccountsFixtures
   alias GtfsPlannerWeb.UserAuth
 
@@ -57,6 +58,22 @@ defmodule GtfsPlannerWeb.UserAuthTest do
 
       assert conn.assigns.current_user.id == user.id
       assert get_session(conn, :user_token) != nil
+    end
+
+    test "stores the digest-derived live socket topic in that session" do
+      user = AccountsFixtures.user_fixture()
+
+      conn =
+        build_conn()
+        |> init_test_session(%{})
+        |> UserAuth.log_in_user(user)
+
+      token = get_session(conn, :user_token)
+      live_socket_id = get_session(conn, :live_socket_id)
+
+      assert {:ok, digest} = UserToken.session_token_digest(token)
+      assert live_socket_id == "users_sessions:" <> Base.url_encode64(digest, padding: false)
+      refute live_socket_id =~ token
     end
 
     test "renews that session to prevent fixation attacks" do
@@ -131,16 +148,101 @@ defmodule GtfsPlannerWeb.UserAuthTest do
       assert cookie.max_age == 0
     end
 
-    test "broadcasts disconnect to LiveView if live_socket_id is set", %{conn: conn, user: user} do
-      live_socket_id = "users_sessions-" <> Base.url_encode64(user.id)
+    test "broadcasts disconnect to the topic installed at login" do
+      user = AccountsFixtures.user_fixture()
+
+      logged_in =
+        build_conn()
+        |> init_test_session(%{})
+        |> UserAuth.log_in_user(user)
+
+      token = get_session(logged_in, :user_token)
+      live_socket_id = get_session(logged_in, :live_socket_id)
+
+      assert is_binary(live_socket_id)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, live_socket_id)
 
       conn =
-        conn
-        |> put_session(:live_socket_id, live_socket_id)
+        build_conn()
+        |> init_test_session(%{user_token: token, live_socket_id: live_socket_id})
         |> UserAuth.log_out_user()
 
-      # Session should be cleared and redirect to login
+      assert_receive %Phoenix.Socket.Broadcast{
+        topic: ^live_socket_id,
+        event: "disconnect",
+        payload: %{}
+      }
+
       assert redirected_to(conn) == ~p"/users/log_in"
+    end
+  end
+
+  describe "disconnect_sessions/1" do
+    test "broadcasts disconnect once per expired web-session token and skips other contexts" do
+      user = AccountsFixtures.user_fixture(%{password: "valid password"})
+      web_token_one = Accounts.generate_user_session_token(user)
+      web_token_two = Accounts.generate_user_session_token(user)
+      api_token = Accounts.generate_api_session_token(user)
+
+      topics =
+        for token <- [web_token_one, web_token_two, api_token] do
+          {:ok, digest} = UserToken.session_token_digest(token)
+          topic = "users_sessions:" <> Base.url_encode64(digest, padding: false)
+          :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
+          topic
+        end
+
+      [web_topic_one, web_topic_two, api_topic] = topics
+
+      {:ok, {_user, expired_tokens}} =
+        Accounts.update_user_password(user, "valid password", %{
+          password: "new valid password",
+          password_confirmation: "new valid password"
+        })
+
+      assert length(expired_tokens) == 3
+      assert Accounts.get_user_by_session_token(web_token_one) == nil
+
+      assert :ok = UserAuth.disconnect_sessions(expired_tokens)
+
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^web_topic_one, event: "disconnect"}
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^web_topic_two, event: "disconnect"}
+      refute_receive %Phoenix.Socket.Broadcast{topic: ^api_topic}
+      refute_receive %Phoenix.Socket.Broadcast{}
+    end
+
+    test "ignores non-web token contexts sharing a digest" do
+      digest = :crypto.hash(:sha256, "digest-source")
+      topic = "users_sessions:" <> Base.url_encode64(digest, padding: false)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
+
+      tokens = [
+        %UserToken{context: "api_session", token: digest},
+        %UserToken{context: "reset_password", token: digest},
+        %UserToken{context: "change:old@example.com", token: digest}
+      ]
+
+      assert UserAuth.disconnect_sessions(tokens) == :ok
+      refute_receive %Phoenix.Socket.Broadcast{}
+    end
+
+    test "returns :ok for an empty list" do
+      assert UserAuth.disconnect_sessions([]) == :ok
+    end
+  end
+
+  describe "clear_remember_me_cookie/1" do
+    test "expires the remember-me cookie without altering the session" do
+      user = AccountsFixtures.user_fixture()
+      token = Accounts.generate_user_session_token(user)
+
+      conn =
+        build_conn()
+        |> init_test_session(%{user_token: token})
+        |> UserAuth.clear_remember_me_cookie()
+
+      assert %{max_age: 0} = conn.resp_cookies["user_remember_me"]
+      assert get_session(conn, :user_token) == token
     end
   end
 
@@ -187,6 +289,22 @@ defmodule GtfsPlannerWeb.UserAuthTest do
 
       assert conn.assigns.current_user.id == user.id
       assert get_session(conn, :user_token) == token
+
+      assert {:ok, digest} = UserToken.session_token_digest(token)
+
+      assert get_session(conn, :live_socket_id) ==
+               "users_sessions:" <> Base.url_encode64(digest, padding: false)
+    end
+
+    test "does not install a live socket topic for a malformed remember_me cookie" do
+      conn =
+        build_conn()
+        |> init_test_session(%{})
+        |> put_req_cookie("user_remember_me", "###invalid###")
+        |> UserAuth.fetch_current_user([])
+
+      assert conn.assigns.current_user == nil
+      assert get_session(conn, :live_socket_id) == nil
     end
 
     test "prefers session token over remember_me cookie" do

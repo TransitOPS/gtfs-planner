@@ -14,8 +14,12 @@ defmodule GtfsPlannerWeb.UserAuth do
   import Phoenix.Controller
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserToken
 
   @max_age 60 * 60 * 24 * 60
+  @remember_me_cookie "user_remember_me"
+  @remember_me_options [max_age: @max_age, secure: true, http_only: true, same_site: "Lax"]
+  @session_topic_prefix "users_sessions:"
 
   @doc """
   Logs the user in.
@@ -50,7 +54,7 @@ defmodule GtfsPlannerWeb.UserAuth do
     conn =
       conn
       |> renew_session()
-      |> put_session(:user_token, token)
+      |> put_token_in_session(token)
       |> maybe_set_organization_in_session(user)
       |> maybe_write_remember_me_cookie(token, params)
       |> assign(:current_user, user)
@@ -153,8 +157,38 @@ defmodule GtfsPlannerWeb.UserAuth do
 
     conn
     |> renew_session()
-    |> delete_resp_cookie("user_remember_me")
+    |> clear_remember_me_cookie()
     |> Phoenix.Controller.redirect(to: "/users/log_in")
+  end
+
+  @doc """
+  Broadcasts a disconnect to the LiveView session topic of every expired
+  web-session token.
+
+  Accepts the `%UserToken{}` records returned by
+  `Accounts.update_user_password/3`. Only `"session"` tokens address a
+  LiveView topic; API-session and email tokens are ignored.
+  """
+  def disconnect_sessions(expired_tokens) when is_list(expired_tokens) do
+    Enum.each(expired_tokens, fn
+      %UserToken{context: "session", token: digest} ->
+        GtfsPlannerWeb.Endpoint.broadcast(session_topic(digest), "disconnect", %{})
+
+      %UserToken{} ->
+        :ok
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Expires the remember-me cookie.
+
+  Used on logout and after password changes so an invalidated persistent
+  token does not remain in the browser. Leaves the Plug session untouched.
+  """
+  def clear_remember_me_cookie(conn) do
+    delete_resp_cookie(conn, @remember_me_cookie)
   end
 
   @doc """
@@ -283,26 +317,30 @@ defmodule GtfsPlannerWeb.UserAuth do
       {user_token, conn}
     else
       conn = fetch_cookies(conn, [])
-      cookie = conn.cookies["user_remember_me"]
 
-      if user_token = cookie do
-        {user_token, put_session(conn, :user_token, user_token)}
+      if user_token = conn.cookies[@remember_me_cookie] do
+        {user_token, put_token_in_session(conn, user_token)}
       else
         {nil, conn}
       end
     end
   end
 
+  defp put_token_in_session(conn, encoded_token) do
+    conn = put_session(conn, :user_token, encoded_token)
+
+    case UserToken.session_token_digest(encoded_token) do
+      {:ok, digest} -> put_session(conn, :live_socket_id, session_topic(digest))
+      :error -> conn
+    end
+  end
+
+  defp session_topic(digest) when is_binary(digest) do
+    @session_topic_prefix <> Base.url_encode64(digest, padding: false)
+  end
+
   defp maybe_write_remember_me_cookie(conn, token, %{"remember_me" => "true"}) do
-    put_resp_cookie(
-      conn,
-      "user_remember_me",
-      token,
-      max_age: @max_age,
-      secure: true,
-      http_only: true,
-      same_site: "Lax"
-    )
+    put_resp_cookie(conn, @remember_me_cookie, token, @remember_me_options)
   end
 
   defp maybe_write_remember_me_cookie(conn, _token, _params) do
