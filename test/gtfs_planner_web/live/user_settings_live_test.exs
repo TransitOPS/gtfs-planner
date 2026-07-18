@@ -8,6 +8,8 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserToken
+  alias GtfsPlanner.Organizations
+  alias GtfsPlanner.OrganizationsFixtures
   alias GtfsPlanner.Repo
 
   describe "authenticated mount" do
@@ -382,5 +384,225 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
 
       refute_push_event(view, "focus_settings_error", %{form_id: "email_form"})
     end
+  end
+
+  describe "cross-session password integration" do
+    @new_password "brand new password 123456"
+    @third_password "yet another password 123456"
+
+    test "native password handoff revokes old capabilities, disconnects the other mounted browser, and issues one fresh session" do
+      %{user: user} = member_user()
+      old_email = user.email
+
+      # Two browser sessions established through the production login pipeline;
+      # browser 1 opts into persistent consent so clearing it is observable.
+      conn1 = log_in_through_pipeline(user, %{"remember_me" => "true"})
+      assert conn1.resp_cookies["user_remember_me"][:value]
+      token1 = get_session(conn1, :user_token)
+      topic1 = get_session(conn1, :live_socket_id)
+
+      conn2 = log_in_through_pipeline(user)
+      token2 = get_session(conn2, :user_token)
+      topic2 = get_session(conn2, :live_socket_id)
+
+      # Distinct digest-derived topics that never expose a bearer token.
+      assert topic1 == session_topic(token1)
+      assert topic2 == session_topic(token2)
+      assert topic1 != topic2
+
+      for topic <- [topic1, topic2], token <- [token1, token2] do
+        refute topic =~ token
+      end
+
+      # Representative stored capabilities that must not survive the change.
+      api_token = Accounts.generate_api_session_token(user)
+      reset_token = seed_email_token(user, "reset_password")
+      confirm_token = seed_email_token(user, "confirm")
+      _invite_token = seed_email_token(user, "invite")
+      change_token = seed_email_token(user, "change:#{old_email}")
+
+      seeded =
+        Repo.all(from t in UserToken, where: t.user_id == ^user.id, select: {t.id, t.context})
+
+      assert Enum.sort(Enum.map(seeded, &elem(&1, 1))) ==
+               Enum.sort([
+                 "session",
+                 "session",
+                 "api_session",
+                 "reset_password",
+                 "confirm",
+                 "invite",
+                 "change:#{old_email}"
+               ])
+
+      seeded_ids = Enum.map(seeded, &elem(&1, 0))
+
+      # Mount the second browser's LiveView, monitor it, and attach a transport
+      # stand-in at the exact production subscription point before mutating.
+      {:ok, lv2, _html} = live(conn2, ~p"/users/settings")
+      lv2_pid = lv2.pid
+      ref2 = Process.monitor(lv2_pid)
+      start_transport_stand_in(topic2, lv2_pid)
+
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic1)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic2)
+
+      # Browser 1 submits the exact password payload; LiveView preflight only.
+      {:ok, lv1, _html} = live(conn1, ~p"/users/settings")
+
+      form =
+        form(lv1, "#password_form", %{
+          "current_password" => valid_user_password(),
+          "user" => %{
+            "password" => @new_password,
+            "password_confirmation" => @new_password
+          }
+        })
+
+      assert render_submit(form) =~ "phx-trigger-action"
+
+      # Nothing mutates until the native authenticated POST runs.
+      assert Accounts.get_user_by_session_token(token1)
+      assert Accounts.get_user_by_api_session_token(api_token)
+      assert Accounts.get_user_by_email_and_password(user.email, valid_user_password())
+      refute_receive %Phoenix.Socket.Broadcast{}
+
+      result_conn = follow_trigger_action(form, conn1)
+
+      assert redirected_to(result_conn) == ~p"/users/settings"
+
+      assert Phoenix.Flash.get(result_conn.assigns.flash, :info) ==
+               "Password updated successfully."
+
+      # Exactly one disconnect broadcast per expired web-session topic...
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic1, event: "disconnect"}, 1000
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic2, event: "disconnect"}, 1000
+      refute_receive %Phoenix.Socket.Broadcast{}
+
+      # ...and the broadcast terminates the still-mounted second-browser
+      # LiveView through the transport reaction, without sleeps.
+      assert_receive {:DOWN, ^ref2, :process, ^lv2_pid, _reason}, 1000
+
+      # Every pre-update capability is revoked, in storage and in behavior.
+      for id <- seeded_ids do
+        refute Repo.get(UserToken, id)
+      end
+
+      assert Accounts.get_user_by_session_token(token1) == nil
+      assert Accounts.get_user_by_session_token(token2) == nil
+      assert Accounts.get_user_by_api_session_token(api_token) == nil
+      assert Accounts.get_user_by_reset_password_token(reset_token) == nil
+      assert Accounts.confirm_user(confirm_token) == :error
+      assert Accounts.update_user_email(Accounts.get_user!(user.id), change_token) == :error
+      assert Accounts.get_user!(user.id).email == old_email
+
+      # Only the new password authenticates.
+      assert Accounts.get_user_by_email_and_password(user.email, valid_user_password()) == nil
+      assert Accounts.get_user_by_email_and_password(user.email, @new_password).id == user.id
+
+      # One fresh, topic-installed current-browser session and nothing else.
+      new_token = get_session(result_conn, :user_token)
+      assert is_binary(new_token)
+      refute new_token in [token1, token2]
+      assert Accounts.get_user_by_session_token(new_token).id == user.id
+
+      new_topic = get_session(result_conn, :live_socket_id)
+      assert new_topic == session_topic(new_token)
+      refute new_topic in [topic1, topic2]
+
+      assert [%UserToken{context: "session"} = fresh_row] =
+               Repo.all(UserToken.user_and_contexts_query(user, :all))
+
+      assert {:ok, fresh_digest} = UserToken.session_token_digest(new_token)
+      assert fresh_row.token == fresh_digest
+
+      # Persistent consent is cleared and no replacement cookie is issued.
+      remember_cookie = result_conn.resp_cookies["user_remember_me"]
+      assert remember_cookie.max_age == 0
+      refute Map.has_key?(remember_cookie, :value)
+
+      # The fresh session authenticates the redirect target.
+      assert result_conn |> get(~p"/users/settings") |> html_response(200)
+
+      # A sequential request carrying the invalidated old browser session
+      # regains nothing and cannot repeat the mutation. No exactly-once claim
+      # is made for concurrent transport replay.
+      stale_get = get(conn1, ~p"/users/settings")
+      assert redirected_to(stale_get) == ~p"/users/log_in"
+
+      stale_post =
+        post(conn1, ~p"/users/update_password", %{
+          "current_password" => @new_password,
+          "user" => %{
+            "password" => @third_password,
+            "password_confirmation" => @third_password
+          }
+        })
+
+      assert redirected_to(stale_post) == ~p"/users/log_in"
+      assert Accounts.get_user_by_email_and_password(user.email, @third_password) == nil
+      assert Accounts.get_user_by_email_and_password(user.email, @new_password)
+    end
+  end
+
+  defp member_user do
+    user = user_fixture()
+    organization = OrganizationsFixtures.organization_fixture()
+
+    {:ok, _} =
+      Organizations.add_user_to_organization(user.id, organization.id, [
+        "pathways_studio_editor"
+      ])
+
+    %{user: user, organization: organization}
+  end
+
+  defp log_in_through_pipeline(user, extra_params \\ %{}) do
+    params =
+      Map.merge(
+        %{"email" => user.email, "password" => valid_user_password()},
+        extra_params
+      )
+
+    post(build_conn(), ~p"/users/log_in", %{"user" => params})
+  end
+
+  defp session_topic(encoded_token) do
+    assert {:ok, digest} = UserToken.session_token_digest(encoded_token)
+    "users_sessions:" <> Base.url_encode64(digest, padding: false)
+  end
+
+  defp seed_email_token(user, context) do
+    {encoded, token_struct} = UserToken.build_email_token(user, context)
+    Repo.insert!(token_struct)
+    encoded
+  end
+
+  # Phoenix.LiveViewTest runs no websocket transport process. In production,
+  # `Phoenix.LiveView.Socket.id/1` returns the session's `:live_socket_id`,
+  # `Phoenix.Socket` subscribes to that topic, and its "disconnect" handler
+  # terminates the socket together with every LiveView mounted on it. This
+  # stand-in reproduces exactly that transport reaction at the faked
+  # browser/transport boundary so the repository-owned broadcast observably
+  # terminates the mounted LiveView.
+  defp start_transport_stand_in(topic, lv_pid) do
+    test_pid = self()
+
+    task =
+      start_supervised!(
+        {Task,
+         fn ->
+           :ok = GtfsPlannerWeb.Endpoint.subscribe(topic)
+           send(test_pid, {:transport_stand_in_ready, self()})
+
+           receive do
+             %Phoenix.Socket.Broadcast{event: "disconnect", topic: ^topic} ->
+               GenServer.stop(lv_pid, :normal)
+           end
+         end}
+      )
+
+    assert_receive {:transport_stand_in_ready, ^task}
+    :ok
   end
 end
