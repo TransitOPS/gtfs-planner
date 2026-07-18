@@ -26,10 +26,18 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
   # Fake import worker: waits for a control message from the test, then either
   # completes (`:complete`) or dies abnormally (`:die`). It never touches the DB.
   defmodule FakeImportWorker do
-    def run(_run, _token, _files, _topic) do
+    def run(_run, _token, _files, topic) do
       receive do
-        :complete -> {:ok, nil, :ok}
-        :die -> Process.exit(self(), :kill)
+        :complete ->
+          {:ok, nil, :ok}
+
+        :die ->
+          Process.exit(self(), :kill)
+
+        {:phase, phase, caller} ->
+          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, topic, {:import_phase, phase})
+          send(caller, {:phase_reported, phase})
+          run(nil, nil, nil, topic)
       after
         10_000 -> {:ok, nil, :ok}
       end
@@ -180,6 +188,10 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
 
     runner_ref = Process.monitor(runner_pid)
 
+    send(worker_pid, {:phase, :extensions, self()})
+    assert_receive {:phase_reported, :extensions}
+    assert :sys.get_state(runner_pid).active_phase == :extensions
+
     # Trigger an abnormal (killed) worker exit.
     send(worker_pid, :die)
 
@@ -190,6 +202,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     assert run_after.state == "interrupted"
     assert run_after.counts_complete == false
     assert run_after.reason_code == "executor_lost"
+    assert run_after.phase == "extensions"
 
     # The child is temporary: it is gone and not respawned.
     assert DynamicSupervisor.count_children(RunnerSupervisor).active == 0

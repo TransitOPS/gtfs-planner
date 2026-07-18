@@ -139,14 +139,16 @@ defmodule GtfsPlanner.Gtfs.Import do
       {:ok, %Import.Result{counts: %{routes: 1, stops: 0, ...}, unrecognized_files: [], topic: "import:123456", archive_warnings: [], extensions: :not_present}}
   """
   def import_files(organization_id, gtfs_version_id, files, topic \\ nil) do
+    # Generate a stable progress topic before work begins so the supervised
+    # runner can durably attribute an unexpected worker exit to the active phase.
+    topic = topic || "import:#{:erlang.unique_integer()}"
+    broadcast_phase(topic, :phase_1)
+
     # Expand any uploaded .zip archives into individual file entries
     {files, archive_warnings} = expand_archives(files)
 
     # Categorize files by filename (case-insensitive)
     {categorized, unrecognized_files, extensions} = categorize_files(files)
-
-    # Generate unique progress topic for PubSub if not provided
-    topic = topic || "import:#{:erlang.unique_integer()}"
 
     # Phase 1: Import core files in a single transaction for atomicity.
     result =
@@ -173,6 +175,8 @@ defmodule GtfsPlanner.Gtfs.Import do
     # failure means every standard count is zero.
     case result do
       {:ok, counts} ->
+        broadcast_phase(topic, :phase_2)
+
         phase_2_result =
           Enum.reduce_while(@phase_2_specs, {:ok, counts}, fn
             {key, _filename, schema, parser_fun, _phase}, {:ok, acc_counts} ->
@@ -197,6 +201,7 @@ defmodule GtfsPlanner.Gtfs.Import do
         case phase_2_result do
           {:ok, counts} ->
             counts = fill_standard_counts(counts)
+            broadcast_phase(topic, :extensions)
 
             case import_extensions_phase(organization_id, gtfs_version_id, extensions, counts) do
               {:ok, extensions_status, counts} ->
@@ -235,6 +240,10 @@ defmodule GtfsPlanner.Gtfs.Import do
       committed_counts: committed_counts,
       counts_complete: true
     )
+  end
+
+  defp broadcast_phase(topic, phase) do
+    Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, topic, {:import_phase, phase})
   end
 
   defp fill_standard_counts(counts) do

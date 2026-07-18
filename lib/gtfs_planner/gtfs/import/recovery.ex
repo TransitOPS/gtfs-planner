@@ -68,17 +68,19 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
 
   defp cleanup_claimed(organization_id, run_id, lease_token) do
     try do
+      version_id = version_id_for(organization_id, run_id, lease_token)
+
       # 1. Remove the diagram namespace first (idempotent on absence).
       maybe_inject_failure(:filesystem, :before_namespace)
-      :ok = delete_namespace(organization_id, run_id, lease_token)
+      :ok = delete_namespace(organization_id, version_id)
 
       # 2. Delete every manifest schema in bounded batches.
       for schema <- Import.cleanup_schemas() do
-        delete_schema_batched(organization_id, run_id, lease_token, schema)
+        delete_schema_batched(organization_id, schema, version_id)
       end
 
       # 3. Verify every owned resource is absent.
-      verify_empty(organization_id, run_id, lease_token)
+      verify_empty(organization_id, version_id)
 
       # 4. Atomically delete the failed version row and mark the run cleaned.
       #    The run retains its target/actor snapshots (set at claim time).
@@ -93,8 +95,8 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
     end
   end
 
-  defp delete_namespace(organization_id, run_id, lease_token) do
-    case version_id_for(organization_id, run_id, lease_token) do
+  defp delete_namespace(organization_id, version_id) do
+    case version_id do
       nil ->
         :ok
 
@@ -106,16 +108,14 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
     end
   end
 
-  defp delete_schema_batched(organization_id, run_id, lease_token, schema) do
-    case version_id_for(organization_id, run_id, lease_token) do
+  defp delete_schema_batched(organization_id, schema, version_id) do
+    case version_id do
       nil ->
         :ok
 
       version_id ->
         delete_schema_batched_for_version(
           organization_id,
-          run_id,
-          lease_token,
           schema,
           version_id
         )
@@ -124,8 +124,6 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
 
   defp delete_schema_batched_for_version(
          organization_id,
-         run_id,
-         lease_token,
          schema,
          version_id
        ) do
@@ -148,7 +146,7 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
 
       {:ok, _count} ->
         # Commit this batch separately, then continue with the next slice.
-        delete_schema_batched(organization_id, run_id, lease_token, schema)
+        delete_schema_batched(organization_id, schema, version_id)
 
       {:error, _reason} ->
         raise RuntimeError, "database_error"
@@ -171,9 +169,7 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
     end)
   end
 
-  defp verify_empty(organization_id, run_id, lease_token) do
-    version_id = version_id_for(organization_id, run_id, lease_token)
-
+  defp verify_empty(organization_id, version_id) do
     namespace_absent? =
       case version_id do
         nil ->

@@ -10,12 +10,24 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.Import.Run
+  alias GtfsPlanner.Gtfs.Import.{Recovery, Run}
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
   @levels_content "level_id,level_index,level_name\nL1,0.0,Ground"
   @stops_content "stop_id,stop_name,stop_lat,stop_lon,level_id\nS1,Stop 1,1.0,1.0,L1"
+
+  defmodule BlockingCleanupWorker do
+    def run(organization_id, run_id, lease_token) do
+      owner = Application.fetch_env!(:gtfs_planner, :blocking_cleanup_worker_owner)
+      send(owner, {:blocking_cleanup_worker_started, self()})
+
+      receive do
+        :continue ->
+          Recovery.run(organization_id, run_id, lease_token)
+      end
+    end
+  end
 
   defp editor_context(_context) do
     organization = organization_fixture()
@@ -56,6 +68,32 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       await_import_settled(view, tries - 1)
     else
       html
+    end
+  end
+
+  defp await_cleanup_task(view) do
+    runner_pids =
+      GtfsPlanner.Gtfs.Import.RunnerSupervisor
+      |> DynamicSupervisor.which_children()
+      |> Enum.map(fn {_, pid, _, _} -> pid end)
+
+    for pid <- runner_pids do
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 15_000
+    end
+
+    await_cleanup_settled(view, 100)
+  end
+
+  defp await_cleanup_settled(view, 0), do: render(view)
+
+  defp await_cleanup_settled(view, tries) do
+    state = :sys.get_state(view.pid)
+
+    if state.socket.assigns.processing_discard do
+      await_cleanup_settled(view, tries - 1)
+    else
+      render(view)
     end
   end
 
@@ -804,6 +842,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       |> element("#delete-version-#{run.id}")
       |> render_click()
 
+      await_cleanup_task(view)
+
       assert render(view) =~ "No recoverable imports for this organization."
 
       # The removed version name is prefilled into the new-upload name field.
@@ -814,6 +854,66 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       # The failed version row is gone after cleanup.
       refute Versions.get_gtfs_version_for_lifecycle(organization.id, failed_v.id)
+    end
+
+    test "supervised discard completes after the initiating LiveView disconnects", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      previous_worker = Application.get_env(:gtfs_planner, :import_cleanup_worker_module)
+      previous_owner = Application.get_env(:gtfs_planner, :blocking_cleanup_worker_owner)
+
+      Application.put_env(:gtfs_planner, :import_cleanup_worker_module, BlockingCleanupWorker)
+      Application.put_env(:gtfs_planner, :blocking_cleanup_worker_owner, self())
+
+      on_exit(fn ->
+        restore_application_env(:import_cleanup_worker_module, previous_worker)
+        restore_application_env(:blocking_cleanup_worker_owner, previous_owner)
+      end)
+
+      {:ok, failed_version} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Detached cleanup"})
+
+      {:ok, failed_version} =
+        Versions.fail_unpublished_gtfs_version(organization.id, failed_version.id)
+
+      run = insert_run(organization.id, failed_version, "failed")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+      view |> element("#discard-#{run.id}") |> render_click()
+      view |> element("#delete-version-#{run.id}") |> render_click()
+
+      assert_receive {:blocking_cleanup_worker_started, worker_pid}
+
+      runner_pid =
+        Enum.find_value(
+          DynamicSupervisor.which_children(GtfsPlanner.Gtfs.Import.RunnerSupervisor),
+          fn {_, pid, _, _} ->
+            if :sys.get_state(pid).task_pid == worker_pid, do: pid
+          end
+        )
+
+      refute is_nil(runner_pid)
+
+      view_pid = view.pid
+      view_ref = Process.monitor(view_pid)
+      GenServer.stop(view_pid)
+      assert_receive {:DOWN, ^view_ref, :process, ^view_pid, _reason}
+
+      assert :sys.get_state(runner_pid).task_pid == worker_pid
+
+      worker_ref = Process.monitor(worker_pid)
+      runner_ref = Process.monitor(runner_pid)
+      send(worker_pid, :continue)
+
+      assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, :normal}, 15_000
+      assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, :normal}, 15_000
+
+      assert Repo.get!(Run, run.id).state == "cleaned"
+      refute Versions.get_gtfs_version_for_lifecycle(organization.id, failed_version.id)
     end
 
     test "opening a second discard confirmation closes the first", %{
@@ -969,6 +1069,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       view |> element("#discard-#{run.id}") |> render_click()
       view |> element("#delete-version-#{run.id}") |> render_click()
+
+      await_cleanup_task(view)
 
       assert has_element?(view, "#import-run-#{run.id}")
       assert render(view) =~ "Cleanup failed — can be retried by discarding."
@@ -1153,6 +1255,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # Discard through the two-step UI confirmation.
       view |> element("#discard-#{run.id}") |> render_click()
       view |> element("#delete-version-#{run.id}") |> render_click()
+
+      await_cleanup_task(view)
 
       assert render(view) =~ "No recoverable imports for this organization."
       refute Versions.get_gtfs_version_for_lifecycle(organization.id, failed_v.id)

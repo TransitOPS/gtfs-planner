@@ -47,6 +47,8 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
     # 1. Import only into the claimed version id. Never a fallback id.
     case Import.import_files(organization_id, version_id, files, topic) do
       {:ok, %Result{} = result} ->
+        Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, topic, {:import_phase, :publication})
+
         if Result.publishable?(result) do
           publish_or_fail(run, organization_id, run_id, version_id, lease_token, result)
         else

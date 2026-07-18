@@ -102,6 +102,7 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
         heartbeat_ms = heartbeat_ms(opts)
 
         topic = ImportRuns.topic(run_id)
+        Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
 
         task = start_linked_work(kind, worker, organization_id, run, claimed_token, files, topic)
 
@@ -115,6 +116,7 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
           worker: worker,
           task_pid: task.pid,
           topic: topic,
+          active_phase: initial_phase(kind),
           heartbeat_ms: heartbeat_ms,
           timer: timer
         }
@@ -155,6 +157,11 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
 
   def handle_info({:EXIT, pid, reason}, %{task_pid: pid} = state) do
     handle_worker_exit(reason, state)
+  end
+
+  def handle_info({:import_phase, phase}, %{kind: :import} = state)
+      when phase in [:phase_1, :phase_2, :extensions, :publication] do
+    {:noreply, %{state | active_phase: phase}}
   end
 
   # `Task.Supervisor.async` delivers the task's return value as `{ref, result}`
@@ -240,7 +247,7 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
   defp persist_unexpected_exit(%{kind: :import} = state, _reason) do
     failure =
       Failure.from_error(:executor_lost,
-        phase: :phase_2,
+        phase: state.active_phase,
         outcome: :interrupted,
         counts_complete: false
       )
@@ -307,6 +314,9 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
   defp schedule_lease_renew(ms) do
     Process.send_after(self(), :renew_lease, ms)
   end
+
+  defp initial_phase(:import), do: :phase_1
+  defp initial_phase(:cleanup), do: :cleanup
 
   defp runner_supervisor, do: GtfsPlanner.Gtfs.Import.RunnerSupervisor
   defp task_supervisor, do: GtfsPlanner.TaskSupervisor

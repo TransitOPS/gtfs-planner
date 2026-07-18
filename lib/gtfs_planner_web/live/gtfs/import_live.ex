@@ -23,7 +23,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   alias GtfsPlanner.Gtfs.Import.Run
   alias GtfsPlanner.Gtfs.Import.Runner
   alias GtfsPlanner.Gtfs.ImportRuns
-  alias GtfsPlanner.Gtfs.Import.Recovery
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -310,9 +309,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     end
   end
 
-  # Execute the discard after confirmation. Claims cleanup, runs the convergent
-  # cleanup flow, then resets uploads, prefills the removed version name, and
-  # focuses the upload control on success (AC-17).
+  # Execute the discard after confirmation through the supervised cleanup
+  # runner. Completion is applied from the runner's durable-state broadcast so
+  # cleanup survives this LiveView disconnecting.
   @impl true
   def handle_event("delete_version", %{"run_id" => run_id}, socket) do
     organization_id = socket.assigns.current_organization.id
@@ -328,40 +327,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
          |> assign(:recovery_announce, "Could not claim the failed version for cleanup")}
 
       binary_id ->
-        case ImportRuns.claim_cleanup(organization_id, binary_id, actor) do
-          {:ok, %Run{} = run, version, token} ->
-            case Recovery.discard_claimed(run, version, token) do
-              {:ok, nil} ->
-                removed_name = run.version_name
-                recoverable_runs = ImportRuns.list_recoverable(organization_id)
-                new_count = length(recoverable_runs)
+        Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ImportRuns.topic(binary_id))
 
-                socket =
-                  socket
-                  |> stream_delete(:import_recovery_runs, run)
-                  |> assign(:recovery_count, new_count)
-                  |> assign(:recovery_empty, new_count == 0)
-                  |> assign(:pending_discard_run_id, nil)
-                  |> assign(:processing_discard, false)
-                  |> assign(:recovery_announce, "Discarded #{removed_name}")
-                  |> assign(
-                    :form,
-                    to_form(%{"version_name" => removed_name}, as: :gtfs_import_form)
-                  )
-
-                # Reset consumed uploads and return focus to the file picker so the
-                # user can immediately re-upload the same feed.
-                socket = reset_uploads(socket)
-                {:noreply, push_event(socket, "focus_gtfs_import_files", %{})}
-
-              {:error, _reason} ->
-                {:noreply,
-                 socket
-                 |> restream_recovery_run(organization_id, binary_id)
-                 |> assign(:processing_discard, false)
-                 |> assign(:pending_discard_run_id, nil)
-                 |> assign(:recovery_announce, "Could not discard the failed version")}
-            end
+        case Runner.start_cleanup(organization_id, binary_id, actor) do
+          {:ok, _runner_pid} ->
+            {:noreply,
+             socket
+             |> restream_recovery_run(organization_id, binary_id)
+             |> assign(:processing_discard, binary_id)
+             |> assign(:pending_discard_run_id, nil)
+             |> assign(:recovery_announce, "Cleanup in progress")}
 
           {:error, _reason} ->
             {:noreply,
@@ -498,6 +473,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     {:noreply, assign(socket, :import_progress, progress)}
   end
 
+  def handle_info({:import_phase, _phase}, socket) do
+    {:noreply, socket}
+  end
+
   @impl true
   def handle_info({:import_run_changed, run_id}, socket) do
     # A terminal or progress transition was broadcast by the supervised Runner
@@ -529,8 +508,48 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         socket
       end
 
+    socket = settle_discard(socket, organization_id, run_id, run)
+
     {:noreply, socket}
   end
+
+  defp settle_discard(
+         %{assigns: %{processing_discard: run_id}} = socket,
+         organization_id,
+         run_id,
+         run
+       ) do
+    changed_run =
+      run ||
+        from(r in Run,
+          where: r.id == ^run_id and r.organization_id == ^organization_id
+        )
+        |> GtfsPlanner.Repo.one()
+
+    case changed_run do
+      %Run{state: "cleaned", version_name: removed_name} ->
+        socket
+        |> assign(:pending_discard_run_id, nil)
+        |> assign(:processing_discard, false)
+        |> assign(:recovery_announce, "Discarded #{removed_name}")
+        |> assign(
+          :form,
+          to_form(%{"version_name" => removed_name}, as: :gtfs_import_form)
+        )
+        |> reset_uploads()
+        |> push_event("focus_gtfs_import_files", %{})
+
+      %Run{state: "cleanup_failed"} ->
+        socket
+        |> assign(:pending_discard_run_id, nil)
+        |> assign(:processing_discard, false)
+
+      _ ->
+        socket
+    end
+  end
+
+  defp settle_discard(socket, _organization_id, _run_id, _run), do: socket
 
   # When the run we started reaches `published`, the route-version we bound as
   # `:import_target` is now published. Render the success result with the
