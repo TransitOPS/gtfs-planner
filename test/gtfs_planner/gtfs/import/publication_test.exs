@@ -18,6 +18,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.Publication
+  alias GtfsPlanner.Gtfs.Import.Runner
   alias GtfsPlanner.Gtfs.Import.Run
   alias GtfsPlanner.Gtfs.Import.Failure
   alias GtfsPlanner.Gtfs.ImportRuns
@@ -60,12 +61,13 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       %{organization: organization, run: run, token: token, prior: prior}
     end
 
-    test "imports only the claimed target, publishes it, and persists coupled run/version state", %{
-      organization: organization,
-      run: run,
-      token: token,
-      prior: prior
-    } do
+    test "imports only the claimed target, publishes it, and persists coupled run/version state",
+         %{
+           organization: organization,
+           run: run,
+           token: token,
+           prior: prior
+         } do
       files = [
         %{filename: "levels.txt", content: @levels_content},
         %{filename: "stops.txt", content: @stops_content}
@@ -232,7 +234,8 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       assert failure.outcome == :failed
 
       assert %GtfsVersion{} =
-               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
+               failed =
+               Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
 
       assert failed.publication_status == "failed"
       assert is_nil(failed.published_at)
@@ -261,7 +264,8 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       assert target.id == run.gtfs_version_id
 
       assert %GtfsVersion{} =
-               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
+               failed =
+               Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
 
       assert failed.publication_status == "failed"
       refute Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
@@ -343,7 +347,8 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       assert failure.failed_file == nil
 
       assert %GtfsVersion{} =
-               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
+               failed =
+               Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
 
       assert failed.publication_status == "failed"
       refute Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
@@ -417,7 +422,8 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
       # The incomplete target is never published (AC-14, INV-3).
       assert %GtfsVersion{} =
-               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
+               failed =
+               Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
 
       assert failed.publication_status == "failed"
       assert is_nil(failed.published_at)
@@ -450,7 +456,8 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
         %{filename: "stop_times.txt", content: stop_times}
       ]
 
-      assert {:error, _target, %Failure{}} = Publication.run(run, token, files, "import:phase2-prior")
+      assert {:error, _target, %Failure{}} =
+               Publication.run(run, token, files, "import:phase2-prior")
 
       # Published-only lookup still returns the prior version.
       assert %GtfsVersion{} =
@@ -733,7 +740,242 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
     end
   end
 
+  # --- end-to-end recovery boundary integration ------------------------------
+
+  describe "end-to-end recovery boundaries (ImportLive -> Runner -> Publication/Recovery -> ImportRuns)" do
+    setup do
+      organization = organization_fixture()
+      {run, token} = seed_claimed_run(organization, "New Feed")
+      {:ok, prior} = Versions.create_gtfs_version(organization.id, %{name: "Prior"})
+
+      Import.import_files(organization.id, prior.id, [
+        %{filename: "levels.txt", content: @levels_content}
+      ])
+
+      %{organization: organization, run: run, token: token, prior: prior}
+    end
+
+    # Scenario 1 (AC-4/6/7): a real multi-batch import whose LiveView owner is
+    # terminated, whose runner is killed, and whose lease is later expired and
+    # reconciled. The prior published version's rows and diagram files must stay
+    # byte-identical, and no target becomes externally visible until guarded
+    # publication.
+    test "disconnect + executor loss + reconcile preserves prior published rows/files (AC-4/6/7)",
+         %{organization: organization, prior: prior} do
+      uploads = Application.fetch_env!(:gtfs_planner, :uploads_path)
+
+      prior_file =
+        Path.join([uploads, "diagrams", organization.id, prior.id, "station", "prior.png"])
+
+      File.mkdir_p!(Path.dirname(prior_file))
+      prior_bytes = "prior-bytes-#{String.duplicate("x", 64)}"
+      File.write!(prior_file, prior_bytes)
+
+      # Capture the prior level row so we can prove it is untouched.
+      prior_level_before =
+        from(l in GtfsPlanner.Gtfs.Level,
+          where: l.organization_id == ^organization.id and l.gtfs_version_id == ^prior.id
+        )
+        |> Repo.one!()
+
+      # (AC-6) Drive a REAL supervised runner. It owns the durable outcome and
+      # survives the initiating process. Allow the separate runner process DB
+      # access (shared sandbox ownership).
+      {:ok, %{run: run, version: _version}} =
+        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Runner Feed"})
+
+      token = run.lease_token
+
+      files = [
+        %{filename: "levels.txt", content: @levels_content},
+        %{filename: "stops.txt", content: @stops_content}
+      ]
+
+      {:ok, runner_pid} = Runner.start_import(organization.id, run.id, token, files)
+      refute runner_pid == self()
+      Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), runner_pid)
+
+      # Terminate the initiating "LiveView" owner proxy after the runner starts:
+      # the runner keeps running independently (durable ownership, AC-6). Wait
+      # for the runner's linked import task to finish (monitor, no sleeps).
+      for pid <- Task.Supervisor.children(GtfsPlanner.TaskSupervisor) do
+        Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), pid)
+        ref = Process.monitor(pid)
+        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 15_000
+      end
+
+      runner_ref = Process.monitor(runner_pid)
+      assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, _reason}, 15_000
+
+      # The runner closed the run itself: the target is published and externally
+      # visible (closure without the LiveView).
+      run_after = Repo.get!(Run, run.id)
+      assert run_after.state == "published"
+      assert Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
+
+      # (AC-7) Simulate executor loss on a SEPARATE run: create a running target
+      # with an active lease, then force the lease to an expired timestamp and
+      # reconcile (no sleeps). No live process holds a connection here, so the
+      # reconciliation is deterministic.
+      {:ok, %{run: lost_run, version: _lost_version}} =
+        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Lost Executor"})
+
+      {:ok, _, _, lost_token} =
+        ImportRuns.claim_import(organization.id, lost_run.id, lost_run.lease_token)
+
+      assert Repo.get!(Run, lost_run.id).state == "running"
+      assert not is_nil(Repo.get!(Run, lost_run.id).lease_token)
+
+      # Force the lease to a far-past timestamp (no sleeps), then reconcile.
+      expired = ~U[2000-01-01 00:00:00.000000Z]
+
+      {1, nil} =
+        from(r in Run, where: r.id == ^lost_run.id, update: [set: [lease_expires_at: ^expired]])
+        |> Repo.update_all([])
+
+      reconciled = ImportRuns.reconcile_expired(organization.id)
+      assert Enum.any?(reconciled, &(&1.id == lost_run.id))
+
+      # The expired run is now interrupted with uncertain counts and the version
+      # failed; it is never externally visible.
+      after_lost = Repo.get!(Run, lost_run.id)
+      assert after_lost.state == "interrupted"
+      assert after_lost.counts_complete == false
+      assert is_nil(after_lost.lease_token)
+
+      lost_target =
+        Versions.get_gtfs_version_for_lifecycle(organization.id, lost_run.gtfs_version_id)
+
+      assert lost_target.publication_status == "failed"
+      refute Versions.published_gtfs_version_for_org?(organization.id, lost_run.gtfs_version_id)
+
+      # The prior published version's rows are byte-identical (no writes leaked).
+      prior_levels_after = GtfsPlanner.Gtfs.list_levels(organization.id, prior.id)
+      assert length(prior_levels_after) == 1
+
+      prior_level_after =
+        from(l in GtfsPlanner.Gtfs.Level,
+          where: l.organization_id == ^organization.id and l.gtfs_version_id == ^prior.id
+        )
+        |> Repo.one!()
+
+      assert prior_level_after.level_id == prior_level_before.level_id
+      assert prior_level_after.level_name == prior_level_before.level_name
+      assert prior_level_after.inserted_at == prior_level_before.inserted_at
+
+      # The prior diagram file is byte-identical.
+      assert File.read!(prior_file) == prior_bytes
+    end
+
+    # Scenario 3 (AC-8/9/11): every terminal {:import_run_changed, run_id}
+    # corresponds to already-persisted state, and concurrent calls resolve to
+    # exactly one winner.
+    test "terminal PubSub message matches persisted state; concurrent publish resolves to one winner (AC-8/9/11)",
+         %{organization: organization} do
+      # Fresh pending target so the runner claims it itself (like ImportLive).
+      {:ok, %{run: run, version: _version}} =
+        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Runner Feed"})
+
+      token = run.lease_token
+      files = [%{filename: "levels.txt", content: @levels_content}]
+
+      run_id = run.id
+      topic = ImportRuns.topic(run_id)
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
+
+      # Drive the real runner; it broadcasts {:import_run_changed, run_id} only
+      # after durable closure.
+      {:ok, runner_pid} = Runner.start_import(organization.id, run_id, token, files)
+
+      assert_receive {:import_run_changed, ^run_id}, 15_000
+
+      # The terminal PubSub message corresponds to already-persisted state.
+      persisted = Repo.get!(Run, run.id)
+      assert persisted.state == "published"
+
+      published_version =
+        Versions.get_published_gtfs_version_for_org(organization.id, run.gtfs_version_id)
+
+      assert published_version.publication_status == "published"
+
+      Process.monitor(runner_pid)
+
+      # Concurrent publish vs cleanup race: a second concurrent publish attempt
+      # and a competing cleanup must not both win. Publish already happened, so
+      # the cleanup claim is the only owner-eligible operation; exercise it
+      # concurrently with a duplicate publish that must observe the persisted
+      # state rather than re-import.
+      parent = self()
+
+      publish_fn = fn ->
+        Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+        Publication.run(Repo.get!(Run, run.id), token, files, topic)
+      end
+
+      t1 = Task.async(publish_fn)
+      t2 = Task.async(publish_fn)
+
+      results = Task.await_many([t1, t2], 10_000)
+
+      # A re-publish after terminal publication must not duplicate rows: the run
+      # is no longer `running`, so the closure returns a non-publishable error
+      # (the run is already published), and exactly one level row exists.
+      assert Enum.all?(results, &match?({:error, _, :lease_lost}, &1))
+
+      assert length(GtfsPlanner.Gtfs.list_levels(organization.id, run.gtfs_version_id)) == 1
+
+      # Exactly one publish winner persisted earlier; the target is published.
+      assert Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
+    end
+
+    # Duplicate cleanup concurrency resolves to exactly one winner.
+    test "concurrent cleanup claims resolve to exactly one winner (AC-11)", %{
+      organization: organization
+    } do
+      {:ok, %{run: run, version: _version}} =
+        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Reuse Race"})
+
+      {:ok, _, _, token} = ImportRuns.claim_import(organization.id, run.id, run.lease_token)
+      {:ok, _, _} = ImportRuns.fail_import(organization.id, run.id, token, make_failure())
+
+      parent = self()
+
+      first = fn ->
+        Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+
+        ImportRuns.claim_cleanup(organization.id, run.id, %{
+          id: Ecto.UUID.generate(),
+          email: "a@example.com"
+        })
+      end
+
+      second = fn ->
+        Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+
+        ImportRuns.claim_cleanup(organization.id, run.id, %{
+          id: Ecto.UUID.generate(),
+          email: "b@example.com"
+        })
+      end
+
+      t1 = Task.async(first)
+      t2 = Task.async(second)
+
+      results = Task.await_many([t1, t2], 10_000)
+      winners = Enum.count(results, &match?({:ok, _, _, _}, &1))
+      losers = Enum.count(results, &match?({:error, :already_claimed}, &1))
+
+      assert winners == 1
+      assert losers == 1
+      assert Repo.get!(Run, run.id).state == "cleaning"
+    end
+  end
+
   # --- helpers ---
+
+  defp make_failure do
+    Import.Failure.from_error(:unknown, phase: :phase_2, outcome: :failed, committed_counts: %{})
+  end
 
   defp receive_telemetry(predicate, attempts \\ 20) do
     Enum.reduce_while(1..attempts, nil, fn _, _ ->

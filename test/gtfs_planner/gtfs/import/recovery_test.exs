@@ -10,6 +10,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
   use GtfsPlanner.DataCase, async: false
 
   alias GtfsPlanner.Gtfs.Import
+  alias GtfsPlanner.Gtfs.Import.Runner
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.Import.Recovery
   alias GtfsPlanner.Gtfs.Import.Run
@@ -344,6 +345,102 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
     end
   end
 
+  # --- end-to-end discard then re-upload convergence (AC-13/AC-14) ----------
+
+  describe "discard then re-upload under the same name (AC-13/AC-14)" do
+    test "discarding a failed target then re-uploading the same name yields one fresh target with no duplicate rows",
+         %{org: org} do
+      {run, version} = fail_run(org, "Reupload Me")
+      seed_level_rows(org, version, 8)
+
+      # Discard the failed target through Recovery.discard_claimed (the same
+      # contract the LiveView UI uses after claiming cleanup).
+      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+      assert {:ok, nil} = Recovery.discard_claimed(run, claimed_version, token)
+
+      refute version_exists?(version.id)
+      assert count_rows(Level, org, version) == 0
+      assert Repo.get!(Run, run.id).state == "cleaned"
+
+      # The old gtfs_version_id identity is gone: zero rows remain and the version
+      # row is absent.
+      assert count_rows(Level, org, version) == 0
+
+      # Re-upload the same feed under the SAME version name. The name is
+      # creatable only after cleanup reached `cleaned`.
+      {:ok, %{run: new_run, version: new_version}} =
+        ImportRuns.create_pending_target(org.id, @actor, %{name: "Reupload Me"})
+
+      refute new_version.id == version.id
+
+      {:ok, _, _, new_token} = ImportRuns.claim_import(org.id, new_run.id, new_run.lease_token)
+      {:ok, _, _} = ImportRuns.fail_import(org.id, new_run.id, new_token, make_failure())
+      seed_level_rows(org, new_version, 3)
+
+      # Exactly ONE fresh target exists for that name; the deleted identity has
+      # no rows and no version row.
+      versions_for_name =
+        from(v in GtfsVersion, where: v.organization_id == ^org.id and v.name == "Reupload Me")
+        |> Repo.all()
+
+      assert length(versions_for_name) == 1
+      assert Enum.at(versions_for_name, 0).id == new_version.id
+
+      assert count_rows(Level, org, version) == 0
+      refute version_exists?(version.id)
+
+      # The fresh target carries only its own three rows.
+      assert count_rows(Level, org, new_version) == 3
+    end
+
+    test "a re-uploaded feed published through the runner leaves no duplicate target rows (AC-14)",
+         %{org: org, root: root} do
+      {run, version} = fail_run(org, "Publish After Discard")
+      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+      assert {:ok, nil} = Recovery.discard_claimed(run, claimed_version, token)
+      refute version_exists?(version.id)
+
+      # Fresh target, same name, real publication through the runner. The runner
+      # claims the pending run itself (pending lease token), exactly like
+      # ImportLive.
+      {:ok, %{run: new_run, version: new_version}} =
+        ImportRuns.create_pending_target(org.id, @actor, %{name: "Publish After Discard"})
+
+      files = [
+        %{filename: "levels.txt", content: "level_id,level_index,level_name\nL1,0.0,Ground"}
+      ]
+
+      {:ok, runner_pid} = Runner.start_import(org.id, new_run.id, new_run.lease_token, files)
+      Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), runner_pid)
+
+      # Wait for the runner task to finish (monitor it; no sleeps).
+      for pid <- Task.Supervisor.children(GtfsPlanner.TaskSupervisor) do
+        Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), pid)
+        ref = Process.monitor(pid)
+        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 15_000
+      end
+
+      new_version = Repo.get!(GtfsVersion, new_version.id)
+      assert new_version.publication_status == "published"
+
+      # Exactly one version with that name, exactly one level row under it.
+      versions_for_name =
+        from(v in GtfsVersion,
+          where: v.organization_id == ^org.id and v.name == "Publish After Discard"
+        )
+        |> Repo.all()
+
+      assert length(versions_for_name) == 1
+      assert count_rows(Level, org, new_version) == 1
+
+      # The deleted identity is entirely gone.
+      refute version_exists?(version.id)
+      assert count_rows(Level, org, version) == 0
+
+      _ = root
+    end
+  end
+
   # --- runner entry point ---------------------------------------------------
 
   describe "run/3 (Runner entry)" do
@@ -360,6 +457,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
 
     test "a wrong token cannot complete cleanup", %{org: org} do
       {run, version} = fail_run(org)
+
       {:ok, _, _claimed_version, _token} =
         ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
 
