@@ -1202,6 +1202,24 @@ const DiagramCanvasHook = {
       marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
     });
 
+    // Journal markers (pin markers + node/pathway "has an open entry" indicators)
+    // are drawn at full size in diagram space; counter-scale each about its center
+    // so it stays a fixed on-screen size as the diagram zooms, like node markers.
+    overlay.querySelectorAll("[data-journal-scale]").forEach((group) => {
+      const cx = parseFloat(group.getAttribute("data-center-x"));
+      const cy = parseFloat(group.getAttribute("data-center-y"));
+
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+        return;
+      }
+
+      const k = 1 / iconScale;
+      group.setAttribute(
+        "transform",
+        `translate(${cx} ${cy}) scale(${k}) translate(${-cx} ${-cy})`,
+      );
+    });
+
     overlay.querySelectorAll("[data-stop-label]").forEach((label) => {
       const cx = parseFloat(label.getAttribute("data-center-x"));
       const cy = parseFloat(label.getAttribute("data-center-y"));

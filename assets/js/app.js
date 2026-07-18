@@ -49,6 +49,14 @@ window.addEventListener("phx:scroll_to_error", (e) => {
   })
 })
 
+// Scroll the focused journal entry into view within the rail (map → journal).
+window.addEventListener("phx:journal_focus", (e) => {
+  requestAnimationFrame(() => {
+    const el = document.getElementById(`journal-entry-${e.detail.id}`)
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" })
+  })
+})
+
 // connect if there are any LiveViews on the page
 liveSocket.connect()
 

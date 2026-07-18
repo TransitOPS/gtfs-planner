@@ -181,6 +181,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :active_level, :any, default: nil
   attr :other_levels, :list, default: []
   attr :enabled_count, :integer, default: 0
+  attr :journal_open_count, :integer, default: 0
 
   def diagram_action_strip(assigns) do
     ~H"""
@@ -236,6 +237,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <% end %>
           </div>
           <div class="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
+              phx-click="open_journal_panel"
+            >
+              <.icon name="hero-clipboard-document-list" class="w-4 h-4" /> Journal
+              <span :if={@journal_open_count > 0} class="badge badge-sm badge-warning ml-1">
+                {@journal_open_count}
+              </span>
+            </button>
             <%= if @mode == :view and @has_diagram do %>
               <form id="stop-search-form" phx-submit="search_stop" class="flex items-center">
                 <input
@@ -708,6 +719,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_point_a, :any, default: nil
   attr :scale_point_b, :any, default: nil
   attr :measurement_enabled, :boolean, default: false
+  attr :journal_pins, :list, default: []
+  attr :journal_indicators, :list, default: []
+  attr :journal_focus_id, :string, default: nil
 
   def diagram_canvas(assigns) do
     canvas_key = diagram_canvas_key(assigns.active_level, assigns.active_stop_level)
@@ -761,6 +775,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             scale_point_a={@scale_point_a}
             scale_point_b={@scale_point_b}
             measurement_enabled={@measurement_enabled}
+            journal_pins={@journal_pins}
+            journal_indicators={@journal_indicators}
+            journal_focus_id={@journal_focus_id}
           />
           <div
             id="diagram-edit-tooltip"
@@ -825,6 +842,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_point_a, :any, default: nil
   attr :scale_point_b, :any, default: nil
   attr :measurement_enabled, :boolean, default: false
+  attr :journal_pins, :list, default: []
+  attr :journal_indicators, :list, default: []
+  attr :journal_focus_id, :string, default: nil
 
   defp diagram_overlay(assigns) do
     ~H"""
@@ -881,7 +901,74 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         :if={@pending_xy && @mode == :add && @selected_stop_id == nil}
         pending_xy={@pending_xy}
       />
+      <.journal_pins_layer pins={@journal_pins} focus_id={@journal_focus_id} />
+      <.journal_indicators_layer indicators={@journal_indicators} />
     </svg>
+    """
+  end
+
+  attr :indicators, :list, default: []
+
+  # Non-stream layer of "has an open entry" indicators for node/pathway targets on
+  # the active level (positions resolved server-side). Separate from the streamed
+  # stops/pathways so it reacts to journal open/close + entry changes.
+  defp journal_indicators_layer(assigns) do
+    ~H"""
+    <g id="journal-indicators-svg">
+      <.journal_target_indicator
+        :for={ind <- @indicators}
+        cx={ind.cx}
+        cy={ind.cy}
+        entry_id={ind.entry_id}
+      />
+    </g>
+    """
+  end
+
+  attr :pins, :list, default: []
+  attr :focus_id, :string, default: nil
+
+  # Journal pin markers, drawn in the same 0–100 diagram space as node markers
+  # (from each pin entry's diagram_x/diagram_y). Distinct shape/color from nodes;
+  # clicking one opens the journal drawer focused on that entry. Closed pins are
+  # muted. The caller filters to the active level and to pins with coordinates.
+  defp journal_pins_layer(assigns) do
+    ~H"""
+    <g id="journal-pins-svg">
+      <g
+        :for={pin <- @pins}
+        data-journal-pin-id={pin.id}
+        data-journal-scale="true"
+        data-center-x={pin.diagram_x}
+        data-center-y={pin.diagram_y}
+        class="cursor-pointer"
+        style="pointer-events: auto;"
+        phx-click="focus_journal_pin"
+        phx-value-id={pin.id}
+      >
+        <circle
+          :if={@focus_id == pin.id}
+          cx={pin.diagram_x}
+          cy={pin.diagram_y}
+          r="2.0"
+          fill="none"
+          stroke="#DB2777"
+          stroke-width="0.3"
+          stroke-opacity="0.8"
+          class="animate-pulse"
+        />
+        <circle
+          cx={pin.diagram_x}
+          cy={pin.diagram_y}
+          r="1.1"
+          fill={if pin.closed_at, do: "#9CA3AF", else: "#DB2777"}
+          fill-opacity="0.85"
+          stroke="#FFFFFF"
+          stroke-width="0.2"
+        />
+        <circle cx={pin.diagram_x} cy={pin.diagram_y} r="0.35" fill="#FFFFFF" />
+      </g>
+    </g>
     """
   end
 
@@ -1084,6 +1171,46 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         text={@reverse_label_text}
         side={:reverse}
       />
+    </g>
+    """
+  end
+
+  attr :cx, :float, required: true
+  attr :cy, :float, required: true
+  attr :entry_id, :string, required: true
+
+  # Subtle "has an open journal entry" indicator drawn on a node/pathway while the
+  # journal is open. Clicking it focuses that entry in the rail (map → journal).
+  defp journal_target_indicator(assigns) do
+    ~H"""
+    <g
+      class="cursor-pointer"
+      style="pointer-events: auto;"
+      data-journal-scale="true"
+      data-center-x={@cx}
+      data-center-y={@cy}
+      phx-click="focus_journal_entry"
+      phx-value-id={@entry_id}
+    >
+      <circle
+        cx={@cx}
+        cy={@cy}
+        r="1.25"
+        fill="#F59E0B"
+        fill-opacity="0.95"
+        stroke="#FFFFFF"
+        stroke-width="0.25"
+      />
+      <text
+        x={@cx}
+        y={@cy + 0.62}
+        text-anchor="middle"
+        font-size="1.5"
+        font-weight="bold"
+        fill="#FFFFFF"
+      >
+        !
+      </text>
     </g>
     """
   end
@@ -4346,6 +4473,260 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # ============================================================================
   # Naming Drawer
   # ============================================================================
+
+  @doc """
+  Station journal review panel — a docked side rail (not an overlay), so the desk
+  reviewer keeps the captured entries visible while they edit the diagram the
+  entries describe. Lists companion-captured entries newest-first with their
+  target, author, time, note, and photos. Closing is a desk action: closed
+  entries are de-emphasized and badged with who/when but never hidden or filtered
+  out (per the journal's open/closed treatment). Open entries show Close; closed
+  ones show Reopen.
+  """
+  attr :entries, :list, default: []
+  attr :photos_by_entry, :map, default: %{}
+  attr :user_names, :map, default: %{}
+  attr :target_labels, :map, default: %{}
+  attr :entry_levels, :map, default: %{}
+  attr :focus_entry_id, :string, default: nil
+  attr :filter, :atom, default: :all
+
+  def station_journal_panel(assigns) do
+    assigns =
+      assign(assigns, :visible_entries, filter_journal_entries(assigns.entries, assigns.filter))
+
+    ~H"""
+    <%!-- Reference rail, deliberately styled UNLIKE the edit drawers: a muted,
+    recessed surface (no shadow) with an amber identity (header + left accent),
+    so an editor that opens beside it reads as a separate floating panel. --%>
+    <aside
+      id="station-journal-panel"
+      class="fixed top-0 right-0 z-[55] flex h-screen w-96 flex-col border-l-4 border-amber-400 bg-base-200"
+    >
+      <div class="flex items-center justify-between border-b border-amber-200 bg-amber-50 px-3 py-2">
+        <h2 class="flex items-center gap-1.5 text-sm font-semibold text-amber-900">
+          <.icon name="hero-clipboard-document-list" class="h-4 w-4" /> Station journal
+        </h2>
+        <button
+          type="button"
+          class="btn btn-ghost btn-xs btn-circle text-amber-900/70 hover:bg-amber-200/50"
+          phx-click="close_journal_panel"
+          aria-label="Close journal panel"
+        >
+          <.icon name="hero-x-mark" class="h-4 w-4" />
+        </button>
+      </div>
+
+      <div class="border-b border-base-300 px-3 py-2">
+        <div class="join w-full" role="group" aria-label="Filter journal entries">
+          <button
+            :for={{value, label} <- [{:all, "All"}, {:open, "Open"}, {:closed, "Closed"}]}
+            type="button"
+            class={[
+              "btn btn-xs join-item flex-1",
+              @filter == value && "border-amber-500 bg-amber-500 text-white hover:bg-amber-600",
+              @filter != value && "btn-ghost"
+            ]}
+            aria-pressed={@filter == value}
+            phx-click="set_journal_filter"
+            phx-value-filter={value}
+          >
+            {label}
+          </button>
+        </div>
+      </div>
+
+      <div class="flex-1 overflow-y-auto p-3">
+        <div :if={@visible_entries == []} class="text-sm text-base-content/60 py-8 text-center">
+          {journal_empty_message(@filter)}
+        </div>
+
+        <ul class="space-y-3">
+          <li
+            :for={entry <- @visible_entries}
+            id={"journal-entry-#{entry.id}"}
+            class={
+              [
+                "rounded-lg border p-3",
+                # Open cards are white + lifted so they read as live items floating
+                # on the muted rail; closed cards blend back into it.
+                entry.closed_at && "border-base-300 bg-base-200/40 opacity-70",
+                !entry.closed_at && "border-base-300 bg-base-100 shadow-sm",
+                @focus_entry_id == entry.id && "ring-2 ring-amber-400"
+              ]
+            }
+          >
+            <div class="flex items-start justify-between gap-2">
+              <.journal_target_chip
+                entry={entry}
+                label={journal_target_label(entry, @target_labels)}
+              />
+              <div class="flex shrink-0 flex-col items-end gap-1">
+                <span class="text-xs whitespace-nowrap text-base-content/50">
+                  {journal_format_time(entry.captured_at)}
+                </span>
+                <div class="flex items-center gap-1">
+                  <span
+                    :if={Map.get(@entry_levels, entry.id)}
+                    class="badge badge-xs badge-ghost whitespace-nowrap"
+                    title="On level"
+                  >
+                    {Map.get(@entry_levels, entry.id)}
+                  </span>
+                  <span :if={entry.closed_at} class="badge badge-xs badge-ghost">Closed</span>
+                </div>
+              </div>
+            </div>
+
+            <%!-- phx-no-format keeps {entry.body} flush to the tags: with
+            whitespace-pre-wrap, any markup indentation the formatter would add
+            renders as a leading indent in the note. --%>
+            <p
+              :if={entry.body && entry.body != ""}
+              class="mt-2 text-sm whitespace-pre-wrap"
+              phx-no-format
+            >{entry.body}</p>
+
+            <div :if={Map.get(@photos_by_entry, entry.id, []) != []} class="mt-2 flex flex-wrap gap-2">
+              <a
+                :for={photo <- Map.get(@photos_by_entry, entry.id, [])}
+                href={photo.url}
+                target="_blank"
+                rel="noopener"
+                class="block"
+              >
+                <img
+                  src={photo.url}
+                  alt="Journal photo"
+                  loading="lazy"
+                  class="h-20 w-20 rounded object-cover border border-base-300 hover:opacity-90"
+                />
+              </a>
+            </div>
+
+            <div class="mt-2 flex items-center justify-between gap-2">
+              <span class="text-xs text-base-content/50">
+                by {journal_user_name(entry.author_id, @user_names)}
+              </span>
+              <div class="flex items-center gap-2">
+                <span :if={entry.closed_at} class="text-xs text-base-content/50">
+                  Closed by {journal_user_name(entry.closed_by, @user_names)} · {journal_format_time(
+                    entry.closed_at
+                  )}
+                </span>
+                <button
+                  :if={entry.closed_at}
+                  type="button"
+                  class="btn btn-xs btn-ghost"
+                  phx-click="reopen_journal_entry"
+                  phx-value-id={entry.id}
+                >
+                  Reopen
+                </button>
+                <button
+                  :if={!entry.closed_at}
+                  type="button"
+                  class="btn btn-xs btn-outline"
+                  phx-click="close_journal_entry"
+                  phx-value-id={entry.id}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </aside>
+    """
+  end
+
+  defp journal_target_label(%{target_type: "station"}, _labels), do: "Station"
+  defp journal_target_label(%{target_type: "pin"}, _labels), do: "Pin"
+
+  defp journal_target_label(%{target_type: type, target_id: id}, labels)
+       when type in ["node", "pathway"] do
+    Map.get(labels, id) || String.capitalize(type)
+  end
+
+  defp journal_target_label(_entry, _labels), do: "Entry"
+
+  # The target chip. A pill that truncates long names (full name in the title),
+  # and — for node/pathway/pin — a clickable button that locates the target on the
+  # diagram: node/pathway open their editor beside the journal; a pin highlights
+  # its marker. Station entries aren't clickable (no map target).
+  attr :entry, :any, required: true
+  attr :label, :string, required: true
+
+  defp journal_target_chip(assigns) do
+    assigns = assign(assigns, :action, journal_target_action(assigns.entry))
+
+    ~H"""
+    <button
+      :if={@action}
+      type="button"
+      class={[
+        "block min-w-0 max-w-full truncate rounded px-1.5 py-0.5 text-left text-xs font-medium hover:brightness-95",
+        journal_target_class(@entry.target_type)
+      ]}
+      title={"#{@label} — click to locate on the diagram"}
+      phx-click={elem(@action, 0)}
+      phx-value-id={elem(@action, 1)}
+    >
+      {@label}
+    </button>
+    <span
+      :if={!@action}
+      class={[
+        "block min-w-0 max-w-full truncate rounded px-1.5 py-0.5 text-xs font-medium",
+        journal_target_class(@entry.target_type)
+      ]}
+      title={@label}
+    >
+      {@label}
+    </span>
+    """
+  end
+
+  # All clickable chips route through journal_locate (keyed by the ENTRY id): it
+  # resolves the target's level, switches the diagram there if needed, then opens
+  # the node/pathway editor or focuses the pin — so a target on another level is
+  # navigated to rather than acted on off-screen.
+  defp journal_target_action(%{target_type: "node", target_id: id, id: eid}) when is_binary(id),
+    do: {"journal_locate", eid}
+
+  defp journal_target_action(%{target_type: "pathway", target_id: id, id: eid})
+       when is_binary(id),
+       do: {"journal_locate", eid}
+
+  defp journal_target_action(%{target_type: "pin", id: eid}), do: {"journal_locate", eid}
+  defp journal_target_action(_), do: nil
+
+  defp journal_target_class("station"), do: "bg-gray-100 text-gray-700"
+  defp journal_target_class("node"), do: "bg-blue-100 text-blue-800"
+  defp journal_target_class("pathway"), do: "bg-purple-100 text-purple-800"
+  defp journal_target_class("pin"), do: "bg-pink-100 text-pink-800"
+  defp journal_target_class(_), do: "bg-gray-100 text-gray-600"
+
+  defp journal_user_name(nil, _names), do: "—"
+  defp journal_user_name(id, names), do: Map.get(names, id) || "unknown"
+
+  defp journal_format_time(nil), do: ""
+
+  defp journal_format_time(%DateTime{} = dt),
+    do: Calendar.strftime(dt, "%b %-d, %Y %-I:%M %p")
+
+  defp filter_journal_entries(entries, :open),
+    do: Enum.filter(entries, &is_nil(&1.closed_at))
+
+  defp filter_journal_entries(entries, :closed),
+    do: Enum.reject(entries, &is_nil(&1.closed_at))
+
+  defp filter_journal_entries(entries, _all), do: entries
+
+  defp journal_empty_message(:open), do: "No open entries."
+  defp journal_empty_message(:closed), do: "No closed entries."
+  defp journal_empty_message(_all), do: "No journal entries captured for this station yet."
 
   attr :open, :boolean, default: false
   attr :style, :atom, default: :kebab

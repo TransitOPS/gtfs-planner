@@ -14,6 +14,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.StationJournal.PhotoStorage
+  alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Otp.Lifecycle
@@ -105,6 +107,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:floorplan_image_w, nil)
      |> assign(:floorplan_image_h, nil)
      |> assign(:station_stop_levels_cache, empty_station_stop_levels_cache())
+     |> assign(:journal_panel_open, false)
+     |> assign(:journal_entries, [])
+     |> assign(:journal_photos_by_entry, %{})
+     |> assign(:journal_user_names, %{})
+     |> assign(:journal_target_labels, %{})
+     |> assign(:journal_entry_levels, %{})
+     |> assign(:journal_open_count, 0)
+     |> assign(:journal_focus_entry_id, nil)
+     |> assign(:journal_filter, :all)
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg .svg),
        max_file_size: 10_000_000,
@@ -184,10 +195,276 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         socket =
           socket
           |> load_level_data(active_level)
+          |> load_journal()
           |> maybe_open_child_stop_from_params(params)
 
         {:noreply, socket}
     end
+  end
+
+  # Load the station journal (entries newest-first, photos grouped by entry with
+  # resolved static URLs, author/closer display names, node target labels, and the
+  # open-entry count) into assigns for the review drawer + pin markers.
+  defp load_journal(socket) do
+    %{
+      current_organization: %{id: org_id},
+      current_gtfs_version: %{id: version_id},
+      station: station
+    } = socket.assigns
+
+    # The journal domain (`StationJournal`) takes a trusted scope struct. The
+    # LiveView has already authorized the org/version and loaded the station,
+    # so the scope is built directly rather than re-resolved from the DB.
+    scope = %Scope{
+      organization_id: org_id,
+      gtfs_version_id: version_id,
+      station_id: station.id,
+      station_stop_id: station.stop_id,
+      actor_id: socket.assigns.current_user.id
+    }
+
+    entries =
+      scope
+      |> Gtfs.list_station_journal()
+      |> Enum.reverse()
+
+    photos_by_entry =
+      entries
+      |> Enum.reject(&(&1.photos == []))
+      |> Map.new(fn entry ->
+        {entry.id,
+         Enum.map(entry.photos, fn p ->
+           %{
+             id: p.id,
+             filename: p.filename,
+             content_type: p.content_type,
+             width: p.width,
+             height: p.height,
+             url: PhotoStorage.public_path(scope, p)
+           }
+         end)}
+      end)
+
+    user_names =
+      entries
+      |> Enum.flat_map(&[&1.author_id, &1.closed_by])
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> resolve_journal_user_names()
+
+    entry_levels = Map.new(entries, &{&1.id, entry_level_name(socket, &1)})
+
+    socket
+    |> assign(:journal_entries, entries)
+    |> assign(:journal_photos_by_entry, photos_by_entry)
+    |> assign(:journal_user_names, user_names)
+    |> assign(:journal_target_labels, build_journal_target_labels(entries))
+    |> assign(:journal_entry_levels, entry_levels)
+    |> assign(:journal_open_count, Enum.count(entries, &is_nil(&1.closed_at)))
+  end
+
+  defp set_journal_entry_closed(socket, id, closed?) do
+    %{current_organization: %{id: org_id}, current_gtfs_version: %{id: version_id}} =
+      socket.assigns
+
+    case Gtfs.get_journal_entry(org_id, version_id, id) do
+      nil ->
+        put_flash(socket, :error, "Journal entry not found.")
+
+      entry ->
+        result =
+          if closed? do
+            Gtfs.close_journal_entry(entry, socket.assigns.current_user.id)
+          else
+            Gtfs.reopen_journal_entry(entry)
+          end
+
+        case result do
+          {:ok, _} -> load_journal(socket)
+          {:error, _} -> put_flash(socket, :error, "Couldn't update the journal entry.")
+        end
+    end
+  end
+
+  defp resolve_journal_user_names(ids) do
+    Map.new(ids, fn id -> {id, journal_user_email(id)} end)
+  end
+
+  defp journal_user_email(id) do
+    GtfsPlanner.Accounts.get_user!(id).email
+  rescue
+    _ -> "unknown"
+  end
+
+  # Display labels for node-targeted entries (stop name). Pathway/pin/station chips
+  # use generic labels in the component, so only node ids need resolving.
+  defp build_journal_target_labels(entries) do
+    entries
+    |> Enum.filter(&(&1.target_type == "node" and not is_nil(&1.target_id)))
+    |> Enum.map(& &1.target_id)
+    |> Enum.uniq()
+    |> Enum.reduce(%{}, fn id, acc ->
+      case safe_stop_label(id) do
+        nil -> acc
+        label -> Map.put(acc, id, label)
+      end
+    end)
+  end
+
+  defp safe_stop_label(id) do
+    stop = Gtfs.get_stop!(id)
+    stop.stop_name || stop.stop_id
+  rescue
+    _ -> nil
+  end
+
+  # Indicator markers for node/pathway entries on the active level, but only while
+  # the journal panel is open: a list of %{cx, cy, entry_id} resolved from each
+  # open node/pathway entry's target coordinate (node = its diagram point;
+  # pathway = the midpoint of its from/to). Rendered in a non-stream overlay layer
+  # so it reacts to journal toggles; clicking one focuses that entry in the rail.
+  defp journal_indicators(assigns) do
+    if assigns.journal_panel_open do
+      stops_by_id = Map.new(assigns.child_stops_list || [], &{&1.id, &1})
+      pathways_by_id = Map.new(assigns.pathways_list || [], &{&1.id, &1})
+
+      assigns.journal_entries
+      |> Enum.filter(
+        &(&1.target_type in ["node", "pathway"] and is_nil(&1.closed_at) and
+            not is_nil(&1.target_id))
+      )
+      |> Enum.uniq_by(& &1.target_id)
+      |> Enum.flat_map(fn e ->
+        case journal_indicator_xy(e, stops_by_id, pathways_by_id) do
+          {cx, cy} -> [%{cx: cx, cy: cy, entry_id: e.id}]
+          nil -> []
+        end
+      end)
+    else
+      []
+    end
+  end
+
+  defp journal_indicator_xy(%{target_type: "node", target_id: id}, stops, _pathways) do
+    case stops[id] do
+      %{diagram_coordinate: %{"x" => x, "y" => y}} -> {x + 1.6, y - 1.6}
+      _ -> nil
+    end
+  end
+
+  defp journal_indicator_xy(%{target_type: "pathway", target_id: id}, _stops, pathways) do
+    case pathways[id] do
+      %{
+        from_stop: %{diagram_coordinate: %{"x" => x1, "y" => y1}},
+        to_stop: %{diagram_coordinate: %{"x" => x2, "y" => y2}}
+      } ->
+        {(x1 + x2) / 2, (y1 + y2) / 2}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp journal_indicator_xy(_entry, _stops, _pathways), do: nil
+
+  # Pin entries anchored to the active level (by stop_level_id) with coordinates,
+  # for the diagram overlay's pin markers.
+  defp journal_pins_for_active_level(assigns) do
+    case assigns[:active_stop_level] do
+      %{id: stop_level_id} ->
+        for e <- assigns.journal_entries,
+            e.target_type == "pin",
+            e.stop_level_id == stop_level_id,
+            not is_nil(e.diagram_x),
+            not is_nil(e.diagram_y),
+            do: e
+
+      _ ->
+        []
+    end
+  end
+
+  # Switch the diagram to the level a journal entry's target lives on, if it isn't
+  # already active. Resolves the level from the target (pin → its stop_level;
+  # node/pathway → the stop's GTFS level_id matched to a station level).
+  defp maybe_switch_to_entry_level(socket, entry) do
+    with %{} = level <- entry_level(socket, entry),
+         true <- level.id != socket.assigns.active_level.id do
+      switch_to_level(socket, level)
+    else
+      _ -> socket
+    end
+  end
+
+  defp entry_level(socket, %{target_type: "pin", stop_level_id: slid}) when is_binary(slid) do
+    case socket.assigns.station_stop_levels_cache.by_stop_level_id[slid] do
+      %{level: %{} = level} -> level
+      _ -> nil
+    end
+  end
+
+  defp entry_level(socket, %{target_type: "node", target_id: id}) when is_binary(id) do
+    case safe_get_stop(id) do
+      %{level_id: gtfs_level_id} when is_binary(gtfs_level_id) ->
+        Enum.find(socket.assigns.levels, &(&1.level_id == gtfs_level_id))
+
+      _ ->
+        nil
+    end
+  end
+
+  defp entry_level(socket, %{target_type: "pathway", target_id: id}) when is_binary(id) do
+    case safe_get_pathway(id) do
+      %{from_stop: %{level_id: gtfs_level_id}} when is_binary(gtfs_level_id) ->
+        Enum.find(socket.assigns.levels, &(&1.level_id == gtfs_level_id))
+
+      _ ->
+        nil
+    end
+  end
+
+  defp entry_level(_socket, _entry), do: nil
+
+  # Display name of an entry's level (for the rail's level tag), or nil for
+  # station entries / unresolved targets.
+  defp entry_level_name(socket, entry) do
+    case entry_level(socket, entry) do
+      %{level_name: name} when is_binary(name) and name != "" -> name
+      %{level_id: level_id} when is_binary(level_id) -> level_id
+      _ -> nil
+    end
+  end
+
+  defp safe_get_stop(id) do
+    Gtfs.get_stop!(id)
+  rescue
+    _ -> nil
+  end
+
+  defp safe_get_pathway(id) do
+    Gtfs.get_pathway_with_stops!(id)
+  rescue
+    _ -> nil
+  end
+
+  # The active-level switch pipeline (extracted from search_stop) — reused when a
+  # journal target lives on another level.
+  defp switch_to_level(socket, level) do
+    socket
+    |> disable_measurement()
+    |> assign(:active_level, level)
+    |> assign(:pending_xy, nil)
+    |> assign(:diagram_error, nil)
+    |> assign(:show_walkability_drawer, false)
+    |> assign(:walkability_stop, nil)
+    |> assign(:walkability_form, to_form(default_walkability_form_params(), as: :walkability))
+    |> clear_walkability_selection()
+    |> assign(:walkability_last_results, [])
+    |> assign(:walkability_mode, :create)
+    |> assign(:editing_walkability_test, nil)
+    |> reset_reposition_state()
+    |> load_station_stop_levels_cache()
+    |> load_level_data(level)
   end
 
   defp load_station_stop_levels_cache(socket) do
@@ -829,7 +1106,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div id="diagram-page" data-immersive={if @mode in [:add, :connect, :map], do: "true"}>
+    <div
+      id="diagram-page"
+      data-immersive={if @mode in [:add, :connect, :map], do: "true"}
+      class={
+        [
+          # When the journal rail is open it reserves the right 24rem of the screen
+          # (pr-96) and `journal-open` shifts the edit drawers left of the rail.
+          @journal_panel_open && "journal-open pr-96"
+        ]
+      }
+    >
       <Layouts.app
         flash={@flash}
         current_user={@current_user}
@@ -864,9 +1151,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             active_level={@active_level}
             other_levels={@other_levels}
             enabled_count={MapSet.size(MapSet.union(@other_levels_floorplan, @other_levels_stops))}
+            journal_open_count={@journal_open_count}
           />
           <%= if @mode == :map do %>
-            <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
+            <div id="map-canvas-wrapper" class="w-full px-4 py-4 sm:px-6 lg:px-8">
               <.map_canvas
                 station={@station}
                 active_level={@active_level}
@@ -888,7 +1176,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               />
             </div>
           <% else %>
-            <div id="diagram-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
+            <div id="diagram-canvas-wrapper" class="w-full px-4 py-4 sm:px-6 lg:px-8">
               <.diagram_canvas
                 station={@station}
                 active_level={@active_level}
@@ -908,6 +1196,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
                 scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
                 measurement_enabled={@measurement_enabled}
+                journal_pins={journal_pins_for_active_level(assigns)}
+                journal_indicators={journal_indicators(assigns)}
+                journal_focus_id={@journal_focus_entry_id}
               />
             </div>
           <% end %>
@@ -1008,6 +1299,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           walkability_tests_list={@walkability_tests_list}
         />
       </Layouts.app>
+
+      <.station_journal_panel
+        :if={@journal_panel_open}
+        entries={@journal_entries}
+        photos_by_entry={@journal_photos_by_entry}
+        user_names={@journal_user_names}
+        target_labels={@journal_target_labels}
+        entry_levels={@journal_entry_levels}
+        focus_entry_id={@journal_focus_entry_id}
+        filter={@journal_filter}
+      />
     </div>
     """
   end
@@ -1937,7 +2239,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:pathway_form_dirty, false)
        |> assign(:editing_pathway, pathway)
        |> assign(:pathway_form, form)
-       |> assign(:show_pathway_drawer, true)}
+       |> assign(:show_pathway_drawer, true)
+       # Close the node editor so the two never stack.
+       |> assign(:pending_xy, nil)
+       |> assign(:selected_stop_id, nil)
+       |> assign(:active_point_id, nil)}
     end
   end
 
@@ -2472,6 +2778,85 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:naming_applying?, false)
      |> assign(:naming_error, nil)
      |> assign(:naming_excluded_ids, MapSet.new())}
+  end
+
+  # ── Station journal review ──
+
+  def handle_event("open_journal_panel", _params, socket) do
+    # The toolbar button toggles the docked panel; opening reloads the journal.
+    if socket.assigns.journal_panel_open do
+      {:noreply,
+       socket |> assign(:journal_panel_open, false) |> assign(:journal_focus_entry_id, nil)}
+    else
+      {:noreply,
+       socket
+       |> load_journal()
+       |> assign(:journal_focus_entry_id, nil)
+       |> assign(:journal_panel_open, true)}
+    end
+  end
+
+  def handle_event("close_journal_panel", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:journal_panel_open, false)
+     |> assign(:journal_focus_entry_id, nil)}
+  end
+
+  def handle_event("set_journal_filter", %{"filter" => filter}, socket) do
+    filter = if filter in ~w(all open closed), do: String.to_existing_atom(filter), else: :all
+    {:noreply, assign(socket, :journal_filter, filter)}
+  end
+
+  # Map → journal: a diagram indicator (on a node/pathway with an open entry) was
+  # clicked. Open the panel if needed and focus that entry (rings + scrolls to it).
+  def handle_event("focus_journal_entry", %{"id" => id}, socket) do
+    {:noreply,
+     socket
+     |> assign(:journal_panel_open, true)
+     |> assign(:journal_focus_entry_id, id)
+     |> push_event("journal_focus", %{id: id})}
+  end
+
+  # Journal → map: locate an entry's target on the diagram. Switch to the target's
+  # level if it isn't the active one, then open the node/pathway editor or focus
+  # the pin — so chips for off-level targets navigate there instead of acting
+  # off-screen. Keyed by the entry id (the target is resolved from the entry).
+  def handle_event("journal_locate", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.journal_entries, &(&1.id == id)) do
+      nil ->
+        {:noreply, socket}
+
+      entry ->
+        socket =
+          socket
+          |> assign(:journal_panel_open, true)
+          |> maybe_switch_to_entry_level(entry)
+
+        case entry.target_type do
+          "node" -> handle_event("edit_child_stop", %{"id" => entry.target_id}, socket)
+          "pathway" -> handle_event("edit_pathway", %{"id" => entry.target_id}, socket)
+          "pin" -> handle_event("focus_journal_pin", %{"id" => entry.id}, socket)
+          _ -> {:noreply, socket}
+        end
+    end
+  end
+
+  def handle_event("close_journal_entry", %{"id" => id}, socket) do
+    {:noreply, set_journal_entry_closed(socket, id, true)}
+  end
+
+  def handle_event("reopen_journal_entry", %{"id" => id}, socket) do
+    {:noreply, set_journal_entry_closed(socket, id, false)}
+  end
+
+  def handle_event("focus_journal_pin", %{"id" => id}, socket) do
+    {:noreply,
+     socket
+     |> load_journal()
+     |> assign(:journal_focus_entry_id, id)
+     |> assign(:journal_panel_open, true)
+     |> push_event("journal_focus", %{id: id})}
   end
 
   @impl true
@@ -4769,6 +5154,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:editing_level, false)
     |> assign(:stop_id_mode, :manual)
     |> assign(:child_stop_form, form)
+    # The node + pathway editors are mutually exclusive — close the pathway drawer
+    # so opening this one never stacks on top of it.
+    |> assign(:show_pathway_drawer, false)
   end
 
   defp stop_diagram_point(stop) do
