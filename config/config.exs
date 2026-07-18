@@ -18,7 +18,16 @@ config :gtfs_planner,
   import_file_reader: File,
   # Duration (in seconds) a preparation/execution/cleanup lease remains valid
   # before `reconcile_expired/1` may close it as interrupted/cleanup_failed.
-  import_lease_seconds: 300
+  import_lease_seconds: 300,
+  # Worker module that performs an already-claimed import. `Publication` closes
+  # the run through `ImportRuns`.
+  import_worker_module: GtfsPlanner.Gtfs.Import.Publication,
+  # Worker module that performs an already-claimed cleanup. `Recovery` closes the
+  # run through `ImportRuns` (created in step 7).
+  import_cleanup_worker_module: GtfsPlanner.Gtfs.Import.Recovery,
+  # Heartbeat interval (in milliseconds) at which the import runner renews its
+  # execution/cleanup lease.
+  import_runner_heartbeat_ms: 60_000
 
 # Configure the endpoint
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,

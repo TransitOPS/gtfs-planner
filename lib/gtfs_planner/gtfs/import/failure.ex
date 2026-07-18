@@ -57,7 +57,7 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
                   ~w(
                     row_invalid constraint_violation database_error
                     missing_references image_write_failed missing_image
-                    filesystem_error unknown_error
+                    filesystem_error executor_lost unknown_error
                   )
 
   @failed_file_max 255
