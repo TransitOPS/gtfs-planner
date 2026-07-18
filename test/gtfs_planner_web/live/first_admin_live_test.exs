@@ -2,9 +2,16 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
   use GtfsPlannerWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
+  import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.OrganizationsFixtures
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.FirstAdminForm
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Organizations.Organization
+  alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions.GtfsVersion
   alias GtfsPlannerWeb.FirstAdminLive
 
   @base_message "Setup could not be completed. Please try again."
@@ -25,6 +32,14 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
     "password_confirmation" => "secret-pw-2-different",
     "organization_name" => "",
     "organization_alias" => ""
+  }
+
+  @valid_admin_params %{
+    "email" => "admin@example.com",
+    "password" => "valid setup password 123",
+    "password_confirmation" => "valid setup password 123",
+    "organization_name" => "My Transit Agency",
+    "organization_alias" => "my-transit-agency"
   }
 
   describe "initial availability" do
@@ -281,6 +296,87 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
 
       assert summary_text =~ @summary_title
       assert summary_text =~ @base_message
+    end
+  end
+
+  describe "retry integration" do
+    test "redirects to / when a user already exists without rendering the setup form", %{
+      conn: conn
+    } do
+      user_fixture()
+
+      assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/first")
+    end
+
+    test "redirects a valid first submit to /users/log_in", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      assert {:error, {:redirect, %{to: "/users/log_in"}}} =
+               view
+               |> element("#first_admin_form")
+               |> render_submit(%{"admin" => @valid_admin_params})
+    end
+
+    test "persists exactly one record set when an invalid submit is corrected in the same view",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      user_count = Repo.aggregate(User, :count, :id)
+      org_count = Repo.aggregate(Organization, :count, :id)
+      version_count = Repo.aggregate(GtfsVersion, :count, :id)
+      membership_count = Repo.aggregate(UserOrgMembership, :count, :id)
+
+      invalid_response =
+        view |> element("#first_admin_form") |> render_submit(%{"admin" => @all_invalid_params})
+
+      assert is_binary(invalid_response)
+      assert has_element?(view, @summary_selector)
+      assert has_element?(view, ~s(#first_admin_form[phx-submit="setup"]))
+
+      assert {:error, {:redirect, %{to: "/users/log_in"}}} =
+               view
+               |> element("#first_admin_form")
+               |> render_submit(%{"admin" => @valid_admin_params})
+
+      assert Repo.aggregate(User, :count, :id) == user_count + 1
+      assert Repo.aggregate(Organization, :count, :id) == org_count + 1
+      assert Repo.aggregate(GtfsVersion, :count, :id) == version_count + 1
+      assert Repo.aggregate(UserOrgMembership, :count, :id) == membership_count + 1
+    end
+
+    test "rolls back a failed transaction submit and persists only the corrected retry", %{
+      conn: conn
+    } do
+      taken_alias = "taken-#{System.unique_integer([:positive])}"
+      organization_fixture(%{name: "Existing Org", alias: taken_alias})
+
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      user_count = Repo.aggregate(User, :count, :id)
+      org_count = Repo.aggregate(Organization, :count, :id)
+      version_count = Repo.aggregate(GtfsVersion, :count, :id)
+      membership_count = Repo.aggregate(UserOrgMembership, :count, :id)
+
+      rollback_response =
+        view
+        |> element("#first_admin_form")
+        |> render_submit(%{
+          "admin" => %{@valid_admin_params | "organization_alias" => taken_alias}
+        })
+
+      assert is_binary(rollback_response)
+      assert has_element?(view, @summary_selector)
+      assert has_element?(view, ~s(#first-admin-organization-alias[aria-invalid="true"]))
+
+      assert {:error, {:redirect, %{to: "/users/log_in"}}} =
+               view
+               |> element("#first_admin_form")
+               |> render_submit(%{"admin" => @valid_admin_params})
+
+      assert Repo.aggregate(User, :count, :id) == user_count + 1
+      assert Repo.aggregate(Organization, :count, :id) == org_count + 1
+      assert Repo.aggregate(GtfsVersion, :count, :id) == version_count + 1
+      assert Repo.aggregate(UserOrgMembership, :count, :id) == membership_count + 1
     end
   end
 end
