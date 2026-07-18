@@ -232,7 +232,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
 
     socket =
       case Accounts.update_user_password(user, password, user_params) do
-        {:ok, user} ->
+        {:ok, {user, _tokens}} ->
           socket
           |> put_flash(:info, "Password updated successfully.")
           |> assign(:current_user, user)
