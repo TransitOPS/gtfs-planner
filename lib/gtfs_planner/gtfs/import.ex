@@ -398,11 +398,31 @@ defmodule GtfsPlanner.Gtfs.Import do
     Enum.map(@import_specs, fn {_key, filename, _schema, _parser_fun, _phase} -> filename end)
   end
 
+  @doc false
+  def import_specs, do: @import_specs
+
   @doc """
   Returns all supported import count keys.
   """
   def supported_count_keys do
     @supported_count_keys
+  end
+
+  @doc """
+  Returns the reverse-dependency-ordered list of schema modules that cleanup
+  deletes when discarding a failed import target.
+
+  The list shares the same source (`@import_specs`) as `supported_filenames/0`,
+  so a supported file can never exist without cleanup ownership (INV-4). The
+  schemas are returned in reverse import order so that child rows are removed
+  before their parents; `GtfsPlanner.Gtfs.StopLevel` (an extension schema not
+  backed by a standard GTFS file) is prepended because its rows must be removed
+  first.
+  """
+  @spec cleanup_schemas() :: [module()]
+  def cleanup_schemas do
+    schemas = Enum.map(@import_specs, fn {_key, _filename, schema, _parser, _phase} -> schema end)
+    [GtfsPlanner.Gtfs.StopLevel | Enum.reverse(schemas)]
   end
 
   @max_zip_entries 10_000

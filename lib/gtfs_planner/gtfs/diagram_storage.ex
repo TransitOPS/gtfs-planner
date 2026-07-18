@@ -51,6 +51,45 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
   def store_import_image(_, _, _, _, _), do: {:error, :badarg}
 
   @doc """
+  Idempotently removes the exact organization/version diagram namespace
+  (`<uploads>/diagrams/<organization_id>/<gtfs_version_id>`).
+
+  Both path components are validated against path-traversal, and the version
+  directory is verified to be contained within the organization root before any
+  removal. A missing namespace returns `:ok` (idempotent). A validation or
+  containment error returns `{:error, reason}` and never broadens the path.
+
+  ## Returns
+
+    - `:ok` when the version namespace is absent or was removed
+    - `{:error, :unsafe_path}` when an organization or version component is invalid
+    - `{:error, :path_traversal}` when the computed directory escapes the org root
+  """
+  @spec delete_version_namespace(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          :ok | {:error, :unsafe_path | :path_traversal}
+  def delete_version_namespace(organization_id, gtfs_version_id)
+      when is_binary(organization_id) and is_binary(gtfs_version_id) do
+    if PathSafety.safe_path_component?(organization_id) and
+         PathSafety.safe_path_component?(gtfs_version_id) do
+      org_dir = Path.join([uploads_root(), "diagrams", organization_id])
+      version_dir = Path.join([org_dir, gtfs_version_id])
+
+      case PathSafety.ensure_within_root(org_dir, version_dir) do
+        :ok ->
+          File.rm_rf(version_dir)
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, :unsafe_path}
+    end
+  end
+
+  def delete_version_namespace(_, _), do: {:error, :badarg}
+
+  @doc """
   Returns the absolute on-disk path of a versioned diagram file, or an error when the
   versioned file does not exist.
   """

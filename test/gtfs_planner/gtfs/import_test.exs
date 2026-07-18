@@ -489,6 +489,38 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
     end
   end
 
+  describe "cleanup_schemas/0 manifest" do
+    test "every supported filename maps to a cleanup-owned schema (INV-4)" do
+      # Cleanup ownership shares the same source list as supported_filenames/0,
+      # so a supported file cannot exist without cleanup ownership.
+      owned_schemas = MapSet.new(Import.cleanup_schemas())
+
+      assert Enum.all?(Import.supported_filenames(), fn _filename ->
+               true
+             end)
+
+      # Every import spec schema must be present in the cleanup manifest.
+      for {_key, _filename, schema, _parser, _phase} <- GtfsPlanner.Gtfs.Import.import_specs() do
+        assert MapSet.member?(owned_schemas, schema),
+               "schema #{inspect(schema)} is supported but missing from cleanup manifest"
+      end
+    end
+
+    test "StopLevel is first and the rest follow reverse import dependency order" do
+      schemas = Import.cleanup_schemas()
+
+      assert hd(schemas) == GtfsPlanner.Gtfs.StopLevel
+
+      import_schemas = Enum.map(Import.import_specs(), fn {_k, _f, s, _p, _ph} -> s end)
+
+      # After StopLevel, the remainder must equal the import schemas reversed.
+      assert tl(schemas) == Enum.reverse(import_schemas)
+
+      # And the manifest is exactly one StopLevel plus every import schema.
+      assert length(schemas) == length(import_schemas) + 1
+    end
+  end
+
   describe "zip expansion" do
     setup do
       organization = GtfsPlanner.OrganizationsFixtures.organization_fixture()
