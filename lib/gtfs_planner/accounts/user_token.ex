@@ -86,14 +86,28 @@ defmodule GtfsPlanner.Accounts.UserToken do
   end
 
   @doc """
+  Computes the digest stored in `users_tokens` for an encoded web-session token.
+
+  Accepts the unpadded URL-safe Base64 token held by the browser and returns
+  `{:ok, digest}` where `digest` is the SHA-256 hash persisted at rest, or
+  `:error` for malformed input. The digest is a non-bearer identifier; this
+  function performs no database lookup.
+  """
+  def session_token_digest(encoded_token) when is_binary(encoded_token) do
+    case Base.url_decode64(encoded_token, padding: false) do
+      {:ok, raw_token} -> {:ok, :crypto.hash(:sha256, raw_token)}
+      :error -> :error
+    end
+  end
+
+  @doc """
   Verifies a session token and returns a query to fetch user.
 
   Returns `:error` if the token is invalid or expired.
   Returns `{:ok, query}` if the token is valid.
   """
   def verify_session_token_query(token) when is_binary(token) do
-    with {:ok, decoded_token} <- Base.url_decode64(token, padding: false),
-         hashed_token = :crypto.hash(:sha256, decoded_token) do
+    with {:ok, hashed_token} <- session_token_digest(token) do
       query =
         from token_record in by_token_and_context_query(hashed_token, "session"),
           where: token_record.inserted_at > ago(@session_validity_in_days, "day"),
@@ -101,8 +115,6 @@ defmodule GtfsPlanner.Accounts.UserToken do
           select: user
 
       {:ok, query}
-    else
-      _ -> :error
     end
   end
 
