@@ -50,18 +50,6 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
   end
 
   @doc """
-  Child spec for `DynamicSupervisor` registration via `{Runner, init_arg}`.
-  Restart is `:temporary`: a dead runner must never be auto-restarted.
-  """
-  def child_spec(opts) do
-    %{
-      id: __MODULE__,
-      start: {__MODULE__, :start_link, [opts]},
-      restart: :temporary
-    }
-  end
-
-  @doc """
   Starts a supervised runner that claims and executes an import for `run_id`
   using the supplied preparation `lease_token`, consuming `files`.
 

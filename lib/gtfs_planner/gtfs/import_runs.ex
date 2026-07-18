@@ -801,18 +801,37 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
     |> Repo.one()
   end
 
-  # Verifies the locked run is in an expected state AND holds the supplied lease
-  # token. Returns `:ok` when both hold, `:lease_lost` when the state is right
-  # but the token is stale/wrong (a stale owner can never write), `:invalid_transition`
-  # when the run is in an ineligible state, and `:not_found` when no run was locked.
+  # Verifies the locked run is in an expected state AND holds the supplied,
+  # unexpired lease token. Returns `:ok` when all hold, `:lease_lost` when the
+  # state is right but the token is stale/wrong/expired (a stale owner can never
+  # write), `:invalid_transition` when the run is in an ineligible state, and
+  # `:not_found` when no run was locked. Expiry uses PostgreSQL time while the
+  # caller still holds the row lock.
   defp guard_lease(nil, _expected, _token), do: :not_found
 
-  defp guard_lease(%Run{state: state, lease_token: run_token}, expected, token) do
-    if run_token == token do
-      if state in expected, do: :ok, else: :invalid_transition
-    else
-      if state in expected, do: :lease_lost, else: :invalid_transition
+  defp guard_lease(%Run{id: id, state: state, lease_token: run_token}, expected, token) do
+    cond do
+      state not in expected ->
+        :invalid_transition
+
+      run_token != token ->
+        :lease_lost
+
+      lease_current?(id) ->
+        :ok
+
+      true ->
+        :lease_lost
     end
+  end
+
+  defp lease_current?(run_id) do
+    from(r in Run,
+      where:
+        r.id == ^run_id and not is_nil(r.lease_expires_at) and
+          r.lease_expires_at >= fragment("CURRENT_TIMESTAMP")
+    )
+    |> Repo.exists?()
   end
 
   defp publication_reason_code(reason) when is_atom(reason) do

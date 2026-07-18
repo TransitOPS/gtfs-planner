@@ -333,8 +333,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             case Recovery.discard_claimed(run, version, token) do
               {:ok, nil} ->
                 removed_name = run.version_name
-
-                new_count = max(0, socket.assigns.recovery_count - 1)
+                recoverable_runs = ImportRuns.list_recoverable(organization_id)
+                new_count = length(recoverable_runs)
 
                 socket =
                   socket
@@ -357,6 +357,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               {:error, _reason} ->
                 {:noreply,
                  socket
+                 |> restream_recovery_run(organization_id, binary_id)
                  |> assign(:processing_discard, false)
                  |> assign(:pending_discard_run_id, nil)
                  |> assign(:recovery_announce, "Could not discard the failed version")}
@@ -506,31 +507,19 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     # success result the old task-owned flow used to return directly.
     organization_id = socket.assigns.current_organization.id
 
-    run =
-      ImportRuns.list_recoverable(organization_id)
-      |> Enum.find(&(&1.id == run_id))
+    recoverable_runs = ImportRuns.list_recoverable(organization_id)
+    run = Enum.find(recoverable_runs, &(&1.id == run_id))
+    recovery_count = length(recoverable_runs)
 
     socket =
-      case run do
-        %Run{} = run ->
-          socket
-          |> stream_insert(:import_recovery_runs, run, at: -1)
-          |> assign(:recovery_empty, false)
-          |> assign(:recovery_announce, recovery_announce_text(run))
-
-        nil ->
-          gone_run = GtfsPlanner.Repo.get(Run, run_id)
-
-          new_count = max(0, socket.assigns.recovery_count - 1)
-
-          socket =
-            socket
-            |> stream_delete(:import_recovery_runs, gone_run)
-            |> assign(:recovery_count, new_count)
-            |> assign(:recovery_empty, new_count == 0)
-
-          success_for_published_target(socket, run_id)
-      end
+      reconcile_recovery_run(
+        socket,
+        organization_id,
+        run_id,
+        run,
+        recovery_count,
+        recoverable_runs == []
+      )
 
     socket =
       if socket.assigns.processing_publish == run_id and
@@ -593,16 +582,65 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp run_counts_to_result(nil), do: %{}
 
   defp run_counts_to_result(%Run{committed_counts: counts}) when is_map(counts) do
-    mapped =
-      Enum.reduce(counts, %{}, fn {k, v}, acc ->
-        try do
-          Map.put(acc, String.to_existing_atom(to_string(k)), v)
-        rescue
-          _ -> acc
-        end
-      end)
+    Enum.reduce([:levels, :stops, :pathways], %{}, fn key, acc ->
+      case fetch_committed_count(counts, key) do
+        {:ok, value} -> Map.put(acc, key, value)
+        :error -> acc
+      end
+    end)
+  end
 
-    Map.take(mapped, [:levels, :stops, :pathways])
+  defp fetch_committed_count(counts, key) do
+    with :error <- Map.fetch(counts, key) do
+      Map.fetch(counts, Atom.to_string(key))
+    end
+  end
+
+  defp restream_recovery_run(socket, organization_id, run_id) do
+    recoverable_runs = ImportRuns.list_recoverable(organization_id)
+
+    socket =
+      case Enum.find(recoverable_runs, &(&1.id == run_id)) do
+        %Run{} = run -> stream_insert(socket, :import_recovery_runs, run, at: -1)
+        nil -> socket
+      end
+
+    socket
+    |> assign(:recovery_count, length(recoverable_runs))
+    |> assign(:recovery_empty, recoverable_runs == [])
+  end
+
+  defp reconcile_recovery_run(socket, _organization_id, _run_id, %Run{} = run, count, empty?) do
+    socket
+    |> stream_insert(:import_recovery_runs, run, at: -1)
+    |> assign(:recovery_count, count)
+    |> assign(:recovery_empty, empty?)
+    |> assign(:recovery_announce, recovery_announce_text(run))
+  end
+
+  defp reconcile_recovery_run(socket, organization_id, run_id, nil, count, empty?) do
+    gone_run =
+      from(r in Run,
+        where: r.id == ^run_id and r.organization_id == ^organization_id
+      )
+      |> GtfsPlanner.Repo.one()
+
+    socket = maybe_delete_recovery_run(socket, gone_run)
+    socket = assign_recovery_count(socket, count, empty?)
+
+    if gone_run, do: success_for_published_target(socket, run_id), else: socket
+  end
+
+  defp maybe_delete_recovery_run(socket, %Run{} = run) do
+    stream_delete(socket, :import_recovery_runs, run)
+  end
+
+  defp maybe_delete_recovery_run(socket, nil), do: socket
+
+  defp assign_recovery_count(socket, count, empty?) do
+    socket
+    |> assign(:recovery_count, count)
+    |> assign(:recovery_empty, empty?)
   end
 
   defp block_diff_review(socket, blockers) do

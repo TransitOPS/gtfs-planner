@@ -10,6 +10,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Import.Run
+  alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
   @levels_content "level_id,level_index,level_name\nL1,0.0,Ground"
@@ -910,6 +912,67 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert Versions.published_gtfs_version_for_org?(organization.id, pub_run_v.id)
       # The cross-org failed version is untouched.
       assert Versions.get_gtfs_version_for_lifecycle(other_org.id, other_v.id)
+
+      # A forged cross-organization broadcast is ignored without changing the
+      # scoped recovery count or trying to delete a missing streamed row.
+      recovery_count = :sys.get_state(view.pid).socket.assigns.recovery_count
+      send(view.pid, {:import_run_changed, other_run.id})
+      assert :sys.get_state(view.pid).socket.assigns.recovery_count == recovery_count
+    end
+
+    test "a newly recoverable run updates the exact count without duplicate-broadcast drift", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      assert :sys.get_state(view.pid).socket.assigns.recovery_count == 0
+
+      {:ok, failed_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "New"})
+      {:ok, failed_v} = Versions.fail_unpublished_gtfs_version(organization.id, failed_v.id)
+      run = insert_run(organization.id, failed_v, "failed")
+
+      send(view.pid, {:import_run_changed, run.id})
+      assert :sys.get_state(view.pid).socket.assigns.recovery_count == 1
+      assert has_element?(view, "#import-run-#{run.id}")
+
+      send(view.pid, {:import_run_changed, run.id})
+      assert :sys.get_state(view.pid).socket.assigns.recovery_count == 1
+    end
+
+    test "a failed UI cleanup re-streams the durable cleanup_failed state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, failed_v} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Cleanup Failure"})
+
+      {:ok, failed_v} = Versions.fail_unpublished_gtfs_version(organization.id, failed_v.id)
+      run = insert_run(organization.id, failed_v, "failed")
+
+      Application.put_env(
+        :gtfs_planner,
+        :import_cleanup_inject_failure,
+        {:filesystem, :before_namespace}
+      )
+
+      on_exit(fn -> Application.delete_env(:gtfs_planner, :import_cleanup_inject_failure) end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      view |> element("#discard-#{run.id}") |> render_click()
+      view |> element("#delete-version-#{run.id}") |> render_click()
+
+      assert has_element?(view, "#import-run-#{run.id}")
+      assert render(view) =~ "Cleanup failed — can be retried by discarding."
+      assert Repo.get!(Run, run.id).state == "cleanup_failed"
     end
 
     test "terminal {:import_run_changed, run_id} reloads the card from durable state", %{

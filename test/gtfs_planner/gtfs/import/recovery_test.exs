@@ -306,6 +306,22 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
       assert Repo.get!(Run, run.id).state == "cleaned"
       refute version_exists?(version.id)
     end
+
+    test "non-runtime cleanup exceptions are normalized and persisted", %{org: org} do
+      {run, version} = fail_run(org)
+      seed_level_rows(org, version, 1)
+      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+
+      Application.put_env(:gtfs_planner, :import_cleanup_batch_size, :invalid)
+
+      assert {:error, :database_error} =
+               Recovery.discard_claimed(run, claimed_version, token)
+
+      failed = Repo.get!(Run, run.id)
+      assert failed.state == "cleanup_failed"
+      assert failed.reason_code == "database_error"
+      assert version_exists?(version.id)
+    end
   end
 
   # --- race / same-name -----------------------------------------------------

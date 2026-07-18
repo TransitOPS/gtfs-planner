@@ -86,7 +86,7 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
 
       {:ok, nil}
     rescue
-      e in RuntimeError ->
+      e ->
         reason = failure_reason(e)
         fail(organization_id, run_id, lease_token, reason)
         {:error, reason}
@@ -254,5 +254,10 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
   defp failure_reason(%RuntimeError{message: "filesystem_error"}), do: :filesystem_error
   defp failure_reason(%RuntimeError{message: "database_error"}), do: :database_error
   defp failure_reason(%RuntimeError{message: "verification_failed"}), do: :verification_failed
+  defp failure_reason(%File.Error{}), do: :filesystem_error
+  defp failure_reason(%Ecto.QueryError{}), do: :database_error
+  defp failure_reason(%Ecto.Query.CastError{}), do: :database_error
+  defp failure_reason(%Postgrex.Error{}), do: :database_error
+  defp failure_reason(%DBConnection.ConnectionError{}), do: :database_error
   defp failure_reason(_other), do: :unknown_error
 end

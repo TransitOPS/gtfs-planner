@@ -210,6 +210,24 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       assert Repo.get!(Run, run.id).state == "running"
     end
 
+    test "an expired lease cannot publish", %{org: org, run: run, token: token} do
+      result = %Result{
+        counts: %{routes: 1},
+        unrecognized_files: [],
+        topic: "import:p",
+        archive_warnings: [],
+        extensions: :not_present
+      }
+
+      set_run_lease_expiry(run, expired_past())
+
+      assert {:error, :invalid_transition} =
+               ImportRuns.publish_import(org.id, run.id, token, result)
+
+      assert Repo.get!(Run, run.id).state == "running"
+      assert Repo.get!(GtfsVersion, run.gtfs_version_id).publication_status == "importing"
+    end
+
     test "publish/fail race: publish wins under the lock", %{org: org, run: run, token: token} do
       result = %Result{
         counts: %{routes: 1},

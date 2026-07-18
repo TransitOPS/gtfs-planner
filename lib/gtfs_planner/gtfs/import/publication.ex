@@ -145,10 +145,6 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
         emit_failure(run, organization_id, run_id, version_id, @importing_status, :lease_lost)
         {:error, read_version(organization_id, version_id), :lease_lost}
 
-      {:error, :lease_lost} ->
-        emit_failure(run, organization_id, run_id, version_id, @importing_status, :lease_lost)
-        {:error, read_version(organization_id, version_id), :lease_lost}
-
       {:error, reason} ->
         {:error, read_version(organization_id, version_id), reason}
     end
