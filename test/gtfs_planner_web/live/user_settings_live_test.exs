@@ -37,13 +37,18 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/users/settings")
 
-      assert has_element?(view, "#email-address")
-      assert has_element?(view, "#email-current-password")
+      assert has_element?(view, "#email-address[name=\"user[email]\"]")
+      assert has_element?(view, "#email-current-password[name=\"current_password\"]")
       assert has_element?(view, "#email-submit")
 
-      assert has_element?(view, "#password-current-password")
-      assert has_element?(view, "#password-new-password")
-      assert has_element?(view, "#password-confirmation")
+      assert has_element?(view, "#password-current-password[name=\"current_password\"]")
+      assert has_element?(view, "#password-new-password[name=\"user[password]\"]")
+
+      assert has_element?(
+               view,
+               "#password-confirmation[name=\"user[password_confirmation]\"]"
+             )
+
       assert has_element?(view, "#password-submit")
     end
 
@@ -181,7 +186,7 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
       assert has_element?(view, "#email_form")
 
       # Current password value is cleared (secret recovery invariant)
-      has_element?(view, "#email-current-password")
+      assert has_element?(view, "#email-current-password[value=\"\"]")
 
       # Proposed email is preserved for correction
       assert has_element?(view, "#email-address[value=\"invalid-email\"]")
@@ -231,6 +236,18 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
 
       # Form still present
       assert has_element?(view, "#password_form")
+
+      assert has_element?(view, "#password-current-password[value=\"\"]")
+
+      assert has_element?(
+               view,
+               "#password-new-password:not([value]), #password-new-password[value=\"\"]"
+             )
+
+      assert has_element?(
+               view,
+               "#password-confirmation:not([value]), #password-confirmation[value=\"\"]"
+             )
 
       # trigger_submit stays false
       html = render(view)
