@@ -11,237 +11,305 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
       current_path={@current_path}
       user_roles={@user_roles}
     >
-      <div class="space-y-12">
+      <div id="account-settings" phx-hook=".SettingsFormFocus" class="space-y-12">
         <div>
           <.header>
-            Account Settings
+            <span id="account-settings-title">Account Settings</span>
             <:subtitle>Manage your account email address and password settings.</:subtitle>
           </.header>
 
           <div class="space-y-12 max-w-3xl">
             <div>
-              <.simple_form
+              <.form
                 for={@email_form}
                 id="email_form"
                 phx-submit="update_email"
                 phx-change="validate_email"
+                phx-auto-recover="ignore"
               >
                 <.input
                   field={@email_form[:email]}
+                  id="email-address"
                   type="email"
                   label="Email"
+                  autocomplete="email"
                   required
                 />
 
                 <.input
-                  field={@email_form[:current_password]}
+                  id="email-current-password"
+                  name="current_password"
                   type="password"
                   label="Current password"
-                  value={@email_form_current_password}
+                  value={@email_current_password}
+                  errors={email_form_errors_for(@email_form, :current_password)}
+                  autocomplete="current-password"
                   required
                 />
 
-                <:actions>
-                  <.button phx-disable-with="Changing...">Change Email</.button>
-                </:actions>
-              </.simple_form>
+                <.button
+                  id="email-submit"
+                  type="submit"
+                  phx-disable-with="Sending confirmation…"
+                >
+                  Send confirmation
+                </.button>
+              </.form>
             </div>
 
             <div>
-              <.simple_form
+              <.form
                 for={@password_form}
                 id="password_form"
                 phx-submit="update_password"
                 phx-change="validate_password"
-                action={~p"/users/settings"}
+                phx-auto-recover="ignore"
+                action={@password_form_action}
+                method="post"
+                phx-trigger-action={@trigger_submit}
               >
                 <.input
-                  field={@password_form[:current_password]}
+                  id="password-current-password"
+                  name="current_password"
                   type="password"
                   label="Current password"
-                  value={@current_password}
+                  value={@password_current_password}
+                  errors={password_form_errors_for(@password_form, :current_password)}
+                  autocomplete="current-password"
                   required
                 />
 
                 <.input
                   field={@password_form[:password]}
+                  id="password-new-password"
                   type="password"
                   label="New password"
+                  autocomplete="new-password"
                   required
                 />
 
                 <.input
                   field={@password_form[:password_confirmation]}
+                  id="password-confirmation"
                   type="password"
                   label="Confirm new password"
+                  autocomplete="new-password"
                   required
                 />
 
-                <:actions>
-                  <.button phx-disable-with="Changing...">Change Password</.button>
-                </:actions>
-              </.simple_form>
+                <.button
+                  id="password-submit"
+                  type="submit"
+                  phx-disable-with="Changing password…"
+                >
+                  Change password
+                </.button>
+              </.form>
             </div>
           </div>
         </div>
-
-        <div>
-          <.header>
-            Email Change History
-            <:subtitle>A list of all recent email changes in your account.</:subtitle>
-          </.header>
-
-          <.table
-            id="emails"
-            rows={@email_token}
-            row_click={false}
-          >
-            <:col :let={token} label="Address">{token.sent_to}</:col>
-            <:col :let={token} label="Status">
-              <%= if token.context == "change:#{@current_user.email}" do %>
-                Pending
-              <% else %>
-                Changed
-              <% end %>
-            </:col>
-            <:col :let={token} label="Updated At">
-              {token.inserted_at |> Calendar.strftime("%B %d, %Y %H:%M")}
-            </:col>
-          </.table>
-        </div>
       </div>
+
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".SettingsFormFocus">
+        export default {
+          mounted() {
+            this.handleEvent("focus_settings_error", (data) => {
+              const formId = data.form_id;
+              if (["email_form", "password_form"].includes(formId)) {
+                const form = document.getElementById(formId);
+                if (form) {
+                  const invalid = form.querySelector("[aria-invalid=\"true\"]");
+                  if (invalid) invalid.focus();
+                }
+              }
+            });
+          }
+        }
+      </script>
     </Layouts.app>
     """
   end
 
-  def mount(params, _session, socket) do
-    # user_roles will be empty for this view as it doesn't use AssignOrganization hook
+  def mount(_params, _session, socket) do
+    user = socket.assigns.current_user
     user_roles = socket.assigns[:user_roles] || []
 
     socket =
       socket
-      |> assign(:current_password, nil)
-      |> assign(:email_form_current_password, nil)
       |> assign(:user_roles, user_roles)
-      |> assign_forms(params)
+      |> assign(:email_form, to_form(Accounts.change_user_email(user)))
+      |> assign(:password_form, to_form(Accounts.change_user_password(user)))
+      |> assign(:email_current_password, "")
+      |> assign(:password_current_password, "")
+      |> assign(:trigger_submit, false)
+      |> assign(:password_form_action, ~p"/users/update_password")
 
     {:ok, socket}
   end
 
-  defp assign_forms(socket, %{"action" => "update_email"} = params) do
-    socket
-    |> assign(:trigger_submit, true)
-    |> assign(:current_action, "update_email")
-    |> then(&assign_email_form(&1, params))
-    |> assign_password_form()
-  end
-
-  defp assign_forms(socket, %{"action" => "update_password"} = params) do
-    socket
-    |> assign(:trigger_submit, true)
-    |> assign(:current_action, "update_password")
-    |> assign_email_form(%{})
-    |> assign_password_form(params)
-  end
-
-  defp assign_forms(socket, _params) do
-    socket
-    |> assign(:trigger_submit, false)
-    |> assign(:current_action, nil)
-    |> assign_email_form(%{})
-    |> assign_password_form()
-  end
-
-  defp assign_email_form(socket, %{"current_password" => password}) do
-    assign(socket, :email_form_current_password, password)
-  end
-
-  defp assign_email_form(socket, _params) do
-    current_user = socket.assigns.current_user
-
-    if current_user do
-      changeset = Accounts.change_user_email(current_user)
-      assign(socket, :email_form, to_form(changeset))
-    else
-      socket
-    end
-  end
-
-  defp assign_password_form(socket, params \\ %{}) do
-    password_form =
-      socket.assigns.current_user
-      |> Accounts.change_user_password(params)
-      |> to_form()
-
-    assign(socket, :password_form, password_form)
-  end
-
-  def handle_event("validate_email", params, socket) do
-    %{"current_password" => password, "user" => user_params} = params
-
+  def handle_event(
+        "validate_email",
+        %{"user" => user_params, "current_password" => password},
+        socket
+      ) do
     email_form =
       socket.assigns.current_user
       |> Accounts.change_user_email(user_params)
       |> Map.put(:action, :validate)
       |> to_form()
 
-    {:noreply, assign(socket, email_form: email_form, email_form_current_password: password)}
+    {:noreply,
+     socket
+     |> assign(:email_form, email_form)
+     |> assign(:email_current_password, password)}
   end
 
-  def handle_event("update_email", params, socket) do
-    %{"current_password" => password, "user" => user_params} = params
-    user = socket.assigns.current_user
-
-    socket =
-      case Accounts.apply_user_email(user, password, user_params) do
-        {:ok, applied_user} ->
-          Accounts.deliver_user_confirmation_instructions(
-            applied_user,
-            &url(~p"/users/confirm/#{&1}")
-          )
-
-          socket
-          |> put_flash(
-            :info,
-            "A link to confirm your email change has been sent to the new address."
-          )
-          |> assign(:current_user, applied_user)
-
-        {:error, changeset} ->
-          assign(socket, :email_form, to_form(Map.put(changeset, :action, :insert)))
-      end
-
+  def handle_event("validate_email", _params, socket) do
     {:noreply, socket}
   end
 
-  def handle_event("validate_password", params, socket) do
-    %{"current_password" => password, "user" => user_params} = params
+  def handle_event(
+        "update_email",
+        %{"user" => user_params, "current_password" => password},
+        socket
+      ) do
+    user = socket.assigns.current_user
 
+    case Accounts.apply_user_email(user, password, user_params) do
+      {:ok, applied_user} ->
+        case Accounts.deliver_user_update_email_instructions(
+               applied_user,
+               user.email,
+               &url(~p"/users/settings/confirm_email/#{&1}")
+             ) do
+          {:ok, _email} ->
+            {:noreply,
+             socket
+             |> put_flash(
+               :info,
+               "A link to confirm your email change has been sent to the new address."
+             )
+             |> assign(:email_current_password, "")
+             |> assign(:email_form, to_form(Accounts.change_user_email(user)))
+             |> assign(:trigger_submit, false)}
+
+          {:error, _reason} ->
+            {:noreply,
+             socket
+             |> assign(:email_current_password, "")
+             |> put_flash(
+               :error,
+               "We couldn't send the confirmation email. Please try again."
+             )
+             |> assign(:email_form, to_form(%{"email" => user_params["email"]}, as: :user))
+             |> assign(:trigger_submit, false)}
+        end
+
+      {:error, changeset} ->
+        sanitized = sanitize_changeset_secrets(changeset)
+
+        {:noreply,
+         socket
+         |> assign(:email_current_password, "")
+         |> assign(:email_form, to_form(Map.put(sanitized, :action, :insert)))
+         |> assign(:trigger_submit, false)
+         |> push_event("focus_settings_error", %{form_id: "email_form"})}
+    end
+  end
+
+  def handle_event("update_email", _params, socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event(
+        "validate_password",
+        %{"user" => user_params, "current_password" => password},
+        socket
+      ) do
     password_form =
       socket.assigns.current_user
       |> Accounts.change_user_password(user_params)
       |> Map.put(:action, :validate)
       |> to_form()
 
-    {:noreply, assign(socket, password_form: password_form, current_password: password)}
+    {:noreply,
+     socket
+     |> assign(:password_form, password_form)
+     |> assign(:password_current_password, password)}
   end
 
-  def handle_event("update_password", params, socket) do
-    %{"current_password" => password, "user" => user_params} = params
+  def handle_event("validate_password", _params, socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event(
+        "update_password",
+        %{"user" => user_params, "current_password" => password},
+        socket
+      ) do
     user = socket.assigns.current_user
 
-    socket =
-      case Accounts.update_user_password(user, password, user_params) do
-        {:ok, user} ->
-          socket
-          |> put_flash(:info, "Password updated successfully.")
-          |> assign(:current_user, user)
-          |> assign(:current_password, nil)
+    case Accounts.apply_user_password(user, password, user_params) do
+      {:ok, _applied_user} ->
+        {:noreply,
+         socket
+         |> assign(:trigger_submit, true)}
 
-        {:error, changeset} ->
-          assign(socket, :password_form, to_form(Map.put(changeset, :action, :insert)))
-      end
+      {:error, changeset} ->
+        sanitized =
+          changeset
+          |> sanitize_changeset_secrets()
+          |> Map.put(:action, :insert)
 
+        {:noreply,
+         socket
+         |> assign(:password_current_password, "")
+         |> assign(:password_form, to_form(sanitized))
+         |> assign(:trigger_submit, false)
+         |> push_event("focus_settings_error", %{form_id: "password_form"})}
+    end
+  end
+
+  def handle_event("update_password", _params, socket) do
     {:noreply, socket}
+  end
+
+  defp sanitize_changeset_secrets(changeset) do
+    secret_string_keys = ["current_password", "password", "password_confirmation"]
+    secret_atom_keys = [:current_password, :password, :password_confirmation]
+
+    params =
+      changeset.params
+      |> Map.drop(secret_string_keys)
+
+    changes =
+      changeset.changes
+      |> Map.drop(secret_atom_keys)
+
+    %{changeset | params: params, changes: changes}
+  end
+
+  defp email_form_errors_for(%Phoenix.HTML.Form{source: source}, field) do
+    errors = if is_map(source), do: Map.get(source, :errors, []), else: []
+
+    errors
+    |> Enum.filter(fn {f, _} -> f == field end)
+    |> Enum.map(fn {_, {msg, opts}} -> translate_error(msg, opts) end)
+  end
+
+  defp email_form_errors_for(_form, _field), do: []
+
+  defp password_form_errors_for(%Phoenix.HTML.Form{source: source}, field) do
+    errors = if is_map(source), do: Map.get(source, :errors, []), else: []
+
+    errors
+    |> Enum.filter(fn {f, _} -> f == field end)
+    |> Enum.map(fn {_, {msg, opts}} -> translate_error(msg, opts) end)
+  end
+
+  defp password_form_errors_for(_form, _field), do: []
+
+  defp translate_error(msg, opts) do
+    GtfsPlannerWeb.CoreComponents.translate_error({msg, opts})
   end
 end

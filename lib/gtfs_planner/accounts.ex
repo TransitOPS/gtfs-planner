@@ -214,12 +214,32 @@ defmodule GtfsPlanner.Accounts do
   end
 
   @doc """
+  Emulates that the password will change without actually changing
+  it in the database.
+
+  ## Examples
+
+      iex> apply_user_password(user, "valid password", %{password: "new valid password", password_confirmation: "new valid password"})
+      {:ok, %User{}}
+
+      iex> apply_user_password(user, "invalid password", %{password: "valid", password_confirmation: "another valid"})
+      {:error, %Ecto.Changeset{}}
+
+  """
+  def apply_user_password(%User{} = user, current_password, attrs) when is_map(attrs) do
+    user
+    |> User.password_changeset(attrs, hash_password: false)
+    |> User.validate_current_password(current_password, user: user)
+    |> Ecto.Changeset.apply_action(:update)
+  end
+
+  @doc """
   Updates the user password.
 
   ## Examples
 
       iex> update_user_password(user, "valid password", %{password: "new valid password", password_confirmation: "new valid password"})
-      {:ok, %User{}}
+      {:ok, {%User{}, [%UserToken{}]}}
 
       iex> update_user_password(user, "invalid password", %{password: "valid", password_confirmation: "another valid"})
       {:error, %Ecto.Changeset{}}
@@ -233,10 +253,13 @@ defmodule GtfsPlanner.Accounts do
 
     Ecto.Multi.new()
     |> Ecto.Multi.update(:user, changeset)
-    |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, :all))
+    |> Ecto.Multi.run(:tokens, fn repo, _changes ->
+      {:ok, repo.all(UserToken.user_and_contexts_query(user, :all))}
+    end)
+    |> Ecto.Multi.delete_all(:deleted, UserToken.user_and_contexts_query(user, :all))
     |> Repo.transaction()
     |> case do
-      {:ok, %{user: user}} -> {:ok, user}
+      {:ok, %{user: user, tokens: tokens}} -> {:ok, {user, tokens}}
       {:error, :user, changeset, _} -> {:error, changeset}
     end
   end

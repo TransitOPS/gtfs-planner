@@ -217,6 +217,48 @@ defmodule GtfsPlanner.AccountsTest do
     end
   end
 
+  describe "apply_user_password/3" do
+    setup do
+      %{user: user_fixture()}
+    end
+
+    test "validates password", %{user: user} do
+      {:error, changeset} =
+        Accounts.apply_user_password(user, valid_user_password(), %{
+          password: "short",
+          password_confirmation: "other"
+        })
+
+      assert %{
+               password: ["should be at least 12 character(s)"],
+               password_confirmation: ["does not match password"]
+             } = errors_on(changeset)
+    end
+
+    test "validates current password", %{user: user} do
+      {:error, changeset} =
+        Accounts.apply_user_password(user, "invalid", %{
+          password: "new valid password 123456"
+        })
+
+      assert %{current_password: ["is invalid"]} = errors_on(changeset)
+    end
+
+    test "applies the password without persisting it", %{user: user} do
+      original_hash = user.hashed_password
+      original_token_count = Repo.aggregate(UserToken, :count)
+
+      {:ok, _applied_user} =
+        Accounts.apply_user_password(user, valid_user_password(), %{
+          password: "new valid password 123456",
+          password_confirmation: "new valid password 123456"
+        })
+
+      assert Accounts.get_user!(user.id).hashed_password == original_hash
+      assert Repo.aggregate(UserToken, :count) == original_token_count
+    end
+  end
+
   describe "update_user_password/3" do
     setup do
       %{user: user_fixture()}
@@ -243,7 +285,7 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "updates the password", %{user: user} do
-      {:ok, _user} =
+      {:ok, {_user, _tokens}} =
         Accounts.update_user_password(user, valid_user_password(), %{
           password: "new valid password",
           password_confirmation: "new valid password"
@@ -256,12 +298,54 @@ defmodule GtfsPlanner.AccountsTest do
     test "deletes all tokens for the given user", %{user: user} do
       _ = Accounts.generate_user_session_token(user)
 
-      {:ok, _} =
+      {:ok, {_user, _tokens}} =
         Accounts.update_user_password(user, valid_user_password(), %{
           password: "new valid password",
           password_confirmation: "new valid password"
         })
 
+      refute Repo.get_by(UserToken, user_id: user.id)
+    end
+
+    test "preserves password and tokens on validation failure", %{user: user} do
+      original_hash = user.hashed_password
+      _ = Accounts.generate_user_session_token(user)
+      _ = Accounts.generate_api_session_token(user)
+
+      {:error, _changeset} =
+        Accounts.update_user_password(user, "wrong_password", %{
+          password: "new valid password 123456",
+          password_confirmation: "new valid password 123456"
+        })
+
+      assert Accounts.get_user!(user.id).hashed_password == original_hash
+      assert Repo.get_by(UserToken, user_id: user.id, context: "session")
+      assert Repo.get_by(UserToken, user_id: user.id, context: "api_session")
+    end
+
+    test "returns exact captured token structs across all contexts", %{user: user} do
+      _ = Accounts.generate_user_session_token(user)
+      _ = Accounts.generate_api_session_token(user)
+      insert_email_token(user, "reset_password")
+      insert_email_token(user, "confirm")
+      insert_email_token(user, "invite")
+      insert_email_token(user, "change:#{user.email}")
+
+      pre_ids =
+        from(t in UserToken, where: t.user_id == ^user.id, select: t.id)
+        |> Repo.all()
+        |> Enum.sort()
+
+      {:ok, {_updated_user, expired_tokens}} =
+        Accounts.update_user_password(user, valid_user_password(), %{
+          password: "new valid password",
+          password_confirmation: "new valid password"
+        })
+
+      returned_ids = Enum.map(expired_tokens, & &1.id) |> Enum.sort()
+
+      assert returned_ids != []
+      assert returned_ids == pre_ids
       refute Repo.get_by(UserToken, user_id: user.id)
     end
   end
@@ -901,5 +985,10 @@ defmodule GtfsPlanner.AccountsTest do
 
       assert get_change(changeset, :password) == padded_password
     end
+  end
+
+  defp insert_email_token(user, context) do
+    {_encoded_token, user_token} = UserToken.build_email_token(user, context)
+    Repo.insert!(user_token)
   end
 end
