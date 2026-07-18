@@ -289,8 +289,10 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
     %{changeset | params: params, changes: changes}
   end
 
-  defp email_form_errors_for(%Phoenix.HTML.Form{} = form, field) do
-    form.source.errors
+  defp email_form_errors_for(%Phoenix.HTML.Form{source: source}, field) do
+    errors = if is_map(source), do: Map.get(source, :errors, []), else: []
+
+    errors
     |> Enum.filter(fn {f, _} -> f == field end)
     |> Enum.map(fn {_, {msg, opts}} -> translate_error(msg, opts) end)
   end

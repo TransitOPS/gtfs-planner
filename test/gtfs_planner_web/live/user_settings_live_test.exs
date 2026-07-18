@@ -4,8 +4,11 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
   import Swoosh.TestAssertions
+  import Ecto.Query
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserToken
+  alias GtfsPlanner.Repo
 
   describe "authenticated mount" do
     test "renders the account-settings surface with exact stable IDs once and no email history",
@@ -237,6 +240,7 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
     test "sends change-email message without changing persisted identity", %{conn: conn} do
       user = user_fixture()
       old_email = user.email
+      proposed_email = "new-valid@example.com"
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/users/settings")
@@ -244,7 +248,7 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
       view
       |> element("#email_form")
       |> render_submit(%{
-        "user" => %{"email" => "new-valid@example.com"},
+        "user" => %{"email" => proposed_email},
         "current_password" => valid_user_password()
       })
 
@@ -255,8 +259,23 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
       reloaded = Accounts.get_user!(user.id)
       assert reloaded.email == old_email
 
-      # Email was sent using Swoosh test adapter
-      assert_email_sent(to: [{"", "new-valid@example.com"}])
+      # Email was sent via Swoosh test adapter to the proposed address,
+      # body contains the authenticated confirmation route
+      assert_email_sent(fn email ->
+        assert email.to == [{"", proposed_email}]
+        assert email.html_body =~ ~r|/users/settings/confirm_email/|
+      end)
+
+      # A change-email token was created with the correct context and sent_to
+      token =
+        Repo.one!(
+          from t in UserToken,
+            where: t.user_id == ^user.id,
+            where: t.context == ^"change:#{old_email}",
+            where: t.sent_to == ^proposed_email
+        )
+
+      assert token
     end
   end
 
