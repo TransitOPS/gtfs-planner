@@ -484,10 +484,14 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
       json = Manifest.encode(manifest)
 
       # Pass empty image map - the extension phase must fail now, not count down.
-      assert {:error, {:image_restore_failed, {:missing_binary, zip_path}}} =
+      # The extension DB transaction committed before the image step failed, so
+      # the committed DB counts are returned alongside the error (AC-3).
+      assert {:error, {:image_restore_failed, {:missing_binary, zip_path}}, committed} =
                Import.import_extensions(org_id, version_id, json, %{})
 
       assert zip_path == "_pathways_extensions/diagrams/station_main/floor.png"
+      assert committed.extensions_stop_levels == 1
+      assert committed.extensions_images == 0
     end
 
     test "returns an explicit error for an unsafe filename path traversal attempt", %{
@@ -525,8 +529,14 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
         "_pathways_extensions/diagrams/station_main/../escape.png" => "fake png"
       }
 
-      assert {:error, {:image_restore_failed, {:write_failed, _zip_path, :unsafe_path}}} =
+      assert {:error, {:image_restore_failed, {:write_failed, _zip_path, :unsafe_path}},
+              committed} =
                Import.import_extensions(org_id, version_id, Manifest.encode(manifest), images)
+
+      # The DB counts committed before the unsafe write are reported; the image
+      # count is zero because no file was written.
+      assert committed.extensions_stop_levels == 1
+      assert committed.extensions_images == 0
 
       uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
       refute File.exists?(Path.join([uploads_path, "diagrams", org_id, "escape.png"]))

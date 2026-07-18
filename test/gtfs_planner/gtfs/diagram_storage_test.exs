@@ -433,6 +433,92 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     end
   end
 
+  describe "delete_version_namespace/2" do
+    test "removes only the exact version namespace, leaving sibling versions intact",
+         %{root: root, organization: org, version: version} do
+      other_version = gtfs_version_fixture(org.id)
+
+      version_dir = Path.join([uploads_root(org.id), version.id])
+      sibling_dir = Path.join([uploads_root(org.id), other_version.id])
+
+      File.mkdir_p!(Path.join([version_dir, "station_a"]))
+      File.write!(Path.join([version_dir, "station_a", "plan.png"]), @import_bytes_a)
+      File.mkdir_p!(Path.join([sibling_dir, "station_b"]))
+      File.write!(Path.join([sibling_dir, "station_b", "plan.png"]), @import_bytes_b)
+
+      assert :ok = DiagramStorage.delete_version_namespace(org.id, version.id)
+
+      refute File.exists?(version_dir)
+      assert File.exists?(sibling_dir)
+      assert File.read!(Path.join([sibling_dir, "station_b", "plan.png"])) == @import_bytes_b
+      # Nothing escaped beyond the org root.
+      assert [] ==
+               Path.wildcard(Path.join([root, "diagrams", "**", "*.png"])) --
+                 [Path.join([sibling_dir, "station_b", "plan.png"])]
+    end
+
+    test "returns ok when the namespace is already absent (idempotent)",
+         %{organization: org, version: version} do
+      assert :ok = DiagramStorage.delete_version_namespace(org.id, version.id)
+      assert :ok = DiagramStorage.delete_version_namespace(org.id, version.id)
+    end
+
+    test "rejects an unsafe organization or version component without deleting",
+         %{root: root, organization: org, version: version} do
+      existing =
+        Path.join([uploads_root(org.id), version.id])
+        |> Path.dirname()
+
+      File.mkdir_p!(existing)
+      File.write!(Path.join([existing, "keep.txt"]), "keep")
+
+      assert {:error, :unsafe_path} =
+               DiagramStorage.delete_version_namespace("../escaped", version.id)
+
+      assert {:error, :unsafe_path} =
+               DiagramStorage.delete_version_namespace(org.id, "../../etc")
+
+      # No broader deletion occurred.
+      assert File.exists?(Path.join([existing, "keep.txt"]))
+      assert [] == Path.wildcard(Path.join([root, "**", "etc"]))
+    end
+
+    test "rejects an unsafe version component without broadening the path",
+         %{root: root, organization: org, version: version} do
+      # Craft a component that fails validation; nothing is deleted and no
+      # broader path is touched. Because safe_path_component? rejects slashes,
+      # the only remaining guard is ensure_within_root, exercised for every
+      # realistic join below.
+      assert {:error, _} = DiagramStorage.delete_version_namespace(org.id, ".")
+
+      # The org root and sibling data remain untouched.
+      assert [] == Path.wildcard(Path.join([root, "diagrams", "**", "*.png"]))
+    end
+
+    test "published-version files in a sibling namespace are preserved",
+         %{root: root, organization: org} do
+      published_version = gtfs_version_fixture(org.id)
+      failed_version = gtfs_version_fixture(org.id)
+
+      published_dir = Path.join([uploads_root(org.id), published_version.id])
+      failed_dir = Path.join([uploads_root(org.id), failed_version.id])
+
+      File.mkdir_p!(Path.join([published_dir, "station_a"]))
+      File.write!(Path.join([published_dir, "station_a", "plan.png"]), @import_bytes_a)
+      File.mkdir_p!(Path.join([failed_dir, "station_a"]))
+      File.write!(Path.join([failed_dir, "station_a", "plan.png"]), @import_bytes_b)
+
+      assert :ok = DiagramStorage.delete_version_namespace(org.id, failed_version.id)
+
+      refute File.exists?(failed_dir)
+      assert File.read!(Path.join([published_dir, "station_a", "plan.png"])) == @import_bytes_a
+
+      assert [] ==
+               Path.wildcard(Path.join([root, "diagrams", "**", "*.png"])) --
+                 [Path.join([published_dir, "station_a", "plan.png"])]
+    end
+  end
+
   defp uploads_root(organization_id) do
     Path.join([Application.fetch_env!(:gtfs_planner, :uploads_path), "diagrams", organization_id])
     |> Path.expand()

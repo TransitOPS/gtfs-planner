@@ -4,25 +4,29 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
 
   The workflow is:
 
-    1. Re-read the target through the organization-scoped lifecycle getter so
-       every decision is made against the current persisted state.
-    2. Atomically claim `staging -> importing`. A losing claim returns before
-       any import write — the module never falls back to another version.
-    3. Import only into the claimed version id via `Import.import_files/4`.
-    4. Reject any result that is not publishable; mark the target failed.
-    5. Any import error marks the exact target failed before publication.
-    6. Conditionally publish `importing -> published`.
-    7. A database publication failure after all asset writes leaves the target
-       `importing` (externally unavailable) and returns a distinct
-       `{:publication_failed, reason}` for reconciliation.
+    1. The caller (Runner, step 5; a temporary bridge in ImportLive for now)
+       has already created a pending target and claimed it into a running run
+       owning the importing version. `Publication.run/4` receives that claimed
+       `%Run{}` plus its execution lease token.
+    2. Import only into the run's exact target version id via
+       `Import.import_files/4`. The run is the only write destination; there is
+       no fallback version.
+    3. Import result handling closes the run exclusively through `ImportRuns`:
+       - publishable result -> `ImportRuns.publish_import/4`
+       - non-publishable result or import error -> `ImportRuns.fail_import/4`
+       - database publication failure -> `ImportRuns.record_publication_failure/5`
+    4. A lost or renewed-away lease during closure yields a non-publishable
+       closure error and never retries inserts.
 
-  The module never accepts a fallback version id: the passed target is the
-  only write destination, and the route/current version is context only.
+  `Publication` never calls generic version claim/publish/fail functions
+  directly; `ImportRuns` is the sole owner of every coupled run + version
+  transition.
   """
 
   alias GtfsPlanner.Gtfs.Import
-  alias GtfsPlanner.Gtfs.Import.Result
-  alias GtfsPlanner.Versions
+  alias GtfsPlanner.Gtfs.Import.{Result, Failure}
+  alias GtfsPlanner.Gtfs.Import.Run
+  alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Versions.GtfsVersion
 
   alias Postgrex.Error, as: PostgrexError
@@ -32,165 +36,189 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
   @telemetry_event [:gtfs_planner, :import_publication, :transition]
   @importing_status "importing"
 
-  @spec run(GtfsVersion.t(), [map()], String.t()) ::
+  @spec run(Run.t(), Ecto.UUID.t(), [map()], String.t()) ::
           {:ok, GtfsVersion.t(), Result.t()}
           | {:error, GtfsVersion.t() | nil, term()}
-  def run(%GtfsVersion{} = target, files, topic) when is_binary(topic) do
-    organization_id = target.organization_id
-    version_id = target.id
+  def run(%Run{} = run, lease_token, files, topic) when is_binary(topic) do
+    organization_id = run.organization_id
+    run_id = run.id
+    version_id = run.gtfs_version_id
 
-    # 1. Re-read the target through the organization-scoped lifecycle getter.
-    case Versions.get_gtfs_version_for_lifecycle(organization_id, version_id) do
-      nil ->
-        emit_failure(nil, organization_id, version_id, "unknown", :not_found)
-        {:error, nil, :not_found}
-
-      target ->
-        run_for_target(target, organization_id, version_id, files, topic)
-    end
-  end
-
-  defp run_for_target(target, organization_id, version_id, files, topic) do
-    # 2. Atomically claim staging -> importing.
-    case Versions.claim_staging_gtfs_version(organization_id, version_id) do
-      {:ok, claimed} ->
-        # 3. Import only into the claimed version id. Never a fallback id.
-        import_and_close(claimed, organization_id, version_id, files, topic)
-
-      {:error, :invalid_status_transition} ->
-        # Losing claim returns before any import write.
-        emit_failure(
-          target,
-          organization_id,
-          version_id,
-          target.publication_status,
-          :invalid_status_transition
-        )
-
-        {:error, target, :invalid_status_transition}
-
-      {:error, :not_found} ->
-        emit_failure(nil, organization_id, version_id, "unknown", :not_found)
-        {:error, nil, :not_found}
-    end
-  end
-
-  defp import_and_close(claimed, organization_id, version_id, files, topic) do
+    # 1. Import only into the claimed version id. Never a fallback id.
     case Import.import_files(organization_id, version_id, files, topic) do
       {:ok, %Result{} = result} ->
-        if Import.Result.publishable?(result) do
-          publish_or_fail(claimed, organization_id, version_id, result)
+        Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, topic, {:import_phase, :publication})
+
+        if Result.publishable?(result) do
+          publish_or_fail(run, organization_id, run_id, version_id, lease_token, result)
         else
-          # Non-publishable result: mark the exact target failed, never publish.
-          fail_target(claimed, organization_id, version_id, {:import_not_publishable, result})
+          # Non-publishable result: close the run failed, never publish.
+          fail_target(
+            run,
+            organization_id,
+            run_id,
+            version_id,
+            lease_token,
+            {:import_not_publishable, result}
+          )
         end
 
-      {:error, reason} ->
-        # Import error: mark the exact target failed, never publish.
-        fail_target(claimed, organization_id, version_id, reason)
+      {:error, %Failure{} = failure} ->
+        # Import error: close the run failed, never publish. The import
+        # returned a fully-formed Failure carrying sanitized file/row.
+        fail_target(run, organization_id, run_id, version_id, lease_token, failure)
     end
   end
 
-  defp publish_or_fail(claimed, organization_id, version_id, result) do
-    try do
-      case Versions.publish_importing_gtfs_version(organization_id, version_id) do
-        {:ok, published} ->
-          {:ok, published, result}
+  defp publish_or_fail(run, organization_id, run_id, version_id, lease_token, result) do
+    case ImportRuns.publish_import(organization_id, run_id, lease_token, result) do
+      {:ok, _run, version} ->
+        emit_failure(run, organization_id, run_id, version_id, "published", nil)
+        {:ok, version, result}
 
-        {:error, reason} ->
-          # Database publication failure AFTER all asset writes: leave the target
-          # importing (externally unavailable) and return a distinct error for
-          # Package 3 reconciliation. Do NOT mark it failed.
-          emit_failure(
-            claimed,
-            organization_id,
-            version_id,
-            @importing_status,
-            :publication_failed,
-            reason
-          )
+      {:error, :invalid_transition} ->
+        # Lease/token was not the active execution owner: treat as a
+        # non-publishable closure error and never retry inserts.
+        emit_failure(run, organization_id, run_id, version_id, @importing_status, :lease_lost)
+        {:error, read_version(organization_id, version_id), :lease_lost}
 
-          {:error, claimed, {:publication_failed, reason}}
-      end
-    rescue
-      # A real database publication failure (e.g. check constraint violation on
-      # the importing -> published transition) raises rather than returning
-      # {:error, :invalid_status_transition}. Leave the target importing and
-      # return a distinct error for reconciliation. Do NOT mark it failed.
-      e in PostgrexError ->
-        emit_failure(
-          claimed,
+      {:error, reason} ->
+        # A real database publication failure AFTER all asset writes: record the
+        # run as publication_failed (version stays importing, externally
+        # unavailable) and return a distinct error for Package 3 reconciliation.
+        # Do NOT mark it failed.
+        record_publication_failure_or_lease_lost(
+          run,
           organization_id,
+          run_id,
+          version_id,
+          lease_token,
+          result,
+          reason
+        )
+    end
+  rescue
+    # A Postgres publication failure (e.g. check-constraint violation) raises
+    # rather than returning {:error, :invalid_status_transition}. Leave the
+    # version importing and record publication_failed for reconciliation. Do NOT
+    # mark it failed.
+    e in PostgrexError ->
+      record_publication_failure_or_lease_lost(
+        run,
+        organization_id,
+        run_id,
+        version_id,
+        lease_token,
+        result,
+        e
+      )
+  end
+
+  defp record_publication_failure_or_lease_lost(
+         run,
+         organization_id,
+         run_id,
+         version_id,
+         lease_token,
+         result,
+         reason
+       ) do
+    case ImportRuns.record_publication_failure(
+           organization_id,
+           run_id,
+           lease_token,
+           result,
+           :publication_failed
+         ) do
+      {:ok, _run} ->
+        emit_failure(
+          run,
+          organization_id,
+          run_id,
           version_id,
           @importing_status,
           :publication_failed,
-          e
-        )
-
-        {:error, claimed, {:publication_failed, e}}
-    end
-  end
-
-  defp fail_target(claimed, organization_id, version_id, reason) do
-    case Versions.fail_unpublished_gtfs_version(organization_id, version_id) do
-      {:ok, failed} ->
-        emit_failure(
-          claimed,
-          organization_id,
-          version_id,
-          failed.publication_status,
-          :import_failed,
           reason
         )
 
-        {:error, failed, reason}
+        {:error, read_version(organization_id, version_id), {:publication_failed, reason}}
 
-      {:error, fail_reason} ->
+      {:error, :invalid_transition} ->
+        emit_failure(run, organization_id, run_id, version_id, @importing_status, :lease_lost)
+        {:error, read_version(organization_id, version_id), :lease_lost}
+
+      {:error, reason} ->
+        {:error, read_version(organization_id, version_id), reason}
+    end
+  end
+
+  defp fail_target(run, organization_id, run_id, version_id, lease_token, %Failure{} = failure) do
+    fail_target_via_import_runs(run, organization_id, run_id, version_id, lease_token, failure)
+  end
+
+  defp fail_target(run, organization_id, run_id, version_id, lease_token, reason) do
+    failure = Failure.from_error(reason, phase: :phase_2, outcome: :failed)
+
+    fail_target_via_import_runs(run, organization_id, run_id, version_id, lease_token, failure)
+  end
+
+  defp fail_target_via_import_runs(
+         run,
+         organization_id,
+         run_id,
+         version_id,
+         lease_token,
+         failure
+       ) do
+    case ImportRuns.fail_import(organization_id, run_id, lease_token, failure) do
+      {:ok, _run, version} ->
         emit_failure(
-          claimed,
+          run,
           organization_id,
+          run_id,
           version_id,
-          claimed.publication_status,
-          :failed_transition,
-          {reason, fail_reason}
+          version.publication_status,
+          :import_failed,
+          failure
         )
 
-        {:error, claimed, {:failed_transition, reason, fail_reason}}
+        {:error, version, failure}
+
+      {:error, :invalid_transition} ->
+        # Lost/renewed-away lease: non-publishable closure error, no insert retry.
+        emit_failure(run, organization_id, run_id, version_id, @importing_status, :lease_lost)
+        {:error, read_version(organization_id, version_id), :lease_lost}
+
+      {:error, reason} ->
+        {:error, read_version(organization_id, version_id), reason}
+    end
+  end
+
+  defp read_version(organization_id, version_id) do
+    case GtfsPlanner.Versions.get_gtfs_version_for_lifecycle(organization_id, version_id) do
+      nil -> nil
+      version -> version
     end
   end
 
   defp emit_failure(
-         target,
+         _run,
          organization_id,
+         _run_id,
          version_id,
          new_state,
          failure_class,
          inner_reason \\ nil
-       )
-
-  defp emit_failure(
-         nil,
-         organization_id,
-         version_id,
-         new_state,
-         failure_class,
-         _inner_reason
        ) do
-    emit_failure_metadata(organization_id, version_id, "unknown", new_state, failure_class)
-  end
+    # `prior_state`/`new_state` track the target version publication_status
+    # across the closure: the run is running and its version is importing until
+    # the closure transition resolves it.
+    prior_state = @importing_status
 
-  defp emit_failure(
-         %GtfsVersion{} = target,
-         organization_id,
-         version_id,
-         new_state,
-         failure_class,
-         inner_reason
-       ) do
     emit_failure_metadata(
       organization_id,
       version_id,
-      target.publication_status,
+      prior_state,
       new_state,
       failure_class,
       inner_reason
@@ -203,7 +231,7 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
          prior_state,
          new_state,
          failure_class,
-         inner_reason \\ nil
+         inner_reason
        ) do
     metadata = %{
       organization_id: organization_id,

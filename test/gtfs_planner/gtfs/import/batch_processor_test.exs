@@ -350,6 +350,51 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
   end
 
   describe "insert_batched_with_transactions/5" do
+    test "returns {:error, reason, committed_count} carrying durable committed rows", %{
+      organization_id: org_id,
+      gtfs_version_id: version_id,
+      topic: topic
+    } do
+      # Two full batches (L1, L2) commit before a row-conversion error rejects the
+      # third chunk. The committed count reports exactly the durable rows.
+      events = [
+        {:ok, 2, %{"level_id" => "L1", "level_index" => "1.0"}},
+        {:ok, 3, %{"level_id" => "L2", "level_index" => "2.0"}},
+        {:ok, 4, %{"level_id" => "", "level_index" => "3.0"}}
+      ]
+
+      row_to_attrs_fn = fn row, organization_id, gtfs_version_id ->
+        if row["level_id"] == "" do
+          {:error, "missing level_id"}
+        else
+          {level_index, _} = Float.parse(row["level_index"])
+
+          {:ok,
+           %{
+             level_id: row["level_id"],
+             level_index: level_index,
+             organization_id: organization_id,
+             gtfs_version_id: gtfs_version_id
+           }}
+        end
+      end
+
+      assert {:error, %{file: "levels.txt", row: 4, reason: "missing level_id"}, 2} =
+               BatchProcessor.insert_batched_with_transactions(
+                 Repo,
+                 Level,
+                 events,
+                 row_to_attrs_fn,
+                 organization_id: org_id,
+                 gtfs_version_id: version_id,
+                 file_name: "levels.txt",
+                 topic: topic,
+                 batch_size: 2
+               )
+
+      assert Repo.all(Level) |> Enum.map(& &1.level_id) |> Enum.sort() == ["L1", "L2"]
+    end
+
     test "commits complete batches, discards the error batch, and stops consuming", %{
       organization_id: org_id,
       gtfs_version_id: version_id,
@@ -390,7 +435,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessorTest do
 
       Process.put(:bp_transaction_consumed, [])
 
-      assert {:error, %GtfsPlanner.Gtfs.Import.ParseError{row: 5}} =
+      assert {:error, %GtfsPlanner.Gtfs.Import.ParseError{row: 5}, 2} =
                BatchProcessor.insert_batched_with_transactions(
                  Repo,
                  Level,

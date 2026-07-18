@@ -10,6 +10,11 @@ defmodule GtfsPlanner.MixProject do
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
+      test_coverage: [summary: [threshold: 77]],
+      dialyzer: [
+        plt_local_path: "priv/plts",
+        ignore_warnings: ".dialyzer_ignore.exs"
+      ],
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       listeners: [Phoenix.CodeReloader]
     ]
@@ -75,6 +80,8 @@ defmodule GtfsPlanner.MixProject do
       {:argon2_elixir, "~> 4.1"},
       {:ex_cldr_plugs, "~> 1.3"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: :dev, runtime: false},
+      {:sobelow, "~> 0.14.1", only: :dev, runtime: false},
       {:live_select, "~> 1.4"},
       {:dotenv_parser, "~> 2.0"}
     ]
@@ -109,7 +116,7 @@ defmodule GtfsPlanner.MixProject do
         "compile --warnings-as-errors",
         "deps.unlock --unused",
         "format",
-        "credo",
+        "credo diff --from-git-ref origin/main --strict",
         "test"
       ]
     ]

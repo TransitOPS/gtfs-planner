@@ -164,8 +164,17 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "stops.txt", content: stops_content}
       ]
 
-      # Should fail due to duplicate level_id constraint
-      assert {:error, _reason} = Import.import_files(organization.id, gtfs_version.id, files)
+      # Should fail due to duplicate level_id constraint. Phase 1 runs in one
+      # outer transaction, so the failure rolls everything back: all standard
+      # counts are zero and the outcome is a certain :failed (AC-2).
+      assert {:error, %Import.Failure{} = failure} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert failure.outcome == :failed
+      assert failure.phase == :phase_1
+      assert failure.counts_complete == true
+      assert failure.reason_code == "constraint_violation"
+      assert Enum.all?(failure.committed_counts, fn {_key, count} -> count == 0 end)
 
       # Verify no new levels were created (only the original one exists)
       levels = Gtfs.list_levels(organization.id, gtfs_version.id)
@@ -391,8 +400,14 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "stops.txt", content: stops_content}
       ]
 
-      assert {:error, %Import.ParseError{file: "levels.txt", reason: :duplicate_header}} =
+      assert {:error, %Import.Failure{} = failure} =
                Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert failure.outcome == :failed
+      assert failure.phase == :phase_1
+      assert failure.counts_complete == true
+      assert failure.reason_code == "duplicate_header"
+      assert failure.failed_file == "levels.txt"
 
       # No levels and no stops were inserted: the Phase 1 transaction rolled back.
       assert Gtfs.list_levels(organization.id, gtfs_version.id) == []
@@ -415,8 +430,18 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "shapes.txt", content: shapes_content}
       ]
 
-      assert {:error, %Import.ParseError{file: "shapes.txt", reason: :duplicate_header}} =
+      # Phase 1 (levels) commits durably before the Phase 2 shapes header fails,
+      # so the outcome is :partial and the sanitized file names the failing file.
+      assert {:error, %Import.Failure{} = failure} =
                Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert failure.outcome == :partial
+      assert failure.phase == :phase_2
+      assert failure.counts_complete == true
+      assert failure.reason_code == "duplicate_header"
+      assert failure.failed_file == "shapes.txt"
+      assert failure.committed_counts.levels == 1
+      assert failure.committed_counts.shapes == 0
 
       shapes =
         GtfsPlanner.Repo.all(Gtfs.Shape)
@@ -461,6 +486,34 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
   describe "registry coverage" do
     test "import and liveview recognized filename sets match" do
       assert MapSet.new(Import.supported_filenames()) == ImportLive.recognized_gtfs_filenames()
+    end
+  end
+
+  describe "cleanup_schemas/0 manifest" do
+    test "every supported filename maps to a cleanup-owned schema (INV-4)" do
+      # Cleanup ownership shares the same source list as supported_filenames/0,
+      # so a supported file cannot exist without cleanup ownership.
+      owned_schemas = MapSet.new(Import.cleanup_schemas())
+
+      # Every import spec schema must be present in the cleanup manifest.
+      for {_key, _filename, schema, _parser, _phase} <- GtfsPlanner.Gtfs.Import.import_specs() do
+        assert MapSet.member?(owned_schemas, schema),
+               "schema #{inspect(schema)} is supported but missing from cleanup manifest"
+      end
+    end
+
+    test "StopLevel is first and the rest follow reverse import dependency order" do
+      schemas = Import.cleanup_schemas()
+
+      assert hd(schemas) == GtfsPlanner.Gtfs.StopLevel
+
+      import_schemas = Enum.map(Import.import_specs(), fn {_k, _f, s, _p, _ph} -> s end)
+
+      # After StopLevel, the remainder must equal the import schemas reversed.
+      assert tl(schemas) == Enum.reverse(import_schemas)
+
+      # And the manifest is exactly one StopLevel plus every import schema.
+      assert length(schemas) == length(import_schemas) + 1
     end
   end
 
@@ -977,12 +1030,22 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       manifest = manifest_with_image()
       zip_binary = full_feed_with_extensions(manifest, %{}, omit_image: true)
 
-      assert {:error, {:image_restore_failed, {:missing_binary, zip_path}}} =
+      assert {:error, %Import.Failure{} = failure} =
                Import.import_files(organization.id, gtfs_version.id, [
                  %{filename: "gtfs.zip", content: zip_binary}
                ])
 
-      assert zip_path == "_pathways_extensions/diagrams/32095/lvl.png"
+      assert failure.phase == :extensions
+      assert failure.reason_code == "missing_image"
+      assert failure.counts_complete == true
+      # The extension DB transaction committed before the image step failed, so
+      # the standard counts and extension DB counts are durable while the image
+      # count is zero (AC-3). No raw zip path is stored anywhere.
+      assert failure.committed_counts.levels == 1
+      assert failure.committed_counts.stops == 1
+      assert failure.committed_counts.extensions_stop_levels == 1
+      assert failure.committed_counts.extensions_images == 0
+      refute has_raw_term?(failure)
     end
 
     test "unsafe image path fails the whole import", %{
@@ -1042,10 +1105,14 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
           [:memory]
         )
 
-      assert {:error, {:image_restore_failed, {:write_failed, _zip_path, :unsafe_path}}} =
+      assert {:error, %Import.Failure{} = failure} =
                Import.import_files(organization.id, gtfs_version.id, [
                  %{filename: "gtfs.zip", content: zip_binary}
                ])
+
+      assert failure.phase == :extensions
+      assert failure.reason_code == "image_write_failed"
+      refute has_raw_term?(failure)
     end
 
     test "extension database failure (missing reference) fails the whole import", %{
@@ -1066,11 +1133,139 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       zip_binary = full_feed_with_extensions(manifest, %{})
 
-      assert {:error, {:missing_references, _refs}} =
+      assert {:error, %Import.Failure{} = failure} =
                Import.import_files(organization.id, gtfs_version.id, [
                  %{filename: "gtfs.zip", content: zip_binary}
                ])
+
+      assert failure.phase == :extensions
+      assert failure.reason_code == "missing_references"
+      refute has_raw_term?(failure)
     end
+  end
+
+  describe "durable failure counts" do
+    alias GtfsPlanner.Gtfs
+
+    setup do
+      organization = GtfsPlanner.OrganizationsFixtures.organization_fixture()
+      gtfs_version = GtfsPlanner.VersionsFixtures.gtfs_version_fixture(organization.id)
+
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "a malformed row after two committed Phase 2 batches yields a partial failure (AC-1)",
+         %{organization: organization, gtfs_version: gtfs_version} do
+      levels_content = "level_id,level_index,level_name\nL1,0.0,Ground Floor\n"
+
+      stops_content =
+        "stop_id,stop_name,stop_lat,stop_lon,level_id,location_type,wheelchair_boarding\n" <>
+          "S1,Main,40.7,-74.0,L1,1,1\n"
+
+      # @batch_size is compile-time 1000 with no test override. Generate more than
+      # two batch sizes of valid rows followed by one malformed row so exactly two
+      # full batches (2,000 rows) commit before the failing chunk is rejected.
+      valid_row_count = 2100
+
+      valid_rows =
+        Enum.map_join(1..valid_row_count, "", fn n -> "T1,S#{n},#{n},08:00:00,08:00:00\n" end)
+
+      stop_times =
+        "trip_id,stop_id,stop_sequence,arrival_time,departure_time\n" <>
+          valid_rows <>
+          "T1,SBAD,not_a_number,08:00:00,08:00:00\n"
+
+      # Header is physical row 1; data rows begin at physical row 2, so the bad
+      # record (data row 2101) sits at physical row 2102.
+      bad_physical_row = valid_row_count + 2
+
+      files = [
+        %{filename: "levels.txt", content: levels_content},
+        %{filename: "stops.txt", content: stops_content},
+        %{filename: "stop_times.txt", content: stop_times}
+      ]
+
+      assert {:error, %Import.Failure{} = failure} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert failure.outcome == :partial
+      assert failure.phase == :phase_2
+      assert failure.counts_complete == true
+      assert failure.reason_code == "row_invalid"
+      assert failure.failed_file == "stop_times.txt"
+      assert failure.failed_row == bad_physical_row
+
+      # Exactly two committed batches for the failing file, plus the durable
+      # Phase 1 counts.
+      assert failure.committed_counts.stop_times == 2000
+      assert failure.committed_counts.levels == 1
+      assert failure.committed_counts.stops == 1
+      assert failure.committed_counts.shapes == 0
+
+      # The durable rows match the reported count and are scoped to the target.
+      persisted =
+        Gtfs.StopTime
+        |> where([st], st.gtfs_version_id == ^gtfs_version.id)
+        |> GtfsPlanner.Repo.aggregate(:count)
+
+      assert persisted == 2000
+
+      refute has_raw_term?(failure)
+    end
+
+    test "a Phase 1 failure reports every standard count as a certain zero (AC-2)", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      # Duplicate level_id inside the same file rolls the Phase 1 transaction back.
+      levels_content = "level_id,level_index,level_name\nL1,0.0,Ground\nL1,1.0,Platform\n"
+
+      files = [%{filename: "levels.txt", content: levels_content}]
+
+      assert {:error, %Import.Failure{} = failure} =
+               Import.import_files(organization.id, gtfs_version.id, files)
+
+      assert failure.outcome == :failed
+      assert failure.phase == :phase_1
+      assert failure.counts_complete == true
+
+      assert MapSet.new(Map.keys(failure.committed_counts)) ==
+               MapSet.new(Import.supported_count_keys())
+
+      assert Enum.all?(failure.committed_counts, fn {_key, count} -> count == 0 end)
+      refute has_raw_term?(failure)
+    end
+  end
+
+  # Guards INV-3/AC-16: a persisted failure must never leak raw error terms,
+  # exception messages, SQL, stack traces, or filesystem paths.
+  defp has_raw_term?(%Import.Failure{} = failure) do
+    attrs = Import.Failure.to_run_attrs(failure)
+
+    reason_bad? = failure.reason_code not in Import.Failure.reason_codes()
+
+    file_bad? =
+      case failure.failed_file do
+        nil -> false
+        file -> String.contains?(file, ["/", "\\"]) or String.length(file) > 255
+      end
+
+    row_bad? =
+      case failure.failed_row do
+        nil -> false
+        row -> not (is_integer(row) and row > 0)
+      end
+
+    counts_bad? =
+      Enum.any?(failure.committed_counts, fn {_key, value} ->
+        not (is_integer(value) and value >= 0)
+      end)
+
+    attrs_bad? =
+      not (is_binary(attrs.reason_code) and is_binary(attrs.phase) and
+             is_boolean(attrs.counts_complete))
+
+    reason_bad? or file_bad? or row_bad? or counts_bad? or attrs_bad?
   end
 
   defp with_entry_limit_unset(fun) do

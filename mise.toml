@@ -42,7 +42,7 @@ run = "mix format --check-formatted"
 
 [tasks."lint:elixir:credo"]
 depends = ["elixir:deps"]
-run = "mix credo"
+run = "mix credo diff --from-git-ref origin/main --strict"
 
 [tasks."lint:elixir:sobelow"]
 depends = ["elixir:deps"]

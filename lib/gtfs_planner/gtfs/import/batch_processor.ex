@@ -70,12 +70,14 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
   ## Returns
 
     * `{:ok, total_inserted}` - On success, returns count of inserted rows
-    * `{:error, reason}` - On failure, returns error details
+    * `{:error, reason, committed_count}` - On failure, returns error details plus
+      the number of rows durably committed in earlier batches before the failure
 
   ## Notes
 
   Each batch is committed immediately. If an error occurs mid-import, partial data
-  will remain in the database. The caller should handle cleanup if needed.
+  will remain in the database. The caller should handle cleanup if needed. The
+  returned `committed_count` is the durable row count that survived the failure.
 
   Progress events are broadcast via PubSub as:
   `{:import_progress, %{file: file_name, processed: count, total: total}}`
@@ -109,6 +111,13 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     |> finalize_batches(config)
   end
 
+  # Non-transactional imports run inside a single caller-owned transaction, so a
+  # mid-import failure rolls everything back and there is no durable committed
+  # count to report. Transactional imports commit each batch immediately, so the
+  # count that survived the failure is reported to the caller.
+  defp emit_error(reason, _committed, %{transactional?: false}), do: {:error, reason}
+  defp emit_error(reason, committed, %{transactional?: true}), do: {:error, reason, committed}
+
   defp reduce_event(event, {:ok, inserted, attrs, attrs_count}, row_to_attrs_fn, config) do
     event
     |> convert_event(
@@ -120,14 +129,14 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     |> accumulate_event(inserted, attrs, attrs_count, config)
   end
 
-  defp accumulate_event({:error, reason}, _inserted, _attrs, _attrs_count, _config),
-    do: {:halt, {:error, reason}}
+  defp accumulate_event({:error, reason}, inserted, _attrs, _attrs_count, _config),
+    do: {:halt, {:error, reason, inserted}}
 
   defp accumulate_event({:ok, attr}, inserted, attrs, attrs_count, config)
        when attrs_count + 1 == config.batch_size do
     case flush_batch(Enum.reverse([attr | attrs]), inserted, config) do
       {:ok, batch_count} -> {:cont, {:ok, inserted + batch_count, [], 0}}
-      {:error, reason} -> {:halt, {:error, reason}}
+      {:error, reason} -> {:halt, {:error, reason, inserted}}
     end
   end
 
@@ -135,13 +144,15 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
     {:cont, {:ok, inserted, [attr | attrs], attrs_count + 1}}
   end
 
-  defp finalize_batches({:error, reason}, _config), do: {:error, reason}
+  defp finalize_batches({:error, reason, committed}, config),
+    do: emit_error(reason, committed, config)
+
   defp finalize_batches({:ok, inserted, [], 0}, _config), do: {:ok, inserted}
 
   defp finalize_batches({:ok, inserted, attrs, _attrs_count}, config) do
     case flush_batch(Enum.reverse(attrs), inserted, config) do
       {:ok, batch_count} -> {:ok, inserted + batch_count}
-      {:error, reason} -> {:error, reason}
+      {:error, reason} -> emit_error(reason, inserted, config)
     end
   end
 

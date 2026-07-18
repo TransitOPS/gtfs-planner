@@ -34,4 +34,28 @@ defmodule GtfsPlanner.Gtfs.Import.Result do
       }) do
     archive_warnings == [] and extensions in [:not_present, :complete]
   end
+
+  @doc """
+  Serializes a successful completion into the bounded, sanitized attributes
+  accepted by the `Import.Run` changeset.
+
+  A successful import has complete, durable counts, so `counts_complete` is
+  always `true`. Only non-negative integer counts are emitted; the caller owns
+  `state` and all lease/timestamp fields.
+  """
+  @spec to_run_attrs(t()) :: map()
+  def to_run_attrs(%__MODULE__{counts: counts}) do
+    %{
+      committed_counts: sanitize_counts(counts),
+      counts_complete: true
+    }
+  end
+
+  defp sanitize_counts(counts) when is_map(counts) do
+    counts
+    |> Enum.filter(fn {_key, value} -> is_integer(value) and value >= 0 end)
+    |> Map.new()
+  end
+
+  defp sanitize_counts(_counts), do: %{}
 end

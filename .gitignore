@@ -30,6 +30,7 @@ gtfs_planner-*.tar
 
 # Ignore digested assets cache.
 /priv/static/cache_manifest.json
+/priv/plts/
 
 # Ignore Phoenix digested static files (files with content hashes)
 # Pattern: filename-[32-char-hex-hash].ext

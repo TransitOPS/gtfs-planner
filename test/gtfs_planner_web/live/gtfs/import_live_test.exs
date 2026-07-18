@@ -2,6 +2,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
   use GtfsPlannerWeb.ConnCase
 
   import Phoenix.LiveViewTest
+  import Ecto.Query
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
@@ -9,10 +10,24 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Import.{Recovery, Run}
+  alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
   @levels_content "level_id,level_index,level_name\nL1,0.0,Ground"
   @stops_content "stop_id,stop_name,stop_lat,stop_lon,level_id\nS1,Stop 1,1.0,1.0,L1"
+
+  defmodule BlockingCleanupWorker do
+    def run(organization_id, run_id, lease_token) do
+      owner = Application.fetch_env!(:gtfs_planner, :blocking_cleanup_worker_owner)
+      send(owner, {:blocking_cleanup_worker_started, self()})
+
+      receive do
+        :continue ->
+          Recovery.run(organization_id, run_id, lease_token)
+      end
+    end
+  end
 
   defp editor_context(_context) do
     organization = organization_fixture()
@@ -31,14 +46,55 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
   # Deterministically wait for the supervised publication task to finish, then
   # flush the LiveView mailbox by rendering. No sleeps: we monitor the task
-  # process and assert on its DOWN message.
+  # process and assert on its DOWN message. The supervised Runner broadcasts
+  # `{:import_run_changed, run_id}` only after the task exits, so we re-render
+  # until the LiveView has applied the terminal transition (the "Importing"
+  # CTA returns to idle) rather than racing the broadcast.
   defp await_import_task(view) do
     for pid <- Task.Supervisor.children(GtfsPlanner.TaskSupervisor) do
       ref = Process.monitor(pid)
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 15_000
     end
 
-    render(view)
+    await_import_settled(view, 100)
+  end
+
+  defp await_import_settled(view, 0), do: render(view)
+
+  defp await_import_settled(view, tries) do
+    html = render(view)
+
+    if html =~ "Importing" do
+      await_import_settled(view, tries - 1)
+    else
+      html
+    end
+  end
+
+  defp await_cleanup_task(view) do
+    runner_pids =
+      GtfsPlanner.Gtfs.Import.RunnerSupervisor
+      |> DynamicSupervisor.which_children()
+      |> Enum.map(fn {_, pid, _, _} -> pid end)
+
+    for pid <- runner_pids do
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 15_000
+    end
+
+    await_cleanup_settled(view, 100)
+  end
+
+  defp await_cleanup_settled(view, 0), do: render(view)
+
+  defp await_cleanup_settled(view, tries) do
+    state = :sys.get_state(view.pid)
+
+    if state.socket.assigns.processing_discard do
+      await_cleanup_settled(view, tries - 1)
+    else
+      render(view)
+    end
   end
 
   defp put_socket_assigns(view, assigns) do
@@ -556,7 +612,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
 
       # Simulate an import already in progress.
-      put_socket_assigns(view, %{importing: true, import_task: make_ref()})
+      put_socket_assigns(view, %{importing: true})
 
       before_count = length(all_versions(organization.id))
       submit_import(view, "Should Not Create")
@@ -606,6 +662,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert target
       assert target.publication_status == "failed"
 
+      run =
+        from(r in GtfsPlanner.Gtfs.Import.Run,
+          where: r.organization_id == ^organization.id and r.gtfs_version_id == ^target.id
+        )
+        |> GtfsPlanner.Repo.one!()
+
+      assert run.state == "failed"
+      assert run.reason_code == "unknown_error"
+      assert is_nil(run.lease_token)
+
       # No task started and no rows written to any version.
       assert Task.Supervisor.children(GtfsPlanner.TaskSupervisor) == []
       refute Gtfs.get_level_by_level_id(organization.id, route_version.id, "L1")
@@ -616,82 +682,95 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
     end
   end
 
-  describe "task terminal states" do
+  describe "recovery UI" do
     setup :editor_context
 
-    test "DOWN fails a still-importing target", %{
+    defp insert_run(organization_id, version, state, opts \\ []) do
+      attrs =
+        opts
+        |> Keyword.merge(
+          organization_id: organization_id,
+          gtfs_version_id: version.id,
+          version_name: version.name,
+          state: state,
+          committed_counts: Keyword.get(opts, :committed_counts, %{}),
+          counts_complete: Keyword.get(opts, :counts_complete, true),
+          failed_file: Keyword.get(opts, :failed_file),
+          failed_row: Keyword.get(opts, :failed_row),
+          finished_at: Keyword.get_lazy(opts, :finished_at, fn -> DateTime.utc_now() end)
+        )
+        |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+        |> Map.new()
+
+      GtfsPlanner.Repo.insert!(struct(GtfsPlanner.Gtfs.Import.Run, attrs))
+    end
+
+    test "mount streams recoverable runs with stable ids and a distinct action per state", %{
       conn: conn,
       user: user,
       organization: organization,
       gtfs_version: route_version
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
 
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Crashing"})
-      {:ok, importing} = Versions.claim_staging_gtfs_version(organization.id, staging.id)
+      {:ok, failed_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "F1"})
+      {:ok, failed_v} = Versions.fail_unpublished_gtfs_version(organization.id, failed_v.id)
+      insert_run(organization.id, failed_v, "failed")
 
-      ref = make_ref()
-      put_socket_assigns(view, %{import_task: ref, import_target: importing, importing: true})
+      {:ok, partial_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "P1"})
+      {:ok, partial_v} = Versions.fail_unpublished_gtfs_version(organization.id, partial_v.id)
 
-      send(view.pid, {:DOWN, ref, :process, self(), :killed})
-      render(view)
+      insert_run(organization.id, partial_v, "partial",
+        committed_counts: %{levels: 5, stops: 10},
+        failed_file: "stops.txt",
+        failed_row: 3
+      )
 
-      failed = Versions.get_gtfs_version_for_lifecycle(organization.id, importing.id)
-      assert failed.publication_status == "failed"
+      {:ok, inter_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "I1"})
+      {:ok, inter_v} = Versions.fail_unpublished_gtfs_version(organization.id, inter_v.id)
+      insert_run(organization.id, inter_v, "interrupted", counts_complete: false)
+
+      {:ok, pubfail_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "PF1"})
+      {:ok, pubfail_v} = Versions.claim_staging_gtfs_version(organization.id, pubfail_v.id)
+
+      insert_run(organization.id, pubfail_v, "publication_failed",
+        committed_counts: %{levels: 1},
+        counts_complete: true
+      )
+
+      {:ok, view, html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      # Stable streamed cards with stable ids per run.
+      assert has_element?(view, "#import-recovery-runs")
+
+      assert has_element?(
+               view,
+               "#import-run-#{GtfsPlanner.Repo.get_by(GtfsPlanner.Gtfs.Import.Run, version_name: "F1").id}"
+             )
+
+      assert has_element?(
+               view,
+               "#import-run-#{GtfsPlanner.Repo.get_by(GtfsPlanner.Gtfs.Import.Run, version_name: "P1").id}"
+             )
+
+      assert has_element?(
+               view,
+               "#import-run-#{GtfsPlanner.Repo.get_by(GtfsPlanner.Gtfs.Import.Run, version_name: "I1").id}"
+             )
+
+      assert has_element?(
+               view,
+               "#import-run-#{GtfsPlanner.Repo.get_by(GtfsPlanner.Gtfs.Import.Run, version_name: "PF1").id}"
+             )
+
+      # Each non-active state renders its distinct next action.
+      assert html =~ "Discard failed import"
+      assert html =~ "Publish version"
+      # partial/failed/interrupted/cleanup_failed share discard only
+      assert html =~ "counts are uncertain" or render(view) =~ "counts are uncertain"
     end
 
-    test "DOWN never overwrites a terminal (failed) target", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: route_version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
-
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Terminal"})
-      {:ok, _importing} = Versions.claim_staging_gtfs_version(organization.id, staging.id)
-      {:ok, already_failed} = Versions.fail_unpublished_gtfs_version(organization.id, staging.id)
-
-      ref = make_ref()
-
-      put_socket_assigns(view, %{import_task: ref, import_target: already_failed, importing: true})
-
-      send(view.pid, {:DOWN, ref, :process, self(), :killed})
-      render(view)
-
-      still_failed = Versions.get_gtfs_version_for_lifecycle(organization.id, staging.id)
-      assert still_failed.publication_status == "failed"
-    end
-
-    test "publication failure result leaves the target importing and names it", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: route_version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
-
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "PubFail"})
-      {:ok, importing} = Versions.claim_staging_gtfs_version(organization.id, staging.id)
-
-      ref = make_ref()
-      put_socket_assigns(view, %{import_task: ref, import_target: importing, importing: true})
-
-      send(view.pid, {ref, {:error, importing, {:publication_failed, :db_down}}})
-      html = render(view)
-
-      assert html =~ "Publication failed"
-      assert html =~ "PubFail"
-
-      # The LiveView must not overwrite the importing state; it stays importing.
-      current = Versions.get_gtfs_version_for_lifecycle(organization.id, importing.id)
-      assert current.publication_status == "importing"
-    end
-
-    test "a task interruption preserves the visible version and never surfaces the target as published",
+    test "partial cards show durable counts and sanitized file/row; interrupted states uncertainty",
          %{
            conn: conn,
            user: user,
@@ -699,33 +778,249 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
            gtfs_version: route_version
          } do
       conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, partial_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "Counts"})
+      {:ok, partial_v} = Versions.fail_unpublished_gtfs_version(organization.id, partial_v.id)
+
+      insert_run(organization.id, partial_v, "partial",
+        committed_counts: %{levels: 5, stops: 12, pathways: 3},
+        failed_file: "stops.txt",
+        failed_row: 7
+      )
+
+      {:ok, inter_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "Unc"})
+      {:ok, inter_v} = Versions.fail_unpublished_gtfs_version(organization.id, inter_v.id)
+      insert_run(organization.id, inter_v, "interrupted", counts_complete: false)
+
       {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+      html = render(view)
 
-      {:ok, staging} =
-        Versions.create_staging_gtfs_version(organization.id, %{name: "Interrupted"})
+      # Durable counts + sanitized file/row are shown, never raw internals.
+      assert html =~ "5 levels"
+      assert html =~ "12 stops"
+      assert html =~ "3 pathways"
+      assert html =~ "stops.txt"
+      assert html =~ "row 7"
 
-      {:ok, importing} = Versions.claim_staging_gtfs_version(organization.id, staging.id)
-
-      ref = make_ref()
-      put_socket_assigns(view, %{import_task: ref, import_target: importing, importing: true})
-
-      # A monitored task interruption (parser process failure / crash) rather than
-      # a returned result.
-      send(view.pid, {:DOWN, ref, :process, self(), :killed})
-      render(view)
-
-      # The interrupted target is never externally available as published (AC-15,
-      # INV-3) — asserted without requiring a terminal failed status.
-      refute Versions.published_gtfs_version_for_org?(organization.id, importing.id)
-
-      # The visible/current route version is preserved and stays published.
-      assert Versions.published_gtfs_version_for_org?(organization.id, route_version.id)
-
-      # The destination region still promises the current version remains available.
-      assert has_element?(view, "#gtfs-import-destination")
+      # Interrupted states uncertainty, no counts rendered.
+      assert html =~ "uncertain"
+      refute html =~ "inspect("
+      refute html =~ "Ecto"
+      refute html =~ ~s(SQL)
+      refute html =~ "/tmp/"
     end
 
-    test "import/claim error result names the failed target", %{
+    test "discard uses two-step inline confirmation naming the version and focuses the upload", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, failed_v} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "ToDiscard"})
+
+      {:ok, failed_v} = Versions.fail_unpublished_gtfs_version(organization.id, failed_v.id)
+      run = insert_run(organization.id, failed_v, "failed")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      # No confirm button until "Discard failed import" is clicked.
+      refute has_element?(view, "#delete-version-#{run.id}")
+
+      view
+      |> element("#discard-#{run.id}")
+      |> render_click()
+
+      # Now the confirm button names the version consequence.
+      assert has_element?(view, "#delete-version-#{run.id}", "Delete failed version")
+      assert render(view) =~ "ToDiscard"
+
+      # Confirming discards the failed version and removes the card.
+      view
+      |> element("#delete-version-#{run.id}")
+      |> render_click()
+
+      await_cleanup_task(view)
+
+      assert render(view) =~ "No recoverable imports for this organization."
+
+      # The removed version name is prefilled into the new-upload name field.
+      assert render(view) =~ "ToDiscard"
+
+      # Focus is pushed to the upload control.
+      assert_push_event(view, "focus_gtfs_import_files", %{})
+
+      # The failed version row is gone after cleanup.
+      refute Versions.get_gtfs_version_for_lifecycle(organization.id, failed_v.id)
+    end
+
+    test "supervised discard completes after the initiating LiveView disconnects", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      previous_worker = Application.get_env(:gtfs_planner, :import_cleanup_worker_module)
+      previous_owner = Application.get_env(:gtfs_planner, :blocking_cleanup_worker_owner)
+
+      Application.put_env(:gtfs_planner, :import_cleanup_worker_module, BlockingCleanupWorker)
+      Application.put_env(:gtfs_planner, :blocking_cleanup_worker_owner, self())
+
+      on_exit(fn ->
+        restore_application_env(:import_cleanup_worker_module, previous_worker)
+        restore_application_env(:blocking_cleanup_worker_owner, previous_owner)
+      end)
+
+      {:ok, failed_version} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Detached cleanup"})
+
+      {:ok, failed_version} =
+        Versions.fail_unpublished_gtfs_version(organization.id, failed_version.id)
+
+      run = insert_run(organization.id, failed_version, "failed")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+      view |> element("#discard-#{run.id}") |> render_click()
+      view |> element("#delete-version-#{run.id}") |> render_click()
+
+      assert_receive {:blocking_cleanup_worker_started, worker_pid}
+
+      runner_pid =
+        Enum.find_value(
+          DynamicSupervisor.which_children(GtfsPlanner.Gtfs.Import.RunnerSupervisor),
+          fn {_, pid, _, _} ->
+            if :sys.get_state(pid).task_pid == worker_pid, do: pid
+          end
+        )
+
+      refute is_nil(runner_pid)
+
+      view_pid = view.pid
+      view_ref = Process.monitor(view_pid)
+      GenServer.stop(view_pid)
+      assert_receive {:DOWN, ^view_ref, :process, ^view_pid, _reason}
+
+      assert :sys.get_state(runner_pid).task_pid == worker_pid
+
+      worker_ref = Process.monitor(worker_pid)
+      runner_ref = Process.monitor(runner_pid)
+      send(worker_pid, :continue)
+
+      assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, :normal}, 15_000
+      assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, :normal}, 15_000
+
+      assert Repo.get!(Run, run.id).state == "cleaned"
+      refute Versions.get_gtfs_version_for_lifecycle(organization.id, failed_version.id)
+    end
+
+    test "opening a second discard confirmation closes the first", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, first_version} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Discard First"})
+
+      {:ok, first_version} =
+        Versions.fail_unpublished_gtfs_version(organization.id, first_version.id)
+
+      first_run = insert_run(organization.id, first_version, "failed")
+
+      {:ok, second_version} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Discard Second"})
+
+      {:ok, second_version} =
+        Versions.fail_unpublished_gtfs_version(organization.id, second_version.id)
+
+      second_run = insert_run(organization.id, second_version, "failed")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      view |> element("#discard-#{first_run.id}") |> render_click()
+      assert has_element?(view, "#delete-version-#{first_run.id}")
+
+      view |> element("#discard-#{second_run.id}") |> render_click()
+
+      refute has_element?(view, "#delete-version-#{first_run.id}")
+      assert has_element?(view, "#delete-version-#{second_run.id}")
+    end
+
+    test "publication retry clears processing state and removes the recovery card", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, version} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Retry Publish"})
+
+      {:ok, version} = Versions.claim_staging_gtfs_version(organization.id, version.id)
+
+      run =
+        insert_run(organization.id, version, "publication_failed",
+          committed_counts: %{levels: 1},
+          counts_complete: true
+        )
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+      assert has_element?(view, "#publish-version-#{run.id}")
+
+      view |> element("#publish-version-#{run.id}") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      refute has_element?(view, "#import-run-#{run.id}")
+      assert Versions.published_gtfs_version_for_org?(organization.id, version.id)
+      assert :sys.get_state(view.pid).socket.assigns.processing_publish == nil
+    end
+
+    test "crafted publish/discard events for a published/cross-org target change nothing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      other_org = organization_fixture()
+      {:ok, other_v} = Versions.create_staging_gtfs_version(other_org.id, %{name: "Other"})
+      {:ok, other_v} = Versions.fail_unpublished_gtfs_version(other_org.id, other_v.id)
+      other_run = insert_run(other_org.id, other_v, "failed")
+
+      {:ok, _existing} = Versions.create_gtfs_version(organization.id, %{name: "Published"})
+      {:ok, pub_run_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "Pub"})
+      {:ok, pub_run_v} = Versions.claim_staging_gtfs_version(organization.id, pub_run_v.id)
+      {:ok, pub_run_v} = Versions.publish_importing_gtfs_version(organization.id, pub_run_v.id)
+      pub_run = insert_run(organization.id, pub_run_v, "published")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      # Cross-org run and a published run are not recoverable and the events are
+      # ignored (no crash, no state change).
+      render_hook(view, "delete_version", %{"run_id" => to_string(other_run.id)})
+      render_hook(view, "publish_version", %{"run_id" => to_string(pub_run.id)})
+      render_hook(view, "delete_version", %{"run_id" => to_string(pub_run.id)})
+
+      # The published version is untouched.
+      assert Versions.published_gtfs_version_for_org?(organization.id, pub_run_v.id)
+      # The cross-org failed version is untouched.
+      assert Versions.get_gtfs_version_for_lifecycle(other_org.id, other_v.id)
+
+      # A forged cross-organization broadcast is ignored without changing the
+      # scoped recovery count or trying to delete a missing streamed row.
+      recovery_count = :sys.get_state(view.pid).socket.assigns.recovery_count
+      send(view.pid, {:import_run_changed, other_run.id})
+      assert :sys.get_state(view.pid).socket.assigns.recovery_count == recovery_count
+    end
+
+    test "a newly recoverable run updates the exact count without duplicate-broadcast drift", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -734,19 +1029,298 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
 
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "ImportErr"})
-      {:ok, failed} = Versions.fail_unpublished_gtfs_version(organization.id, staging.id)
+      assert :sys.get_state(view.pid).socket.assigns.recovery_count == 0
 
-      ref = make_ref()
-      put_socket_assigns(view, %{import_task: ref, import_target: failed, importing: true})
+      {:ok, failed_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "New"})
+      {:ok, failed_v} = Versions.fail_unpublished_gtfs_version(organization.id, failed_v.id)
+      run = insert_run(organization.id, failed_v, "failed")
 
-      send(view.pid, {ref, {:error, failed, {:import_not_publishable, :whatever}}})
+      send(view.pid, {:import_run_changed, run.id})
+      assert :sys.get_state(view.pid).socket.assigns.recovery_count == 1
+      assert has_element?(view, "#import-run-#{run.id}")
+
+      send(view.pid, {:import_run_changed, run.id})
+      assert :sys.get_state(view.pid).socket.assigns.recovery_count == 1
+    end
+
+    test "a failed UI cleanup re-streams the durable cleanup_failed state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, failed_v} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Cleanup Failure"})
+
+      {:ok, failed_v} = Versions.fail_unpublished_gtfs_version(organization.id, failed_v.id)
+      run = insert_run(organization.id, failed_v, "failed")
+
+      Application.put_env(
+        :gtfs_planner,
+        :import_cleanup_inject_failure,
+        {:filesystem, :before_namespace}
+      )
+
+      on_exit(fn -> Application.delete_env(:gtfs_planner, :import_cleanup_inject_failure) end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      view |> element("#discard-#{run.id}") |> render_click()
+      view |> element("#delete-version-#{run.id}") |> render_click()
+
+      await_cleanup_task(view)
+
+      assert has_element?(view, "#import-run-#{run.id}")
+      assert render(view) =~ "Cleanup failed — can be retried by discarding."
+      assert Repo.get!(Run, run.id).state == "cleanup_failed"
+    end
+
+    test "terminal {:import_run_changed, run_id} reloads the card from durable state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, failed_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "Reload"})
+      {:ok, failed_v} = Versions.fail_unpublished_gtfs_version(organization.id, failed_v.id)
+      run = insert_run(organization.id, failed_v, "failed")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+      assert has_element?(view, "#import-run-#{run.id}")
+
+      # Clean up the run in a separate (already-terminated) LiveView context by
+      # claiming + discarding directly, then broadcast the terminal change.
+      {:ok, _run, cleanup_version, token} =
+        GtfsPlanner.Gtfs.ImportRuns.claim_cleanup(organization.id, run.id, %{
+          id: user.id,
+          email: user.email
+        })
+
+      cleared =
+        GtfsPlanner.Repo.get!(GtfsPlanner.Gtfs.Import.Run, run.id)
+        |> GtfsPlanner.Gtfs.Import.Recovery.discard_claimed(cleanup_version, token)
+
+      assert cleared == {:ok, nil}
+
+      # The broadcasting LiveView reconnects to the already-persisted state.
+      send(view.pid, {:import_run_changed, run.id})
       html = render(view)
 
-      assert html =~ "Import failed"
-      assert html =~ "ImportErr"
+      refute has_element?(view, "#import-run-#{run.id}")
+      assert html =~ "No recoverable imports for this organization."
     end
   end
+
+  describe "end-to-end recovery boundary integration (AC-4/6/7/13/14)" do
+    setup :editor_context
+
+    test "terminating the first LiveView, killing its runner, then remounting reconciles and keeps prior rows byte-identical",
+         %{conn: conn, user: user, organization: organization, gtfs_version: route_version} do
+      conn = log_in_user(conn, user, organization: organization)
+
+      previous_worker = Application.get_env(:gtfs_planner, :import_worker_module)
+      previous_owner = Application.get_env(:gtfs_planner, :blocking_import_worker_owner)
+
+      Application.put_env(
+        :gtfs_planner,
+        :import_worker_module,
+        GtfsPlanner.Support.BlockingImportWorker
+      )
+
+      Application.put_env(:gtfs_planner, :blocking_import_worker_owner, self())
+
+      on_exit(fn ->
+        restore_application_env(:import_worker_module, previous_worker)
+        restore_application_env(:blocking_import_worker_owner, previous_owner)
+      end)
+
+      uploads = Application.fetch_env!(:gtfs_planner, :uploads_path)
+
+      # A prior published version whose rows + diagram file must stay byte-identical.
+      {:ok, prior} = Versions.create_gtfs_version(organization.id, %{name: "Prior Live"})
+
+      GtfsPlanner.Gtfs.create_level(%{
+        level_id: "LP",
+        level_index: 0.0,
+        level_name: "Prior Level",
+        organization_id: organization.id,
+        gtfs_version_id: prior.id
+      })
+
+      prior_file =
+        Path.join([uploads, "diagrams", organization.id, prior.id, "station", "prior_live.png"])
+
+      File.mkdir_p!(Path.dirname(prior_file))
+      prior_bytes = "prior-live-bytes-#{String.duplicate("z", 32)}"
+      File.write!(prior_file, prior_bytes)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [
+        gtfs_zip([{"levels.txt", @levels_content}, {"stops.txt", @stops_content}])
+      ])
+
+      submit_import(view, "Drop Me")
+      assert_receive {:blocking_import_worker_started, worker_pid}
+
+      # The initiating LiveView process for the import; terminate it and confirm
+      # it is gone (AC-6: the runner must survive).
+      view_ref = Process.monitor(view.pid)
+      # Find the supervised runner that owns the in-flight import.
+      runner_pid =
+        Enum.find_value(0..20, nil, fn _ ->
+          case DynamicSupervisor.which_children(GtfsPlanner.Gtfs.Import.RunnerSupervisor) do
+            [] -> nil
+            [{_, pid, _, _}] -> pid
+            _ -> nil
+          end
+        end)
+
+      refute is_nil(runner_pid)
+
+      # Terminate the LiveView owner (graceful stop; a normal/shutdown exit
+      # does not propagate to the linked test process, unlike :kill).
+      view_pid = view.pid
+      GenServer.stop(view_pid)
+      assert_receive {:DOWN, ^view_ref, :process, ^view_pid, _reason}, 15_000
+
+      # The supervisor-owned runner survives the LiveView. Kill it afterward so
+      # its normal closure cannot execute (AC-7).
+      task_pid = :sys.get_state(runner_pid).task_pid
+      assert task_pid == worker_pid
+      runner_ref = Process.monitor(runner_pid)
+      task_ref = Process.monitor(task_pid)
+      Process.exit(runner_pid, :kill)
+      assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, :killed}
+      assert_receive {:DOWN, ^task_ref, :process, ^task_pid, _reason}
+
+      # The run is still active (running) because the lease is unexpired.
+      run =
+        from(r in GtfsPlanner.Gtfs.Import.Run, where: r.organization_id == ^organization.id)
+        |> GtfsPlanner.Repo.one!()
+
+      assert run.state == "running"
+
+      # Force the lease to a far-past timestamp and reconcile via the real
+      # ImportRuns entry point.
+      expired = ~U[2000-01-01 00:00:00.000000Z]
+
+      {1, nil} =
+        from(r in GtfsPlanner.Gtfs.Import.Run,
+          where: r.id == ^run.id,
+          update: [set: [lease_expires_at: ^expired]]
+        )
+        |> GtfsPlanner.Repo.update_all([])
+
+      reconciled = GtfsPlanner.Gtfs.ImportRuns.reconcile_expired(organization.id)
+      assert Enum.any?(reconciled, &(&1.id == run.id))
+
+      # The reconstructed state is authoritative: interrupted, version failed.
+      assert GtfsPlanner.Repo.get!(GtfsPlanner.Gtfs.Import.Run, run.id).state == "interrupted"
+      target = Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
+      assert target.publication_status == "failed"
+      refute Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
+
+      # Remount a fresh LiveView: it reconciles on mount and streams the
+      # interrupted run as a recoverable card (AC-6/AC-7).
+      {:ok, view2, html2} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      assert html2 =~ "Import recovery"
+      assert has_element?(view2, "#import-run-#{run.id}")
+      assert html2 =~ "Durable counts are uncertain"
+
+      # Prior published version rows + diagram file are byte-identical.
+      assert GtfsPlanner.Gtfs.list_levels(organization.id, prior.id) != []
+      assert File.read!(prior_file) == prior_bytes
+
+      # No target is externally visible before guarded publication.
+      refute Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
+    end
+
+    test "discard through the UI then re-upload the same name yields one fresh target (AC-13/AC-14)",
+         %{conn: conn, user: user, organization: organization, gtfs_version: route_version} do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, failed_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "Again"})
+      {:ok, failed_v} = Versions.fail_unpublished_gtfs_version(organization.id, failed_v.id)
+      run = insert_run(organization.id, failed_v, "failed")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+      assert has_element?(view, "#import-run-#{run.id}")
+
+      # Discard through the two-step UI confirmation.
+      view |> element("#discard-#{run.id}") |> render_click()
+      view |> element("#delete-version-#{run.id}") |> render_click()
+
+      await_cleanup_task(view)
+
+      assert render(view) =~ "No recoverable imports for this organization."
+      refute Versions.get_gtfs_version_for_lifecycle(organization.id, failed_v.id)
+
+      before_versions = length(all_versions(organization.id))
+
+      # Re-upload the same feed under the SAME version name.
+      upload_gtfs(view, [
+        gtfs_zip([{"levels.txt", @levels_content}, {"stops.txt", @stops_content}])
+      ])
+
+      submit_import(view, "Again")
+      await_import_task(view)
+
+      # Exactly one new version row (the fresh target), no duplicate for the name.
+      assert length(all_versions(organization.id)) == before_versions + 1
+
+      again_versions =
+        from(v in GtfsPlanner.Versions.GtfsVersion,
+          where: v.organization_id == ^organization.id and v.name == "Again"
+        )
+        |> GtfsPlanner.Repo.all()
+
+      assert length(again_versions) == 1
+      target = Enum.at(again_versions, 0)
+      assert target.publication_status == "published"
+      assert GtfsPlanner.Gtfs.get_level_by_level_id(organization.id, target.id, "L1")
+    end
+
+    test "terminal {:import_run_changed, run_id} reloads the card from already-persisted state during a live import",
+         %{conn: conn, user: user, organization: organization, gtfs_version: route_version} do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [
+        gtfs_zip([{"levels.txt", @levels_content}, {"stops.txt", @stops_content}])
+      ])
+
+      # The synchronous post-submit render reflects the in-flight publication.
+      html = submit_import(view, "Live Reconcile")
+      assert html =~ "Importing"
+
+      # Wait for the supervised task to finish, then flush by rendering until the
+      # LiveView has applied the terminal transition.
+      for pid <- Task.Supervisor.children(GtfsPlanner.TaskSupervisor) do
+        ref = Process.monitor(pid)
+        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 15_000
+      end
+
+      await_import_settled(view, 100)
+
+      # The published target is now externally visible and the success result was
+      # applied from persisted durable state.
+      target = version_by_name(organization.id, "Live Reconcile")
+      assert target
+      assert target.publication_status == "published"
+      assert render(view) =~ "Import successful"
+      assert has_element?(view, "#gtfs-import-view-version[href='/gtfs/#{target.id}/routes']")
+    end
+  end
+
+  defp restore_application_env(key, nil), do: Application.delete_env(:gtfs_planner, key)
+  defp restore_application_env(key, value), do: Application.put_env(:gtfs_planner, key, value)
 
   describe "upload display" do
     setup :editor_context

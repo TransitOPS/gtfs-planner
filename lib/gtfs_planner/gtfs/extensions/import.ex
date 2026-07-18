@@ -30,7 +30,14 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
     - `{:ok, counts}` with keys `:extensions_stop_coordinates`, `:extensions_stop_levels`,
       `:extensions_route_flags`, `:extensions_images`
-    - `{:error, reason}`
+    - `{:error, reason}` when the manifest cannot be decoded, references are
+      missing, or the extension database transaction rolls back (no extension
+      writes are durable)
+    - `{:error, reason, committed_counts}` when the extension database transaction
+      committed but image restoration failed afterward. `committed_counts` carries
+      the durable `:extensions_stop_coordinates`, `:extensions_stop_levels`,
+      `:extensions_route_flags`, and `:extensions_images` (files written before
+      the failure) counts.
   """
   def import_extensions(
         organization_id,
@@ -160,17 +167,26 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
     case result do
       {:ok, counts} ->
-        case restore_images(
-               organization_id,
-               gtfs_version_id,
-               manifest.diagram_images,
-               image_files_by_zip_path
-             ) do
-          {:ok, image_count} ->
-            {:ok, Map.put(counts, :extensions_images, image_count)}
+        # Image writes happen AFTER the extension DB transaction commits, so the
+        # DB counts are already durable here. `restore_images/4` reports how many
+        # image files it wrote, so a mid-restore failure still returns the exact
+        # committed extension counts (INV-3, AC-3).
+        {written, image_result} =
+          restore_images(
+            organization_id,
+            gtfs_version_id,
+            manifest.diagram_images,
+            image_files_by_zip_path
+          )
+
+        committed = Map.put(counts, :extensions_images, written)
+
+        case image_result do
+          :ok ->
+            {:ok, committed}
 
           {:error, reason} ->
-            {:error, {:image_restore_failed, reason}}
+            {:error, {:image_restore_failed, reason}, committed}
         end
 
       {:error, reason} ->
@@ -242,39 +258,36 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
   # -- image restore ----------------------------------------------------------
 
+  # Returns `{files_written, :ok | {:error, reason}}`. The count is the number of
+  # image files successfully written before any failure, so callers can report the
+  # exact durable image count even when restoration stops midway.
   defp restore_images(
          organization_id,
          gtfs_version_id,
          diagram_images,
          image_files_by_zip_path
        ) do
-    result =
-      Enum.reduce_while(diagram_images, 0, fn entry, acc ->
-        case Map.fetch(image_files_by_zip_path, entry.zip_path) do
-          {:ok, binary} ->
-            case DiagramStorage.store_import_image(
-                   organization_id,
-                   gtfs_version_id,
-                   entry.station_stop_id,
-                   entry.filename,
-                   binary
-                 ) do
-              :ok ->
-                {:cont, acc + 1}
+    Enum.reduce_while(diagram_images, {0, :ok}, fn entry, {written, :ok} ->
+      case Map.fetch(image_files_by_zip_path, entry.zip_path) do
+        {:ok, binary} ->
+          case DiagramStorage.store_import_image(
+                 organization_id,
+                 gtfs_version_id,
+                 entry.station_stop_id,
+                 entry.filename,
+                 binary
+               ) do
+            :ok ->
+              {:cont, {written + 1, :ok}}
 
-              {:error, reason} ->
-                {:halt, {:error, {:write_failed, entry.zip_path, reason}}}
-            end
+            {:error, reason} ->
+              {:halt, {written, {:error, {:write_failed, entry.zip_path, reason}}}}
+          end
 
-          :error ->
-            {:halt, {:error, {:missing_binary, entry.zip_path}}}
-        end
-      end)
-
-    case result do
-      count when is_integer(count) -> {:ok, count}
-      {:error, _} = error -> error
-    end
+        :error ->
+          {:halt, {written, {:error, {:missing_binary, entry.zip_path}}}}
+      end
+    end)
   end
 
   # -- helpers ----------------------------------------------------------------
