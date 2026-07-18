@@ -29,15 +29,16 @@ defmodule GtfsPlanner.Gtfs.Import do
       ]
 
       case Import.import_files(org_id, version_id, files) do
-        {:ok, {counts, unrecognized, topic}} ->
+        {:ok, %Import.Result{} = result} ->
           # Import successful, topic can be used to subscribe to progress
-        {:error, reason} ->
-          # Import failed, transaction rolled back
+        {:error, %Import.Failure{} = failure} ->
+          # Import failed; `failure` carries the phase, outcome, durable
+          # committed counts, certainty, sanitized file/row, and reason code
       end
   """
 
   alias GtfsPlanner.{Repo, Gtfs}
-  alias GtfsPlanner.Gtfs.Import.{Result, BatchProcessor, RowParser, CsvParser}
+  alias GtfsPlanner.Gtfs.Import.{Result, Failure, BatchProcessor, RowParser, CsvParser}
   alias GtfsPlanner.Gtfs.Extensions
 
   require Logger
@@ -127,7 +128,9 @@ defmodule GtfsPlanner.Gtfs.Import do
       - `topic` - PubSub topic for progress updates
       - `archive_warnings` - list of `%{filename, reason, detail}` maps for archives that could not be expanded
       - `extensions` - `:not_present` when no extension manifest was supplied, or `:complete` when the extension phase finished fully
-    - `{:error, reason}` on failure
+    - `{:error, %Import.Failure{}}` on failure, carrying the phase, outcome,
+      durable committed counts, count certainty, sanitized file/row, and a fixed
+      reason code
 
   ## Examples
 
@@ -165,7 +168,9 @@ defmodule GtfsPlanner.Gtfs.Import do
         end)
       end)
 
-    # Check if Phase 1 succeeded
+    # Check if Phase 1 succeeded. Phase 1 runs in a single outer transaction, so
+    # its counts only become durable after that transaction commits: a Phase 1
+    # failure means every standard count is zero.
     case result do
       {:ok, counts} ->
         phase_2_result =
@@ -179,14 +184,19 @@ defmodule GtfsPlanner.Gtfs.Import do
                      schema,
                      parser_fun
                    ) do
-                {:ok, count} -> {:cont, {:ok, Map.put(acc_counts, key, count)}}
-                {:error, reason} -> {:halt, {:error, reason}}
+                {:ok, count} ->
+                  {:cont, {:ok, Map.put(acc_counts, key, count)}}
+
+                {:error, reason, committed} ->
+                  # Report all earlier committed counts plus this file's durable
+                  # committed-batch count.
+                  {:halt, {:error, reason, Map.put(acc_counts, key, committed)}}
               end
           end)
 
         case phase_2_result do
           {:ok, counts} ->
-            counts = Enum.reduce(@supported_count_keys, counts, &Map.put_new(&2, &1, 0))
+            counts = fill_standard_counts(counts)
 
             case import_extensions_phase(organization_id, gtfs_version_id, extensions, counts) do
               {:ok, extensions_status, counts} ->
@@ -199,21 +209,51 @@ defmodule GtfsPlanner.Gtfs.Import do
                    extensions: extensions_status
                  }}
 
-              {:error, reason} ->
-                {:error, reason}
+              {:error, reason, committed} ->
+                {:error, build_failure(reason, :extensions, committed)}
             end
 
-          {:error, reason} ->
-            {:error, reason}
+          {:error, reason, committed} ->
+            {:error, build_failure(reason, :phase_2, committed)}
         end
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, build_failure(reason, :phase_1, %{})}
     end
   end
 
-  # Processes phase 2 files with batch-level transactions
-  # Each batch gets its own transaction to prevent long-running transactions
+  # Builds a truthful, sanitized failure. Missing standard counts are filled with
+  # zero so the durable count map is always complete and bounded. The outcome is
+  # `:partial` when any durable rows were committed, otherwise `:failed`.
+  defp build_failure(reason, phase, committed_counts) do
+    committed_counts = fill_standard_counts(committed_counts)
+    outcome = if standard_count_total(committed_counts) > 0, do: :partial, else: :failed
+
+    Failure.from_error(reason,
+      phase: phase,
+      outcome: outcome,
+      committed_counts: committed_counts,
+      counts_complete: true
+    )
+  end
+
+  defp fill_standard_counts(counts) do
+    Enum.reduce(@supported_count_keys, counts, &Map.put_new(&2, &1, 0))
+  end
+
+  defp standard_count_total(counts) do
+    Enum.reduce(@supported_count_keys, 0, fn key, total ->
+      case Map.get(counts, key, 0) do
+        value when is_integer(value) and value > 0 -> total + value
+        _ -> total
+      end
+    end)
+  end
+
+  # Processes phase 2 files with batch-level transactions.
+  # Each batch gets its own transaction to prevent long-running transactions, so
+  # committed batches survive a later failure. Returns `{:ok, count}` or
+  # `{:error, reason, committed}` where `committed` is the durable row count.
   defp process_phase_2_category(
          files,
          organization_id,
@@ -232,7 +272,30 @@ defmodule GtfsPlanner.Gtfs.Import do
       )
     end
 
-    process_category_files(files, insert)
+    process_phase_2_files(files, insert)
+  end
+
+  defp process_phase_2_files(files, insert) do
+    Enum.reduce_while(files, {:ok, 0}, fn file, {:ok, count} ->
+      case process_phase_2_file(file, insert) do
+        {:ok, inserted} -> {:cont, {:ok, count + inserted}}
+        {:error, reason, committed} -> {:halt, {:error, reason, count + committed}}
+      end
+    end)
+  end
+
+  defp process_phase_2_file(file, insert) do
+    case CsvParser.stream(file.filename, file.content) do
+      {:ok, parsed} ->
+        case insert.(file, parsed) do
+          {:ok, inserted} -> {:ok, inserted}
+          {:error, reason, committed} -> {:error, reason, committed}
+        end
+
+      # A parser failure happens before any batch is committed for this file.
+      {:error, reason} ->
+        {:error, reason, 0}
+    end
   end
 
   # Processes a category of files using batch insertion
@@ -694,8 +757,9 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   # Runs the extensions import phase after standard GTFS phases complete.
   # When no extension manifest is present the phase is absent and counts are
-  # returned unchanged. On extension failure the error is propagated so the
-  # overall import result is an error rather than a silently incomplete import.
+  # returned unchanged. On extension failure the standard counts stay durable and
+  # any committed extension counts are threaded back so the overall failure can
+  # report exact durable truth (AC-3).
   defp import_extensions_phase(_organization_id, _gtfs_version_id, extensions, counts)
        when not is_map_key(extensions, :json) do
     {:ok, :not_present, counts}
@@ -713,8 +777,15 @@ defmodule GtfsPlanner.Gtfs.Import do
       {:ok, ext_counts} ->
         {:ok, :complete, Map.merge(counts, ext_counts)}
 
+      # Decode/reference/DB-transaction failure: no extension writes are durable,
+      # but the standard counts already committed remain.
       {:error, reason} ->
-        {:error, reason}
+        {:error, reason, counts}
+
+      # Image restoration failed after the extension DB transaction committed:
+      # merge the durable extension counts into the standard counts.
+      {:error, reason, ext_committed} ->
+        {:error, reason, Map.merge(counts, ext_committed)}
     end
   end
 
