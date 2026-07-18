@@ -169,6 +169,66 @@ defmodule GtfsPlanner.Gtfs.Import.Run do
     )
   end
 
+  @doc """
+  The fully system-owned changeset used by `ImportRuns` for every coupled
+  transition. It casts the lifecycle/lease/timestamp/actor fields directly
+  (these are never user-cast) alongside the caller-influenced count/audit
+  fields, and re-applies every database check constraint so an invalid state /
+  lease / timestamp pairing is rejected at the serializer rather than only at
+  the database.
+  """
+  @spec system_changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
+  def system_changeset(run, attrs) do
+    run
+    |> cast(attrs, [
+      :state,
+      :phase,
+      :committed_counts,
+      :counts_complete,
+      :failed_file,
+      :failed_row,
+      :reason_code,
+      :lease_token,
+      :lease_expires_at,
+      :started_at,
+      :finished_at,
+      :cleanup_started_at,
+      :cleanup_finished_at,
+      :actor_id,
+      :actor_email,
+      :cleanup_actor_id,
+      :cleanup_actor_email
+    ])
+    |> validate_committed_counts()
+    |> validate_length(:failed_file, max: @version_name_max)
+    |> validate_failed_row()
+    |> validate_length(:reason_code, max: @reason_code_max)
+    |> validate_length(:phase, max: @phase_max)
+    |> validate_length(:actor_email, max: @actor_email_max)
+    |> validate_length(:cleanup_actor_email, max: @actor_email_max)
+    |> check_constraint(:state, name: @state_check, message: "is not a valid import-run state")
+    |> check_constraint(:lease_token,
+      name: @lease_check,
+      message: "lease must be present for active states and absent otherwise"
+    )
+    |> check_constraint(:finished_at,
+      name: @finished_check,
+      message: "finished_at is required for terminal import outcomes only"
+    )
+    |> check_constraint(:cleanup_started_at,
+      name: @cleanup_started_check,
+      message: "cleanup_started_at is required for cleanup states only"
+    )
+    |> check_constraint(:cleanup_finished_at,
+      name: @cleanup_finished_check,
+      message: "cleanup_finished_at is allowed only on the cleaned state"
+    )
+    |> check_constraint(:failed_row,
+      name: @failed_row_check,
+      message: "failed_row, when present, must be positive"
+    )
+  end
+
   defp validate_failed_row(changeset) do
     case get_change(changeset, :failed_row) do
       nil -> changeset
@@ -184,6 +244,8 @@ defmodule GtfsPlanner.Gtfs.Import.Run do
         changeset
 
       counts when is_map(counts) ->
+        counts = normalize_count_keys(counts)
+
         changeset
         |> validate_count_keys(counts)
         |> validate_count_values(counts)
@@ -191,6 +253,22 @@ defmodule GtfsPlanner.Gtfs.Import.Run do
       _other ->
         add_error(changeset, :committed_counts, "must be a map")
     end
+  end
+
+  # PostgreSQL JSONB round-trips atom keys back as strings. Normalize any
+  # string key that matches an allowlisted atom key back to its atom form so a
+  # reloaded run (with string-key counts) still validates and persists cleanly.
+  defp normalize_count_keys(counts) do
+    Enum.reduce(counts, %{}, fn
+      {key, value}, acc when is_binary(key) ->
+        case Enum.find(@count_allowlist, &Atom.to_string(&1) == key) do
+          nil -> Map.put(acc, key, value)
+          atom_key -> Map.put(acc, atom_key, value)
+        end
+
+      {key, value}, acc ->
+        Map.put(acc, key, value)
+    end)
   end
 
   defp validate_count_keys(changeset, counts) do

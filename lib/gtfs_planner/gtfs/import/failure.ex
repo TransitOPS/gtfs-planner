@@ -57,7 +57,7 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
                   ~w(
                     row_invalid constraint_violation database_error
                     missing_references image_write_failed missing_image
-                    unknown_error
+                    filesystem_error unknown_error
                   )
 
   @failed_file_max 255
@@ -67,6 +67,18 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
   """
   @spec reason_codes() :: [String.t()]
   def reason_codes, do: @reason_codes
+
+  @doc """
+  Maps a failure outcome to its terminal import-run state.
+
+  `:failed` and `:partial` map to their identically named run states; `:interrupted`
+  maps to `interrupted` (the uncertain-counts terminal state used when an
+  executor or node is lost mid-import).
+  """
+  @spec outcome_to_state(t()) :: String.t()
+  def outcome_to_state(%__MODULE__{outcome: outcome}) do
+    Atom.to_string(outcome)
+  end
 
   @doc """
   Normalizes an internal error term into a sanitized `Failure`.
