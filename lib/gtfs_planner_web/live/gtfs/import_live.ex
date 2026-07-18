@@ -19,6 +19,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   }
 
   alias GtfsPlanner.Gtfs.Import.Publication
+  alias GtfsPlanner.Gtfs.Import.Run
+  alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -1156,13 +1158,18 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     """
   end
 
-  # Create exactly one staging target, bind it as `:import_target`, consume the
-  # uploads into memory, and hand the persisted target to `Publication.run/3`.
-  # The route/current version is never a write destination.
+  # Create exactly one staging target + pending run, claim it into a running run,
+  # bind the staged version as `:import_target`, consume the uploads into memory,
+  # and hand the claimed run + lease token to `Publication.run/4`. The
+  # route/current version is never a write destination.
+  #
+  # NOTE: this is a temporary compile-preserving bridge ahead of step 8, which
+  # reworks ImportLive to create the run up-front and start a supervised Runner.
   defp create_and_start_import(socket, _form_data, version_name) do
     organization_id = socket.assigns.current_organization.id
+    actor = %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
 
-    case Versions.create_staging_gtfs_version(organization_id, %{name: version_name}) do
+    case ImportRuns.create_pending_target(organization_id, actor, %{name: version_name}) do
       {:error, changeset} ->
         # Pre-consumption changeset error (blank/duplicate name): return to the
         # form, preserve every upload entry, focus/announce the error,
@@ -1183,17 +1190,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
         {:noreply, socket}
 
-      {:ok, target} ->
+      {:ok, %{run: run, version: target}} ->
         # Bind the persisted target before touching uploads so every downstream
-        # path (consume error, task, result, :DOWN) closes this exact version.
+        # path (consume error, task, result, :DOWN) closes this exact run/version.
         socket = assign(socket, :import_target, target)
 
-        case consume_import_files(socket) do
-          {:ok, uploaded_files} ->
-            start_import_task(socket, target, uploaded_files)
+        case claim_and_consume_import_files(socket, run, actor) do
+          {:ok, claimed_run, token, uploaded_files} ->
+            start_import_task(socket, claimed_run, token, uploaded_files)
 
           {:error, reason} ->
-            # Post-create consumption/read error: fail the exact staging target,
+            # Post-create consumption/read error: fail the exact pending target,
             # start no task, and render target-specific feedback.
             failed = fail_target_best_effort(target)
 
@@ -1208,7 +1215,20 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     end
   end
 
-  defp start_import_task(socket, %GtfsVersion{} = target, uploaded_files) do
+  defp claim_and_consume_import_files(socket, run, _actor) do
+    case ImportRuns.claim_import(run.organization_id, run.id, run.lease_token) do
+      {:ok, claimed_run, _version, token} ->
+        case consume_import_files(socket) do
+          {:ok, uploaded_files} -> {:ok, claimed_run, token, uploaded_files}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, _reason} ->
+        {:error, :claim_failed}
+    end
+  end
+
+  defp start_import_task(socket, %Run{} = run, lease_token, uploaded_files) do
     # Subscribe to the progress topic BEFORE starting the task so no progress
     # message is missed.
     topic = "import:#{:erlang.unique_integer()}"
@@ -1216,7 +1236,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     task =
       Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-        Publication.run(target, uploaded_files, topic)
+        Publication.run(run, lease_token, uploaded_files, topic)
       end)
 
     {:noreply,

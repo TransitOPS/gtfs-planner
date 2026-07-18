@@ -1,19 +1,26 @@
 defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
   @moduledoc """
-  Publication orchestration: exact-target claim, import, publishability gate,
-  conditional close, failure seams, races, and structured telemetry.
+  Publication orchestration: exact-target import, publishability gate, closure
+  exclusively through ImportRuns, failure seams, races, and structured telemetry.
 
-  Exercises the real Repo and filesystem boundaries. Failure seams are narrow
-  and controllable: a real PostgreSQL publication constraint for the DB
+  Exercises the real Repo and filesystem boundaries. Failure seams are narrow and
+  controllable: a real PostgreSQL publication constraint for the DB
   publication-failure case, an isolated unwritable uploads root for the
   filesystem case, and crafted input/result shapes for the import/extension/
   archive cases.
+
+  Each test seeds a claimed run via `ImportRuns.create_pending_target/3` +
+  `ImportRuns.claim_import/3` and passes the claimed `%Run{}` + lease token to
+  `Publication.run/4`.
   """
 
   use GtfsPlanner.DataCase, async: false
 
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.Publication
+  alias GtfsPlanner.Gtfs.Import.Run
+  alias GtfsPlanner.Gtfs.Import.Failure
+  alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
@@ -25,10 +32,24 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
   @levels_content "level_id,level_index,level_name\nL1,0.0,Ground Floor\n"
   @stops_content "stop_id,stop_name,stop_lat,stop_lon,level_id,location_type,wheelchair_boarding\nS1,Main,40.7,-74.0,L1,1,1\n"
 
-  describe "run/3 success" do
+  defp actor do
+    %{id: Ecto.UUID.generate(), email: "importer@example.com"}
+  end
+
+  defp seed_claimed_run(organization, name) do
+    {:ok, %{run: run, version: _version}} =
+      ImportRuns.create_pending_target(organization.id, actor(), %{name: name})
+
+    {:ok, claimed_run, _version, token} =
+      ImportRuns.claim_import(organization.id, run.id, run.lease_token)
+
+    {claimed_run, token}
+  end
+
+  describe "run/4 success" do
     setup do
       organization = organization_fixture()
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "New Feed"})
+      {run, token} = seed_claimed_run(organization, "New Feed")
       # A prior published version whose rows/files must remain untouched.
       {:ok, prior} = Versions.create_gtfs_version(organization.id, %{name: "Prior"})
 
@@ -36,12 +57,13 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
         %{filename: "levels.txt", content: @levels_content}
       ])
 
-      %{organization: organization, staging: staging, prior: prior}
+      %{organization: organization, run: run, token: token, prior: prior}
     end
 
-    test "claims exactly the target, imports only it, and publishes it", %{
+    test "imports only the claimed target, publishes it, and persists coupled run/version state", %{
       organization: organization,
-      staging: staging,
+      run: run,
+      token: token,
       prior: prior
     } do
       files = [
@@ -49,9 +71,9 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
         %{filename: "stops.txt", content: @stops_content}
       ]
 
-      assert {:ok, published, result} = Publication.run(staging, files, "import:test")
+      assert {:ok, published, result} = Publication.run(run, token, files, "import:test")
 
-      assert published.id == staging.id
+      assert published.id == run.gtfs_version_id
       assert published.publication_status == "published"
       assert not is_nil(published.published_at)
       assert result.extensions == :not_present
@@ -59,7 +81,10 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
       # The claimed target is now externally readable.
       assert %GtfsVersion{} =
-               Versions.get_published_gtfs_version_for_org(organization.id, staging.id)
+               Versions.get_published_gtfs_version_for_org(
+                 organization.id,
+                 run.gtfs_version_id
+               )
 
       # Prior version rows are untouched (organization fixture also seeds a
       # "First Version", so there are three published versions now).
@@ -67,15 +92,25 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       prior_levels = GtfsPlanner.Gtfs.list_levels(organization.id, prior.id)
       assert length(prior_levels) == 1
       # Target received exactly its own writes.
-      target_levels = GtfsPlanner.Gtfs.list_levels(organization.id, staging.id)
+      target_levels = GtfsPlanner.Gtfs.list_levels(organization.id, run.gtfs_version_id)
       assert length(target_levels) == 1
-      target_stops = GtfsPlanner.Gtfs.list_stops(organization.id, staging.id)
+      target_stops = GtfsPlanner.Gtfs.list_stops(organization.id, run.gtfs_version_id)
       assert length(target_stops) == 1
+
+      # The run is coupled to published with complete counts.
+      persisted_run =
+        from(r in Run, where: r.id == ^run.id, select: r)
+        |> Repo.one!()
+
+      assert persisted_run.state == "published"
+      assert persisted_run.counts_complete == true
+      assert not is_nil(persisted_run.finished_at)
     end
 
     test "preserves prior-version rows/files throughout and writes only the claimed version", %{
       organization: organization,
-      staging: staging,
+      run: run,
+      token: token,
       prior: prior
     } do
       uploads = Application.fetch_env!(:gtfs_planner, :uploads_path)
@@ -88,7 +123,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
       files = [%{filename: "levels.txt", content: @levels_content}]
 
-      assert {:ok, _, _} = Publication.run(staging, files, "import:test")
+      assert {:ok, _, _} = Publication.run(run, token, files, "import:test")
 
       # Prior file bytes are byte-identical.
       assert File.read!(prior_file) == "prior-bytes"
@@ -99,39 +134,45 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
     end
   end
 
-  describe "losing claim before any write" do
+  describe "lease loss during closure" do
     setup do
       organization = organization_fixture()
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staged"})
-      %{organization: organization, staging: staging}
+      {run, token} = seed_claimed_run(organization, "Staged")
+      %{organization: organization, run: run, token: token}
     end
 
-    test "a losing claim returns before import and performs no writes", %{
+    test "a wrong lease token yields a non-publishable closure error with no publish", %{
       organization: organization,
-      staging: staging
+      run: run
     } do
-      # Pre-claim so the publication's internal claim will lose.
-      {:ok, _} = Versions.claim_staging_gtfs_version(organization.id, staging.id)
-
+      wrong_token = Ecto.UUID.generate()
       files = [%{filename: "levels.txt", content: @levels_content}]
 
-      assert {:error, target, :invalid_status_transition} =
-               Publication.run(staging, files, "import:lose")
+      assert {:error, _version, :lease_lost} =
+               Publication.run(run, wrong_token, files, "import:lose")
 
-      assert target.id == staging.id
-
-      # Nothing was written: no levels belong to the target, still importing.
+      # The closure never published: the version stays importing and the run
+      # stays running (no insert retry, no second import call).
       final =
-        from(v in GtfsVersion, where: v.id == ^staging.id, select: v.publication_status)
+        from(v in GtfsVersion,
+          where: v.id == ^run.gtfs_version_id,
+          select: v.publication_status
+        )
         |> Repo.one!()
 
       assert final == "importing"
-      assert GtfsPlanner.Gtfs.list_levels(organization.id, staging.id) == []
+
+      persisted_run =
+        from(r in Run, where: r.id == ^run.id, select: r.state)
+        |> Repo.one!()
+
+      assert persisted_run == "running"
     end
 
-    test "two concurrent run calls for one staging target produce exactly one claim winner", %{
+    test "two concurrent run calls on the same claimed run produce exactly one publisher", %{
       organization: organization,
-      staging: staging
+      run: run,
+      token: token
     } do
       parent = self()
 
@@ -139,7 +180,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
       task_fn = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
-        Publication.run(staging, files, "import:race")
+        Publication.run(run, token, files, "import:race")
       end
 
       t1 = Task.async(task_fn)
@@ -150,68 +191,86 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       winners = Enum.filter(results, &match?({:ok, _, _}, &1))
       assert length(winners) == 1
 
-      losers = Enum.filter(results, &match?({:error, _, :invalid_status_transition}, &1))
+      losers = Enum.filter(results, &match?({:error, _, :lease_lost}, &1))
       assert length(losers) == 1
 
       final =
-        from(v in GtfsVersion, where: v.id == ^staging.id, select: v.publication_status)
+        from(v in GtfsVersion,
+          where: v.id == ^run.gtfs_version_id,
+          select: v.publication_status
+        )
         |> Repo.one!()
 
       assert final == "published"
 
       # Exactly one level row was written (only the winner imported).
-      assert length(GtfsPlanner.Gtfs.list_levels(organization.id, staging.id)) == 1
+      assert length(GtfsPlanner.Gtfs.list_levels(organization.id, run.gtfs_version_id)) == 1
     end
   end
 
-  describe "import and publishability failures mark target failed and never publish" do
+  describe "import and publishability failures close through ImportRuns.fail_import and never publish" do
     setup do
       organization = organization_fixture()
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staged"})
-      %{organization: organization, staging: staging}
+      {run, token} = seed_claimed_run(organization, "Staged")
+      %{organization: organization, run: run, token: token}
     end
 
     test "an import error fails the exact target and never publishes", %{
       organization: organization,
-      staging: staging
+      run: run,
+      token: token
     } do
       files = [
         %{filename: "levels.txt", content: "level_id,level_index\nL1,0.0\nL1,0.0"},
         %{filename: "stops.txt", content: @stops_content}
       ]
 
-      assert {:error, target, _reason} = Publication.run(staging, files, "import:fail")
-      assert target.id == staging.id
+      assert {:error, target, %Failure{} = failure} =
+               Publication.run(run, token, files, "import:fail")
+
+      assert target.id == run.gtfs_version_id
+      assert failure.outcome == :failed
 
       assert %GtfsVersion{} =
-               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, staging.id)
+               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
 
       assert failed.publication_status == "failed"
       assert is_nil(failed.published_at)
-      refute Versions.published_gtfs_version_for_org?(organization.id, staging.id)
+      refute Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
+
+      persisted_run =
+        from(r in Run, where: r.id == ^run.id, select: r)
+        |> Repo.one!()
+
+      assert persisted_run.state == "failed"
     end
 
     test "a non-publishable result (archive warning) fails the target", %{
       organization: organization,
-      staging: staging
+      run: run,
+      token: token
     } do
       files = [%{filename: "bad.zip", content: "not a real zip"}]
 
-      assert {:error, target, {:import_not_publishable, _result}} =
-               Publication.run(staging, files, "import:warn")
+      assert {:error, target, %Failure{} = failure} =
+               Publication.run(run, token, files, "import:warn")
 
-      assert target.id == staging.id
+      assert failure.phase == :phase_2
+      assert failure.outcome == :failed
+
+      assert target.id == run.gtfs_version_id
 
       assert %GtfsVersion{} =
-               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, staging.id)
+               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
 
       assert failed.publication_status == "failed"
-      refute Versions.published_gtfs_version_for_org?(organization.id, staging.id)
+      refute Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
     end
 
     test "an extension image-write failure fails the target", %{
       organization: organization,
-      staging: staging
+      run: run,
+      token: token
     } do
       # Own an isolated uploads root so the write failure is controllable.
       previous = Application.get_env(:gtfs_planner, :uploads_path)
@@ -277,23 +336,24 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
       files = [%{filename: "gtfs.zip", content: zip}]
 
-      assert {:error, target, {:image_restore_failed, _}} =
-               Publication.run(staging, files, "import:img")
+      assert {:error, target, %Failure{} = failure} =
+               Publication.run(run, token, files, "import:img")
 
-      assert target.id == staging.id
+      assert target.id == run.gtfs_version_id
+      assert failure.failed_file == nil
 
       assert %GtfsVersion{} =
-               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, staging.id)
+               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
 
       assert failed.publication_status == "failed"
-      refute Versions.published_gtfs_version_for_org?(organization.id, staging.id)
+      refute Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
     end
   end
 
-  describe "late Phase 2 failure after committed batches never publishes (AC-4, AC-14)" do
+  describe "late Phase 2 failure after committed batches closes through fail_import (AC-1)" do
     setup do
       organization = organization_fixture()
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "New Feed"})
+      {run, token} = seed_claimed_run(organization, "New Feed")
 
       # A prior published version whose rows must remain untouched by the failed run.
       {:ok, prior} = Versions.create_gtfs_version(organization.id, %{name: "Prior"})
@@ -302,11 +362,11 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
         %{filename: "levels.txt", content: @levels_content}
       ])
 
-      %{organization: organization, staging: staging, prior: prior}
+      %{organization: organization, run: run, token: token, prior: prior}
     end
 
     test "a semantic error after two committed batches quarantines partial rows and names the source row",
-         %{organization: organization, staging: staging} do
+         %{organization: organization, run: run, token: token} do
       # @batch_size is compile-time 1000 with no test override, so generate more
       # than two batch sizes of valid rows followed by one malformed row. The
       # malformed row's chunk is rejected before insertion, so only the two full
@@ -334,18 +394,21 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
         %{filename: "stop_times.txt", content: stop_times}
       ]
 
-      assert {:error, target, error} = Publication.run(staging, files, "import:phase2-late")
-      assert target.id == staging.id
+      assert {:error, target, %Failure{} = failure} =
+               Publication.run(run, token, files, "import:phase2-late")
+
+      assert target.id == run.gtfs_version_id
 
       # The failure names the source file and the exact physical source row of the
-      # bad record (AC-4), not an inserted-row offset.
-      assert error.file == "stop_times.txt"
-      assert error.row == bad_physical_row
+      # bad record (AC-4), not an inserted-row offset. Failure uses
+      # `failed_file`/`failed_row`.
+      assert failure.failed_file == "stop_times.txt"
+      assert failure.failed_row == bad_physical_row
 
-      # At least two committed batches persisted, scoped to the claimed staging
-      # target, and strictly fewer than the total (the error chunk never inserts).
+      # At least two committed batches persisted, scoped to the claimed target,
+      # and strictly fewer than the total (the error chunk never inserts).
       persisted =
-        from(st in GtfsPlanner.Gtfs.StopTime, where: st.gtfs_version_id == ^staging.id)
+        from(st in GtfsPlanner.Gtfs.StopTime, where: st.gtfs_version_id == ^run.gtfs_version_id)
         |> Repo.aggregate(:count)
 
       assert persisted >= 2 * 1000
@@ -354,15 +417,25 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
       # The incomplete target is never published (AC-14, INV-3).
       assert %GtfsVersion{} =
-               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, staging.id)
+               failed = Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
 
       assert failed.publication_status == "failed"
       assert is_nil(failed.published_at)
-      refute Versions.published_gtfs_version_for_org?(organization.id, staging.id)
+      refute Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
+
+      # The run closed through ImportRuns.fail_import as partial with exact
+      # committed counts (the ~2000 committed stop_times).
+      persisted_run =
+        from(r in Run, where: r.id == ^run.id, select: r)
+        |> Repo.one!()
+
+      assert persisted_run.state == "partial"
+      assert persisted_run.counts_complete == true
+      assert persisted_run.committed_counts["stop_times"] == persisted
     end
 
     test "the prior published version and its records remain unchanged after the failed run",
-         %{organization: organization, staging: staging, prior: prior} do
+         %{organization: organization, run: run, token: token, prior: prior} do
       valid_rows =
         Enum.map_join(1..2100, "", fn n -> "T1,S#{n},#{n},08:00:00,08:00:00\n" end)
 
@@ -377,7 +450,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
         %{filename: "stop_times.txt", content: stop_times}
       ]
 
-      assert {:error, _target, _error} = Publication.run(staging, files, "import:phase2-prior")
+      assert {:error, _target, %Failure{}} = Publication.run(run, token, files, "import:phase2-prior")
 
       # Published-only lookup still returns the prior version.
       assert %GtfsVersion{} =
@@ -389,17 +462,18 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
     end
   end
 
-  describe "database publication failure after asset writes" do
+  describe "database publication failure after asset writes (AC-9)" do
     setup do
       organization = organization_fixture()
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staged"})
-      %{organization: organization, staging: staging}
+      {run, token} = seed_claimed_run(organization, "Staged")
+      %{organization: organization, run: run, token: token}
     end
 
     @tag :publication_failure
-    test "returns publication_failed and leaves target importing + externally unavailable", %{
+    test "records publication_failed and leaves target importing + externally unavailable", %{
       organization: organization,
-      staging: staging
+      run: run,
+      token: token
     } do
       # Install a real, transaction-local CHECK constraint that forbids
       # published_at being set during this test, forcing the importing ->
@@ -425,42 +499,96 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       files = [%{filename: "levels.txt", content: @levels_content}]
 
       assert {:error, target, {:publication_failed, _reason}} =
-               Publication.run(staging, files, "import:dbfail")
+               Publication.run(run, token, files, "import:dbfail")
 
-      assert target.id == staging.id
+      assert target.id == run.gtfs_version_id
 
       # Asset writes completed: the level row exists under the claimed version.
-      assert length(GtfsPlanner.Gtfs.list_levels(organization.id, staging.id)) == 1
+      assert length(GtfsPlanner.Gtfs.list_levels(organization.id, run.gtfs_version_id)) == 1
 
-      # Target is left importing for later reconciliation.
+      # The run is recorded as publication_failed by ImportRuns.
+      persisted_run =
+        from(r in Run, where: r.id == ^run.id, select: r)
+        |> Repo.one!()
+
+      assert persisted_run.state == "publication_failed"
+      assert persisted_run.counts_complete == true
+
+      # Target version stays importing for later reconciliation.
       final =
-        from(v in GtfsVersion, where: v.id == ^staging.id, select: v.publication_status)
+        from(v in GtfsVersion,
+          where: v.id == ^run.gtfs_version_id,
+          select: v.publication_status
+        )
         |> Repo.one!()
 
       assert final == "importing"
 
       # Externally unavailable.
-      refute Versions.published_gtfs_version_for_org?(organization.id, staging.id)
+      refute Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
+    end
+
+    @tag :publication_failure
+    test "retry_publication publishes without a second Import.import_files call", %{
+      organization: organization,
+      run: run,
+      token: token
+    } do
+      constraint_sql = """
+      ALTER TABLE gtfs_versions
+      ADD CONSTRAINT publication_proof_no_published_at
+      CHECK (publication_status <> 'published' OR published_at IS NULL) NOT VALID
+      """
+
+      drop_sql = """
+      ALTER TABLE gtfs_versions
+      DROP CONSTRAINT IF EXISTS publication_proof_no_published_at
+      """
+
+      {:ok, _} = Repo.query(constraint_sql)
+
+      on_exit(fn ->
+        Repo.query(drop_sql)
+      end)
+
+      files = [%{filename: "levels.txt", content: @levels_content}]
+
+      assert {:error, _target, {:publication_failed, _}} =
+               Publication.run(run, token, files, "import:dbfail-retry")
+
+      # Drop the constraint so the guarded retry can publish.
+      {:ok, _} = Repo.query(drop_sql)
+
+      assert {:ok, retried_run, retried_version} =
+               ImportRuns.retry_publication(organization.id, run.id)
+
+      assert retried_run.state == "published"
+      assert retried_version.publication_status == "published"
+      assert not is_nil(retried_version.published_at)
+
+      # Exactly one level row was written (no second import call occurred).
+      assert length(GtfsPlanner.Gtfs.list_levels(organization.id, run.gtfs_version_id)) == 1
     end
   end
 
   describe "no fallback under stale route context" do
     setup do
       organization = organization_fixture()
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staged"})
+      {run, token} = seed_claimed_run(organization, "Staged")
       {:ok, current} = Versions.create_gtfs_version(organization.id, %{name: "Current"})
-      %{organization: organization, staging: staging, current: current}
+      %{organization: organization, run: run, token: token, current: current}
     end
 
-    test "publication uses only the passed target id, never the route/current version", %{
+    test "publication uses only the claimed run's target, never the route/current version", %{
       organization: organization,
-      staging: staging,
+      run: run,
+      token: token,
       current: current
     } do
       files = [%{filename: "levels.txt", content: @levels_content}]
 
-      assert {:ok, published, _result} = Publication.run(staging, files, "import:exact")
-      assert published.id == staging.id
+      assert {:ok, published, _result} = Publication.run(run, token, files, "import:exact")
+      assert published.id == run.gtfs_version_id
 
       # The current (route) version received no writes.
       assert GtfsPlanner.Gtfs.list_levels(organization.id, current.id) == []
@@ -473,13 +601,14 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
   describe "telemetry" do
     setup do
       organization = organization_fixture()
-      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staged"})
-      %{organization: organization, staging: staging}
+      {run, token} = seed_claimed_run(organization, "Staged")
+      %{organization: organization, run: run, token: token}
     end
 
     test "emits scoped transition telemetry with org, target, prior/new state, failure class", %{
       organization: organization,
-      staging: staging
+      run: run,
+      token: token
     } do
       handler_id = make_ref()
       test_pid = self()
@@ -496,16 +625,16 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       on_exit(fn -> :telemetry.detach(handler_id) end)
 
       files = [%{filename: "levels.txt", content: @levels_content}]
-      {:ok, _published, _result} = Publication.run(staging, files, "import:tele")
+      {:ok, _published, _result} = Publication.run(run, token, files, "import:tele")
 
       published_event =
         receive_telemetry(fn {_ev, meta} ->
-          meta.version_id == staging.id and meta.new_state == "published"
+          meta.version_id == run.gtfs_version_id and meta.new_state == "published"
         end)
 
       assert {_event, meta} = published_event
       assert meta.organization_id == organization.id
-      assert meta.version_id == staging.id
+      assert meta.version_id == run.gtfs_version_id
       assert meta.prior_state == "importing"
       assert meta.new_state == "published"
       # Failure class is present and nil for a successful transition.
@@ -518,7 +647,8 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
     test "emits publication-error telemetry on database publication failure", %{
       organization: organization,
-      staging: staging
+      run: run,
+      token: token
     } do
       constraint_sql = """
       ALTER TABLE gtfs_versions
@@ -554,26 +684,26 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       files = [%{filename: "levels.txt", content: @levels_content}]
 
       {:error, _target, {:publication_failed, _}} =
-        Publication.run(staging, files, "import:telefail")
+        Publication.run(run, token, files, "import:telefail")
 
       error_event =
         receive_telemetry(fn {_ev, meta} ->
-          meta.version_id == staging.id and not is_nil(meta.failure_class)
+          meta.version_id == run.gtfs_version_id and not is_nil(meta.failure_class)
         end)
 
       assert {_event, meta} = error_event
       assert meta.organization_id == organization.id
-      assert meta.version_id == staging.id
+      assert meta.version_id == run.gtfs_version_id
       assert meta.failure_class == :publication_failed
       assert meta.prior_state == "importing"
       assert meta.new_state == "importing"
     end
 
-    test "a losing claim reports the unchanged persisted state", %{
+    test "a lost lease reports the non-publishable closure error", %{
       organization: organization,
-      staging: staging
+      run: run
     } do
-      {:ok, _claimed} = Versions.claim_staging_gtfs_version(organization.id, staging.id)
+      wrong_token = Ecto.UUID.generate()
 
       handler_id = make_ref()
       test_pid = self()
@@ -589,13 +719,13 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
       on_exit(fn -> :telemetry.detach(handler_id) end)
 
-      assert {:error, _target, :invalid_status_transition} =
-               Publication.run(staging, [], "import:claim-telemetry")
+      assert {:error, _target, :lease_lost} =
+               Publication.run(run, wrong_token, [], "import:lease-telemetry")
 
       assert {_event, meta} =
                receive_telemetry(fn {_event, meta} ->
-                 meta.version_id == staging.id and
-                   meta.failure_class == :invalid_status_transition
+                 meta.version_id == run.gtfs_version_id and
+                   meta.failure_class == :lease_lost
                end)
 
       assert meta.prior_state == "importing"
