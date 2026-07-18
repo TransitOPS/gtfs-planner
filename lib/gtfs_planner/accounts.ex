@@ -677,16 +677,6 @@ defmodule GtfsPlanner.Accounts do
         {:ok, %{confirm_user: user}} ->
           {:ok, user}
 
-        {:error, :user, reason, _} ->
-          {:error,
-           FirstAdminForm.from_transaction_error(changeset, :user, reason)
-           |> Map.put(:action, :insert)}
-
-        {:error, :org, reason, _} ->
-          {:error,
-           FirstAdminForm.from_transaction_error(changeset, :org, reason)
-           |> Map.put(:action, :insert)}
-
         {:error, op, reason, _} ->
           {:error,
            FirstAdminForm.from_transaction_error(changeset, op, reason)

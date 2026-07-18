@@ -34,14 +34,6 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
     "organization_alias" => ""
   }
 
-  @valid_admin_params %{
-    "email" => "admin@example.com",
-    "password" => "valid setup password 123",
-    "password_confirmation" => "valid setup password 123",
-    "organization_name" => "My Transit Agency",
-    "organization_alias" => "my-transit-agency"
-  }
-
   describe "initial availability" do
     test "renders the stable form contract with no summary for a zero-user install", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/first")
@@ -309,16 +301,18 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
     end
 
     test "redirects a valid first submit to /users/log_in", %{conn: conn} do
+      admin_params = valid_admin_params()
       {:ok, view, _html} = live(conn, ~p"/first")
 
       assert {:error, {:redirect, %{to: "/users/log_in"}}} =
                view
                |> element("#first_admin_form")
-               |> render_submit(%{"admin" => @valid_admin_params})
+               |> render_submit(%{"admin" => admin_params})
     end
 
     test "persists exactly one record set when an invalid submit is corrected in the same view",
          %{conn: conn} do
+      admin_params = valid_admin_params()
       {:ok, view, _html} = live(conn, ~p"/first")
 
       user_count = Repo.aggregate(User, :count, :id)
@@ -336,7 +330,7 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
       assert {:error, {:redirect, %{to: "/users/log_in"}}} =
                view
                |> element("#first_admin_form")
-               |> render_submit(%{"admin" => @valid_admin_params})
+               |> render_submit(%{"admin" => admin_params})
 
       assert Repo.aggregate(User, :count, :id) == user_count + 1
       assert Repo.aggregate(Organization, :count, :id) == org_count + 1
@@ -347,6 +341,7 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
     test "rolls back a failed transaction submit and persists only the corrected retry", %{
       conn: conn
     } do
+      admin_params = valid_admin_params()
       taken_alias = "taken-#{System.unique_integer([:positive])}"
       organization_fixture(%{name: "Existing Org", alias: taken_alias})
 
@@ -361,7 +356,7 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
         view
         |> element("#first_admin_form")
         |> render_submit(%{
-          "admin" => %{@valid_admin_params | "organization_alias" => taken_alias}
+          "admin" => %{admin_params | "organization_alias" => taken_alias}
         })
 
       assert is_binary(rollback_response)
@@ -371,12 +366,22 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
       assert {:error, {:redirect, %{to: "/users/log_in"}}} =
                view
                |> element("#first_admin_form")
-               |> render_submit(%{"admin" => @valid_admin_params})
+               |> render_submit(%{"admin" => admin_params})
 
       assert Repo.aggregate(User, :count, :id) == user_count + 1
       assert Repo.aggregate(Organization, :count, :id) == org_count + 1
       assert Repo.aggregate(GtfsVersion, :count, :id) == version_count + 1
       assert Repo.aggregate(UserOrgMembership, :count, :id) == membership_count + 1
     end
+  end
+
+  defp valid_admin_params do
+    %{
+      "email" => unique_user_email(),
+      "password" => "valid setup password 123",
+      "password_confirmation" => "valid setup password 123",
+      "organization_name" => "My Transit Agency",
+      "organization_alias" => unique_organization_alias()
+    }
   end
 end
