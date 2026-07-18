@@ -64,20 +64,21 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     - `:ok` when the version namespace is absent or was removed
     - `{:error, :unsafe_path}` when an organization or version component is invalid
     - `{:error, :path_traversal}` when the computed directory escapes the org root
+    - `{:error, :badarg}` when either argument is not a binary
+    - `{:error, reason}` when the filesystem removal fails
   """
   @spec delete_version_namespace(Ecto.UUID.t(), Ecto.UUID.t()) ::
-          :ok | {:error, :unsafe_path | :path_traversal}
+          :ok | {:error, term()}
   def delete_version_namespace(organization_id, gtfs_version_id)
       when is_binary(organization_id) and is_binary(gtfs_version_id) do
     if PathSafety.safe_path_component?(organization_id) and
          PathSafety.safe_path_component?(gtfs_version_id) do
-      org_dir = Path.join([uploads_root(), "diagrams", organization_id])
-      version_dir = Path.join([org_dir, gtfs_version_id])
+      org_dir = org_root(organization_id)
+      version_dir = Path.join(org_dir, gtfs_version_id)
 
       case PathSafety.ensure_within_root(org_dir, version_dir) do
         :ok ->
-          File.rm_rf(version_dir)
-          :ok
+          remove_version_namespace(version_dir)
 
         {:error, reason} ->
           {:error, reason}
@@ -88,6 +89,37 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
   end
 
   def delete_version_namespace(_, _), do: {:error, :badarg}
+
+  defp remove_version_namespace(version_dir) do
+    case File.rm_rf(version_dir) do
+      {:ok, _removed} -> :ok
+      {:error, reason, _file} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Reports whether the exact organization/version diagram namespace exists.
+  The same component and containment checks as deletion are applied.
+  """
+  @spec version_namespace_exists?(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, boolean()} | {:error, :unsafe_path | :path_traversal | :badarg}
+  def version_namespace_exists?(organization_id, gtfs_version_id)
+      when is_binary(organization_id) and is_binary(gtfs_version_id) do
+    if PathSafety.safe_path_component?(organization_id) and
+         PathSafety.safe_path_component?(gtfs_version_id) do
+      org_dir = org_root(organization_id)
+      version_dir = Path.join(org_dir, gtfs_version_id)
+
+      case PathSafety.ensure_within_root(org_dir, version_dir) do
+        :ok -> {:ok, File.dir?(version_dir)}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :unsafe_path}
+    end
+  end
+
+  def version_namespace_exists?(_, _), do: {:error, :badarg}
 
   @doc """
   Returns the absolute on-disk path of a versioned diagram file, or an error when the

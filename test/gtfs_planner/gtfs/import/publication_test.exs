@@ -755,12 +755,11 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       %{organization: organization, run: run, token: token, prior: prior}
     end
 
-    # Scenario 1 (AC-4/6/7): a real multi-batch import whose LiveView owner is
-    # terminated, whose runner is killed, and whose lease is later expired and
-    # reconciled. The prior published version's rows and diagram files must stay
-    # byte-identical, and no target becomes externally visible until guarded
-    # publication.
-    test "disconnect + executor loss + reconcile preserves prior published rows/files (AC-4/6/7)",
+    # Scenario 1 (AC-4/7): a real multi-batch import plus a separate expired
+    # executor lease. The prior published version's rows and diagram files must
+    # stay byte-identical, and no target becomes externally visible until
+    # guarded publication.
+    test "executor loss + reconcile preserves prior published rows/files (AC-4/7)",
          %{organization: organization, prior: prior} do
       uploads = Application.fetch_env!(:gtfs_planner, :uploads_path)
 
@@ -795,9 +794,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       refute runner_pid == self()
       Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), runner_pid)
 
-      # Terminate the initiating "LiveView" owner proxy after the runner starts:
-      # the runner keeps running independently (durable ownership, AC-6). Wait
-      # for the runner's linked import task to finish (monitor, no sleeps).
+      # Wait for the runner's linked import task to finish (monitor, no sleeps).
       for pid <- Task.Supervisor.children(GtfsPlanner.TaskSupervisor) do
         Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), pid)
         ref = Process.monitor(pid)
@@ -867,10 +864,10 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       assert File.read!(prior_file) == prior_bytes
     end
 
-    # Scenario 3 (AC-8/9/11): every terminal {:import_run_changed, run_id}
-    # corresponds to already-persisted state, and concurrent calls resolve to
-    # exactly one winner.
-    test "terminal PubSub message matches persisted state; concurrent publish resolves to one winner (AC-8/9/11)",
+    # Scenario 3 (AC-8/9): every terminal {:import_run_changed, run_id}
+    # corresponds to already-persisted state, and duplicate publication is
+    # rejected after the durable winner.
+    test "terminal PubSub message matches persisted state; duplicate publish is rejected (AC-8/9)",
          %{organization: organization} do
       # Fresh pending target so the runner claims it itself (like ImportLive).
       {:ok, %{run: run, version: _version}} =
@@ -900,11 +897,8 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
       Process.monitor(runner_pid)
 
-      # Concurrent publish vs cleanup race: a second concurrent publish attempt
-      # and a competing cleanup must not both win. Publish already happened, so
-      # the cleanup claim is the only owner-eligible operation; exercise it
-      # concurrently with a duplicate publish that must observe the persisted
-      # state rather than re-import.
+      # Duplicate publish attempts must observe the persisted terminal state
+      # rather than re-import.
       parent = self()
 
       publish_fn = fn ->

@@ -4,9 +4,8 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
   lease-loss cancellation, abnormal-exit closure, stale-token shutdown, and
   temporary (non-restarting) supervision.
 
-  Uses `start_supervised!/1` for the `RunnerSupervisor` (already part of the
-  application), `:sys.get_state/1`, `Process.monitor`, and explicit messages —
-  never `Process.sleep/1`/`Process.alive?/1`.
+  Uses the application `RunnerSupervisor`, `:sys.get_state/1`,
+  `Process.monitor/1`, and explicit messages.
   """
 
   use GtfsPlanner.DataCase, async: false
@@ -14,6 +13,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
   alias GtfsPlanner.Gtfs.Import.Run
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.Import.Runner
+  alias GtfsPlanner.Gtfs.Import.RunnerSupervisor
   alias GtfsPlanner.Repo
 
   import Ecto.Query
@@ -65,13 +65,6 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
       Application.put_env(:gtfs_planner, :import_cleanup_worker_module, original_cleanup)
       Application.put_env(:gtfs_planner, :import_runner_heartbeat_ms, original_heartbeat)
     end)
-
-    # Ensure the runner supervisor is present (the full app may not be started
-    # under DataCase). Start it only if absent.
-    unless Process.whereis(RunnerSupervisor) do
-      {:ok, _} =
-        start_supervised({DynamicSupervisor, name: RunnerSupervisor, strategy: :one_for_one})
-    end
 
     :ok
   end
@@ -144,15 +137,17 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
 
     state = :sys.get_state(runner_pid)
     worker_pid = state.task_pid
-    assert Process.alive?(worker_pid)
+    worker_ref = Process.monitor(worker_pid)
 
     # Record the lease expiry, send a manual renewal tick, and confirm it moved.
     before = Repo.get!(Run, run.id).lease_expires_at
+    previous_expiry = DateTime.add(before, -1, :second)
+    set_run_lease_expiry(run, previous_expiry)
     send(runner_pid, :renew_lease)
     # Synchronize: the tick is handled synchronously and updates the row.
     assert :sys.get_state(runner_pid).run_id == run.id
     after_ = Repo.get!(Run, run.id).lease_expires_at
-    assert DateTime.compare(after_, before) == :gt
+    assert DateTime.compare(after_, previous_expiry) == :gt
 
     # Expire the lease in the database, then send another renewal tick. The runner
     # must terminate the linked worker and stop.
@@ -163,7 +158,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     assert_receive {:DOWN, ^ref, :process, ^runner_pid, :lease_lost}
 
     # The linked worker was killed.
-    refute Process.alive?(worker_pid)
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, _reason}
     # The runner did not write a second closure (still running, lease cleared by reconcile only).
     assert Repo.get!(Run, run.id).state == "running"
   end
@@ -194,7 +189,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     run_after = Repo.get!(Run, run.id)
     assert run_after.state == "interrupted"
     assert run_after.counts_complete == false
-    assert run_after.reason_code == "unknown_error"
+    assert run_after.reason_code == "executor_lost"
 
     # The child is temporary: it is gone and not respawned.
     assert DynamicSupervisor.count_children(RunnerSupervisor).active == 0

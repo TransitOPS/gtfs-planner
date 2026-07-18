@@ -622,6 +622,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert target
       assert target.publication_status == "failed"
 
+      run =
+        from(r in GtfsPlanner.Gtfs.Import.Run,
+          where: r.organization_id == ^organization.id and r.gtfs_version_id == ^target.id
+        )
+        |> GtfsPlanner.Repo.one!()
+
+      assert run.state == "failed"
+      assert run.reason_code == "unknown_error"
+      assert is_nil(run.lease_token)
+
       # No task started and no rows written to any version.
       assert Task.Supervisor.children(GtfsPlanner.TaskSupervisor) == []
       refute Gtfs.get_level_by_level_id(organization.id, route_version.id, "L1")
@@ -925,17 +935,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       refute is_nil(runner_pid)
 
-      # Kill the runner so its normal closure cannot execute (AC-7).
-      runner_ref = Process.monitor(runner_pid)
-      Process.exit(runner_pid, :kill)
-      assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, :killed}
-
       # Terminate the LiveView owner (graceful stop; a normal/shutdown exit
       # does not propagate to the linked test process, unlike :kill).
       view_pid = view.pid
-      view_ref = Process.monitor(view_pid)
       GenServer.stop(view_pid)
       assert_receive {:DOWN, ^view_ref, :process, ^view_pid, _reason}, 15_000
+
+      # The supervisor-owned runner survives the LiveView. Kill it afterward so
+      # its normal closure cannot execute (AC-7).
+      runner_ref = Process.monitor(runner_pid)
+      Process.exit(runner_pid, :kill)
+      assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, :killed}
 
       # The run is still active (running) because the lease is unexpired.
       run =

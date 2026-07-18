@@ -80,9 +80,8 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
       # 3. Verify every owned resource is absent.
       verify_empty(organization_id, run_id, lease_token)
 
-      # 4. Delete the failed version row, then mark the run cleaned. The run
-      #    retains its target/actor snapshots (set at claim_cleanup time).
-      delete_failed_version(organization_id, run_id, lease_token)
+      # 4. Atomically delete the failed version row and mark the run cleaned.
+      #    The run retains its target/actor snapshots (set at claim time).
       finish(organization_id, run_id, lease_token)
 
       {:ok, nil}
@@ -95,38 +94,55 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
   end
 
   defp delete_namespace(organization_id, run_id, lease_token) do
-    version_id = version_id_for(organization_id, run_id, lease_token)
+    case version_id_for(organization_id, run_id, lease_token) do
+      nil ->
+        :ok
 
-    case DiagramStorage.delete_version_namespace(organization_id, version_id) do
-      :ok -> :ok
-      {:error, _reason} -> raise RuntimeError, "filesystem_error"
+      version_id ->
+        case DiagramStorage.delete_version_namespace(organization_id, version_id) do
+          :ok -> :ok
+          {:error, _reason} -> raise RuntimeError, "filesystem_error"
+        end
     end
   end
 
   defp delete_schema_batched(organization_id, run_id, lease_token, schema) do
-    batch_size = Application.get_env(:gtfs_planner, :import_cleanup_batch_size, @default_batch_size)
+    case version_id_for(organization_id, run_id, lease_token) do
+      nil ->
+        :ok
+
+      version_id ->
+        delete_schema_batched_for_version(
+          organization_id,
+          run_id,
+          lease_token,
+          schema,
+          version_id
+        )
+    end
+  end
+
+  defp delete_schema_batched_for_version(
+         organization_id,
+         run_id,
+         lease_token,
+         schema,
+         version_id
+       ) do
+    batch_size =
+      Application.get_env(:gtfs_planner, :import_cleanup_batch_size, @default_batch_size)
+
     maybe_inject_failure(:database, schema)
 
     query =
       from(r in schema,
-        where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id_for(organization_id, run_id, lease_token),
+        where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id,
         order_by: [asc: r.id],
         limit: ^batch_size,
         select: r.id
       )
 
-    case Repo.transaction(fn ->
-           ids = Repo.all(query)
-           if ids == [] do
-             0
-           else
-             {count, nil} =
-               from(r in schema, where: r.id in ^ids)
-               |> Repo.delete_all()
-
-             count
-           end
-         end) do
+    case delete_batch(query, schema) do
       {:ok, 0} ->
         :ok
 
@@ -139,46 +155,59 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
     end
   end
 
+  defp delete_batch(query, schema) do
+    Repo.transaction(fn ->
+      ids = Repo.all(query)
+
+      if ids == [] do
+        0
+      else
+        {count, nil} =
+          from(r in schema, where: r.id in ^ids)
+          |> Repo.delete_all()
+
+        count
+      end
+    end)
+  end
+
   defp verify_empty(organization_id, run_id, lease_token) do
     version_id = version_id_for(organization_id, run_id, lease_token)
 
-    missing_namespace =
-      case DiagramStorage.delete_version_namespace(organization_id, version_id) do
-        :ok -> false
-        {:error, _reason} -> true
+    namespace_absent? =
+      case version_id do
+        nil ->
+          true
+
+        version_id ->
+          case DiagramStorage.version_namespace_exists?(organization_id, version_id) do
+            {:ok, exists?} -> not exists?
+            {:error, _reason} -> false
+          end
       end
 
-    if missing_namespace do
+    if not namespace_absent? do
       raise RuntimeError, "verification_failed"
     end
 
     nonempty =
-      Enum.find(Import.cleanup_schemas(), fn schema ->
-        count =
-          from(r in schema,
-            where:
-              r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id
-          )
-          |> Repo.aggregate(:count)
+      if is_nil(version_id) do
+        nil
+      else
+        Enum.find(Import.cleanup_schemas(), fn schema ->
+          count =
+            from(r in schema,
+              where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id
+            )
+            |> Repo.aggregate(:count)
 
-        count != 0
-      end)
+          count != 0
+        end)
+      end
 
     if not is_nil(nonempty) do
       raise RuntimeError, "verification_failed"
     end
-
-    :ok
-  end
-
-  defp delete_failed_version(organization_id, run_id, lease_token) do
-    version_id = version_id_for(organization_id, run_id, lease_token)
-
-    {_count, nil} =
-      from(v in GtfsVersion,
-        where: v.id == ^version_id and v.organization_id == ^organization_id
-      )
-      |> Repo.delete_all()
 
     :ok
   end

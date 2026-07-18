@@ -239,8 +239,12 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
   # --- internal: abnormal exit closure --------------------------------------
 
   defp handle_worker_exit(reason, state) do
-    persist_unexpected_exit(state, reason)
-    broadcast_changed(state)
+    case persist_unexpected_exit(state, reason) do
+      {:ok, _run, _version} -> broadcast_changed(state)
+      {:ok, _run} -> broadcast_changed(state)
+      {:error, _reason} -> :ok
+    end
+
     cancel_timer(state)
     {:stop, {:worker_exit, reason}, state}
   end
@@ -256,14 +260,13 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
     ImportRuns.fail_import(state.organization_id, state.run_id, state.lease_token, failure)
   end
 
-  defp persist_unexpected_exit(%{kind: :cleanup} = state, reason) do
-    reason_code =
-      case reason do
-        :killed -> :executor_lost
-        _other -> :executor_lost
-      end
-
-    ImportRuns.fail_cleanup(state.organization_id, state.run_id, state.lease_token, reason_code)
+  defp persist_unexpected_exit(%{kind: :cleanup} = state, _reason) do
+    ImportRuns.fail_cleanup(
+      state.organization_id,
+      state.run_id,
+      state.lease_token,
+      :executor_lost
+    )
   end
 
   defp broadcast_changed(%{topic: topic, run_id: run_id}) do

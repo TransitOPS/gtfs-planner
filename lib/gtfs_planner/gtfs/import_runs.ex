@@ -28,6 +28,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   @type actor :: %{required(:id) => Ecto.UUID.t(), required(:email) => String.t()}
 
   @lease_seconds Application.compile_env(:gtfs_planner, :import_lease_seconds, 300)
+  @lease_placeholder ~U[1970-01-01 00:00:00.000000Z]
 
   # Macro: applies values to a single run row via `update_all`. DB-time columns
   # use PostgreSQL time: pass `:now` (CURRENT_TIMESTAMP) or `:lease`
@@ -39,14 +40,22 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
       Enum.map(set, fn
         {field, :lease} ->
           {field,
-           quote do ^(DateTime.utc_now() |> DateTime.add(unquote(@lease_seconds), :second)) end}
+           quote do
+             fragment(
+               "CURRENT_TIMESTAMP + (? * interval '1 second')",
+               unquote(@lease_seconds)
+             )
+           end}
 
         {field, value} ->
-          {field, quote do ^(unquote(value)) end}
+          {field,
+           quote do
+             ^unquote(value)
+           end}
       end)
 
     quote do
-      from(r in Run, where: r.id == ^(unquote(run_id_expr)), update: [set: unquote(pairs)])
+      from(r in Run, where: r.id == ^unquote(run_id_expr), update: [set: unquote(pairs)])
       |> Repo.update_all([])
 
       :ok
@@ -80,8 +89,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
             state: "pending",
             counts_complete: false,
             lease_token: token,
-            lease_expires_at:
-              DateTime.utc_now() |> DateTime.add(@lease_seconds, :second),
+            lease_expires_at: @lease_placeholder,
             actor_id: actor.id,
             actor_email: actor.email,
             inserted_at: DateTime.utc_now(),
@@ -102,6 +110,49 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
           Repo.rollback(changeset)
       end
     end)
+  end
+
+  @doc """
+  Atomically closes a pending run and its staging version when upload
+  preparation fails before a runner can claim the import.
+  """
+  @spec fail_pending_target(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), atom()) ::
+          {:ok, Run.t(), GtfsVersion.t()} | {:error, term()}
+  def fail_pending_target(organization_id, run_id, lease_token, reason) do
+    transaction(fn ->
+      organization_id
+      |> lock_run(run_id)
+      |> fail_pending_locked(organization_id, lease_token, reason)
+    end)
+  end
+
+  defp fail_pending_locked(nil, _organization_id, _lease_token, _reason),
+    do: {:error, :not_found}
+
+  defp fail_pending_locked(run, organization_id, lease_token, reason) do
+    case guard_lease(run, ~w(pending), lease_token) do
+      :ok -> close_pending_target(organization_id, run, reason)
+      :lease_lost -> {:error, :invalid_transition}
+      :invalid_transition -> {:error, :invalid_transition}
+    end
+  end
+
+  defp close_pending_target(organization_id, run, reason) do
+    {:ok, version} =
+      Versions.fail_unpublished_gtfs_version(organization_id, run.gtfs_version_id)
+
+    {:ok, _} =
+      run
+      |> Run.system_changeset(%{
+        state: "failed",
+        lease_token: nil,
+        lease_expires_at: nil,
+        finished_at: DateTime.utc_now(),
+        reason_code: publication_reason_code(reason)
+      })
+      |> Repo.update()
+
+    {:ok, Repo.get!(Run, run.id), Repo.get!(GtfsVersion, version.id)}
   end
 
   # --- lease claim / renew --------------------------------------------------
@@ -129,16 +180,16 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
                 {:ok, version} ->
                   new_token = Ecto.UUID.generate()
 
-                {:ok, _} =
-                  run
-                  |> Run.system_changeset(%{
-                    state: "running",
-                    lease_token: new_token,
-                    started_at: DateTime.utc_now()
-                  })
-                  |> Repo.update()
+                  {:ok, _} =
+                    run
+                    |> Run.system_changeset(%{
+                      state: "running",
+                      lease_token: new_token,
+                      started_at: DateTime.utc_now()
+                    })
+                    |> Repo.update()
 
-                set_run(run.id, lease_expires_at: :lease)
+                  set_run(run.id, lease_expires_at: :lease)
 
                   {:ok, Repo.get!(Run, run.id), Repo.get!(GtfsVersion, version.id), new_token}
 
@@ -177,8 +228,15 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
         run ->
           case guard_lease(run, ~w(pending running), lease_token) do
             :ok ->
-              if not is_nil(run.lease_expires_at) and
-                   DateTime.compare(run.lease_expires_at, DateTime.utc_now()) != :lt do
+              lease_current? =
+                from(r in Run,
+                  where:
+                    r.id == ^run.id and not is_nil(r.lease_expires_at) and
+                      r.lease_expires_at >= fragment("CURRENT_TIMESTAMP")
+                )
+                |> Repo.exists?()
+
+              if lease_current? do
                 set_run(run.id, lease_expires_at: :lease)
                 :ok
               else
@@ -230,7 +288,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
                 )
                 |> Repo.update()
 
-              version =       fail_run_version(organization_id, run)
+              version = fail_run_version(organization_id, run)
 
               {:ok, Repo.get!(Run, run.id), Repo.get!(GtfsVersion, version.id)}
 
@@ -272,19 +330,19 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
             :ok ->
               case Versions.publish_importing_gtfs_version(organization_id, run.gtfs_version_id) do
                 {:ok, version} ->
-                {:ok, _} =
-                  run
-                |> Run.system_changeset(Map.merge(Result.to_run_attrs(result), %{
-                  state: "published",
-                  lease_token: nil,
-                  lease_expires_at: nil,
-                  finished_at: DateTime.utc_now()
-                }))
-                |> Repo.update()
+                  {:ok, _} =
+                    run
+                    |> Run.system_changeset(
+                      Map.merge(Result.to_run_attrs(result), %{
+                        state: "published",
+                        lease_token: nil,
+                        lease_expires_at: nil,
+                        finished_at: DateTime.utc_now()
+                      })
+                    )
+                    |> Repo.update()
 
-                set_run(run.id, lease_expires_at: nil)
-
-                {:ok, Repo.get!(Run, run.id), Repo.get!(GtfsVersion, version.id)}
+                  {:ok, Repo.get!(Run, run.id), Repo.get!(GtfsVersion, version.id)}
 
                 {:error, :not_found} ->
                   {:error, :not_found}
@@ -330,21 +388,21 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
             :ok ->
               {:ok, _} =
                 run
-                |> Run.system_changeset(Map.merge(Result.to_run_attrs(result), %{
-                  state: "publication_failed",
-                  lease_token: nil,
-                  lease_expires_at: nil,
-                  finished_at: DateTime.utc_now(),
-                  reason_code: publication_reason_code(reason)
-                }))
+                |> Run.system_changeset(
+                  Map.merge(Result.to_run_attrs(result), %{
+                    state: "publication_failed",
+                    lease_token: nil,
+                    lease_expires_at: nil,
+                    finished_at: DateTime.utc_now(),
+                    reason_code: publication_reason_code(reason)
+                  })
+                )
                 |> Repo.update()
-
-              set_run(run.id, lease_expires_at: nil)
 
               {:ok, Repo.get!(Run, run.id)}
 
             :lease_lost ->
-              {:error, :lease_lost}
+              {:error, :invalid_transition}
 
             :invalid_transition ->
               {:error, :invalid_transition}
@@ -377,8 +435,12 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
         nil ->
           {:error, :not_found}
 
-        %Run{state: "publication_failed", counts_complete: true, finished_at: %DateTime{},
-             gtfs_version_id: version_id} = run ->
+        %Run{
+          state: "publication_failed",
+          counts_complete: true,
+          finished_at: %DateTime{},
+          gtfs_version_id: version_id
+        } = run ->
           case Versions.publish_importing_gtfs_version(organization_id, version_id) do
             {:ok, version} ->
               {:ok, _} =
@@ -390,8 +452,6 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
                   finished_at: DateTime.utc_now()
                 })
                 |> Repo.update()
-
-              set_run(run.id, lease_expires_at: nil)
 
               {:ok, Repo.get!(Run, run.id), Repo.get!(GtfsVersion, version.id)}
 
@@ -431,7 +491,8 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
         %Run{state: "cleaning"} ->
           {:error, :already_claimed}
 
-        %Run{state: state} = run when state in ~w(failed partial interrupted publication_failed cleanup_failed) ->
+        %Run{state: state} = run
+        when state in ~w(failed partial interrupted publication_failed cleanup_failed) ->
           token = Ecto.UUID.generate()
 
           {:ok, _} =
@@ -439,8 +500,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
             |> Run.system_changeset(%{
               state: "cleaning",
               lease_token: token,
-              lease_expires_at:
-                DateTime.utc_now() |> DateTime.add(@lease_seconds, :second),
+              lease_expires_at: @lease_placeholder,
               finished_at: nil,
               cleanup_started_at: DateTime.utc_now(),
               cleanup_actor_email: actor.email
@@ -448,6 +508,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
             |> Repo.update()
 
           set_run(run.id, cleanup_actor_id: actor.id)
+          set_run(run.id, lease_expires_at: :lease)
 
           version = Repo.get!(GtfsVersion, run.gtfs_version_id)
 
@@ -460,13 +521,10 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   end
 
   @doc """
-  Closes a claimed cleanup as `cleaned`. Marks the run `cleaned` (terminal audit
-  receipt) with `cleanup_finished_at` and clears the cleanup lease.
-
-  Per the step-3 boundary, the actual `gtfs_versions` row deletion is owned by
-  the Recovery step (step 7): `finish_cleanup` transitions only run state here so
-  the audit row retains its `gtfs_version_id`/`version_name`/`actor` snapshots
-  after the version row is removed. A wrong token / cross-org / non-cleaning run
+  Closes a claimed cleanup as `cleaned`, atomically deleting the scoped target
+  version and marking the run `cleaned` (terminal audit receipt) with
+  `cleanup_finished_at`. The run retains its target and actor snapshots after
+  the version row is removed. A wrong token / cross-org / non-cleaning run
   writes nothing (AC-8).
   """
   @spec finish_cleanup(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
@@ -480,6 +538,13 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
         run ->
           case guard_lease(run, ~w(cleaning), lease_token) do
             :ok ->
+              from(v in GtfsVersion,
+                where:
+                  v.id == ^run.gtfs_version_id and
+                    v.organization_id == ^organization_id
+              )
+              |> Repo.delete_all()
+
               {:ok, _} =
                 run
                 |> Run.system_changeset(%{
@@ -490,8 +555,6 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
                   cleanup_finished_at: DateTime.utc_now()
                 })
                 |> Repo.update()
-
-              set_run(run.id, lease_expires_at: nil)
 
               {:ok, Repo.get!(Run, run.id)}
 
@@ -531,8 +594,6 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
                   reason_code: publication_reason_code(reason)
                 })
                 |> Repo.update()
-
-              set_run(run.id, lease_expires_at: nil)
 
               {:ok, Repo.get!(Run, run.id)}
 
@@ -579,8 +640,12 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
     end)
   end
 
-  defp reconcile_one(organization_id, %Run{state: state, id: id, gtfs_version_id: version_id,
-                                           lease_token: token})
+  defp reconcile_one(organization_id, %Run{
+         state: state,
+         id: id,
+         gtfs_version_id: version_id,
+         lease_token: token
+       })
        when state in ~w(pending running) do
     {1, nil} =
       from(r in Run,
@@ -662,7 +727,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
         )
         |> Repo.all()
 
-      Enum.map(adopted_versions, fn version ->
+      Enum.flat_map(adopted_versions, fn version ->
         run_id = Ecto.UUID.generate()
 
         attrs = %{
@@ -678,11 +743,19 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
           updated_at: DateTime.utc_now()
         }
 
-        {1, nil} = Repo.insert_all(Run, [attrs])
-
-        Repo.get!(Run, run_id)
+        insert_adopted_run(attrs, run_id)
       end)
     end)
+  end
+
+  defp insert_adopted_run(attrs, run_id) do
+    case Repo.insert_all(Run, [attrs],
+           on_conflict: :nothing,
+           conflict_target: :gtfs_version_id
+         ) do
+      {1, nil} -> [Repo.get!(Run, run_id)]
+      {0, nil} -> []
+    end
   end
 
   @doc """

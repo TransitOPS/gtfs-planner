@@ -124,8 +124,9 @@ defmodule GtfsPlanner.Gtfs.Import.Run do
   @doc """
   A system-owned changeset used by the `ImportRuns` context to set lifecycle,
   lease, and timestamp fields directly. User params are ignored for those
-  columns; only `committed_counts` may be influenced by caller-supplied data,
-  and it is validated against the fixed allowlist and value constraints.
+  columns. Caller-supplied count and failure/audit detail is limited to the
+  bounded fields cast below and validated against fixed allowlists and length
+  constraints.
   """
   @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(run, attrs) do

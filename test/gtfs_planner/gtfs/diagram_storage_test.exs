@@ -452,8 +452,9 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       assert File.exists?(sibling_dir)
       assert File.read!(Path.join([sibling_dir, "station_b", "plan.png"])) == @import_bytes_b
       # Nothing escaped beyond the org root.
-      assert [] == Path.wildcard(Path.join([root, "diagrams", "**", "*.png"])) --
-               [Path.join([sibling_dir, "station_b", "plan.png"])]
+      assert [] ==
+               Path.wildcard(Path.join([root, "diagrams", "**", "*.png"])) --
+                 [Path.join([sibling_dir, "station_b", "plan.png"])]
     end
 
     test "returns ok when the namespace is already absent (idempotent)",
@@ -482,7 +483,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       assert [] == Path.wildcard(Path.join([root, "**", "etc"]))
     end
 
-    test "does not fall back to a broader path when containment fails",
+    test "rejects an unsafe version component without broadening the path",
          %{root: root, organization: org, version: version} do
       # Craft a component that fails validation; nothing is deleted and no
       # broader path is touched. Because safe_path_component? rejects slashes,
@@ -511,8 +512,10 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       refute File.exists?(failed_dir)
       assert File.read!(Path.join([published_dir, "station_a", "plan.png"])) == @import_bytes_a
-      assert [] == Path.wildcard(Path.join([root, "diagrams", "**", "*.png"])) --
-               [Path.join([published_dir, "station_a", "plan.png"])]
+
+      assert [] ==
+               Path.wildcard(Path.join([root, "diagrams", "**", "*.png"])) --
+                 [Path.join([published_dir, "station_a", "plan.png"])]
     end
   end
 

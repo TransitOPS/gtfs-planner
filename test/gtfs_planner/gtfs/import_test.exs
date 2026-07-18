@@ -495,10 +495,6 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       # so a supported file cannot exist without cleanup ownership.
       owned_schemas = MapSet.new(Import.cleanup_schemas())
 
-      assert Enum.all?(Import.supported_filenames(), fn _filename ->
-               true
-             end)
-
       # Every import spec schema must be present in the cleanup manifest.
       for {_key, _filename, schema, _parser, _phase} <- GtfsPlanner.Gtfs.Import.import_specs() do
         assert MapSet.member?(owned_schemas, schema),

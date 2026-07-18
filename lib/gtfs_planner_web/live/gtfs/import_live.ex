@@ -5,6 +5,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  import Ecto.Query, only: [from: 2]
+
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import
 
@@ -240,6 +242,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         case find_recoverable_run(socket, binary_id) do
           %Run{} = run ->
             if discardable?(run) do
+              socket = clear_previous_discard_confirmation(socket, run.id)
+
               confirming = %{run | confirming_discard: true}
 
               {:noreply,
@@ -273,7 +277,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     {:noreply,
      socket
      |> assign(:pending_discard_run_id, nil)
-     |> assign(:processing_discard, false)}
+     |> assign(:processing_discard, false)
+     |> assign(:recovery_announce, nil)}
   end
 
   # Retry publication for a run in `publication_failed`. Re-reads organization-
@@ -289,15 +294,18 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       binary_id ->
         case ImportRuns.retry_publication(organization_id, binary_id) do
           {:ok, _run, _version} ->
-            # The runner-driven closure will broadcast {:import_run_changed} and the
-            # card will reload as published/removed. Surface a transient notice.
+            # Publication retry closes synchronously; enqueue the same durable
+            # reload path used by runner broadcasts so the card is removed and
+            # the processing state is cleared.
+            send(self(), {:import_run_changed, binary_id})
+
             {:noreply,
              socket
              |> assign(:recovery_announce, "Publishing version")
              |> assign(:processing_publish, binary_id)}
 
           {:error, _reason} ->
-            {:noreply, socket}
+            {:noreply, assign(socket, :processing_publish, nil)}
         end
     end
   end
@@ -521,10 +529,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             |> assign(:recovery_count, new_count)
             |> assign(:recovery_empty, new_count == 0)
 
-          case success_for_published_target(socket, run_id) do
-            {:ok, socket} -> socket
-            :skip -> socket
-          end
+          success_for_published_target(socket, run_id)
+      end
+
+    socket =
+      if socket.assigns.processing_publish == run_id and
+           (is_nil(run) or run.state != "publication_failed") do
+        assign(socket, :processing_publish, nil)
+      else
+        socket
       end
 
     {:noreply, socket}
@@ -537,10 +550,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     target = socket.assigns[:import_target]
 
     if target do
-      run = GtfsPlanner.Repo.get(Run, run_id)
+      organization_id = socket.assigns.current_organization.id
+
+      run =
+        from(r in Run,
+          where: r.id == ^run_id and r.organization_id == ^organization_id
+        )
+        |> GtfsPlanner.Repo.one()
 
       case Versions.get_gtfs_version_for_lifecycle(
-             socket.assigns.current_organization.id,
+             organization_id,
              target.id
            ) do
         %GtfsVersion{publication_status: "published"} = published ->
@@ -554,22 +573,20 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             extensions: :not_present
           }
 
-          {:ok,
-           socket
-           |> assign(:import_result, {:ok, published, result})
-           |> assign(:import_target, published)
-           |> assign(:published_version, published)
-           |> assign(:importing, false)
-           |> assign(:import_progress, nil)}
+          socket
+          |> assign(:import_result, {:ok, published, result})
+          |> assign(:import_target, published)
+          |> assign(:published_version, published)
+          |> assign(:importing, false)
+          |> assign(:import_progress, nil)
 
         _ ->
-          {:ok,
-           socket
-           |> assign(:importing, false)
-           |> assign(:import_progress, nil)}
+          socket
+          |> assign(:importing, false)
+          |> assign(:import_progress, nil)
       end
     else
-      :skip
+      socket
     end
   end
 
@@ -1568,7 +1585,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           {:error, reason} ->
             # Post-create consumption/read error: fail the exact pending target,
             # start no runner, and render target-specific feedback.
-            failed = fail_target_best_effort(target)
+            failed = fail_target_best_effort(run, target)
 
             {:noreply,
              socket
@@ -1606,14 +1623,19 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   # Best-effort conditional closure of a still-unpublished target. A published
   # or failed target is left untouched (the transition is a no-op there).
-  defp fail_target_best_effort(%GtfsVersion{} = target) do
-    case Versions.fail_unpublished_gtfs_version(target.organization_id, target.id) do
-      {:ok, failed} -> failed
+  defp fail_target_best_effort(%Run{} = run, %GtfsVersion{} = target) do
+    case ImportRuns.fail_pending_target(
+           target.organization_id,
+           run.id,
+           run.lease_token,
+           :upload_consumption_failed
+         ) do
+      {:ok, _run, failed} -> failed
       {:error, _reason} -> target
     end
   end
 
-  defp fail_target_best_effort(_), do: nil
+  defp fail_target_best_effort(_, _), do: nil
 
   # Recovery runs that can be discarded (whole-target cleanup) rather than
   # published. `cleaning` is in-progress and excluded; `published`/`cleaned` are
@@ -1621,6 +1643,27 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   @discardable_states ~w(failed partial interrupted publication_failed cleanup_failed)
 
   defp discardable?(%Run{state: state}), do: state in @discardable_states
+
+  defp clear_previous_discard_confirmation(
+         %{assigns: %{pending_discard_run_id: previous_run_id}} = socket,
+         current_run_id
+       )
+       when is_binary(previous_run_id) and previous_run_id != current_run_id do
+    case find_recoverable_run(socket, previous_run_id) do
+      %Run{} = previous ->
+        stream_insert(
+          socket,
+          :import_recovery_runs,
+          %{previous | confirming_discard: false},
+          at: -1
+        )
+
+      nil ->
+        socket
+    end
+  end
+
+  defp clear_previous_discard_confirmation(socket, _current_run_id), do: socket
 
   # Event `run_id` values arrive as string UUIDs, matching the `:binary_id`
   # primary key's Elixir-side string representation. Validate and return the
@@ -1694,7 +1737,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     end)
     |> Enum.join(", ")
   rescue
-    _ -> ""
+    ArgumentError -> ""
   end
 
   defp recovery_card_border(%Run{state: state})

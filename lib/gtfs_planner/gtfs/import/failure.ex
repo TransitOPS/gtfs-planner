@@ -161,6 +161,8 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
 
   defp classify({:write_failed, _zip_path, _reason}), do: {"image_write_failed", nil, nil}
 
+  defp classify(:executor_lost), do: {"executor_lost", nil, nil}
+
   defp classify(_other), do: {"unknown_error", nil, nil}
 
   defp parse_reason_code(reason) when is_atom(reason) do
