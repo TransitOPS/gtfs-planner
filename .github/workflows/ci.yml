@@ -126,6 +126,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
       - name: Set up Elixir
         uses: ./.github/actions/elixir
         id: beam
@@ -168,7 +170,7 @@ jobs:
             plt-${{ runner.os }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
           path: priv/plts
       - name: Run dialyzer
-        run: mix dialyzer --format github --format dialyxir
+        run: mise run lint:elixir:dialyzer
 
   js:
     name: JS

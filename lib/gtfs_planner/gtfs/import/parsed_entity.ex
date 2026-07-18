@@ -24,6 +24,10 @@ defmodule GtfsPlanner.Gtfs.Import.ParsedEntity do
 
   @type result :: :not_uploaded | {:ok, t()} | {:error, ParseFailure.t()}
 
+  @doc "Returns the complete records indexed by their natural key."
+  @spec records_by_key(t()) :: %{required(String.t()) => map()}
+  def records_by_key(%__MODULE__{records_by_key: records_by_key}), do: records_by_key
+
   @spec parse(
           nil | %{filename: String.t(), content: binary()},
           :level | :stop | :pathway,

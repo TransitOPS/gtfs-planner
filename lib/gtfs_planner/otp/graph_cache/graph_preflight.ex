@@ -143,7 +143,7 @@ defmodule GtfsPlanner.Otp.GraphPreflight do
 
   defp validate_gtfs_zip_path(gtfs_path) do
     cond do
-      gtfs_path == nil or String.trim(gtfs_path) == "" ->
+      String.trim(gtfs_path) == "" ->
         [issue(:missing_gtfs_zip_path, "GTFS artifact zip path is missing", %{})]
 
       Path.type(gtfs_path) != :absolute ->

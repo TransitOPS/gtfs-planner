@@ -194,7 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     summary = Map.get(socket.assigns.connectivity_summaries, dimension)
     source_ids = if summary, do: Enum.map(summary.summary_rows, & &1.source_stop_id), else: []
     all_keys = MapSet.new(source_ids, &{dimension, &1})
-    all_expanded = MapSet.subset?(all_keys, expanded_sources) and all_keys != MapSet.new()
+    all_expanded = MapSet.subset?(all_keys, expanded_sources) and MapSet.size(all_keys) > 0
 
     if all_expanded do
       {:noreply,

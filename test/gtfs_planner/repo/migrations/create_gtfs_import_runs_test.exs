@@ -22,13 +22,16 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsImportRunsTest do
   @migration_glob "../../../../priv/repo/migrations/*_create_gtfs_import_runs.exs"
 
   @migration_path (
-                     matches = Path.wildcard(Path.expand(@migration_glob, __DIR__))
+                    matches = Path.wildcard(Path.expand(@migration_glob, __DIR__))
 
-                     case matches do
-                       [path] -> path
-                       other -> raise "expected exactly one import-runs migration file, got: #{inspect(other)}"
-                     end
-                   )
+                    case matches do
+                      [path] ->
+                        path
+
+                      other ->
+                        raise "expected exactly one import-runs migration file, got: #{inspect(other)}"
+                    end
+                  )
 
   Code.require_file(@migration_path)
 
@@ -64,7 +67,8 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsImportRunsTest do
 
       for expected <-
             ~w(gtfs_import_runs_state_check gtfs_import_runs_lease_check gtfs_import_runs_finished_at_check gtfs_import_runs_cleanup_started_at_check gtfs_import_runs_cleanup_finished_at_check gtfs_import_runs_failed_row_check) do
-        assert expected in names, "expected check constraint #{expected} to exist, got #{inspect(names)}"
+        assert expected in names,
+               "expected check constraint #{expected} to exist, got #{inspect(names)}"
       end
     end
   end
@@ -104,7 +108,10 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsImportRunsTest do
       %{schema: schema, org_id: org_id}
     end
 
-    test "running/pending/cleaning without both lease fields raises", %{schema: schema, org_id: org_id} do
+    test "running/pending/cleaning without both lease fields raises", %{
+      schema: schema,
+      org_id: org_id
+    } do
       for state <- @lease_states do
         assert_constraint_violation(fn -> insert_run!(schema, org_id, state, lease: false) end)
       end
@@ -128,7 +135,10 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsImportRunsTest do
       %{schema: schema, org_id: org_id}
     end
 
-    test "a terminal import state without finished_at is rejected", %{schema: schema, org_id: org_id} do
+    test "a terminal import state without finished_at is rejected", %{
+      schema: schema,
+      org_id: org_id
+    } do
       for state <- @terminal_states do
         assert_constraint_violation(fn -> insert_run!(schema, org_id, state, finished: false) end)
       end

@@ -676,6 +676,41 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
                length(adopted) + 1
     end
 
+    test "concurrent legacy adoption creates exactly one run for a failed target", %{} do
+      org = organization_fixture()
+      {:ok, version} = Versions.create_staging_gtfs_version(org.id, %{name: "Legacy Race"})
+      {:ok, version} = Versions.fail_unpublished_gtfs_version(org.id, version.id)
+
+      parent = self()
+
+      adopt = fn ->
+        Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+        send(parent, {:adopter_ready, self()})
+
+        receive do
+          :adopt -> ImportRuns.adopt_legacy_failed_targets(org.id)
+        end
+      end
+
+      first = Task.async(adopt)
+      second = Task.async(adopt)
+
+      assert_receive {:adopter_ready, first_pid}
+      assert_receive {:adopter_ready, second_pid}
+
+      send(first_pid, :adopt)
+      send(second_pid, :adopt)
+
+      results = Task.await_many([first, second], 5_000)
+
+      assert results |> Enum.map(&length/1) |> Enum.sum() == 1
+
+      assert Repo.aggregate(
+               from(r in Run, where: r.gtfs_version_id == ^version.id),
+               :count
+             ) == 1
+    end
+
     test "list_recoverable excludes published and cleaned", %{} do
       org = organization_fixture()
       {:ok, %{run: pending}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "P"})

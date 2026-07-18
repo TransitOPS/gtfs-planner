@@ -58,7 +58,7 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
   batched cleanup flow. Returns `{:ok, nil}` (the version row is removed) or
   `{:error, atom()}` when cleanup failed and the version is retained (AC-13).
   """
-  @spec discard_claimed(ImportRuns.Run.t(), GtfsVersion.t(), Ecto.UUID.t()) ::
+  @spec discard_claimed(Run.t(), GtfsVersion.t(), Ecto.UUID.t()) ::
           {:ok, nil} | {:error, atom()}
   def discard_claimed(%Run{organization_id: org_id, id: run_id}, _version, lease_token) do
     cleanup_claimed(org_id, run_id, lease_token)

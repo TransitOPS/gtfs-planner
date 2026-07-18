@@ -229,6 +229,36 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     assert DynamicSupervisor.count_children(RunnerSupervisor).active == 0
   end
 
+  test "an abnormal worker exit after lease loss does not broadcast an unpersisted closure" do
+    org = organization_fixture()
+    {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+
+    {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, [])
+    allow_repo(runner_pid)
+
+    state = :sys.get_state(runner_pid)
+    worker_pid = state.task_pid
+
+    Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
+
+    run_id = run.id
+    replacement_token = Ecto.UUID.generate()
+
+    {1, nil} =
+      from(r in Run, where: r.id == ^run.id)
+      |> Repo.update_all(set: [lease_token: replacement_token])
+
+    runner_ref = Process.monitor(runner_pid)
+    send(worker_pid, :die)
+
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, {:worker_exit, :killed}}
+    refute_receive {:import_run_changed, ^run_id}, 100
+
+    persisted = Repo.get!(Run, run.id)
+    assert persisted.state == "running"
+    assert persisted.lease_token == replacement_token
+  end
+
   # --- AC-8: stale-token shutdown without overwriting newer state -----------
 
   test "a stale/wrong-token runner shuts down without overwriting state" do

@@ -61,7 +61,8 @@ defmodule GtfsPlanner.Repo.Migrations.CreateGtfsImportRuns do
            )
 
     create constraint(:gtfs_import_runs, @state_check,
-             check: "state = ANY(ARRAY['pending','running','failed','partial','interrupted','publication_failed','published','cleaning','cleanup_failed','cleaned']::text[])",
+             check:
+               "state = ANY(ARRAY['pending','running','failed','partial','interrupted','publication_failed','published','cleaning','cleanup_failed','cleaned']::text[])",
              comment: "run state must be one of the documented import-run states"
            )
 

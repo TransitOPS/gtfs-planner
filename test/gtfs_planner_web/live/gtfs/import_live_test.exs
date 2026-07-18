@@ -814,6 +814,71 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       refute Versions.get_gtfs_version_for_lifecycle(organization.id, failed_v.id)
     end
 
+    test "opening a second discard confirmation closes the first", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, first_version} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Discard First"})
+
+      {:ok, first_version} =
+        Versions.fail_unpublished_gtfs_version(organization.id, first_version.id)
+
+      first_run = insert_run(organization.id, first_version, "failed")
+
+      {:ok, second_version} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Discard Second"})
+
+      {:ok, second_version} =
+        Versions.fail_unpublished_gtfs_version(organization.id, second_version.id)
+
+      second_run = insert_run(organization.id, second_version, "failed")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      view |> element("#discard-#{first_run.id}") |> render_click()
+      assert has_element?(view, "#delete-version-#{first_run.id}")
+
+      view |> element("#discard-#{second_run.id}") |> render_click()
+
+      refute has_element?(view, "#delete-version-#{first_run.id}")
+      assert has_element?(view, "#delete-version-#{second_run.id}")
+    end
+
+    test "publication retry clears processing state and removes the recovery card", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, version} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Retry Publish"})
+
+      {:ok, version} = Versions.claim_staging_gtfs_version(organization.id, version.id)
+
+      run =
+        insert_run(organization.id, version, "publication_failed",
+          committed_counts: %{levels: 1},
+          counts_complete: true
+        )
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+      assert has_element?(view, "#publish-version-#{run.id}")
+
+      view |> element("#publish-version-#{run.id}") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      refute has_element?(view, "#import-run-#{run.id}")
+      assert Versions.published_gtfs_version_for_org?(organization.id, version.id)
+      assert :sys.get_state(view.pid).socket.assigns.processing_publish == nil
+    end
+
     test "crafted publish/discard events for a published/cross-org target change nothing", %{
       conn: conn,
       user: user,
@@ -892,6 +957,22 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
          %{conn: conn, user: user, organization: organization, gtfs_version: route_version} do
       conn = log_in_user(conn, user, organization: organization)
 
+      previous_worker = Application.get_env(:gtfs_planner, :import_worker_module)
+      previous_owner = Application.get_env(:gtfs_planner, :blocking_import_worker_owner)
+
+      Application.put_env(
+        :gtfs_planner,
+        :import_worker_module,
+        GtfsPlanner.Support.BlockingImportWorker
+      )
+
+      Application.put_env(:gtfs_planner, :blocking_import_worker_owner, self())
+
+      on_exit(fn ->
+        restore_application_env(:import_worker_module, previous_worker)
+        restore_application_env(:blocking_import_worker_owner, previous_owner)
+      end)
+
       uploads = Application.fetch_env!(:gtfs_planner, :uploads_path)
 
       # A prior published version whose rows + diagram file must stay byte-identical.
@@ -919,6 +1000,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       ])
 
       submit_import(view, "Drop Me")
+      assert_receive {:blocking_import_worker_started, worker_pid}
 
       # The initiating LiveView process for the import; terminate it and confirm
       # it is gone (AC-6: the runner must survive).
@@ -943,9 +1025,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       # The supervisor-owned runner survives the LiveView. Kill it afterward so
       # its normal closure cannot execute (AC-7).
+      task_pid = :sys.get_state(runner_pid).task_pid
+      assert task_pid == worker_pid
       runner_ref = Process.monitor(runner_pid)
+      task_ref = Process.monitor(task_pid)
       Process.exit(runner_pid, :kill)
       assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, :killed}
+      assert_receive {:DOWN, ^task_ref, :process, ^task_pid, _reason}
 
       # The run is still active (running) because the lease is unexpired.
       run =
@@ -1065,6 +1151,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert has_element?(view, "#gtfs-import-view-version[href='/gtfs/#{target.id}/routes']")
     end
   end
+
+  defp restore_application_env(key, nil), do: Application.delete_env(:gtfs_planner, key)
+  defp restore_application_env(key, value), do: Application.put_env(:gtfs_planner, key, value)
 
   describe "upload display" do
     setup :editor_context

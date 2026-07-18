@@ -1635,8 +1635,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     end
   end
 
-  defp fail_target_best_effort(_, _), do: nil
-
   # Recovery runs that can be discarded (whole-target cleanup) rather than
   # published. `cleaning` is in-progress and excluded; `published`/`cleaned` are
   # terminal and never recoverable.
@@ -1914,7 +1912,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     uploaded_ids =
       case stops_result do
-        {:ok, %ParsedEntity{records_by_key: records_by_key}} ->
+        {:ok, parsed_entity} ->
+          records_by_key = ParsedEntity.records_by_key(parsed_entity)
           Map.values(records_by_key) |> Enum.map(&Map.get(&1, :stop_id))
 
         {:error, %ParseFailure{preview_records_by_key: preview_records_by_key}} ->
