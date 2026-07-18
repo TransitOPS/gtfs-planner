@@ -18,9 +18,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     ParseFailure
   }
 
-  alias GtfsPlanner.Gtfs.Import.Publication
   alias GtfsPlanner.Gtfs.Import.Run
+  alias GtfsPlanner.Gtfs.Import.Runner
   alias GtfsPlanner.Gtfs.ImportRuns
+  alias GtfsPlanner.Gtfs.Import.Recovery
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -51,6 +52,19 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   @impl true
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
+    organization_id = socket.assigns.current_organization.id
+
+    # Reconcile expired leases and adopt runless legacy failed versions into
+    # durable, organization-scoped recoverable runs before showing the page, so
+    # a reconnect always reconstructs current state from PostgreSQL.
+    ImportRuns.adopt_legacy_failed_targets(organization_id)
+    ImportRuns.reconcile_expired(organization_id)
+
+    recoverable_runs = ImportRuns.list_recoverable(organization_id)
+
+    for run <- recoverable_runs do
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
+    end
 
     {:ok,
      socket
@@ -74,10 +88,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:import_target, nil)
      |> assign(:published_version, nil)
      |> assign(:version_name_touched, false)
-     |> assign(:import_task, nil)
      |> assign(:import_progress, nil)
      |> assign(:importing, false)
      |> assign(:unrecognized_upload_files, [])
+     |> assign(:recovery_empty, recoverable_runs == [])
+     |> assign(:recovery_count, length(recoverable_runs))
+     |> assign(:pending_discard_run_id, nil)
+     |> assign(:processing_discard, false)
+     |> assign(:processing_publish, nil)
+     |> assign(:recovery_announce, nil)
      |> assign(:diff_step, :upload)
      |> assign(:diff_summary, empty_diff_summary())
      |> assign(:diff_filter, :all)
@@ -87,7 +106,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:apply_results, [])
      |> assign(:decisions_by_id, %{})
      |> stream(:diff_decisions, [])
-     |> stream(:diff_preview_decisions, [])}
+     |> stream(:diff_preview_decisions, [])
+     |> stream(:import_recovery_runs, recoverable_runs,
+       dom_id: fn run -> "import-run-#{run.id}" end
+     )}
   end
 
   @impl true
@@ -200,6 +222,145 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
       true ->
         create_and_start_import(socket, form_data, version_name)
+    end
+  end
+
+  # --- recovery actions ------------------------------------------------------
+
+  # Begin the two-step destructive confirmation for a recoverable run. Only the
+  # card whose "Discard failed import" was clicked reveals the confirming
+  # "Delete failed version" button, preventing an accidental discard.
+  @impl true
+  def handle_event("begin_discard", %{"run_id" => run_id}, socket) do
+    case load_run_id(run_id) do
+      nil ->
+        {:noreply, socket}
+
+      binary_id ->
+        case find_recoverable_run(socket, binary_id) do
+          %Run{} = run ->
+            if discardable?(run) do
+              confirming = %{run | confirming_discard: true}
+
+              {:noreply,
+               socket
+               |> stream_insert(:import_recovery_runs, confirming, at: -1)
+               |> assign(:pending_discard_run_id, run.id)
+               |> assign(:recovery_announce, "Confirm discarding #{run.version_name}")}
+            else
+              {:noreply, socket}
+            end
+
+          nil ->
+            {:noreply, socket}
+        end
+    end
+  end
+
+  # Cancel an in-progress discard confirmation (no state change).
+  @impl true
+  def handle_event("cancel_discard", _params, socket) do
+    socket =
+      case find_recoverable_run(socket, socket.assigns.pending_discard_run_id) do
+        %Run{} = run ->
+          socket
+          |> stream_insert(:import_recovery_runs, %{run | confirming_discard: false}, at: -1)
+
+        nil ->
+          socket
+      end
+
+    {:noreply,
+     socket
+     |> assign(:pending_discard_run_id, nil)
+     |> assign(:processing_discard, false)}
+  end
+
+  # Retry publication for a run in `publication_failed`. Re-reads organization-
+  # scoped durable state; cross-org or wrong-state crafted events are rejected.
+  @impl true
+  def handle_event("publish_version", %{"run_id" => run_id}, socket) do
+    organization_id = socket.assigns.current_organization.id
+
+    case load_run_id(run_id) do
+      nil ->
+        {:noreply, socket}
+
+      binary_id ->
+        case ImportRuns.retry_publication(organization_id, binary_id) do
+          {:ok, _run, _version} ->
+            # The runner-driven closure will broadcast {:import_run_changed} and the
+            # card will reload as published/removed. Surface a transient notice.
+            {:noreply,
+             socket
+             |> assign(:recovery_announce, "Publishing version")
+             |> assign(:processing_publish, binary_id)}
+
+          {:error, _reason} ->
+            {:noreply, socket}
+        end
+    end
+  end
+
+  # Execute the discard after confirmation. Claims cleanup, runs the convergent
+  # cleanup flow, then resets uploads, prefills the removed version name, and
+  # focuses the upload control on success (AC-17).
+  @impl true
+  def handle_event("delete_version", %{"run_id" => run_id}, socket) do
+    organization_id = socket.assigns.current_organization.id
+    actor = %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
+
+    socket = assign(socket, :processing_discard, true)
+
+    case load_run_id(run_id) do
+      nil ->
+        {:noreply,
+         socket
+         |> assign(:processing_discard, false)
+         |> assign(:recovery_announce, "Could not claim the failed version for cleanup")}
+
+      binary_id ->
+        case ImportRuns.claim_cleanup(organization_id, binary_id, actor) do
+          {:ok, %Run{} = run, version, token} ->
+            case Recovery.discard_claimed(run, version, token) do
+              {:ok, nil} ->
+                removed_name = run.version_name
+
+                new_count = max(0, socket.assigns.recovery_count - 1)
+
+                socket =
+                  socket
+                  |> stream_delete(:import_recovery_runs, run)
+                  |> assign(:recovery_count, new_count)
+                  |> assign(:recovery_empty, new_count == 0)
+                  |> assign(:pending_discard_run_id, nil)
+                  |> assign(:processing_discard, false)
+                  |> assign(:recovery_announce, "Discarded #{removed_name}")
+                  |> assign(
+                    :form,
+                    to_form(%{"version_name" => removed_name}, as: :gtfs_import_form)
+                  )
+
+                # Reset consumed uploads and return focus to the file picker so the
+                # user can immediately re-upload the same feed.
+                socket = reset_uploads(socket)
+                {:noreply, push_event(socket, "focus_gtfs_import_files", %{})}
+
+              {:error, _reason} ->
+                {:noreply,
+                 socket
+                 |> assign(:processing_discard, false)
+                 |> assign(:pending_discard_run_id, nil)
+                 |> assign(:recovery_announce, "Could not discard the failed version")}
+            end
+
+          {:error, _reason} ->
+            {:noreply,
+             socket
+             |> assign(:processing_discard, false)
+             |> assign(:pending_discard_run_id, nil)
+             |> assign(:recovery_announce, "Could not claim the failed version for cleanup")}
+        end
     end
   end
 
@@ -329,28 +490,102 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   end
 
   @impl true
-  def handle_info({ref, result}, socket) when socket.assigns.import_task == ref do
-    # The supervised publication task finished; stop monitoring its process.
-    Process.demonitor(ref, [:flush])
+  def handle_info({:import_run_changed, run_id}, socket) do
+    # A terminal or progress transition was broadcast by the supervised Runner
+    # (or a peer LiveView) for this organization's run. Reload the durable run
+    # and re-stream it; if it is no longer recoverable, drop it from the list
+    # and, when the run we started just published its target, surface the
+    # success result the old task-owned flow used to return directly.
+    organization_id = socket.assigns.current_organization.id
 
-    {:noreply, apply_import_result(socket, result)}
+    run =
+      ImportRuns.list_recoverable(organization_id)
+      |> Enum.find(&(&1.id == run_id))
+
+    socket =
+      case run do
+        %Run{} = run ->
+          socket
+          |> stream_insert(:import_recovery_runs, run, at: -1)
+          |> assign(:recovery_empty, false)
+          |> assign(:recovery_announce, recovery_announce_text(run))
+
+        nil ->
+          gone_run = GtfsPlanner.Repo.get(Run, run_id)
+
+          new_count = max(0, socket.assigns.recovery_count - 1)
+
+          socket =
+            socket
+            |> stream_delete(:import_recovery_runs, gone_run)
+            |> assign(:recovery_count, new_count)
+            |> assign(:recovery_empty, new_count == 0)
+
+          case success_for_published_target(socket, run_id) do
+            {:ok, socket} -> socket
+            :skip -> socket
+          end
+      end
+
+    {:noreply, socket}
   end
 
-  @impl true
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, socket)
-      when socket.assigns.import_task == ref do
-    # The supervised publication task crashed before returning a result.
-    # Best-effort close the exact target we bound this run to: a still-staging
-    # or importing target is failed, while a published or failed terminal state
-    # is never overwritten (the conditional transition is a no-op there).
-    target = fail_target_best_effort(socket.assigns[:import_target])
+  # When the run we started reaches `published`, the route-version we bound as
+  # `:import_target` is now published. Render the success result with the
+  # durable counts from the run's audit row so the import page announces it.
+  defp success_for_published_target(socket, run_id) do
+    target = socket.assigns[:import_target]
 
-    {:noreply,
-     socket
-     |> assign(:import_target, target)
-     |> assign(:import_result, {:error, target, :process_crashed})
-     |> assign(:importing, false)
-     |> assign(:import_task, nil)}
+    if target do
+      run = GtfsPlanner.Repo.get(Run, run_id)
+
+      case Versions.get_gtfs_version_for_lifecycle(
+             socket.assigns.current_organization.id,
+             target.id
+           ) do
+        %GtfsVersion{publication_status: "published"} = published ->
+          counts = run_counts_to_result(run)
+
+          result = %Result{
+            counts: counts,
+            unrecognized_files: [],
+            topic: nil,
+            archive_warnings: [],
+            extensions: :not_present
+          }
+
+          {:ok,
+           socket
+           |> assign(:import_result, {:ok, published, result})
+           |> assign(:import_target, published)
+           |> assign(:published_version, published)
+           |> assign(:importing, false)
+           |> assign(:import_progress, nil)}
+
+        _ ->
+          {:ok,
+           socket
+           |> assign(:importing, false)
+           |> assign(:import_progress, nil)}
+      end
+    else
+      :skip
+    end
+  end
+
+  defp run_counts_to_result(nil), do: %{}
+
+  defp run_counts_to_result(%Run{committed_counts: counts}) when is_map(counts) do
+    mapped =
+      Enum.reduce(counts, %{}, fn {k, v}, acc ->
+        try do
+          Map.put(acc, String.to_existing_atom(to_string(k)), v)
+        rescue
+          _ -> acc
+        end
+      end)
+
+    Map.take(mapped, [:levels, :stops, :pathways])
   end
 
   defp block_diff_review(socket, blockers) do
@@ -507,7 +742,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                     GTFS .txt/.csv files or a .zip archive (max 50 files, 200MB each)
                   </p>
                 </div>
-                <.live_file_input upload={@uploads.gtfs_files} class="sr-only" />
+                <.live_file_input upload={@uploads.gtfs_files} id="gtfs-import-files" class="sr-only" />
               </label>
             </div>
 
@@ -699,6 +934,124 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   </div>
               <% end %>
             </div>
+          <% end %>
+        </div>
+      </div>
+
+      <%!-- Reconnect-safe recovery region: streamed, stable DOM ids, one ARIA
+           live region announces each state change once (AC-15/16/17/18, INV-3). --%>
+      <div class="mt-8" aria-live="polite" id="gtfs-import-recovery-announce">
+        <%= if @recovery_announce do %>
+          <span class="sr-only">{@recovery_announce}</span>
+        <% end %>
+      </div>
+
+      <div class="mt-8">
+        <div class="bg-base-100 rounded-lg p-6">
+          <div class="flex flex-col gap-3">
+            <h2 class="text-xl font-semibold">Import recovery</h2>
+            <p class="text-sm text-base-content/70">
+              Failed, partial, interrupted, or cleanup-pending imports for this organization. Each can be discarded and re-uploaded.
+            </p>
+          </div>
+
+          <div
+            id="import-recovery-runs"
+            phx-update="stream"
+            class="mt-4 flex flex-col gap-3"
+          >
+            <div
+              :for={{dom_id, run} <- @streams.import_recovery_runs}
+              id={dom_id}
+              class={[
+                "rounded-lg border p-4",
+                recovery_card_border(run)
+              ]}
+            >
+              <.icon name={recovery_card_icon(run)} class="w-5 h-5 mb-2" />
+              <div class="flex flex-col gap-1">
+                <p class="text-sm font-semibold">{run.version_name}</p>
+                <p class="text-xs text-base-content/70">{recovery_card_state_label(run)}</p>
+                <%= if run.committed_counts != %{} and run.state == "partial" do %>
+                  <p class="text-xs text-base-content/70 mt-1">
+                    {recovery_counts_summary(run.committed_counts)}
+                  </p>
+                <% end %>
+                <%= if run.state == "partial" and run.failed_file do %>
+                  <p class="text-xs text-base-content/70">
+                    Last file: {run.failed_file}{if run.failed_row, do: " (row #{run.failed_row})"}
+                  </p>
+                <% end %>
+                <%= if run.state == "interrupted" do %>
+                  <p class="text-xs text-base-content/70 mt-1">
+                    Durable counts are uncertain after an interrupted import.
+                  </p>
+                <% end %>
+              </div>
+
+              <div class="mt-3 flex flex-wrap gap-2">
+                <%= if run.state == "publication_failed" do %>
+                  <.button
+                    id={"publish-version-#{run.id}"}
+                    phx-click="publish_version"
+                    phx-value-run_id={run.id}
+                    class="btn btn-primary btn-sm"
+                    disabled={@processing_publish == run.id}
+                  >
+                    Publish version
+                  </.button>
+                <% end %>
+
+                <%= if discardable?(run) do %>
+                  <%= if run.confirming_discard do %>
+                    <span class="text-xs text-base-content/80 mr-1 self-center">
+                      Discard “{run.version_name}” and delete its failed version?
+                    </span>
+                    <.button
+                      id={"delete-version-#{run.id}"}
+                      phx-click="delete_version"
+                      phx-value-run_id={run.id}
+                      class="btn btn-error btn-sm"
+                      disabled={@processing_discard}
+                    >
+                      Delete failed version
+                    </.button>
+                    <.button
+                      id={"cancel-discard-#{run.id}"}
+                      phx-click="cancel_discard"
+                      class="btn btn-ghost btn-sm"
+                      disabled={@processing_discard}
+                    >
+                      Cancel
+                    </.button>
+                  <% else %>
+                    <.button
+                      id={"discard-#{run.id}"}
+                      phx-click="begin_discard"
+                      phx-value-run_id={run.id}
+                      class="btn btn-outline btn-sm"
+                    >
+                      Discard failed import
+                    </.button>
+                  <% end %>
+                <% end %>
+
+                <%= if run.state in ~w(pending running cleaning) do %>
+                  <span class="text-xs text-base-content/50 self-center">
+                    {if run.state == "cleaning", do: "Cleanup in progress…", else: "In progress…"}
+                  </span>
+                <% end %>
+              </div>
+            </div>
+          </div>
+
+          <%= if @recovery_empty do %>
+            <p
+              id="import-recovery-empty"
+              class="text-sm text-base-content/60 py-2"
+            >
+              No recoverable imports for this organization.
+            </p>
           <% end %>
         </div>
       </div>
@@ -1152,19 +1505,21 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             const el = this.el.querySelector(selector)
             if (el) el.focus()
           })
+          this.handleEvent("focus_gtfs_import_files", () => {
+            const el = this.el.querySelector("#gtfs-import-files")
+            if (el) el.focus()
+          })
         }
       }
     </script>
     """
   end
 
-  # Create exactly one staging target + pending run, claim it into a running run,
-  # bind the staged version as `:import_target`, consume the uploads into memory,
-  # and hand the claimed run + lease token to `Publication.run/4`. The
-  # route/current version is never a write destination.
-  #
-  # NOTE: this is a temporary compile-preserving bridge ahead of step 8, which
-  # reworks ImportLive to create the run up-front and start a supervised Runner.
+  # Create exactly one staging target + pending run, subscribe to its stable
+  # topic, consume the uploads into memory, and hand the run + lease token to a
+  # supervised Runner that claims and executes the import. The route/current
+  # version is never a write destination, and no task reference is owned by the
+  # socket: the Runner is durable and survives disconnect (AC-6).
   defp create_and_start_import(socket, _form_data, version_name) do
     organization_id = socket.assigns.current_organization.id
     actor = %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
@@ -1173,7 +1528,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       {:error, changeset} ->
         # Pre-consumption changeset error (blank/duplicate name): return to the
         # form, preserve every upload entry, focus/announce the error,
-        # and start no task. No lifecycle row was created.
+        # and start no runner. No lifecycle row was created.
         socket =
           socket
           |> assign(:version_name_touched, true)
@@ -1191,17 +1546,28 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         {:noreply, socket}
 
       {:ok, %{run: run, version: target}} ->
-        # Bind the persisted target before touching uploads so every downstream
-        # path (consume error, task, result, :DOWN) closes this exact run/version.
-        socket = assign(socket, :import_target, target)
+        # Subscribe to the stable topic BEFORE starting the runner so no
+        # broadcast is missed.
+        Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
 
-        case claim_and_consume_import_files(socket, run, actor) do
-          {:ok, claimed_run, token, uploaded_files} ->
-            start_import_task(socket, claimed_run, token, uploaded_files)
+        case consume_import_files(socket) do
+          {:ok, uploaded_files} ->
+            # Hand the pending run + lease token to the supervised runner. The
+            # runner re-claims in init and executes publication through
+            # ImportRuns, broadcasting {:import_run_changed, run.id} on closure.
+            Runner.start_import(organization_id, run.id, run.lease_token, uploaded_files)
+
+            {:noreply,
+             socket
+             |> assign(:import_target, target)
+             |> assign(:importing, true)
+             |> assign(:import_result, nil)
+             |> assign(:published_version, nil)
+             |> assign(:import_progress, nil)}
 
           {:error, reason} ->
             # Post-create consumption/read error: fail the exact pending target,
-            # start no task, and render target-specific feedback.
+            # start no runner, and render target-specific feedback.
             failed = fail_target_best_effort(target)
 
             {:noreply,
@@ -1209,43 +1575,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
              |> assign(:import_target, failed)
              |> assign(:import_result, {:error, failed, {:upload_consumption_failed, reason}})
              |> assign(:importing, false)
-             |> assign(:import_task, nil)
              |> assign(:import_progress, nil)}
         end
     end
-  end
-
-  defp claim_and_consume_import_files(socket, run, _actor) do
-    case ImportRuns.claim_import(run.organization_id, run.id, run.lease_token) do
-      {:ok, claimed_run, _version, token} ->
-        case consume_import_files(socket) do
-          {:ok, uploaded_files} -> {:ok, claimed_run, token, uploaded_files}
-          {:error, reason} -> {:error, reason}
-        end
-
-      {:error, _reason} ->
-        {:error, :claim_failed}
-    end
-  end
-
-  defp start_import_task(socket, %Run{} = run, lease_token, uploaded_files) do
-    # Subscribe to the progress topic BEFORE starting the task so no progress
-    # message is missed.
-    topic = "import:#{:erlang.unique_integer()}"
-    Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, topic)
-
-    task =
-      Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-        Publication.run(run, lease_token, uploaded_files, topic)
-      end)
-
-    {:noreply,
-     socket
-     |> assign(:import_task, task.ref)
-     |> assign(:importing, true)
-     |> assign(:import_result, nil)
-     |> assign(:published_version, nil)
-     |> assign(:import_progress, nil)}
   end
 
   # Consume upload entries by reading each temporary path through the configured
@@ -1283,30 +1615,131 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   defp fail_target_best_effort(_), do: nil
 
-  defp apply_import_result(socket, {:ok, %GtfsVersion{} = published, %Result{} = result}) do
-    socket
-    |> assign(:import_result, {:ok, published, result})
-    |> assign(:import_target, published)
-    |> assign(:published_version, published)
-    |> assign(:importing, false)
-    |> assign(:import_task, nil)
+  # Recovery runs that can be discarded (whole-target cleanup) rather than
+  # published. `cleaning` is in-progress and excluded; `published`/`cleaned` are
+  # terminal and never recoverable.
+  @discardable_states ~w(failed partial interrupted publication_failed cleanup_failed)
+
+  defp discardable?(%Run{state: state}), do: state in @discardable_states
+
+  # Event `run_id` values arrive as string UUIDs, matching the `:binary_id`
+  # primary key's Elixir-side string representation. Validate and return the
+  # string unchanged so downstream ImportRuns queries and stream lookups match.
+  defp load_run_id(run_id) when is_binary(run_id) do
+    case Ecto.UUID.cast(run_id) do
+      {:ok, _} -> run_id
+      :error -> nil
+    end
   end
 
-  defp apply_import_result(socket, {:error, target, {:publication_failed, reason}}) do
-    socket
-    |> assign(:import_result, {:error, target, {:publication_failed, reason}})
-    |> assign(:import_target, target)
-    |> assign(:importing, false)
-    |> assign(:import_task, nil)
+  defp find_recoverable_run(socket, run_id) do
+    organization_id = socket.assigns.current_organization.id
+
+    ImportRuns.list_recoverable(organization_id)
+    |> Enum.find(&(&1.id == run_id))
   end
 
-  defp apply_import_result(socket, {:error, target, reason}) do
-    socket
-    |> assign(:import_result, {:error, target, reason})
-    |> assign(:import_target, target)
-    |> assign(:importing, false)
-    |> assign(:import_task, nil)
+  # Reset every staged GTFS upload entry so a discarded target can be re-uploaded
+  # cleanly under the same (prefilled) version name.
+  defp reset_uploads(socket) do
+    Enum.reduce(socket.assigns.uploads.gtfs_files.entries, socket, fn entry, acc ->
+      cancel_upload(acc, :gtfs_files, entry.ref)
+    end)
   end
+
+  # One short announce string per state so the single ARIA live region (AC-18)
+  # reports a meaningful change exactly once per transition.
+  defp recovery_announce_text(%Run{state: "pending"}), do: "Import pending"
+  defp recovery_announce_text(%Run{state: "running"}), do: "Import running"
+  defp recovery_announce_text(%Run{state: "partial"}), do: "Import partially committed"
+  defp recovery_announce_text(%Run{state: "failed"}), do: "Import failed"
+  defp recovery_announce_text(%Run{state: "interrupted"}), do: "Import interrupted"
+  defp recovery_announce_text(%Run{state: "publication_failed"}), do: "Publication failed"
+  defp recovery_announce_text(%Run{state: "cleaning"}), do: "Cleanup in progress"
+  defp recovery_announce_text(%Run{state: "cleanup_failed"}), do: "Cleanup failed"
+  defp recovery_announce_text(%Run{}), do: nil
+
+  @count_labels %{
+    levels: "levels",
+    stops: "stops",
+    pathways: "pathways",
+    extensions_stop_coordinates: "stop coordinates",
+    extensions_stop_levels: "stop levels",
+    extensions_route_flags: "route flags",
+    extensions_images: "images"
+  }
+
+  defp recovery_counts_summary(counts) when is_map(counts) do
+    counts
+    |> Enum.reject(fn {_k, v} -> v == 0 or v == nil end)
+    |> Enum.sort_by(
+      fn {k, _v} ->
+        order = [
+          :levels,
+          :stops,
+          :pathways,
+          :extensions_stop_coordinates,
+          :extensions_stop_levels,
+          :extensions_route_flags,
+          :extensions_images
+        ]
+
+        Enum.find_index(order, &(&1 == String.to_existing_atom(to_string(k)))) || 99
+      end,
+      fn a, b -> a <= b end
+    )
+    |> Enum.map(fn {k, v} ->
+      label = Map.get(@count_labels, String.to_existing_atom(to_string(k)), to_string(k))
+      "#{v} #{label}"
+    end)
+    |> Enum.join(", ")
+  rescue
+    _ -> ""
+  end
+
+  defp recovery_card_border(%Run{state: state})
+       when state in ~w(failed interrupted cleanup_failed),
+       do: "border-error/40 bg-error/5"
+
+  defp recovery_card_border(%Run{state: "partial"}), do: "border-warning/40 bg-warning/5"
+
+  defp recovery_card_border(%Run{state: "publication_failed"}),
+    do: "border-warning/40 bg-warning/5"
+
+  defp recovery_card_border(%Run{state: "cleaning"}), do: "border-info/40 bg-info/5"
+  defp recovery_card_border(%Run{}), do: "border-base-300 bg-base-200"
+
+  defp recovery_card_icon(%Run{state: state}) when state in ~w(failed interrupted cleanup_failed),
+    do: "hero-exclamation-circle"
+
+  defp recovery_card_icon(%Run{state: "partial"}), do: "hero-exclamation-triangle"
+  defp recovery_card_icon(%Run{state: "publication_failed"}), do: "hero-exclamation-triangle"
+  defp recovery_card_icon(%Run{state: "cleaning"}), do: "hero-arrow-path"
+  defp recovery_card_icon(%Run{}), do: "hero-clock"
+
+  defp recovery_card_state_label(%Run{state: "pending"}), do: "Import pending — preparing upload."
+
+  defp recovery_card_state_label(%Run{state: "running"}),
+    do: "Import running — writing to a new version."
+
+  defp recovery_card_state_label(%Run{state: "partial"}),
+    do: "Partially committed — some rows were written before a failure."
+
+  defp recovery_card_state_label(%Run{state: "failed"}),
+    do: "Failed — no rows were committed. Safe to discard and re-upload."
+
+  defp recovery_card_state_label(%Run{state: "interrupted"}),
+    do: "Interrupted — the import process was lost."
+
+  defp recovery_card_state_label(%Run{state: "publication_failed"}),
+    do: "Publication failed — files imported but not published."
+
+  defp recovery_card_state_label(%Run{state: "cleaning"}), do: "Cleanup in progress."
+
+  defp recovery_card_state_label(%Run{state: "cleanup_failed"}),
+    do: "Cleanup failed — can be retried by discarding."
+
+  defp recovery_card_state_label(%Run{}), do: "Recoverable import."
 
   # The version name is edited under the form field `:version_name`, while the
   # schema validates the `:name` column. Remap so the inline error renders

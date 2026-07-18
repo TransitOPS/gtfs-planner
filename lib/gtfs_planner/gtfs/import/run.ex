@@ -30,12 +30,12 @@ defmodule GtfsPlanner.Gtfs.Import.Run do
   @active_states ~w(pending running cleaning)
 
   @count_allowlist Import.supported_count_keys() ++
-                    [
-                      :extensions_stop_coordinates,
-                      :extensions_stop_levels,
-                      :extensions_route_flags,
-                      :extensions_images
-                    ]
+                     [
+                       :extensions_stop_coordinates,
+                       :extensions_stop_levels,
+                       :extensions_route_flags,
+                       :extensions_images
+                     ]
 
   @state_check "gtfs_import_runs_state_check"
   @lease_check "gtfs_import_runs_lease_check"
@@ -97,6 +97,7 @@ defmodule GtfsPlanner.Gtfs.Import.Run do
     field :actor_email, :string
     field :cleanup_actor_id, :binary_id
     field :cleanup_actor_email, :string
+    field :confirming_discard, :boolean, virtual: true, default: false
     belongs_to :organization, Organization
 
     timestamps(type: :utc_datetime_usec)
@@ -261,7 +262,7 @@ defmodule GtfsPlanner.Gtfs.Import.Run do
   defp normalize_count_keys(counts) do
     Enum.reduce(counts, %{}, fn
       {key, value}, acc when is_binary(key) ->
-        case Enum.find(@count_allowlist, &Atom.to_string(&1) == key) do
+        case Enum.find(@count_allowlist, &(Atom.to_string(&1) == key)) do
           nil -> Map.put(acc, key, value)
           atom_key -> Map.put(acc, atom_key, value)
         end
