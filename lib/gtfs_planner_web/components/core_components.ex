@@ -211,6 +211,15 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :class, :any, default: nil, doc: "the input class to use over defaults"
   attr :error_class, :any, default: nil, doc: "the input error class to use over defaults"
 
+  attr :announce_errors, :boolean,
+    default: true,
+    doc: """
+    when false, the inline error keeps its stable id, text, aria-invalid, and
+    aria-describedby association but is not a live region (no role="alert" or
+    aria-live="assertive"). Disable only when the form owner supplies deterministic
+    submit-time focus plus an associated description or focusable error summary.
+    """
+
   attr :rest, :global,
     include: ~w(accept autocomplete capture cols disabled form list max maxlength min minlength
                 multiple pattern placeholder readonly required rows size step)
@@ -274,7 +283,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </span>
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} />
+      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
     </div>
     """
   end
@@ -304,7 +313,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </select>
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} />
+      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
     </div>
     """
   end
@@ -330,7 +339,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} />
+      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
     </div>
     """
   end
@@ -359,7 +368,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         />
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} />
+      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
     </div>
     """
   end
@@ -443,9 +452,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   # Helper used by inputs to generate form errors. All messages for a field are
   # rendered inside one referenced alert container carrying the deterministic
-  # error id the control points at via aria-describedby.
+  # error id the control points at via aria-describedby. When announce_errors is
+  # false, only the live-region attributes are dropped; the id, text, and
+  # description wiring stay identical.
   attr :id, :string, default: nil
   attr :errors, :list, default: []
+  attr :announce_errors, :boolean, default: true
 
   defp error(assigns) do
     ~H"""
@@ -453,8 +465,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
       :if={@errors != []}
       id={@id}
       class="mt-1.5 flex flex-col gap-1 text-sm text-error"
-      role="alert"
-      aria-live="assertive"
+      role={@announce_errors && "alert"}
+      aria-live={@announce_errors && "assertive"}
     >
       <span :for={msg <- @errors} class="flex gap-2 items-center">
         <.icon name="hero-exclamation-circle" class="size-5" />

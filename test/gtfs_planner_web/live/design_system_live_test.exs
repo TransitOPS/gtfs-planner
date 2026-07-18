@@ -430,6 +430,33 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       assert has_element?(view, "#ds-page-inputs")
       assert has_element?(view, "#ds-inputs-demo-form")
     end
+
+    # Pinned reference for the shared announce_errors contract: assertive inline
+    # announcement is the default, and opting out is licensed only alongside
+    # deterministic submit-time focus plus a described or focusable recovery path.
+    test "documents the announce_errors opt-out contract", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/inputs")
+
+      assert has_element?(view, "#ds-inputs-announce-errors")
+
+      contract_text =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#ds-inputs-announce-errors")
+        |> LazyHTML.text()
+        |> String.replace(~r/\s+/, " ")
+
+      assert contract_text =~ "announce_errors"
+      assert contract_text =~ "defaults to true"
+      assert contract_text =~ ~s(role="alert")
+      assert contract_text =~ ~s(aria-live="assertive")
+      assert contract_text =~ "deterministic submit-time focus"
+      assert contract_text =~ "aria-describedby"
+      assert contract_text =~ "focusable error summary"
+    end
   end
 
   describe "tables page" do
