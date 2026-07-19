@@ -29,6 +29,27 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
   end
 
   describe "drawer form submission" do
+    test "create drawer has derived native root and preserved inner panel form", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")
+
+      # Derived native root
+      assert has_element?(view, "dialog#org-drawer-overlay")
+      assert has_element?(view, "dialog#org-drawer-overlay[data-open='true']")
+
+      # Inner panel preserves caller-facing ID
+      assert has_element?(view, "aside#org-drawer")
+
+      # Form is preserved inside the drawer
+      assert has_element?(view, "aside#org-drawer #org-form")
+
+      # Form submission still works through preserved IDs and event names
+      assert view
+             |> form("#org-form", organization: %{name: "Compat Test Org", alias: "compat-test"})
+             |> render_submit()
+
+      assert_patch(view, ~p"/admin/organizations")
+    end
+
     test "creates organization via drawer form", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")
 

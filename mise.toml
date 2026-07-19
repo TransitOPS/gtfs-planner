@@ -12,6 +12,12 @@ depends = ["lint:*"]
 depends = ["format:*"]
 
 # Setup
+[tasks."setup:nodejs"]
+sources = ["assets/package.json", "assets/package-lock.json"]
+outputs = ["assets/node_modules/.package-lock.json"]
+run = "npm ci --prefix assets"
+hide = true
+
 [tasks."setup:tools"]
 sources = ["mise.toml", ".tool-versions"]
 depends_post = ["setuppost:jq"]
@@ -31,11 +37,39 @@ fi
 """
 
 # Tests
+[tasks."test:nodejs"]
+depends = ["setup:nodejs"]
+run = "npm run --prefix assets test"
+
 [tasks."test:elixir"]
 depends = ["elixir:deps"]
 run = "mix test"
 
+# Browser (Playwright/Chromium) E2E tasks
+[tasks."setup:browser"]
+depends = ["setup:nodejs"]
+run = "npx --prefix assets playwright install chromium"
+hide = true
+
+[tasks."prepare:browser"]
+depends = ["elixir:deps", "setup:nodejs"]
+run = '''
+  MIX_ENV=test mix assets.deploy
+  MIX_ENV=test mix ecto.reset --force
+  MIX_ENV=test mix run test/support/browser_seed.exs
+'''
+hide = true
+
+[tasks."test:browser"]
+depends = ["setup:browser", "prepare:browser"]
+run = "npm --prefix assets run test:browser"
+
 # Linting
+[tasks."lint:nodejs:syntax"]
+depends = ["setup:nodejs"]
+sources = ["assets/package.json", "assets/package-lock.json", "assets/js/*.js"]
+run = "npm run --prefix assets syntax"
+
 [tasks."lint:elixir:format"]
 depends = ["elixir:deps"]
 run = "mix format --check-formatted"

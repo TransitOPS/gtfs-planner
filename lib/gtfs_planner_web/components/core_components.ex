@@ -802,9 +802,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
   @doc """
   Renders a slide-in drawer panel from the right side of the screen.
 
-  The drawer provides a consistent slide-in-from-right behavior with an overlay
-  that can be clicked to close. It uses CSS transitions for smooth animations
-  and integrates reliably with LiveView's server-driven state model.
+  Renders a native `<dialog>` backed by the `OverlayDialog` hook. LiveView
+  owns the requested state through `data-open`; the hook calls `showModal()`
+  or `close()` to synchronize to the browser. The caller-facing panel ID
+  stays on the inner `<aside>` so existing selectors and form integrations
+  remain valid.
 
   ## Examples
 
@@ -818,63 +820,71 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :id, :string, required: true
   attr :open, :boolean, default: false
   attr :on_close, :string, default: "close_drawer"
-  attr :title, :string, default: nil
+  attr :target, :any, default: nil
+  attr :title, :string, required: true
+  attr :initial_focus, :atom, values: [:heading, :first_field], default: :heading
+  attr :initial_focus_id, :string, default: nil
+  attr :return_focus_id, :string, default: nil
+  attr :close_on_backdrop, :boolean, default: true
   attr :class, :string, default: "max-w-[min(100vw,48rem)]"
   slot :inner_block, required: true
   slot :header_actions
 
   def drawer(assigns) do
     ~H"""
-    <%!-- Overlay --%>
-    <div
-      class={[
-        "fixed inset-0 bg-black/30 z-40 transition-opacity duration-300",
-        @open && "opacity-100",
-        !@open && "opacity-0 pointer-events-none"
-      ]}
-      phx-click={@on_close}
-    />
-    <%!-- Drawer Panel --%>
-    <aside
-      id={@id}
-      phx-hook="DrawerFocus"
+    <dialog
+      id={"#{@id}-overlay"}
+      phx-mounted={JS.ignore_attributes("open")}
+      phx-hook="OverlayDialog"
       data-open={to_string(@open)}
-      data-on-close={@on_close}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={@title && "#{@id}-title"}
-      class={[
-        "fixed top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 z-50 transition-transform duration-300 overflow-x-hidden",
-        @open && "translate-x-0",
-        !@open && "translate-x-full",
-        @class
-      ]}
+      data-initial-focus={to_string(@initial_focus)}
+      data-initial-focus-id={@initial_focus_id}
+      data-return-focus-id={@return_focus_id}
+      data-close-on-backdrop={to_string(@close_on_backdrop)}
+      aria-labelledby={"#{@id}-title"}
+      {if @open, do: %{role: "dialog", "aria-modal": "true"}, else: %{inert: true, "aria-hidden": "true"}}
+      class="m-0 border-0 w-full h-full max-w-none max-h-none overflow-hidden bg-transparent p-0"
     >
-      <div class="flex flex-col h-full">
-        <%!-- Header --%>
-        <header class="flex items-center justify-between px-6 py-4 bg-base-200 border-b border-base-300">
-          <div class="flex items-center gap-3">
-            <h2 :if={@title} id={"#{@id}-title"} class="text-lg font-semibold">
-              {@title}
-            </h2>
-            {render_slot(@header_actions)}
+      <aside
+        id={@id}
+        aria-labelledby={"#{@id}-title"}
+        data-dialog-panel
+        tabindex="-1"
+        class={[
+          "absolute top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 overflow-x-hidden",
+          @class
+        ]}
+      >
+        <div class="flex flex-col h-full">
+          <%!-- Header --%>
+          <header class="flex items-center justify-between px-6 py-4 bg-base-200 border-b border-base-300">
+            <div class="flex items-center gap-3">
+              <h2 id={"#{@id}-title"} class="text-lg font-semibold" tabindex="-1">
+                {@title}
+              </h2>
+              {render_slot(@header_actions)}
+            </div>
+            <div class="tooltip tooltip-left" data-tip={gettext("close")}>
+              <button
+                type="button"
+                id={"#{@id}-close"}
+                phx-click={@on_close}
+                phx-target={@target}
+                data-dialog-dismiss
+                class="btn btn-ghost btn-sm btn-circle min-w-[44px] min-h-[44px] text-base-content/70 hover:bg-base-300/50"
+                aria-label={gettext("close")}
+              >
+                <.icon name="hero-x-mark" class="size-5" />
+              </button>
+            </div>
+          </header>
+          <%!-- Content --%>
+          <div id={"#{@id}-body"} class="flex-1 overflow-y-auto p-6">
+            {render_slot(@inner_block)}
           </div>
-          <div :if={!@title && @header_actions == []} class="flex-1" />
-          <button
-            type="button"
-            phx-click={@on_close}
-            class="btn btn-ghost btn-sm btn-circle text-base-content/70 hover:bg-base-300/50"
-            aria-label={gettext("close")}
-          >
-            <.icon name="hero-x-mark" class="size-5" />
-          </button>
-        </header>
-        <%!-- Content --%>
-        <div class="flex-1 overflow-y-auto p-6">
-          {render_slot(@inner_block)}
         </div>
-      </div>
-    </aside>
+      </aside>
+    </dialog>
     """
   end
 
@@ -1354,60 +1364,75 @@ defmodule GtfsPlannerWeb.CoreComponents do
   @doc """
   Renders a focused confirmation dialog for a destructive action.
 
-  Hidden by default; toggle it client-side with `show_confirm_dialog/2` and
-  `hide_confirm_dialog/2`. Opening moves focus to Cancel. Escape and a backdrop
-  click close it; the backdrop and Cancel also run `on_cancel`. State the
-  consequence with real numbers in the body, and repeat verb + object in
-  `confirm_label` (e.g. "Delete route").
+  Fully server-owned. Renders a native `<dialog>` backed by the
+  `OverlayDialog` hook. Focus lands on Cancel. Escape fires Cancel
+  through the hook; the backdrop does not dismiss by default.
+
+  `on_confirm` and `on_cancel` are event name strings. Use `phx-target`
+  when the owner is a `LiveComponent`. Supply `described_by` when the
+  body contains additional description beyond the title, and render a
+  matching concise descendant inside the dialog.
 
   ## Examples
 
       <.confirm_dialog
         id="delete-route"
+        open={@confirm_open}
         title="Delete route 42?"
         confirm_label="Delete route"
+        pending_label="Deleting…"
         on_confirm="delete_route"
+        on_cancel="cancel_delete"
+        pending={@deleting}
+        described_by="delete-route-body"
       >
         This removes the route and its 214 trips from version 2026-01. It cannot be undone.
       </.confirm_dialog>
-
-      <.button variant="danger" phx-click={show_confirm_dialog("delete-route")}>Delete route</.button>
   """
   attr :id, :string, required: true
+  attr :open, :boolean, required: true
   attr :title, :string, required: true
-  attr :confirm_label, :string, required: true, doc: "repeats verb + object"
-  attr :on_confirm, :any, required: true, doc: "a JS command or event name"
-  attr :on_cancel, :any, default: nil, doc: "a JS command or event name run on cancel"
+  attr :confirm_label, :string, required: true
+  attr :pending_label, :string, required: true
+  attr :on_confirm, :string, required: true
+  attr :on_cancel, :string, required: true
+  attr :target, :any, default: nil
+  attr :pending, :boolean, default: false
+  attr :return_focus_id, :string, default: nil
+  attr :described_by, :string, default: nil
+  attr :close_on_backdrop, :boolean, default: false
   attr :rest, :global
   slot :inner_block, required: true
 
   def confirm_dialog(assigns) do
-    cancel_js =
-      case assigns.on_cancel do
-        nil -> JS.hide(to: "##{assigns.id}")
-        %JS{} = js -> JS.hide(js, to: "##{assigns.id}")
-        event when is_binary(event) -> JS.hide(JS.push(%JS{}, event), to: "##{assigns.id}")
-      end
+    extra = Map.new(assigns.rest || %{})
 
-    assigns = assign(assigns, :cancel_js, cancel_js)
+    extra =
+      if assigns.described_by,
+        do: Map.put(extra, "aria-describedby", assigns.described_by),
+        else: extra
+
+    extra =
+      if assigns.open,
+        do: Map.merge(extra, %{role: "alertdialog", "aria-modal": "true"}),
+        else: Map.merge(extra, %{inert: true, "aria-hidden": "true"})
+
+    assigns = assign(assigns, :extra, extra)
 
     ~H"""
-    <div
+    <dialog
       id={@id}
-      class="hidden"
-      role="alertdialog"
+      phx-mounted={JS.ignore_attributes("open")}
+      phx-hook="OverlayDialog"
+      data-open={to_string(@open)}
+      data-close-on-backdrop={to_string(@close_on_backdrop)}
+      data-pending={to_string(@pending)}
+      data-return-focus-id={@return_focus_id}
       aria-labelledby={"#{@id}-title"}
-      aria-describedby={"#{@id}-body"}
-      phx-window-keydown={hide_confirm_dialog(@id)}
-      phx-key="escape"
-      {@rest}
+      {@extra}
+      class="m-0 border-0 w-full h-full bg-transparent p-0"
     >
-      <div
-        class="fixed inset-0 bg-black/30 z-40"
-        aria-hidden="true"
-        phx-click={@cancel_js}
-      />
-      <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div class="w-full h-full flex items-center justify-center p-4">
         <div class="w-full max-w-sm border border-base-300 bg-base-100 p-5">
           <h3 id={"#{@id}-title"} class="font-semibold">{@title}</h3>
           <div id={"#{@id}-body"} class="mt-1 text-sm text-base-content/70">
@@ -1417,45 +1442,30 @@ defmodule GtfsPlannerWeb.CoreComponents do
             <button
               id={"#{@id}-cancel"}
               type="button"
-              class="h-10 border border-base-300 px-4 text-sm font-semibold"
-              phx-click={@cancel_js}
+              class="h-[44px] min-w-[44px] border border-base-300 px-4 text-sm font-semibold"
+              phx-click={@on_cancel}
+              phx-target={@target}
+              data-dialog-dismiss
+              disabled={@pending}
             >
               Cancel
             </button>
             <button
+              id={"#{@id}-confirm"}
               type="button"
-              class="h-10 bg-error px-4 text-sm font-semibold text-error-content"
+              class="h-[44px] min-w-[44px] bg-error px-4 text-sm font-semibold text-error-content"
               phx-click={@on_confirm}
+              phx-target={@target}
+              phx-disable-with={@pending_label}
+              disabled={@pending}
             >
-              {@confirm_label}
+              {if @pending, do: @pending_label, else: @confirm_label}
             </button>
           </div>
         </div>
       </div>
-    </div>
+    </dialog>
     """
-  end
-
-  @doc """
-  Shows a confirmation dialog and moves focus to its Cancel button.
-  """
-  def show_confirm_dialog(js \\ %JS{}, id) when is_binary(id) do
-    js
-    |> JS.show(
-      to: "##{id}",
-      transition: {"transition-opacity ease-out duration-200", "opacity-0", "opacity-100"}
-    )
-    |> JS.focus(to: "##{id}-cancel")
-  end
-
-  @doc """
-  Hides a confirmation dialog.
-  """
-  def hide_confirm_dialog(js \\ %JS{}, id) when is_binary(id) do
-    JS.hide(js,
-      to: "##{id}",
-      transition: {"transition-opacity ease-in duration-150", "opacity-100", "opacity-0"}
-    )
   end
 
   @doc """

@@ -99,6 +99,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # Verify form has correct values in input fields
       assert result =~ ~r/value=\"CHILD_STOP_1\"/
       assert result =~ ~r/value=\"Child Stop 1\"/
+
+      # Derived native root and preserved inner panel
+      assert has_element?(view, "dialog#child-stop-drawer-overlay[data-open='true']")
+      assert has_element?(view, "aside#child-stop-drawer")
+      assert has_element?(view, "#child-stop-form")
     end
 
     test "clicking child stop without diagram coordinates shows flash error", %{
@@ -134,7 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                ~s(Stop "CHILD_STOP_NO_COORD" has no diagram position)
              )
 
-      refute has_element?(view, "#child-stop-drawer[open]")
+      assert has_element?(view, "dialog#child-stop-drawer-overlay[data-open='false']")
     end
 
     test "new child stop drawer locks level to active level with hidden field", %{
@@ -8585,14 +8590,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      refute has_element?(view, "#child-stop-drawer[open]")
+      assert has_element?(view, "dialog#child-stop-drawer-overlay[data-open='false']")
 
       view
       |> form("#stop-search-form", %{"stop_id_query" => "   "})
       |> render_submit()
 
       refute has_element?(view, "#flash-error")
-      refute has_element?(view, "#child-stop-drawer[open]")
+      assert has_element?(view, "dialog#child-stop-drawer-overlay[data-open='false']")
     end
 
     test "stop found on current level opens edit sidebar", %{

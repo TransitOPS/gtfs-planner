@@ -6,55 +6,160 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
   import GtfsPlannerWeb.CoreComponents
 
   describe "drawer/1" do
-    test "renders with open: false and has translate-x-full class" do
-      assigns = %{open: false}
+    test "closed drawer renders inert, aria-hidden, data-open=false, and no role" do
+      assigns = %{open: false, title: "Test"}
 
       html =
         rendered_to_string(~H"""
-        <.drawer id="test-drawer" open={@open} on_close="close">
+        <.drawer id="test-drawer" open={@open} title={@title}>
           <p>Drawer content</p>
         </.drawer>
         """)
 
-      assert html =~ "translate-x-full"
-      assert html =~ "id=\"test-drawer\""
-      assert html =~ "Drawer content"
+      doc = LazyHTML.from_fragment(html)
+      dialog = LazyHTML.query(doc, "dialog#test-drawer-overlay")
+
+      assert LazyHTML.attribute(dialog, "data-open") == ["false"]
+      assert LazyHTML.attribute(dialog, "inert") == [""]
+      assert LazyHTML.attribute(dialog, "aria-hidden") == ["true"]
+      assert LazyHTML.attribute(dialog, "role") == []
+      assert LazyHTML.attribute(dialog, "aria-modal") == []
+      assert Enum.count(LazyHTML.query(doc, "aside#test-drawer")) == 1
     end
 
-    test "renders with open: true and has translate-x-0 class" do
-      assigns = %{open: true}
+    test "open drawer renders role=dialog, aria-modal=true, and no inert" do
+      assigns = %{open: true, title: "Test"}
 
       html =
         rendered_to_string(~H"""
-        <.drawer id="test-drawer" open={@open} on_close="close">
+        <.drawer id="test-drawer" open={@open} title={@title}>
           <p>Drawer content</p>
         </.drawer>
         """)
 
-      assert html =~ "translate-x-0"
-      refute html =~ "translate-x-full"
-      assert html =~ "id=\"test-drawer\""
+      dialog = html |> LazyHTML.from_fragment() |> LazyHTML.query("dialog#test-drawer-overlay")
+
+      assert LazyHTML.attribute(dialog, "data-open") == ["true"]
+      assert LazyHTML.attribute(dialog, "role") == ["dialog"]
+      assert LazyHTML.attribute(dialog, "aria-modal") == ["true"]
+      assert LazyHTML.attribute(dialog, "aria-labelledby") == ["test-drawer-title"]
+      assert LazyHTML.attribute(dialog, "inert") == []
+      assert LazyHTML.attribute(dialog, "aria-hidden") == []
     end
 
-    test "renders title when provided" do
+    test "drawer exposes focus policy as data attributes" do
+      assigns = %{open: true, title: "Test"}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer
+          id="test-drawer"
+          open={@open}
+          title={@title}
+          initial_focus={:heading}
+          close_on_backdrop={false}
+        >
+          <p>Content</p>
+        </.drawer>
+        """)
+
+      dialog = html |> LazyHTML.from_fragment() |> LazyHTML.query("dialog#test-drawer-overlay")
+
+      assert LazyHTML.attribute(dialog, "data-initial-focus") == ["heading"]
+      assert LazyHTML.attribute(dialog, "data-close-on-backdrop") == ["false"]
+    end
+
+    test "drawer renders derived stable IDs and preserves caller panel ID" do
+      assigns = %{open: true, title: "Test"}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer id="test-drawer" open={@open} title={@title}>
+          <p>Content</p>
+        </.drawer>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "dialog#test-drawer-overlay")) == 1
+      assert Enum.count(LazyHTML.query(doc, "aside#test-drawer")) == 1
+      assert Enum.count(LazyHTML.query(doc, "#test-drawer-title")) == 1
+      assert Enum.count(LazyHTML.query(doc, "#test-drawer-close")) == 1
+      assert Enum.count(LazyHTML.query(doc, "#test-drawer-body")) == 1
+    end
+
+    test "drawer title heading has tabindex=-1 for focus" do
       assigns = %{open: true, title: "Test Title"}
 
       html =
         rendered_to_string(~H"""
-        <.drawer id="test-drawer" open={@open} on_close="close" title={@title}>
-          <p>Drawer content</p>
+        <.drawer id="test-drawer" open={@open} title={@title}>
+          <p>Content</p>
         </.drawer>
         """)
 
-      assert html =~ "Test Title"
+      heading = html |> LazyHTML.from_fragment() |> LazyHTML.query("#test-drawer-title")
+
+      assert LazyHTML.attribute(heading, "tabindex") == ["-1"]
     end
 
-    test "renders inner_block content" do
-      assigns = %{open: true}
+    test "drawer panel is an explicit focus fallback" do
+      assigns = %{open: true, title: "Test Title"}
 
       html =
         rendered_to_string(~H"""
-        <.drawer id="test-drawer" open={@open} on_close="close">
+        <.drawer id="test-drawer" open={@open} title={@title}>
+          <p>Content</p>
+        </.drawer>
+        """)
+
+      panel = html |> LazyHTML.from_fragment() |> LazyHTML.query("aside#test-drawer")
+
+      assert LazyHTML.attribute(panel, "data-dialog-panel") == [""]
+      assert LazyHTML.attribute(panel, "tabindex") == ["-1"]
+    end
+
+    test "close button has matching tooltip and accessible name plus a 44px hit target" do
+      assigns = %{open: true, title: "Test"}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer id="test-drawer" open={@open} title={@title}>
+          <p>Content</p>
+        </.drawer>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      button = LazyHTML.query(doc, "#test-drawer-close")
+      tooltip = LazyHTML.query(doc, ".tooltip.tooltip-left[data-tip]")
+
+      assert LazyHTML.attribute(button, "data-dialog-dismiss") == [""]
+      assert LazyHTML.attribute(tooltip, "data-tip") == LazyHTML.attribute(button, "aria-label")
+      assert "tooltip-left" in (LazyHTML.attribute(tooltip, "class") |> hd() |> String.split())
+      classes = LazyHTML.attribute(button, "class") |> hd()
+      assert String.contains?(classes, "min-w-[44px]")
+      assert String.contains?(classes, "min-h-[44px]")
+    end
+
+    test "uses custom on_close event name and optional target" do
+      assigns = %{open: true, title: "Test"}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer id="test-drawer" open={@open} title={@title} on_close="custom_close_event">
+          <p>Content</p>
+        </.drawer>
+        """)
+
+      assert html =~ ~s(phx-click="custom_close_event")
+    end
+
+    test "renders inner_block content" do
+      assigns = %{open: true, title: "Test"}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer id="test-drawer" open={@open} title={@title}>
           <p>Custom drawer content</p>
           <div class="custom-class">More content</div>
         </.drawer>
@@ -65,58 +170,362 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert html =~ "custom-class"
     end
 
-    test "uses custom on_close event name" do
-      assigns = %{open: true}
+    test "renders optional header_actions slot" do
+      assigns = %{open: true, title: "Test"}
 
       html =
         rendered_to_string(~H"""
-        <.drawer id="test-drawer" open={@open} on_close="custom_close_event">
+        <.drawer id="test-drawer" open={@open} title={@title}>
+          <:header_actions>
+            <button class="action-btn">Action</button>
+          </:header_actions>
           <p>Content</p>
         </.drawer>
         """)
 
-      assert html =~ "phx-click=\"custom_close_event\""
+      assert html =~ "action-btn"
     end
 
-    test "renders close button with aria-label" do
-      assigns = %{open: true}
+    test "includes phx-mounted and phx-hook for native sync" do
+      assigns = %{open: false, title: "Test"}
 
       html =
         rendered_to_string(~H"""
-        <.drawer id="test-drawer" open={@open} on_close="close">
+        <.drawer id="test-drawer" open={@open} title={@title}>
           <p>Content</p>
         </.drawer>
         """)
 
-      assert html =~ "aria-label"
-      assert html =~ "hero-x-mark"
+      assert html =~ "phx-mounted"
+      assert html =~ "phx-hook=\"OverlayDialog\""
+    end
+  end
+
+  describe "confirm_dialog/1" do
+    test "closed renders inert, aria-hidden, data-open=false, and no role" do
+      assigns = %{open: false}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      dialog = html |> LazyHTML.from_fragment() |> LazyHTML.query("dialog#test-confirm")
+
+      assert LazyHTML.attribute(dialog, "data-open") == ["false"]
+      assert LazyHTML.attribute(dialog, "inert") == [""]
+      assert LazyHTML.attribute(dialog, "aria-hidden") == ["true"]
+      assert LazyHTML.attribute(dialog, "role") == []
+      assert LazyHTML.attribute(dialog, "aria-modal") == []
     end
 
-    test "overlay has correct z-index and opacity classes" do
+    test "open renders role=alertdialog, aria-modal=true, and stable derived IDs" do
       assigns = %{open: true}
 
       html =
         rendered_to_string(~H"""
-        <.drawer id="test-drawer" open={@open} on_close="close">
-          <p>Content</p>
-        </.drawer>
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
         """)
 
-      assert html =~ "z-40"
-      assert html =~ "opacity-100"
+      doc = LazyHTML.from_fragment(html)
+      dialog = LazyHTML.query(doc, "dialog#test-confirm")
+
+      assert LazyHTML.attribute(dialog, "data-open") == ["true"]
+      assert LazyHTML.attribute(dialog, "role") == ["alertdialog"]
+      assert LazyHTML.attribute(dialog, "aria-modal") == ["true"]
+      assert LazyHTML.attribute(dialog, "inert") == []
+      assert LazyHTML.attribute(dialog, "aria-hidden") == []
+
+      assert Enum.count(LazyHTML.query(doc, "#test-confirm-title")) == 1
+      assert Enum.count(LazyHTML.query(doc, "#test-confirm-body")) == 1
+      assert Enum.count(LazyHTML.query(doc, "#test-confirm-cancel")) == 1
+      assert Enum.count(LazyHTML.query(doc, "#test-confirm-confirm")) == 1
     end
 
-    test "drawer panel has correct z-index" do
+    test "omits aria-describedby when described_by not supplied" do
       assigns = %{open: true}
 
       html =
         rendered_to_string(~H"""
-        <.drawer id="test-drawer" open={@open} on_close="close">
-          <p>Content</p>
-        </.drawer>
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
         """)
 
-      assert html =~ "z-50"
+      assert html =~ "aria-describedby" == false
+    end
+
+    test "includes aria-describedby when described_by supplied" do
+      assigns = %{open: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+          described_by="desc-42"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      assert html =~ ~s(aria-describedby="desc-42")
+    end
+
+    test "wires string events on confirm and cancel buttons" do
+      assigns = %{open: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="do_delete"
+          on_cancel="do_cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      confirm = LazyHTML.query(doc, "#test-confirm-confirm")
+      assert LazyHTML.attribute(confirm, "phx-click") == ["do_delete"]
+
+      cancel = LazyHTML.query(doc, "#test-confirm-cancel")
+      assert LazyHTML.attribute(cancel, "phx-click") == ["do_cancel"]
+    end
+
+    test "confirm button has phx-disable-with and shows label" do
+      assigns = %{open: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete route"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      confirm = html |> LazyHTML.from_fragment() |> LazyHTML.query("#test-confirm-confirm")
+
+      assert LazyHTML.attribute(confirm, "phx-disable-with") == ["Deleting…"]
+      assert html =~ "Delete route"
+    end
+
+    test "renders pending_label and disables both buttons when pending" do
+      assigns = %{open: true, pending: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete route"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+          pending={@pending}
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      confirm = LazyHTML.query(doc, "#test-confirm-confirm")
+      assert LazyHTML.attribute(confirm, "disabled") == [""]
+      assert html =~ "Deleting…"
+      refute html =~ "Delete route"
+
+      cancel = LazyHTML.query(doc, "#test-confirm-cancel")
+      assert LazyHTML.attribute(cancel, "disabled") == [""]
+    end
+
+    test "cancel button has data-dialog-dismiss and 44px hit target" do
+      assigns = %{open: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      cancel = html |> LazyHTML.from_fragment() |> LazyHTML.query("#test-confirm-cancel")
+
+      assert LazyHTML.attribute(cancel, "data-dialog-dismiss") == [""]
+      classes = LazyHTML.attribute(cancel, "class") |> hd()
+      assert String.contains?(classes, "h-[44px]")
+      assert String.contains?(classes, "min-w-[44px]")
+    end
+
+    test "close_on_backdrop defaults to false" do
+      assigns = %{open: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      dialog = html |> LazyHTML.from_fragment() |> LazyHTML.query("dialog#test-confirm")
+
+      assert LazyHTML.attribute(dialog, "data-close-on-backdrop") == ["false"]
+    end
+
+    test "sets data-pending=true on the dialog when pending" do
+      assigns = %{open: true, pending: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+          pending={@pending}
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      dialog = html |> LazyHTML.from_fragment() |> LazyHTML.query("dialog#test-confirm")
+
+      assert LazyHTML.attribute(dialog, "data-pending") == ["true"]
+    end
+
+    test "names the alertdialog from its required title" do
+      assigns = %{open: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      dialog = html |> LazyHTML.from_fragment() |> LazyHTML.query("dialog#test-confirm")
+
+      assert LazyHTML.attribute(dialog, "aria-labelledby") == ["test-confirm-title"]
+    end
+
+    test "sets data-return-focus-id when provided" do
+      assigns = %{open: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+          return_focus_id="result-42"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      dialog = html |> LazyHTML.from_fragment() |> LazyHTML.query("dialog#test-confirm")
+
+      assert LazyHTML.attribute(dialog, "data-return-focus-id") == ["result-42"]
+    end
+
+    test "includes phx-mounted and phx-hook" do
+      assigns = %{open: false}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      assert html =~ "phx-mounted"
+      assert html =~ "phx-hook=\"OverlayDialog\""
     end
   end
 

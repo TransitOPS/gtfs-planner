@@ -20,6 +20,7 @@ config :gtfs_planner, :validator_module, GtfsPlanner.Gtfs.ValidatorMock
 # you can enable the server option below.
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
+  check_origin: false,
   secret_key_base: "Vlqg9A56iIf2P4HgwZAFhhA0raEXyKKmoZ5xjBmuiZUjDE1FI9/OpjJ/HRgFfTIE",
   server: false
 

@@ -49,6 +49,10 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
      |> assign(:demo_form, demo_form())
      |> assign(:pagination_page, 1)
      |> assign(:drawer_open, false)
+     |> assign(:confirm_open, false)
+     |> assign(:confirm_pending, false)
+     |> assign(:confirm_result, nil)
+     |> assign(:confirm_return_focus_id, nil)
      |> assign(:form, address_form())
      |> assign(:selected_address, nil)
      |> assign(:selected_lat, nil)
@@ -114,6 +118,45 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
 
   def handle_event("close_drawer", _params, socket) do
     {:noreply, assign(socket, :drawer_open, false)}
+  end
+
+  # The overlays page confirmation demo. The confirmation is fully server-owned:
+  # open, pending, success, and error are all assigns. Success closes only the
+  # child alertdialog and focuses #ds-confirm-result inside the still-open drawer.
+  # Error clears pending in place so the user can retry or cancel.
+  def handle_event("open_confirm", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:confirm_open, true)
+     |> assign(:confirm_return_focus_id, nil)}
+  end
+
+  def handle_event("cancel_confirm", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:confirm_open, false)
+     |> assign(:confirm_pending, false)
+     |> assign(:confirm_return_focus_id, nil)}
+  end
+
+  def handle_event("run_confirm", _params, socket) do
+    {:noreply, assign(socket, :confirm_pending, true)}
+  end
+
+  def handle_event("confirm_success", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:confirm_open, false)
+     |> assign(:confirm_pending, false)
+     |> assign(:confirm_result, :success)
+     |> assign(:confirm_return_focus_id, "ds-confirm-result")}
+  end
+
+  def handle_event("confirm_error", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:confirm_pending, false)
+     |> assign(:confirm_return_focus_id, nil)}
   end
 
   # The autocomplete page's LiveSelect demo, migrated from the retired `/components`

@@ -25,9 +25,9 @@
 }
 
 /* daisyUI Tailwind Plugin. You can update this file by fetching the latest version with:
-   curl -sLO https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.js
+   curl -sL https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.js -o assets/vendor/daisyui.cjs
    Make sure to look at the daisyUI changelog: https://daisyui.com/docs/changelog/ */
-@plugin "../vendor/daisyui" {
+@plugin "../vendor/daisyui_plugin.cjs" {
   themes:
     light --default;
 }
@@ -301,6 +301,42 @@ body:has(#diagram-page[data-immersive="true"]) {
   transform: translateY(0);
 }
 
+/* ── Native dialog overlay presentation ── */
+
+/* Backdrop: dim the page behind every open modal dialog.
+   Animation provides a brief entry fade; close is immediate. */
+dialog[open]::backdrop {
+  background-color: oklch(0% 0 0 / 50%);
+  animation: ds-backdrop-fade-in 150ms ease-out forwards;
+}
+
+@keyframes ds-backdrop-fade-in {
+  from { background-color: oklch(0% 0 0 / 0%); }
+  to   { background-color: oklch(0% 0 0 / 50%); }
+}
+
+/* Drawer inner panel: slides in from the right edge.
+   Targets the <aside> inside an open drawer dialog. */
+dialog[data-initial-focus][open] > aside {
+  animation: ds-drawer-slide-in 300ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes ds-drawer-slide-in {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+/* Confirmation inner panel: centered rise-in without shrinking action targets.
+   Targets the centered wrapper inside an open alertdialog. */
+dialog[role="alertdialog"][open] > div > div {
+  animation: ds-confirm-scale-in 150ms ease-out forwards;
+}
+
+@keyframes ds-confirm-scale-in {
+  from { opacity: 0; transform: translateY(0.5rem); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   #diagram-page #app-header,
   #diagram-page #station-sub-nav,
@@ -309,6 +345,14 @@ body:has(#diagram-page[data-immersive="true"]) {
   #diagram-page #map-canvas-wrapper,
   #diagram-page #main-content {
     transition-duration: 0ms;
+  }
+
+  /* Zero out native overlay motion for accessibility */
+  dialog[open]::backdrop,
+  dialog[data-initial-focus][open] > aside,
+  dialog[role="alertdialog"][open] > div > div {
+    animation-duration: 0ms !important;
+    transition-duration: 0ms !important;
   }
 }
 
