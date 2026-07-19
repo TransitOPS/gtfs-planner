@@ -2,7 +2,9 @@ defmodule GtfsPlanner.AccountsTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.{User, UserToken, UserOrgMembership}
+  alias GtfsPlanner.Accounts.{FirstAdminForm, User, UserOrgMembership, UserToken}
+  alias GtfsPlanner.Organizations.Organization
+  alias GtfsPlanner.Versions.GtfsVersion
   import GtfsPlanner.OrganizationsFixtures
 
   describe "get_user!/1" do
@@ -990,5 +992,128 @@ defmodule GtfsPlanner.AccountsTest do
   defp insert_email_token(user, context) do
     {_encoded_token, user_token} = UserToken.build_email_token(user, context)
     Repo.insert!(user_token)
+  end
+
+  describe "change_first_admin/1" do
+    test "returns a composite FirstAdminForm changeset" do
+      changeset = Accounts.change_first_admin(%{})
+
+      assert %Ecto.Changeset{data: %FirstAdminForm{}} = changeset
+      refute changeset.valid?
+    end
+
+    test "returns a changeset with valid attributes that is valid at the composite level" do
+      attrs = %{
+        email: unique_user_email(),
+        password: valid_user_password(),
+        password_confirmation: valid_user_password(),
+        organization_name: valid_organization_name(),
+        organization_alias: unique_organization_alias()
+      }
+
+      changeset = Accounts.change_first_admin(attrs)
+
+      assert changeset.valid?
+      assert %Ecto.Changeset{data: %FirstAdminForm{}} = changeset
+    end
+  end
+
+  describe "register_first_admin/1" do
+    test "exports no arity-two registration function" do
+      Code.ensure_loaded!(Accounts)
+      refute function_exported?(Accounts, :register_first_admin, 2)
+    end
+
+    test "preflight invalid input returns Ecto.Changeset with action :insert and writes nothing" do
+      user_count = Repo.aggregate(User, :count, :id)
+      org_count = Repo.aggregate(Organization, :count, :id)
+      version_count = Repo.aggregate(GtfsVersion, :count, :id)
+      membership_count = Repo.aggregate(UserOrgMembership, :count, :id)
+
+      result = Accounts.register_first_admin(%{email: "notanemail", password: "short"})
+
+      assert {:error, %Ecto.Changeset{} = changeset} = result
+      assert changeset.action == :insert
+      assert changeset.errors != []
+
+      assert Repo.aggregate(User, :count, :id) == user_count
+      assert Repo.aggregate(Organization, :count, :id) == org_count
+      assert Repo.aggregate(GtfsVersion, :count, :id) == version_count
+      assert Repo.aggregate(UserOrgMembership, :count, :id) == membership_count
+    end
+
+    test "valid confirmed-administrator creates user, org, version, membership, and confirms atomically" do
+      email = unique_user_email()
+      password = valid_user_password()
+      org_name = valid_organization_name()
+      org_alias = unique_organization_alias()
+
+      user_count = Repo.aggregate(User, :count, :id)
+      org_count = Repo.aggregate(Organization, :count, :id)
+      version_count = Repo.aggregate(GtfsVersion, :count, :id)
+      membership_count = Repo.aggregate(UserOrgMembership, :count, :id)
+
+      result =
+        Accounts.register_first_admin(%{
+          email: email,
+          password: password,
+          password_confirmation: password,
+          organization_name: org_name,
+          organization_alias: org_alias
+        })
+
+      assert {:ok, %User{} = user} = result
+      assert user.email == email
+      assert user.confirmed_at
+      assert Accounts.get_user_by_email_and_password(email, password)
+
+      assert Repo.aggregate(User, :count, :id) == user_count + 1
+      assert Repo.aggregate(Organization, :count, :id) == org_count + 1
+      assert Repo.aggregate(GtfsVersion, :count, :id) == version_count + 1
+      assert Repo.aggregate(UserOrgMembership, :count, :id) == membership_count + 1
+
+      org = Repo.get_by(Organization, alias: org_alias)
+      assert org
+      assert org.name == org_name
+
+      version = Repo.one(from(v in GtfsVersion, where: v.organization_id == ^org.id))
+      assert version
+      assert version.name == "First Version"
+      assert version.publication_status == "published"
+
+      membership =
+        Repo.get_by(UserOrgMembership, user_id: user.id, organization_id: org.id)
+
+      assert membership
+      assert membership.roles == ["administrator"]
+    end
+
+    test "real duplicate organization alias constraint maps to :organization_alias and rolls back writes" do
+      alias_val = "dup-#{System.unique_integer([:positive])}"
+
+      _existing_org = organization_fixture(%{name: "Existing Org", alias: alias_val})
+
+      user_count = Repo.aggregate(User, :count, :id)
+      org_count = Repo.aggregate(Organization, :count, :id)
+      version_count = Repo.aggregate(GtfsVersion, :count, :id)
+      membership_count = Repo.aggregate(UserOrgMembership, :count, :id)
+
+      result =
+        Accounts.register_first_admin(%{
+          email: unique_user_email(),
+          password: valid_user_password(),
+          password_confirmation: valid_user_password(),
+          organization_name: "New Org",
+          organization_alias: alias_val
+        })
+
+      assert {:error, %Ecto.Changeset{action: :insert} = changeset} = result
+      assert %{organization_alias: [_ | _]} = errors_on(changeset)
+
+      assert Repo.aggregate(User, :count, :id) == user_count
+      assert Repo.aggregate(Organization, :count, :id) == org_count
+      assert Repo.aggregate(GtfsVersion, :count, :id) == version_count
+      assert Repo.aggregate(UserOrgMembership, :count, :id) == membership_count
+    end
   end
 end

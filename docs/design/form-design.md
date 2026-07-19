@@ -39,6 +39,10 @@
 - After interaction
 - Explain what + how to fix
 - Focus first error on submit
+- Inline errors are assertive live regions by default (`role="alert"` + `aria-live="assertive"`)
+- `announce_errors={false}` is licensed only when the form supplies deterministic
+  submit-time focus plus an associated `aria-describedby` description or a focusable
+  error summary; the error id, text, and description wiring never change
 
 ## 8. Actions
 - One dominant primary

@@ -2,55 +2,126 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.FirstAdminForm
+
+  @summary_fields [
+    email: "first-admin-email",
+    password: "first-admin-password",
+    password_confirmation: "first-admin-password-confirmation",
+    organization_name: "first-admin-organization-name",
+    organization_alias: "first-admin-organization-alias"
+  ]
 
   def render(assigns) do
     ~H"""
     <Layouts.auth flash={@flash}>
-      <.header class="text-center">
-        Welcome to Pathways Studio
-        <:subtitle>Set up your administrator account and organization</:subtitle>
-      </.header>
+      <div id="first-admin-page" phx-hook=".FirstAdminErrorFocus">
+        <.header class="text-center">
+          Welcome to Pathways Studio
+          <:subtitle>Set up your administrator account and organization</:subtitle>
+        </.header>
 
-      <.simple_form for={@form} id="first_admin_form" phx-submit="setup" phx-change="validate">
-        <.input
-          field={@form[:email]}
-          type="email"
-          label="Email"
-          placeholder="admin@company.com"
-          required
-        />
-        <.input
-          field={@form[:password]}
-          type="password"
-          label="Password"
-          required
-        />
-        <.input
-          field={@form[:password_confirmation]}
-          type="password"
-          label="Confirm password"
-          required
-        />
-        <.input
-          field={@form[:organization_name]}
-          type="text"
-          label="Organization name"
-          placeholder="My Transit Agency"
-          required
-        />
-        <.input
-          field={@form[:organization_alias]}
-          type="text"
-          label="Organization alias (optional)"
-          placeholder="my-transit-agency"
-          help="Used in URLs, e.g., /gtfs/my-transit-agency"
-        />
-        <:actions>
-          <.button phx-disable-with="Setting up..." class="w-full" variant="primary">
-            Create administrator account
-          </.button>
-        </:actions>
-      </.simple_form>
+        <section
+          :if={@summary_entries != []}
+          id="first-admin-error-summary"
+          tabindex="-1"
+          aria-labelledby="first-admin-error-summary-title"
+          class="mb-6 rounded-lg border border-error/30 bg-error/5 p-4"
+        >
+          <h2 id="first-admin-error-summary-title" class="font-semibold text-error">
+            There is a problem with this form
+          </h2>
+          <ul class="mt-2 space-y-1 text-sm text-error">
+            <li :for={entry <- @summary_entries}>
+              <%= if entry.target do %>
+                <a href={"##{entry.target}"} class="link">{entry.message}</a>
+              <% else %>
+                {entry.message}
+              <% end %>
+            </li>
+          </ul>
+        </section>
+
+        <.form for={@form} id="first_admin_form" phx-change="validate" phx-submit="setup">
+          <div class="space-y-6">
+            <.input
+              field={@form[:email]}
+              id="first-admin-email"
+              type="email"
+              label="Email"
+              placeholder="admin@company.com"
+              announce_errors={false}
+              required
+            />
+            <.input
+              field={@form[:password]}
+              id="first-admin-password"
+              type="password"
+              label="Password"
+              errors={@password_errors}
+              announce_errors={false}
+              required
+            />
+            <.input
+              field={@form[:password_confirmation]}
+              id="first-admin-password-confirmation"
+              type="password"
+              label="Confirm password"
+              errors={@password_confirmation_errors}
+              announce_errors={false}
+              required
+            />
+            <.input
+              field={@form[:organization_name]}
+              id="first-admin-organization-name"
+              type="text"
+              label="Organization name"
+              placeholder="My Transit Agency"
+              announce_errors={false}
+              required
+            />
+            <.input
+              field={@form[:organization_alias]}
+              id="first-admin-organization-alias"
+              type="text"
+              label="Organization alias (optional)"
+              placeholder="my-transit-agency"
+              help="Used in URLs, e.g., /gtfs/my-transit-agency"
+              announce_errors={false}
+            />
+          </div>
+          <div class="mt-8">
+            <.button
+              id="first-admin-submit"
+              type="submit"
+              phx-disable-with="Setting up..."
+              class="w-full"
+              variant="primary"
+            >
+              Create administrator account
+            </.button>
+          </div>
+        </.form>
+      </div>
+
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".FirstAdminErrorFocus">
+        export default {
+          mounted() {
+            this.handleEvent("focus_first_admin_error", () => {
+              const form = document.getElementById("first_admin_form");
+              const invalid = form && form.querySelector('[aria-invalid="true"]');
+
+              if (invalid) {
+                invalid.focus();
+                return;
+              }
+
+              const summary = document.getElementById("first-admin-error-summary");
+              if (summary) summary.focus();
+            });
+          }
+        }
+      </script>
     </Layouts.auth>
     """
   end
@@ -59,62 +130,64 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
     if Accounts.count_users() > 0 do
       {:ok, redirect(socket, to: ~p"/")}
     else
-      form = to_form(%{}, as: "admin")
-
       {:ok,
        socket
-       |> assign(form: form)
-       |> assign(page_title: "Setup Administrator")}
-    end
-  end
-
-  def handle_event("setup", %{"admin" => admin_params}, socket) do
-    user_attrs = %{
-      "email" => admin_params["email"],
-      "password" => admin_params["password"],
-      "password_confirmation" => admin_params["password_confirmation"]
-    }
-
-    org_attrs = %{
-      "name" => admin_params["organization_name"],
-      "alias" =>
-        admin_params["organization_alias"] ||
-          generate_alias(admin_params["organization_name"])
-    }
-
-    case Accounts.register_first_admin(user_attrs, org_attrs) do
-      {:ok, _user} ->
-        {:noreply,
-         socket
-         |> redirect(to: ~p"/users/log_in")}
-
-      {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset, as: "admin"))}
+       |> assign(page_title: "Setup Administrator")
+       |> assign_form(Accounts.change_first_admin())}
     end
   end
 
   def handle_event("validate", %{"admin" => admin_params}, socket) do
     changeset =
-      Accounts.change_user_registration(
-        %GtfsPlanner.Accounts.User{},
-        %{
-          email: admin_params["email"],
-          password: admin_params["password"],
-          password_confirmation: admin_params["password_confirmation"]
-        }
-      )
+      admin_params
+      |> Accounts.change_first_admin()
       |> Map.put(:action, :validate)
 
-    # Use raw params to preserve ALL fields, pass changeset errors for validation
-    {:noreply, assign(socket, form: to_form(admin_params, as: "admin", errors: changeset.errors))}
+    {:noreply, assign_form(socket, changeset)}
   end
 
-  defp generate_alias(name) do
-    name
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9\s-]/, "")
-    |> String.replace(~r/\s+/, "-")
-    |> String.replace(~r/-+/, "-")
-    |> String.trim("-")
+  def handle_event("setup", %{"admin" => admin_params}, socket) do
+    case Accounts.register_first_admin(admin_params) do
+      {:ok, _user} ->
+        {:noreply, redirect(socket, to: ~p"/users/log_in")}
+
+      {:error, changeset} ->
+        changeset = FirstAdminForm.sanitize_secrets(changeset)
+        summary_entries = error_summary_entries(changeset)
+
+        {:noreply,
+         socket
+         |> assign(form: to_form(changeset, as: :admin))
+         |> assign(summary_entries: summary_entries)
+         |> assign(password_errors: translate_errors(changeset.errors, :password))
+         |> assign(
+           password_confirmation_errors:
+             translate_errors(changeset.errors, :password_confirmation)
+         )
+         |> push_event("focus_first_admin_error", %{})}
+    end
+  end
+
+  defp assign_form(socket, changeset) do
+    socket
+    |> assign(form: to_form(changeset, as: :admin))
+    |> assign(summary_entries: [])
+    |> assign(password_errors: [])
+    |> assign(password_confirmation_errors: [])
+  end
+
+  defp error_summary_entries(changeset) do
+    field_entries =
+      for {field, control_id} <- @summary_fields,
+          message <- translate_errors(changeset.errors, field) do
+        %{target: control_id, message: message}
+      end
+
+    base_entries =
+      for message <- translate_errors(changeset.errors, :base) do
+        %{target: nil, message: message}
+      end
+
+    field_entries ++ base_entries
   end
 end

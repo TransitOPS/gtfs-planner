@@ -247,6 +247,30 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </p>
 
+      <h2 class="mt-8 text-lg font-semibold">Error announcement</h2>
+      <ul
+        id="ds-inputs-announce-errors"
+        class="mt-2 list-disc space-y-1 pl-5 text-base-content/70"
+      >
+        <li>
+          <code class="font-mono text-sm">announce_errors</code>
+          defaults to <code class="font-mono text-sm">true</code>: the inline error is an
+          assertive live region (<code class="font-mono text-sm">role="alert"</code> + <code class="font-mono text-sm">aria-live="assertive"</code>).
+        </li>
+        <li>
+          A form may set
+          <code phx-no-curly-interpolation class="font-mono text-sm">announce_errors={false}</code>
+          only when it supplies deterministic submit-time focus to the first invalid control
+          plus an associated <code class="font-mono text-sm">aria-describedby</code>
+          description or a focusable error summary.
+        </li>
+        <li>
+          Opting out changes nothing else: the error id, error text, <code class="font-mono text-sm">aria-invalid</code>, and
+          <code class="font-mono text-sm">aria-describedby</code>
+          wiring stay identical.
+        </li>
+      </ul>
+
       <h2 class="mt-8 text-lg font-semibold">Checkbox group</h2>
       <p class="mt-1 text-sm text-base-content/60">
         A fieldset with a legend for multi-select options. It takes a bare
