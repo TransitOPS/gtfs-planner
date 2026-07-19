@@ -285,26 +285,35 @@ test.describe("Diagram focus indicator", () => {
   test("focused stop group carries the paired dark/light focus ring", async ({
     page,
   }) => {
-    // Tab onto an actual canvas stop group (not a control button): the focus
-    // contract for AC-6 lives on `#diagram-overlay g[tabindex]`, and the ring
-    // must remain visible over an arbitrary floorplan color.
-    const stopGroup = page.locator("#diagram-overlay g[tabindex]").first();
-    await stopGroup.focus();
+    // Enter the overlay by keyboard so :focus-visible matches, then inspect the
+    // SVG hit-target geometry that carries the cross-engine focus indicator.
+    await page.locator("#diagram-canvas-wrapper").click();
 
-    const ring = await stopGroup.evaluate((el) => {
-      const style = getComputedStyle(el);
+    const focusedGroup = page.locator("#diagram-overlay g[tabindex]:focus-visible");
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await page.keyboard.press("Tab");
+      if ((await focusedGroup.count()) === 1) break;
+    }
+
+    await expect(focusedGroup).toHaveCount(1);
+
+    const ring = await focusedGroup.evaluate((el) => {
+      const geometry = el.querySelector(
+        "[data-stop-hit-target], [data-pathway-hit], [data-cross-level-badge-hit]",
+      );
+      const style = getComputedStyle(geometry);
       return {
-        outlineStyle: style.outlineStyle,
-        outlineWidth: style.outlineWidth,
-        // The light halo is applied via `filter: drop-shadow(...)`.
+        stroke: style.stroke,
+        strokeWidth: style.strokeWidth,
         filter: style.filter,
       };
     });
 
-    // Dark ring: a real (non-none) outline of non-zero width.
-    expect(ring.outlineStyle).not.toBe("none");
-    expect(parseFloat(ring.outlineWidth)).toBeGreaterThan(0);
-    // Light halo: a drop-shadow filter is present (the paired second ring).
+    // Dark ring: a real SVG stroke of non-zero width. Light ring: a halo on
+    // that same geometry, avoiding browser-dependent outline paint on SVG <g>.
+    expect(ring.stroke).not.toBe("none");
+    expect(parseFloat(ring.strokeWidth)).toBeGreaterThan(0);
     expect(ring.filter).toContain("drop-shadow");
   });
 });

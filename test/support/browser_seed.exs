@@ -133,7 +133,9 @@ case Accounts.register_first_admin(%{
         gtfs_version_id: diagram_version.id
       })
 
-    IO.puts("Browser seed: diagram ready — /gtfs/#{diagram_version.id}/stops/BROWSER_STATION/diagram")
+    IO.puts(
+      "Browser seed: diagram ready — /gtfs/#{diagram_version.id}/stops/BROWSER_STATION/diagram"
+    )
 
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"

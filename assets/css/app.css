@@ -259,14 +259,14 @@ body:has(#diagram-page[data-immersive="true"]) {
   cursor: default !important;
 }
 
-/* Paired focus indicator that stays visible over any floorplan color.
-   Both rings are fully opaque so at least one clears 3:1 on any background:
-   the dark outline reads on light imagery, the light halo reads on dark
-   imagery. Stacking two drop-shadows thickens the light halo into a legible
-   ring rather than a faint edge. */
-#diagram-overlay g[tabindex]:focus-visible {
-  outline: 2px solid oklch(0% 0 0);
-  outline-offset: 2px;
+/* Paired SVG-native focus indicator that stays visible over any floorplan color.
+   The dark stroke paints reliably on SVG geometry across browser engines; the
+   white halo traces that same hit-target geometry for dark imagery. */
+#diagram-overlay g[tabindex]:focus-visible > [data-stop-hit-target],
+#diagram-overlay g[tabindex]:focus-visible > [data-pathway-hit],
+#diagram-overlay g[tabindex]:focus-visible > [data-cross-level-badge-hit] {
+  stroke: oklch(0% 0 0);
+  stroke-width: 0.3px;
   filter: drop-shadow(0 0 1px oklch(100% 0 0)) drop-shadow(0 0 1px oklch(100% 0 0));
 }
 

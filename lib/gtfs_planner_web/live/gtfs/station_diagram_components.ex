@@ -4913,7 +4913,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <div>
       <div class="flex items-center gap-2 mb-2">
         <h2 class="text-base font-semibold">Pathways on Level</h2>
-        <span :if={@pathway_error} class="text-error text-sm">{@pathway_error}</span>
+        <span :if={@pathway_error} id="pathways-table-error" class="text-error text-sm">
+          {@pathway_error}
+        </span>
       </div>
       <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <%= if @pathways_list == [] do %>

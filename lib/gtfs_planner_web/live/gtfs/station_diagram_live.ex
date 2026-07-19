@@ -1488,6 +1488,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("cancel_placement", _params, socket) do
+    socket = restream_active_stop(socket)
+
     {:noreply,
      socket
      |> assign(:placement_status, "Placement cancelled")
@@ -3951,30 +3953,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp handle_stop_selection(id, socket) do
-    case socket.assigns.active_point_id do
-      nil ->
-        # First stop selected - set it as active
-        stop = Gtfs.get_stop!(id)
+    case fetch_intent_stop(socket, id) do
+      {:ok, stop} ->
+        case socket.assigns.active_point_id do
+          nil ->
+            # First stop selected - set it as active
+            {:noreply,
+             socket
+             |> stream_insert(:child_stops, stop)
+             |> assign(:active_point_id, stop.id)
+             |> assign(:selected_from_stop, stop)}
 
-        {:noreply,
-         socket
-         |> stream_insert(:child_stops, stop)
-         |> assign(:active_point_id, id)
-         |> assign(:selected_from_stop, stop)}
+          active_point_id when active_point_id == stop.id ->
+            # Clicking same stop - deselect it
+            {:noreply,
+             socket
+             |> stream_insert(:child_stops, stop)
+             |> assign(:active_point_id, nil)
+             |> assign(:selected_from_stop, nil)}
 
-      ^id ->
-        # Clicking same stop - deselect it
-        stop = Gtfs.get_stop!(id)
+          first_stop_id ->
+            # Second stop selected - create pathway between them
+            create_pathway_between_stops(socket, first_stop_id, stop.id)
+        end
 
-        {:noreply,
-         socket
-         |> stream_insert(:child_stops, stop)
-         |> assign(:active_point_id, nil)
-         |> assign(:selected_from_stop, nil)}
-
-      first_stop_id ->
-        # Second stop selected - create pathway between them
-        create_pathway_between_stops(socket, first_stop_id, id)
+      {:error, :not_found} ->
+        {:noreply, assign(socket, :pathway_error, "Invalid stop selection")}
     end
   end
 
@@ -4717,14 +4721,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-    from_stop = Gtfs.get_stop!(from_stop_id)
-    to_stop = Gtfs.get_stop!(to_stop_id)
-    pair_key = normalize_pair_key(from_stop.stop_id, to_stop.stop_id)
-    pair_count = Map.get(socket.assigns.pathway_pair_counts || %{}, pair_key, 0)
-
-    if pair_count >= 2 do
-      {:noreply, assign(socket, :pathway_error, "This stop pair already has two pathways")}
-    else
+    with {:ok, from_stop} <- fetch_intent_stop(socket, from_stop_id),
+         {:ok, to_stop} <- fetch_intent_stop(socket, to_stop_id),
+         pair_key = normalize_pair_key(from_stop.stop_id, to_stop.stop_id),
+         pair_count = Map.get(socket.assigns.pathway_pair_counts || %{}, pair_key, 0),
+         false <- pair_count >= 2 do
       pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
 
       attrs =
@@ -4751,7 +4752,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
           loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
           refreshed_socket = refresh_lists(socket)
-          pathway_pair = pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
+
+          pathway_pair =
+            pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
 
           {:noreply,
            refreshed_socket
@@ -4782,6 +4785,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> assign(:active_point_id, nil)
            |> assign(:pathway_error, "Failed to create pathway")}
       end
+    else
+      true ->
+        {:noreply, assign(socket, :pathway_error, "This stop pair already has two pathways")}
+
+      {:error, :not_found} ->
+        {:noreply, assign(socket, :pathway_error, "Invalid stop selection")}
     end
   end
 
@@ -4800,20 +4809,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # entered. Reading a render-time `phx-value` snapshot could commit a stale
   # coordinate if the click fired before the field's change re-render landed.
   defp reposition_read_coordinates(_params, socket) do
-    pending_xy = socket.assigns.pending_xy
-    x_val = present_or(socket.assigns.reposition_x, pending_xy && to_optional_string(pending_xy.x))
-    y_val = present_or(socket.assigns.reposition_y, pending_xy && to_optional_string(pending_xy.y))
-
-    with {:ok, x} <- parse_finite_float(x_val),
-         {:ok, y} <- parse_finite_float(y_val) do
+    with {:ok, x} <- parse_finite_float(socket.assigns.reposition_x),
+         {:ok, y} <- parse_finite_float(socket.assigns.reposition_y) do
       {:ok, x, y}
-    end
-  end
-
-  defp present_or(value, fallback) do
-    case value do
-      v when is_binary(v) and v != "" -> v
-      _ -> fallback
     end
   end
 
