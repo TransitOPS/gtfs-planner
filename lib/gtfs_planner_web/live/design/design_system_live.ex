@@ -48,18 +48,18 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
      |> assign(:page, hd(@pages))
      |> assign(:demo_form, demo_form())
      |> assign(:pagination_page, 1)
-      |> assign(:drawer_open, false)
-      |> assign(:confirm_open, false)
-      |> assign(:confirm_pending, false)
-      |> assign(:confirm_result, nil)
-      |> assign(:confirm_return_focus_id, nil)
-      |> assign(:form, address_form())
-      |> assign(:selected_address, nil)
-      |> assign(:selected_lat, nil)
-      |> assign(:selected_lon, nil)
-      |> assign(:selected_result, nil)
-      |> assign(:saved_locations, [])
-      |> assign(:last_results, [])}
+     |> assign(:drawer_open, false)
+     |> assign(:confirm_open, false)
+     |> assign(:confirm_pending, false)
+     |> assign(:confirm_result, nil)
+     |> assign(:confirm_return_focus_id, nil)
+     |> assign(:form, address_form())
+     |> assign(:selected_address, nil)
+     |> assign(:selected_lat, nil)
+     |> assign(:selected_lon, nil)
+     |> assign(:selected_result, nil)
+     |> assign(:saved_locations, [])
+     |> assign(:last_results, [])}
   end
 
   # Demo state for every page lives here, in the LiveView that owns the events.

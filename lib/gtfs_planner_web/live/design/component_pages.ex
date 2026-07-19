@@ -954,7 +954,8 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       <h1 class="text-2xl font-bold">Overlays</h1>
       <p class="mt-2 text-base-content/70">
         Server-owned overlays backed by native <code class="font-mono text-sm">&lt;dialog&gt;</code>
-        and the <code class="font-mono text-sm">OverlayDialog</code> hook.
+        and the <code class="font-mono text-sm">OverlayDialog</code>
+        hook.
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Drawer</h2>
@@ -962,8 +963,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         The drawer renders a native modal dialog. Open state is a server assign;
         the hook calls <code class="font-mono text-sm">showModal()</code>.
         Close via the header button, Escape, or a true backdrop click — all push
-        the configured <code class="font-mono text-sm">on_close</code>
-        event back to the LiveView.
+        the configured <code class="font-mono text-sm">on_close</code> event back to the LiveView.
       </p>
 
       <div id="ds-drawer-demo" class="mt-3 border border-base-300 p-4">
@@ -1032,12 +1032,15 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       <h2 class="mt-8 text-lg font-semibold">Confirm dialog</h2>
       <p class="mt-1 text-sm text-base-content/60">
         A fully server-owned confirmation. Focus lands on Cancel. The confirm
-        button uses <code class="font-mono text-sm">phx-disable-with</code> for
+        button uses <code class="font-mono text-sm">phx-disable-with</code>
+        for
         immediate acknowledgment. Durable pending disables both confirm and
         dismiss controls; the hook refuses Escape and backdrop clicks.
-        <code class="font-mono text-sm">on_confirm</code> and
-        <code class="font-mono text-sm">on_cancel</code> are plain event name
-        strings. Supply <code class="font-mono text-sm">target</code> when the
+        <code class="font-mono text-sm">on_confirm</code>
+        and <code class="font-mono text-sm">on_cancel</code>
+        are plain event name
+        strings. Supply <code class="font-mono text-sm">target</code>
+        when the
         owner is a <code class="font-mono text-sm">LiveComponent</code>.
       </p>
 
@@ -1047,17 +1050,17 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
           &lt;.confirm_dialog
-            id="delete-route"
-            open={@confirm_open}
-            title="Delete route 42?"
-            confirm_label="Delete route"
-            pending_label="Deleting…"
-            on_confirm="delete_route"
-            on_cancel="cancel_delete"
-            pending={@deleting}
-            described_by="delete-route-body"
+          id="delete-route"
+          open={@confirm_open}
+          title="Delete route 42?"
+          confirm_label="Delete route"
+          pending_label="Deleting…"
+          on_confirm="delete_route"
+          on_cancel="cancel_delete"
+          pending={@deleting}
+          described_by="delete-route-body"
           &gt;
-            This removes the route and its 214 trips from version 2026-01. It cannot be undone.
+          This removes the route and its 214 trips from version 2026-01. It cannot be undone.
           &lt;/.confirm_dialog&gt;
         </code>
       </div>
@@ -1076,8 +1079,8 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </li>
         <li>
           The drawer closes via the header button, Escape, or a true backdrop click;
-          a click in the panel never closes. The
-          <code class="font-mono text-sm">OverlayDialog</code> hook manages focus
+          a click in the panel never closes. The <code class="font-mono text-sm">OverlayDialog</code>
+          hook manages focus
           and native modal behavior.
         </li>
         <li>

@@ -1457,7 +1457,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               phx-disable-with={@pending_label}
               disabled={@pending}
             >
-              <%= if @pending, do: @pending_label, else: @confirm_label %>
+              {if @pending, do: @pending_label, else: @confirm_label}
             </button>
           </div>
         </div>
