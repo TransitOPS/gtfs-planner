@@ -103,6 +103,22 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert LazyHTML.attribute(heading, "tabindex") == ["-1"]
     end
 
+    test "drawer panel is an explicit focus fallback" do
+      assigns = %{open: true, title: "Test Title"}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer id="test-drawer" open={@open} title={@title}>
+          <p>Content</p>
+        </.drawer>
+        """)
+
+      panel = html |> LazyHTML.from_fragment() |> LazyHTML.query("aside#test-drawer")
+
+      assert LazyHTML.attribute(panel, "data-dialog-panel") == [""]
+      assert LazyHTML.attribute(panel, "tabindex") == ["-1"]
+    end
+
     test "close button has matching tooltip and accessible name plus a 44px hit target" do
       assigns = %{open: true, title: "Test"}
 

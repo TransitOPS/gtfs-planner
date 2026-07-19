@@ -14,6 +14,7 @@ depends = ["format:*"]
 # Setup
 [tasks."setup:nodejs"]
 sources = ["assets/package.json", "assets/package-lock.json"]
+outputs = ["assets/node_modules/.package-lock.json"]
 run = "npm ci --prefix assets"
 hide = true
 
@@ -38,7 +39,6 @@ fi
 # Tests
 [tasks."test:nodejs"]
 depends = ["setup:nodejs"]
-sources = ["assets/package.json", "assets/package-lock.json"]
 run = "npm run --prefix assets test"
 
 [tasks."test:elixir"]

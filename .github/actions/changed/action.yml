@@ -28,11 +28,15 @@ runs:
             - 'coveralls.json'
           js:
             - 'assets/**/*.js'
+            - 'assets/**/*.cjs'
             - 'assets/**/*.css'
             - 'assets/*.json'
             - 'assets/.postcssrc'
             - 'assets/.prettier*'
             - 'assets/eslint.config.mjs'
+            - 'lib/gtfs_planner_web/components/**/*.ex'
+            - 'lib/gtfs_planner_web/live/**/*.ex'
+            - 'mise.toml'
           infra:
             - 'infra/**/*.tf'
           docker:
@@ -41,4 +45,3 @@ runs:
           shared:
             - '.tool-versions'
             - '.github/**/*'
-

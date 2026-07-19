@@ -848,6 +848,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
       <aside
         id={@id}
         aria-labelledby={"#{@id}-title"}
+        data-dialog-panel
+        tabindex="-1"
         class={[
           "absolute top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 overflow-x-hidden",
           @class

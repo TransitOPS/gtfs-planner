@@ -108,14 +108,14 @@ test.describe("Open overlay modality", () => {
     await expect(page.getByRole("alertdialog")).toHaveCount(1);
   });
 
-  test("keyboard Tab traversal stays inside the topmost dialog", async ({ page }) => {
+  test("keyboard Tab traversal permits Chromium's native body boundary without reaching outside controls", async ({ page }) => {
     // Open nested confirmation so it is the topmost modal
     await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
     // Initial focus should be on Cancel
     await expect(page.locator("#ds-demo-confirm-cancel")).toBeFocused();
 
-    // Press Tab — should move inside confirmation, never escape to page elements
+    // Press Tab — moves to the confirmation action.
     await page.keyboard.press("Tab");
     let activeId = await page.evaluate(() => {
       const ae = document.activeElement;
@@ -124,21 +124,46 @@ test.describe("Open overlay modality", () => {
     // Confirm button has id ds-demo-confirm-confirm
     expect(activeId).toBe("ds-demo-confirm-confirm");
 
-    // Tab again — should cycle inside the modal
+    // Chromium may transiently focus BODY before returning to the modal. This
+    // native-dialog behavior must not be replaced by a custom focus trap.
     await page.keyboard.press("Tab");
-    activeId = await page.evaluate(() => {
+    const focusLocation = await page.evaluate(() => {
       const ae = document.activeElement;
-      return ae ? ae.id : null;
+      const confirm = document.getElementById("ds-demo-confirm");
+
+      return {
+        id: ae ? ae.id : null,
+        inConfirm: Boolean(ae && confirm && confirm.contains(ae)),
+        isBody: ae === document.body,
+      };
     });
-    expect(activeId).toBe("ds-demo-confirm-cancel");
+    expect(focusLocation.inConfirm || focusLocation.isBody).toBe(true);
+
+    if (focusLocation.isBody) {
+      await page.keyboard.press("Tab");
+    }
+
+    await expect(page.locator("#ds-demo-confirm-cancel")).toBeFocused();
 
     // Shift+Tab from Cancel should go to Confirm
     await page.keyboard.press("Shift+Tab");
-    activeId = await page.evaluate(() => {
+    const reverseFocusLocation = await page.evaluate(() => {
       const ae = document.activeElement;
-      return ae ? ae.id : null;
+      const confirm = document.getElementById("ds-demo-confirm");
+
+      return {
+        id: ae ? ae.id : null,
+        inConfirm: Boolean(ae && confirm && confirm.contains(ae)),
+        isBody: ae === document.body,
+      };
     });
-    expect(activeId).toBe("ds-demo-confirm-confirm");
+    expect(reverseFocusLocation.inConfirm || reverseFocusLocation.isBody).toBe(true);
+
+    if (reverseFocusLocation.isBody) {
+      await page.keyboard.press("Shift+Tab");
+    }
+
+    await expect(page.locator("#ds-demo-confirm-confirm")).toBeFocused();
 
     // Verify focus never left the confirmation dialog
     const inConfirm = await page.evaluate(() => {

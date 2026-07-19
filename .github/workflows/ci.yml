@@ -331,7 +331,7 @@ jobs:
   ci_passed:
     name: CI Passed?
     runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
-    needs: [elixir_dev, elixir_test, js, js_browser, docker, infra]
+    needs: [elixir_deps, elixir_dev, elixir_test, js, js_browser, docker, infra]
     if: ${{ always() }}
     steps:
       - run: |

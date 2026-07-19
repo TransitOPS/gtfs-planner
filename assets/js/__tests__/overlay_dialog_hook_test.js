@@ -51,6 +51,10 @@ function makeHook(dialog) {
   return hook;
 }
 
+function makeRendered(element) {
+  vi.spyOn(element, "getClientRects").mockReturnValue([{}]);
+}
+
 describe("OverlayDialog", () => {
   beforeEach(() => {
     stubNativeDialog();
@@ -206,15 +210,15 @@ describe("OverlayDialog", () => {
       expect(focusSpy).toHaveBeenCalledTimes(1);
     });
 
-    it("falls back to semantic mode when explicit ID is not in dialog", () => {
+    it("falls back to the dialog panel when explicit ID is not in dialog", () => {
       const inner =
-        '<h2 id="my-title" tabindex="-1">Title</h2><button id="btn-ok">OK</button>';
+        '<h2 id="my-title" tabindex="-1">Title</h2><div id="panel" data-dialog-panel tabindex="-1">Panel</div><button id="btn-ok">OK</button>';
       const dialog = buildDialog({
         dataset: { open: "true", initialFocusId: "nonexistent" },
         innerHTML: inner,
       });
-      const heading = dialog.querySelector("#my-title");
-      const focusSpy = vi.spyOn(heading, "focus");
+      const panel = dialog.querySelector("#panel");
+      const focusSpy = vi.spyOn(panel, "focus");
       const hook = makeHook(dialog);
       hook.mounted();
       expect(focusSpy).toHaveBeenCalledTimes(1);
@@ -225,7 +229,7 @@ describe("OverlayDialog", () => {
       outer.id = "outside-btn";
       document.body.appendChild(outer);
 
-      const inner = '<div tabindex="-1" id="panel">Panel</div>';
+      const inner = '<div data-dialog-panel tabindex="-1" id="panel">Panel</div>';
       const dialog = buildDialog({
         dataset: { open: "true", initialFocusId: "outside-btn" },
         innerHTML: inner,
@@ -260,6 +264,7 @@ describe("OverlayDialog", () => {
         innerHTML: inner,
       });
       const first = dialog.querySelector("#field-a");
+      makeRendered(first);
       const focusSpy = vi.spyOn(first, "focus");
       const hook = makeHook(dialog);
       hook.mounted();
@@ -274,6 +279,7 @@ describe("OverlayDialog", () => {
         innerHTML: inner,
       });
       const active = dialog.querySelector("#active-field");
+      makeRendered(active);
       const focusSpy = vi.spyOn(active, "focus");
       const hook = makeHook(dialog);
       hook.mounted();
@@ -294,8 +300,8 @@ describe("OverlayDialog", () => {
       expect(focusSpy).toHaveBeenCalledTimes(1);
     });
 
-    it("falls back to tabindex=-1 element when no focusable target matches", () => {
-      const inner = '<div tabindex="-1" id="panel">Fallback</div>';
+    it("falls back to the explicit dialog panel when no focusable target matches", () => {
+      const inner = '<div data-dialog-panel tabindex="-1" id="panel">Fallback</div>';
       const dialog = buildDialog({
         dataset: { open: "true" },
         innerHTML: inner,
@@ -845,6 +851,7 @@ describe("OverlayDialog", () => {
         innerHTML: inner,
       });
       const textarea = dialog.querySelector("#b");
+      makeRendered(textarea);
       const focusSpy = vi.spyOn(textarea, "focus");
       const hook = makeHook(dialog);
       hook.mounted();

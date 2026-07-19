@@ -112,14 +112,25 @@ const OverlayDialog = {
     }
 
     if (mode === "first_field") {
-      const field = this.el.querySelector(
-        "input:not([disabled]):not([type='hidden']), select:not([disabled]), textarea:not([disabled])",
-      );
+      const field = Array.from(
+        this.el.querySelectorAll(
+          "input:not([disabled]):not([type='hidden']), select:not([disabled]), textarea:not([disabled])",
+        ),
+      ).find((candidate) => this._isRendered(candidate));
       if (this._focusWithoutScroll(field)) return;
     }
 
-    const panel = this.el.querySelector("[tabindex='-1']");
+    const panel = this.el.querySelector("[data-dialog-panel]");
     this._focusWithoutScroll(panel);
+  },
+
+  _isRendered(target) {
+    if (target.closest("[hidden], [inert]")) return false;
+
+    const style = window.getComputedStyle(target);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+
+    return target.getClientRects().length > 0;
   },
 
   _focusWithoutScroll(target) {
