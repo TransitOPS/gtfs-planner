@@ -253,6 +253,25 @@ describe("DiagramCanvasHook — group activation", () => {
       expect(clickSpy).not.toHaveBeenCalled();
     });
 
+    it("does not activate a stop group when the inner hit-target rect is missing", () => {
+      const group = elSVG("g", {
+        id: "stop-no-hit",
+        "data-stop-id": "STOP_NO_HIT",
+        "data-stop-center-x": "50",
+        "data-stop-center-y": "50",
+        tabindex: "0"
+      });
+      overlay.appendChild(group);
+      const hook = makeHook(svg);
+      hook.mounted();
+
+      const clickSpy = vi.spyOn(group, "click");
+      group.focus();
+      dispatchDocumentKeydown("Enter");
+
+      expect(clickSpy).not.toHaveBeenCalled();
+    });
+
     it("still handles Escape to cancel drag (existing behavior preserved)", () => {
       const { group } = makeStopGroup(overlay);
       const hook = makeHook(svg);
@@ -378,6 +397,38 @@ describe("DiagramCanvasHook — pan/zoom controls", () => {
       expect(hook.viewBox.x).toBe(initialX);
       expect(hook.viewBox.y).toBe(initialY);
     });
+
+    it("clamps viewBox at top boundary when panning up", () => {
+      const minY = -hook.viewBox.h * 0.5; // clampViewBox margin
+      hook.viewBox.y = minY;
+      const btn = attachButton({ "data-pan": "up", "aria-label": "Pan up" });
+      btn.click();
+      expect(hook.viewBox.y).toBe(minY);
+    });
+
+    it("clamps viewBox at bottom boundary when panning down", () => {
+      const maxY = hook.baseH - hook.viewBox.h * (1 - 0.5); // clampViewBox margin
+      hook.viewBox.y = maxY;
+      const btn = attachButton({ "data-pan": "down", "aria-label": "Pan down" });
+      btn.click();
+      expect(hook.viewBox.y).toBe(maxY);
+    });
+
+    it("clamps viewBox at left boundary when panning left", () => {
+      const minX = -hook.viewBox.w * 0.5; // clampViewBox margin
+      hook.viewBox.x = minX;
+      const btn = attachButton({ "data-pan": "left", "aria-label": "Pan left" });
+      btn.click();
+      expect(hook.viewBox.x).toBe(minX);
+    });
+
+    it("clamps viewBox at right boundary when panning right", () => {
+      const maxX = hook.baseW - hook.viewBox.w * (1 - 0.5); // clampViewBox margin
+      hook.viewBox.x = maxX;
+      const btn = attachButton({ "data-pan": "right", "aria-label": "Pan right" });
+      btn.click();
+      expect(hook.viewBox.x).toBe(maxX);
+    });
   });
 
   describe("zoom buttons", () => {
@@ -472,6 +523,19 @@ describe("DiagramCanvasHook — pan/zoom controls", () => {
       // matches this.viewBox and continues without spurious reset
       expect(syncSpy).toHaveBeenCalled();
     });
+
+    it("syncOverlayViewBox is idempotent to prevent spurious observer resets", () => {
+      hook.viewBox = { x: 5, y: 3, w: 40, h: 32 };
+      hook.syncOverlayViewBox();
+      const expectedViewBox = "5 3 40 32";
+      expect(overlay.getAttribute("viewBox")).toBe(expectedViewBox);
+
+      // Second call with same viewBox — must not trigger an attribute change
+      // (which would fire the MutationObserver, causing a spurious reset loop)
+      const setAttributeSpy = vi.spyOn(overlay, "setAttribute");
+      hook.syncOverlayViewBox();
+      expect(setAttributeSpy).not.toHaveBeenCalled();
+    });
   });
 
   describe("zoom label", () => {
@@ -551,6 +615,14 @@ describe("DiagramCanvasHook — Escape/cancel keyboard placement", () => {
       expect(pushEventSpy).toHaveBeenCalledWith("cancel_placement", {});
     });
 
+    it("prevents default on Escape when canceling keyboard placement", () => {
+      createDrawerOverlay({ open: true });
+      const pushEventSpy = vi.spyOn(hook, "pushEvent");
+      const event = dispatchDocumentKeydown("Escape");
+      expect(pushEventSpy).toHaveBeenCalledWith("cancel_placement", {});
+      expect(event.defaultPrevented).toBe(true);
+    });
+
     it("does not push cancel_placement when drawer is not open", () => {
       createDrawerOverlay({ open: false });
       const pushEventSpy = vi.spyOn(hook, "pushEvent");
@@ -562,6 +634,14 @@ describe("DiagramCanvasHook — Escape/cancel keyboard placement", () => {
       const pushEventSpy = vi.spyOn(hook, "pushEvent");
       dispatchDocumentKeydown("Escape");
       expect(pushEventSpy).not.toHaveBeenCalledWith("cancel_placement", {});
+    });
+
+    it("pushes cancel_placement when drawer is open even in non-view mode", () => {
+      overlay.setAttribute("data-mode", "add");
+      createDrawerOverlay({ open: true });
+      const pushEventSpy = vi.spyOn(hook, "pushEvent");
+      dispatchDocumentKeydown("Escape");
+      expect(pushEventSpy).toHaveBeenCalledWith("cancel_placement", {});
     });
 
     it("still cancels drag when dragging and drawer is open (existing behavior preserved)", () => {
