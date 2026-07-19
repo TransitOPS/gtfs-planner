@@ -843,7 +843,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       data-close-on-backdrop={to_string(@close_on_backdrop)}
       aria-labelledby={"#{@id}-title"}
       {if @open, do: %{role: "dialog", "aria-modal": "true"}, else: %{inert: true, "aria-hidden": "true"}}
-      class="m-0 border-0 w-full h-full bg-transparent p-0"
+      class="m-0 border-0 w-full h-full max-w-none max-h-none overflow-hidden bg-transparent p-0"
     >
       <aside
         id={@id}

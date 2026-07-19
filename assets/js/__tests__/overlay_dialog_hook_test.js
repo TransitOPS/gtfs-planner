@@ -174,6 +174,24 @@ describe("OverlayDialog", () => {
   // Focus resolution
   // =========================================================================
   describe("focus resolution", () => {
+    it("prevents initial focus from scrolling the animated dialog", () => {
+      const dialog = buildDialog({
+        dataset: { open: "true", initialFocus: "heading" },
+        innerHTML: '<h2 id="my-title" tabindex="-1">Title</h2>',
+      });
+      dialog.scrollLeft = 720;
+      dialog.scrollTop = 40;
+
+      const heading = dialog.querySelector("#my-title");
+      const focusSpy = vi.spyOn(heading, "focus");
+      const hook = makeHook(dialog);
+      hook.mounted();
+
+      expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
+      expect(dialog.scrollLeft).toBe(0);
+      expect(dialog.scrollTop).toBe(0);
+    });
+
     it("focuses an explicit descendant ID when valid", () => {
       const inner =
         '<h2 id="my-title" tabindex="-1">Title</h2><button id="btn-ok">OK</button>';

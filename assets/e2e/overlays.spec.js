@@ -385,6 +385,50 @@ test.describe("Presentation and motion", () => {
     await expect(page.locator("#ds-demo-drawer-overlay")).toBeVisible();
   });
 
+  test("drawer panel reaches the viewport edge and uses the slide-in animation", async ({ page }) => {
+    const panel = page.locator("#ds-demo-drawer");
+    const motion = await panel.evaluate(async (element) => {
+      const animation = element
+        .getAnimations()
+        .find((candidate) => candidate.animationName === "ds-drawer-slide-in");
+
+      if (!animation) return null;
+
+      animation.pause();
+      await animation.ready;
+
+      const duration = animation.effect.getComputedTiming().duration;
+      const dialog = element.closest("dialog");
+      const sample = async (currentTime) => {
+        animation.currentTime = currentTime;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const box = element.getBoundingClientRect();
+        return {
+          left: box.left,
+          right: box.right,
+          opacity: getComputedStyle(element).opacity,
+          scrollLeft: dialog.scrollLeft,
+        };
+      };
+
+      const start = await sample(0);
+      const middle = await sample(duration / 2);
+      const end = await sample(duration);
+      animation.finish();
+
+      return { duration, width: end.right - end.left, start, middle, end };
+    });
+
+    expect(motion).not.toBeNull();
+    expect(motion.duration).toBe(300);
+    expect(motion.start.left).toBeGreaterThan(motion.middle.left);
+    expect(motion.middle.left).toBeGreaterThan(motion.end.left);
+    expect(motion.start.left - motion.end.left).toBeGreaterThanOrEqual(motion.width * 0.99);
+    expect([motion.start.opacity, motion.middle.opacity, motion.end.opacity]).toEqual(["1", "1", "1"]);
+    expect([motion.start.scrollLeft, motion.middle.scrollLeft, motion.end.scrollLeft]).toEqual([0, 0, 0]);
+    expect(Math.abs(motion.end.right - page.viewportSize().width)).toBeLessThanOrEqual(1);
+  });
+
   test("all three action controls compute to at least 44 by 44 CSS pixels", async ({ page }) => {
     // Drawer close button
     const closeBtn = page.locator("#ds-demo-drawer-close");
