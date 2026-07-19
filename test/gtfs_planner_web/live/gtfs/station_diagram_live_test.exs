@@ -892,7 +892,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, _view, html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert html =~ "Scroll to pan"
+      assert html =~ "Pan up"
       assert html =~ "Show Key"
     end
 
