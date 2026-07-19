@@ -989,6 +989,47 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert render(view) =~ "Child View Dot"
     end
 
+    test "view mode groups carry tabindex and role=button, add mode does not", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TABINDEX_STOP",
+          stop_name: "Tabindex Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # View mode (default): stop group is focusable and has role="button"
+      assert has_element?(
+               view,
+               "#child_stops-#{child_stop.id}[tabindex='0'][role='button']"
+             )
+
+      # Switch to add mode: stop group loses tabindex and role
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
+      |> render_click()
+
+      refute has_element?(view, "#child_stops-#{child_stop.id}[tabindex='0']")
+      refute has_element?(view, "#child_stops-#{child_stop.id}[role='button']")
+    end
+
     test "view mode stop click does not render pending marker shape", %{
       conn: conn,
       user: user,
@@ -3915,12 +3956,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#child_stops-#{from_stop.id}[data-editable='stop'][data-tooltip='Click to edit, hold to move'][tabindex='0'][aria-label]"
+               "#child_stops-#{from_stop.id}[data-editable='stop'][data-tooltip='Click to edit, hold to move'][tabindex='0'][role='button'][aria-label]"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id}[data-editable='pathway'][data-tooltip='Click to edit pathway'][tabindex='0'][aria-label]"
+               "#pathways-#{pathway.id}[data-editable='pathway'][data-tooltip='Click to edit pathway'][tabindex='0'][role='button'][aria-label]"
              )
 
       assert has_element?(view, "#diagram-edit-tooltip[role='tooltip'][aria-hidden='true']")
@@ -4181,7 +4222,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#pathways-#{same_level_pathway.id}[data-tooltip='Click to edit pathway']"
              )
 
-      assert has_element?(view, "#pathways-#{same_level_pathway.id}[tabindex='0']")
+      assert has_element?(view, "#pathways-#{same_level_pathway.id}[tabindex='0'][role='button']")
       assert has_element?(view, "#pathways-#{same_level_pathway.id} [data-pathway-tooltip-hit]")
 
       assert has_element?(
@@ -4190,7 +4231,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
              )
 
       assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[data-tooltip]")
-      assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[tabindex='0']")
+
+      assert has_element?(
+               view,
+               "#cross-level-badge-#{cross_level_pathway.id}[tabindex='0'][role='button']"
+             )
 
       assert has_element?(
                view,

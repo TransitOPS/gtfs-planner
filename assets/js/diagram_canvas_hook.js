@@ -573,19 +573,41 @@ const DiagramCanvasHook = {
   },
 
   handleDocumentKeyDown(e) {
-    if (e.key !== "Escape" || !this.dragging) {
+    if (e.key === "Escape" && this.dragging) {
+      const dragging = this.dragging;
+      dragging.groupEl.classList.remove("dragging");
+      dragging.groupEl.removeAttribute("transform");
+      this.restoreDraggedPathways(dragging);
+      this.dragging = null;
+      this.cancelDragHold();
+      this._suppressNextClick = true;
+      this.debugDrag("drag canceled by escape", { stopId: dragging.stopId });
+      this.pushEvent("drag_cancel", {});
       return;
     }
 
-    const dragging = this.dragging;
-    dragging.groupEl.classList.remove("dragging");
-    dragging.groupEl.removeAttribute("transform");
-    this.restoreDraggedPathways(dragging);
-    this.dragging = null;
-    this.cancelDragHold();
-    this._suppressNextClick = true;
-    this.debugDrag("drag canceled by escape", { stopId: dragging.stopId });
-    this.pushEvent("drag_cancel", {});
+    if ((e.key === "Enter" || e.key === " ") && this.isViewMode() && this.overlay) {
+      const activeEl = document.activeElement;
+      if (!activeEl || !this.overlay.contains(activeEl)) {
+        return;
+      }
+      if (!activeEl.hasAttribute("tabindex")) {
+        return;
+      }
+
+      if (e.key === " ") {
+        e.preventDefault();
+      }
+
+      if (activeEl.hasAttribute("data-stop-id")) {
+        const hitTarget = activeEl.querySelector("[data-stop-hit-target]");
+        if (hitTarget) {
+          hitTarget.click();
+        }
+      } else {
+        activeEl.click();
+      }
+    }
   },
 
   handleCanvasClick(e) {

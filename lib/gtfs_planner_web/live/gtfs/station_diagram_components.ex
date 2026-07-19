@@ -957,6 +957,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-tooltip={if @editable?, do: "Click to edit pathway"}
       data-tooltip-color={if @editable?, do: "#FF00FF"}
       tabindex={if @editable?, do: "0"}
+      role={if @editable?, do: "button"}
       aria-label={if @editable?, do: pathway_aria_label(@pathway)}
       phx-click={if @editable?, do: "edit_pathway"}
       phx-value-id={if @editable?, do: @pathway.id}
@@ -1638,7 +1639,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             data-editable="stop"
             data-tooltip={stop_tooltip_text(@mode, @measurement_enabled)}
             data-tooltip-color={active_fill}
-            tabindex="0"
+            tabindex={if @mode == :view, do: "0"}
+            role={if @mode == :view, do: "button"}
             aria-label={stop_aria_label}
           >
             <rect
@@ -1970,6 +1972,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           data-tooltip={if @editable?, do: cross_level_badge_tooltip(mode_label)}
           data-tooltip-color={if @editable?, do: "#FF00FF"}
           tabindex={if @editable?, do: "0"}
+          role={if @editable?, do: "button"}
           aria-label={if @editable?, do: cross_level_badge_aria_label(mode_label)}
           phx-click={if @editable?, do: "edit_pathway"}
           phx-value-id={if @editable?, do: badge.pathway_id}
