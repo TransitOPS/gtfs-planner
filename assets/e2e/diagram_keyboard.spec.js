@@ -282,25 +282,30 @@ test.describe("Diagram focus indicator", () => {
     expect(hasFocusVisible).toBe(true);
   });
 
-  test("stop focus indicator is visible against the dark pan-bar background", async ({
+  test("focused stop group carries the paired dark/light focus ring", async ({
     page,
   }) => {
-    // Focus a pan button (on dark background bar)
-    const panUpBtn = page.locator('[aria-label="Pan up"]');
-    await panUpBtn.focus();
+    // Tab onto an actual canvas stop group (not a control button): the focus
+    // contract for AC-6 lives on `#diagram-overlay g[tabindex]`, and the ring
+    // must remain visible over an arbitrary floorplan color.
+    const stopGroup = page.locator("#diagram-overlay g[tabindex]").first();
+    await stopGroup.focus();
 
-    // The button should be focused and have visible styling
-    const outlineStyle = await panUpBtn.evaluate((el) => {
+    const ring = await stopGroup.evaluate((el) => {
       const style = getComputedStyle(el);
       return {
         outlineStyle: style.outlineStyle,
-        outlineColor: style.outlineColor,
         outlineWidth: style.outlineWidth,
-        boxShadow: style.boxShadow,
+        // The light halo is applied via `filter: drop-shadow(...)`.
+        filter: style.filter,
       };
     });
-    // Should have a visible focus indicator (ring-offset pattern from core_components)
-    expect(outlineStyle.boxShadow || outlineStyle.outlineStyle !== "none").toBeTruthy();
+
+    // Dark ring: a real (non-none) outline of non-zero width.
+    expect(ring.outlineStyle).not.toBe("none");
+    expect(parseFloat(ring.outlineWidth)).toBeGreaterThan(0);
+    // Light halo: a drop-shadow filter is present (the paired second ring).
+    expect(ring.filter).toContain("drop-shadow");
   });
 });
 

@@ -4706,6 +4706,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
+  defp stop_display_label(stop) do
+    case stop.stop_name do
+      name when is_binary(name) and name != "" -> name
+      _ -> stop.stop_id
+    end
+  end
+
   defp create_pathway_between_stops(socket, from_stop_id, to_stop_id) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
@@ -4758,6 +4765,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> assign(:show_pathway_drawer, true)
            |> assign(:active_point_id, nil)
            |> assign(:selected_from_stop, nil)
+           |> assign(
+             :placement_status,
+             "Pathway created #{stop_display_label(from_stop)} → #{stop_display_label(to_stop)}"
+           )
            |> assign(:pathway_error, nil)}
 
         {:error, _changeset} ->
@@ -4781,14 +4792,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:reposition_stops, [])
   end
 
-  defp reposition_read_coordinates(params, socket) do
+  # Reads the coordinate from the server-tracked `reposition_x`/`reposition_y`
+  # assigns rather than the row button's `phx-value-*`. The assigns are kept
+  # current by `validate_reposition_coordinates` (typed) and `canvas_click`
+  # (clicked); because LiveView processes those events before the row-action
+  # click that follows them, the assign is always the value the operator last
+  # entered. Reading a render-time `phx-value` snapshot could commit a stale
+  # coordinate if the click fired before the field's change re-render landed.
+  defp reposition_read_coordinates(_params, socket) do
     pending_xy = socket.assigns.pending_xy
-    x_val = params["x"] || (pending_xy && to_optional_string(pending_xy.x))
-    y_val = params["y"] || (pending_xy && to_optional_string(pending_xy.y))
+    x_val = present_or(socket.assigns.reposition_x, pending_xy && to_optional_string(pending_xy.x))
+    y_val = present_or(socket.assigns.reposition_y, pending_xy && to_optional_string(pending_xy.y))
 
     with {:ok, x} <- parse_finite_float(x_val),
          {:ok, y} <- parse_finite_float(y_val) do
       {:ok, x, y}
+    end
+  end
+
+  defp present_or(value, fallback) do
+    case value do
+      v when is_binary(v) and v != "" -> v
+      _ -> fallback
     end
   end
 

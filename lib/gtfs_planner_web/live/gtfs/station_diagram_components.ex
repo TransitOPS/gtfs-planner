@@ -2843,9 +2843,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                       class="btn btn-primary btn-xs"
                       phx-click="reposition_stop"
                       phx-value-id={stop.id}
-                      phx-value-x={@reposition_x}
-                      phx-value-y={@reposition_y}
-                      aria-label={"Place here — #{stop.stop_id} (#{stop.stop_name})"}
+                      aria-label={reposition_row_label("Place here", stop)}
                     >
                       Place here
                     </button>
@@ -2888,9 +2886,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                       class="btn btn-outline btn-xs"
                       phx-click="reposition_stop"
                       phx-value-id={stop.id}
-                      phx-value-x={@reposition_x}
-                      phx-value-y={@reposition_y}
-                      aria-label={"Move here — #{stop.stop_id} (#{stop.stop_name})"}
+                      aria-label={reposition_row_label("Move here", stop)}
                     >
                       Move here
                     </button>
@@ -2908,6 +2904,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </section>
     </div>
     """
+  end
+
+  # Row-action label naming the target stop; the parenthetical name is omitted
+  # when the stop has no name, so no empty "()" is announced to assistive tech.
+  defp reposition_row_label(action, stop) do
+    case stop.stop_name do
+      name when is_binary(name) and name != "" -> "#{action} — #{stop.stop_id} (#{name})"
+      _ -> "#{action} — #{stop.stop_id}"
+    end
   end
 
   attr :child_stop_form, :any, required: true

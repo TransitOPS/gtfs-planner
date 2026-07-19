@@ -1649,6 +1649,61 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert updated_stop.diagram_coordinate == %{"x" => 88.0, "y" => 77.0}
     end
 
+    test "reposition commits the server-tracked coordinate, not a stale click-time value", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_RACE",
+          stop_name: "Reposition Race",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      assert has_element?(view, "#positioned-stop-row-#{child_stop.id}")
+
+      # The operator types the intended coordinate; the field-change event lands.
+      view
+      |> form("#reposition-coordinate-form", %{"x" => "55.5", "y" => "66.5"})
+      |> render_change()
+
+      # Simulate the race: the row button fires carrying an OLDER phx-value
+      # snapshot (as a slow re-render would leave in the DOM). The server must
+      # ignore that stale param and commit the value it is tracking.
+      render_hook(view, "reposition_stop", %{
+        "id" => child_stop.id,
+        "x" => "1.0",
+        "y" => "1.0"
+      })
+
+      refute render(view) =~ "Invalid stop selection"
+
+      updated_stop = Gtfs.get_stop!(child_stop.id)
+      assert updated_stop.diagram_coordinate == %{"x" => 55.5, "y" => 66.5}
+    end
+
     test "reposition row actions are labeled with stop identity for keyboard accessibility", %{
       conn: conn,
       user: user,
@@ -1827,6 +1882,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert pathway.to_stop_id == stop_b.stop_id
       assert pathway.pathway_mode == 1
       assert pathway.is_bidirectional == true
+
+      # Commit is visibly acknowledged through the placement-status region (AC-9),
+      # naming both endpoints, without relying on an announcement/live region.
+      assert has_element?(view, "#placement-status")
+      assert render(view) =~ "Pathway created"
+      assert render(view) =~ stop_a.stop_name
+      assert render(view) =~ stop_b.stop_name
     end
 
     test "mixed canvas-click and picker endpoint selection resolves to one shared state", %{
