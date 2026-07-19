@@ -1,12 +1,12 @@
 # HTTP Controllers Agent Doc
 
 Source target: `lib-gtfs-planner-web-controllers`
-Scope: Handles non-LiveView browser and HTTP endpoints for sessions, health checks, map data, errors, and the station resolution prototype.
+Scope: Handles non-LiveView browser and HTTP endpoints for sessions, health checks, map data, and errors.
 Deep analysis: [`docs/specops/analysis/lib-gtfs-planner-web-controllers.md`](../analysis/lib-gtfs-planner-web-controllers.md)
-Freshness: `source_hash=f51a70c7cf75e03d34641116884ef172d91db72818d0a990a605d01e7e27d92e`, `last_synthesized=null`
+Freshness: `source_hash=d7adeab62ee9b041e155dc4b7904fd0deca1f4d19285046ec6a27bcb445a5e4a`, `last_synthesized=null`
 
 ## Use When
-- Adding or changing a non-LiveView controller route under `/health`, `/users`, `/map`, or `/station-data-resolution-prototype`
+- Adding or changing a non-LiveView controller route under `/health`, `/users`, or `/map`
 - Changing Geoapify or Overpass API integration behavior
 - Modifying session login/logout logic or authorization gates
 - Changing error view rendering for HTML or JSON
@@ -25,8 +25,6 @@ Freshness: `source_hash=f51a70c7cf75e03d34641116884ef172d91db72818d0a990a605d01e
 | `HealthController` | `/health` | GET | `:api` (no auth) | None |
 | `UserSessionController` | `/users/log_in` | POST | `:browser` + redirect-if-authenticated | `Accounts.get_user_by_email_and_password/2`, `UserAuth.log_in_user/3` |
 | `UserSessionController` | `/users/log_out` | DELETE | `:browser` + require-authenticated | `UserAuth.log_out_user/1` |
-| `StationResolutionPrototypeController` | `/station-data-resolution-prototype` | GET | `:browser` + require-authenticated | `Application.app_dir/2`, `send_file/3` |
-| `StationResolutionPrototypeController` | `/station-data-resolution-prototype/station-resolution-v2.css` | GET | `:browser` + require-authenticated | Same as above |
 | `MapTilesController` | `/map/tiles/:style/:z/:x/:y` | GET | `:browser` + require-authenticated | `Req.get/2` → `maps.geoapify.com` |
 | `MapBuildingsController` | `/map/buildings` | GET | `:browser` + require-authenticated | `Req.post/3` → `overpass-api.de` |
 | `ErrorHTML` / `ErrorJSON` | (via endpoint `render_errors` config) | — | — | `Phoenix.Controller.status_message_from_template/1` |
@@ -57,9 +55,6 @@ Freshness: `source_hash=f51a70c7cf75e03d34641116884ef172d91db72818d0a990a605d01e
 | `MapTilesController` | `maps.geoapify.com/v1/tile/...` (GET) | 10s | 2 × 100ms (`:safe_transient`) |
 | `MapBuildingsController` | `overpass-api.de/api/interpreter` (POST) | 30s | 2 × 200ms |
 
-### File System
-- `StationResolutionPrototypeController` reads `priv/prototypes/station-resolution-v2.html` and `.css` via `Application.app_dir/2`. No filesystem writes.
-
 ## Failure Modes
 | Controller | Trigger | Status | Response Body | Risk |
 |---|---|---|---|---|
@@ -75,7 +70,6 @@ Freshness: `source_hash=f51a70c7cf75e03d34641116884ef172d91db72818d0a990a605d01e
 | `MapBuildingsController` | Invalid `radius` (>2000 or ≤0) | 400 | `"invalid radius"` | Low |
 | `MapBuildingsController` | Upstream non-200 | 502 | `"upstream #{status}"` | Medium |
 | `MapBuildingsController` | Upstream network error | 502 | `"upstream network error"` | Medium |
-| `StationResolutionPrototypeController` | File missing/unreadable | **Unhandled** | Likely 500 from Phoenix | Low (file shipped in priv) |
 | `HealthController` | None | N/A | N/A | N/A |
 
 ## Change Checklist
@@ -95,6 +89,5 @@ Freshness: `source_hash=f51a70c7cf75e03d34641116884ef172d91db72818d0a990a605d01e
 - `UserAuth.log_in_user` contract ambiguity (only `{:error, :deactivated}` matched): §11.4, item 7
 - `UserAuth.fetch_user_organization` return-value interpretation: §11.4, item 8
 - Geoapify API key in URL query string logging risk: §11.1, item 1
-- Proto file serving error gap: §11.2, item 5
 - Untested controllers (Health, UserSession): §10.2
 - Test strategy details (`Req.Test` stubs, auth redirect patterns): §10.3
