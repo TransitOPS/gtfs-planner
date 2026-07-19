@@ -181,6 +181,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :active_level, :any, default: nil
   attr :other_levels, :list, default: []
   attr :enabled_count, :integer, default: 0
+  attr :child_stops_list, :list, default: []
 
   def diagram_action_strip(assigns) do
     ~H"""
@@ -212,13 +213,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                     Click diagram to add a child stop
                   </span>
                 <% @mode == :connect && @selected_from_stop == nil -> %>
-                  <span class="text-sm text-blue-700 font-medium">
-                    Choose a child stop to begin pathway
-                  </span>
+                  <form
+                    phx-change="select_from_stop"
+                    id="connect-from-form"
+                    class="flex items-center gap-2"
+                  >
+                    <label class="text-sm font-medium text-blue-900">From:</label>
+                    <select name="from_id" class="select select-sm select-bordered bg-white">
+                      <option value="">Select a stop...</option>
+                      <%= for stop <- @child_stops_list do %>
+                        <option value={stop.id}>
+                          {stop.stop_name || stop.stop_id}
+                        </option>
+                      <% end %>
+                    </select>
+                  </form>
                 <% @mode == :connect && @selected_from_stop != nil -> %>
                   <span class="text-sm text-blue-700 font-medium">
-                    From: {@selected_from_stop.stop_name || @selected_from_stop.stop_id} — select destination stop
+                    From: {@selected_from_stop.stop_name || @selected_from_stop.stop_id}
                   </span>
+                  <form
+                    phx-change="select_to_stop"
+                    id="connect-to-form"
+                    class="flex items-center gap-2"
+                  >
+                    <label class="text-sm font-medium text-blue-900">— To:</label>
+                    <select name="to_id" class="select select-sm select-bordered bg-white">
+                      <option value="">Select destination...</option>
+                      <%= for stop <- @child_stops_list, stop.id != @selected_from_stop.id do %>
+                        <option value={stop.id}>
+                          {stop.stop_name || stop.stop_id}
+                        </option>
+                      <% end %>
+                    </select>
+                  </form>
                   <button
                     type="button"
                     class="btn btn-ghost btn-sm text-blue-700 hover:text-blue-900 hover:bg-blue-100"
@@ -233,6 +261,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 <% true -> %>
                   <span class="text-sm text-blue-700"></span>
               <% end %>
+            <% end %>
+            <%= if @mode == :add do %>
+              <button
+                id="keyboard-create-stop"
+                type="button"
+                class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
+                phx-click="open_create_form"
+              >
+                Enter coordinates
+              </button>
             <% end %>
           </div>
           <div class="ml-auto flex items-center gap-2">
@@ -878,7 +916,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         style={:saved}
       />
       <.pending_marker
-        :if={@pending_xy && @mode == :add && @selected_stop_id == nil}
+        :if={@pending_xy && is_number(@pending_xy.x) && @mode == :add && @selected_stop_id == nil}
         pending_xy={@pending_xy}
       />
     </svg>
@@ -957,6 +995,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       data-tooltip={if @editable?, do: "Click to edit pathway"}
       data-tooltip-color={if @editable?, do: "#FF00FF"}
       tabindex={if @editable?, do: "0"}
+      role={if @editable?, do: "button"}
       aria-label={if @editable?, do: pathway_aria_label(@pathway)}
       phx-click={if @editable?, do: "edit_pathway"}
       phx-value-id={if @editable?, do: @pathway.id}
@@ -1638,7 +1677,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             data-editable="stop"
             data-tooltip={stop_tooltip_text(@mode, @measurement_enabled)}
             data-tooltip-color={active_fill}
-            tabindex="0"
+            tabindex={if @mode == :view, do: "0"}
+            role={if @mode == :view, do: "button"}
             aria-label={stop_aria_label}
           >
             <rect
@@ -1970,6 +2010,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           data-tooltip={if @editable?, do: cross_level_badge_tooltip(mode_label)}
           data-tooltip-color={if @editable?, do: "#FF00FF"}
           tabindex={if @editable?, do: "0"}
+          role={if @editable?, do: "button"}
           aria-label={if @editable?, do: cross_level_badge_aria_label(mode_label)}
           phx-click={if @editable?, do: "edit_pathway"}
           phx-value-id={if @editable?, do: badge.pathway_id}
@@ -2258,8 +2299,73 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp diagram_hints_and_legend(assigns) do
     ~H"""
-    <div class="absolute bottom-2 left-2 z-10 flex items-center gap-3 bg-black/50 text-white text-xs rounded-lg px-3 py-1.5 backdrop-blur-sm">
-      <span>Scroll to pan · Ctrl+Scroll to zoom</span>
+    <div class="absolute bottom-2 left-2 z-10 flex items-center gap-0.5 bg-black/50 text-white rounded-lg px-2 py-1.5 backdrop-blur-sm">
+      <%!-- Pan controls --%>
+      <button
+        type="button"
+        data-pan="up"
+        aria-label="Pan up"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
+        <.icon name="hero-chevron-up" class="w-4 h-4" />
+      </button>
+      <button
+        type="button"
+        data-pan="down"
+        aria-label="Pan down"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
+        <.icon name="hero-chevron-down" class="w-4 h-4" />
+      </button>
+      <button
+        type="button"
+        data-pan="left"
+        aria-label="Pan left"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
+        <.icon name="hero-chevron-left" class="w-4 h-4" />
+      </button>
+      <button
+        type="button"
+        data-pan="right"
+        aria-label="Pan right"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
+        <.icon name="hero-chevron-right" class="w-4 h-4" />
+      </button>
+
+      <div class="w-px h-5 bg-white/30 mx-1"></div>
+
+      <%!-- Zoom controls --%>
+      <button
+        type="button"
+        data-zoom="out"
+        aria-label="Zoom out"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
+        <.icon name="hero-minus" class="w-4 h-4" />
+      </button>
+      <span data-zoom-label class="text-xs font-mono w-10 text-center select-none">100%</span>
+      <button
+        type="button"
+        data-zoom="in"
+        aria-label="Zoom in"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
+        <.icon name="hero-plus" class="w-4 h-4" />
+      </button>
+
+      <button
+        type="button"
+        data-reset="true"
+        aria-label="Reset view"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
+        <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
+      </button>
+
+      <div class="w-px h-5 bg-white/30 mx-1"></div>
+
       <span
         :if={!@has_scale}
         class="badge badge-xs border bg-amber-100 border-amber-300 text-amber-900"
@@ -2489,6 +2595,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :reposition_mode, :boolean, default: false
   attr :reposition_search, :string, default: ""
   attr :reposition_stops, :list, default: []
+  attr :reposition_x, :string, default: ""
+  attr :reposition_y, :string, default: ""
   attr :platform_options, :list, default: []
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
@@ -2575,10 +2683,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         hidden={@history_active}
       >
         <.reposition_stop_view
-          :if={@pending_xy && @reposition_mode && @selected_stop_id == nil}
+          :if={@reposition_mode && @selected_stop_id == nil}
           reposition_stops={@reposition_stops}
           reposition_search={@reposition_search}
           active_level={@active_level}
+          reposition_x={@reposition_x}
+          reposition_y={@reposition_y}
         />
 
         <.child_stop_form
@@ -2615,6 +2725,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :reposition_stops, :list, default: []
   attr :reposition_search, :string, default: ""
   attr :active_level, :any, default: nil
+  attr :reposition_x, :string, default: ""
+  attr :reposition_y, :string, default: ""
 
   defp reposition_stop_view(assigns) do
     normalized_search =
@@ -2655,8 +2767,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:unpositioned_stops, unpositioned_stops)
       |> assign(:positioned_stops, positioned_stops)
 
+    coordinate_form = to_form(%{"x" => assigns.reposition_x, "y" => assigns.reposition_y})
+
+    assigns = assign(assigns, :coordinate_form, coordinate_form)
+
     ~H"""
     <div class="space-y-6">
+      <.form
+        for={@coordinate_form}
+        id="reposition-coordinate-form"
+        phx-change="validate_reposition_coordinates"
+      >
+        <fieldset class="space-y-3">
+          <legend class="text-sm font-semibold text-base-content/70">
+            Target diagram coordinate (x, y)
+          </legend>
+          <div class="flex gap-4">
+            <.input
+              field={@coordinate_form[:x]}
+              id="reposition-x-input"
+              type="number"
+              label="X"
+              step="any"
+            />
+            <.input
+              field={@coordinate_form[:y]}
+              id="reposition-y-input"
+              type="number"
+              label="Y"
+              step="any"
+            />
+          </div>
+        </fieldset>
+      </.form>
+
       <.form
         for={@search_form}
         id="reposition-search-form"
@@ -2699,6 +2843,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                       class="btn btn-primary btn-xs"
                       phx-click="reposition_stop"
                       phx-value-id={stop.id}
+                      aria-label={reposition_row_label("Place here", stop)}
                     >
                       Place here
                     </button>
@@ -2741,6 +2886,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                       class="btn btn-outline btn-xs"
                       phx-click="reposition_stop"
                       phx-value-id={stop.id}
+                      aria-label={reposition_row_label("Move here", stop)}
                     >
                       Move here
                     </button>
@@ -2758,6 +2904,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       </section>
     </div>
     """
+  end
+
+  # Row-action label naming the target stop; the parenthetical name is omitted
+  # when the stop has no name, so no empty "()" is announced to assistive tech.
+  defp reposition_row_label(action, stop) do
+    case stop.stop_name do
+      name when is_binary(name) and name != "" -> "#{action} — #{stop.stop_id} (#{name})"
+      _ -> "#{action} — #{stop.stop_id}"
+    end
   end
 
   attr :child_stop_form, :any, required: true
@@ -2923,6 +3078,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           min="-180"
           max="180"
           help="Optional"
+        />
+      </div>
+
+      <div class="grid grid-cols-2 gap-4 pt-2 border-t border-base-200">
+        <.input
+          field={@child_stop_form[:x]}
+          type="number"
+          label="Diagram X"
+          placeholder="e.g., 42.5"
+          step="any"
+          help="Position on the floorplan (required)"
+        />
+        <.input
+          field={@child_stop_form[:y]}
+          type="number"
+          label="Diagram Y"
+          placeholder="e.g., 78.3"
+          step="any"
+          help="Position on the floorplan (required)"
         />
       </div>
 
@@ -4739,7 +4913,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <div>
       <div class="flex items-center gap-2 mb-2">
         <h2 class="text-base font-semibold">Pathways on Level</h2>
-        <span :if={@pathway_error} class="text-error text-sm">{@pathway_error}</span>
+        <span :if={@pathway_error} id="pathways-table-error" class="text-error text-sm">
+          {@pathway_error}
+        </span>
       </div>
       <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <%= if @pathways_list == [] do %>

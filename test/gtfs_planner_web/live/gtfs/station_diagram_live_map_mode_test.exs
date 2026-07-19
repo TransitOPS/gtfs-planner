@@ -1926,6 +1926,46 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       # the active floorplan preview where image-space positioning is available.
       refute Enum.find(other.stops, &(&1.stop_id == "ISO_OTHER_DIAGRAM_ONLY"))
     end
+
+    test "map mode behavior is unaffected by keyboard editing paths (DSA Step 8 guard)", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_level: stop_level
+    } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+
+      other_level_id = aligned_other_level(organization, gtfs_version, station, "dsa8")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      # Map mode renders the map canvas, not the floorplan canvas
+      assert has_element?(view, ".map-canvas #map-alignment-leaflet")
+
+      # Other-level toggling still works
+      render_click(element(view, floorplan_selector(other_level_id)))
+      assert has_element?(view, "#other-levels-button .badge", "1")
+
+      # Switch back to view mode, then verify map mode still activates
+      render_hook(view, "switch_mode", %{"mode" => "view"})
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+
+      assert has_element?(view, ".map-canvas #map-alignment-leaflet")
+
+      # Badge state was reset on mode switch
+      refute has_element?(view, "#other-levels-button .badge")
+
+      # Map-mode canvas_click is still a no-op
+      render_hook(view, "canvas_click", %{"x" => "100", "y" => "100"})
+      refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+    end
   end
 
   # Creates an other level with a diagram and a complete alignment (floorplan-eligible)

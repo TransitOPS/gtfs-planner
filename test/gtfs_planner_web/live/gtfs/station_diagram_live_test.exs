@@ -892,7 +892,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, _view, html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert html =~ "Scroll to pan"
+      assert html =~ "Pan up"
       assert html =~ "Show Key"
     end
 
@@ -987,6 +987,47 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#child-stop-form")
       assert render(view) =~ "Child View Dot"
+    end
+
+    test "view mode groups carry tabindex and role=button, add mode does not", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "TABINDEX_STOP",
+          stop_name: "Tabindex Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # View mode (default): stop group is focusable and has role="button"
+      assert has_element?(
+               view,
+               "#child_stops-#{child_stop.id}[tabindex='0'][role='button']"
+             )
+
+      # Switch to add mode: stop group loses tabindex and role
+      view
+      |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
+      |> render_click()
+
+      refute has_element?(view, "#child_stops-#{child_stop.id}[tabindex='0']")
+      refute has_element?(view, "#child_stops-#{child_stop.id}[role='button']")
     end
 
     test "view mode stop click does not render pending marker shape", %{
@@ -1366,6 +1407,736 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#pathway-form")
       assert render(view) =~ pathway.pathway_id
+    end
+
+    test "keyboard create by typing diagram x/y coordinates with no canvas click", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      # Open create form via keyboard entry (no canvas click)
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-form")
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "keyboard_create",
+        "stop_name" => "Keyboard Created Stop",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "x" => "42.5",
+        "y" => "78.3"
+      })
+      |> render_submit()
+
+      created_stop =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> Enum.find(&(&1.stop_name == "Keyboard Created Stop"))
+
+      assert created_stop
+      assert created_stop.diagram_coordinate == %{"x" => 42.5, "y" => 78.3}
+    end
+
+    test "canvas click pre-fills diagram x/y fields and typing overrides click-set values", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      # Canvas click sets diagram coordinates in form
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      assert has_element?(view, "#child-stop-form")
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      # Submit with typed values that override the click-set values
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "click_then_type",
+        "stop_name" => "Click Then Type",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "x" => "55.0",
+        "y" => "88.0"
+      })
+      |> render_submit()
+
+      created_stop =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> Enum.find(&(&1.stop_name == "Click Then Type"))
+
+      assert created_stop
+      assert created_stop.diagram_coordinate == %{"x" => 55.0, "y" => 88.0}
+    end
+
+    test "non-finite diagram coordinate is rejected and drawer preserves entered input", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      # Open create form via keyboard
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-form")
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      # Submit with invalid non-finite x coordinate
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "invalid_coord",
+        "stop_name" => "Invalid Coord Stop",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "x" => "not-a-number",
+        "y" => "50"
+      })
+      |> render_submit()
+
+      # Drawer stays open with the form visible
+      assert has_element?(view, "#child-stop-form")
+      # The entered values are preserved in the form
+      assert render(view) =~ "not-a-number"
+
+      created_stops =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+
+      refute Enum.any?(created_stops, &(&1.stop_name == "Invalid Coord Stop"))
+    end
+
+    test "keyboard reposition by typing diagram x/y coordinates with no canvas click", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_KEYBOARD_ONLY",
+          stop_name: "Reposition Keyboard Only",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      assert has_element?(view, "#positioned-stop-row-#{child_stop.id}")
+
+      view
+      |> form("#reposition-coordinate-form", %{"x" => "99.5", "y" => "42.0"})
+      |> render_change()
+
+      view
+      |> element("#positioned-stop-row-#{child_stop.id} button[phx-click='reposition_stop']")
+      |> render_click()
+
+      refute render(view) =~ "Invalid stop selection"
+
+      updated_stop = Gtfs.get_stop!(child_stop.id)
+      assert updated_stop.diagram_coordinate == %{"x" => 99.5, "y" => 42.0}
+    end
+
+    test "reposition reads coordinate from typed field value rather than stale click-set pending_xy",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_STALE_COORD",
+          stop_name: "Reposition Stale Coord",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      # Canvas click sets pending_xy at (30, 40)
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      assert has_element?(view, "#positioned-stop-row-#{child_stop.id}")
+
+      # Typed values override the click-set pending_xy
+      view
+      |> form("#reposition-coordinate-form", %{"x" => "88.0", "y" => "77.0"})
+      |> render_change()
+
+      view
+      |> element("#positioned-stop-row-#{child_stop.id} button[phx-click='reposition_stop']")
+      |> render_click()
+
+      refute render(view) =~ "Invalid stop selection"
+
+      updated_stop = Gtfs.get_stop!(child_stop.id)
+      assert updated_stop.diagram_coordinate == %{"x" => 88.0, "y" => 77.0}
+    end
+
+    test "reposition rejects a cleared coordinate instead of restoring pending_xy", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_CLEARED_COORD",
+          stop_name: "Reposition Cleared Coord",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+      render_hook(view, "enter_reposition_mode", %{})
+
+      view
+      |> form("#reposition-coordinate-form", %{"x" => "", "y" => "40"})
+      |> render_change()
+
+      view
+      |> element("#positioned-stop-row-#{child_stop.id} button[phx-click='reposition_stop']")
+      |> render_click()
+
+      assert has_element?(view, "#flash-error", "Failed to re-position stop")
+      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 20.0, "y" => 30.0}
+    end
+
+    test "reposition commits the server-tracked coordinate, not a stale click-time value", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_RACE",
+          stop_name: "Reposition Race",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      assert has_element?(view, "#positioned-stop-row-#{child_stop.id}")
+
+      # The operator types the intended coordinate; the field-change event lands.
+      view
+      |> form("#reposition-coordinate-form", %{"x" => "55.5", "y" => "66.5"})
+      |> render_change()
+
+      # Simulate the race: the row button fires carrying an OLDER phx-value
+      # snapshot (as a slow re-render would leave in the DOM). The server must
+      # ignore that stale param and commit the value it is tracking.
+      render_hook(view, "reposition_stop", %{
+        "id" => child_stop.id,
+        "x" => "1.0",
+        "y" => "1.0"
+      })
+
+      refute render(view) =~ "Invalid stop selection"
+
+      updated_stop = Gtfs.get_stop!(child_stop.id)
+      assert updated_stop.diagram_coordinate == %{"x" => 55.5, "y" => 66.5}
+    end
+
+    test "reposition row actions are labeled with stop identity for keyboard accessibility", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_A11Y_LABEL",
+          stop_name: "A11y Label Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 60.0}
+        })
+
+      unpositioned_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_A11Y_UNPOS",
+          stop_name: "A11y Unpositioned Stop",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      # Positioned stop's "Move here" button has aria-label
+      assert has_element?(
+               view,
+               "#positioned-stop-row-#{child_stop.id} button[aria-label='Move here — REPOSITION_A11Y_LABEL (A11y Label Stop)']"
+             )
+
+      # Unpositioned stop's "Place here" button has aria-label
+      assert has_element?(
+               view,
+               "#unpositioned-stop-row-#{unpositioned_stop.id} button[aria-label='Place here — REPOSITION_A11Y_UNPOS (A11y Unpositioned Stop)']"
+             )
+    end
+
+    test "reposition row action buttons are keyboard-operable native button elements", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_KB_OPERABLE",
+          stop_name: "KB Operable Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 60.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      # Positioned stop "Move here" button is a native <button> element with phx-click handler
+      reposition_btn = "#positioned-stop-row-#{child_stop.id} button[phx-click='reposition_stop']"
+
+      assert has_element?(view, reposition_btn)
+      refute has_element?(view, reposition_btn <> "[disabled]")
+
+      view
+      |> element(reposition_btn)
+      |> render_click()
+
+      refute render(view) =~ "Invalid stop selection"
+    end
+
+    # Keyboard connect-mode endpoint picker tests (Step 5)
+    test "endpoint picker creates pathway between selected from-stop and to-stop with no canvas click",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_PICKER_A",
+          stop_name: "Connect Picker A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 16.0, "y" => 30.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_PICKER_B",
+          stop_name: "Connect Picker B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 34.0, "y" => 30.0}
+        })
+
+      # Associate level diagram so connect mode is available
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-picker-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+
+      # No pathway before selection
+      pathways_before =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn p ->
+          p.from_stop_id == stop_a.stop_id and p.to_stop_id == stop_b.stop_id
+        end)
+
+      assert pathways_before == []
+
+      # Select from-stop via picker
+      view
+      |> element("form#connect-from-form")
+      |> render_change(%{"from_id" => to_string(stop_a.id)})
+
+      # Verify from-stop selection feedback
+      assert has_element?(view, "#diagram-action-strip")
+
+      # Select to-stop via picker — this completes the pathway
+      view
+      |> element("form#connect-to-form")
+      |> render_change(%{"to_id" => to_string(stop_b.id)})
+
+      # Verify pathway was created
+      pathways =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn p ->
+          p.from_stop_id == stop_a.stop_id and p.to_stop_id == stop_b.stop_id
+        end)
+
+      assert length(pathways) == 1
+
+      pathway = hd(pathways)
+      assert pathway.from_stop_id == stop_a.stop_id
+      assert pathway.to_stop_id == stop_b.stop_id
+      assert pathway.pathway_mode == 1
+      assert pathway.is_bidirectional == true
+
+      # Commit is visibly acknowledged through the placement-status region (AC-9),
+      # naming both endpoints, without relying on an announcement/live region.
+      assert has_element?(view, "#placement-status")
+      assert render(view) =~ "Pathway created"
+      assert render(view) =~ stop_a.stop_name
+      assert render(view) =~ stop_b.stop_name
+    end
+
+    test "endpoint picker rejects stops outside the current organization and version", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      current_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_SCOPED_CURRENT",
+          stop_name: "Connect Scoped Current",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 16.0, "y" => 30.0}
+        })
+
+      foreign_organization = organization_fixture()
+      foreign_version = gtfs_version_fixture(foreign_organization.id)
+
+      foreign_stop =
+        stop_fixture(foreign_organization.id, foreign_version.id, %{
+          stop_id: "CONNECT_SCOPED_FOREIGN",
+          stop_name: "Secret Foreign Stop",
+          location_type: 0,
+          diagram_coordinate: %{"x" => 34.0, "y" => 30.0}
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-scope-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+      render_hook(view, "select_from_stop", %{"from_id" => foreign_stop.id})
+
+      assert has_element?(view, "#pathways-table-error", "Invalid stop selection")
+      refute render(view) =~ foreign_stop.stop_name
+
+      render_hook(view, "select_from_stop", %{"from_id" => current_stop.id})
+      render_hook(view, "select_to_stop", %{"to_id" => foreign_stop.id})
+
+      assert has_element?(view, "#pathways-table-error", "Invalid stop selection")
+      refute render(view) =~ foreign_stop.stop_name
+
+      assert Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id) == []
+    end
+
+    test "endpoint picker rejects malformed and missing stop ids without crashing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-invalid-id-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+      render_hook(view, "select_from_stop", %{"from_id" => "not-a-uuid"})
+
+      assert has_element?(view, "#pathways-table-error", "Invalid stop selection")
+
+      render_hook(view, "select_to_stop", %{"to_id" => Ecto.UUID.generate()})
+
+      assert has_element?(view, "#pathways-table-error", "Invalid stop selection")
+      assert Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id) == []
+    end
+
+    test "mixed canvas-click and picker endpoint selection resolves to one shared state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_MIXED_A",
+          stop_name: "Connect Mixed A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 16.0, "y" => 30.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_MIXED_B",
+          stop_name: "Connect Mixed B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 34.0, "y" => 30.0}
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-mixed-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+
+      # Scenario 1: Canvas-click from-stop, picker to-stop
+      render_hook(view, "stop_clicked", %{"id" => stop_a.id})
+      assert has_element?(view, "#diagram-action-strip")
+
+      view
+      |> element("form#connect-to-form")
+      |> render_change(%{"to_id" => to_string(stop_b.id)})
+
+      pathways_1 =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn p ->
+          p.from_stop_id == stop_a.stop_id and p.to_stop_id == stop_b.stop_id
+        end)
+
+      assert length(pathways_1) == 1
+
+      pathway_1 = hd(pathways_1)
+      assert pathway_1.from_stop_id == stop_a.stop_id
+      assert pathway_1.to_stop_id == stop_b.stop_id
+
+      # Clean up: delete pathway so next scenario starts fresh
+      {:ok, _} = Gtfs.delete_pathway(pathway_1)
+
+      # Refresh view
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+
+      # Scenario 2: Picker from-stop, canvas-click to-stop
+      view
+      |> element("form#connect-from-form")
+      |> render_change(%{"from_id" => to_string(stop_a.id)})
+
+      render_hook(view, "stop_clicked", %{"id" => stop_b.id})
+
+      pathways_2 =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn p ->
+          p.from_stop_id == stop_a.stop_id and p.to_stop_id == stop_b.stop_id
+        end)
+
+      assert length(pathways_2) == 1
+    end
+
+    test "selecting same stop for both endpoints via picker is rejected without creating pathway",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_SAME_A",
+          stop_name: "Connect Same A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 16.0, "y" => 30.0}
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-same-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+
+      # Select from-stop via picker
+      view
+      |> element("form#connect-from-form")
+      |> render_change(%{"from_id" => to_string(stop.id)})
+
+      # Select same stop as to-stop via picker
+      view
+      |> element("form#connect-to-form")
+      |> render_change(%{"to_id" => to_string(stop.id)})
+
+      # Verify no pathway was created
+      pathways =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn p -> p.from_stop_id == stop.stop_id or p.to_stop_id == stop.stop_id end)
+
+      assert pathways == []
     end
   end
 
@@ -3915,12 +4686,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#child_stops-#{from_stop.id}[data-editable='stop'][data-tooltip='Click to edit, hold to move'][tabindex='0'][aria-label]"
+               "#child_stops-#{from_stop.id}[data-editable='stop'][data-tooltip='Click to edit, hold to move'][tabindex='0'][role='button'][aria-label]"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id}[data-editable='pathway'][data-tooltip='Click to edit pathway'][tabindex='0'][aria-label]"
+               "#pathways-#{pathway.id}[data-editable='pathway'][data-tooltip='Click to edit pathway'][tabindex='0'][role='button'][aria-label]"
              )
 
       assert has_element?(view, "#diagram-edit-tooltip[role='tooltip'][aria-hidden='true']")
@@ -4181,7 +4952,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#pathways-#{same_level_pathway.id}[data-tooltip='Click to edit pathway']"
              )
 
-      assert has_element?(view, "#pathways-#{same_level_pathway.id}[tabindex='0']")
+      assert has_element?(view, "#pathways-#{same_level_pathway.id}[tabindex='0'][role='button']")
       assert has_element?(view, "#pathways-#{same_level_pathway.id} [data-pathway-tooltip-hit]")
 
       assert has_element?(
@@ -4190,7 +4961,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
              )
 
       assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[data-tooltip]")
-      assert has_element?(view, "#cross-level-badge-#{cross_level_pathway.id}[tabindex='0']")
+
+      assert has_element?(
+               view,
+               "#cross-level-badge-#{cross_level_pathway.id}[tabindex='0'][role='button']"
+             )
 
       assert has_element?(
                view,
@@ -8437,6 +9212,244 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - cancel_placement" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CANCEL_STATION",
+          stop_name: "Cancel Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "CANCEL_LEVEL_0",
+          parent_station: station.stop_id
+        })
+
+      repo_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CANCEL_REPO_CHILD",
+          stop_name: "Cancel Repo Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      edit_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CANCEL_EDIT_CHILD",
+          stop_name: "Cancel Edit Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 75.0, "y" => 85.0}
+        })
+
+      conn = log_in_user(build_conn(), user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      %{
+        conn: conn,
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        repo_stop: repo_stop,
+        edit_stop: edit_stop,
+        view: view
+      }
+    end
+
+    test "cancel_placement clears pending placement and mutates nothing", %{
+      view: view,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      # Placement drawer is open with coordinate fields pre-filled
+      assert has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      pre_count =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> length()
+
+      render_hook(view, "cancel_placement", %{})
+
+      # Drawer should close after cancel
+      refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      # No stop should have been created
+      post_count =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> length()
+
+      assert pre_count == post_count
+
+      # Placement status should be visible
+      assert has_element?(view, "#placement-status", "Placement cancelled")
+    end
+
+    test "cancel_placement clears reposition state and returns focus", %{
+      view: view,
+      repo_stop: child_stop
+    } do
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "50", "y" => "60"})
+      render_hook(view, "enter_reposition_mode", %{})
+
+      # Reposition mode is active with coordinate fields
+      assert has_element?(view, "#reposition-x-input")
+
+      render_hook(view, "cancel_placement", %{})
+
+      # Drawer should close
+      refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      # Reposition state should be cleared, stop unchanged
+      unchanged = Gtfs.get_stop!(child_stop.id)
+      assert unchanged.diagram_coordinate == %{"x" => 20.0, "y" => 30.0}
+
+      # Placement status should be visible
+      assert has_element?(view, "#placement-status", "Placement cancelled")
+    end
+
+    test "cancel_placement during edit closes drawer without mutation", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      edit_stop: child_stop
+    } do
+      {:ok, _} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "cancel-edit-diagram.png"
+        })
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child_stops-#{child_stop.id} [data-stop-hit-target]")
+      |> render_click()
+
+      # Drawer is open for editing
+      assert has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      assert has_element?(
+               view,
+               "#child_stops-#{child_stop.id} [data-stop-marker][fill='#FF4500']"
+             )
+
+      render_hook(view, "cancel_placement", %{})
+
+      # Drawer should close
+      refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      # Stop should be unchanged
+      unchanged = Gtfs.get_stop!(child_stop.id)
+      assert unchanged.diagram_coordinate == %{"x" => 75.0, "y" => 85.0}
+
+      assert has_element?(
+               view,
+               "#child_stops-#{child_stop.id} [data-stop-marker][fill='#0080FF']"
+             )
+
+      # Placement status should be visible
+      assert has_element?(view, "#placement-status", "Placement cancelled")
+    end
+
+    test "cancel_placement with empty placement mutates nothing", %{
+      view: view,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      pre_count =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> length()
+
+      render_hook(view, "cancel_placement", %{})
+
+      post_count =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> length()
+
+      assert pre_count == post_count
+
+      assert has_element?(view, "#placement-status", "Placement cancelled")
+    end
+
+    test "explicit Cancel button clears pending placement without creating stop", %{
+      view: view,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      assert has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      pre_count =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> length()
+
+      view
+      |> element("#child-stop-form button[phx-click='close_drawer']")
+      |> render_click()
+
+      refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      post_count =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> length()
+
+      assert pre_count == post_count
+    end
+
+    test "explicit Cancel clears reposition state without mutating stop via close_drawer", %{
+      view: view,
+      repo_stop: child_stop
+    } do
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "50", "y" => "60"})
+      render_hook(view, "enter_reposition_mode", %{})
+
+      assert has_element?(view, "#reposition-x-input")
+
+      render_hook(view, "close_drawer", %{})
+
+      refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      unchanged = Gtfs.get_stop!(child_stop.id)
+      assert unchanged.diagram_coordinate == %{"x" => 20.0, "y" => 30.0}
+    end
+  end
+
   describe "StationDiagramLive - search_stop" do
     setup do
       organization = organization_fixture()
@@ -12270,6 +13283,251 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "level", level.id)
 
       assert logs == []
+    end
+
+    test "keyboard reposition with unchanged coordinates does not insert a change log", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NOOP_KEYBOARD_REPO",
+          stop_name: "Noop Keyboard Repo",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 50.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      assert has_element?(view, "#positioned-stop-row-#{stop.id}")
+
+      view
+      |> form("#reposition-coordinate-form", %{"x" => "40.0", "y" => "50.0"})
+      |> render_change()
+
+      view
+      |> element("#positioned-stop-row-#{stop.id} button[phx-click='reposition_stop']")
+      |> render_click()
+
+      refute render(view) =~ "Invalid stop selection"
+
+      logs =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      assert logs == []
+    end
+
+    test "keyboard save_child_stop edit with unchanged coordinates does not insert a change log",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "NOOP_KEYBOARD_SAVE",
+          stop_name: "Noop Keyboard Save",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 60.0, "y" => 70.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "60", "y" => "70"})
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      # Submit edit with same coordinates as existing — no-op
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "NOOP_KEYBOARD_SAVE",
+        "stop_name" => "Noop Keyboard Save",
+        "location_type" => "0",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "x" => "60.0",
+        "y" => "70.0"
+      })
+      |> render_submit()
+
+      logs =
+        Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      assert logs == []
+    end
+  end
+
+  describe "StationDiagramLive - keyboard path version-scope enforcement (AC-12)" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "VERSION_SCOPE_STATION",
+          stop_name: "Version Scope Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "VERSION_SCOPE_L",
+          level_name: "Version Scope Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "version-scope.png")
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "reposition_stop rejects a stop from a different GTFS version", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      other_version = gtfs_version_fixture(organization.id)
+
+      # Create a stop under a different version
+      foreign_stop =
+        stop_fixture(organization.id, other_version.id, %{
+          stop_id: "FOREIGN_VERSION_STOP",
+          stop_name: "Foreign Version Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "50", "y" => "60"})
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      # Foreign stop should NOT appear in the reposition table
+      refute has_element?(view, "#positioned-stop-row-#{foreign_stop.id}")
+
+      # Craft a reposition_stop event with the foreign stop ID — should be rejected
+      render_hook(view, "reposition_stop", %{
+        "id" => to_string(foreign_stop.id),
+        "x" => "88.0",
+        "y" => "77.0"
+      })
+
+      assert render(view) =~ "Invalid stop selection"
+
+      # Foreign stop coordinates should be unchanged
+      unchanged = Gtfs.get_stop!(foreign_stop.id)
+      assert unchanged.diagram_coordinate == %{"x" => 20.0, "y" => 30.0}
+    end
+
+    test "save_child_stop creates stop scoped to the current version via socket assigns", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-form")
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "VERSION_SCOPED_CREATE",
+        "stop_name" => "Version Scoped Create",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "x" => "42.5",
+        "y" => "78.3"
+      })
+      |> render_submit()
+
+      created =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> Enum.find(&(&1.stop_id == "VERSION_SCOPED_CREATE"))
+
+      assert created
+      assert created.organization_id == organization.id
+      assert created.gtfs_version_id == gtfs_version.id
     end
   end
 

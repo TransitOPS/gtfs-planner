@@ -54,6 +54,8 @@ const TOOLTIP_POINTER_OFFSET = 12;
 const TOOLTIP_VIEWPORT_PADDING = 8;
 const DRAG_HOLD_MS = 200;
 const DRAG_THRESHOLD_UNITS = 2;
+const PAN_FRACTION = 0.25;
+const ZOOM_FACTOR = 1.5;
 
 function parallelOffsetFromSegment(x1, y1, x2, y2, offset) {
   const dx = x2 - x1;
@@ -573,19 +575,55 @@ const DiagramCanvasHook = {
   },
 
   handleDocumentKeyDown(e) {
-    if (e.key !== "Escape" || !this.dragging) {
+    if (e.key === "Escape" && this.dragging) {
+      const dragging = this.dragging;
+      dragging.groupEl.classList.remove("dragging");
+      dragging.groupEl.removeAttribute("transform");
+      this.restoreDraggedPathways(dragging);
+      this.dragging = null;
+      this.cancelDragHold();
+      this._suppressNextClick = true;
+      this.debugDrag("drag canceled by escape", { stopId: dragging.stopId });
+      this.pushEvent("drag_cancel", {});
       return;
     }
 
-    const dragging = this.dragging;
-    dragging.groupEl.classList.remove("dragging");
-    dragging.groupEl.removeAttribute("transform");
-    this.restoreDraggedPathways(dragging);
-    this.dragging = null;
-    this.cancelDragHold();
-    this._suppressNextClick = true;
-    this.debugDrag("drag canceled by escape", { stopId: dragging.stopId });
-    this.pushEvent("drag_cancel", {});
+    // Cancel keyboard placement/reposition
+    if (e.key === "Escape") {
+      const drawer = document.getElementById("child-stop-drawer-overlay");
+      if (drawer && drawer.dataset.open === "true") {
+        e.preventDefault();
+        this.pushEvent("cancel_placement", {});
+        return;
+      }
+    }
+
+    if ((e.key === "Enter" || e.key === " ") && this.isViewMode() && this.overlay) {
+      const activeEl = document.activeElement;
+      if (!activeEl || !this.overlay.contains(activeEl)) {
+        return;
+      }
+      if (!activeEl.hasAttribute("tabindex")) {
+        return;
+      }
+
+      if (e.key === " ") {
+        e.preventDefault();
+      }
+
+      const activationTarget = activeEl.hasAttribute("data-stop-id")
+        ? activeEl.querySelector("[data-stop-hit-target]")
+        : activeEl;
+
+      if (activationTarget) {
+        activationTarget.dispatchEvent(
+          new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true
+          })
+        );
+      }
+    }
   },
 
   handleCanvasClick(e) {
@@ -629,6 +667,76 @@ const DiagramCanvasHook = {
 
   handleGesture(e) {
     e.preventDefault();
+  },
+
+  handlePanZoomButtonClick(e) {
+    const panBtn = e.target.closest("[data-pan]");
+    if (panBtn) {
+      const direction = panBtn.getAttribute("data-pan");
+      const stepX = this.viewBox.w * PAN_FRACTION;
+      const stepY = this.viewBox.h * PAN_FRACTION;
+
+      switch (direction) {
+        case "up":
+          this.viewBox.y -= stepY;
+          break;
+        case "down":
+          this.viewBox.y += stepY;
+          break;
+        case "left":
+          this.viewBox.x -= stepX;
+          break;
+        case "right":
+          this.viewBox.x += stepX;
+          break;
+      }
+
+      this.clampViewBox();
+      this.updateViewBox();
+      return;
+    }
+
+    const zoomBtn = e.target.closest("[data-zoom]");
+    if (zoomBtn) {
+      const factor = zoomBtn.getAttribute("data-zoom") === "in" ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
+      const newScale = Math.min(this.maxScale, Math.max(this.minScale, this.scale * factor));
+
+      if (newScale !== this.scale) {
+        const centerX = this.viewBox.x + this.viewBox.w / 2;
+        const centerY = this.viewBox.y + this.viewBox.h / 2;
+        const newW = this.baseW / newScale;
+        const newH = this.baseH / newScale;
+
+        this.viewBox.x = centerX - newW / 2;
+        this.viewBox.y = centerY - newH / 2;
+        this.viewBox.w = newW;
+        this.viewBox.h = newH;
+        this.scale = newScale;
+
+        this.clampViewBox();
+        this.updateViewBox();
+      }
+      return;
+    }
+
+    const resetBtn = e.target.closest("[data-reset]");
+    if (resetBtn) {
+      this.scale = 1;
+      this.viewBox = { x: 0, y: 0, w: this.baseW, h: this.baseH };
+      this.clampViewBox();
+      this.updateViewBox();
+      return;
+    }
+  },
+
+  updateZoomLabel() {
+    const container = this.el.parentElement;
+    if (!container) return;
+    const label = container.querySelector("[data-zoom-label]");
+    if (label) {
+      const pct = Math.round(this.scale * 100);
+      label.textContent = `${pct}%`;
+    }
   },
 
   setupOverlayPanZoom() {
@@ -705,6 +813,7 @@ const DiagramCanvasHook = {
     this._handleCanvasClick = this.handleCanvasClick.bind(this);
     this._handleCapturedClick = this.handleCapturedClick.bind(this);
     this._handleDocumentKeyDown = this.handleDocumentKeyDown.bind(this);
+    this._handlePanZoomButtonClick = this.handlePanZoomButtonClick.bind(this);
 
     this.refreshTooltipElements();
     this.setupTooltipListeners();
@@ -735,6 +844,11 @@ const DiagramCanvasHook = {
 
     svg.addEventListener("gesturestart", this._handleGesture);
     svg.addEventListener("gesturechange", this._handleGesture);
+
+    const container = svg.parentElement;
+    if (container) {
+      container.addEventListener("click", this._handlePanZoomButtonClick);
+    }
 
     this.handleEvent("center_on_stop", ({x, y}) => {
       if (!this.hasFiniteCenterPoint({x, y})) {
@@ -1712,6 +1826,7 @@ const DiagramCanvasHook = {
     this.syncOverlayViewBox();
     this.scaleOverlayElements();
     this.repositionTooltipIfVisible();
+    this.updateZoomLabel();
   },
 
   centerOnPoint(x, y) {
@@ -1844,6 +1959,11 @@ const DiagramCanvasHook = {
     // Clean up observer
     if (this.overlayObserver) {
       this.overlayObserver.disconnect();
+    }
+
+    // Clean up pan/zoom button listener
+    if (this._handlePanZoomButtonClick && this.el.parentElement) {
+      this.el.parentElement.removeEventListener("click", this._handlePanZoomButtonClick);
     }
 
     // Clean up pan/zoom listeners

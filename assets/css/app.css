@@ -259,10 +259,15 @@ body:has(#diagram-page[data-immersive="true"]) {
   cursor: default !important;
 }
 
-/* Avoid browser-native SVG focus rings that appear as large donut overlays on click. */
-#diagram-overlay g[tabindex]:focus,
-#diagram-overlay g[tabindex]:focus-visible {
-  outline: none;
+/* Paired SVG-native focus indicator that stays visible over any floorplan color.
+   The dark stroke paints reliably on SVG geometry across browser engines; the
+   white halo traces that same hit-target geometry for dark imagery. */
+#diagram-overlay g[tabindex]:focus-visible > [data-stop-hit-target],
+#diagram-overlay g[tabindex]:focus-visible > [data-pathway-hit],
+#diagram-overlay g[tabindex]:focus-visible > [data-cross-level-badge-hit] {
+  stroke: oklch(0% 0 0);
+  stroke-width: 0.3px;
+  filter: drop-shadow(0 0 1px oklch(100% 0 0)) drop-shadow(0 0 1px oklch(100% 0 0));
 }
 
 #diagram-overlay g.dragging {
@@ -353,6 +358,10 @@ dialog[role="alertdialog"][open] > div > div {
   dialog[role="alertdialog"][open] > div > div {
     animation-duration: 0ms !important;
     transition-duration: 0ms !important;
+  }
+
+  #diagram-overlay g[tabindex]:focus-visible {
+    transition-duration: 0ms;
   }
 }
 

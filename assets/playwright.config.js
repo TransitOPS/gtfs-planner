@@ -27,11 +27,12 @@ export default defineConfig({
   },
 
   webServer: {
-    command: "MIX_ENV=test PHX_SERVER=true PORT=4002 mix phx.server",
+    command:
+      "MIX_ENV=test mix assets.deploy && MIX_ENV=test PHX_SERVER=true PORT=4002 mix phx.server",
     cwd: resolve(__dirname, ".."),
     url: "http://127.0.0.1:4002",
     reuseExistingServer: !process.env.CI,
-    timeout: 30_000,
+    timeout: 180_000,
     stdout: "pipe",
     stderr: "pipe",
   },

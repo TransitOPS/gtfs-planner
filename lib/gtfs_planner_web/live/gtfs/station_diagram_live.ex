@@ -34,6 +34,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:mode, :view)
      |> assign(:measurement_enabled, false)
      |> assign(:scale_status, nil)
+     |> assign(:placement_status, nil)
      |> assign(:ruler_point_a, nil)
      |> assign(:ruler_point_b, nil)
      |> assign(:show_ruler_drawer, false)
@@ -55,6 +56,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:reposition_mode, false)
      |> assign(:reposition_search, "")
      |> assign(:reposition_stops, [])
+     |> assign(:reposition_x, "")
+     |> assign(:reposition_y, "")
      |> assign(:platform_options, [])
      |> assign(:platform_stop_ids, MapSet.new())
      |> assign(:editing_child_stop, nil)
@@ -864,6 +867,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             active_level={@active_level}
             other_levels={@other_levels}
             enabled_count={MapSet.size(MapSet.union(@other_levels_floorplan, @other_levels_stops))}
+            child_stops_list={@child_stops_list}
           />
           <%= if @mode == :map do %>
             <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
@@ -926,6 +930,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           reposition_mode={@reposition_mode}
           reposition_search={@reposition_search}
           reposition_stops={@reposition_stops}
+          reposition_x={@reposition_x}
+          reposition_y={@reposition_y}
           history_open_for={@history_open_for}
           history_entries={@history_entries}
           history_field_filter={@history_field_filter}
@@ -993,6 +999,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           <div class="alert alert-success alert-soft text-sm">
             <span>{@naming_status}</span>
             <button type="button" class="btn btn-ghost btn-xs" phx-click="dismiss_naming_status">
+              Dismiss
+            </button>
+          </div>
+        </div>
+
+        <div
+          :if={@placement_status}
+          id="placement-status"
+          role="status"
+          aria-live="polite"
+          class="mx-4 sm:mx-6 lg:mx-8 mt-2"
+        >
+          <div class="alert alert-info alert-soft text-sm">
+            <span>{@placement_status}</span>
+            <button type="button" class="btn btn-ghost btn-xs" phx-click="dismiss_placement_status">
               Dismiss
             </button>
           </div>
@@ -1159,35 +1180,74 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply, handle_view_measure_click(socket, x, y)}
 
       :add ->
-        level_id =
-          if socket.assigns.active_level, do: socket.assigns.active_level.level_id, else: ""
+        if socket.assigns.reposition_mode do
+          {:noreply,
+           socket
+           |> assign(:pending_xy, %{x: x, y: y})
+           |> assign(:reposition_x, Float.to_string(x))
+           |> assign(:reposition_y, Float.to_string(y))}
+        else
+          level_id =
+            if socket.assigns.active_level, do: socket.assigns.active_level.level_id, else: ""
 
-        form =
-          to_form(%{
-            "stop_id" => "",
-            "stop_name" => "",
-            "location_type" => "3",
-            "level_id" => level_id,
-            "wheelchair_boarding" => "0",
-            "platform_code" => "",
-            "stop_lat" => "",
-            "stop_lon" => ""
-          })
+          form =
+            to_form(%{
+              "stop_id" => "",
+              "stop_name" => "",
+              "location_type" => "3",
+              "level_id" => level_id,
+              "wheelchair_boarding" => "0",
+              "platform_code" => "",
+              "stop_lat" => "",
+              "stop_lon" => "",
+              "x" => Float.to_string(x),
+              "y" => Float.to_string(y)
+            })
 
-        {:noreply,
-         socket
-         |> reset_reposition_state()
-         |> assign(:pending_xy, %{x: x, y: y})
-         |> assign(:selected_stop_id, nil)
-         |> assign(:editing_level, false)
-         |> assign(:stop_id_mode, :auto)
-         |> assign(:child_stop_form, form)}
+          {:noreply,
+           socket
+           |> reset_reposition_state()
+           |> assign(:pending_xy, %{x: x, y: y})
+           |> assign(:selected_stop_id, nil)
+           |> assign(:editing_level, false)
+           |> assign(:stop_id_mode, :auto)
+           |> assign(:child_stop_form, form)}
+        end
 
       # In :connect mode, stop selection is handled by the SVG
       # hit-target circles via phx-click="stop_clicked" — no proximity search needed.
       _ ->
         {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("open_create_form", _params, socket) do
+    level_id =
+      if socket.assigns.active_level, do: socket.assigns.active_level.level_id, else: ""
+
+    form =
+      to_form(%{
+        "stop_id" => "",
+        "stop_name" => "",
+        "location_type" => "3",
+        "level_id" => level_id,
+        "wheelchair_boarding" => "0",
+        "platform_code" => "",
+        "stop_lat" => "",
+        "stop_lon" => "",
+        "x" => "",
+        "y" => ""
+      })
+
+    {:noreply,
+     socket
+     |> reset_reposition_state()
+     |> assign(:pending_xy, %{x: nil, y: nil})
+     |> assign(:selected_stop_id, nil)
+     |> assign(:editing_level, false)
+     |> assign(:stop_id_mode, :auto)
+     |> assign(:child_stop_form, form)}
   end
 
   @impl true
@@ -1212,16 +1272,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     reposition_stops =
       Gtfs.list_child_stops_for_parent(organization_id, gtfs_version_id, station.id)
 
+    pending_xy = socket.assigns.pending_xy
+
     {:noreply,
      socket
      |> assign(:reposition_mode, true)
      |> assign(:reposition_search, "")
-     |> assign(:reposition_stops, reposition_stops)}
+     |> assign(:reposition_stops, reposition_stops)
+     |> assign(:reposition_x, if(pending_xy, do: to_optional_string(pending_xy.x), else: ""))
+     |> assign(:reposition_y, if(pending_xy, do: to_optional_string(pending_xy.y), else: ""))}
   end
 
   @impl true
   def handle_event("exit_reposition_mode", _params, socket) do
     {:noreply, reset_reposition_state(socket)}
+  end
+
+  @impl true
+  def handle_event("validate_reposition_coordinates", params, socket) do
+    {:noreply,
+     socket
+     |> assign(:reposition_x, params["x"] || "")
+     |> assign(:reposition_y, params["y"] || "")}
   end
 
   @impl true
@@ -1235,55 +1307,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
-  def handle_event("reposition_stop", %{"id" => id}, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    pending_xy = socket.assigns.pending_xy
+  def handle_event("reposition_stop", params, socket) do
     active_level = socket.assigns.active_level
-    reposition_stops = socket.assigns.reposition_stops
-    stop = Gtfs.get_stop(id)
 
-    cond do
-      is_nil(stop) ->
-        {:noreply, put_flash(socket, :error, "Invalid stop selection")}
-
-      stop.organization_id != organization_id or stop.gtfs_version_id != gtfs_version_id ->
-        {:noreply, put_flash(socket, :error, "Invalid stop selection")}
-
-      not Enum.any?(reposition_stops, &(&1.id == stop.id)) ->
-        {:noreply, put_flash(socket, :error, "Invalid stop selection")}
-
-      is_nil(pending_xy) or is_nil(active_level) ->
+    with {:ok, x, y} <- reposition_read_coordinates(params, socket),
+         {:ok, stop} <- reposition_validate_stop(params, socket),
+         false <- is_nil(active_level) do
+      do_reposition_stop(socket, stop, x, y, active_level.level_id)
+    else
+      {:error, :invalid_coordinate} ->
         {:noreply, put_flash(socket, :error, "Failed to re-position stop")}
 
+      {:error, msg} ->
+        {:noreply, put_flash(socket, :error, msg)}
+
       true ->
-        attrs = %{
-          diagram_coordinate: %{"x" => pending_xy.x, "y" => pending_xy.y},
-          level_id: active_level.level_id
-        }
-
-        case Gtfs.update_stop(stop, attrs) do
-          {:ok, updated_stop} ->
-            maybe_record_change(
-              socket.assigns.audit_ctx,
-              :stop,
-              stop,
-              updated_stop,
-              attrs
-            )
-
-            {:noreply,
-             socket
-             |> refresh_lists()
-             |> assign(:pending_xy, nil)
-             |> assign(:selected_stop_id, nil)
-             |> assign(:child_stop_form, to_form(%{}))
-             |> reset_reposition_state()
-             |> maybe_refresh_history_entries("stop", updated_stop.id)}
-
-          {:error, _changeset} ->
-            {:noreply, put_flash(socket, :error, "Failed to re-position stop")}
-        end
+        {:noreply, put_flash(socket, :error, "Failed to re-position stop")}
     end
   end
 
@@ -1445,6 +1484,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_event("drag_cancel", _params, socket) do
     Logger.debug("drag_cancel received", dragging_stop_id: socket.assigns.dragging_stop_id)
     {:noreply, assign(socket, :dragging_stop_id, nil)}
+  end
+
+  @impl true
+  def handle_event("cancel_placement", _params, socket) do
+    socket = restream_active_stop(socket)
+
+    {:noreply,
+     socket
+     |> assign(:placement_status, "Placement cancelled")
+     |> assign(:pending_xy, nil)
+     |> assign(:selected_stop_id, nil)
+     |> assign(:active_point_id, nil)
+     |> assign(:reposition_x, "")
+     |> assign(:reposition_y, "")
+     |> assign(:child_stop_form, to_form(%{}))
+     |> reset_reposition_state()}
+  end
+
+  @impl true
+  def handle_event("dismiss_placement_status", _params, socket) do
+    {:noreply, assign(socket, :placement_status, nil)}
   end
 
   @impl true
@@ -1630,128 +1690,142 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
-    pending_xy = socket.assigns.pending_xy
-    location_type = parse_int(params["location_type"] || "3")
-    selected_parent_platform = blank_to_nil(params["parent_platform"])
-    platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
 
-    parent_station =
-      if location_type == 4 and MapSet.member?(platform_stop_ids, selected_parent_platform) do
-        selected_parent_platform
-      else
-        station.stop_id
-      end
+    with {:ok, x} <- parse_finite_float(params["x"]),
+         {:ok, y} <- parse_finite_float(params["y"]) do
+      location_type = parse_int(params["location_type"] || "3")
+      selected_parent_platform = blank_to_nil(params["parent_platform"])
+      platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
 
-    stop_id =
-      if socket.assigns.stop_id_mode == :auto and socket.assigns.selected_stop_id == nil and
-           params["stop_id"] not in [nil, ""] do
-        Gtfs.unique_stop_id(organization_id, gtfs_version_id, params["stop_id"])
-      else
-        params["stop_id"]
-      end
-
-    stop_attrs = %{
-      stop_id: stop_id,
-      stop_name: params["stop_name"],
-      location_type: location_type,
-      parent_station: parent_station,
-      level_id: params["level_id"],
-      wheelchair_boarding: parse_optional_int(params["wheelchair_boarding"]),
-      platform_code: blank_to_nil(params["platform_code"]),
-      stop_lat: params["stop_lat"],
-      stop_lon: params["stop_lon"],
-      diagram_coordinate: %{"x" => pending_xy.x, "y" => pending_xy.y},
-      organization_id: organization_id,
-      gtfs_version_id: gtfs_version_id
-    }
-
-    case socket.assigns.selected_stop_id do
-      nil ->
-        case Gtfs.create_stop(stop_attrs) do
-          {:ok, stop} ->
-            Gtfs.record_change(
-              socket.assigns.audit_ctx,
-              :stop,
-              nil,
-              "created",
-              stop_attrs
-            )
-
-            {:noreply,
-             socket
-             |> stream_insert(:child_stops, stop)
-             |> refresh_lists()
-             |> assign(:pending_xy, nil)
-             |> assign(:selected_stop_id, nil)
-             |> assign(:active_point_id, nil)
-             |> assign(:child_stop_form, to_form(%{}))}
-
-          {:error, changeset} ->
-            {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
+      parent_station =
+        if location_type == 4 and MapSet.member?(platform_stop_ids, selected_parent_platform) do
+          selected_parent_platform
+        else
+          station.stop_id
         end
 
-      selected_id ->
-        stop = Gtfs.get_stop!(selected_id)
+      stop_id =
+        if socket.assigns.stop_id_mode == :auto and socket.assigns.selected_stop_id == nil and
+             params["stop_id"] not in [nil, ""] do
+          Gtfs.unique_stop_id(organization_id, gtfs_version_id, params["stop_id"])
+        else
+          params["stop_id"]
+        end
 
-        stop_attrs_result =
-          if stop_attrs.stop_id in [nil, ""] do
-            case Gtfs.generate_kebab_stop_id(
-                   organization_id,
-                   gtfs_version_id,
-                   stop_attrs.stop_name,
-                   stop.stop_id
-                 ) do
-              {:ok, generated} -> {:ok, %{stop_attrs | stop_id: generated}}
-              {:error, msg} -> {:error, msg}
+      stop_attrs = %{
+        stop_id: stop_id,
+        stop_name: params["stop_name"],
+        location_type: location_type,
+        parent_station: parent_station,
+        level_id: params["level_id"],
+        wheelchair_boarding: parse_optional_int(params["wheelchair_boarding"]),
+        platform_code: blank_to_nil(params["platform_code"]),
+        stop_lat: params["stop_lat"],
+        stop_lon: params["stop_lon"],
+        diagram_coordinate: %{"x" => x, "y" => y},
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id
+      }
+
+      case socket.assigns.selected_stop_id do
+        nil ->
+          case Gtfs.create_stop(stop_attrs) do
+            {:ok, stop} ->
+              Gtfs.record_change(
+                socket.assigns.audit_ctx,
+                :stop,
+                stop,
+                "created",
+                stop_attrs
+              )
+
+              {:noreply,
+               socket
+               |> stream_insert(:child_stops, stop)
+               |> refresh_lists()
+               |> assign(
+                 :placement_status,
+                 "Stop placed at (#{Float.to_string(x)}, #{Float.to_string(y)})"
+               )
+               |> assign(:pending_xy, nil)
+               |> assign(:selected_stop_id, nil)
+               |> assign(:active_point_id, nil)
+               |> assign(:child_stop_form, to_form(%{}))}
+
+            {:error, changeset} ->
+              {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
+          end
+
+        selected_id ->
+          stop = Gtfs.get_stop!(selected_id)
+
+          stop_attrs_result =
+            if stop_attrs.stop_id in [nil, ""] do
+              case Gtfs.generate_kebab_stop_id(
+                     organization_id,
+                     gtfs_version_id,
+                     stop_attrs.stop_name,
+                     stop.stop_id
+                   ) do
+                {:ok, generated} -> {:ok, %{stop_attrs | stop_id: generated}}
+                {:error, msg} -> {:error, msg}
+              end
+            else
+              {:ok, stop_attrs}
             end
-          else
-            {:ok, stop_attrs}
+
+          {result, applied_attrs} =
+            case stop_attrs_result do
+              {:error, msg} ->
+                changeset =
+                  stop
+                  |> Stop.changeset(stop_attrs)
+                  |> Ecto.Changeset.add_error(:stop_id, msg)
+                  |> Map.put(:action, :validate)
+
+                {{:error, changeset}, stop_attrs}
+
+              {:ok, resolved_attrs} ->
+                update_result =
+                  if resolved_attrs.stop_id != stop.stop_id do
+                    Gtfs.update_stop_with_cascade(stop, resolved_attrs)
+                  else
+                    Gtfs.update_stop(stop, resolved_attrs)
+                  end
+
+                {update_result, resolved_attrs}
+            end
+
+          case result do
+            {:ok, updated_stop} ->
+              Gtfs.record_change(
+                socket.assigns.audit_ctx,
+                :stop,
+                stop,
+                "updated",
+                applied_attrs
+              )
+
+              refresh_plan =
+                child_stop_refresh_plan(stop, updated_stop, socket.assigns.active_level)
+
+              {:noreply,
+               socket
+               |> assign(:placement_status, "Stop updated")
+               |> close_child_stop_drawer_after_save()
+               |> apply_child_stop_save_refresh(refresh_plan, updated_stop)
+               |> maybe_refresh_history_entries("stop", updated_stop.id)}
+
+            {:error, changeset} ->
+              {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
           end
-
-        {result, applied_attrs} =
-          case stop_attrs_result do
-            {:error, msg} ->
-              changeset =
-                stop
-                |> Stop.changeset(stop_attrs)
-                |> Ecto.Changeset.add_error(:stop_id, msg)
-                |> Map.put(:action, :validate)
-
-              {{:error, changeset}, stop_attrs}
-
-            {:ok, resolved_attrs} ->
-              update_result =
-                if resolved_attrs.stop_id != stop.stop_id do
-                  Gtfs.update_stop_with_cascade(stop, resolved_attrs)
-                else
-                  Gtfs.update_stop(stop, resolved_attrs)
-                end
-
-              {update_result, resolved_attrs}
-          end
-
-        case result do
-          {:ok, updated_stop} ->
-            Gtfs.record_change(
-              socket.assigns.audit_ctx,
-              :stop,
-              stop,
-              "updated",
-              applied_attrs
-            )
-
-            refresh_plan =
-              child_stop_refresh_plan(stop, updated_stop, socket.assigns.active_level)
-
-            {:noreply,
-             socket
-             |> close_child_stop_drawer_after_save()
-             |> apply_child_stop_save_refresh(refresh_plan, updated_stop)
-             |> maybe_refresh_history_entries("stop", updated_stop.id)}
-
-          {:error, changeset} ->
-            {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
-        end
+      end
+    else
+      {:error, :invalid_coordinate} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Diagram X and Y must be valid finite numbers")
+         |> assign(:child_stop_form, to_form(params))}
     end
   end
 
@@ -2000,7 +2074,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               Gtfs.record_change(
                 socket.assigns.audit_ctx,
                 :pathway,
-                nil,
+                pathway,
                 "created",
                 attrs
               )
@@ -2042,6 +2116,51 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:selected_from_stop, nil)
      |> assign(:active_point_id, nil)}
+  end
+
+  @impl true
+  def handle_event("select_from_stop", %{"from_id" => ""}, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("select_from_stop", %{"from_id" => from_id}, socket) do
+    # If same stop is already selected, no-op
+    socket =
+      if socket.assigns.selected_from_stop && socket.assigns.selected_from_stop.id == from_id do
+        socket
+      else
+        # Deselect current from-stop if any (clear shared selection state)
+        socket =
+          if socket.assigns.selected_from_stop do
+            stop = socket.assigns.selected_from_stop
+
+            socket
+            |> stream_insert(:child_stops, stop)
+            |> assign(:selected_from_stop, nil)
+            |> assign(:active_point_id, nil)
+          else
+            socket
+          end
+
+        # Select new from-stop through shared handle_stop_selection
+        case handle_stop_selection(from_id, socket) do
+          {:noreply, socket} -> socket
+          _ -> socket
+        end
+      end
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("select_to_stop", %{"to_id" => ""}, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("select_to_stop", %{"to_id" => to_id}, socket) do
+    handle_stop_selection(to_id, socket)
   end
 
   @impl true
@@ -3205,7 +3324,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               Gtfs.record_change(
                 socket.assigns.audit_ctx,
                 :level,
-                nil,
+                new_level,
                 "created",
                 level_attrs
               )
@@ -3834,30 +3953,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp handle_stop_selection(id, socket) do
-    case socket.assigns.active_point_id do
-      nil ->
-        # First stop selected - set it as active
-        stop = Gtfs.get_stop!(id)
+    case fetch_intent_stop(socket, id) do
+      {:ok, stop} ->
+        case socket.assigns.active_point_id do
+          nil ->
+            # First stop selected - set it as active
+            {:noreply,
+             socket
+             |> stream_insert(:child_stops, stop)
+             |> assign(:active_point_id, stop.id)
+             |> assign(:selected_from_stop, stop)}
 
-        {:noreply,
-         socket
-         |> stream_insert(:child_stops, stop)
-         |> assign(:active_point_id, id)
-         |> assign(:selected_from_stop, stop)}
+          active_point_id when active_point_id == stop.id ->
+            # Clicking same stop - deselect it
+            {:noreply,
+             socket
+             |> stream_insert(:child_stops, stop)
+             |> assign(:active_point_id, nil)
+             |> assign(:selected_from_stop, nil)}
 
-      ^id ->
-        # Clicking same stop - deselect it
-        stop = Gtfs.get_stop!(id)
+          first_stop_id ->
+            # Second stop selected - create pathway between them
+            create_pathway_between_stops(socket, first_stop_id, stop.id)
+        end
 
-        {:noreply,
-         socket
-         |> stream_insert(:child_stops, stop)
-         |> assign(:active_point_id, nil)
-         |> assign(:selected_from_stop, nil)}
-
-      first_stop_id ->
-        # Second stop selected - create pathway between them
-        create_pathway_between_stops(socket, first_stop_id, id)
+      {:error, :not_found} ->
+        {:noreply, assign(socket, :pathway_error, "Invalid stop selection")}
     end
   end
 
@@ -4267,6 +4388,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp to_float(nil), do: 0.0
 
+  defp parse_finite_float(nil), do: {:error, :invalid_coordinate}
+  defp parse_finite_float(""), do: {:error, :invalid_coordinate}
+
+  defp parse_finite_float(val) when is_integer(val), do: {:ok, val / 1}
+  defp parse_finite_float(val) when is_float(val), do: {:ok, val}
+  defp parse_finite_float(val) when is_integer(val), do: {:ok, val / 1}
+
+  defp parse_finite_float(val) when is_binary(val) do
+    case Float.parse(val) do
+      {parsed, ""} -> {:ok, parsed}
+      _ -> {:error, :invalid_coordinate}
+    end
+  end
+
+  defp parse_finite_float(_), do: {:error, :invalid_coordinate}
+
   defp parse_mode("view"), do: {:ok, :view}
   defp parse_mode("add"), do: {:ok, :add}
   defp parse_mode("connect"), do: {:ok, :connect}
@@ -4573,18 +4710,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
+  defp stop_display_label(stop) do
+    case stop.stop_name do
+      name when is_binary(name) and name != "" -> name
+      _ -> stop.stop_id
+    end
+  end
+
   defp create_pathway_between_stops(socket, from_stop_id, to_stop_id) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-    from_stop = Gtfs.get_stop!(from_stop_id)
-    to_stop = Gtfs.get_stop!(to_stop_id)
-    pair_key = normalize_pair_key(from_stop.stop_id, to_stop.stop_id)
-    pair_count = Map.get(socket.assigns.pathway_pair_counts || %{}, pair_key, 0)
-
-    if pair_count >= 2 do
-      {:noreply, assign(socket, :pathway_error, "This stop pair already has two pathways")}
-    else
+    with {:ok, from_stop} <- fetch_intent_stop(socket, from_stop_id),
+         {:ok, to_stop} <- fetch_intent_stop(socket, to_stop_id),
+         pair_key = normalize_pair_key(from_stop.stop_id, to_stop.stop_id),
+         pair_count = Map.get(socket.assigns.pathway_pair_counts || %{}, pair_key, 0),
+         false <- pair_count >= 2 do
       pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
 
       attrs =
@@ -4604,14 +4745,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           Gtfs.record_change(
             socket.assigns.audit_ctx,
             :pathway,
-            nil,
+            pathway,
             "created",
             attrs
           )
 
           loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
           refreshed_socket = refresh_lists(socket)
-          pathway_pair = pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
+
+          pathway_pair =
+            pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
 
           {:noreply,
            refreshed_socket
@@ -4625,6 +4768,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> assign(:show_pathway_drawer, true)
            |> assign(:active_point_id, nil)
            |> assign(:selected_from_stop, nil)
+           |> assign(
+             :placement_status,
+             "Pathway created #{stop_display_label(from_stop)} → #{stop_display_label(to_stop)}"
+           )
            |> assign(:pathway_error, nil)}
 
         {:error, _changeset} ->
@@ -4638,6 +4785,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> assign(:active_point_id, nil)
            |> assign(:pathway_error, "Failed to create pathway")}
       end
+    else
+      true ->
+        {:noreply, assign(socket, :pathway_error, "This stop pair already has two pathways")}
+
+      {:error, :not_found} ->
+        {:noreply, assign(socket, :pathway_error, "Invalid stop selection")}
     end
   end
 
@@ -4646,6 +4799,78 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:reposition_mode, false)
     |> assign(:reposition_search, "")
     |> assign(:reposition_stops, [])
+  end
+
+  # Reads the coordinate from the server-tracked `reposition_x`/`reposition_y`
+  # assigns rather than the row button's `phx-value-*`. The assigns are kept
+  # current by `validate_reposition_coordinates` (typed) and `canvas_click`
+  # (clicked); because LiveView processes those events before the row-action
+  # click that follows them, the assign is always the value the operator last
+  # entered. Reading a render-time `phx-value` snapshot could commit a stale
+  # coordinate if the click fired before the field's change re-render landed.
+  defp reposition_read_coordinates(_params, socket) do
+    with {:ok, x} <- parse_finite_float(socket.assigns.reposition_x),
+         {:ok, y} <- parse_finite_float(socket.assigns.reposition_y) do
+      {:ok, x, y}
+    end
+  end
+
+  defp reposition_validate_stop(params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    reposition_stops = socket.assigns.reposition_stops
+    id = params["id"]
+    stop = if id, do: Gtfs.get_stop(id)
+
+    cond do
+      is_nil(stop) ->
+        {:error, "Invalid stop selection"}
+
+      stop.organization_id != organization_id or stop.gtfs_version_id != gtfs_version_id ->
+        {:error, "Invalid stop selection"}
+
+      not Enum.any?(reposition_stops, &(&1.id == stop.id)) ->
+        {:error, "Invalid stop selection"}
+
+      true ->
+        {:ok, stop}
+    end
+  end
+
+  defp do_reposition_stop(socket, stop, x, y, level_id) do
+    attrs = %{
+      diagram_coordinate: %{"x" => x, "y" => y},
+      level_id: level_id
+    }
+
+    case Gtfs.update_stop(stop, attrs) do
+      {:ok, updated_stop} ->
+        maybe_record_change(
+          socket.assigns.audit_ctx,
+          :stop,
+          stop,
+          updated_stop,
+          attrs
+        )
+
+        {:noreply,
+         socket
+         |> refresh_lists()
+         |> assign(
+           :placement_status,
+           "Stop re-positioned to (#{Float.to_string(x)}, #{Float.to_string(y)})"
+         )
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:reposition_x, "")
+         |> assign(:reposition_y, "")
+         |> assign(:child_stop_form, to_form(%{}))
+         |> reset_reposition_state()
+         |> maybe_refresh_history_entries("stop", updated_stop.id)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to re-position stop")}
+    end
   end
 
   defp maybe_open_child_stop_from_params(socket, %{"edit_child_stop_id" => id} = _params) do
@@ -4757,7 +4982,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         "wheelchair_boarding" => to_optional_string(stop.wheelchair_boarding),
         "platform_code" => stop.platform_code || "",
         "stop_lat" => to_optional_string(stop.stop_lat),
-        "stop_lon" => to_optional_string(stop.stop_lon)
+        "stop_lon" => to_optional_string(stop.stop_lon),
+        "x" => to_optional_string(pending_xy.x),
+        "y" => to_optional_string(pending_xy.y)
       })
 
     socket
