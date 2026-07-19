@@ -42,6 +42,7 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert LazyHTML.attribute(dialog, "data-open") == ["true"]
       assert LazyHTML.attribute(dialog, "role") == ["dialog"]
       assert LazyHTML.attribute(dialog, "aria-modal") == ["true"]
+      assert LazyHTML.attribute(dialog, "aria-labelledby") == ["test-drawer-title"]
       assert LazyHTML.attribute(dialog, "inert") == []
       assert LazyHTML.attribute(dialog, "aria-hidden") == []
     end
@@ -102,7 +103,7 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert LazyHTML.attribute(heading, "tabindex") == ["-1"]
     end
 
-    test "close button has data-dialog-dismiss, aria-label, and 44px hit target" do
+    test "close button has matching tooltip and accessible name plus a 44px hit target" do
       assigns = %{open: true, title: "Test"}
 
       html =
@@ -112,10 +113,13 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
         </.drawer>
         """)
 
-      button = html |> LazyHTML.from_fragment() |> LazyHTML.query("#test-drawer-close")
+      doc = LazyHTML.from_fragment(html)
+      button = LazyHTML.query(doc, "#test-drawer-close")
+      tooltip = LazyHTML.query(doc, ".tooltip.tooltip-left[data-tip]")
 
       assert LazyHTML.attribute(button, "data-dialog-dismiss") == [""]
-      refute LazyHTML.attribute(button, "aria-label") == []
+      assert LazyHTML.attribute(tooltip, "data-tip") == LazyHTML.attribute(button, "aria-label")
+      assert "tooltip-left" in (LazyHTML.attribute(tooltip, "class") |> hd() |> String.split())
       classes = LazyHTML.attribute(button, "class") |> hd()
       assert String.contains?(classes, "min-w-[44px]")
       assert String.contains?(classes, "min-h-[44px]")

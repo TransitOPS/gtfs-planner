@@ -13,7 +13,7 @@ async function loginAndGoToOverlays(page) {
   await page.fill('input[name="user[email]"]', TEST_USER.email);
   await page.fill('input[name="user[password]"]', TEST_USER.password);
   await page.locator('button:has-text("Log in")').click();
-  await page.waitForURL("**/");
+  await page.waitForURL("**/admin/organizations");
   await page.goto("/design/overlays");
   await page.waitForSelector("#ds-page-overlays");
 }
@@ -24,7 +24,7 @@ test("authenticates and opens the normative overlays page", async ({ page }) => 
   await page.fill('input[name="user[email]"]', TEST_USER.email);
   await page.fill('input[name="user[password]"]', TEST_USER.password);
   await page.locator('button:has-text("Log in")').click();
-  await page.waitForURL("**/");
+  await page.waitForURL("**/admin/organizations");
   await page.goto("/design/overlays");
   await page.waitForSelector("#ds-page-overlays");
 
@@ -409,6 +409,25 @@ test.describe("Presentation and motion", () => {
     expect(box).not.toBeNull();
     expect(box.width).toBeGreaterThanOrEqual(44);
     expect(box.height).toBeGreaterThanOrEqual(44);
+  });
+
+  test("drawer close tooltip matches its accessible name on hover and focus", async ({ page }) => {
+    const closeBtn = page.locator("#ds-demo-drawer-close");
+    const tooltip = closeBtn.locator("..");
+    const accessibleName = await closeBtn.getAttribute("aria-label");
+    const tooltipOpacity = () =>
+      tooltip.evaluate((element) => getComputedStyle(element, "::before").opacity);
+
+    await expect(tooltip).toHaveAttribute("data-tip", accessibleName);
+
+    await closeBtn.hover();
+    await expect.poll(tooltipOpacity).toBe("1");
+
+    await page.mouse.move(0, 0);
+    await page.locator("#ds-demo-drawer-title").focus();
+    await page.keyboard.press("Tab");
+    await expect(closeBtn).toBeFocused();
+    await expect.poll(tooltipOpacity).toBe("1");
   });
 
   test("emulated reduced motion reports zero animation and transition duration", async ({ page }) => {

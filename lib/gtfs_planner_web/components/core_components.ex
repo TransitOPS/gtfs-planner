@@ -841,6 +841,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       data-initial-focus-id={@initial_focus_id}
       data-return-focus-id={@return_focus_id}
       data-close-on-backdrop={to_string(@close_on_backdrop)}
+      aria-labelledby={"#{@id}-title"}
       {if @open, do: %{role: "dialog", "aria-modal": "true"}, else: %{inert: true, "aria-hidden": "true"}}
       class="m-0 border-0 w-full h-full bg-transparent p-0"
     >
@@ -861,17 +862,19 @@ defmodule GtfsPlannerWeb.CoreComponents do
               </h2>
               {render_slot(@header_actions)}
             </div>
-            <button
-              type="button"
-              id={"#{@id}-close"}
-              phx-click={@on_close}
-              phx-target={@target}
-              data-dialog-dismiss
-              class="btn btn-ghost btn-sm btn-circle min-w-[44px] min-h-[44px] text-base-content/70 hover:bg-base-300/50"
-              aria-label={gettext("close")}
-            >
-              <.icon name="hero-x-mark" class="size-5" />
-            </button>
+            <div class="tooltip tooltip-left" data-tip={gettext("close")}>
+              <button
+                type="button"
+                id={"#{@id}-close"}
+                phx-click={@on_close}
+                phx-target={@target}
+                data-dialog-dismiss
+                class="btn btn-ghost btn-sm btn-circle min-w-[44px] min-h-[44px] text-base-content/70 hover:bg-base-300/50"
+                aria-label={gettext("close")}
+              >
+                <.icon name="hero-x-mark" class="size-5" />
+              </button>
+            </div>
           </header>
           <%!-- Content --%>
           <div id={"#{@id}-body"} class="flex-1 overflow-y-auto p-6">

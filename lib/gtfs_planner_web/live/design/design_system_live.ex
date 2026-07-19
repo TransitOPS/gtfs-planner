@@ -125,14 +125,18 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   # child alertdialog and focuses #ds-confirm-result inside the still-open drawer.
   # Error clears pending in place so the user can retry or cancel.
   def handle_event("open_confirm", _params, socket) do
-    {:noreply, assign(socket, :confirm_open, true)}
+    {:noreply,
+     socket
+     |> assign(:confirm_open, true)
+     |> assign(:confirm_return_focus_id, nil)}
   end
 
   def handle_event("cancel_confirm", _params, socket) do
     {:noreply,
      socket
      |> assign(:confirm_open, false)
-     |> assign(:confirm_pending, false)}
+     |> assign(:confirm_pending, false)
+     |> assign(:confirm_return_focus_id, nil)}
   end
 
   def handle_event("run_confirm", _params, socket) do
@@ -149,7 +153,10 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   end
 
   def handle_event("confirm_error", _params, socket) do
-    {:noreply, assign(socket, :confirm_pending, false)}
+    {:noreply,
+     socket
+     |> assign(:confirm_pending, false)
+     |> assign(:confirm_return_focus_id, nil)}
   end
 
   # The autocomplete page's LiveSelect demo, migrated from the retired `/components`

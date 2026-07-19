@@ -946,7 +946,40 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       assert has_element?(view, "dialog#ds-demo-drawer-overlay[data-open='true']")
       assert has_element?(view, "dialog#ds-demo-confirm[data-open='false']")
+
+      assert has_element?(
+               view,
+               "dialog#ds-demo-confirm[data-return-focus-id='ds-confirm-result']"
+             )
+
       assert has_element?(view, "#ds-confirm-result", "Route deleted successfully.")
+    end
+
+    test "non-success confirmation events clear a prior return-focus override", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      render_click(view, "confirm_success", %{})
+
+      assert has_element?(
+               view,
+               "dialog#ds-demo-confirm[data-return-focus-id='ds-confirm-result']"
+             )
+
+      render_click(view, "open_confirm", %{})
+      refute has_element?(view, "dialog#ds-demo-confirm[data-return-focus-id]")
+
+      render_click(view, "confirm_success", %{})
+      render_click(view, "cancel_confirm", %{})
+      refute has_element?(view, "dialog#ds-demo-confirm[data-return-focus-id]")
+
+      render_click(view, "confirm_success", %{})
+      render_click(view, "confirm_error", %{})
+      refute has_element?(view, "dialog#ds-demo-confirm[data-return-focus-id]")
     end
 
     test "confirmation pending disables confirm and dismiss controls", %{
