@@ -43,6 +43,10 @@ gtfs_planner-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# Ignore Playwright browser-test artifacts.
+/assets/test-results/
+/assets/playwright-report/
+
 # Ignore git commit message files
 git_commit_message.txt
 
