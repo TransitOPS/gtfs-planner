@@ -1734,7 +1734,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               Gtfs.record_change(
                 socket.assigns.audit_ctx,
                 :stop,
-                nil,
+                stop,
                 "created",
                 stop_attrs
               )
@@ -2074,7 +2074,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               Gtfs.record_change(
                 socket.assigns.audit_ctx,
                 :pathway,
-                nil,
+                pathway,
                 "created",
                 attrs
               )
@@ -3324,7 +3324,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               Gtfs.record_change(
                 socket.assigns.audit_ctx,
                 :level,
-                nil,
+                new_level,
                 "created",
                 level_attrs
               )
@@ -4745,7 +4745,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           Gtfs.record_change(
             socket.assigns.audit_ctx,
             :pathway,
-            nil,
+            pathway,
             "created",
             attrs
           )
