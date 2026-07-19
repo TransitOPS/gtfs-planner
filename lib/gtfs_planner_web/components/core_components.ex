@@ -493,16 +493,20 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   def header(assigns) do
     ~H"""
-    <header class={[@class, @actions != [] && "flex items-center justify-between gap-6", "pb-4"]}>
-      <div>
-        <h1 class="text-lg font-semibold leading-8">
+    <header class={[
+      @class,
+      @actions != [] && "flex flex-col sm:flex-row sm:items-center justify-between gap-4",
+      "pb-4"
+    ]}>
+      <div class="min-w-0">
+        <h1 class="text-2xl font-bold leading-8 break-words">
           {render_slot(@inner_block)}
         </h1>
-        <p :if={@subtitle != []} class="text-sm text-base-content/70">
+        <p :if={@subtitle != []} class="mt-1 text-sm text-base-content/70">
           {render_slot(@subtitle)}
         </p>
       </div>
-      <div class="flex-none">{render_slot(@actions)}</div>
+      <div class="flex-none flex flex-wrap items-center gap-2">{render_slot(@actions)}</div>
     </header>
     """
   end
@@ -930,90 +934,57 @@ defmodule GtfsPlannerWeb.CoreComponents do
       class="w-full px-4 sm:px-6 lg:px-8"
       aria-label="Station navigation"
     >
-      <%!-- Top row: Back button, station name, actions --%>
-      <div class="flex items-center justify-between py-3">
-        <div class="flex items-center gap-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 py-3">
+        <div class="flex items-center gap-2 min-w-0">
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops"}
-            class="btn btn-ghost btn-sm btn-square"
+            class="btn btn-ghost btn-square min-h-11 min-w-11"
             aria-label="Back to stations list"
           >
             <.icon name="hero-chevron-left" class="size-5" />
           </.link>
-          <h1 class="text-xl font-semibold leading-tight">
+          <h1 class="text-xl font-semibold leading-tight break-words min-w-0">
             {@station.stop_name || @station.stop_id}
           </h1>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
           {render_slot(@actions)}
         </div>
       </div>
-      <%!-- Bottom row: Underline tabs + diagram controls --%>
-      <div class="flex items-end justify-between border-b border-base-300">
-        <%!-- Left: Tabs --%>
-        <div class="flex items-end gap-6" role="tablist">
+      <div class="flex flex-wrap items-end justify-between gap-4 border-b border-base-300">
+        <div class="flex flex-wrap items-end gap-1">
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :details && "border-primary text-base-content",
-              @active_tab != :details &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :details}
+            class={sub_nav_link_class(@active_tab == :details)}
             aria-current={@active_tab == :details && "page"}
           >
             Details
           </.link>
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/diagram"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :diagram && "border-primary text-base-content",
-              @active_tab != :diagram &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :diagram}
+            class={sub_nav_link_class(@active_tab == :diagram)}
             aria-current={@active_tab == :diagram && "page"}
           >
             Diagram
           </.link>
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/report"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :report && "border-primary text-base-content",
-              @active_tab != :report &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :report}
+            class={sub_nav_link_class(@active_tab == :report)}
             aria-current={@active_tab == :report && "page"}
           >
             Reports
           </.link>
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/reachability"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :reachability && "border-primary text-base-content",
-              @active_tab != :reachability &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :reachability}
+            class={sub_nav_link_class(@active_tab == :reachability)}
             aria-current={@active_tab == :reachability && "page"}
           >
             Reachability
           </.link>
         </div>
 
-        <%!-- Right: Diagram controls (only on diagram tab) --%>
-        <div :if={@active_tab == :diagram} class="flex items-center gap-4 pb-2">
-          <%!-- Level context --%>
-          <div class="flex items-center gap-2">
+        <div :if={@active_tab == :diagram} class="flex flex-wrap items-center gap-4 pb-2">
+          <div class="flex flex-wrap items-center gap-2">
             <.button
               type="button"
               size="sm"
@@ -1046,8 +1017,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             </.button>
           </div>
 
-          <%!-- Canvas actions --%>
-          <div :if={@active_level && @uploads} class="flex items-center gap-2">
+          <div :if={@active_level && @uploads} class="flex flex-wrap items-center gap-2">
             <form
               id="diagram-upload-form-sub-nav"
               phx-change="upload_diagram"
@@ -1075,6 +1045,20 @@ defmodule GtfsPlannerWeb.CoreComponents do
       </div>
     </nav>
     """
+  end
+
+  defp sub_nav_link_class(is_active) do
+    base =
+      "inline-flex items-center px-3 py-2.5 min-h-11 text-sm transition-colors border-b-2 -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+
+    state =
+      if is_active do
+        "font-semibold border-primary text-base-content"
+      else
+        "font-medium border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
+      end
+
+    [base, state]
   end
 
   defp diagram_upload_error_to_string(:too_large), do: "File is too large (max 10 MB)"
@@ -1109,7 +1093,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :active_tab, :atom, values: [:details, :patterns], default: :details
 
   def route_sub_nav(assigns) do
-    # Build route display name: short_name - long_name or route_id
     route_display =
       cond do
         assigns.route.route_short_name && assigns.route.route_long_name ->
@@ -1129,48 +1112,32 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
     ~H"""
     <nav class="w-full px-4 sm:px-6 lg:px-8" aria-label="Route navigation">
-      <%!-- Top row: Back button and route name --%>
-      <div class="flex items-center justify-between py-3">
-        <div class="flex items-center gap-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 py-3">
+        <div class="flex items-center gap-2 min-w-0">
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/routes"}
-            class="btn btn-ghost btn-sm btn-square"
+            class="btn btn-ghost btn-square min-h-11 min-w-11"
             aria-label="Back to routes list"
           >
             <.icon name="hero-chevron-left" class="size-5" />
           </.link>
-          <h1 class="text-xl font-semibold leading-tight">
+          <h1 class="text-xl font-semibold leading-tight break-words min-w-0">
             {@route_display}
           </h1>
         </div>
       </div>
-      <%!-- Bottom row: Underline tabs --%>
-      <div class="flex items-end justify-between border-b border-base-300">
-        <div class="flex items-end gap-6" role="tablist">
+      <div class="flex flex-wrap items-end justify-between gap-4 border-b border-base-300">
+        <div class="flex flex-wrap items-end gap-1">
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :details && "border-primary text-base-content",
-              @active_tab != :details &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :details}
+            class={sub_nav_link_class(@active_tab == :details)}
             aria-current={@active_tab == :details && "page"}
           >
             Details
           </.link>
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :patterns && "border-primary text-base-content",
-              @active_tab != :patterns &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :patterns}
+            class={sub_nav_link_class(@active_tab == :patterns)}
             aria-current={@active_tab == :patterns && "page"}
           >
             Patterns

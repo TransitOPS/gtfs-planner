@@ -793,18 +793,27 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/design/navigation")
 
-      # HEEx renders `aria-selected={true}` as a valueless attribute, so the marked tab
-      # is `[aria-selected]`, never `[aria-selected="true"]`.
       assert has_element?(
                view,
-               ~s(#station-sub-nav a[role="tab"][aria-current="page"]),
+               ~s(#station-sub-nav a[aria-current="page"]),
                "Details"
              )
 
-      assert has_element?(view, ~s(#station-sub-nav a[role="tab"][aria-selected]), "Details")
+      refute has_element?(view, ~s(#station-sub-nav [role="tablist"]))
+      refute has_element?(view, ~s(#station-sub-nav [role="tab"]))
 
       refute has_element?(view, "#diagram-upload-form-sub-nav")
       refute has_element?(view, "#station-sub-nav-upload")
+    end
+
+    test "documents long-content wrapping and ordinary nav semantics", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/navigation")
+
+      assert has_element?(view, "#ds-page-navigation", "break-words")
+      assert has_element?(view, "#ds-page-navigation", "min-h-11")
+      assert has_element?(view, "#ds-page-navigation", ~s(aria-current="page"))
     end
 
     # INV-4: an unhandled event crashes the LiveView for every page. On :details both

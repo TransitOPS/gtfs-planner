@@ -105,7 +105,14 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   min-height: 100vh;
-  overflow-x: hidden;
+}
+
+#app-header {
+  overflow: visible;
+}
+
+#station-sub-nav {
+  overflow: visible;
 }
 
 /* Custom override for LiveSelect input text color to ensure theme compatibility */

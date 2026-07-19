@@ -954,17 +954,27 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </p>
 
+      <h2 class="mt-8 text-lg font-semibold">Long-content states</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Station and route names wrap at narrow widths via <code class="font-mono text-sm">break-words</code>.
+        The back button and tab links maintain 44 px targets (<code class="font-mono text-sm">min-h-11</code>)
+        regardless of content length. Sub-navigation links use ordinary
+        <code class="font-mono text-sm">navigate</code>
+        semantics with <code class="font-mono text-sm">aria-current="page"</code>
+        — no tablist or tab roles.
+      </p>
+
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>
           Pass <code class="font-mono text-sm">active_tab</code>
-          on every page that renders a sub-nav. It is what marks the current tab <code class="font-mono text-sm">aria-current="page"</code>, so an omitted value
+          on every page that renders a sub-nav. It is what marks the current link <code class="font-mono text-sm">aria-current="page"</code>, so an omitted value
           silently tells the user they are somewhere else.
         </li>
         <li>
-          The tabs are <code class="font-mono text-sm">navigate</code>
-          links, not events. They are real navigation and belong in the browser's
-          history — do not reimplement them as click handlers.
+          The tabs are ordinary <code class="font-mono text-sm">navigate</code>
+          links, not events or tab roles. They are real navigation and belong in the
+          browser's history — do not reimplement them as click handlers.
         </li>
         <li>
           One header per view. The actions slot holds that view's primary action; if you

@@ -1,0 +1,440 @@
+defmodule GtfsPlannerWeb.NavigationComponentsTest do
+  use GtfsPlannerWeb.ConnCase, async: true
+
+  import Phoenix.LiveViewTest
+  import Phoenix.Component
+  import GtfsPlannerWeb.CoreComponents
+
+  alias GtfsPlannerWeb.Navigation
+
+  defp render_nav(assigns) do
+    rendered_to_string(~H"""
+    <Navigation.top_nav
+      current_user={@current_user}
+      current_organization={@current_organization}
+      user_roles={@user_roles}
+      current_path={@current_path}
+      current_gtfs_version={@current_gtfs_version}
+    />
+    """)
+  end
+
+  defp admin_user,
+    do: %GtfsPlanner.Accounts.UserOrgMembership{roles: ["administrator"]}
+
+  defp editor_user, do: %{id: 2, email: "editor@test.com"}
+
+  defp org, do: %{id: 1, name: "Test Org"}
+
+  defp gtfs_version, do: %{id: 42, name: "v1"}
+
+  defp admin_assigns(path) do
+    %{
+      current_user: admin_user(),
+      current_organization: org(),
+      user_roles: ["pathways_studio_admin", "pathways_studio_editor"],
+      current_path: path,
+      current_gtfs_version: gtfs_version()
+    }
+  end
+
+  defp editor_assigns(path) do
+    %{
+      current_user: editor_user(),
+      current_organization: org(),
+      user_roles: ["pathways_studio_editor"],
+      current_path: path,
+      current_gtfs_version: gtfs_version()
+    }
+  end
+
+  describe "path-family matching — admin links" do
+    test "Organizations activates on /admin/organizations" do
+      html = render_nav(admin_assigns("/admin/organizations"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Organizations"
+    end
+
+    test "Organizations activates on nested /admin/organizations/123" do
+      html = render_nav(admin_assigns("/admin/organizations/123"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Organizations"
+    end
+
+    test "Users activates on /admin/users" do
+      html = render_nav(admin_assigns("/admin/users"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Users"
+    end
+
+    test "Users activates on nested /admin/users/456" do
+      html = render_nav(admin_assigns("/admin/users/456"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Users"
+    end
+
+    test "Organizations does NOT activate on /admin/users" do
+      html = render_nav(admin_assigns("/admin/users"))
+      doc = LazyHTML.from_fragment(html)
+
+      org_link = LazyHTML.query(doc, ~s(a[href="/admin/organizations"]))
+      assert LazyHTML.attribute(org_link, "aria-current") == []
+    end
+
+    test "Users does NOT activate on /admin/organizations" do
+      html = render_nav(admin_assigns("/admin/organizations"))
+      doc = LazyHTML.from_fragment(html)
+
+      users_link = LazyHTML.query(doc, ~s(a[href="/admin/users"]))
+      assert LazyHTML.attribute(users_link, "aria-current") == []
+    end
+  end
+
+  describe "path-family matching — GTFS task links" do
+    test "Routes activates on /gtfs/42/routes" do
+      html = render_nav(editor_assigns("/gtfs/42/routes"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Routes"
+    end
+
+    test "Routes activates on nested /gtfs/42/routes/route-1" do
+      html = render_nav(editor_assigns("/gtfs/42/routes/route-1"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Routes"
+    end
+
+    test "Stations activates on /gtfs/42/stops" do
+      html = render_nav(editor_assigns("/gtfs/42/stops"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Stations"
+    end
+
+    test "Import activates on /gtfs/42/import" do
+      html = render_nav(editor_assigns("/gtfs/42/import"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Import"
+    end
+
+    test "Export activates on /gtfs/42/export" do
+      html = render_nav(editor_assigns("/gtfs/42/export"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Export"
+    end
+
+    test "Routes does NOT activate on /gtfs/42/stops" do
+      html = render_nav(editor_assigns("/gtfs/42/stops"))
+      doc = LazyHTML.from_fragment(html)
+
+      routes_link = LazyHTML.query(doc, ~s(a[href="/gtfs/42/routes"]))
+      assert LazyHTML.attribute(routes_link, "aria-current") == []
+    end
+
+    test "query strings are ignored" do
+      html = render_nav(editor_assigns("/gtfs/42/routes?tab=patterns"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Routes"
+    end
+
+    test "unrelated word containing family name does not activate" do
+      html = render_nav(editor_assigns("/gtfs/42/imported-things"))
+      doc = LazyHTML.from_fragment(html)
+
+      import_link = LazyHTML.query(doc, ~s(a[href="/gtfs/42/import"]))
+      assert LazyHTML.attribute(import_link, "aria-current") == []
+    end
+
+    test "no link is active on unrelated path" do
+      html = render_nav(editor_assigns("/settings"))
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.empty?(LazyHTML.query(doc, ~s(a[aria-current="page"])))
+    end
+  end
+
+  describe "active state presentation" do
+    test "active link has aria-current=page and non-color cue" do
+      html = render_nav(admin_assigns("/admin/organizations"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      classes = LazyHTML.attribute(link, "class") |> List.first()
+
+      assert classes =~ "font-semibold"
+      assert classes =~ "border"
+    end
+
+    test "inactive links do not carry aria-current" do
+      html = render_nav(admin_assigns("/admin/organizations"))
+      doc = LazyHTML.from_fragment(html)
+
+      inactive = LazyHTML.query(doc, "a:not([aria-current])")
+      refute Enum.empty?(inactive)
+    end
+  end
+
+  describe "target sizing and wrapping" do
+    test "nav links have 44px minimum target" do
+      html = render_nav(admin_assigns("/admin/organizations"))
+      doc = LazyHTML.from_fragment(html)
+
+      links = LazyHTML.query(doc, "nav a")
+      classes = LazyHTML.attribute(links, "class") |> List.first()
+
+      assert classes =~ "min-h-11"
+    end
+
+    test "nav container wraps" do
+      html = render_nav(admin_assigns("/admin/organizations"))
+      doc = LazyHTML.from_fragment(html)
+
+      nav = LazyHTML.query(doc, "nav")
+      classes = LazyHTML.attribute(nav, "class") |> List.first()
+
+      assert classes =~ "flex-wrap"
+    end
+  end
+
+  describe "role gating" do
+    test "administrator sees Organizations link" do
+      html = render_nav(admin_assigns("/"))
+      assert html =~ "Organizations"
+    end
+
+    test "non-administrator does not see Organizations link" do
+      html = render_nav(editor_assigns("/"))
+      refute html =~ "Organizations"
+    end
+
+    test "editor sees GTFS task links" do
+      html = render_nav(editor_assigns("/"))
+      assert html =~ "Routes"
+      assert html =~ "Stations"
+      assert html =~ "Import"
+      assert html =~ "Export"
+    end
+
+    test "user without editor role does not see GTFS links" do
+      assigns = %{
+        current_user: editor_user(),
+        current_organization: org(),
+        user_roles: [],
+        current_path: "/",
+        current_gtfs_version: gtfs_version()
+      }
+
+      html = render_nav(assigns)
+      refute html =~ "Routes"
+      refute html =~ "Stations"
+    end
+  end
+
+  describe "station_sub_nav" do
+    defp render_station_sub_nav(assigns) do
+      assigns =
+        Map.merge(
+          %{
+            station: %{stop_id: "stop-1", stop_name: "Central Station"},
+            gtfs_version_id: 42,
+            active_tab: :details,
+            levels: [],
+            active_level: nil,
+            mode: :add,
+            uploads: nil,
+            has_diagram: false,
+            diagram_error: nil,
+            actions: []
+          },
+          assigns
+        )
+
+      rendered_to_string(~H"""
+      <.station_sub_nav
+        station={@station}
+        gtfs_version_id={@gtfs_version_id}
+        active_tab={@active_tab}
+        levels={@levels}
+        active_level={@active_level}
+        mode={@mode}
+        uploads={@uploads}
+        has_diagram={@has_diagram}
+        diagram_error={@diagram_error}
+      >
+        <:actions :if={@actions != []}>
+          <button :for={a <- @actions}>{a}</button>
+        </:actions>
+      </.station_sub_nav>
+      """)
+    end
+
+    test "renders ordinary navigation links without tablist or tab roles" do
+      html = render_station_sub_nav(%{})
+      refute html =~ ~s(role="tablist")
+      refute html =~ ~s(role="tab")
+      refute html =~ "aria-selected"
+    end
+
+    test "active tab has aria-current=page" do
+      html = render_station_sub_nav(%{active_tab: :details})
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(#station-sub-nav a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Details"
+    end
+
+    test "inactive tabs do not have aria-current" do
+      html = render_station_sub_nav(%{active_tab: :details})
+      doc = LazyHTML.from_fragment(html)
+
+      diagram_link =
+        LazyHTML.query(doc, ~s(#station-sub-nav a[href="/gtfs/42/stops/stop-1/diagram"]))
+
+      assert LazyHTML.attribute(diagram_link, "aria-current") == []
+    end
+
+    test "back link has 44px target and accessible name" do
+      html = render_station_sub_nav(%{})
+      doc = LazyHTML.from_fragment(html)
+
+      back = LazyHTML.query(doc, ~s(#station-sub-nav a[aria-label="Back to stations list"]))
+      assert Enum.count(back) == 1
+      classes = LazyHTML.attribute(back, "class") |> List.first()
+      assert classes =~ "min-h-11"
+    end
+
+    test "long station name wraps" do
+      html =
+        render_station_sub_nav(%{
+          station: %{
+            stop_id: "stop-1",
+            stop_name:
+              "A Very Long Station Name That Should Wrap At Narrow Widths Without Breaking"
+          }
+        })
+
+      doc = LazyHTML.from_fragment(html)
+      heading = LazyHTML.query(doc, "#station-sub-nav h1")
+      classes = LazyHTML.attribute(heading, "class") |> List.first()
+      assert classes =~ "break-words"
+    end
+
+    test "diagram controls render on diagram tab" do
+      html = render_station_sub_nav(%{active_tab: :diagram})
+      assert html =~ "Add level"
+      assert html =~ "Apply naming"
+    end
+
+    test "diagram controls do not render on details tab" do
+      html = render_station_sub_nav(%{active_tab: :details})
+      refute html =~ "Add level"
+    end
+  end
+
+  describe "route_sub_nav" do
+    defp render_route_sub_nav(assigns) do
+      assigns =
+        Map.merge(
+          %{
+            route: %{
+              route_id: "route-1",
+              route_short_name: "42",
+              route_long_name: "Crosstown"
+            },
+            gtfs_version_id: 42,
+            active_tab: :details
+          },
+          assigns
+        )
+
+      rendered_to_string(~H"""
+      <.route_sub_nav
+        route={@route}
+        gtfs_version_id={@gtfs_version_id}
+        active_tab={@active_tab}
+      />
+      """)
+    end
+
+    test "renders ordinary navigation links without tablist or tab roles" do
+      html = render_route_sub_nav(%{})
+      refute html =~ ~s(role="tablist")
+      refute html =~ ~s(role="tab")
+      refute html =~ "aria-selected"
+    end
+
+    test "active tab has aria-current=page" do
+      html = render_route_sub_nav(%{active_tab: :patterns})
+      doc = LazyHTML.from_fragment(html)
+
+      link = LazyHTML.query(doc, ~s(nav a[aria-current="page"]))
+      assert LazyHTML.text(link) =~ "Patterns"
+    end
+
+    test "back link has 44px target and accessible name" do
+      html = render_route_sub_nav(%{})
+      doc = LazyHTML.from_fragment(html)
+
+      back = LazyHTML.query(doc, ~s(nav a[aria-label="Back to routes list"]))
+      assert Enum.count(back) == 1
+      classes = LazyHTML.attribute(back, "class") |> List.first()
+      assert classes =~ "min-h-11"
+    end
+  end
+
+  describe "header" do
+    test "renders h1 with correct hierarchy class" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.header>
+          Page Title
+          <:subtitle>Some subtitle</:subtitle>
+        </.header>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      h1 = LazyHTML.query(doc, "header h1")
+      assert LazyHTML.text(h1) =~ "Page Title"
+    end
+
+    test "actions stack at narrow widths" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.header>
+          Title
+          <:actions>
+            <button>Action</button>
+          </:actions>
+        </.header>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      header = LazyHTML.query(doc, "header")
+      classes = LazyHTML.attribute(header, "class") |> List.first()
+      assert classes =~ "flex-col"
+      assert classes =~ "sm:flex-row"
+    end
+  end
+end
