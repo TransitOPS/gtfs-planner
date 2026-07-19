@@ -118,6 +118,24 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
   end
 
   describe "invite flow" do
+    test "invite drawer has derived native root and preserved inner panel ID", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
+
+      # Derived native root
+      assert has_element?(view, "dialog#invite-drawer-overlay")
+      assert has_element?(view, "dialog#invite-drawer-overlay[data-open='true']")
+
+      # Inner panel preserves caller-facing ID
+      assert has_element?(view, "aside#invite-drawer")
+
+      # Form is preserved inside the drawer
+      assert has_element?(view, "aside#invite-drawer #invite-form")
+
+      # Close event drives the configured on_close
+      render_click(view, "close_drawer")
+      assert_patch(view, ~p"/admin/users")
+    end
+
     test "opens invite drawer and invites new user", %{conn: conn, organization: organization} do
       {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
 

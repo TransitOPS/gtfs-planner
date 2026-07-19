@@ -308,6 +308,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       |> element("[phx-click='select_entity'][phx-value-entity_type='stop']", "Entrance")
       |> render_click()
 
+      # Derived native root
+      assert has_element?(view, "dialog#report-entity-drawer-overlay")
+      assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='true']")
+
+      # Inner panel preserves caller-facing ID
       assert has_element?(view, "#report-entity-drawer")
       assert has_element?(view, "#report-stop-edit-form")
     end
@@ -329,12 +334,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       |> element("[phx-click='select_entity'][phx-value-entity_type='stop']", "Entrance")
       |> render_click()
 
+      assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='true']")
       assert has_element?(view, "#report-stop-edit-form")
 
       # Close the drawer
       render_click(view, "close_entity_drawer")
 
+      # Drawer form is removed; native root reflects closed state
       refute has_element?(view, "#report-stop-edit-form")
+      assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='false']")
     end
 
     test "large detail sets render without nested overflow text", %{
@@ -410,6 +418,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       |> element("[phx-click='select_entity'][phx-value-entity_type='stop']", "Entrance")
       |> render_click()
 
+      assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='true']")
       assert has_element?(view, "#report-stop-edit-form")
 
       # Submit the form with changed data
