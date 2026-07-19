@@ -866,6 +866,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             active_level={@active_level}
             other_levels={@other_levels}
             enabled_count={MapSet.size(MapSet.union(@other_levels_floorplan, @other_levels_stops))}
+            child_stops_list={@child_stops_list}
           />
           <%= if @mode == :map do %>
             <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
@@ -2073,6 +2074,51 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:selected_from_stop, nil)
      |> assign(:active_point_id, nil)}
+  end
+
+  @impl true
+  def handle_event("select_from_stop", %{"from_id" => ""}, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("select_from_stop", %{"from_id" => from_id}, socket) do
+    # If same stop is already selected, no-op
+    socket =
+      if socket.assigns.selected_from_stop && socket.assigns.selected_from_stop.id == from_id do
+        socket
+      else
+        # Deselect current from-stop if any (clear shared selection state)
+        socket =
+          if socket.assigns.selected_from_stop do
+            stop = socket.assigns.selected_from_stop
+
+            socket
+            |> stream_insert(:child_stops, stop)
+            |> assign(:selected_from_stop, nil)
+            |> assign(:active_point_id, nil)
+          else
+            socket
+          end
+
+        # Select new from-stop through shared handle_stop_selection
+        case handle_stop_selection(from_id, socket) do
+          {:noreply, socket} -> socket
+          _ -> socket
+        end
+      end
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("select_to_stop", %{"to_id" => ""}, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("select_to_stop", %{"to_id" => to_id}, socket) do
+    handle_stop_selection(to_id, socket)
   end
 
   @impl true

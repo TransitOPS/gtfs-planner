@@ -1703,6 +1703,215 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#unpositioned-stop-row-#{unpositioned_stop.id} button[aria-label='Place here — REPOSITION_A11Y_UNPOS (A11y Unpositioned Stop)']"
              )
     end
+
+    # Keyboard connect-mode endpoint picker tests (Step 5)
+    test "endpoint picker creates pathway between selected from-stop and to-stop with no canvas click",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_PICKER_A",
+          stop_name: "Connect Picker A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 16.0, "y" => 30.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_PICKER_B",
+          stop_name: "Connect Picker B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 34.0, "y" => 30.0}
+        })
+
+      # Associate level diagram so connect mode is available
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-picker-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+
+      # No pathway before selection
+      pathways_before =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn p ->
+          p.from_stop_id == stop_a.stop_id and p.to_stop_id == stop_b.stop_id
+        end)
+
+      assert pathways_before == []
+
+      # Select from-stop via picker
+      view
+      |> element("form#connect-from-form")
+      |> render_change(%{"from_id" => to_string(stop_a.id)})
+
+      # Verify from-stop selection feedback
+      assert has_element?(view, "#diagram-action-strip")
+
+      # Select to-stop via picker — this completes the pathway
+      view
+      |> element("form#connect-to-form")
+      |> render_change(%{"to_id" => to_string(stop_b.id)})
+
+      # Verify pathway was created
+      pathways =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn p ->
+          p.from_stop_id == stop_a.stop_id and p.to_stop_id == stop_b.stop_id
+        end)
+
+      assert length(pathways) == 1
+
+      pathway = hd(pathways)
+      assert pathway.from_stop_id == stop_a.stop_id
+      assert pathway.to_stop_id == stop_b.stop_id
+      assert pathway.pathway_mode == 1
+      assert pathway.is_bidirectional == true
+    end
+
+    test "mixed canvas-click and picker endpoint selection resolves to one shared state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      stop_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_MIXED_A",
+          stop_name: "Connect Mixed A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 16.0, "y" => 30.0}
+        })
+
+      stop_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_MIXED_B",
+          stop_name: "Connect Mixed B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 34.0, "y" => 30.0}
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-mixed-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+
+      # Scenario 1: Canvas-click from-stop, picker to-stop
+      render_hook(view, "stop_clicked", %{"id" => stop_a.id})
+      assert has_element?(view, "#diagram-action-strip")
+
+      view
+      |> element("form#connect-to-form")
+      |> render_change(%{"to_id" => to_string(stop_b.id)})
+
+      pathways_1 =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn p ->
+          p.from_stop_id == stop_a.stop_id and p.to_stop_id == stop_b.stop_id
+        end)
+
+      assert length(pathways_1) == 1
+
+      pathway_1 = hd(pathways_1)
+      assert pathway_1.from_stop_id == stop_a.stop_id
+      assert pathway_1.to_stop_id == stop_b.stop_id
+
+      # Clean up: delete pathway so next scenario starts fresh
+      {:ok, _} = Gtfs.delete_pathway(pathway_1)
+
+      # Refresh view
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+
+      # Scenario 2: Picker from-stop, canvas-click to-stop
+      view
+      |> element("form#connect-from-form")
+      |> render_change(%{"from_id" => to_string(stop_a.id)})
+
+      render_hook(view, "stop_clicked", %{"id" => stop_b.id})
+
+      pathways_2 =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn p ->
+          p.from_stop_id == stop_a.stop_id and p.to_stop_id == stop_b.stop_id
+        end)
+
+      assert length(pathways_2) == 1
+    end
+
+    test "selecting same stop for both endpoints via picker is rejected without creating pathway",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONNECT_SAME_A",
+          stop_name: "Connect Same A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 16.0, "y" => 30.0}
+        })
+
+      stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-same-diagram.png")
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "connect"})
+
+      # Select from-stop via picker
+      view
+      |> element("form#connect-from-form")
+      |> render_change(%{"from_id" => to_string(stop.id)})
+
+      # Select same stop as to-stop via picker
+      view
+      |> element("form#connect-to-form")
+      |> render_change(%{"to_id" => to_string(stop.id)})
+
+      # Verify no pathway was created
+      pathways =
+        Gtfs.list_pathways_for_station(organization.id, gtfs_version.id, station.id)
+        |> Enum.filter(fn p -> p.from_stop_id == stop.stop_id or p.to_stop_id == stop.stop_id end)
+
+      assert pathways == []
+    end
   end
 
   describe "StationDiagramLive - child stop save refresh" do

@@ -181,6 +181,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :active_level, :any, default: nil
   attr :other_levels, :list, default: []
   attr :enabled_count, :integer, default: 0
+  attr :child_stops_list, :list, default: []
 
   def diagram_action_strip(assigns) do
     ~H"""
@@ -212,13 +213,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                     Click diagram to add a child stop
                   </span>
                 <% @mode == :connect && @selected_from_stop == nil -> %>
-                  <span class="text-sm text-blue-700 font-medium">
-                    Choose a child stop to begin pathway
-                  </span>
+                  <form
+                    phx-change="select_from_stop"
+                    id="connect-from-form"
+                    class="flex items-center gap-2"
+                  >
+                    <label class="text-sm font-medium text-blue-900">From:</label>
+                    <select name="from_id" class="select select-sm select-bordered bg-white">
+                      <option value="">Select a stop...</option>
+                      <%= for stop <- @child_stops_list do %>
+                        <option value={stop.id}>
+                          {stop.stop_name || stop.stop_id}
+                        </option>
+                      <% end %>
+                    </select>
+                  </form>
                 <% @mode == :connect && @selected_from_stop != nil -> %>
                   <span class="text-sm text-blue-700 font-medium">
-                    From: {@selected_from_stop.stop_name || @selected_from_stop.stop_id} — select destination stop
+                    From: {@selected_from_stop.stop_name || @selected_from_stop.stop_id}
                   </span>
+                  <form
+                    phx-change="select_to_stop"
+                    id="connect-to-form"
+                    class="flex items-center gap-2"
+                  >
+                    <label class="text-sm font-medium text-blue-900">— To:</label>
+                    <select name="to_id" class="select select-sm select-bordered bg-white">
+                      <option value="">Select destination...</option>
+                      <%= for stop <- @child_stops_list, stop.id != @selected_from_stop.id do %>
+                        <option value={stop.id}>
+                          {stop.stop_name || stop.stop_id}
+                        </option>
+                      <% end %>
+                    </select>
+                  </form>
                   <button
                     type="button"
                     class="btn btn-ghost btn-sm text-blue-700 hover:text-blue-900 hover:bg-blue-100"
