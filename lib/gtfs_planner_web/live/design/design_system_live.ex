@@ -32,7 +32,8 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
     %{slug: "autocomplete", title: "Autocomplete", group: "Components"},
     %{slug: "improvements", title: "Improvements", group: "Proposals"},
     %{slug: "content", title: "Content & IA", group: "Proposals"},
-    %{slug: "transit", title: "Transit patterns", group: "Proposals"}
+    %{slug: "transit", title: "Transit patterns", group: "Proposals"},
+    %{slug: "experimental", title: "Experimental", group: "Proposals"}
   ]
 
   @doc """
@@ -59,7 +60,11 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
      |> assign(:selected_lon, nil)
      |> assign(:selected_result, nil)
      |> assign(:saved_locations, [])
-     |> assign(:last_results, [])}
+     |> assign(:last_results, [])
+     |> assign(:filter_active, false)
+     |> assign(:filter_inactive, true)
+     |> assign(:view_mode, "list")
+     |> allow_upload(:feed, accept: ~w(.zip), max_entries: 1, max_file_size: 52_428_800)}
   end
 
   # Demo state for every page lives here, in the LiveView that owns the events.
@@ -258,6 +263,22 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
     {:noreply, assign(socket, :saved_locations, saved_locations)}
   end
 
+  def handle_event("cancel_upload", %{"ref" => ref}, socket) do
+    {:noreply, cancel_upload(socket, :feed, ref)}
+  end
+
+  def handle_event("toggle_filter", %{"value" => filter}, socket) do
+    case filter do
+      "active" -> {:noreply, assign(socket, :filter_active, !socket.assigns.filter_active)}
+      "inactive" -> {:noreply, assign(socket, :filter_inactive, !socket.assigns.filter_inactive)}
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("change_view", %{"value" => view_mode}, socket) do
+    {:noreply, assign(socket, :view_mode, view_mode)}
+  end
+
   # Resolves a typed/selected address string against the results the last autocomplete
   # call cached. An unmatched string clears the selection rather than keeping a stale
   # one, which is also what makes a failed geocoding call safe.
@@ -414,4 +435,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   # registry entry without a body raises a FunctionClauseError on that page rather
   # than rendering a silent placeholder.
   defp page_body(%{page: %{slug: "transit"}} = assigns), do: ProposalPages.transit(assigns)
+
+  defp page_body(%{page: %{slug: "experimental"}} = assigns),
+    do: ProposalPages.experimental(assigns)
 end

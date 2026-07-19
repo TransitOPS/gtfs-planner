@@ -1,19 +1,24 @@
 defmodule GtfsPlannerWeb.Design.ProposalPages do
   @moduledoc ~S"""
-  Proposals pages for the `/design` section: improvements, content & IA, and
-  transit patterns.
+  Proposals pages for the `/design` section: improvements, content & IA,
+  transit patterns, and experimental components.
 
-  Unlike the Components pages, nothing here renders a production component.
-  Every example is a plain-HTML-and-Tailwind mockup of something that does not
+  Most pages here are plain-HTML-and-Tailwind mockups of something that does not
   exist yet, so a proposal cannot be mistaken for shipped API. A proposal
   graduates by landing in `core_components.ex` and earning a Components page —
   never by being promoted from this module.
+
+  The experimental page is an exception: it renders real components that are
+  implemented and tested but not yet adopted in production. These are marked
+  experimental with clear ownership and graduation paths.
 
   Every Tailwind/daisyUI class here is a literal string. Tailwind v4 scans
   source text, so an interpolated class name compiles but is silently missing
   from the bundle. See the moduledoc on `FoundationPages`.
   """
   use Phoenix.Component
+
+  import GtfsPlannerWeb.CoreComponents
 
   @doc """
   Grounded recommendations: observed problems, proposed fixes, and the gaps
@@ -881,6 +886,180 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
         </li>
         <li>
           Fares: currency-aware mono amounts, fare rules written as plain sentences.
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  @doc """
+  Experimental components: upload, pressed filters, and segmented controls.
+  These are real components with deterministic demo state, marked experimental
+  with ownership and maturity labels.
+  """
+  def experimental(assigns) do
+    ~H"""
+    <section id="ds-page-experimental" class="max-w-4xl">
+      <h1 class="text-2xl font-bold">Experimental</h1>
+      <p class="mt-2 text-base-content/70">
+        Components that are implemented and tested but not yet adopted in production.
+        Each has a deterministic demo, clear ownership, and a path to graduation.
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Upload field</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        A file upload field with Phoenix LiveView's UploadConfig. Presents a labeled
+        native file input, constraints, entry progress, cancellation, and rejection.
+        Does not consume or persist files.
+      </p>
+      <div class="mt-2 text-xs text-base-content/50">
+        <span class="font-semibold">Maturity:</span>
+        Experimental · <span class="font-semibold">Owner:</span>
+        Packages 14/16 (import and diagram upload) · <span class="font-semibold">Graduation:</span>
+        Package 19
+      </div>
+      <div id="ds-upload-demo" class="mt-3 border border-base-300 p-4">
+        <.upload_field
+          id="feed-upload"
+          upload={@uploads.feed}
+          label="GTFS feed"
+          help="ZIP file, max 50MB"
+          cancel_event="cancel_upload"
+        />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.upload_field id="feed-upload" upload={@uploads.feed} label="GTFS feed" help="ZIP file, max 50MB" cancel_event="cancel_upload" /&gt;
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Pressed filter</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        A toggle button with aria-pressed state for filtering data. Server-owned
+        pressed state, pending/disabled copy, configured event/value/target.
+      </p>
+      <div class="mt-2 text-xs text-base-content/50">
+        <span class="font-semibold">Maturity:</span>
+        Experimental · <span class="font-semibold">Owner:</span>
+        Packages 14–17 (selection adoption) · <span class="font-semibold">Graduation:</span>
+        Package 19
+      </div>
+      <div id="ds-pressed-filter-demo" class="mt-3 flex flex-wrap gap-2 border border-base-300 p-4">
+        <.pressed_filter
+          id="filter-active"
+          pressed={@filter_active}
+          event="toggle_filter"
+          value="active"
+          label="Active"
+        />
+        <.pressed_filter
+          id="filter-inactive"
+          pressed={@filter_inactive}
+          event="toggle_filter"
+          value="inactive"
+          label="Inactive"
+        />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.pressed_filter id="filter-active" pressed={@filter_active} event="toggle_filter" value="active" label="Active" /&gt;
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Segmented control</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        A fieldset with visible legend and native same-name radio group. Server-owned
+        selected value, configured event/target, disabled explanation.
+      </p>
+      <div class="mt-2 text-xs text-base-content/50">
+        <span class="font-semibold">Maturity:</span>
+        Experimental · <span class="font-semibold">Owner:</span>
+        Packages 14–17 (selection adoption) · <span class="font-semibold">Graduation:</span>
+        Package 19
+      </div>
+      <div id="ds-segmented-control-demo" class="mt-3 border border-base-300 p-4">
+        <.segmented_control
+          id="view-mode"
+          name="view_mode"
+          legend="View mode"
+          options={[{"List", "list"}, {"Map", "map"}, {"Table", "table"}]}
+          value={@view_mode}
+          event="change_view"
+        />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.segmented_control id="view-mode" name="view_mode" legend="View mode" options={[{"List", "list"}, {"Map", "map"}]} value={@view_mode} event="change_view" /&gt;
+        </code>
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Semantic decision matrix</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        When to use each selection primitive. Navigation uses links with aria-current,
+        pressed filters use buttons with aria-pressed, and single choice uses a
+        fieldset with native radios.
+      </p>
+      <div class="mt-3 overflow-x-auto">
+        <table id="ds-selection-matrix" class="w-full text-sm">
+          <thead>
+            <tr class="border-y border-base-300 text-left text-xs font-semibold text-base-content/60">
+              <th class="py-2 pr-4 font-semibold">Pattern</th>
+              <th class="py-2 pr-4 font-semibold">Component</th>
+              <th class="py-2 pr-4 font-semibold">Semantics</th>
+              <th class="py-2 font-semibold">Use when</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-base-300">
+            <tr>
+              <td class="py-2 pr-4 font-medium">Navigation</td>
+              <td class="py-2 pr-4">Link</td>
+              <td class="py-2 pr-4">aria-current</td>
+              <td class="py-2">Moving between pages or records</td>
+            </tr>
+            <tr>
+              <td class="py-2 pr-4 font-medium">Filter toggle</td>
+              <td class="py-2 pr-4">pressed_filter</td>
+              <td class="py-2 pr-4">aria-pressed</td>
+              <td class="py-2">Toggling a filter on/off</td>
+            </tr>
+            <tr>
+              <td class="py-2 pr-4 font-medium">Single choice</td>
+              <td class="py-2 pr-4">segmented_control</td>
+              <td class="py-2 pr-4">fieldset + radio</td>
+              <td class="py-2">Choosing one option from a set</td>
+            </tr>
+            <tr>
+              <td class="py-2 pr-4 font-medium">Disclosure</td>
+              <td class="py-2 pr-4">details/summary</td>
+              <td class="py-2 pr-4">native disclosure</td>
+              <td class="py-2">Showing/hiding content</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Non-goals</h2>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
+        <li>
+          These components do not consume or persist files. Upload adoption in import
+          and diagram pages is owned by Packages 14 and 16.
+        </li>
+        <li>
+          These components do not migrate ImportLive, station-diagram upload, or
+          change-history tabs. Those migrations are owned by Packages 14–17.
+        </li>
+        <li>
+          These components are not a generic selection abstraction. Navigation, pressed
+          filters, and single choice remain distinct contracts with distinct semantics.
         </li>
       </ul>
     </section>

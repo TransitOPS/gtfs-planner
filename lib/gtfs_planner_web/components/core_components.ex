@@ -1451,6 +1451,229 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   @doc """
+  Renders a file upload field with Phoenix LiveView's UploadConfig.
+
+  Experimental. Presents a labeled native file input, constraints, entry progress,
+  cancellation, rejection, and failure states. Does not consume or persist files.
+
+  ## Examples
+
+      <.upload_field
+        id="feed-upload"
+        upload={@uploads.feed}
+        label="GTFS feed"
+        help="ZIP file, max 50MB"
+        cancel_event="cancel_upload"
+      />
+  """
+  attr :id, :string, required: true
+  attr :upload, Phoenix.LiveView.UploadConfig, required: true
+  attr :label, :string, required: true
+  attr :help, :string, required: true
+  attr :cancel_event, :string, required: true
+  attr :target, :any, default: nil
+  attr :error, :string, default: nil
+  slot :failure, doc: "view-level failure message"
+
+  def upload_field(assigns) do
+    ~H"""
+    <div id={@id} class="space-y-2">
+      <label for={"#{@id}-input"} class="block text-sm font-semibold">
+        {@label}
+      </label>
+      <p id={"#{@id}-help"} class="text-sm text-base-content/60">
+        {@help}
+      </p>
+
+      <label
+        for={"#{@id}-input"}
+        class="block border-2 border-dashed border-base-300 rounded-lg p-4 cursor-pointer hover:border-primary focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20"
+      >
+        <span class="text-sm text-base-content/70">
+          Click to select a file or drag and drop
+        </span>
+        <.live_file_input upload={@upload} id={"#{@id}-input"} class="sr-only" />
+      </label>
+
+      <p :if={@error} id={"#{@id}-error"} class="text-sm text-error" role="alert">
+        {@error}
+      </p>
+
+      <div :if={@failure != []} id={"#{@id}-failure"} class="text-sm text-error">
+        {render_slot(@failure)}
+      </div>
+
+      <ul :if={@upload.entries != []} id={"#{@id}-entries"} class="space-y-2">
+        <li
+          :for={entry <- @upload.entries}
+          id={"#{@id}-entry-#{entry.ref}"}
+          class="flex items-center gap-2"
+        >
+          <div class="flex-1 min-w-0">
+            <p class="text-sm font-medium truncate" title={entry.client_name}>
+              {entry.client_name}
+            </p>
+            <div class="flex items-center gap-2 mt-1">
+              <div class="flex-1 h-2 bg-base-300 rounded-full overflow-hidden">
+                <div
+                  class="h-full bg-primary transition-all"
+                  style={"width: #{entry.progress}%"}
+                >
+                </div>
+              </div>
+              <span class="text-xs text-base-content/60 tabular-nums">
+                {entry.progress}%
+              </span>
+            </div>
+            <ul :if={upload_errors(@upload, entry) != []} class="mt-1 text-xs text-error">
+              <li :for={error <- upload_errors(@upload, entry)}>
+                {translate_error(error)}
+              </li>
+            </ul>
+          </div>
+          <button
+            type="button"
+            class="h-11 w-11 flex items-center justify-center text-base-content/60 hover:text-error"
+            phx-click={@cancel_event}
+            phx-value-ref={entry.ref}
+            phx-target={@target}
+            aria-label={"Cancel #{entry.client_name}"}
+          >
+            <.icon name="hero-x-mark" class="size-5" />
+          </button>
+        </li>
+      </ul>
+
+      <ul :if={@upload.errors != []} id={"#{@id}-rejected"} class="text-sm text-error">
+        <li :for={error <- @upload.errors}>
+          {upload_error_to_string(error)}
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  defp upload_error_to_string(:too_large), do: "File is too large"
+  defp upload_error_to_string(:too_many_files), do: "Too many files"
+  defp upload_error_to_string(:not_accepted), do: "File type not accepted"
+  defp upload_error_to_string(:external_client_failure), do: "Upload failed"
+  defp upload_error_to_string({:error, reason}), do: reason
+  defp upload_error_to_string(error) when is_binary(error), do: error
+  defp upload_error_to_string(error) when is_atom(error), do: Atom.to_string(error)
+  defp upload_error_to_string(_), do: "Upload error"
+
+  @doc """
+  Renders a pressed filter button with aria-pressed state.
+
+  Experimental. A toggle button for filtering data. Server-owned pressed state,
+  pending/disabled copy, configured event/value/target.
+
+  ## Examples
+
+      <.pressed_filter
+        id="filter-active"
+        pressed={@filter_active}
+        event="toggle_filter"
+        value="active"
+        label="Active"
+      />
+  """
+  attr :id, :string, required: true
+  attr :pressed, :boolean, required: true
+  attr :event, :string, required: true
+  attr :value, :string, required: true
+  attr :label, :string, required: true
+  attr :target, :any, default: nil
+  attr :pending, :boolean, default: false
+  attr :pending_label, :string, default: nil
+  attr :disabled, :boolean, default: false
+  attr :disabled_reason, :string, default: nil
+
+  def pressed_filter(assigns) do
+    ~H"""
+    <button
+      id={@id}
+      type="button"
+      class={[
+        "h-11 min-w-[44px] px-4 text-sm font-semibold border rounded-lg transition-colors",
+        @pressed && "bg-primary text-primary-content border-primary",
+        !@pressed && "bg-base-100 text-base-content border-base-300 hover:border-primary",
+        @disabled && "opacity-50 cursor-not-allowed"
+      ]}
+      phx-click={@event}
+      phx-value={@value}
+      phx-target={@target}
+      phx-disable-with={if @pending, do: @pending_label || "Loading…", else: nil}
+      aria-pressed={to_string(@pressed)}
+      disabled={@disabled || @pending}
+      title={if @disabled, do: @disabled_reason, else: nil}
+    >
+      {if @pending, do: @pending_label || "Loading…", else: @label}
+    </button>
+    """
+  end
+
+  @doc """
+  Renders a segmented control with native radio inputs.
+
+  Experimental. A fieldset with visible legend and native same-name radio group.
+  Server-owned selected value, configured event/target, disabled explanation.
+
+  ## Examples
+
+      <.segmented_control
+        id="view-mode"
+        name="view_mode"
+        legend="View mode"
+        options={[{"List", "list"}, {"Map", "map"}, {"Table", "table"}]}
+        value={@view_mode}
+        event="change_view"
+      />
+  """
+  attr :id, :string, required: true
+  attr :name, :string, required: true
+  attr :legend, :string, required: true
+  attr :options, :list, required: true
+  attr :value, :string, required: true
+  attr :event, :string, required: true
+  attr :target, :any, default: nil
+  attr :disabled, :boolean, default: false
+  attr :disabled_reason, :string, default: nil
+
+  def segmented_control(assigns) do
+    ~H"""
+    <fieldset id={@id} class="space-y-2" disabled={@disabled}>
+      <legend class="text-sm font-semibold">{@legend}</legend>
+      <p :if={@disabled && @disabled_reason} class="text-xs text-base-content/60">
+        {@disabled_reason}
+      </p>
+      <div class="flex flex-wrap gap-2">
+        <label
+          :for={{label, val} <- @options}
+          class={[
+            "h-11 min-w-[44px] px-4 flex items-center justify-center text-sm font-semibold border rounded-lg cursor-pointer transition-colors",
+            @value == val && "bg-primary text-primary-content border-primary",
+            @value != val && "bg-base-100 text-base-content border-base-300 hover:border-primary"
+          ]}
+        >
+          <input
+            type="radio"
+            name={@name}
+            value={val}
+            checked={@value == val}
+            class="sr-only"
+            phx-click={@event}
+            phx-value={val}
+            phx-target={@target}
+          />
+          {label}
+        </label>
+      </div>
+    </fieldset>
+    """
+  end
+
+  @doc """
   Translates an error message using gettext.
 
   Accepts the `{msg, opts}` tuple produced by Ecto changesets as well as a

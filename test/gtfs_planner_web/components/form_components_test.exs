@@ -339,4 +339,165 @@ defmodule GtfsPlannerWeb.FormComponentsTest do
       refute html =~ "aria-live"
     end
   end
+
+  describe "upload_field/1 experimental contract" do
+    test "renders labeled native file input with help text" do
+      assigns = %{
+        upload: %Phoenix.LiveView.UploadConfig{
+          ref: "test-ref",
+          entries: [],
+          errors: [],
+          max_entries: 1,
+          max_file_size: 52_428_800,
+          accept: [".zip"]
+        }
+      }
+
+      html =
+        rendered_to_string(~H"""
+        <.upload_field
+          id="feed-upload"
+          upload={@upload}
+          label="GTFS feed"
+          help="ZIP file, max 50MB"
+          cancel_event="cancel_upload"
+        />
+        """)
+
+      assert html =~ "GTFS feed"
+      assert html =~ "ZIP file, max 50MB"
+      assert html =~ ~r/for="feed-upload-input"/
+      assert html =~ ~r/id="feed-upload-input"/
+      assert html =~ ~r/type="file"/
+    end
+
+    test "renders entry with progress bar and cancel button" do
+      entry = %Phoenix.LiveView.UploadEntry{
+        ref: "entry-ref",
+        client_name: "test.zip",
+        progress: 50,
+        valid?: true
+      }
+
+      assigns = %{
+        upload: %Phoenix.LiveView.UploadConfig{
+          ref: "test-ref",
+          entries: [entry],
+          errors: [],
+          max_entries: 1,
+          max_file_size: 52_428_800,
+          accept: [".zip"]
+        }
+      }
+
+      html =
+        rendered_to_string(~H"""
+        <.upload_field
+          id="feed-upload"
+          upload={@upload}
+          label="GTFS feed"
+          help="ZIP file"
+          cancel_event="cancel_upload"
+        />
+        """)
+
+      assert html =~ "test.zip"
+      assert html =~ "50%"
+      assert html =~ ~r/id="feed-upload-entry-entry-ref"/
+      assert html =~ ~r/phx-click="cancel_upload"/
+      assert html =~ ~r/phx-value-ref="entry-ref"/
+    end
+
+    test "renders rejected entry errors" do
+      entry = %Phoenix.LiveView.UploadEntry{
+        ref: "bad-ref",
+        client_name: "bad.exe",
+        progress: 0,
+        valid?: false
+      }
+
+      assigns = %{
+        upload: %Phoenix.LiveView.UploadConfig{
+          ref: "test-ref",
+          entries: [entry],
+          errors: [:too_many_files],
+          max_entries: 1,
+          max_file_size: 52_428_800,
+          accept: [".zip"]
+        }
+      }
+
+      html =
+        rendered_to_string(~H"""
+        <.upload_field
+          id="feed-upload"
+          upload={@upload}
+          label="GTFS feed"
+          help="ZIP file"
+          cancel_event="cancel_upload"
+        />
+        """)
+
+      assert html =~ "bad.exe"
+      assert html =~ "Too many files"
+    end
+
+    test "renders view-level failure slot" do
+      assigns = %{
+        upload: %Phoenix.LiveView.UploadConfig{
+          ref: "test-ref",
+          entries: [],
+          errors: [],
+          max_entries: 1,
+          max_file_size: 52_428_800,
+          accept: [".zip"]
+        }
+      }
+
+      html =
+        rendered_to_string(~H"""
+        <.upload_field
+          id="feed-upload"
+          upload={@upload}
+          label="GTFS feed"
+          help="ZIP file"
+          cancel_event="cancel_upload"
+        >
+          <:failure>Upload failed: server error</:failure>
+        </.upload_field>
+        """)
+
+      assert html =~ "Upload failed: server error"
+      assert html =~ ~r/id="feed-upload-failure"/
+    end
+
+    test "renders error attribute" do
+      assigns = %{
+        upload: %Phoenix.LiveView.UploadConfig{
+          ref: "test-ref",
+          entries: [],
+          errors: [],
+          max_entries: 1,
+          max_file_size: 52_428_800,
+          accept: [".zip"]
+        }
+      }
+
+      html =
+        rendered_to_string(~H"""
+        <.upload_field
+          id="feed-upload"
+          upload={@upload}
+          label="GTFS feed"
+          help="ZIP file"
+          cancel_event="cancel_upload"
+          error="File type not allowed"
+        />
+        """)
+
+      assert html =~ "File type not allowed"
+      assert html =~ ~r/id="feed-upload-error"/
+      assert html =~ ~r/role="alert"/
+    end
+  end
 end

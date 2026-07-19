@@ -437,4 +437,247 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert classes =~ "sm:flex-row"
     end
   end
+
+  describe "pressed_filter/1 experimental contract" do
+    test "renders button with aria-pressed state" do
+      assigns = %{pressed: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.pressed_filter
+          id="filter-active"
+          pressed={@pressed}
+          event="toggle_filter"
+          value="active"
+          label="Active"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      button = LazyHTML.query(doc, "#filter-active")
+      assert LazyHTML.attribute(button, "aria-pressed") == ["true"]
+      assert LazyHTML.text(button) =~ "Active"
+    end
+
+    test "unpressed button has aria-pressed=false" do
+      assigns = %{pressed: false}
+
+      html =
+        rendered_to_string(~H"""
+        <.pressed_filter
+          id="filter-active"
+          pressed={@pressed}
+          event="toggle_filter"
+          value="active"
+          label="Active"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      button = LazyHTML.query(doc, "#filter-active")
+      assert LazyHTML.attribute(button, "aria-pressed") == ["false"]
+    end
+
+    test "button has 44px target" do
+      assigns = %{pressed: false}
+
+      html =
+        rendered_to_string(~H"""
+        <.pressed_filter
+          id="filter-active"
+          pressed={@pressed}
+          event="toggle_filter"
+          value="active"
+          label="Active"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      button = LazyHTML.query(doc, "#filter-active")
+      classes = LazyHTML.attribute(button, "class") |> List.first()
+      assert classes =~ "h-11"
+      assert classes =~ "min-w-[44px]"
+    end
+
+    test "button sends configured event and value" do
+      assigns = %{pressed: false}
+
+      html =
+        rendered_to_string(~H"""
+        <.pressed_filter
+          id="filter-active"
+          pressed={@pressed}
+          event="toggle_filter"
+          value="active"
+          label="Active"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      button = LazyHTML.query(doc, "#filter-active")
+      assert LazyHTML.attribute(button, "phx-click") == ["toggle_filter"]
+      assert LazyHTML.attribute(button, "phx-value") == ["active"]
+    end
+
+    test "pending button shows pending label" do
+      assigns = %{pressed: false}
+
+      html =
+        rendered_to_string(~H"""
+        <.pressed_filter
+          id="filter-active"
+          pressed={@pressed}
+          event="toggle_filter"
+          value="active"
+          label="Active"
+          pending={true}
+          pending_label="Loading…"
+        />
+        """)
+
+      assert html =~ "Loading…"
+      doc = LazyHTML.from_fragment(html)
+      button = LazyHTML.query(doc, "#filter-active")
+      assert LazyHTML.attribute(button, "disabled") == [""]
+    end
+
+    test "disabled button shows disabled reason" do
+      assigns = %{pressed: false}
+
+      html =
+        rendered_to_string(~H"""
+        <.pressed_filter
+          id="filter-active"
+          pressed={@pressed}
+          event="toggle_filter"
+          value="active"
+          label="Active"
+          disabled={true}
+          disabled_reason="Not available"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      button = LazyHTML.query(doc, "#filter-active")
+      assert LazyHTML.attribute(button, "disabled") == [""]
+      assert LazyHTML.attribute(button, "title") == ["Not available"]
+    end
+  end
+
+  describe "segmented_control/1 experimental contract" do
+    test "renders fieldset with legend and radio inputs" do
+      assigns = %{value: "list"}
+
+      html =
+        rendered_to_string(~H"""
+        <.segmented_control
+          id="view-mode"
+          name="view_mode"
+          legend="View mode"
+          options={[{"List", "list"}, {"Map", "map"}]}
+          value={@value}
+          event="change_view"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      fieldset = LazyHTML.query(doc, "#view-mode")
+      assert Enum.count(fieldset) == 1
+
+      legend = LazyHTML.query(doc, "#view-mode legend")
+      assert LazyHTML.text(legend) =~ "View mode"
+
+      radios = LazyHTML.query(doc, "#view-mode input[type='radio']")
+      assert Enum.count(radios) == 2
+    end
+
+    test "selected option has checked attribute" do
+      assigns = %{value: "map"}
+
+      html =
+        rendered_to_string(~H"""
+        <.segmented_control
+          id="view-mode"
+          name="view_mode"
+          legend="View mode"
+          options={[{"List", "list"}, {"Map", "map"}]}
+          value={@value}
+          event="change_view"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      map_radio = LazyHTML.query(doc, ~s(#view-mode input[value="map"]))
+      assert LazyHTML.attribute(map_radio, "checked") == [""]
+
+      list_radio = LazyHTML.query(doc, ~s(#view-mode input[value="list"]))
+      assert LazyHTML.attribute(list_radio, "checked") == []
+    end
+
+    test "radio inputs send configured event and value" do
+      assigns = %{value: "list"}
+
+      html =
+        rendered_to_string(~H"""
+        <.segmented_control
+          id="view-mode"
+          name="view_mode"
+          legend="View mode"
+          options={[{"List", "list"}, {"Map", "map"}]}
+          value={@value}
+          event="change_view"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      list_radio = LazyHTML.query(doc, ~s(#view-mode input[value="list"]))
+      assert LazyHTML.attribute(list_radio, "phx-click") == ["change_view"]
+      assert LazyHTML.attribute(list_radio, "phx-value") == ["list"]
+    end
+
+    test "disabled fieldset shows disabled reason" do
+      assigns = %{value: "list"}
+
+      html =
+        rendered_to_string(~H"""
+        <.segmented_control
+          id="view-mode"
+          name="view_mode"
+          legend="View mode"
+          options={[{"List", "list"}]}
+          value={@value}
+          event="change_view"
+          disabled={true}
+          disabled_reason="Not available"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      fieldset = LazyHTML.query(doc, "#view-mode")
+      assert LazyHTML.attribute(fieldset, "disabled") == [""]
+
+      assert html =~ "Not available"
+    end
+
+    test "options wrap at narrow widths" do
+      assigns = %{value: "list"}
+
+      html =
+        rendered_to_string(~H"""
+        <.segmented_control
+          id="view-mode"
+          name="view_mode"
+          legend="View mode"
+          options={[{"List", "list"}, {"Map", "map"}, {"Table", "table"}]}
+          value={@value}
+          event="change_view"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      container = LazyHTML.query(doc, "#view-mode div.flex")
+      classes = LazyHTML.attribute(container, "class") |> List.first()
+      assert classes =~ "flex-wrap"
+    end
+  end
 end
