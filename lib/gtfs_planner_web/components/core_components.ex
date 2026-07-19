@@ -54,8 +54,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
     <div
       :if={msg = render_slot(@inner_block) || Phoenix.Flash.get(@flash, @kind)}
       id={@id}
-      phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
-      role="alert"
       class="toast toast-top toast-end z-[60]"
       {@rest}
     >
@@ -71,7 +69,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
           <p>{msg}</p>
         </div>
         <div class="flex-1" />
-        <button type="button" class="group self-start cursor-pointer" aria-label={gettext("close")}>
+        <button
+          type="button"
+          class="group self-start cursor-pointer min-h-11 min-w-11 flex items-center justify-center"
+          aria-label={gettext("Dismiss message")}
+          phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
+        >
           <.icon name="hero-x-mark" class="size-5 opacity-40 group-hover:opacity-70" />
         </button>
       </div>
@@ -1305,7 +1308,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   Show it only for the first paint of a slow view, never to replace content
   already on screen. The bars animate under `motion-safe:` and are hidden from
-  assistive tech; a visually-hidden live region announces `label` instead.
+  assistive tech; the label is visually available above the bars.
   Callers needing exact column mirroring pass their own bars as the inner block.
 
   ## Examples
@@ -1313,7 +1316,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       <.skeleton rows={5} label="Loading routes" />
   """
   attr :rows, :integer, default: 3
-  attr :label, :string, default: "Loading", doc: "announced to assistive tech"
+  attr :label, :string, default: "Loading", doc: "visually available loading copy"
   attr :class, :any, default: nil
   attr :rest, :global
   slot :inner_block, doc: "replaces the default bars for exact column mirroring"
@@ -1321,7 +1324,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   def skeleton(assigns) do
     ~H"""
     <div class={@class} {@rest}>
-      <span class="sr-only" role="status">{@label}</span>
+      <p class="text-sm text-base-content/60 mb-2">{@label}</p>
       <div
         :if={@inner_block == []}
         class="space-y-3 motion-safe:animate-pulse"

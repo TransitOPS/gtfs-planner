@@ -420,6 +420,18 @@ dialog[role="alertdialog"][open] > div > div {
   #diagram-overlay g[tabindex]:focus-visible {
     transition-duration: 0ms;
   }
+
+  /* Shared reduced-motion: disable skeleton pulse and general transitions */
+  .motion-safe\:animate-pulse {
+    animation: none !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
 }
 
 /* Print styles for Report 2 */

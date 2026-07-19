@@ -653,15 +653,15 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       assert has_element?(view, "#ds-flash-demo #ds-flash-error", "Sample error message")
     end
 
-    # The examples must be the real <.flash>, not replica markup: these classes and the
-    # role come from core_components.ex and are what the page documents.
+    # The examples must be the real <.flash>, not replica markup: these classes come from
+    # core_components.ex and are what the page documents.
     test "renders each example as the real flash component", %{conn: conn, user: user} do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/feedback")
 
-      assert has_element?(view, ~s(#ds-flash-info[role="alert"] .alert.alert-info))
-      assert has_element?(view, ~s(#ds-flash-error[role="alert"] .alert.alert-error))
+      assert has_element?(view, ~s(#ds-flash-info .alert.alert-info))
+      assert has_element?(view, ~s(#ds-flash-error .alert.alert-error))
     end
 
     # The containment rule is `#ds-flash-demo .toast { position: static; }`. CSS is not
@@ -742,6 +742,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     end
 
     # The demo emits no custom event: <.flash>'s root pushes the built-in
+    # The close button is the only element that dismisses the flash. Clicking it sends
     # `lv:clear-flash`, which LiveView handles internally. The examples render from their
     # inner block, so dismissing one does not remove it.
     test "dismissing a flash example does not crash the LiveView", %{conn: conn, user: user} do
@@ -749,7 +750,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/design/feedback")
 
-      view |> element("#ds-flash-info") |> render_click()
+      view |> element("#ds-flash-info button[aria-label='Dismiss message']") |> render_click()
 
       assert has_element?(view, "#ds-flash-demo #ds-flash-info", "Sample info message")
       assert has_element?(view, "#ds-flash-demo #ds-flash-error", "Sample error message")

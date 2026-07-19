@@ -726,8 +726,8 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         In the app these appear as a toast pinned to the top right. The two below are the
         real component, shown in place by a page-scoped rule that returns them to normal
         flow — see <code class="font-mono text-sm">#ds-flash-demo</code>
-        in <code class="font-mono text-sm">assets/css/app.css</code>. Clicking one
-        dismisses it exactly as it would in the app.
+        in <code class="font-mono text-sm">assets/css/app.css</code>. Only the close button
+        dismisses the message; the message content itself is not clickable.
       </p>
 
       <div id="ds-flash-demo" class="mt-3 space-y-3 border border-base-300 p-4">
@@ -935,9 +935,8 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           name the object on the confirm button.
         </li>
         <li>
-          The flash container is <code class="font-mono text-sm">aria-live="polite"</code>,
-          so a screen reader announces a message without stealing focus. A state change
-          the user cannot see must still be announced.
+          Flash messages are dismissed only by the explicit close button. The message
+          content and any recovery links remain interactive and do not dismiss the flash.
         </li>
       </ul>
     </section>

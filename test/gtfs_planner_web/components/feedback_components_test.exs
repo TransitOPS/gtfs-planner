@@ -6,6 +6,82 @@ defmodule GtfsPlannerWeb.Components.FeedbackComponentsTest do
 
   import GtfsPlannerWeb.CoreComponents
 
+  describe "flash/1 close-only dismissal" do
+    test "close button has phx-click and 44px target" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.flash kind={:info} id="test-flash">Test message</.flash>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      close_btn = LazyHTML.query(doc, "button[aria-label='Dismiss message']")
+      assert Enum.count(close_btn) == 1
+      assert LazyHTML.attribute(close_btn, "phx-click") |> Enum.any?()
+
+      classes = LazyHTML.attribute(close_btn, "class") |> List.first()
+      assert classes =~ "min-h-11"
+      assert classes =~ "min-w-11"
+    end
+
+    test "flash root has no phx-click" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.flash kind={:info} id="test-flash">Test message</.flash>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      root = LazyHTML.query(doc, "#test-flash")
+      assert LazyHTML.attribute(root, "phx-click") == []
+    end
+
+    test "flash has no role=alert" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.flash kind={:info} id="test-flash">Test message</.flash>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      root = LazyHTML.query(doc, "#test-flash")
+      assert LazyHTML.attribute(root, "role") == []
+    end
+  end
+
+  describe "skeleton/1 visible label" do
+    test "label is visually available, not screen-reader only" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.skeleton rows={3} label="Loading routes" />
+        """)
+
+      assert html =~ "Loading routes"
+      doc = LazyHTML.from_fragment(html)
+      label = LazyHTML.query(doc, "p")
+      assert Enum.count(label) == 1
+      classes = LazyHTML.attribute(label, "class") |> List.first()
+      refute classes =~ "sr-only"
+    end
+
+    test "skeleton has no role=status" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.skeleton rows={3} label="Loading" />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      assert Enum.empty?(LazyHTML.query(doc, "[role='status']"))
+    end
+  end
+
   describe "status_badge/1 explicit vocabulary" do
     test "renders known status with explicit label and tone" do
       assigns = %{}

@@ -154,7 +154,7 @@ defmodule GtfsPlannerWeb.Layouts do
 
   def flash_group(assigns) do
     ~H"""
-    <div id={@id} aria-live="polite">
+    <div id={@id}>
       <.flash kind={:info} flash={@flash} />
       <.flash kind={:error} flash={@flash} />
 
