@@ -28,6 +28,7 @@ import GtfsVersionHook from "./gtfs_version_hook"
 import DiagramCanvasHook from "./diagram_canvas_hook"
 import MapAlignmentHook from "./map_alignment_hook"
 import DrawerFocusHook from "./drawer_focus_hook"
+import OverlayDialogHook from "./overlay_dialog_hook"
 import "../vendor/leaflet"
 import LiveSelect from "../vendor/live_select"
 
@@ -35,7 +36,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, MapAlignment: MapAlignmentHook, DrawerFocus: DrawerFocusHook, LiveSelect: LiveSelect.LiveSelect},
+  hooks: {...colocatedHooks, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, MapAlignment: MapAlignmentHook, DrawerFocus: DrawerFocusHook, OverlayDialog: OverlayDialogHook, LiveSelect: LiveSelect.LiveSelect},
 })
 
 // Show progress bar on live navigation and form submits
