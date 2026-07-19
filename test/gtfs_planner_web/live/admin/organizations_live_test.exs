@@ -28,6 +28,55 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
     %{conn: conn, user: user, organization: organization}
   end
 
+  describe "index page shared table contract" do
+    test "renders one stacked shared table with stable tbody ID and stream rows", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations")
+
+      html = render(view)
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "table")) == 1
+      assert Enum.count(LazyHTML.query(doc, "tbody#organizations")) == 1
+      table = LazyHTML.query(doc, "table")
+      table_classes = LazyHTML.attribute(table, "class") |> List.first()
+      assert table_classes =~ "ds-stack-table"
+
+      wrapper = LazyHTML.query(doc, "#organizations-container")
+      assert Enum.count(wrapper) == 1
+    end
+
+    test "makes organization name the primary navigation link", %{
+      conn: conn,
+      organization: organization
+    } do
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations")
+
+      assert has_element?(
+               view,
+               "tbody#organizations a[href='/admin/organizations/#{organization.id}']",
+               organization.name
+             )
+    end
+
+    test "preserves Edit as the row action", %{conn: conn, organization: organization} do
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations")
+
+      assert has_element?(
+               view,
+               "tbody#organizations a[href='/admin/organizations/#{organization.id}/edit']",
+               "Edit"
+             )
+    end
+
+    test "does not render a redundant View action link", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations")
+
+      refute has_element?(view, "tbody#organizations a", "View")
+    end
+  end
+
   describe "drawer form submission" do
     test "create drawer has derived native root and preserved inner panel form", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")

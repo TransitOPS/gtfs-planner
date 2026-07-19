@@ -509,17 +509,19 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         </.header>
 
         <div class="mt-8 bg-base-100 border border-base-300 rounded-lg overflow-hidden">
-          <.table id="organizations" rows={@streams.organizations}>
-            <:col :let={{_id, org}} label="Name">{org.name}</:col>
+          <.table id="organizations" rows={@streams.organizations} responsive="stack">
+            <:col :let={{_id, org}} label="Name">
+              <.link
+                navigate={~p"/admin/organizations/#{org.id}"}
+                class="link link-primary font-semibold"
+              >
+                {org.name}
+              </.link>
+            </:col>
             <:col :let={{_id, org}} label="Alias">{org.alias}</:col>
             <:action :let={{_id, org}}>
               <.link patch={~p"/admin/organizations/#{org.id}/edit"} class="link link-primary">
                 Edit
-              </.link>
-            </:action>
-            <:action :let={{_id, org}}>
-              <.link navigate={~p"/admin/organizations/#{org.id}"} class="link link-primary">
-                View
               </.link>
             </:action>
           </.table>

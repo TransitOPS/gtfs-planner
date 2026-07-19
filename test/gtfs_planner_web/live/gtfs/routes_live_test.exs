@@ -9,6 +9,87 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
 
   alias GtfsPlanner.Accounts
 
+  describe "RoutesLive shared table contract" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      %{user: user, organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "renders one shared table with stable tbody ID and route badge", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      route_fixture(organization.id, version.id, %{
+        route_id: "SHARED1",
+        route_short_name: "S1",
+        route_color: "FF0000"
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      html = render(view)
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "table")) == 1
+      assert Enum.count(LazyHTML.query(doc, "tbody#routes")) == 1
+      assert Enum.count(LazyHTML.query(doc, "#routes-container")) == 1
+    end
+
+    test "renders shared pagination with configured event", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      Enum.each(1..51, fn idx ->
+        route_fixture(organization.id, version.id, %{
+          route_id: "PG#{String.pad_leading(Integer.to_string(idx), 3, "0")}"
+        })
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      assert has_element?(view, "button[phx-click='paginate']", "Previous")
+      assert has_element?(view, "button[phx-click='paginate']", "Next")
+    end
+
+    test "does not duplicate route or action IDs", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      route_fixture(organization.id, version.id, %{route_id: "DEDUP1"})
+      route_fixture(organization.id, version.id, %{route_id: "DEDUP2"})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      html = render(view)
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "table")) == 1
+      assert Enum.count(LazyHTML.query(doc, "tbody")) == 1
+    end
+  end
+
   describe "RoutesLive filtering and search" do
     setup do
       organization = organization_fixture()
@@ -118,10 +199,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
 
-      # Click sort header for route_short_name
+      # Click sort header for route_short_name (shared table uses phx-value-key)
       html =
         view
-        |> element("[phx-value-column=route_short_name]")
+        |> element("[phx-value-key=route_short_name]")
         |> render_click()
 
       # Assert sort indicator appears (ascending first)
@@ -130,7 +211,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
       # Click again to sort descending
       html =
         view
-        |> element("[phx-value-column=route_short_name]")
+        |> element("[phx-value-key=route_short_name]")
         |> render_click()
 
       # Assert sort indicator changes to descending
