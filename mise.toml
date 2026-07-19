@@ -60,7 +60,7 @@ run = '''
 hide = true
 
 [tasks."test:browser"]
-depends = ["prepare:browser"]
+depends = ["setup:browser", "prepare:browser"]
 run = "npm --prefix assets run test:browser"
 
 # Linting

@@ -45,7 +45,7 @@ jobs:
     name: Build Elixir dependencies
     runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
     needs: [changes]
-    if: ${{ needs.changes.outputs.elixir-changed == 'true' }}
+    if: ${{ needs.changes.outputs.elixir-changed == 'true' || needs.changes.outputs.js-changed == 'true' }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -209,6 +209,51 @@ jobs:
       - name: Run tests
         run: mise run test:nodejs
 
+  js_browser:
+    name: JS (browser)
+    runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
+    needs: [changes, elixir_deps]
+    if: ${{ needs.changes.outputs.js-changed == 'true' }}
+
+    services:
+      postgres:
+        image: kartoza/postgis:17-3.5
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_PASS: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: pathways_test
+        # memory limit is 3GB
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5 --memory 3000000000
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Set up Elixir
+        uses: ./.github/actions/elixir
+        id: beam
+      - name: Restore dependencies cache
+        id: deps_cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          # Cache key based on Erlang/Elixir version and the mix.lock hash
+          key: |
+            deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+          path: |
+            deps
+            _build
+      - name: Set up Node
+        id: node
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version-file: .tool-versions
+          cache: npm
+          cache-dependency-path: "assets/package-lock.json"
+      - name: Run browser tests
+        run: mise run test:browser
+
   docker:
     name: Build Docker image
     runs-on: ${{ fromJSON(vars.GH_DOCKER_RUNNER_LABEL) }}
@@ -286,7 +331,7 @@ jobs:
   ci_passed:
     name: CI Passed?
     runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
-    needs: [elixir_dev, elixir_test, js, docker, infra]
+    needs: [elixir_dev, elixir_test, js, js_browser, docker, infra]
     if: ${{ always() }}
     steps:
       - run: |
