@@ -60,7 +60,9 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
             label={"Rename \"#{@current_version.name}\""}
             class="input input-sm w-48"
           />
-          <button type="submit" class="btn btn-primary btn-sm">Save changes</button>
+          <button type="submit" class="btn btn-primary btn-sm" phx-disable-with="Saving name…">
+            Save changes
+          </button>
           <button
             type="button"
             phx-click="cancel_edit"
@@ -98,6 +100,15 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           <.icon name="hero-pencil-square" class="w-4 h-4" />
         </button>
       <% end %>
+      <div id="gtfs-version-pending" hidden aria-live="polite" class="text-sm text-base-content/70">
+        Switching version…
+      </div>
+      <div id="gtfs-version-failure" hidden role="alert" class="flex items-center gap-2">
+        <span class="text-sm text-error">Version switch failed.</span>
+        <button type="button" id="gtfs-version-retry" class="btn btn-ghost btn-xs text-primary">
+          Retry
+        </button>
+      </div>
     </div>
     """
   end

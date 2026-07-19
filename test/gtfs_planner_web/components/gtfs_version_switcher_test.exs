@@ -269,6 +269,70 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
     end
   end
 
+  describe "pending and failure regions" do
+    test "renders a hidden pending element with switching copy", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      assert has_element?(view, "#gtfs-version-pending[hidden]")
+      pending_html = view |> element("#gtfs-version-pending") |> render()
+      assert pending_html =~ "Switching version"
+    end
+
+    test "renders a hidden failure region with retry button", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      assert has_element?(view, "#gtfs-version-failure[hidden]")
+      assert has_element?(view, "#gtfs-version-retry")
+    end
+
+    test "pending element has aria-live for accessibility", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      pending_html = view |> element("#gtfs-version-pending") |> render()
+      assert pending_html =~ ~s(aria-live="polite")
+    end
+
+    test "failure region has alert role", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      failure_html = view |> element("#gtfs-version-failure") |> render()
+      assert failure_html =~ ~s(role="alert")
+    end
+  end
+
+  describe "rename pending state" do
+    test "rename submit button shows task-specific pending label", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      view
+      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> render_click()
+
+      submit_html = view |> element("#gtfs-version-rename-form button[type=submit]") |> render()
+      assert submit_html =~ ~s(phx-disable-with="Saving name…")
+    end
+  end
+
   describe "published-only options" do
     test "switcher options exclude staging, importing, and failed versions", %{
       conn: conn,
