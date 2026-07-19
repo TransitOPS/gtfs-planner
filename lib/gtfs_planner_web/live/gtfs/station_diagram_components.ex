@@ -234,6 +234,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                   <span class="text-sm text-blue-700"></span>
               <% end %>
             <% end %>
+            <%= if @mode == :add do %>
+              <button
+                id="keyboard-create-stop"
+                type="button"
+                class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
+                phx-click="open_create_form"
+              >
+                Enter coordinates
+              </button>
+            <% end %>
           </div>
           <div class="ml-auto flex items-center gap-2">
             <%= if @mode == :view and @has_diagram do %>
@@ -878,7 +888,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         style={:saved}
       />
       <.pending_marker
-        :if={@pending_xy && @mode == :add && @selected_stop_id == nil}
+        :if={@pending_xy && is_number(@pending_xy.x) && @mode == :add && @selected_stop_id == nil}
         pending_xy={@pending_xy}
       />
     </svg>
@@ -2926,6 +2936,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           min="-180"
           max="180"
           help="Optional"
+        />
+      </div>
+
+      <div class="grid grid-cols-2 gap-4 pt-2 border-t border-base-200">
+        <.input
+          field={@child_stop_form[:x]}
+          type="number"
+          label="Diagram X"
+          placeholder="e.g., 42.5"
+          step="any"
+          help="Position on the floorplan (required)"
+        />
+        <.input
+          field={@child_stop_form[:y]}
+          type="number"
+          label="Diagram Y"
+          placeholder="e.g., 78.3"
+          step="any"
+          help="Position on the floorplan (required)"
         />
       </div>
 

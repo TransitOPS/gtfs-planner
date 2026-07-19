@@ -1408,6 +1408,147 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#pathway-form")
       assert render(view) =~ pathway.pathway_id
     end
+
+    test "keyboard create by typing diagram x/y coordinates with no canvas click", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      # Open create form via keyboard entry (no canvas click)
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-form")
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "keyboard_create",
+        "stop_name" => "Keyboard Created Stop",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "x" => "42.5",
+        "y" => "78.3"
+      })
+      |> render_submit()
+
+      created_stop =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> Enum.find(&(&1.stop_name == "Keyboard Created Stop"))
+
+      assert created_stop
+      assert created_stop.diagram_coordinate == %{"x" => 42.5, "y" => 78.3}
+    end
+
+    test "canvas click pre-fills diagram x/y fields and typing overrides click-set values", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      # Canvas click sets diagram coordinates in form
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      assert has_element?(view, "#child-stop-form")
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      # Submit with typed values that override the click-set values
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "click_then_type",
+        "stop_name" => "Click Then Type",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "x" => "55.0",
+        "y" => "88.0"
+      })
+      |> render_submit()
+
+      created_stop =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> Enum.find(&(&1.stop_name == "Click Then Type"))
+
+      assert created_stop
+      assert created_stop.diagram_coordinate == %{"x" => 55.0, "y" => 88.0}
+    end
+
+    test "non-finite diagram coordinate is rejected and drawer preserves entered input", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      # Open create form via keyboard
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-form")
+
+      view
+      |> element("#child-stop-form button[phx-click='toggle_stop_id_mode']")
+      |> render_click()
+
+      # Submit with invalid non-finite x coordinate
+      view
+      |> form("#child-stop-form", %{
+        "stop_id" => "invalid_coord",
+        "stop_name" => "Invalid Coord Stop",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "x" => "not-a-number",
+        "y" => "50"
+      })
+      |> render_submit()
+
+      # Drawer stays open with the form visible
+      assert has_element?(view, "#child-stop-form")
+      # The entered values are preserved in the form
+      assert render(view) =~ "not-a-number"
+
+      created_stops =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+
+      refute Enum.any?(created_stops, &(&1.stop_name == "Invalid Coord Stop"))
+    end
   end
 
   describe "StationDiagramLive - child stop save refresh" do
