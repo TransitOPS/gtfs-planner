@@ -466,8 +466,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
   `<.pagination>` demo.
 
   The pagination demo is driven by the `:pagination_page` assign and emits the
-  `paginate` event that `DesignSystemLive` handles; `<.pagination>` hardcodes both the
-  event name and `phx-value-page` (`core_components.ex:584-585`), so the demo range
+  `paginate` event (the default) that `DesignSystemLive` handles. The demo range
   here (`total={45}`, `per_page={10}` → 5 pages) must stay in step with the clamp in
   `DesignSystemLive.handle_event("paginate", ...)`. A test pins the two together.
   """
@@ -481,6 +480,11 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         takes an <code class="font-mono text-sm">id</code>, a list of <code class="font-mono text-sm">rows</code>, and one
         <code class="font-mono text-sm">&lt;:col&gt;</code>
         slot per column. Rows can be a plain list, as below, or a LiveView stream.
+        The default <code class="font-mono text-sm">responsive="scroll"</code>
+        wraps the table in a local horizontal
+        overflow container; <code class="font-mono text-sm">responsive="stack"</code>
+        presents labeled records on narrow
+        screens without cloning the table.
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Table</h2>
@@ -492,7 +496,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         its color, never color alone.
       </p>
 
-      <div class="mt-3 border border-base-300">
+      <div id="ds-demo-table-wrapper" class="mt-3 border border-base-300">
         <.table id="ds-demo-table" rows={sample_routes()}>
           <:col :let={route} label="ID" align="right" sort="asc">
             <span class="tabular-nums">{route.id}</span>
@@ -520,6 +524,67 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </p>
 
+      <h2 class="mt-8 text-lg font-semibold">Long content</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Wide tables stay inside their local overflow wrapper; the body never clips.
+      </p>
+
+      <div id="ds-demo-table-long" class="mt-3 border border-base-300">
+        <.table id="ds-demo-long" rows={sample_routes()}>
+          <:col :let={route} label="Route identifier" align="right">
+            <span class="tabular-nums">{route.id}</span>
+          </:col>
+          <:col :let={route} label="Full route name and description">
+            {route.name} — This is a deliberately long route description to test overflow behavior at narrow viewports without clipping the body.
+          </:col>
+          <:col :let={route} label="Status">{route.status}</:col>
+          <:action :let={route}>
+            <.button variant="quiet" size="sm" aria-label={"Edit route #{route.name}"}>
+              Edit
+            </.button>
+          </:action>
+        </.table>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Empty</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        An empty dataset renders headers and an empty tbody. Pair with
+        <code class="font-mono text-sm">&lt;.empty_state&gt;</code>
+        above the table for a first-use message.
+      </p>
+
+      <div id="ds-demo-table-empty" class="mt-3 border border-base-300">
+        <.table id="ds-demo-empty" rows={[]}>
+          <:col label="ID" align="right"></:col>
+          <:col label="Name"></:col>
+          <:col label="Status"></:col>
+        </.table>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Stack mode</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        <code class="font-mono text-sm">responsive="stack"</code>
+        presents each row as a labeled record on narrow screens.
+        Headers remain in the DOM; CSS hides them visually and uses
+        <code class="font-mono text-sm">data-label</code>
+        to label each cell.
+      </p>
+
+      <div id="ds-demo-table-stack" class="mt-3 border border-base-300">
+        <.table id="ds-demo-stack" rows={sample_routes()} responsive="stack">
+          <:col :let={route} label="ID" align="right">
+            <span class="tabular-nums">{route.id}</span>
+          </:col>
+          <:col :let={route} label="Name">{route.name}</:col>
+          <:col :let={route} label="Status">{route.status}</:col>
+          <:action :let={route}>
+            <.button variant="quiet" size="sm" aria-label={"Edit route #{route.name}"}>
+              Edit
+            </.button>
+          </:action>
+        </.table>
+      </div>
+
       <h2 class="mt-8 text-lg font-semibold">List</h2>
       <p class="mt-1 text-sm text-base-content/60">
         Definition pairs for one record. Use it where a table would have one row and
@@ -546,6 +611,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       <p class="mt-1 text-sm text-base-content/60">
         Live: the buttons below move a real assign. Previous and Next disable at the
         ends of the range rather than disappearing, so the controls never shift position.
+        The component normalizes negative totals, zero per-page, and out-of-range pages.
       </p>
 
       <div id="ds-pagination-demo" class="mt-3 border border-base-300 px-4">
@@ -556,9 +622,19 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           phx-no-curly-interpolation
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
-          &lt;.pagination page={@page} per_page={10} total={45} entity="routes" /&gt; · entity is the noun in the count · emits phx-click="paginate" with phx-value-page
+          &lt;.pagination page={@page} per_page={10} total={45} entity="routes" /&gt; · event defaults to "paginate" · entity is the noun in the count · event and target are configurable
         </code>
       </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Pagination — empty</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Zero total renders <code class="font-mono text-sm">0–0 of 0</code>
+        with both controls disabled.
+      </p>
+
+      <div id="ds-pagination-empty" class="mt-3 border border-base-300 px-4">
+        <.pagination page={1} per_page={10} total={0} entity="routes" />
+      </div>
 
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
@@ -578,10 +654,11 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </li>
         <li>
           <code class="font-mono text-sm">&lt;.pagination&gt;</code>
-          hardcodes <code class="font-mono text-sm">phx-click="paginate"</code>
+          emits <code class="font-mono text-sm">phx-click</code>
+          with the configured <code class="font-mono text-sm">event</code>
+          (default <code class="font-mono text-sm">"paginate"</code>)
           and appends the optional <code class="font-mono text-sm">entity</code>
-          noun to the count. It needs a matching
-          <code class="font-mono text-sm">handle_event("paginate", …)</code>
+          noun to the count. It needs a matching <code class="font-mono text-sm">handle_event/3</code>
           that parses <code class="font-mono text-sm">phx-value-page</code>
           — it arrives as a string — and clamps it before assigning.
         </li>
@@ -594,6 +671,13 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           state and the arrow; add <code class="font-mono text-sm">sort_event</code>
           and <code class="font-mono text-sm">sort_key</code>
           to make the header an interactive sort button.
+        </li>
+        <li>
+          Use <code class="font-mono text-sm">responsive="stack"</code>
+          for record-oriented narrow layouts;
+          the default <code class="font-mono text-sm">"scroll"</code>
+          keeps the table in a local overflow wrapper.
+          Both modes render one table, one tbody, and one row per record — no duplication.
         </li>
       </ul>
     </section>

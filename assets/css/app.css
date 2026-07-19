@@ -115,6 +115,56 @@ body {
   overflow: visible;
 }
 
+/* ── Responsive data-view contracts ── */
+
+/* Stack mode: present each row as a labeled record on narrow screens.
+   Headers stay in the DOM; CSS hides them visually and turns each cell
+   into a labeled block using its data-label attribute. */
+@media (max-width: 639px) {
+  .ds-stack-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  .ds-stack-table tbody tr {
+    display: block;
+    border-top: 1px solid oklch(var(--bc) / 0.1);
+    padding: 0.5rem 0;
+  }
+
+  .ds-stack-table tbody td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+    padding: 0.25rem 0;
+    text-align: right;
+    border-bottom: none;
+  }
+
+  .ds-stack-table tbody td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    text-align: left;
+    flex-shrink: 0;
+  }
+
+  .ds-stack-table tbody td[data-label="Actions"] {
+    justify-content: flex-end;
+  }
+
+  .ds-stack-table tbody td[data-label="Actions"]::before {
+    display: none;
+  }
+}
+
 /* Custom override for LiveSelect input text color to ensure theme compatibility */
 .live-select-input {
   color: oklch(var(--bc)); /* Use DaisyUI's base content color for light mode */

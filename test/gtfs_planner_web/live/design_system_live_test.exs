@@ -506,7 +506,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
         view
         |> render()
         |> LazyHTML.from_fragment()
-        |> LazyHTML.query("#ds-page-tables table.table thead th")
+        |> LazyHTML.query("#ds-demo-table-wrapper thead th")
         # The ID column carries a sort indicator, so strip the arrow glyph to compare labels.
         |> Enum.map(
           &(&1

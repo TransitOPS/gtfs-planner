@@ -512,7 +512,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   @doc """
-  Renders a table with generic styling.
+  Renders a responsive data table with one semantic representation.
 
   ## Examples
 
@@ -524,14 +524,23 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :id, :string, required: true
   attr :rows, :list, required: true
   attr :row_id, :any, default: nil, doc: "the function for generating the row id"
-  attr :row_click, :any, default: nil, doc: "the function for handling phx-click on each row"
 
   attr :row_item, :any,
     default: &Function.identity/1,
     doc: "the function for mapping each row before calling the :col and :action slots"
 
+  attr :responsive, :string,
+    values: ~w(stack scroll),
+    default: "scroll",
+    doc:
+      "\"stack\" presents labeled records on narrow screens; \"scroll\" uses local horizontal overflow"
+
+  attr :sort_target, :any,
+    default: nil,
+    doc: "LiveComponent target for sort events"
+
   slot :col, required: true do
-    attr :label, :string
+    attr :label, :string, required: true
     attr :align, :string, doc: "\"left\" (default) or \"right\""
 
     attr :sort, :string,
@@ -550,70 +559,73 @@ defmodule GtfsPlannerWeb.CoreComponents do
       end
 
     ~H"""
-    <table class="table">
-      <thead>
-        <tr>
-          <th
-            :for={col <- @col}
-            class={if(col[:align] == "right", do: "text-right", else: "text-left")}
-            aria-sort={sort_aria(col[:sort])}
-          >
-            <button
-              :if={col[:sort_event]}
-              type="button"
-              class="inline-flex items-center gap-1"
-              phx-click={col[:sort_event]}
-              phx-value-key={col[:sort_key]}
+    <div id={"#{@id}-container"} class={table_container_class(@responsive)}>
+      <table class={["table", @responsive == "stack" && "ds-stack-table"]}>
+        <thead>
+          <tr>
+            <th
+              :for={col <- @col}
+              class={if(col[:align] == "right", do: "text-right", else: "text-left")}
+              aria-sort={sort_aria(col[:sort])}
             >
-              {col[:label]}
-              <span
-                :if={col[:sort]}
-                class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
-                aria-hidden="true"
+              <button
+                :if={col[:sort_event]}
+                type="button"
+                class="inline-flex items-center gap-1 min-h-11"
+                phx-click={col[:sort_event]}
+                phx-value-key={col[:sort_key]}
+                phx-target={@sort_target}
               >
-                {sort_arrow(col[:sort])}
+                {col[:label]}
+                <span
+                  :if={col[:sort]}
+                  class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
+                  aria-hidden="true"
+                >
+                  {sort_arrow(col[:sort])}
+                </span>
+              </button>
+              <span :if={!col[:sort_event]} class="inline-flex items-center gap-1">
+                {col[:label]}
+                <span
+                  :if={col[:sort]}
+                  class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
+                  aria-hidden="true"
+                >
+                  {sort_arrow(col[:sort])}
+                </span>
               </span>
-            </button>
-            <span :if={!col[:sort_event]} class="inline-flex items-center gap-1">
-              {col[:label]}
-              <span
-                :if={col[:sort]}
-                class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
-                aria-hidden="true"
-              >
-                {sort_arrow(col[:sort])}
-              </span>
-            </span>
-          </th>
-          <th :if={@action != []}>
-            <span class="sr-only">{gettext("Actions")}</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
-        <tr :for={row <- @rows} id={@row_id && @row_id.(row)}>
-          <td
-            :for={col <- @col}
-            phx-click={@row_click && @row_click.(row)}
-            class={[
-              if(col[:align] == "right", do: "text-right", else: "text-left"),
-              @row_click && "hover:cursor-pointer"
-            ]}
-          >
-            {render_slot(col, @row_item.(row))}
-          </td>
-          <td :if={@action != []} class="w-0 font-semibold">
-            <div class="flex gap-4">
-              <%= for action <- @action do %>
-                {render_slot(action, @row_item.(row))}
-              <% end %>
-            </div>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+            </th>
+            <th :if={@action != []}>
+              <span class="sr-only">{gettext("Actions")}</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
+          <tr :for={row <- @rows} id={@row_id && @row_id.(row)}>
+            <td
+              :for={col <- @col}
+              data-label={col[:label]}
+              class={if(col[:align] == "right", do: "text-right", else: "text-left")}
+            >
+              {render_slot(col, @row_item.(row))}
+            </td>
+            <td :if={@action != []} data-label="Actions" class="w-0 font-semibold">
+              <div class="flex gap-4">
+                <%= for action <- @action do %>
+                  {render_slot(action, @row_item.(row))}
+                <% end %>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     """
   end
+
+  defp table_container_class("stack"), do: "overflow-visible"
+  defp table_container_class("scroll"), do: "overflow-x-auto"
 
   defp sort_aria("asc"), do: "ascending"
   defp sort_aria("desc"), do: "descending"
@@ -662,16 +674,24 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :per_page, :integer, required: true
   attr :total, :integer, required: true
   attr :entity, :string, default: nil, doc: "optional noun appended to the count, e.g. \"routes\""
+  attr :event, :string, default: "paginate", doc: "event name emitted by Previous and Next"
+  attr :target, :any, default: nil, doc: "LiveComponent target for pagination events"
 
   def pagination(assigns) do
-    # Handle empty state: when total is 0, show 0-0 instead of 1-0
-    start_item = if assigns.total == 0, do: 0, else: (assigns.page - 1) * assigns.per_page + 1
-    end_item = min(assigns.page * assigns.per_page, assigns.total)
-    has_prev = assigns.page > 1
-    has_next = end_item < assigns.total
+    total = max(assigns.total, 0)
+    per_page = max(assigns.per_page, 1)
+    max_page = max(ceil(total / per_page), 1)
+    page = assigns.page |> max(1) |> min(max_page)
+
+    start_item = if total == 0, do: 0, else: (page - 1) * per_page + 1
+    end_item = min(page * per_page, total)
+    has_prev = page > 1
+    has_next = end_item < total
 
     assigns =
       assigns
+      |> assign(:total, total)
+      |> assign(:page, page)
       |> assign(:start_item, start_item)
       |> assign(:end_item, end_item)
       |> assign(:has_prev, has_prev)
@@ -685,18 +705,20 @@ defmodule GtfsPlannerWeb.CoreComponents do
       <div class="flex gap-2">
         <button
           type="button"
-          class="btn btn-sm btn-ghost"
-          phx-click="paginate"
+          class="btn btn-sm btn-ghost min-h-11"
+          phx-click={@event}
           phx-value-page={@page - 1}
+          phx-target={@target}
           disabled={!@has_prev}
         >
           Previous
         </button>
         <button
           type="button"
-          class="btn btn-sm btn-ghost"
-          phx-click="paginate"
+          class="btn btn-sm btn-ghost min-h-11"
+          phx-click={@event}
           phx-value-page={@page + 1}
+          phx-target={@target}
           disabled={!@has_next}
         >
           Next
