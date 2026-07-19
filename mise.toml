@@ -12,6 +12,11 @@ depends = ["lint:*"]
 depends = ["format:*"]
 
 # Setup
+[tasks."setup:nodejs"]
+sources = ["assets/package.json", "assets/package-lock.json"]
+run = "npm ci --prefix assets"
+hide = true
+
 [tasks."setup:tools"]
 sources = ["mise.toml", ".tool-versions"]
 depends_post = ["setuppost:jq"]
@@ -31,11 +36,21 @@ fi
 """
 
 # Tests
+[tasks."test:nodejs"]
+depends = ["setup:nodejs"]
+sources = ["assets/package.json", "assets/package-lock.json"]
+run = "npm run --prefix assets test"
+
 [tasks."test:elixir"]
 depends = ["elixir:deps"]
 run = "mix test"
 
 # Linting
+[tasks."lint:nodejs:syntax"]
+depends = ["setup:nodejs"]
+sources = ["assets/package.json", "assets/package-lock.json", "assets/js/*.js"]
+run = "npm run --prefix assets syntax"
+
 [tasks."lint:elixir:format"]
 depends = ["elixir:deps"]
 run = "mix format --check-formatted"

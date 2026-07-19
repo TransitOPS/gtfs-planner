@@ -1,0 +1,13 @@
+{
+  "name": "gtfs-planner-assets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "syntax": "node --check js/*.js",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "4.1.10",
+    "jsdom": "29.1.1"
+  }
+}

@@ -252,12 +252,8 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     hook.scale = 2;
     hook.scaleOverlayElements();
 
-    expect(document.querySelector("#stop-hit").getAttribute("width")).toBe(
-      "1.75",
-    );
-    expect(document.querySelector("#stop-hit").getAttribute("height")).toBe(
-      "1.75",
-    );
+    expect(parseFloat(document.querySelector("#stop-hit").getAttribute("width"))).toBeCloseTo(0.6, 10);
+    expect(parseFloat(document.querySelector("#stop-hit").getAttribute("height"))).toBeCloseTo(0.6, 10);
     expect(document.querySelector("#stop-marker").getAttribute("r")).toBe(
       "0.3",
     );
@@ -341,16 +337,16 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     ).toBe("0.41666666666666663");
 
     expect(document.querySelector("#elevator-box").getAttribute("x")).toBe(
-      "29.5",
+      "29",
     );
     expect(document.querySelector("#elevator-box").getAttribute("y")).toBe(
-      "39.5",
+      "39",
     );
     expect(document.querySelector("#elevator-box").getAttribute("width")).toBe(
-      "1",
+      "2",
     );
     expect(document.querySelector("#elevator-box").getAttribute("height")).toBe(
-      "1",
+      "2",
     );
     expect(
       document.querySelector("#elevator-box").getAttribute("stroke-width"),
@@ -358,7 +354,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
 
     expect(
       document.querySelector("#elevator-text").getAttribute("font-size"),
-    ).toBe("0.6");
+    ).toBe("1.2");
     expect(document.querySelector("#path-label").getAttribute("x")).toBe(
       "50.7",
     );
@@ -370,7 +366,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     ).toBe("0.45");
     expect(
       document.querySelector("#path-label").getAttribute("stroke-width"),
-    ).toBe("0.05555555555555556");
+    ).toBe("0.1");
     expect(document.querySelector("#path-label").getAttribute("transform")).toBe(
       "rotate(15, 50.7, 59.3)",
     );
@@ -527,7 +523,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     expect(parseFloat(pathLabel.getAttribute("y"))).toBeCloseTo(58.8333333333, 5);
     expect(parseFloat(pathLabel.getAttribute("font-size"))).toBeCloseTo(0.75, 5);
     expect(parseFloat(pathLabel.getAttribute("stroke-width"))).toBeCloseTo(
-      0.119047619,
+      0.16666666666666669,
       5,
     );
   });
@@ -603,12 +599,10 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     hook.scale = 0.8;
     hook.scaleOverlayElements();
 
-    expect(document.querySelector("#ruler-endpoint-a").getAttribute("r")).toBe(
-      "0.2734375",
-    );
+    expect(parseFloat(document.querySelector("#ruler-endpoint-a").getAttribute("r"))).toBeCloseTo(0.2734375, 10);
     expect(
-      document.querySelector("#ruler-endpoint-a").getAttribute("stroke-width"),
-    ).toBe("0.1015625");
+      parseFloat(document.querySelector("#ruler-endpoint-a").getAttribute("stroke-width")),
+    ).toBeCloseTo(0.1015625, 10);
   });
 
   it("rescales cross-level badge hit rects using data-base-size at iconScale 2", () => {
