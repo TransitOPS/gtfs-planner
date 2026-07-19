@@ -2502,6 +2502,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :reposition_mode, :boolean, default: false
   attr :reposition_search, :string, default: ""
   attr :reposition_stops, :list, default: []
+  attr :reposition_x, :string, default: ""
+  attr :reposition_y, :string, default: ""
   attr :platform_options, :list, default: []
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
@@ -2588,10 +2590,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         hidden={@history_active}
       >
         <.reposition_stop_view
-          :if={@pending_xy && @reposition_mode && @selected_stop_id == nil}
+          :if={@reposition_mode && @selected_stop_id == nil}
           reposition_stops={@reposition_stops}
           reposition_search={@reposition_search}
           active_level={@active_level}
+          reposition_x={@reposition_x}
+          reposition_y={@reposition_y}
         />
 
         <.child_stop_form
@@ -2628,6 +2632,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :reposition_stops, :list, default: []
   attr :reposition_search, :string, default: ""
   attr :active_level, :any, default: nil
+  attr :reposition_x, :string, default: ""
+  attr :reposition_y, :string, default: ""
 
   defp reposition_stop_view(assigns) do
     normalized_search =
@@ -2668,8 +2674,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:unpositioned_stops, unpositioned_stops)
       |> assign(:positioned_stops, positioned_stops)
 
+    coordinate_form = to_form(%{"x" => assigns.reposition_x, "y" => assigns.reposition_y})
+
+    assigns = assign(assigns, :coordinate_form, coordinate_form)
+
     ~H"""
     <div class="space-y-6">
+      <.form
+        for={@coordinate_form}
+        id="reposition-coordinate-form"
+        phx-change="validate_reposition_coordinates"
+      >
+        <fieldset class="space-y-3">
+          <legend class="text-sm font-semibold text-base-content/70">
+            Target diagram coordinate (x, y)
+          </legend>
+          <div class="flex gap-4">
+            <.input
+              field={@coordinate_form[:x]}
+              id="reposition-x-input"
+              type="number"
+              label="X"
+              step="any"
+            />
+            <.input
+              field={@coordinate_form[:y]}
+              id="reposition-y-input"
+              type="number"
+              label="Y"
+              step="any"
+            />
+          </div>
+        </fieldset>
+      </.form>
+
       <.form
         for={@search_form}
         id="reposition-search-form"
@@ -2712,6 +2750,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                       class="btn btn-primary btn-xs"
                       phx-click="reposition_stop"
                       phx-value-id={stop.id}
+                      phx-value-x={@reposition_x}
+                      phx-value-y={@reposition_y}
+                      aria-label={"Place here — #{stop.stop_id} (#{stop.stop_name})"}
                     >
                       Place here
                     </button>
@@ -2754,6 +2795,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                       class="btn btn-outline btn-xs"
                       phx-click="reposition_stop"
                       phx-value-id={stop.id}
+                      phx-value-x={@reposition_x}
+                      phx-value-y={@reposition_y}
+                      aria-label={"Move here — #{stop.stop_id} (#{stop.stop_name})"}
                     >
                       Move here
                     </button>

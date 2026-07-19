@@ -1549,6 +1549,160 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute Enum.any?(created_stops, &(&1.stop_name == "Invalid Coord Stop"))
     end
+
+    test "keyboard reposition by typing diagram x/y coordinates with no canvas click", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_KEYBOARD_ONLY",
+          stop_name: "Reposition Keyboard Only",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      assert has_element?(view, "#positioned-stop-row-#{child_stop.id}")
+
+      view
+      |> form("#reposition-coordinate-form", %{"x" => "99.5", "y" => "42.0"})
+      |> render_change()
+
+      view
+      |> element("#positioned-stop-row-#{child_stop.id} button[phx-click='reposition_stop']")
+      |> render_click()
+
+      refute render(view) =~ "Invalid stop selection"
+
+      updated_stop = Gtfs.get_stop!(child_stop.id)
+      assert updated_stop.diagram_coordinate == %{"x" => 99.5, "y" => 42.0}
+    end
+
+    test "reposition reads coordinate from typed field value rather than stale click-set pending_xy",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_STALE_COORD",
+          stop_name: "Reposition Stale Coord",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      # Canvas click sets pending_xy at (30, 40)
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      assert has_element?(view, "#positioned-stop-row-#{child_stop.id}")
+
+      # Typed values override the click-set pending_xy
+      view
+      |> form("#reposition-coordinate-form", %{"x" => "88.0", "y" => "77.0"})
+      |> render_change()
+
+      view
+      |> element("#positioned-stop-row-#{child_stop.id} button[phx-click='reposition_stop']")
+      |> render_click()
+
+      refute render(view) =~ "Invalid stop selection"
+
+      updated_stop = Gtfs.get_stop!(child_stop.id)
+      assert updated_stop.diagram_coordinate == %{"x" => 88.0, "y" => 77.0}
+    end
+
+    test "reposition row actions are labeled with stop identity for keyboard accessibility", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_A11Y_LABEL",
+          stop_name: "A11y Label Stop",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 60.0}
+        })
+
+      unpositioned_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REPOSITION_A11Y_UNPOS",
+          stop_name: "A11y Unpositioned Stop",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+
+      view
+      |> element("button#keyboard-create-stop")
+      |> render_click()
+
+      view
+      |> element("#enter-reposition-mode")
+      |> render_click()
+
+      # Positioned stop's "Move here" button has aria-label
+      assert has_element?(
+               view,
+               "#positioned-stop-row-#{child_stop.id} button[aria-label='Move here — REPOSITION_A11Y_LABEL (A11y Label Stop)']"
+             )
+
+      # Unpositioned stop's "Place here" button has aria-label
+      assert has_element?(
+               view,
+               "#unpositioned-stop-row-#{unpositioned_stop.id} button[aria-label='Place here — REPOSITION_A11Y_UNPOS (A11y Unpositioned Stop)']"
+             )
+    end
   end
 
   describe "StationDiagramLive - child stop save refresh" do
