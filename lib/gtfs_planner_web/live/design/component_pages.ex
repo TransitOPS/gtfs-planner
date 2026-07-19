@@ -16,6 +16,8 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
 
   import GtfsPlannerWeb.CoreComponents
 
+  alias GtfsPlannerWeb.Components.RouteIdentity
+
   @doc """
   Every `<.button>` variant × size combination, plus the disabled and with-icon forms.
   """
@@ -320,25 +322,25 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
   end
 
   @doc """
-  `<.route_badge>` across representative GTFS route color inputs.
+  `<RouteIdentity.route_badge>` across representative GTFS route color inputs,
+  plus the `<.status_badge>` vocabulary.
   """
   def badges(assigns) do
     ~H"""
     <section id="ds-page-badges" class="max-w-4xl">
       <h1 class="text-2xl font-bold">Badges</h1>
       <p class="mt-2 text-base-content/70">
-        <code class="font-mono text-sm">&lt;.route_badge&gt;</code>
-        renders a route's identity using the colors the GTFS feed supplies. It takes a
-        map with <code class="font-mono text-sm">route_color</code>, <code class="font-mono text-sm">route_text_color</code>, and
-        <code class="font-mono text-sm">route_short_name</code>
-        — a route struct satisfies it directly.
+        <code class="font-mono text-sm">RouteIdentity.route_badge</code>
+        renders a route's identity using validated feed colors. Invalid or missing
+        colors receive a neutral semantic treatment; contrast is corrected to at
+        least 4.5:1. Text identity is always present, independent of hue.
       </p>
 
-      <h2 class="mt-8 text-lg font-semibold">Samples</h2>
+      <h2 class="mt-8 text-lg font-semibold">Route badge</h2>
       <dl class="mt-3 divide-y divide-base-300 border-y border-base-300">
         <div class="grid grid-cols-4 items-center gap-4 py-3">
           <dt>
-            <.route_badge route={
+            <RouteIdentity.route_badge route={
               %{route_color: "D32F2F", route_text_color: "FFFFFF", route_short_name: "42"}
             } />
           </dt>
@@ -347,15 +349,15 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
               phx-no-curly-interpolation
               class="ds-code-caption font-mono text-xs text-base-content/70"
             >
-              %{route_color: "D32F2F", route_text_color: "FFFFFF", route_short_name: "42"}
+              valid colors, contrast passes → feed foreground retained
             </code>
           </dd>
         </div>
 
         <div class="grid grid-cols-4 items-center gap-4 py-3">
           <dt>
-            <.route_badge route={
-              %{route_color: "1976D2", route_text_color: "FFFFFF", route_short_name: "A"}
+            <RouteIdentity.route_badge route={
+              %{route_color: "FFFF00", route_text_color: "FFFFFF", route_short_name: "A"}
             } />
           </dt>
           <dd class="col-span-3">
@@ -363,15 +365,15 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
               phx-no-curly-interpolation
               class="ds-code-caption font-mono text-xs text-base-content/70"
             >
-              %{route_color: "1976D2", route_text_color: "FFFFFF", route_short_name: "A"}
+              low-contrast foreground → corrected to black
             </code>
           </dd>
         </div>
 
         <div class="grid grid-cols-4 items-center gap-4 py-3">
           <dt>
-            <.route_badge route={
-              %{route_color: "43A047", route_text_color: "000000", route_short_name: "7X"}
+            <RouteIdentity.route_badge route={
+              %{route_color: "ZZZZZZ", route_text_color: "FFFFFF", route_short_name: "7X"}
             } />
           </dt>
           <dd class="col-span-3">
@@ -379,15 +381,20 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
               phx-no-curly-interpolation
               class="ds-code-caption font-mono text-xs text-base-content/70"
             >
-              %{route_color: "43A047", route_text_color: "000000", route_short_name: "7X"}
+              invalid background → neutral semantic treatment, no inline style
             </code>
           </dd>
         </div>
 
         <div class="grid grid-cols-4 items-center gap-4 py-3">
           <dt>
-            <.route_badge route={
-              %{route_color: "9E9E9E", route_text_color: "000000", route_short_name: nil}
+            <RouteIdentity.route_badge route={
+              %{
+                route_color: "9E9E9E",
+                route_text_color: "000000",
+                route_short_name: nil,
+                route_id: "R-99"
+              }
             } />
           </dt>
           <dd class="col-span-3">
@@ -395,28 +402,59 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
               phx-no-curly-interpolation
               class="ds-code-caption font-mono text-xs text-base-content/70"
             >
-              %{route_color: "9E9E9E", route_text_color: "000000", route_short_name: nil} → falls back to an em dash
+              missing short name → falls back to route ID
             </code>
           </dd>
         </div>
       </dl>
 
+      <h2 class="mt-8 text-lg font-semibold">Status badge</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        One vocabulary for every status in the app: a colored dot beside a colored word,
+        never color alone. Known values render explicit labels; unrecognized or blank
+        values render <code class="font-mono text-sm">Unknown</code> with a neutral treatment.
+      </p>
+
+      <div id="ds-status-badge-demo" class="mt-3 flex flex-wrap gap-2 border border-base-300 p-4">
+        <.status_badge status={:pass} />
+        <.status_badge status={:completed} />
+        <.status_badge status={:running} />
+        <.status_badge status={:in_progress} />
+        <.status_badge status={:info} />
+        <.status_badge status={:warning} />
+        <.status_badge status={:failed} />
+        <.status_badge status={:error} />
+        <.status_badge status={:started} />
+        <.status_badge status={:draft} />
+        <.status_badge status={:some_unknown_thing} />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.status_badge status={run.status} /&gt; · known values get explicit labels and tones · unknown or blank renders Unknown · pass label="…" to override the word
+        </code>
+      </p>
+
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>
-          Hex values carry no <code class="font-mono text-sm">#</code>
-          — the component prepends it. That matches the GTFS spec, which stores
-          <code class="font-mono text-sm">route_color</code>
-          as six hex digits.
+          Feed colors are validated as six-digit hex before reaching inline style.
+          Invalid or missing colors get the neutral semantic treatment.
         </li>
         <li>
-          A route with no short name renders an em dash, so the badge keeps its shape in
-          a column instead of collapsing.
+          Foreground contrast is corrected to at least 4.5:1; the badge never
+          relies on hue alone for identification.
         </li>
         <li>
-          The feed owns the color pair, so contrast is not guaranteed. Never let the
-          badge be the only way to tell two routes apart — keep the route name in text
-          beside it.
+          Badge text falls back from short name to route ID to <code class="font-mono text-sm">Unknown route</code>, so every badge
+          carries a text identity.
+        </li>
+        <li>
+          Use <code class="font-mono text-sm">&lt;.status_badge&gt;</code>, not a bare
+          colored dot, for run and check status: the word survives a screenshot and a
+          colorblind reader, and one vocabulary keeps every status reading the same.
         </li>
       </ul>
     </section>
@@ -697,27 +735,29 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       <h2 class="mt-8 text-lg font-semibold">Status badge</h2>
       <p class="mt-1 text-sm text-base-content/60">
         One vocabulary for every status in the app: a colored dot beside a colored word,
-        never color alone. An unrecognized value renders muted rather than crashing, so a
-        new status never breaks a page.
+        never color alone. Known values render explicit labels; unrecognized or blank
+        values render <code class="font-mono text-sm">Unknown</code> with a neutral treatment.
       </p>
 
       <div id="ds-status-badge-demo" class="mt-3 flex flex-wrap gap-2 border border-base-300 p-4">
         <.status_badge status={:pass} />
         <.status_badge status={:completed} />
         <.status_badge status={:running} />
+        <.status_badge status={:in_progress} />
         <.status_badge status={:info} />
         <.status_badge status={:warning} />
         <.status_badge status={:failed} />
         <.status_badge status={:error} />
         <.status_badge status={:started} />
         <.status_badge status={:draft} />
+        <.status_badge status={:some_unknown_thing} />
       </div>
       <p class="mt-3">
         <code
           phx-no-curly-interpolation
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
-          &lt;.status_badge status={run.status} /&gt; · pass and completed read success, failed and error read error, an unknown status falls back to muted · pass label="…" to override the word
+          &lt;.status_badge status={run.status} /&gt; · known values get explicit labels and tones · unknown or blank renders Unknown · pass label="…" to override the word
         </code>
       </p>
 

@@ -265,22 +265,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
   end
 
   describe "badges page" do
-    test "renders at least three route badges", %{conn: conn, user: user} do
-      conn = log_in_user(conn, user)
-
-      {:ok, view, _html} = live(conn, ~p"/design/badges")
-
-      badges =
-        view
-        |> render()
-        |> LazyHTML.from_fragment()
-        |> LazyHTML.query(~s(#ds-page-badges span[style^="background-color:"]))
-        |> Enum.count()
-
-      assert badges >= 3
-    end
-
-    test "applies each sample route's colors to its badge", %{conn: conn, user: user} do
+    test "renders route badges with validated inline styles", %{conn: conn, user: user} do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/badges")
@@ -290,30 +275,49 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
                ~s(#ds-page-badges span[style="background-color: #D32F2F; color: #FFFFFF"]),
                "42"
              )
-
-      assert has_element?(
-               view,
-               ~s(#ds-page-badges span[style="background-color: #1976D2; color: #FFFFFF"]),
-               "A"
-             )
-
-      assert has_element?(
-               view,
-               ~s(#ds-page-badges span[style="background-color: #43A047; color: #000000"]),
-               "7X"
-             )
     end
 
-    test "falls back to an em dash for a route with no short name", %{conn: conn, user: user} do
+    test "corrects low-contrast foreground to black", %{conn: conn, user: user} do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/badges")
 
       assert has_element?(
                view,
-               ~s(#ds-page-badges span[style="background-color: #9E9E9E; color: #000000"]),
-               "—"
+               ~s(#ds-page-badges span[style="background-color: #FFFF00; color: #000000"]),
+               "A"
              )
+    end
+
+    test "renders neutral treatment for invalid background without inline style", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/badges")
+
+      html = render(view)
+      assert html =~ "7X"
+      refute html =~ "ZZZZZZ"
+    end
+
+    test "falls back to route ID when short name is missing", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/badges")
+
+      assert has_element?(view, "#ds-page-badges span", "R-99")
+    end
+
+    test "renders known and unknown status badges", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/badges")
+
+      assert has_element?(view, "#ds-status-badge-demo", "Pass")
+      assert has_element?(view, "#ds-status-badge-demo", "In progress")
+      assert has_element?(view, "#ds-status-badge-demo", "Unknown")
     end
   end
 

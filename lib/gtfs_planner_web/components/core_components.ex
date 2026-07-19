@@ -648,26 +648,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   @doc """
-  Renders a route badge with color, text color, and short name.
-
-  ## Examples
-
-      <.route_badge route={@route} />
-  """
-  attr :route, :map, required: true
-
-  def route_badge(assigns) do
-    ~H"""
-    <span
-      class="inline-flex items-center justify-center px-2 py-0.5 text-xs font-medium rounded"
-      style={"background-color: ##{@route.route_color}; color: ##{@route.route_text_color}"}
-    >
-      {@route.route_short_name || "—"}
-    </span>
-    """
-  end
-
-  @doc """
   Renders pagination controls with previous/next buttons and item count.
 
   ## Examples
@@ -1242,10 +1222,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
   @doc """
   Renders a status badge with a colored dot and a colored word.
 
-  One vocabulary for every status in the app. Status is normalized to a string,
-  so an atom or a string works. Unrecognized values (including `draft`) render
-  with the muted treatment rather than raising, so migrating a call site never
-  crashes on an unexpected value. Pass `label` to override the displayed word.
+  One vocabulary for every status in the app. Known values map to explicit
+  human labels and tones; unrecognized or blank values render `Unknown` with
+  a neutral treatment. Pass `label` to override the displayed word.
 
   ## Examples
 
@@ -1258,27 +1237,30 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :class, :any, default: nil, doc: "extra classes for sizing tweaks"
   attr :rest, :global
 
+  @status_presentation %{
+    "pass" => {"Pass", "bg-success", "text-success"},
+    "completed" => {"Completed", "bg-success", "text-success"},
+    "warning" => {"Warning", "bg-warning", "text-warning"},
+    "failed" => {"Failed", "bg-error", "text-error"},
+    "error" => {"Error", "bg-error", "text-error"},
+    "running" => {"Running", "bg-info", "text-info"},
+    "info" => {"Info", "bg-info", "text-info"},
+    "started" => {"Started", "bg-base-content/40", "text-base-content/60"},
+    "draft" => {"Draft", "bg-base-content/40", "text-base-content/60"},
+    "in_progress" => {"In progress", "bg-info", "text-info"}
+  }
+
+  @status_unknown {"Unknown", "bg-base-content/40", "text-base-content/60"}
+
   def status_badge(assigns) do
     status = to_string(assigns.status)
-
-    {dot_class, text_class} =
-      case status do
-        "pass" -> {"bg-success", "text-success"}
-        "completed" -> {"bg-success", "text-success"}
-        "warning" -> {"bg-warning", "text-warning"}
-        "failed" -> {"bg-error", "text-error"}
-        "error" -> {"bg-error", "text-error"}
-        "running" -> {"bg-info", "text-info"}
-        "info" -> {"bg-info", "text-info"}
-        "started" -> {"bg-base-content/40", "text-base-content/60"}
-        _ -> {"bg-base-content/40", "text-base-content/60"}
-      end
+    {label, dot_class, text_class} = Map.get(@status_presentation, status, @status_unknown)
 
     assigns =
       assigns
       |> assign(:dot_class, dot_class)
       |> assign(:text_class, text_class)
-      |> assign(:word, assigns.label || String.capitalize(status))
+      |> assign(:word, assigns.label || label)
 
     ~H"""
     <span

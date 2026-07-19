@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Components.RouteIdentity
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @impl true
@@ -369,7 +370,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                   <td>{route.route_long_name || "—"}</td>
                   <td>{Route.route_type_label(route.route_type)}</td>
                   <td>
-                    <.route_badge route={route} />
+                    <RouteIdentity.route_badge route={route} />
                   </td>
                 </tr>
               </tbody>
