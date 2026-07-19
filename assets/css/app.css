@@ -147,6 +147,7 @@ body {
     padding: 0.25rem 0;
     text-align: right;
     border-bottom: none;
+    overflow-wrap: anywhere;
   }
 
   .ds-stack-table tbody td::before {

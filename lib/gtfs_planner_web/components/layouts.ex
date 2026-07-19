@@ -83,16 +83,14 @@ defmodule GtfsPlannerWeb.Layouts do
         </div>
 
         <%= if @current_user do %>
-          <div class="flex-1 min-w-0">
-            <Navigation.top_nav
-              current_user={@current_user}
-              current_organization={assigns[:current_organization]}
-              user_roles={@user_roles}
-              current_path={@current_path}
-              current_gtfs_version={@current_gtfs_version}
-            />
-          </div>
-          <div class="flex-none flex flex-wrap items-center gap-3">
+          <Navigation.top_nav
+            current_user={@current_user}
+            current_organization={assigns[:current_organization]}
+            user_roles={@user_roles}
+            current_path={@current_path}
+            current_gtfs_version={@current_gtfs_version}
+          />
+          <div class="flex flex-wrap items-center gap-3">
             <%= if @current_gtfs_version && @available_versions != [] do %>
               <.live_component
                 module={GtfsPlannerWeb.Components.GtfsVersionSwitcher}

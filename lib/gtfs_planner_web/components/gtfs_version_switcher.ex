@@ -43,7 +43,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
       id="gtfs-version-switcher"
       phx-hook="GtfsVersionHook"
       data-organization-id={@organization_id}
-      class="flex items-center gap-2 bg-base-200 rounded-md pl-3 pr-1 py-1"
+      class="flex flex-wrap items-center gap-2 bg-base-200 rounded-md pl-3 pr-1 py-1"
     >
       <%= if @editing? do %>
         <.form
@@ -75,7 +75,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
       <% else %>
         <label
           for="gtfs-version-select"
-          class="text-sm font-medium text-base-content/70 whitespace-nowrap"
+          class="text-sm font-medium text-base-content/70"
         >
           GTFS Version:
         </label>
@@ -83,7 +83,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           id="gtfs-version-select"
           name="version"
           aria-label="Select GTFS version"
-          class="select select-sm select-ghost rounded-md bg-base-100 min-w-[120px] focus:outline-none focus:ring-2 focus:ring-primary"
+          class="select select-ghost rounded-md bg-base-100 min-w-[120px] min-h-11 focus:outline-none focus:ring-2 focus:ring-primary"
         >
           <option :for={{id, name} <- @versions} value={id} selected={id == @current_version.id}>
             {name}
