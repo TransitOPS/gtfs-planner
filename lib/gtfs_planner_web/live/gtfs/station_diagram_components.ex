@@ -2301,31 +2301,66 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <div class="absolute bottom-2 left-2 z-10 flex items-center gap-0.5 bg-black/50 text-white rounded-lg px-2 py-1.5 backdrop-blur-sm">
       <%!-- Pan controls --%>
-      <button type="button" data-pan="up" aria-label="Pan up" class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20">
+      <button
+        type="button"
+        data-pan="up"
+        aria-label="Pan up"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
         <.icon name="hero-chevron-up" class="w-4 h-4" />
       </button>
-      <button type="button" data-pan="down" aria-label="Pan down" class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20">
+      <button
+        type="button"
+        data-pan="down"
+        aria-label="Pan down"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
         <.icon name="hero-chevron-down" class="w-4 h-4" />
       </button>
-      <button type="button" data-pan="left" aria-label="Pan left" class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20">
+      <button
+        type="button"
+        data-pan="left"
+        aria-label="Pan left"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
         <.icon name="hero-chevron-left" class="w-4 h-4" />
       </button>
-      <button type="button" data-pan="right" aria-label="Pan right" class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20">
+      <button
+        type="button"
+        data-pan="right"
+        aria-label="Pan right"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
         <.icon name="hero-chevron-right" class="w-4 h-4" />
       </button>
 
       <div class="w-px h-5 bg-white/30 mx-1"></div>
 
       <%!-- Zoom controls --%>
-      <button type="button" data-zoom="out" aria-label="Zoom out" class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20">
+      <button
+        type="button"
+        data-zoom="out"
+        aria-label="Zoom out"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
         <.icon name="hero-minus" class="w-4 h-4" />
       </button>
       <span data-zoom-label class="text-xs font-mono w-10 text-center select-none">100%</span>
-      <button type="button" data-zoom="in" aria-label="Zoom in" class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20">
+      <button
+        type="button"
+        data-zoom="in"
+        aria-label="Zoom in"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
         <.icon name="hero-plus" class="w-4 h-4" />
       </button>
 
-      <button type="button" data-reset="true" aria-label="Reset view" class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20">
+      <button
+        type="button"
+        data-reset="true"
+        aria-label="Reset view"
+        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
+      >
         <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
       </button>
 
