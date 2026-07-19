@@ -22,6 +22,13 @@
 /* Custom theme: Inter font */
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+
+  /* Brand identity color (product logo + wordmark). This is a fixed brand mark,
+     intentionally distinct from `--color-primary` (the daisyUI action color).
+     ~emerald-700 (#047857); 4.9:1 on base-100 so the wordmark passes AA.
+     Generates the `bg-brand` / `text-brand` utilities used by the shell. */
+  --color-brand: oklch(52% 0.12 165);
+  --color-brand-content: oklch(100% 0 0); /* white icon/text on the brand tile */
 }
 
 /* daisyUI Tailwind Plugin. You can update this file by fetching the latest version with:

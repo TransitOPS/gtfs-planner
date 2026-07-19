@@ -9,9 +9,9 @@ defmodule GtfsPlannerWeb.HeaderTest do
       conn = get(conn, ~p"/users/log_in")
       html = html_response(conn, 200)
 
-      assert html =~ "text-primary"
+      assert html =~ "text-brand"
       assert html =~ "Pathways Studio"
-      assert html =~ "bg-primary"
+      assert html =~ "bg-brand"
     end
 
     test "does not display logout button", %{conn: conn} do
@@ -38,8 +38,8 @@ defmodule GtfsPlannerWeb.HeaderTest do
       {:ok, view, _html} = live(conn, ~p"/")
 
       assert has_element?(view, "#app-header a[href='/']", "Pathways Studio")
-      assert has_element?(view, "#app-header .bg-primary img")
-      assert has_element?(view, "#app-header span.text-primary", "Pathways Studio")
+      assert has_element?(view, "#app-header .bg-brand img")
+      assert has_element?(view, "#app-header span.text-brand", "Pathways Studio")
     end
 
     test "displays logout with accessible name and 44px target", %{conn: conn} do

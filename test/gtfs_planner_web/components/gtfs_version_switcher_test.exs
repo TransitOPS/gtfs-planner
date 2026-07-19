@@ -293,7 +293,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       assert has_element?(view, "#gtfs-version-retry")
     end
 
-    test "pending element has aria-live for accessibility", %{
+    test "pending element carries no live-region announcement contract (decision 0.12)", %{
       conn: conn,
       current: current,
       org: org
@@ -301,10 +301,11 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       pending_html = view |> element("#gtfs-version-pending") |> render()
-      assert pending_html =~ ~s(aria-live="polite")
+      assert pending_html =~ "Switching version"
+      refute pending_html =~ "aria-live"
     end
 
-    test "failure region has alert role", %{
+    test "failure region carries no alert-role announcement contract (decision 0.12)", %{
       conn: conn,
       current: current,
       org: org
@@ -312,7 +313,8 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       {:ok, view, _html} = mount_host(conn, current, org)
 
       failure_html = view |> element("#gtfs-version-failure") |> render()
-      assert failure_html =~ ~s(role="alert")
+      assert failure_html =~ "Version switch failed"
+      refute failure_html =~ ~s(role="alert")
     end
   end
 

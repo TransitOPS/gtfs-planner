@@ -43,7 +43,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
       id="gtfs-version-switcher"
       phx-hook="GtfsVersionHook"
       data-organization-id={@organization_id}
-      class="flex flex-wrap items-center gap-2 bg-base-200 rounded-md pl-3 pr-1 py-1"
+      class="inline-flex w-fit flex-wrap items-center gap-2 bg-base-200 rounded-md pl-3 pr-1 py-1"
     >
       <%= if @editing? do %>
         <.form
@@ -83,7 +83,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           id="gtfs-version-select"
           name="version"
           aria-label="Select GTFS version"
-          class="select select-ghost rounded-md bg-base-100 min-w-[120px] min-h-11 focus:outline-none focus:ring-2 focus:ring-primary"
+          class="select select-ghost rounded-md bg-base-100 w-auto min-w-[120px] min-h-11 focus:outline-none focus:ring-2 focus:ring-primary"
         >
           <option :for={{id, name} <- @versions} value={id} selected={id == @current_version.id}>
             {name}
@@ -100,10 +100,10 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           <.icon name="hero-pencil-square" class="w-4 h-4" />
         </button>
       <% end %>
-      <div id="gtfs-version-pending" hidden aria-live="polite" class="text-sm text-base-content/70">
+      <div id="gtfs-version-pending" hidden class="text-sm text-base-content/70">
         Switching version…
       </div>
-      <div id="gtfs-version-failure" hidden role="alert" class="flex items-center gap-2">
+      <div id="gtfs-version-failure" hidden class="flex items-center gap-2">
         <span class="text-sm text-error">Version switch failed.</span>
         <button type="button" id="gtfs-version-retry" class="btn btn-ghost btn-xs text-primary">
           Retry

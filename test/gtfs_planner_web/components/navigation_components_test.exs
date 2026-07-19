@@ -179,8 +179,9 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
       classes = LazyHTML.attribute(link, "class") |> List.first()
 
+      # Non-color cue: bolder weight plus a filled background (no hue-only signal).
       assert classes =~ "font-semibold"
-      assert classes =~ "border"
+      assert classes =~ "bg-base-200"
     end
 
     test "inactive links do not carry aria-current" do

@@ -75,10 +75,10 @@ defmodule GtfsPlannerWeb.Layouts do
             class="flex items-center gap-2 min-h-11"
             aria-label="Pathways Studio - Go to homepage"
           >
-            <div class="bg-primary p-2 rounded-lg">
+            <div class="bg-brand p-2 rounded-lg">
               <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
             </div>
-            <span class="text-xl font-semibold tracking-tight text-primary">Pathways Studio</span>
+            <span class="text-xl font-semibold tracking-tight text-brand">Pathways Studio</span>
           </.link>
         </div>
 
@@ -214,10 +214,10 @@ defmodule GtfsPlannerWeb.Layouts do
         <div class="bg-base-100 border border-base-300 rounded-lg">
           <div class="p-6">
             <div class="flex items-center justify-center gap-3 mb-6">
-              <div class="bg-primary p-2 rounded-lg">
+              <div class="bg-brand p-2 rounded-lg">
                 <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
               </div>
-              <span class="text-xl font-semibold tracking-tight text-primary">
+              <span class="text-xl font-semibold tracking-tight text-brand">
                 Pathways Studio
               </span>
             </div>

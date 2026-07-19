@@ -1495,7 +1495,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         <.live_file_input upload={@upload} id={"#{@id}-input"} class="sr-only" />
       </label>
 
-      <p :if={@error} id={"#{@id}-error"} class="text-sm text-error" role="alert">
+      <p :if={@error} id={"#{@id}-error"} class="text-sm text-error">
         {@error}
       </p>
 

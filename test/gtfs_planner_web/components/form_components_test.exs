@@ -497,7 +497,7 @@ defmodule GtfsPlannerWeb.FormComponentsTest do
 
       assert html =~ "File type not allowed"
       assert html =~ ~r/id="feed-upload-error"/
-      assert html =~ ~r/role="alert"/
+      refute html =~ ~r/role="alert"/
     end
   end
 end
