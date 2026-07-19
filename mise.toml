@@ -54,6 +54,7 @@ hide = true
 [tasks."prepare:browser"]
 depends = ["elixir:deps", "setup:nodejs"]
 run = '''
+  MIX_ENV=test mix assets.deploy
   MIX_ENV=test mix ecto.reset --force
   MIX_ENV=test mix run test/support/browser_seed.exs
 '''

@@ -443,6 +443,29 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert LazyHTML.attribute(dialog, "data-pending") == ["true"]
     end
 
+    test "names the alertdialog from its required title" do
+      assigns = %{open: true}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={@open}
+          title="Delete?"
+          confirm_label="Delete"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      dialog = html |> LazyHTML.from_fragment() |> LazyHTML.query("dialog#test-confirm")
+
+      assert LazyHTML.attribute(dialog, "aria-labelledby") == ["test-confirm-title"]
+    end
+
     test "sets data-return-focus-id when provided" do
       assigns = %{open: true}
 

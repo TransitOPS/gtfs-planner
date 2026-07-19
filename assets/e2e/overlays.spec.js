@@ -44,6 +44,7 @@ test("authenticates and opens the normative overlays page", async ({ page }) => 
   await expect(overlay).toHaveJSProperty("open", true);
   await expect(confirmDialog).toHaveJSProperty("open", true);
 
+  await page.locator("#ds-demo-confirm-confirm").click();
   await page.locator('button[phx-click="confirm_success"]').click();
   await expect(page.locator("#ds-confirm-result")).toBeVisible();
   await expect(overlay).toHaveJSProperty("open", true);
@@ -102,14 +103,14 @@ test.describe("Open overlay modality", () => {
   });
 
   test("open confirmation names itself with role alertdialog", async ({ page }) => {
-    await page.locator("#ds-demo-drawer button:has-text(\"Delete route\")").click();
+    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
     await expect(page.getByRole("alertdialog", { name: "Delete route 42?" })).toBeVisible();
     await expect(page.getByRole("alertdialog")).toHaveCount(1);
   });
 
   test("keyboard Tab traversal stays inside the topmost dialog", async ({ page }) => {
     // Open nested confirmation so it is the topmost modal
-    await page.locator("#ds-demo-drawer button:has-text(\"Delete route\")").click();
+    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
     // Initial focus should be on Cancel
     await expect(page.locator("#ds-demo-confirm-cancel")).toBeFocused();
@@ -212,7 +213,7 @@ test.describe("Dismissal and nesting", () => {
 
   test("confirmation backdrop click defaults to refusal", async ({ page }) => {
     await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
-    await page.locator("#ds-demo-drawer button:has-text(\"Delete route\")").click();
+    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
     const confirm = page.locator("#ds-demo-confirm");
     await expect(confirm).toBeVisible();
 
@@ -228,7 +229,7 @@ test.describe("Dismissal and nesting", () => {
     await expect(drawer).toBeVisible();
 
     // Open nested confirmation
-    await page.locator("#ds-demo-drawer button:has-text(\"Delete route\")").click();
+    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
     const confirm = page.locator("#ds-demo-confirm");
     await expect(confirm).toBeVisible();
 
@@ -248,7 +249,7 @@ test.describe("Focus behavior", () => {
 
   test("confirmation Cancel receives initial focus", async ({ page }) => {
     await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
-    await page.locator("#ds-demo-drawer button:has-text(\"Delete route\")").click();
+    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
     await expect(page.locator("#ds-demo-confirm-cancel")).toBeFocused();
   });
@@ -281,7 +282,7 @@ test.describe("Focus behavior", () => {
     const drawer = page.locator("#ds-demo-drawer-overlay");
     await expect(drawer).toBeVisible();
 
-    await page.locator("#ds-demo-drawer button:has-text(\"Delete route\")").click();
+    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
 
     // Click confirm to enter pending state
@@ -305,7 +306,7 @@ test.describe("Pending and recovery", () => {
   test.beforeEach(async ({ page }) => {
     await loginAndGoToOverlays(page);
     await page.locator("#ds-drawer-demo button:has-text(\"Open drawer\")").click();
-    await page.locator("#ds-demo-drawer button:has-text(\"Delete route\")").click();
+    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
   });
 
@@ -323,7 +324,7 @@ test.describe("Pending and recovery", () => {
 
   test("pending blocks Escape and backdrop dismissal", async ({ page }) => {
     await page.locator("#ds-demo-confirm-confirm").click();
-    await expect(page.locator("#ds-demo-confirm-confirm")).toBeDisabled();
+    await expect(page.locator("#ds-demo-confirm[data-pending='true']")).toBeVisible();
 
     // Escape is refused while pending
     await page.keyboard.press("Escape");
@@ -393,7 +394,7 @@ test.describe("Presentation and motion", () => {
     expect(box.height).toBeGreaterThanOrEqual(44);
 
     // Open confirmation to test its action buttons
-    await page.locator("#ds-demo-drawer button:has-text(\"Delete route\")").click();
+    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
 
     // Confirmation Cancel button
@@ -457,7 +458,7 @@ test.describe("Presentation and motion", () => {
 
     // Confirmation panel inner animation should also be zero
     // Open confirmation first
-    await page.locator("#ds-demo-drawer button:has-text(\"Delete route\")").click();
+    await page.locator('#ds-demo-drawer button[phx-click="open_confirm"]').click();
     await expect(page.locator("#ds-demo-confirm")).toBeVisible();
 
     const confirmPanelDuration = await page.evaluate(() => {

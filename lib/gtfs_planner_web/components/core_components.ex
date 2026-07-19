@@ -1426,6 +1426,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       data-close-on-backdrop={to_string(@close_on_backdrop)}
       data-pending={to_string(@pending)}
       data-return-focus-id={@return_focus_id}
+      aria-labelledby={"#{@id}-title"}
       {@extra}
       class="m-0 border-0 w-full h-full bg-transparent p-0"
     >
