@@ -8986,6 +8986,170 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - cancel_placement" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CANCEL_STATION",
+          stop_name: "Cancel Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "CANCEL_LEVEL_0",
+          parent_station: station.stop_id
+        })
+
+      repo_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CANCEL_REPO_CHILD",
+          stop_name: "Cancel Repo Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      edit_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CANCEL_EDIT_CHILD",
+          stop_name: "Cancel Edit Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 75.0, "y" => 85.0}
+        })
+
+      conn = log_in_user(build_conn(), user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      %{
+        conn: conn,
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        repo_stop: repo_stop,
+        edit_stop: edit_stop,
+        view: view
+      }
+    end
+
+    test "cancel_placement clears pending placement and mutates nothing", %{
+      view: view,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      # Placement drawer is open with coordinate fields pre-filled
+      assert has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      pre_count =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> length()
+
+      render_hook(view, "cancel_placement", %{})
+
+      # Drawer should close after cancel
+      refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      # No stop should have been created
+      post_count =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> length()
+
+      assert pre_count == post_count
+
+      # Placement status should be visible
+      assert has_element?(view, "#placement-status", "Placement cancelled")
+    end
+
+    test "cancel_placement clears reposition state and returns focus", %{
+      view: view,
+      repo_stop: child_stop
+    } do
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "50", "y" => "60"})
+      render_hook(view, "enter_reposition_mode", %{})
+
+      # Reposition mode is active with coordinate fields
+      assert has_element?(view, "#reposition-x-input")
+
+      render_hook(view, "cancel_placement", %{})
+
+      # Drawer should close
+      refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      # Reposition state should be cleared, stop unchanged
+      unchanged = Gtfs.get_stop!(child_stop.id)
+      assert unchanged.diagram_coordinate == %{"x" => 20.0, "y" => 30.0}
+
+      # Placement status should be visible
+      assert has_element?(view, "#placement-status", "Placement cancelled")
+    end
+
+    test "cancel_placement during edit closes drawer without mutation", %{
+      view: view,
+      edit_stop: child_stop
+    } do
+      render_hook(view, "edit_child_stop", %{"id" => to_string(child_stop.id)})
+
+      # Drawer is open for editing
+      assert has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      render_hook(view, "cancel_placement", %{})
+
+      # Drawer should close
+      refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      # Stop should be unchanged
+      unchanged = Gtfs.get_stop!(child_stop.id)
+      assert unchanged.diagram_coordinate == %{"x" => 75.0, "y" => 85.0}
+
+      # Placement status should be visible
+      assert has_element?(view, "#placement-status", "Placement cancelled")
+    end
+
+    test "cancel_placement with empty placement mutates nothing", %{
+      view: view,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      pre_count =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> length()
+
+      render_hook(view, "cancel_placement", %{})
+
+      post_count =
+        Gtfs.list_child_stops_for_parent(organization.id, gtfs_version.id, station.id)
+        |> length()
+
+      assert pre_count == post_count
+
+      assert has_element?(view, "#placement-status", "Placement cancelled")
+    end
+  end
+
   describe "StationDiagramLive - search_stop" do
     setup do
       organization = organization_fixture()

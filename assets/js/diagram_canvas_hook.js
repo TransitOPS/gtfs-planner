@@ -588,6 +588,16 @@ const DiagramCanvasHook = {
       return;
     }
 
+    // Cancel keyboard placement/reposition
+    if (e.key === "Escape") {
+      const drawer = document.getElementById("child-stop-drawer-overlay");
+      if (drawer && drawer.dataset.open === "true") {
+        e.preventDefault();
+        this.pushEvent("cancel_placement", {});
+        return;
+      }
+    }
+
     if ((e.key === "Enter" || e.key === " ") && this.isViewMode() && this.overlay) {
       const activeEl = document.activeElement;
       if (!activeEl || !this.overlay.contains(activeEl)) {

@@ -514,3 +514,76 @@ describe("DiagramCanvasHook — pan/zoom controls", () => {
     });
   });
 });
+
+describe("DiagramCanvasHook — Escape/cancel keyboard placement", () => {
+  let container;
+  let svg;
+  let overlay;
+  let hook;
+
+  function createDrawerOverlay({ open = false } = {}) {
+    const el = document.createElement("dialog");
+    el.setAttribute("id", "child-stop-drawer-overlay");
+    el.dataset.open = String(open);
+    document.body.appendChild(el);
+    return el;
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    const canvas = makeCanvas();
+    container = canvas.container;
+    svg = canvas.svg;
+    overlay = canvas.overlay;
+    hook = makeHook(svg);
+    hook.mounted();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe("Escape cancels keyboard placement", () => {
+    it("pushes cancel_placement when child-stop-drawer is open", () => {
+      createDrawerOverlay({ open: true });
+      const pushEventSpy = vi.spyOn(hook, "pushEvent");
+      dispatchDocumentKeydown("Escape");
+      expect(pushEventSpy).toHaveBeenCalledWith("cancel_placement", {});
+    });
+
+    it("does not push cancel_placement when drawer is not open", () => {
+      createDrawerOverlay({ open: false });
+      const pushEventSpy = vi.spyOn(hook, "pushEvent");
+      dispatchDocumentKeydown("Escape");
+      expect(pushEventSpy).not.toHaveBeenCalledWith("cancel_placement", {});
+    });
+
+    it("does not push cancel_placement when drawer element is absent", () => {
+      const pushEventSpy = vi.spyOn(hook, "pushEvent");
+      dispatchDocumentKeydown("Escape");
+      expect(pushEventSpy).not.toHaveBeenCalledWith("cancel_placement", {});
+    });
+
+    it("still cancels drag when dragging and drawer is open (existing behavior preserved)", () => {
+      createDrawerOverlay({ open: true });
+      const { group } = makeStopGroup(overlay);
+      hook.dragging = {
+        stopId: "STOP_1",
+        groupEl: group,
+        centerX: 50,
+        centerY: 50,
+        startSvgX: 50,
+        startSvgY: 50,
+        currentX: 60,
+        currentY: 60,
+        pathwayElements: []
+      };
+
+      const pushEventSpy = vi.spyOn(hook, "pushEvent");
+      dispatchDocumentKeydown("Escape");
+
+      expect(hook.dragging).toBeNull();
+      expect(pushEventSpy).toHaveBeenCalledWith("drag_cancel", {});
+    });
+  });
+});

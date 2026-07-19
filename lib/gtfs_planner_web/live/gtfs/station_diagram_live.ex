@@ -34,6 +34,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:mode, :view)
      |> assign(:measurement_enabled, false)
      |> assign(:scale_status, nil)
+     |> assign(:placement_status, nil)
      |> assign(:ruler_point_a, nil)
      |> assign(:ruler_point_b, nil)
      |> assign(:show_ruler_drawer, false)
@@ -1003,6 +1004,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           </div>
         </div>
 
+        <div
+          :if={@placement_status}
+          id="placement-status"
+          role="status"
+          aria-live="polite"
+          class="mx-4 sm:mx-6 lg:mx-8 mt-2"
+        >
+          <div class="alert alert-info alert-soft text-sm">
+            <span>{@placement_status}</span>
+            <button type="button" class="btn btn-ghost btn-xs" phx-click="dismiss_placement_status">
+              Dismiss
+            </button>
+          </div>
+        </div>
+
         <.lists_section
           active_level={@active_level}
           child_stops_list={@child_stops_list}
@@ -1471,6 +1487,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("cancel_placement", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:placement_status, "Placement cancelled")
+     |> assign(:pending_xy, nil)
+     |> assign(:selected_stop_id, nil)
+     |> assign(:active_point_id, nil)
+     |> assign(:reposition_x, "")
+     |> assign(:reposition_y, "")
+     |> assign(:child_stop_form, to_form(%{}))
+     |> reset_reposition_state()}
+  end
+
+  @impl true
+  def handle_event("dismiss_placement_status", _params, socket) do
+    {:noreply, assign(socket, :placement_status, nil)}
+  end
+
+  @impl true
   def handle_event("edit_child_stop", %{"id" => id}, socket) do
     stop = Gtfs.get_stop!(id)
 
@@ -1706,6 +1741,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                socket
                |> stream_insert(:child_stops, stop)
                |> refresh_lists()
+               |> assign(
+                 :placement_status,
+                 "Stop placed at (#{Float.to_string(x)}, #{Float.to_string(y)})"
+               )
                |> assign(:pending_xy, nil)
                |> assign(:selected_stop_id, nil)
                |> assign(:active_point_id, nil)
@@ -1770,6 +1809,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
               {:noreply,
                socket
+               |> assign(:placement_status, "Stop updated")
                |> close_child_stop_drawer_after_save()
                |> apply_child_stop_save_refresh(refresh_plan, updated_stop)
                |> maybe_refresh_history_entries("stop", updated_stop.id)}
@@ -4793,6 +4833,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> refresh_lists()
+         |> assign(
+           :placement_status,
+           "Stop re-positioned to (#{Float.to_string(x)}, #{Float.to_string(y)})"
+         )
          |> assign(:pending_xy, nil)
          |> assign(:selected_stop_id, nil)
          |> assign(:reposition_x, "")
