@@ -32,6 +32,20 @@ async function loginAndGoToDiagram(page) {
   await page.waitForSelector("#diagram-page");
 }
 
+async function tabUntilFocused(page, selector, maxTabs = 50) {
+  for (let attempt = 0; attempt < maxTabs; attempt += 1) {
+    await page.keyboard.press("Tab");
+
+    const matched = await page.evaluate((candidate) => {
+      return document.activeElement?.matches(candidate) ?? false;
+    }, selector);
+
+    if (matched) return;
+  }
+
+  throw new Error(`Could not reach ${selector} after ${maxTabs} Tab presses`);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Keyboard navigation of diagram canvas stops
 // ─────────────────────────────────────────────────────────────────────────────
@@ -48,20 +62,16 @@ test.describe("Diagram keyboard navigation", () => {
     // Tab into the page content and toward the diagram stops.
     // First, click somewhere in the diagram area to set focus context.
     await page.locator("#diagram-canvas-wrapper").click();
-    // Press Tab to move to the first stop's hit target or pathway element
-    await page.keyboard.press("Tab");
-    // The first focusable element should be a stop or pathway button
-    await page.waitForTimeout(300);
+    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
 
     const focused = await page.evaluate(() => {
       const ae = document.activeElement;
       if (!ae) return null;
-      return { tag: ae.tagName, role: ae.getAttribute("role"), id: ae.id };
+      return { tag: ae.tagName.toLowerCase(), role: ae.getAttribute("role"), id: ae.id };
     });
-    // The focused element should be a stop group (g) or pathway group (g)
-    // with role="button"
+
     expect(focused).not.toBeNull();
-    expect(["G", "BUTTON", "A"]).toContain(focused.tag);
+    expect(focused.tag).toBe("g");
     expect(focused.role).toBe("button");
   });
 
@@ -69,10 +79,8 @@ test.describe("Diagram keyboard navigation", () => {
     page,
   }) => {
     await page.waitForSelector("#diagram-overlay");
-    // Tab to reach a focusable element
     await page.locator("#diagram-canvas-wrapper").click();
-    await page.keyboard.press("Tab");
-    await page.waitForTimeout(300);
+    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
 
     // Press Enter to activate the focused stop
     await page.keyboard.press("Enter");
@@ -85,8 +93,7 @@ test.describe("Diagram keyboard navigation", () => {
   test("Escape closes the child stop drawer when open", async ({ page }) => {
     await page.waitForSelector("#diagram-overlay");
     await page.locator("#diagram-canvas-wrapper").click();
-    await page.keyboard.press("Tab");
-    await page.waitForTimeout(300);
+    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
     await page.keyboard.press("Enter");
     await expect(page.locator("#child-stop-drawer-overlay")).toBeVisible({
       timeout: 5000,
@@ -182,7 +189,8 @@ test.describe("Diagram pan and zoom keyboard accessibility", () => {
     // Navigate to the pan/zoom control bar via Tab
     // The pan/zoom bar is at the bottom-left of the canvas
     const panUpBtn = page.locator('[aria-label="Pan up"]');
-    await panUpBtn.focus();
+    await page.locator("#diagram-canvas-wrapper").click();
+    await tabUntilFocused(page, '[aria-label="Pan up"]');
     await expect(panUpBtn).toBeFocused();
 
     // Activate with Enter
@@ -272,7 +280,9 @@ test.describe("Diagram focus indicator", () => {
     page,
   }) => {
     const panUpBtn = page.locator('[aria-label="Pan up"]');
-    await panUpBtn.focus();
+    await page.locator("#diagram-canvas-wrapper").click();
+    await tabUntilFocused(page, '[aria-label="Pan up"]');
+    await expect(panUpBtn).toBeFocused();
 
     // The button should have a focus-visible style (ring)
     // Check that the element matches :focus-visible
@@ -290,12 +300,7 @@ test.describe("Diagram focus indicator", () => {
     await page.locator("#diagram-canvas-wrapper").click();
 
     const focusedGroup = page.locator("#diagram-overlay g[tabindex]:focus-visible");
-
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      await page.keyboard.press("Tab");
-      if ((await focusedGroup.count()) === 1) break;
-    }
-
+    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
     await expect(focusedGroup).toHaveCount(1);
 
     const ring = await focusedGroup.evaluate((el) => {
@@ -346,8 +351,7 @@ test.describe("Diagram reduced-motion accessibility", () => {
 
     // Tab to stops — should work without transition delay
     await page.locator("#diagram-canvas-wrapper").click();
-    await page.keyboard.press("Tab");
-    await page.waitForTimeout(200);
+    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
 
     const hasFocusedStop = await page.evaluate(() => {
       const ae = document.activeElement;
@@ -391,43 +395,49 @@ test.describe("Diagram reduced-motion accessibility", () => {
     await loginAndGoToDiagram(page);
     await page.waitForSelector("#diagram-overlay");
 
-    // Check animation/transition duration on the overlay SVG
-    const durations = await page.evaluate(() => {
-      const overlay = document.getElementById("diagram-overlay");
-      if (!overlay) return null;
-      const style = getComputedStyle(overlay);
+    await page.locator("#diagram-canvas-wrapper").click();
+    await tabUntilFocused(page, "#diagram-overlay g[tabindex]");
+
+    const focusMotion = await page
+      .locator("#diagram-overlay g[tabindex]:focus-visible")
+      .evaluate((group) => {
+        const geometry = group.querySelector(
+          "[data-stop-hit-target], [data-pathway-hit], [data-cross-level-badge-hit]",
+        );
+        const groupStyle = getComputedStyle(group);
+        const geometryStyle = getComputedStyle(geometry);
+
+        return {
+          groupAnimation: groupStyle.animationDuration,
+          groupTransition: groupStyle.transitionDuration,
+          geometryAnimation: geometryStyle.animationDuration,
+          geometryTransition: geometryStyle.transitionDuration,
+        };
+      });
+
+    expect(focusMotion).toEqual({
+      groupAnimation: "0s",
+      groupTransition: "0s",
+      geometryAnimation: "0s",
+      geometryTransition: "0s",
+    });
+
+    await page.keyboard.press("Enter");
+    const drawerPanel = page.locator("dialog[data-initial-focus][open] > aside");
+    await expect(drawerPanel).toBeVisible();
+
+    const drawerMotion = await drawerPanel.evaluate((panel) => {
+      const style = getComputedStyle(panel);
       return {
         animationDuration: style.animationDuration,
         transitionDuration: style.transitionDuration,
       };
     });
 
-    // The overlay itself may not have explicit animations, but its children shouldn't
-    const childrenDurations = await page.evaluate(() => {
-      const overlay = document.getElementById("diagram-overlay");
-      if (!overlay) return [];
-      const results = [];
-      overlay.querySelectorAll("*").forEach((el) => {
-        const style = getComputedStyle(el);
-        if (style.animationDuration !== "0s" || style.transitionDuration !== "0s") {
-          results.push({
-            tag: el.tagName,
-            class: el.className?.baseVal || el.className,
-            animationDuration: style.animationDuration,
-            transitionDuration: style.transitionDuration,
-          });
-        }
-      });
-      return results;
+    expect(drawerMotion).toEqual({
+      animationDuration: "0s",
+      transitionDuration: "0s",
     });
-
-    // In reduced-motion mode, any animated elements should have zero durations.
-    // If there are non-zero entries, that's fine — we just check the focused
-    // drag/drop transitions are not animated.
-    const stopDragAnimations = childrenDurations.filter(
-      (d) => d.class && (d.class.includes("dragging") || d.class.includes("transition")),
-    );
-    expect(stopDragAnimations).toEqual([]);
   });
 });
 

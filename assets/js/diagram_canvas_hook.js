@@ -611,13 +611,17 @@ const DiagramCanvasHook = {
         e.preventDefault();
       }
 
-      if (activeEl.hasAttribute("data-stop-id")) {
-        const hitTarget = activeEl.querySelector("[data-stop-hit-target]");
-        if (hitTarget) {
-          hitTarget.click();
-        }
-      } else {
-        activeEl.click();
+      const activationTarget = activeEl.hasAttribute("data-stop-id")
+        ? activeEl.querySelector("[data-stop-hit-target]")
+        : activeEl;
+
+      if (activationTarget) {
+        activationTarget.dispatchEvent(
+          new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true
+          })
+        );
       }
     }
   },

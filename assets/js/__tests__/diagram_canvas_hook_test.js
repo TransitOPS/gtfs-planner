@@ -125,7 +125,8 @@ describe("DiagramCanvasHook — group activation", () => {
       const hook = makeHook(svg);
       hook.mounted();
 
-      const clickSpy = vi.spyOn(hitTarget, "click");
+      const clickSpy = vi.fn();
+      hitTarget.addEventListener("click", clickSpy);
       group.focus();
       dispatchDocumentKeydown("Enter");
 
@@ -137,7 +138,8 @@ describe("DiagramCanvasHook — group activation", () => {
       const hook = makeHook(svg);
       hook.mounted();
 
-      const clickSpy = vi.spyOn(hitTarget, "click");
+      const clickSpy = vi.fn();
+      hitTarget.addEventListener("click", clickSpy);
       group.focus();
       const event = dispatchDocumentKeydown(" ");
 
@@ -150,7 +152,8 @@ describe("DiagramCanvasHook — group activation", () => {
       const hook = makeHook(svg);
       hook.mounted();
 
-      const clickSpy = vi.spyOn(group, "click");
+      const clickSpy = vi.fn();
+      group.addEventListener("click", clickSpy);
       group.focus();
       dispatchDocumentKeydown("Enter");
 
@@ -162,7 +165,8 @@ describe("DiagramCanvasHook — group activation", () => {
       const hook = makeHook(svg);
       hook.mounted();
 
-      const clickSpy = vi.spyOn(group, "click");
+      const clickSpy = vi.fn();
+      group.addEventListener("click", clickSpy);
       group.focus();
       const event = dispatchDocumentKeydown(" ");
 
@@ -175,7 +179,8 @@ describe("DiagramCanvasHook — group activation", () => {
       const hook = makeHook(svg);
       hook.mounted();
 
-      const clickSpy = vi.spyOn(group, "click");
+      const clickSpy = vi.fn();
+      group.addEventListener("click", clickSpy);
       group.focus();
       dispatchDocumentKeydown("Enter");
 
@@ -187,7 +192,8 @@ describe("DiagramCanvasHook — group activation", () => {
       const hook = makeHook(svg);
       hook.mounted();
 
-      const clickSpy = vi.spyOn(group, "click");
+      const clickSpy = vi.fn();
+      group.addEventListener("click", clickSpy);
       group.focus();
       const event = dispatchDocumentKeydown(" ");
 
@@ -202,8 +208,10 @@ describe("DiagramCanvasHook — group activation", () => {
       const hook = makeHook(svg);
       hook.mounted();
 
-      const groupClickSpy = vi.spyOn(group, "click");
-      const hitClickSpy = vi.spyOn(hitTarget, "click");
+      const groupClickSpy = vi.fn();
+      const hitClickSpy = vi.fn();
+      group.addEventListener("click", groupClickSpy);
+      hitTarget.addEventListener("click", hitClickSpy);
       group.focus();
       dispatchDocumentKeydown("Enter");
 
@@ -217,7 +225,8 @@ describe("DiagramCanvasHook — group activation", () => {
       const hook = makeHook(svg);
       hook.mounted();
 
-      const hitClickSpy = vi.spyOn(hitTarget, "click");
+      const hitClickSpy = vi.fn();
+      hitTarget.addEventListener("click", hitClickSpy);
       group.focus();
       dispatchDocumentKeydown("Enter");
 
@@ -233,7 +242,8 @@ describe("DiagramCanvasHook — group activation", () => {
       document.body.appendChild(outsideBtn);
       outsideBtn.focus();
 
-      const groupClickSpy = vi.spyOn(group, "click");
+      const groupClickSpy = vi.fn();
+      group.addEventListener("click", groupClickSpy);
       dispatchDocumentKeydown("Enter");
 
       expect(groupClickSpy).not.toHaveBeenCalled();
@@ -244,7 +254,8 @@ describe("DiagramCanvasHook — group activation", () => {
       const hook = makeHook(svg);
       hook.mounted();
 
-      const clickSpy = vi.spyOn(group, "click");
+      const clickSpy = vi.fn();
+      group.addEventListener("click", clickSpy);
       group.focus();
       dispatchDocumentKeydown("Escape");
       dispatchDocumentKeydown("Tab");
@@ -265,7 +276,8 @@ describe("DiagramCanvasHook — group activation", () => {
       const hook = makeHook(svg);
       hook.mounted();
 
-      const clickSpy = vi.spyOn(group, "click");
+      const clickSpy = vi.fn();
+      group.addEventListener("click", clickSpy);
       group.focus();
       dispatchDocumentKeydown("Enter");
 
