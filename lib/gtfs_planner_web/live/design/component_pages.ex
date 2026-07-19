@@ -938,52 +938,86 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
   @doc ~S"""
   The `<.drawer>` and `<.confirm_dialog>` overlays.
 
-  The drawer is fixed-position and its overlay covers the viewport, so an
-  open-by-default demo would bury the page behind it. It renders with
-  `open={@drawer_open}` instead, and the trigger, the overlay, and the header close
-  button push `open_drawer`/`close_drawer` — all handled by `DesignSystemLive`, which
-  owns the assign. `on_close` is left at its `"close_drawer"` default.
+  Both are server-owned, native `<dialog>` components backed by the
+  `OverlayDialog` hook. The hook synchronizes `data-open` with the
+  browser's `showModal()`/`close()` and manages focus, dismissal, and
+  pending recovery.
 
-  The confirm dialog is toggled entirely client-side: `show_confirm_dialog/2` on the
-  trigger, `hide_confirm_dialog/2` on Escape/Cancel/backdrop, and — for this demo only —
-  on the confirm button too, so the showcase pushes no server event. In a real call
-  site `on_confirm` carries the destructive event. Every `phx-click` it renders is an
-  encoded `JS` command, not an event name, so the page's server-event surface stays
-  `open_drawer`/`close_drawer`.
+  The confirmation demo nests inside the drawer: opening it from the
+  drawer keeps the drawer open underneath. Confirmation success closes
+  only the child alertdialog and focuses `#ds-confirm-result` inside
+  the still-open drawer. Confirmation error clears pending in place.
   """
   def overlays(assigns) do
     ~H"""
     <section id="ds-page-overlays" class="max-w-4xl">
       <h1 class="text-2xl font-bold">Overlays</h1>
       <p class="mt-2 text-base-content/70">
-        Two overlays. The drawer slides in from the right for editing a record without
-        losing the list behind it; the confirm dialog is a small modal that gates a
-        destructive action.
+        Server-owned overlays backed by native <code class="font-mono text-sm">&lt;dialog&gt;</code>
+        and the <code class="font-mono text-sm">OverlayDialog</code> hook.
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Drawer</h2>
       <p class="mt-1 text-sm text-base-content/60">
-        The drawer is fixed to the viewport and dims the page behind it, so this demo
-        starts closed — open it to see the real component. It closes on the header
-        button, a click outside, or the Escape key, all of which push
-        <code class="font-mono text-sm">on_close</code>
-        back to the LiveView that owns the open state. While it is open the
-        <code class="font-mono text-sm">DrawerFocus</code>
-        hook traps Tab inside the panel and restores focus to the opener on close.
+        The drawer renders a native modal dialog. Open state is a server assign;
+        the hook calls <code class="font-mono text-sm">showModal()</code>.
+        Close via the header button, Escape, or a true backdrop click — all push
+        the configured <code class="font-mono text-sm">on_close</code>
+        event back to the LiveView.
       </p>
 
       <div id="ds-drawer-demo" class="mt-3 border border-base-300 p-4">
         <.button phx-click="open_drawer">Open drawer</.button>
         <.drawer id="ds-demo-drawer" open={@drawer_open} title="Demo drawer">
           <p class="text-sm text-base-content/70">
-            Drawer content is usually a form. It scrolls independently of the page, so a
-            long form does not push the header off screen.
+            Drawer content is usually a form. It scrolls independently of the page.
           </p>
           <p class="mt-4 text-sm text-base-content/70">
             The panel is <code class="font-mono text-sm">max-w-[min(100vw,48rem)]</code>
             by default; pass <code class="font-mono text-sm">class</code>
             to narrow it.
           </p>
+
+          <h3 class="mt-6 font-semibold">Nested confirmation</h3>
+          <p
+            :if={@confirm_result == :success}
+            id="ds-confirm-result"
+            class="mt-1 text-sm text-success"
+            tabindex="-1"
+          >
+            Route deleted successfully.
+          </p>
+
+          <.button variant="danger" phx-click="open_confirm" disabled={@confirm_pending}>
+            Delete route
+          </.button>
+
+          <.confirm_dialog
+            id="ds-demo-confirm"
+            open={@confirm_open}
+            title="Delete route 42?"
+            confirm_label="Delete route"
+            pending_label="Deleting…"
+            on_confirm="run_confirm"
+            on_cancel="cancel_confirm"
+            pending={@confirm_pending}
+            return_focus_id={@confirm_return_focus_id}
+            described_by="ds-demo-confirm-body"
+          >
+            <p>This removes the route and its 214 trips from version 2026-01. It cannot be undone.</p>
+
+            <div :if={@confirm_pending} class="mt-4 border-t border-base-300 pt-4">
+              <p class="text-sm font-medium">Demo: choose an outcome</p>
+              <div class="flex gap-2 mt-2">
+                <.button variant="secondary" size="sm" phx-click="confirm_success">
+                  Complete successfully
+                </.button>
+                <.button variant="secondary" size="sm" phx-click="confirm_error">
+                  Simulate error
+                </.button>
+              </div>
+            </div>
+          </.confirm_dialog>
         </.drawer>
       </div>
       <p class="mt-3">
@@ -997,60 +1031,67 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
 
       <h2 class="mt-8 text-lg font-semibold">Confirm dialog</h2>
       <p class="mt-1 text-sm text-base-content/60">
-        A focused modal for a destructive action. It states the consequence with real
-        numbers, repeats verb + object on the confirm button, and lands focus on Cancel.
-        Escape, the backdrop, and Cancel all close it. Toggling is client-side, so this
-        demo opens without a round trip; in the app <code class="font-mono text-sm">on_confirm</code>
-        carries the delete event.
+        A fully server-owned confirmation. Focus lands on Cancel. The confirm
+        button uses <code class="font-mono text-sm">phx-disable-with</code> for
+        immediate acknowledgment. Durable pending disables both confirm and
+        dismiss controls; the hook refuses Escape and backdrop clicks.
+        <code class="font-mono text-sm">on_confirm</code> and
+        <code class="font-mono text-sm">on_cancel</code> are plain event name
+        strings. Supply <code class="font-mono text-sm">target</code> when the
+        owner is a <code class="font-mono text-sm">LiveComponent</code>.
       </p>
 
       <div id="ds-confirm-demo" class="mt-3 border border-base-300 p-4">
-        <.button variant="danger" phx-click={show_confirm_dialog("ds-demo-confirm")}>
-          Delete route
-        </.button>
-        <.confirm_dialog
-          id="ds-demo-confirm"
-          title="Delete route 42?"
-          confirm_label="Delete route"
-          on_confirm={hide_confirm_dialog("ds-demo-confirm")}
-        >
-          This removes the route and its 214 trips from version 2026-01. It cannot be undone.
-        </.confirm_dialog>
-      </div>
-      <p class="mt-3">
         <code
           phx-no-curly-interpolation
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
-          &lt;.button phx-click={show_confirm_dialog("delete-route")}&gt;Delete route&lt;/.button&gt; · &lt;.confirm_dialog id="delete-route" confirm_label="Delete route" on_confirm="delete_route"&gt;…&lt;/.confirm_dialog&gt;
+          &lt;.confirm_dialog
+            id="delete-route"
+            open={@confirm_open}
+            title="Delete route 42?"
+            confirm_label="Delete route"
+            pending_label="Deleting…"
+            on_confirm="delete_route"
+            on_cancel="cancel_delete"
+            pending={@deleting}
+            described_by="delete-route-body"
+          &gt;
+            This removes the route and its 214 trips from version 2026-01. It cannot be undone.
+          &lt;/.confirm_dialog&gt;
         </code>
-      </p>
+      </div>
 
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>
-          The LiveView owns the open state. The drawer renders from
+          The LiveView owns all open and pending state. The drawer renders from
           <code class="font-mono text-sm">open</code>
           and pushes <code class="font-mono text-sm">on_close</code>; it never closes
-          itself, so an unhandled close event leaves it stuck open.
+          itself.
         </li>
         <li>
           Reach for a drawer when the context behind it matters — editing one row of a
           list. When it does not, a full page is simpler and links better.
         </li>
         <li>
-          The drawer closes on the overlay click, the close button, or Escape, and traps
-          focus while open — the <code class="font-mono text-sm">DrawerFocus</code>
-          hook owns both. A confirm dialog closes the same three ways.
+          The drawer closes via the header button, Escape, or a true backdrop click;
+          a click in the panel never closes. The
+          <code class="font-mono text-sm">OverlayDialog</code> hook manages focus
+          and native modal behavior.
         </li>
         <li>
-          Keep the drawer title a noun phrase naming the record being edited, not the
-          verb: "Edit user" is the button, "User" is the drawer.
+          Keep the drawer title a noun phrase naming the record being edited: "User",
+          not "Edit user".
         </li>
         <li>
           Reach for a confirm dialog only when the action is irreversible. When it can be
           undone, act immediately and offer undo instead of asking first. State the
           consequence with real numbers and repeat verb + object on the confirm button.
+        </li>
+        <li>
+          Pending disables duplicate confirm and dismissal while connected. Every
+          success and error path must clear it. On disconnect the hook recovers locally.
         </li>
       </ul>
     </section>

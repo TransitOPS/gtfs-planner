@@ -45,6 +45,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
   # handle_event clause for each; an unhandled event crashes the LiveView.
   @handled_events ~w(
     demo_form_submit paginate open_drawer close_drawer
+    open_confirm cancel_confirm run_confirm confirm_success confirm_error
     live_select_change change address-form live_select_blur
     save_location delete_location
   )
@@ -821,9 +822,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
   end
 
   describe "overlays page" do
-    # AC-14: the drawer is fixed-position with a full-screen overlay, so an
-    # open-by-default demo would cover the page.
-    test "renders the drawer closed by default inside the demo container", %{
+    test "renders the drawer closed by default with inert and aria-hidden", %{
       conn: conn,
       user: user
     } do
@@ -831,12 +830,13 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/design/overlays")
 
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[data-open='false']")
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[inert]")
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[aria-hidden='true']")
       assert has_element?(view, "#ds-drawer-demo aside#ds-demo-drawer")
-      assert "translate-x-full" in drawer_class_list(view)
-      refute "translate-x-0" in drawer_class_list(view)
     end
 
-    test "opening the drawer from the trigger gives it the open-state class", %{
+    test "opening the drawer sets data-open=true and applies role=dialog", %{
       conn: conn,
       user: user
     } do
@@ -848,27 +848,29 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       |> element("#ds-drawer-demo button[phx-click='open_drawer']", "Open drawer")
       |> render_click()
 
-      assert "translate-x-0" in drawer_class_list(view)
-      refute "translate-x-full" in drawer_class_list(view)
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[data-open='true']")
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[role='dialog']")
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[aria-modal='true']")
+      refute has_element?(view, "dialog#ds-demo-drawer-overlay[inert]")
     end
 
-    test "pushing close_drawer returns the drawer to the closed state", %{conn: conn, user: user} do
+    test "closing the drawer sets data-open=false and restores inert", %{
+      conn: conn,
+      user: user
+    } do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/overlays")
 
       view |> element("#ds-drawer-demo button[phx-click='open_drawer']") |> render_click()
-      assert "translate-x-0" in drawer_class_list(view)
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[data-open='true']")
 
       render_click(view, "close_drawer", %{})
 
-      assert "translate-x-full" in drawer_class_list(view)
-      refute "translate-x-0" in drawer_class_list(view)
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[data-open='false']")
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[inert]")
     end
 
-    # The drawer's own close button emits on_close, which defaults to "close_drawer"
-    # (core_components.ex:706). This drives the real component's control rather than
-    # pushing the event name directly.
     test "the drawer's close button closes it through the real component", %{
       conn: conn,
       user: user
@@ -879,16 +881,112 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       view |> element("#ds-drawer-demo button[phx-click='open_drawer']") |> render_click()
 
-      view |> element("#ds-demo-drawer button[phx-click='close_drawer']") |> render_click()
+      view |> element("#ds-demo-drawer-close") |> render_click()
 
-      assert "translate-x-full" in drawer_class_list(view)
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[data-open='false']")
     end
 
-    # INV-4: every server event this page can emit must have a handler in
-    # DesignSystemLive. The drawer contributes two close_drawer emitters — the overlay
-    # and the header close button. The confirm dialog toggles entirely client-side, so
-    # every phx-click it renders is an encoded JS command (a JSON array), never an event
-    # name; those reach the client only and are excluded here.
+    test "the close button has data-dialog-dismiss and aria-label", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      assert has_element?(view, "#ds-demo-drawer-close[data-dialog-dismiss]")
+      assert has_element?(view, "#ds-demo-drawer-close[aria-label]")
+    end
+
+    test "opening the confirmation from the drawer does not close the drawer", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      view |> element("#ds-drawer-demo button[phx-click='open_drawer']") |> render_click()
+      view |> element("button[phx-click='open_confirm']") |> render_click()
+
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[data-open='true']")
+      assert has_element?(view, "dialog#ds-demo-confirm[data-open='true']")
+      assert has_element?(view, "dialog#ds-demo-confirm[role='alertdialog']")
+    end
+
+    test "cancelling the confirmation closes it but leaves the drawer open", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      view |> element("#ds-drawer-demo button[phx-click='open_drawer']") |> render_click()
+      view |> element("button[phx-click='open_confirm']") |> render_click()
+
+      render_click(view, "cancel_confirm", %{})
+
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[data-open='true']")
+      assert has_element?(view, "dialog#ds-demo-confirm[data-open='false']")
+    end
+
+    test "confirmation success closes child and shows result in still-open drawer", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      view |> element("#ds-drawer-demo button[phx-click='open_drawer']") |> render_click()
+      view |> element("button[phx-click='open_confirm']") |> render_click()
+      view |> element("#ds-demo-confirm-confirm") |> render_click()
+      view |> element("button[phx-click='confirm_success']") |> render_click()
+
+      assert has_element?(view, "dialog#ds-demo-drawer-overlay[data-open='true']")
+      assert has_element?(view, "dialog#ds-demo-confirm[data-open='false']")
+      assert has_element?(view, "#ds-confirm-result", "Route deleted successfully.")
+    end
+
+    test "confirmation pending disables confirm and dismiss controls", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      view |> element("#ds-drawer-demo button[phx-click='open_drawer']") |> render_click()
+      view |> element("button[phx-click='open_confirm']") |> render_click()
+      view |> element("#ds-demo-confirm-confirm") |> render_click()
+
+      assert has_element?(view, "#ds-demo-confirm-confirm[disabled]")
+      assert has_element?(view, "#ds-demo-confirm-cancel[disabled]")
+      assert has_element?(view, "dialog#ds-demo-confirm[data-pending='true']")
+      assert has_element?(view, "#ds-demo-confirm-confirm", "Deleting…")
+    end
+
+    test "confirmation error clears pending in place", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/overlays")
+
+      view |> element("#ds-drawer-demo button[phx-click='open_drawer']") |> render_click()
+      view |> element("button[phx-click='open_confirm']") |> render_click()
+      view |> element("#ds-demo-confirm-confirm") |> render_click()
+      view |> element("button[phx-click='confirm_error']") |> render_click()
+
+      assert has_element?(view, "dialog#ds-demo-confirm[data-open='true']")
+      assert has_element?(view, "dialog#ds-demo-confirm[data-pending='false']")
+      refute has_element?(view, "#ds-demo-confirm-confirm[disabled]")
+      refute has_element?(view, "#ds-demo-confirm-cancel[disabled]")
+      assert has_element?(view, "#ds-demo-confirm-confirm", "Delete route")
+    end
+
     test "emits only events the LiveView handles", %{conn: conn, user: user} do
       conn = log_in_user(conn, user)
 
@@ -899,7 +997,12 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
         |> emitted_events("#ds-page-overlays")
         |> Enum.reject(&String.starts_with?(&1, "["))
 
-      assert Enum.sort(Enum.uniq(events)) == ["close_drawer", "open_drawer"]
+      handled =
+        Enum.sort(Enum.uniq(events))
+
+      assert "close_drawer" in handled
+      assert "open_drawer" in handled
+      assert "open_confirm" in handled
       assert Enum.all?(events, &(&1 in @handled_events))
     end
   end
@@ -1225,18 +1328,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     end
   end
 
-  # The drawer's open/closed state is carried by the class list on its aside
-  # (core_components.ex:728-729), so the state assertions read that list directly.
-  defp drawer_class_list(view) do
-    view
-    |> render()
-    |> LazyHTML.from_fragment()
-    |> LazyHTML.query("#ds-drawer-demo aside#ds-demo-drawer")
-    |> LazyHTML.attribute("class")
-    |> Enum.flat_map(&String.split(&1, " ", trim: true))
-  end
-
-  # Every custom event the rendered page can push from a click, in DOM order.
+  # Click events the page pushes to the LiveView itself. A phx-target routes the event
   defp emitted_events(view, scope) do
     view
     |> render()
