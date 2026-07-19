@@ -45,6 +45,24 @@ run = "npm run --prefix assets test"
 depends = ["elixir:deps"]
 run = "mix test"
 
+# Browser (Playwright/Chromium) E2E tasks
+[tasks."setup:browser"]
+depends = ["setup:nodejs"]
+run = "npx --prefix assets playwright install chromium"
+hide = true
+
+[tasks."prepare:browser"]
+depends = ["elixir:deps", "setup:nodejs"]
+run = '''
+  MIX_ENV=test mix ecto.reset --force
+  MIX_ENV=test mix run test/support/browser_seed.exs
+'''
+hide = true
+
+[tasks."test:browser"]
+depends = ["prepare:browser"]
+run = "npm --prefix assets run test:browser"
+
 # Linting
 [tasks."lint:nodejs:syntax"]
 depends = ["setup:nodejs"]

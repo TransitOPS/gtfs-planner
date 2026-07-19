@@ -4,10 +4,12 @@
   "type": "module",
   "scripts": {
     "syntax": "node --check js/*.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:browser": "playwright test --project=chromium"
   },
   "devDependencies": {
-    "vitest": "4.1.10",
-    "jsdom": "29.1.1"
+    "@playwright/test": "1.61.1",
+    "jsdom": "29.1.1",
+    "vitest": "4.1.10"
   }
 }
