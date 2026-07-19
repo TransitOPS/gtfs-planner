@@ -66,12 +66,6 @@ defmodule GtfsPlannerWeb.Router do
     delete "/users/log_out", UserSessionController, :delete
     get "/users/settings/confirm_email/:token", UserSettingsController, :confirm_email
     post "/users/update_password", UserSessionController, :update_password
-    get "/station-data-resolution-prototype", StationResolutionPrototypeController, :index
-
-    get "/station-data-resolution-prototype/station-resolution-v2.css",
-        StationResolutionPrototypeController,
-        :stylesheet
-
     get "/map/tiles/:style/:z/:x/:y", MapTilesController, :show
     get "/map/buildings", MapBuildingsController, :index
 

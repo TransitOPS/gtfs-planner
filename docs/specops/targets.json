@@ -44,14 +44,14 @@
     {
       "slug": "lib-gtfs-planner-web-controllers",
       "name": "HTTP Controllers",
-      "scope": "Handles non-LiveView browser and HTTP endpoints for sessions, health checks, map data, errors, and the station resolution prototype.",
+      "scope": "Handles non-LiveView browser and HTTP endpoints for sessions, health checks, map data, and errors.",
       "origin": "derived",
       "structural_unit": "lib/gtfs_planner_web/controllers",
       "source_globs": [
         "lib/gtfs_planner_web/controllers/**"
       ],
       "tier2_path": "docs/specops/analysis/lib-gtfs-planner-web-controllers.md",
-      "source_hash": "sha256:899315dcb118025f92078750033e982f1bb7532d2652d6c81d28c36b6cc4f0ec",
+      "source_hash": "sha256:d7adeab62ee9b041e155dc4b7904fd0deca1f4d19285046ec6a27bcb445a5e4a",
       "last_synthesized": null
     },
     {
