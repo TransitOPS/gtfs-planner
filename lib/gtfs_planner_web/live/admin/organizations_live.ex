@@ -370,6 +370,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       />
 
       <.checkbox_group
+        id="invite-roles"
         name="invite[roles][]"
         label="Roles"
         options={@available_roles}

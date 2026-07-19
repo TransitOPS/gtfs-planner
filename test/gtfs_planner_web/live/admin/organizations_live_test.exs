@@ -107,12 +107,13 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
     test "renders invite member form for administrator", %{conn: conn, organization: organization} do
       {:ok, _view, html} = live(conn, ~p"/admin/organizations/#{organization.id}/invite")
 
-      # Assert page contains expected content
       assert html =~ "Invite Member"
       assert html =~ "Email"
 
-      # Assert form element exists
       assert html =~ "invite-form"
+      assert html =~ "invite-roles"
+      assert html =~ "invite-roles-pathways_studio_admin"
+      assert html =~ "invite-roles-pathways_studio_editor"
     end
 
     test "invites new user to organization", %{conn: conn, organization: organization} do

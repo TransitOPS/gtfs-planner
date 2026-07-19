@@ -211,15 +211,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :class, :any, default: nil, doc: "the input class to use over defaults"
   attr :error_class, :any, default: nil, doc: "the input error class to use over defaults"
 
-  attr :announce_errors, :boolean,
-    default: true,
-    doc: """
-    when false, the inline error keeps its stable id, text, aria-invalid, and
-    aria-describedby association but is not a live region (no role="alert" or
-    aria-live="assertive"). Disable only when the form owner supplies deterministic
-    submit-time focus plus an associated description or focusable error summary.
-    """
-
   attr :rest, :global,
     include: ~w(accept autocomplete capture cols disabled form list max maxlength min minlength
                 multiple pattern placeholder readonly required rows size step)
@@ -283,7 +274,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </span>
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
   end
@@ -313,7 +304,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </select>
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
   end
@@ -339,7 +330,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
   end
@@ -368,7 +359,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         />
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
   end
@@ -401,6 +392,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   ## Examples
 
       <.checkbox_group
+        id="invite-roles"
         name="invite[roles][]"
         label="Roles"
         options={[{"Admin", "admin"}, {"Editor", "editor"}]}
@@ -408,6 +400,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         required
       />
   """
+  attr :id, :string, required: true, doc: "the stable component id"
   attr :name, :string, required: true, doc: "the input name for the checkbox group"
   attr :label, :string, required: true, doc: "the label for the checkbox group"
   attr :options, :list, required: true, doc: "list of {label, value} tuples"
@@ -417,16 +410,40 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :help, :string, default: nil, doc: "help text displayed below the checkboxes"
 
   def checkbox_group(assigns) do
+    help_id = if assigns.help, do: "#{assigns.id}-help"
+    error_id = if assigns.error, do: "#{assigns.id}-error"
+
+    describedby =
+      [help_id, error_id]
+      |> Enum.reject(&is_nil/1)
+      |> case do
+        [] -> nil
+        ids -> Enum.join(ids, " ")
+      end
+
+    assigns =
+      assigns
+      |> assign(:help_id, help_id)
+      |> assign(:error_id, error_id)
+      |> assign(:describedby, describedby)
+
     ~H"""
-    <fieldset class="fieldset mb-2" aria-describedby={@error && "#{@name}-error"}>
+    <fieldset
+      id={@id}
+      class={["fieldset mb-2", @error && "text-error"]}
+      aria-describedby={@describedby}
+      aria-invalid={to_string(@error != nil)}
+    >
       <legend class="fieldset-legend text-base">
         {@label}
-        <span :if={@required} class="text-error">*</span>
+        <span :if={@required} class="text-sm text-base-content/60">(required)</span>
+        <span :if={!@required} class="text-sm text-base-content/60">(optional)</span>
       </legend>
       <div class="space-y-2 mt-2" role="group" aria-label={@label}>
         <label :for={{label, value} <- @options} class="flex items-center gap-2 cursor-pointer">
           <input
             type="checkbox"
+            id={"#{@id}-#{value}"}
             name={@name}
             value={value}
             checked={value in @selected}
@@ -435,12 +452,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
           <span class="label">{label}</span>
         </label>
       </div>
-      <p :if={@help} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
+      <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
       <p
         :if={@error}
-        id={"#{@name}-error"}
-        role="alert"
-        aria-live="polite"
+        id={@error_id}
         class="mt-1.5 flex gap-2 items-center text-sm text-error"
       >
         <.icon name="hero-exclamation-circle" class="size-5" />
@@ -450,14 +465,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
     """
   end
 
-  # Helper used by inputs to generate form errors. All messages for a field are
-  # rendered inside one referenced alert container carrying the deterministic
-  # error id the control points at via aria-describedby. When announce_errors is
-  # false, only the live-region attributes are dropped; the id, text, and
-  # description wiring stay identical.
   attr :id, :string, default: nil
   attr :errors, :list, default: []
-  attr :announce_errors, :boolean, default: true
 
   defp error(assigns) do
     ~H"""
@@ -465,8 +474,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
       :if={@errors != []}
       id={@id}
       class="mt-1.5 flex flex-col gap-1 text-sm text-error"
-      role={@announce_errors && "alert"}
-      aria-live={@announce_errors && "assertive"}
     >
       <span :for={msg <- @errors} class="flex gap-2 items-center">
         <.icon name="hero-exclamation-circle" class="size-5" />
@@ -770,12 +777,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   ## Examples
 
-      <.simple_form for={@form} phx-submit="save">
+      <.simple_form for={@form} id="my-form" phx-submit="save">
         <.input field={@form[:email]} type="email" />
         <.input field={@form[:username]} type="text" />
       </.simple_form>
 
   """
+  attr :id, :string, required: true, doc: "the unique id of the form"
   attr :for, :any, default: nil, doc: "the data structure for the form"
   attr :as, :any, default: nil, doc: "the server side parameter to collect all input under"
 
@@ -788,8 +796,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   def simple_form(assigns) do
     ~H"""
-    <.form :let={_f} for={@for} as={@as} {@rest}>
-      <div class="space-y-6">
+    <.form for={@for} as={@as} id={@id} {@rest}>
+      <div class="w-full max-w-2xl space-y-6">
         {render_slot(@inner_block)}
       </div>
       <div :if={@actions != []} class="mt-8 flex items-center justify-between gap-6">
@@ -811,7 +819,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   ## Examples
 
       <.drawer id="user-form" open={@show_form} on_close="close_form" title="Edit User">
-        <.simple_form for={@form} phx-submit="save">
+        <.simple_form for={@form} id="user-edit-form" phx-submit="save">
           <.input field={@form[:name]} type="text" label="Name" class="max-w-3xl" />
         </.simple_form>
       </.drawer>

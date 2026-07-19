@@ -247,27 +247,30 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </p>
 
-      <h2 class="mt-8 text-lg font-semibold">Error announcement</h2>
+      <h2 class="mt-8 text-lg font-semibold">Error contract</h2>
       <ul
-        id="ds-inputs-announce-errors"
+        id="ds-inputs-error-contract"
         class="mt-2 list-disc space-y-1 pl-5 text-base-content/70"
       >
         <li>
-          <code class="font-mono text-sm">announce_errors</code>
-          defaults to <code class="font-mono text-sm">true</code>: the inline error is an
-          assertive live region (<code class="font-mono text-sm">role="alert"</code> + <code class="font-mono text-sm">aria-live="assertive"</code>).
+          Every input derives deterministic help and error IDs from its <code class="font-mono text-sm">id</code>:
+          <code phx-no-curly-interpolation class="font-mono text-sm">{id}-help</code>
+          and <code phx-no-curly-interpolation class="font-mono text-sm">{id}-error</code>.
         </li>
         <li>
-          A form may set
-          <code phx-no-curly-interpolation class="font-mono text-sm">announce_errors={false}</code>
-          only when it supplies deterministic submit-time focus to the first invalid control
-          plus an associated <code class="font-mono text-sm">aria-describedby</code>
-          description or a focusable error summary.
-        </li>
-        <li>
-          Opting out changes nothing else: the error id, error text, <code class="font-mono text-sm">aria-invalid</code>, and
           <code class="font-mono text-sm">aria-describedby</code>
-          wiring stay identical.
+          combines both IDs when present, so the control references every applicable
+          description.
+        </li>
+        <li>
+          <code class="font-mono text-sm">aria-invalid="true"</code>
+          is set only when errors exist. Errors are visible, actionable text — never
+          color alone.
+        </li>
+        <li>
+          Forms that need submit-time focus (like the first-admin setup) own that
+          behavior through their own hook and error summary, not through the input
+          component.
         </li>
       </ul>
 
@@ -279,6 +282,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
       <div class="mt-3 max-w-xl border border-base-300 p-4">
         <.checkbox_group
+          id="ds-demo-roles"
           name="demo[roles][]"
           label="Roles"
           options={[{"Admin", "admin"}, {"Editor", "editor"}]}
@@ -291,7 +295,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           phx-no-curly-interpolation
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
-          &lt;.checkbox_group name="demo[roles][]" label="Roles" options={[{"Admin", "admin"}]} selected={@roles} /&gt;
+          &lt;.checkbox_group id="invite-roles" name="demo[roles][]" label="Roles" options={[{"Admin", "admin"}]} selected={@roles} /&gt;
         </code>
       </p>
 
