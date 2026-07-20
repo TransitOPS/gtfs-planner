@@ -40,6 +40,8 @@ defmodule GtfsPlanner.Accounts.UserOrgMembership do
     |> cast(attrs, [:user_id, :organization_id, :roles])
     |> validate_required([:user_id, :organization_id])
     |> unique_constraint([:user_id, :organization_id])
+    |> foreign_key_constraint(:user_id)
+    |> foreign_key_constraint(:organization_id)
     |> validate_roles()
   end
 

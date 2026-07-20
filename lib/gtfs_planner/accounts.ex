@@ -8,12 +8,12 @@ defmodule GtfsPlanner.Accounts do
 
   alias GtfsPlanner.Accounts.{
     FirstAdminForm,
+    InviteForm,
     PasswordResetRequestForm,
     User,
     UserOrgMembership,
     UserToken
   }
-
   alias GtfsPlanner.Accounts.UserNotifier
   alias GtfsPlanner.Organizations.Organization
 
@@ -499,6 +499,101 @@ defmodule GtfsPlanner.Accounts do
   end
 
   ## User invitation
+
+  @type invite_member_result ::
+          {:ok, User.t()}
+          | {:error, Ecto.Changeset.t()}
+          | {:partial, :delivery_failed, User.t(), term()}
+
+  @doc ~S"""
+  Invites a member to an organization as one atomic database command.
+
+  Validates the submission through `GtfsPlanner.Accounts.InviteForm`, then
+  creates or reuses the user, inserts the organization membership, and inserts
+  the invite token inside a single `Ecto.Multi`. Any failed database operation
+  rolls back every database change from the command and returns an
+  insert-action `InviteForm` changeset.
+
+  The invitation email is delivered only after the transaction commits. A
+  delivery failure leaves the committed user, membership, and usable invite
+  token in place and returns the sole partial result; the safe recovery is
+  `resend_user_invite/2`.
+
+  ## Examples
+
+      iex> invite_member("member@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"))
+      {:ok, %User{}}
+
+      iex> invite_member("nope", org_id, [], &url(~p"/users/accept_invite/#{&1}"))
+      {:error, %Ecto.Changeset{}}
+
+  """
+  @spec invite_member(
+          String.t(),
+          Ecto.UUID.t(),
+          [String.t()],
+          (String.t() -> String.t())
+        ) :: invite_member_result()
+  def invite_member(email, organization_id, roles, invite_url_fun)
+      when is_function(invite_url_fun, 1) do
+    changeset = InviteForm.changeset(%{"email" => email, "roles" => roles})
+
+    if changeset.valid? do
+      changeset
+      |> invite_member_multi(organization_id)
+      |> Repo.transaction()
+      |> resolve_invite_member(changeset, invite_url_fun)
+    else
+      {:error, %{changeset | action: :insert}}
+    end
+  end
+
+  defp invite_member_multi(changeset, organization_id) do
+    email = Ecto.Changeset.get_field(changeset, :email)
+    roles = Ecto.Changeset.get_field(changeset, :roles)
+
+    Ecto.Multi.new()
+    |> Ecto.Multi.run(:user, fn repo, _changes -> fetch_or_insert_invitee(repo, email) end)
+    |> Ecto.Multi.insert(:membership, fn %{user: user} ->
+      UserOrgMembership.changeset(%UserOrgMembership{}, %{
+        user_id: user.id,
+        organization_id: organization_id,
+        roles: roles
+      })
+    end)
+    |> Ecto.Multi.run(:token, fn repo, %{user: user} -> insert_invite_token(repo, user) end)
+  end
+
+  defp fetch_or_insert_invitee(repo, email) do
+    case repo.get_by(User, email: email) do
+      nil -> repo.insert(User.invite_changeset(%User{}, %{email: email}))
+      %User{} = user -> {:ok, user}
+    end
+  end
+
+  defp insert_invite_token(repo, user) do
+    {encoded_token, user_token} = UserToken.build_email_token(user, "invite")
+
+    with {:ok, _persisted} <- repo.insert(user_token), do: {:ok, encoded_token}
+  end
+
+  defp resolve_invite_member({:ok, %{user: user, token: token}}, _changeset, invite_url_fun) do
+    deliver_committed_invite(user, token, invite_url_fun)
+  end
+
+  defp resolve_invite_member({:error, operation, reason, _changes}, changeset, _invite_url_fun) do
+    {:error,
+     changeset
+     |> InviteForm.from_transaction_error(operation, reason)
+     |> Map.put(:action, :insert)}
+  end
+
+  defp deliver_committed_invite(user, encoded_token, invite_url_fun) do
+    case UserNotifier.deliver_user_invite(user, invite_url_fun.(encoded_token)) do
+      {:ok, _delivery} -> {:ok, user}
+      {:error, reason} -> {:partial, :delivery_failed, user, reason}
+    end
+  end
 
   @doc """
   Invites a user to an organization.
