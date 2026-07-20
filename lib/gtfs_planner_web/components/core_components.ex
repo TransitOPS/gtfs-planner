@@ -1050,11 +1050,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
               id="diagram-upload-form-sub-nav"
               phx-change="upload_diagram"
             >
-              <label class="btn btn-sm btn-outline cursor-pointer border-base-300 bg-base-100 text-base-content hover:bg-base-200">
+              <label
+                id="station-sub-nav-upload"
+                for={@uploads.diagram.ref}
+                tabindex="0"
+                role="button"
+                class="btn btn-sm btn-outline cursor-pointer border-base-300 bg-base-100 text-base-content hover:bg-base-200"
+              >
                 {if @has_diagram, do: "Replace diagram", else: "Upload diagram"}
                 <.live_file_input
                   upload={@uploads.diagram}
-                  id="station-sub-nav-upload"
                   class="hidden"
                 />
               </label>

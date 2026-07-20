@@ -1079,22 +1079,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {confirmation_value(@confirmation, :description)}
         </.confirm_dialog>
 
-        <%= if @diagram_replacement_confirmation do %>
-          <.confirm_dialog
-            id="diagram-replacement-confirmation"
-            open={true}
-            title="Replace diagram?"
-            confirm_label="Replace diagram"
-            pending_label="Replacing diagram…"
-            on_confirm="confirm_diagram_replacement"
-            on_cancel="cancel_diagram_replacement"
-            pending={@upload_phase in [:validating, :probing_candidate, :committing]}
-            return_focus_id="station-sub-nav-upload"
-            described_by="diagram-replacement-confirmation-body"
-          >
-            Replacing this diagram resets its calibration. Alignment and placed stop coordinates remain.
-          </.confirm_dialog>
-        <% end %>
+        <.confirm_dialog
+          id="diagram-replacement-confirmation"
+          open={not is_nil(@diagram_replacement_confirmation)}
+          title={
+            if @diagram_replacement_confirmation,
+              do: "Replace diagram?",
+              else: "Confirm diagram replacement"
+          }
+          confirm_label={
+            if @diagram_replacement_confirmation, do: "Replace diagram", else: "Confirm replacement"
+          }
+          pending_label={
+            if @diagram_replacement_confirmation,
+              do: "Replacing diagram…",
+              else: "Confirming replacement…"
+          }
+          on_confirm="confirm_diagram_replacement"
+          on_cancel="cancel_diagram_replacement"
+          pending={@upload_phase in [:validating, :probing_candidate, :committing]}
+          return_focus_id="station-sub-nav-upload"
+          described_by="diagram-replacement-confirmation-body"
+        >
+          Replacing this diagram resets its calibration. Alignment and placed stop coordinates remain.
+        </.confirm_dialog>
 
         <div
           id="diagram-candidate-probe"
