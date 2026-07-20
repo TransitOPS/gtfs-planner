@@ -64,7 +64,12 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
      |> assign(:filter_active, false)
      |> assign(:filter_inactive, true)
      |> assign(:view_mode, "list")
-     |> allow_upload(:feed, accept: ~w(.zip), max_entries: 1, max_file_size: 52_428_800)}
+     |> allow_upload(:feed, accept: ~w(.zip), max_entries: 1, max_file_size: 52_428_800)
+     |> allow_upload(:diagram_demo,
+       accept: ~w(.png .jpg .jpeg),
+       max_entries: 1,
+       max_file_size: 52_428_800
+     )}
   end
 
   # Demo state for every page lives here, in the LiveView that owns the events.
@@ -276,6 +281,10 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   end
 
   def handle_event("change_view", %{"view_mode" => view_mode}, socket) do
+    {:noreply, assign(socket, :view_mode, view_mode)}
+  end
+
+  def handle_event("change_view", %{"component_mode" => view_mode}, socket) do
     {:noreply, assign(socket, :view_mode, view_mode)}
   end
 

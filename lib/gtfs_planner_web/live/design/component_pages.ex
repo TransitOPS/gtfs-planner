@@ -302,6 +302,48 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </p>
 
+      <h2 class="mt-8 text-lg font-semibold">Diagram upload states</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Upload fields keep the filename, determinate progress, errors, cancellation, and
+        recovery copy together. The input always references its help and any active failure
+        message; unavailable upload actions explain what must happen first.
+      </p>
+      <div id="ds-upload-field-demo" class="mt-3 max-w-xl border border-base-300 p-4">
+        <.upload_field
+          id="ds-component-upload"
+          upload={@uploads.diagram_demo}
+          label="Diagram"
+          help="PNG or JPEG, max 50MB"
+          state={:idle}
+          disabled={true}
+          disabled_reason="Choose a level before uploading"
+        />
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Mode selection</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Use native radios for a single workspace mode. Arrow keys remain in this group;
+        entering a workspace is a separate action owned by the workspace itself.
+      </p>
+      <div id="ds-segmented-control-demo" class="mt-3 max-w-xl border border-base-300 p-4">
+        <.segmented_control
+          id="ds-component-mode"
+          name="component_mode"
+          legend="Workspace mode"
+          options={[
+            {"Edit diagram", "list"},
+            %{
+              label: "Align map",
+              value: "map",
+              disabled: true,
+              disabled_reason: "Upload a diagram first"
+            }
+          ]}
+          value={@view_mode}
+          event="change_view"
+        />
+      </div>
+
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>Every field is a cost. Remove it before you design it.</li>

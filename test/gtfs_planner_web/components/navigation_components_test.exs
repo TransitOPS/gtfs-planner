@@ -717,5 +717,62 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       classes = LazyHTML.attribute(container, "class") |> List.first()
       assert classes =~ "flex-wrap"
     end
+
+    test "normalizes tuple and map options while keeping disabled reasons adjacent" do
+      assigns = %{value: "list"}
+
+      html =
+        rendered_to_string(~H"""
+        <.segmented_control
+          id="workspace-mode"
+          name="workspace_mode"
+          legend="Workspace mode"
+          options={[
+            {"List", "list"},
+            %{label: "Map", value: "map", disabled: true, disabled_reason: "Upload a diagram first"}
+          ]}
+          value={@value}
+          event="change_view"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      radios = LazyHTML.query(doc, "#workspace-mode input[type='radio']")
+      assert Enum.count(radios) == 2
+      assert Enum.all?(radios, &(LazyHTML.attribute(&1, "name") == ["workspace_mode"]))
+
+      map_radio = LazyHTML.query(doc, ~s(#workspace-mode input[value="map"]))
+      assert LazyHTML.attribute(map_radio, "disabled") == [""]
+
+      assert LazyHTML.attribute(map_radio, "aria-describedby") == [
+               "workspace-mode-option-map-reason"
+             ]
+
+      assert LazyHTML.query(doc, "#workspace-mode-option-map-reason") != []
+
+      assert LazyHTML.text(LazyHTML.query(doc, "#workspace-mode-option-map-reason")) =~
+               "Upload a diagram first"
+    end
+
+    test "uses native radio behavior without focus-push markup" do
+      assigns = %{value: "list"}
+
+      html =
+        rendered_to_string(~H"""
+        <.segmented_control
+          id="workspace-mode"
+          name="workspace_mode"
+          legend="Workspace mode"
+          options={[{"List", "list"}, {"Map", "map"}]}
+          value={@value}
+          event="change_view"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      assert Enum.empty?(LazyHTML.query(doc, "#workspace-mode [phx-focus]"))
+      assert Enum.empty?(LazyHTML.query(doc, "#workspace-mode [data-focus-target]"))
+      assert Enum.empty?(LazyHTML.query(doc, "#workspace-mode [phx-hook]"))
+    end
   end
 end

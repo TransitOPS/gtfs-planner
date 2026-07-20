@@ -1485,12 +1485,26 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :cancel_event, :string, default: "cancel_upload"
   attr :target, :any, default: nil
   attr :error, :string, default: nil
+
+  attr :state, :atom,
+    values: [:idle, :uploading, :validating, :failed, :succeeded],
+    default: :idle
+
+  attr :disabled, :boolean, default: false
+  attr :disabled_reason, :string, default: nil
+  attr :pending_label, :string, default: "Uploading diagram…"
   slot :failure, doc: "view-level failure message"
 
   def upload_field(assigns) do
+    assigns =
+      assigns
+      |> assign(:pending?, assigns.state in [:uploading, :validating])
+      |> assign(:failure?, assigns.failure != [] or assigns.state == :failed)
+      |> assign(:input_describedby, upload_input_describedby(assigns))
+
     ~H"""
-    <div id={@id} class="space-y-2">
-      <label for={"#{@id}-input"} class="block text-sm font-semibold">
+    <div id={@id} data-upload-state={@state} class="space-y-2">
+      <label id={"#{@id}-label"} class="block text-sm font-semibold">
         {@label}
       </label>
       <p id={"#{@id}-help"} class="text-sm text-base-content/60">
@@ -1498,22 +1512,49 @@ defmodule GtfsPlannerWeb.CoreComponents do
       </p>
 
       <label
-        for={"#{@id}-input"}
-        class="block border-2 border-dashed border-base-300 rounded-lg p-4 cursor-pointer hover:border-primary focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20"
+        aria-disabled={if @disabled, do: "true", else: nil}
+        class={[
+          "block rounded-lg border-2 border-dashed border-base-300 p-4 transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20",
+          !@disabled && "cursor-pointer hover:border-primary",
+          @disabled && "cursor-not-allowed opacity-60"
+        ]}
       >
         <span class="text-sm text-base-content/70">
-          Click to select a file or drag and drop
+          {if @disabled, do: "Upload unavailable", else: "Click to select a file or drag and drop"}
         </span>
-        <.live_file_input upload={@upload} id={"#{@id}-input"} class="sr-only" />
+        <.live_file_input
+          upload={@upload}
+          class="sr-only"
+          disabled={@disabled}
+          aria-labelledby={"#{@id}-label"}
+          aria-describedby={@input_describedby}
+          aria-invalid={to_string(@error != nil or @failure?)}
+        />
       </label>
 
       <p :if={@error} id={"#{@id}-error"} class="text-sm text-error">
         {@error}
       </p>
 
-      <div :if={@failure != []} id={"#{@id}-failure"} class="text-sm text-error">
-        {render_slot(@failure)}
+      <div :if={@failure?} id={"#{@id}-failure"} class="text-sm text-error">
+        <%= if @failure != [] do %>
+          {render_slot(@failure)}
+        <% else %>
+          Upload failed. Select a file to try again.
+        <% end %>
       </div>
+
+      <p
+        :if={@disabled && @disabled_reason}
+        id={"#{@id}-disabled-reason"}
+        class="text-sm text-base-content/70"
+      >
+        {@disabled_reason}
+      </p>
+
+      <p :if={@pending?} id={"#{@id}-pending"} class="text-sm text-base-content/70" aria-live="polite">
+        {@pending_label}
+      </p>
 
       <ul :if={@upload.entries != []} id={"#{@id}-entries"} class="space-y-2">
         <li
@@ -1525,19 +1566,25 @@ defmodule GtfsPlannerWeb.CoreComponents do
             <p class="text-sm font-medium truncate" title={entry.client_name}>
               {entry.client_name}
             </p>
-            <div class="flex items-center gap-2 mt-1">
-              <div class="flex-1 h-2 bg-base-300 rounded-full overflow-hidden">
-                <div
-                  class="h-full bg-primary transition-all"
-                  style={"width: #{entry.progress}%"}
-                >
-                </div>
-              </div>
+            <div class="mt-1 flex items-center gap-2">
+              <progress
+                id={"#{@id}-entry-#{entry.ref}-progress"}
+                class="progress progress-primary h-2 flex-1"
+                value={entry.progress}
+                max="100"
+                aria-label={"Upload progress for #{entry.client_name}"}
+              >
+                {entry.progress}%
+              </progress>
               <span class="text-xs text-base-content/60 tabular-nums">
                 {entry.progress}%
               </span>
             </div>
-            <ul :if={upload_errors(@upload, entry) != []} class="mt-1 text-xs text-error">
+            <ul
+              :if={upload_errors(@upload, entry) != []}
+              id={"#{@id}-entry-#{entry.ref}-error"}
+              class="mt-1 text-xs text-error"
+            >
               <li :for={error <- upload_errors(@upload, entry)}>
                 {upload_error_to_string(error)}
               </li>
@@ -1545,7 +1592,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           </div>
           <button
             type="button"
-            class="h-11 w-11 flex items-center justify-center text-base-content/60 hover:text-error"
+            class="min-h-11 min-w-11 flex items-center justify-center text-base-content/60 hover:text-error"
             phx-click={@cancel_event}
             phx-value-ref={entry.ref}
             phx-target={@target}
@@ -1573,6 +1620,17 @@ defmodule GtfsPlannerWeb.CoreComponents do
   defp upload_error_to_string(error) when is_binary(error), do: error
   defp upload_error_to_string(error) when is_atom(error), do: Atom.to_string(error)
   defp upload_error_to_string(_), do: "Upload error"
+
+  defp upload_input_describedby(assigns) do
+    [
+      "#{assigns.id}-help",
+      assigns.error && "#{assigns.id}-error",
+      (assigns.failure != [] or assigns.state == :failed) && "#{assigns.id}-failure",
+      assigns.disabled && assigns.disabled_reason && "#{assigns.id}-disabled-reason"
+    ]
+    |> Enum.reject(&(&1 in [nil, false]))
+    |> Enum.join(" ")
+  end
 
   @doc """
   Renders a pressed filter button with aria-pressed state.
@@ -1654,35 +1712,96 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :disabled_reason, :string, default: nil
 
   def segmented_control(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :normalized_options,
+        normalize_segmented_options(assigns.options, assigns.id)
+      )
+
     ~H"""
-    <form phx-change={@event} phx-target={@target}>
-      <fieldset id={@id} class="space-y-2" disabled={@disabled}>
+    <form id={"#{@id}-form"} phx-change={@event} phx-target={@target}>
+      <fieldset
+        id={@id}
+        class="space-y-2"
+        disabled={@disabled}
+        aria-describedby={if @disabled && @disabled_reason, do: "#{@id}-disabled-reason", else: nil}
+      >
         <legend class="text-sm font-semibold">{@legend}</legend>
-        <p :if={@disabled && @disabled_reason} class="text-xs text-base-content/60">
+        <p
+          :if={@disabled && @disabled_reason}
+          id={"#{@id}-disabled-reason"}
+          class="text-xs text-base-content/60"
+        >
           {@disabled_reason}
         </p>
         <div class="flex flex-wrap gap-2">
           <label
-            :for={{label, val} <- @options}
+            :for={option <- @normalized_options}
+            for={option.id}
             class={[
               "h-11 min-w-[44px] px-4 flex items-center justify-center text-sm font-semibold border rounded-lg cursor-pointer transition-colors",
-              @value == val && "bg-primary text-primary-content border-primary",
-              @value != val && "bg-base-100 text-base-content border-base-300 hover:border-primary"
+              @value == option.value && "bg-primary text-primary-content border-primary",
+              @value != option.value &&
+                "bg-base-100 text-base-content border-base-300 hover:border-primary",
+              option.disabled && "cursor-not-allowed opacity-60"
             ]}
           >
             <input
+              id={option.id}
               type="radio"
               name={@name}
-              value={val}
-              checked={@value == val}
+              value={option.value}
+              checked={@value == option.value}
+              disabled={option.disabled}
+              aria-describedby={option.disabled_reason && "#{option.id}-reason"}
               class="sr-only"
             />
-            {label}
+            {option.label}
+            <span
+              :if={option.disabled_reason}
+              id={"#{option.id}-reason"}
+              class="ml-2 text-xs font-normal text-base-content/70"
+            >
+              {option.disabled_reason}
+            </span>
           </label>
         </div>
       </fieldset>
     </form>
     """
+  end
+
+  defp normalize_segmented_options(options, control_id) do
+    options
+    |> Enum.with_index()
+    |> Enum.map(fn {option, index} -> normalize_segmented_option(option, control_id, index) end)
+  end
+
+  defp normalize_segmented_option({label, value}, control_id, _index) do
+    segmented_option(label, value, false, nil, control_id)
+  end
+
+  defp normalize_segmented_option(%{label: label, value: value} = option, control_id, _index) do
+    segmented_option(
+      label,
+      value,
+      Map.get(option, :disabled, false),
+      Map.get(option, :disabled_reason),
+      control_id
+    )
+  end
+
+  defp segmented_option(label, value, disabled, disabled_reason, control_id) do
+    value = to_string(value)
+
+    %{
+      id: "#{control_id}-option-#{String.replace(value, ~r/[^a-zA-Z0-9_-]/, "-")}",
+      label: to_string(label),
+      value: value,
+      disabled: disabled,
+      disabled_reason: disabled_reason
+    }
   end
 
   @doc """

@@ -398,9 +398,13 @@ defmodule GtfsPlannerWeb.FormComponentsTest do
 
       assert html =~ "GTFS feed"
       assert html =~ "ZIP file, max 50MB"
-      assert html =~ ~r/for="feed-upload-input"/
-      assert html =~ ~r/id="feed-upload-input"/
-      assert html =~ ~r/type="file"/
+      doc = LazyHTML.from_fragment(html)
+      assert LazyHTML.query(doc, "#feed-upload-label") != []
+
+      assert LazyHTML.query(
+               doc,
+               "#feed-upload input[type='file'][aria-labelledby='feed-upload-label']"
+             ) != []
     end
 
     test "renders entry with progress bar and cancel button" do
@@ -530,6 +534,71 @@ defmodule GtfsPlannerWeb.FormComponentsTest do
       assert html =~ "File type not allowed"
       assert html =~ ~r/id="feed-upload-error"/
       refute html =~ ~r/role="alert"/
+    end
+
+    test "exposes pending, failure, and accessibility associations for an upload entry" do
+      entry = %Phoenix.LiveView.UploadEntry{
+        ref: "entry-ref",
+        client_name: "station-plan.png",
+        progress: 64,
+        valid?: false
+      }
+
+      assigns = %{
+        upload: %Phoenix.LiveView.UploadConfig{
+          ref: "test-ref",
+          entries: [entry],
+          errors: [{"entry-ref", :not_accepted}],
+          max_entries: 1,
+          max_file_size: 52_428_800,
+          accept: [".png"]
+        }
+      }
+
+      html =
+        rendered_to_string(~H"""
+        <.upload_field
+          id="diagram-upload"
+          upload={@upload}
+          label="Diagram"
+          help="PNG or JPEG, max 50MB"
+          state={:validating}
+          pending_label="Checking diagram…"
+          error="The diagram could not be checked"
+          disabled={true}
+          disabled_reason="Choose a level before uploading"
+        >
+          <:failure>Try selecting the diagram again.</:failure>
+        </.upload_field>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      input = LazyHTML.query(doc, "#diagram-upload input[type='file']")
+
+      assert LazyHTML.attribute(input, "aria-describedby") == [
+               "diagram-upload-help diagram-upload-error diagram-upload-failure diagram-upload-disabled-reason"
+             ]
+
+      assert LazyHTML.attribute(input, "disabled") == [""]
+
+      assert LazyHTML.query(doc, "#diagram-upload[data-upload-state='validating']") != []
+      assert LazyHTML.query(doc, "#diagram-upload-pending") != []
+      assert LazyHTML.query(doc, "#diagram-upload-failure") != []
+      assert LazyHTML.query(doc, "#diagram-upload-disabled-reason") != []
+
+      progress = LazyHTML.query(doc, "#diagram-upload-entry-entry-ref progress")
+      assert LazyHTML.attribute(progress, "value") == ["64"]
+      assert LazyHTML.attribute(progress, "max") == ["100"]
+
+      cancel =
+        LazyHTML.query(doc, "#diagram-upload-entry-entry-ref button[phx-click='cancel_upload']")
+
+      classes = LazyHTML.attribute(cancel, "class") |> List.first()
+      assert classes =~ "min-h-11"
+      assert classes =~ "min-w-11"
+
+      assert LazyHTML.query(doc, "#diagram-upload-entry-entry-ref-error") != []
     end
   end
 end
