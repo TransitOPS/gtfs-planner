@@ -258,13 +258,6 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
             station: %{stop_id: "stop-1", stop_name: "Central Station"},
             gtfs_version_id: 42,
             active_tab: :details,
-            levels: [],
-            active_level: nil,
-            mode: :add,
-            uploads: nil,
-            has_diagram: false,
-            diagram_error: nil,
-            upload_phase: :idle,
             actions: []
           },
           assigns
@@ -275,13 +268,6 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
         station={@station}
         gtfs_version_id={@gtfs_version_id}
         active_tab={@active_tab}
-        levels={@levels}
-        active_level={@active_level}
-        mode={@mode}
-        uploads={@uploads}
-        has_diagram={@has_diagram}
-        diagram_error={@diagram_error}
-        upload_phase={@upload_phase}
       >
         <:actions :if={@actions != []}>
           <button :for={a <- @actions}>{a}</button>
@@ -341,72 +327,31 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert classes =~ "break-words"
     end
 
-    test "diagram controls render on diagram tab" do
-      html = render_station_sub_nav(%{active_tab: :diagram})
-      assert html =~ "Add level"
+    test "actions slot renders in the identity row" do
+      html = render_station_sub_nav(%{active_tab: :diagram, actions: ["Apply naming"]})
       assert html =~ "Apply naming"
     end
 
-    test "diagram controls do not render on details tab" do
-      html = render_station_sub_nav(%{active_tab: :details})
+    test "does not render level, upload, or mode controls" do
+      html = render_station_sub_nav(%{active_tab: :diagram})
       refute html =~ "Add level"
+      refute html =~ "upload"
+      refute html =~ "switch_level"
     end
 
-    test "diagram upload uses the shared field with progress, cancellation, and disabled guidance" do
-      entry = %Phoenix.LiveView.UploadEntry{
-        ref: "diagram-entry",
-        client_name: "central-station.png",
-        progress: 64,
-        valid?: true
-      }
-
-      upload = %Phoenix.LiveView.UploadConfig{
-        ref: "diagram-ref",
-        entries: [entry],
-        errors: [],
-        max_entries: 1,
-        max_file_size: 10_000_000,
-        accept: [".png", ".jpg", ".jpeg"]
-      }
-
-      html =
-        render_station_sub_nav(%{
-          active_tab: :diagram,
-          active_level: %{id: "level-1"},
-          uploads: %{diagram: upload},
-          has_diagram: true,
-          upload_phase: :uploading
-        })
-
+    test "renders exactly four navigation links" do
+      html = render_station_sub_nav(%{})
       doc = LazyHTML.from_fragment(html)
+      links = LazyHTML.query(doc, "#station-sub-nav nav a")
+      assert Enum.count(links) == 4
+    end
 
-      assert LazyHTML.query(doc, "#station-sub-nav-upload[data-upload-state='uploading']") != []
-      assert LazyHTML.query(doc, "#station-sub-nav-upload-help") != []
-      assert LazyHTML.query(doc, "#station-sub-nav-upload-entry-diagram-entry progress") != []
-
-      cancel =
-        LazyHTML.query(
-          doc,
-          "#station-sub-nav-upload-entry-diagram-entry button[phx-click='cancel_diagram_upload']"
-        )
-
-      assert LazyHTML.attribute(cancel, "phx-value-ref") == ["diagram-entry"]
-      assert html =~ "central-station.png"
-
-      disabled_html =
-        render_station_sub_nav(%{
-          active_tab: :diagram,
-          uploads: %{diagram: upload}
-        })
-
-      disabled_doc = LazyHTML.from_fragment(disabled_html)
-
-      assert LazyHTML.query(disabled_doc, "#station-sub-nav-upload-disabled-reason") != []
-
-      assert LazyHTML.query(
-               disabled_doc,
-               "#station-sub-nav-upload input[type='file'][disabled]"
-             ) != []
+    test "Floorplans link points to diagram route" do
+      html = render_station_sub_nav(%{})
+      doc = LazyHTML.from_fragment(html)
+      link = LazyHTML.query(doc, ~s(#station-sub-nav a[href$="/diagram"]))
+      assert Enum.count(link) == 1
+      assert LazyHTML.text(link) =~ "Floorplans"
     end
   end
 

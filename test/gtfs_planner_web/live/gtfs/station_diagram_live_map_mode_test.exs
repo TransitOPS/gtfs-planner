@@ -96,7 +96,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert has_element?(view, "button[phx-value-mode='map']", "Map")
+      assert has_element?(view, "#diagram-mode-option-map")
+      assert has_element?(view, "label[for='diagram-mode-option-map']", "Align")
     end
 
     test "Map button is disabled when no diagram file exists", %{

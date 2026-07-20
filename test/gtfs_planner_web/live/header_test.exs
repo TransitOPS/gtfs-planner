@@ -48,13 +48,14 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       {:ok, view, _html} = live(conn, ~p"/")
 
+      # Icon-only control: the accessible name comes from aria-label/title, not
+      # visible text.
       assert has_element?(
                view,
-               "a[href='/users/log_out'][aria-label='Log out of your account']",
-               "Log out"
+               "a[href='/users/log_out'][aria-label='Log out of your account'][title='Log out']"
              )
 
-      assert has_element?(view, "#app-header a[href='/users/log_out'].min-h-11")
+      assert has_element?(view, "#app-header a[href='/users/log_out'].min-h-11.min-w-11")
     end
 
     test "logout button uses correct method and path", %{conn: conn} do
@@ -65,7 +66,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       assert html =~ "href=\"/users/log_out\""
       assert html =~ "data-method=\"delete\""
-      assert has_element?(view, "a[href='/users/log_out']", "Log out")
+      assert has_element?(view, "a[href='/users/log_out'][aria-label='Log out of your account']")
     end
 
     test "header wraps without horizontal overflow", %{conn: conn} do

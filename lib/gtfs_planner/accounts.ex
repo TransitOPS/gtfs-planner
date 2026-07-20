@@ -14,6 +14,7 @@ defmodule GtfsPlanner.Accounts do
     UserOrgMembership,
     UserToken
   }
+
   alias GtfsPlanner.Accounts.UserNotifier
   alias GtfsPlanner.Organizations.Organization
 

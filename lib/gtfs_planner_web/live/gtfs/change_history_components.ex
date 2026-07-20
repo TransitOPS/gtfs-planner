@@ -164,7 +164,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
             id={"history-filter-#{@entity_type}"}
             phx-change="filter_history"
             phx-value-entity-type={@entity_type}
-            class="text-xs border border-base-300 rounded-md px-2 py-1 bg-base-100 text-base-content shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            class="text-xs border border-control-border rounded-md px-2 py-1 bg-base-100 text-base-content shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
             name="key"
           >
             <option
@@ -334,7 +334,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                           if(variant == :original,
                             do:
                               "border-base-200 text-base-content/60 bg-base-200/60 cursor-not-allowed",
-                            else: "border-base-300 text-base-content hover:bg-base-200"
+                            else: "border-control-border text-base-content hover:bg-base-200"
                           )
                         ]}
                       >
@@ -440,7 +440,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         <button
           id={"rollback-preview-cancel-#{@entity_type}"}
           type="button"
-          class="text-xs px-2.5 py-1 rounded-md border border-base-300 text-base-content hover:bg-base-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+          class="text-xs px-2.5 py-1 rounded-md border border-control-border text-base-content hover:bg-base-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
           phx-click="cancel_rollback_preview"
         >
           Cancel

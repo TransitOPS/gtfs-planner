@@ -232,7 +232,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
       </p>
       <div id="ds-search-demo" class="mt-3 border border-base-300 p-4">
         <div class="max-w-md">
-          <div class="flex h-10 items-center gap-2 border border-base-300 px-3 focus-within:border-primary">
+          <div class="flex h-10 items-center gap-2 border border-control-border px-3 focus-within:border-primary">
             <span class="hero-magnifying-glass size-4 text-base-content/60" aria-hidden="true"></span>
             <input
               type="search"
@@ -850,7 +850,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
         <button
           type="button"
           aria-pressed="false"
-          class="inline-flex h-8 items-center gap-1.5 border border-base-300 px-2.5 text-sm"
+          class="inline-flex h-8 items-center gap-1.5 border border-control-border px-2.5 text-sm"
         >
           <span class="size-1.5 rounded-full bg-warning" aria-hidden="true"></span>
           <span class="font-medium text-warning tabular-nums">12 warnings</span>
@@ -858,7 +858,7 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
         <button
           type="button"
           aria-pressed="false"
-          class="inline-flex h-8 items-center gap-1.5 border border-base-300 px-2.5 text-sm"
+          class="inline-flex h-8 items-center gap-1.5 border border-control-border px-2.5 text-sm"
         >
           <span class="size-1.5 rounded-full bg-info" aria-hidden="true"></span>
           <span class="font-medium text-info tabular-nums">5 info</span>

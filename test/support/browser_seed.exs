@@ -188,7 +188,7 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: long-name routes for reflow tests")
 
-# ── Auth fixtures for authentication.spec.js (Package 10) ──
+    # ── Auth fixtures for authentication.spec.js (Package 10) ──
     #
     # Deterministic, test-only token fixtures. Each raw value is a fixed
     # 32-byte binary; only its SHA-256 digest is persisted (production-shaped

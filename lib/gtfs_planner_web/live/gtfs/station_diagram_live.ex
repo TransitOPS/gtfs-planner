@@ -35,7 +35,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:page_title, "Station Diagram")
      |> assign(:user_roles, user_roles)
      |> assign(:mode, :view)
-     |> assign(:workspace_focus_origin, "enter-diagram-workspace")
+     |> assign(:station_editing_status, nil)
+     |> assign(:show_diagram_upload_drawer, false)
+     |> assign(:stop_search_form, to_form(%{"stop_id_query" => ""}))
      |> assign(:measurement_enabled, false)
      |> assign(:scale_status, nil)
      |> assign(:placement_status, nil)
@@ -203,7 +205,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         socket = assign(socket, :audit_ctx, build_audit_ctx(socket))
 
         socket =
+          if connected?(socket) do
+            :ok =
+              Gtfs.subscribe_station_editing_status(
+                organization_id,
+                gtfs_version_id,
+                station.id
+              )
+
+            station_editing_status =
+              Gtfs.get_station_editing_status(organization_id, gtfs_version_id, station.id)
+
+            assign(socket, :station_editing_status, station_editing_status)
+          else
+            socket
+          end
+
+        socket =
           socket
+          |> assign(:show_diagram_upload_drawer, false)
           |> load_level_data(active_level)
           |> maybe_open_child_stop_from_params(params)
 
@@ -294,6 +314,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     {:noreply,
      push_patch(socket, to: "/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
+  end
+
+  @impl true
+  def handle_info({:station_editing_status_updated, status}, socket) do
+    {:noreply, assign(socket, :station_editing_status, status)}
   end
 
   defp load_level_data(socket, nil) do
@@ -852,8 +877,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def render(assigns) do
+    has_diagram =
+      not is_nil(assigns.active_stop_level && assigns.active_stop_level.diagram_filename)
+
+    assigns =
+      assigns
+      |> assign(:has_diagram, has_diagram)
+      |> assign(:active_level_name, active_level_name(assigns[:active_level]))
+
     ~H"""
-    <div id="diagram-page" style={DiagramPalette.css_custom_properties()}>
+    <div
+      id="diagram-page"
+      style={DiagramPalette.css_custom_properties()}
+      data-immersive={if @mode in [:add, :connect, :map], do: "true"}
+    >
       <Layouts.app
         flash={@flash}
         current_user={@current_user}
@@ -868,98 +905,99 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             station={@station}
             gtfs_version_id={@current_gtfs_version.id}
             active_tab={:diagram}
-            levels={@levels}
-            active_level={@active_level}
-            mode={@mode}
-            uploads={@uploads}
-            has_diagram={not is_nil(@active_stop_level && @active_stop_level.diagram_filename)}
-            diagram_error={@diagram_error}
-            upload_phase={@upload_phase}
-          />
+          >
+            <:actions>
+              <.editing_presence_control
+                station_editing_status={@station_editing_status}
+                current_user={@current_user}
+              />
+            </:actions>
+          </.station_sub_nav>
           <.diagram_action_strip
+            :if={@levels != []}
             mode={@mode}
             selected_from_stop={@selected_from_stop}
-            has_diagram={not is_nil(@active_stop_level && @active_stop_level.diagram_filename)}
+            has_diagram={@has_diagram}
             measurement_enabled={@measurement_enabled}
             ruler_point_a={@ruler_point_a}
             ruler_point_b={@ruler_point_b}
             has_scale={scale_configured?(@active_stop_level)}
             scale_status={@scale_status}
+            active_stop_level={@active_stop_level}
             levels={@levels}
             active_level={@active_level}
+            active_level_name={@active_level_name}
             other_levels={@other_levels}
             enabled_count={MapSet.size(MapSet.union(@other_levels_floorplan, @other_levels_stops))}
             child_stops_list={@child_stops_list}
-            workspace_focus_origin={@workspace_focus_origin}
+            stop_search_form={@stop_search_form}
+            station={@station}
           />
-          <%= if @mode == :map do %>
-            <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
-              <.map_canvas
-                station={@station}
-                active_level={@active_level}
-                active_stop_level={@active_stop_level}
-                organization_id={@current_organization.id}
-                gtfs_version_id={@current_gtfs_version.id}
-                align_center_lat={@active_stop_level && @active_stop_level.floorplan_center_lat}
-                align_center_lon={@active_stop_level && @active_stop_level.floorplan_center_lon}
-                align_scale_mpp={@active_stop_level && @active_stop_level.floorplan_scale_mpp}
-                align_rotation_deg={@active_stop_level && @active_stop_level.floorplan_rotation_deg}
-                image_natural_width={@floorplan_image_w}
-                image_natural_height={@floorplan_image_h}
-                child_stops_total={@child_stops_total}
-                child_stops_with_geo={@child_stops_with_geo}
-                anchor_count={@anchor_count}
-                cross_level_pathway_total={@cross_level_pathway_total}
-                cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
-                other_levels_floorplan_count={MapSet.size(@other_levels_floorplan)}
-                map_generation={@map_generation}
-                map_state={@map_state}
-                coordinate_preview={@coordinate_preview}
-                coordinate_confirmation={@coordinate_confirmation}
-                coordinate_apply_form={@coordinate_apply_form}
-              />
-            </div>
-          <% else %>
-            <section
-              id="diagram-workspace"
-              class="diagram-workspace w-full px-4 sm:px-6 lg:px-8 py-4"
-              aria-labelledby="diagram-workspace-heading"
-            >
-              <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 id="diagram-workspace-heading" tabindex="-1" class="text-lg font-semibold">
-                    Diagram workspace
-                  </h2>
-                  <p class="text-sm text-base-content/70">
-                    {workspace_context(@active_level, @mode)}
-                  </p>
-                </div>
-                <span class="badge badge-outline">{mode_label(@mode)}</span>
-              </div>
-              <div id="diagram-canvas-wrapper">
-                <.diagram_canvas
+          <section
+            id="floorplan-workspace"
+            tabindex="-1"
+            aria-labelledby="floorplan-workspace-heading"
+            class="scroll-mt-16 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+          >
+            <%= if @mode == :map do %>
+              <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
+                <h2 id="floorplan-workspace-heading" class="sr-only">Align floorplan</h2>
+                <.map_canvas
                   station={@station}
                   active_level={@active_level}
                   active_stop_level={@active_stop_level}
-                  streams={@streams}
-                  active_point_id={@active_point_id}
-                  pending_xy={@pending_xy}
-                  selected_stop_id={@selected_stop_id}
-                  mode={@mode}
-                  uploads={@uploads}
-                  cross_level_badges_by_stop={@cross_level_badges_by_stop}
-                  diagram_error={@diagram_error}
                   organization_id={@current_organization.id}
                   gtfs_version_id={@current_gtfs_version.id}
-                  ruler_point_a={@ruler_point_a}
-                  ruler_point_b={@ruler_point_b}
-                  scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
-                  scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
-                  measurement_enabled={@measurement_enabled}
+                  align_center_lat={@active_stop_level && @active_stop_level.floorplan_center_lat}
+                  align_center_lon={@active_stop_level && @active_stop_level.floorplan_center_lon}
+                  align_scale_mpp={@active_stop_level && @active_stop_level.floorplan_scale_mpp}
+                  align_rotation_deg={@active_stop_level && @active_stop_level.floorplan_rotation_deg}
+                  image_natural_width={@floorplan_image_w}
+                  image_natural_height={@floorplan_image_h}
+                  child_stops_total={@child_stops_total}
+                  child_stops_with_geo={@child_stops_with_geo}
+                  anchor_count={@anchor_count}
+                  cross_level_pathway_total={@cross_level_pathway_total}
+                  cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
+                  other_levels_floorplan_count={MapSet.size(@other_levels_floorplan)}
+                  map_generation={@map_generation}
+                  map_state={@map_state}
+                  coordinate_preview={@coordinate_preview}
+                  coordinate_confirmation={@coordinate_confirmation}
+                  coordinate_apply_form={@coordinate_apply_form}
                 />
               </div>
-            </section>
-          <% end %>
+            <% else %>
+              <div id="diagram-workspace" class="diagram-workspace w-full px-4 sm:px-6 lg:px-8 py-4">
+                <h2 id="floorplan-workspace-heading" class="sr-only">Floorplan workspace</h2>
+                <div id="diagram-canvas-wrapper">
+                  <.diagram_canvas
+                    station={@station}
+                    active_level={@active_level}
+                    active_stop_level={@active_stop_level}
+                    streams={@streams}
+                    active_point_id={@active_point_id}
+                    pending_xy={@pending_xy}
+                    selected_stop_id={@selected_stop_id}
+                    mode={@mode}
+                    uploads={@uploads}
+                    cross_level_badges_by_stop={@cross_level_badges_by_stop}
+                    diagram_error={@diagram_error}
+                    organization_id={@current_organization.id}
+                    gtfs_version_id={@current_gtfs_version.id}
+                    ruler_point_a={@ruler_point_a}
+                    ruler_point_b={@ruler_point_b}
+                    scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
+                    scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
+                    measurement_enabled={@measurement_enabled}
+                    has_diagram={@has_diagram}
+                    upload={@uploads.diagram}
+                    upload_phase={@upload_phase}
+                  />
+                </div>
+              </div>
+            <% end %>
+          </section>
         </:sub_header>
 
         <.child_stop_drawer
@@ -1098,11 +1136,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           on_confirm="confirm_diagram_replacement"
           on_cancel="cancel_diagram_replacement"
           pending={@upload_phase in [:validating, :probing_candidate, :committing]}
-          return_focus_id="station-sub-nav-upload"
+          return_focus_id="level-control-trigger"
           described_by="diagram-replacement-confirmation-body"
         >
           Replacing this diagram resets its calibration. Alignment and placed stop coordinates remain.
         </.confirm_dialog>
+
+        <.diagram_upload_drawer
+          :if={@levels != []}
+          open={@show_diagram_upload_drawer}
+          upload={@uploads.diagram}
+          active_level={@active_level}
+          active_level_name={@active_level_name}
+          upload_phase={@upload_phase}
+          diagram_error={@diagram_error}
+          has_diagram={@has_diagram}
+        />
 
         <div
           id="diagram-candidate-probe"
@@ -1245,6 +1294,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:active_level, selected_level)
          |> assign(:pending_xy, nil)
          |> assign(:diagram_error, nil)
+         |> assign(:show_diagram_upload_drawer, false)
          |> assign(:show_walkability_drawer, false)
          |> assign(:walkability_stop, nil)
          |> assign(
@@ -1325,33 +1375,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       :error ->
         {:noreply, put_flash(socket, :error, "Invalid mode selection")}
     end
-  end
-
-  @impl true
-  def handle_event("enter_workspace", %{"origin" => "enter-diagram-workspace"}, socket) do
-    {:noreply, assign(socket, :workspace_focus_origin, "enter-diagram-workspace")}
-  end
-
-  def handle_event("enter_workspace", _params, socket), do: {:noreply, socket}
-
-  @impl true
-  def handle_event("exit_editing", _params, socket) do
-    socket =
-      socket
-      |> assign(:mode, :view)
-      |> assign(:selected_from_stop, nil)
-      |> assign(:dragging_stop_id, nil)
-      |> reset_reposition_state()
-      |> assign(:pending_xy, nil)
-      |> assign(:active_point_id, nil)
-      |> maybe_disable_measurement_for_mode(:view)
-      |> restream_mode_dependent_layers()
-      |> assign(:other_levels_floorplan, MapSet.new())
-      |> assign(:other_levels_stops, MapSet.new())
-      |> assign_other_levels()
-      |> push_child_stop_markers()
-
-    {:noreply, socket}
   end
 
   def handle_event("switch_mode", _params, socket) do
@@ -2848,6 +2871,76 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("dismiss_naming_status", _params, socket) do
     {:noreply, assign(socket, :naming_status, nil)}
+  end
+
+  @impl true
+  def handle_event("set_station_editing_status", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.set_station_editing_status(
+           organization_id,
+           gtfs_version_id,
+           socket.assigns.station,
+           socket.assigns.current_user
+         ) do
+      {:ok, status} ->
+        {:noreply, assign(socket, :station_editing_status, status)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to set station editing status")}
+    end
+  end
+
+  @impl true
+  def handle_event("clear_station_editing_status", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    :ok =
+      Gtfs.clear_station_editing_status(
+        organization_id,
+        gtfs_version_id,
+        socket.assigns.station.id
+      )
+
+    {:noreply, assign(socket, :station_editing_status, nil)}
+  end
+
+  @impl true
+  def handle_event("open_diagram_upload_drawer", _params, socket) do
+    has_diagram =
+      not is_nil(
+        socket.assigns.active_stop_level && socket.assigns.active_stop_level.diagram_filename
+      )
+
+    cond do
+      is_nil(socket.assigns.active_level) ->
+        {:noreply, socket}
+
+      not has_diagram ->
+        {:noreply, socket}
+
+      socket.assigns.upload_phase in [:uploading, :validating, :probing_candidate, :committing] ->
+        {:noreply, socket}
+
+      true ->
+        {:noreply, assign(socket, :show_diagram_upload_drawer, true)}
+    end
+  end
+
+  @impl true
+  def handle_event("close_diagram_upload_drawer", _params, socket) do
+    socket =
+      case socket.assigns.upload_phase do
+        phase when phase in [:uploading, :validating, :probing_candidate] ->
+          socket
+
+        _ ->
+          cancel_all_diagram_uploads(socket)
+      end
+
+    {:noreply, assign(socket, :show_diagram_upload_drawer, false)}
   end
 
   @impl true
@@ -4643,18 +4736,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp parse_mode("map"), do: {:ok, :map}
   defp parse_mode(_), do: :error
 
-  defp mode_label(:view), do: "View"
-  defp mode_label(:add), do: "Add stop"
-  defp mode_label(:connect), do: "Connect"
-  defp mode_label(:map), do: "Map"
-
-  defp workspace_context(nil, _mode), do: "Choose a level to begin editing its diagram."
-
-  defp workspace_context(level, mode) do
-    level_name = level.level_name || level.level_id
-    "#{level_name} · #{mode_label(mode)} mode"
-  end
-
   defp toggle_other_level(socket, mapset_assign, level_id, eligibility_key) do
     current = Map.get(socket.assigns, mapset_assign, MapSet.new())
 
@@ -6293,5 +6374,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:ok, :not_found} -> :ok
       {:error, _reason} -> :ok
     end
+  end
+
+  defp cancel_all_diagram_uploads(socket) do
+    Enum.reduce(socket.assigns.uploads.diagram.entries, socket, fn entry, acc ->
+      cancel_upload(acc, :diagram, entry.ref)
+    end)
+  end
+
+  defp active_level_name(nil), do: ""
+
+  defp active_level_name(level) do
+    level.level_name || level.level_id
   end
 end

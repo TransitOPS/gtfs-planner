@@ -200,7 +200,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       reachability_href = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/reachability"
 
       assert has_element?(view, "#station-sub-nav a[href='#{details_href}']", "Details")
-      assert has_element?(view, "#station-sub-nav a[href='#{diagram_href}']", "Diagram")
+      assert has_element?(view, "#station-sub-nav a[href='#{diagram_href}']", "Floorplans")
       assert has_element?(view, "#station-sub-nav a[href='#{report_href}']", "Reports")
 
       assert has_element?(
