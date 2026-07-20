@@ -47,7 +47,7 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
       assert conn.resp_cookies["user_remember_me"][:value] == get_session(conn, :user_token)
     end
 
-    test "rejects invalid credentials without a session" do
+    test "rejects invalid credentials with the bounded recovery code and no session" do
       %{user: user} = member_user()
 
       conn =
@@ -56,8 +56,52 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
         })
 
       assert redirected_to(conn) == ~p"/users/log_in"
-      assert Phoenix.Flash.get(conn.assigns.flash, :error) == "Invalid email or password"
+      assert Phoenix.Flash.get(conn.assigns.flash, :login_recovery) == "invalid_credentials"
+      assert Phoenix.Flash.get(conn.assigns.flash, :email) == user.email
+      assert Enum.sort(Map.keys(conn.assigns.flash)) == ["email", "login_recovery"]
       assert get_session(conn, :user_token) == nil
+    end
+
+    test "an unknown email and a wrong password produce the identical recovery state" do
+      %{user: user} = member_user()
+
+      wrong_password_conn =
+        post(build_conn(), ~p"/users/log_in", %{
+          "user" => %{"email" => user.email, "password" => "totally wrong password"}
+        })
+
+      unknown_email_conn =
+        post(build_conn(), ~p"/users/log_in", %{
+          "user" => %{
+            "email" => "absent-#{System.unique_integer([:positive])}@example.com",
+            "password" => "totally wrong password"
+          }
+        })
+
+      for conn <- [wrong_password_conn, unknown_email_conn] do
+        assert redirected_to(conn) == ~p"/users/log_in"
+        assert Phoenix.Flash.get(conn.assigns.flash, :login_recovery) == "invalid_credentials"
+        assert Enum.sort(Map.keys(conn.assigns.flash)) == ["email", "login_recovery"]
+        assert get_session(conn, :user_token) == nil
+      end
+
+      assert Repo.all(UserToken.user_and_contexts_query(user, :all)) == []
+    end
+
+    test "bounds the recovered email to 160 characters" do
+      long_email = String.duplicate("a", 150) <> "@example.com"
+
+      conn =
+        post(build_conn(), ~p"/users/log_in", %{
+          "user" => %{"email" => long_email, "password" => "any password value"}
+        })
+
+      assert redirected_to(conn) == ~p"/users/log_in"
+      assert Phoenix.Flash.get(conn.assigns.flash, :login_recovery) == "invalid_credentials"
+
+      recovered_email = Phoenix.Flash.get(conn.assigns.flash, :email)
+      assert String.length(recovered_email) == 160
+      assert recovered_email == String.slice(long_email, 0, 160)
     end
 
     test "rejects a user without organization membership and issues no token" do
@@ -66,7 +110,9 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
       conn = log_in_through_pipeline(user)
 
       assert redirected_to(conn) == ~p"/users/log_in"
-      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "no organization assigned"
+      assert Phoenix.Flash.get(conn.assigns.flash, :login_recovery) == "organization_required"
+      assert Phoenix.Flash.get(conn.assigns.flash, :email) == user.email
+      assert Enum.sort(Map.keys(conn.assigns.flash)) == ["email", "login_recovery"]
       assert get_session(conn, :user_token) == nil
       assert Repo.all(UserToken.user_and_contexts_query(user, :all)) == []
     end
@@ -78,7 +124,9 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
       conn = log_in_through_pipeline(user)
 
       assert redirected_to(conn) == ~p"/users/log_in"
-      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "deactivated"
+      assert Phoenix.Flash.get(conn.assigns.flash, :login_recovery) == "deactivated"
+      assert Phoenix.Flash.get(conn.assigns.flash, :email) == user.email
+      assert Enum.sort(Map.keys(conn.assigns.flash)) == ["email", "login_recovery"]
       assert get_session(conn, :user_token) == nil
       assert Repo.all(UserToken.user_and_contexts_query(user, :all)) == []
     end
@@ -222,8 +270,9 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
       conn = post(conn, ~p"/users/update_password", valid_update_params())
 
       assert redirected_to(conn) == ~p"/users/log_in"
-      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "no organization assigned"
-      refute Phoenix.Flash.get(conn.assigns.flash, :info)
+      assert Phoenix.Flash.get(conn.assigns.flash, :login_recovery) == "organization_required"
+      assert Phoenix.Flash.get(conn.assigns.flash, :email) == user.email
+      assert Enum.sort(Map.keys(conn.assigns.flash)) == ["email", "login_recovery"]
       assert conn.resp_cookies["user_remember_me"].max_age == 0
 
       # The password committed and every prior token is invalid; none was reissued.
@@ -246,8 +295,9 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
       conn = post(conn, ~p"/users/update_password", valid_update_params())
 
       assert redirected_to(conn) == ~p"/users/log_in"
-      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "deactivated"
-      refute Phoenix.Flash.get(conn.assigns.flash, :info)
+      assert Phoenix.Flash.get(conn.assigns.flash, :login_recovery) == "deactivated"
+      assert Phoenix.Flash.get(conn.assigns.flash, :email) == user.email
+      assert Enum.sort(Map.keys(conn.assigns.flash)) == ["email", "login_recovery"]
       assert Accounts.get_user_by_email_and_password(user.email, @new_password)
       assert Repo.all(UserToken.user_and_contexts_query(user, :all)) == []
     end
