@@ -3167,9 +3167,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             id="remove-from-diagram-button"
             type="button"
             class="btn btn-warning btn-sm btn-active text-white"
-            phx-click="remove_from_diagram"
+            phx-click="request_confirmation"
+            phx-value-action="remove_from_diagram"
             phx-value-id={@selected_stop_id}
-            data-confirm="Remove this stop from the diagram? It will move to the unassigned list."
+            phx-value-origin="remove-from-diagram-button"
           >
             Remove
           </button>
@@ -3182,11 +3183,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <div class="flex items-center justify-between gap-4">
           <p>This will also delete any pathways connected to this stop.</p>
           <button
+            id="delete-child-stop-button"
             type="button"
             class="btn btn-error btn-sm btn-active text-white"
-            phx-click="delete_child_stop"
+            phx-click="request_confirmation"
+            phx-value-action="delete_child_stop"
             phx-value-id={@selected_stop_id}
-            data-confirm="Are you sure you want to delete this child stop? Any pathways connected to it will also be deleted."
+            phx-value-origin="delete-child-stop-button"
           >
             Delete Stop
           </button>
@@ -4014,11 +4017,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <p class="text-xs text-error/70 mt-1">This action cannot be undone.</p>
           </div>
           <button
+            id="delete-pathway-button"
             type="button"
             class="btn btn-error btn-sm btn-active text-white"
-            phx-click="delete_pathway"
+            phx-click="request_confirmation"
+            phx-value-action="delete_pathway"
             phx-value-id={@editing_pathway.id}
-            data-confirm="Are you sure you want to delete this pathway? This action cannot be undone."
+            phx-value-origin="delete-pathway-button"
           >
             Delete Pathway
           </button>
@@ -4244,11 +4249,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </p>
           </div>
           <button
+            id="remove-level-from-station-button"
             type="button"
             class="btn btn-error btn-sm btn-active text-white"
-            phx-click="remove_level_from_station"
+            phx-click="request_confirmation"
+            phx-value-action="remove_level_from_station"
             phx-value-id={@editing_level_uuid}
-            data-confirm="Remove this level from the station? Child stops on this level will become unassigned."
+            phx-value-origin="remove-level-from-station-button"
           >
             Remove Level
           </button>
@@ -4500,9 +4507,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               type="button"
               id="walkability-test-delete-in-form"
               class="btn btn-outline btn-error mt-3"
-              phx-click="delete_walkability_test"
+              phx-click="request_confirmation"
+              phx-value-action="delete_walkability_test"
               phx-value-id={@editing_walkability_test.id}
-              data-confirm="Delete this walkability test case?"
+              phx-value-origin="walkability-test-delete-in-form"
             >
               Delete Test Case
             </button>

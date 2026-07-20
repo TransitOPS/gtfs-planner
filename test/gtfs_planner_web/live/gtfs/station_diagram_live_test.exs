@@ -15,6 +15,146 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
 
+  describe "StationDiagramLive - server-owned destructive confirmations" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_STATION",
+          stop_name: "Confirmation Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "confirm_level",
+          level_name: "Confirmation Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "mount renders stable server-owned forms and a closed confirmation dialog", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      assert has_element?(view, "#station-diagram-confirmation[data-open='false']")
+      assert has_element?(view, "#ruler-form")
+      refute has_element?(view, "[data-confirm]")
+    end
+
+    test "forged destructive confirmation cannot delete a foreign child stop", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      foreign_station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "FOREIGN_CONFIRM_STATION",
+          location_type: 1
+        })
+
+      foreign_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "FOREIGN_CONFIRM_STOP",
+          location_type: 0,
+          parent_station: foreign_station.stop_id,
+          level_id: level.level_id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "request_confirmation", %{
+        "action" => "delete_child_stop",
+        "id" => foreign_stop.id,
+        "origin" => "forged-origin"
+      })
+
+      refute has_element?(view, "#station-diagram-confirmation[data-open='true']")
+      assert Gtfs.get_stop(foreign_stop.id)
+    end
+
+    test "confirmed child-stop deletion uses the server-owned payload and restores its origin", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_DELETE_CHILD",
+          stop_name: "Delete after confirmation",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 24.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> element("#delete-child-stop-button")
+      |> render_click()
+
+      assert has_element?(view, "#station-diagram-confirmation[data-open='true']")
+      assert has_element?(view, "#station-diagram-confirmation-confirm", "Delete stop")
+
+      assert has_element?(
+               view,
+               "#station-diagram-confirmation[data-return-focus-id='delete-child-stop-button']"
+             )
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
+      |> render_click()
+
+      assert is_nil(Gtfs.get_stop(child_stop.id))
+      assert has_element?(view, "#station-diagram-confirmation[data-open='false']")
+    end
+  end
+
   describe "StationDiagramLive - child stop editing" do
     setup do
       organization = organization_fixture()
@@ -2833,6 +2973,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("#remove-from-diagram-button")
       |> render_click()
 
+      view
+      |> element("#station-diagram-confirmation-confirm")
+      |> render_click()
+
       # The stop should no longer be in the child stops table
       refute has_element?(view, "#child-stop-row-#{child_a.id}")
 
@@ -5606,7 +5750,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#child_stops-#{level_1_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}']"
              )
 
-      render_hook(view, "delete_pathway", %{"id" => cross_level_pathway.id})
+      render_hook(view, "request_confirmation", %{
+        "action" => "delete_pathway",
+        "id" => cross_level_pathway.id,
+        "origin" => "cross-level-delete-pathway"
+      })
+
+      render_hook(view, "confirm_destructive_action", %{})
 
       refute has_element?(view, "#pathway-row-#{cross_level_pathway.id}")
 
@@ -6490,6 +6640,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("#walkability-test-delete-in-form")
       |> render_click()
 
+      view
+      |> element("#station-diagram-confirmation-confirm")
+      |> render_click()
+
       refute has_element?(view, "#walkability-test-row-#{walkability_test.id}")
       refute has_element?(view, "#child-stop-row-#{child_stop.id}", "1 test case")
       assert is_nil(Validations.get_walkability_test(walkability_test.id))
@@ -6782,6 +6936,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       view
       |> element("#walkability-test-delete-in-form")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
       |> render_click()
 
       refute has_element?(view, "#walkability-test-row-#{walkability_test.id}")
@@ -7294,7 +7452,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#pathway-pair-tabs")
 
       view
-      |> element("button[phx-click='delete_pathway']")
+      |> element("#delete-pathway-button")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
       |> render_click()
 
       [remaining] =
@@ -8788,7 +8950,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       view |> element("input[aria-label='Select RESET_CHILD for renaming']") |> render_click()
       assert has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
 
-      view |> element("button", "Cancel") |> render_click()
+      view |> element("#naming-drawer-close") |> render_click()
       html = view |> element("[phx-click='open_naming_drawer']") |> render_click()
       refute has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
       assert has_element?(view, "input[aria-label='Select RESET_CHILD for renaming'][checked]")
@@ -10124,7 +10286,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       view
-      |> element("button[phx-click='delete_child_stop'][phx-value-id='#{child_stop.id}']")
+      |> element("#delete-child-stop-button")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
       |> render_click()
 
       logs =
@@ -10414,7 +10580,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       view
-      |> element("button[phx-click='delete_pathway']")
+      |> element("#delete-pathway-button")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
       |> render_click()
 
       logs =

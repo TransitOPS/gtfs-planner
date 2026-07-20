@@ -14,6 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Otp.Lifecycle
@@ -53,6 +54,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:level_id_manually_edited, false)
      |> assign(:pathway_error, nil)
      |> assign(:diagram_error, nil)
+     |> assign(:confirmation, nil)
+     |> assign(:pending_action, nil)
+     |> assign(:confirmation_execution?, false)
      |> assign(:reposition_mode, false)
      |> assign(:reposition_search, "")
      |> assign(:reposition_stops, [])
@@ -1019,6 +1023,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           </div>
         </div>
 
+        <.confirm_dialog
+          id="station-diagram-confirmation"
+          open={not is_nil(@confirmation)}
+          title={confirmation_value(@confirmation, :title)}
+          confirm_label={confirmation_value(@confirmation, :confirm_label)}
+          pending_label={confirmation_value(@confirmation, :pending_label)}
+          on_confirm="confirm_destructive_action"
+          on_cancel="cancel_confirmation"
+          pending={not is_nil(@pending_action)}
+          return_focus_id={confirmation_value(@confirmation, :origin_id, nil)}
+          described_by="station-diagram-confirmation-body"
+        >
+          {confirmation_value(@confirmation, :description)}
+        </.confirm_dialog>
+
         <.lists_section
           active_level={@active_level}
           child_stops_list={@child_stops_list}
@@ -1031,6 +1050,64 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       </Layouts.app>
     </div>
     """
+  end
+
+  @impl true
+  def handle_event(
+        "request_confirmation",
+        %{"action" => action, "id" => id, "origin" => origin_id},
+        socket
+      ) do
+    case confirmation_payload(socket, action, id, origin_id) do
+      {:ok, confirmation} ->
+        {:noreply, assign(socket, :confirmation, confirmation)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "This action is no longer available.")}
+    end
+  end
+
+  def handle_event("request_confirmation", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("cancel_confirmation", _params, socket) do
+    {:noreply, clear_confirmation(socket)}
+  end
+
+  @impl true
+  def handle_event("confirm_destructive_action", _params, socket) do
+    case socket.assigns.confirmation do
+      %{event: event, id: id} = confirmation ->
+        case confirmation_payload(
+               socket,
+               Atom.to_string(confirmation.action),
+               id,
+               confirmation.origin_id
+             ) do
+          {:ok, _fresh_confirmation} ->
+            socket =
+              socket
+              |> assign(:pending_action, confirmation.action)
+              |> assign(:confirmation_execution?, true)
+
+            case event do
+              "remove_from_diagram" -> handle_event(event, %{"id" => id}, socket)
+              "delete_child_stop" -> handle_event(event, %{"id" => id}, socket)
+              "delete_pathway" -> handle_event(event, %{"id" => id}, socket)
+              "remove_level_from_station" -> handle_event(event, %{"id" => id}, socket)
+              "delete_walkability_test" -> handle_event(event, %{"id" => id}, socket)
+            end
+
+          {:error, _reason} ->
+            {:noreply,
+             socket
+             |> clear_confirmation()
+             |> put_flash(:error, "This action is no longer available.")}
+        end
+
+      _ ->
+        {:noreply, socket}
+    end
   end
 
   # ============================================================================
@@ -1831,62 +1908,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("remove_from_diagram", %{"id" => stop_id}, socket) do
-    org_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-    station_stop_id = socket.assigns.station.stop_id
-
-    case Gtfs.remove_child_stop_from_diagram(org_id, version_id, station_stop_id, stop_id) do
-      {:ok, _stop} ->
-        {:noreply,
-         socket
-         |> refresh_lists()
-         |> put_flash(:info, "Stop removed from diagram.")
-         |> assign(:pending_xy, nil)
-         |> assign(:selected_stop_id, nil)
-         |> assign(:active_point_id, nil)
-         |> assign(:child_stop_form, to_form(%{}))}
-
-      {:error, :not_found} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Stop not found for this station.")
-         |> assign(:pending_xy, nil)
-         |> assign(:selected_stop_id, nil)
-         |> assign(:child_stop_form, to_form(%{}))}
+    if confirmed_action?(socket, :remove_from_diagram, stop_id) do
+      do_remove_from_diagram(stop_id, socket)
+    else
+      {:noreply, reject_unconfirmed_action(socket)}
     end
   end
 
   @impl true
   def handle_event("delete_child_stop", %{"id" => stop_id}, socket) do
-    org_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-    station_stop_id = socket.assigns.station.stop_id
-
-    case Gtfs.delete_child_stop(org_id, version_id, station_stop_id, stop_id) do
-      {:ok, deleted_stop} ->
-        Gtfs.record_change(
-          socket.assigns.audit_ctx,
-          :stop,
-          deleted_stop,
-          "deleted",
-          %{}
-        )
-
-        {:noreply,
-         socket
-         |> refresh_lists()
-         |> assign(:pending_xy, nil)
-         |> assign(:selected_stop_id, nil)
-         |> assign(:active_point_id, nil)
-         |> assign(:child_stop_form, to_form(%{}))}
-
-      {:error, :not_found} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Failed to delete child stop")
-         |> assign(:pending_xy, nil)
-         |> assign(:selected_stop_id, nil)
-         |> assign(:child_stop_form, to_form(%{}))}
+    if confirmed_action?(socket, :delete_child_stop, stop_id) do
+      do_delete_child_stop(stop_id, socket)
+    else
+      {:noreply, reject_unconfirmed_action(socket)}
     end
   end
 
@@ -1901,84 +1935,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("delete_pathway", %{"id" => pathway_id}, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
-
-    pathway =
-      Enum.find(socket.assigns.pathways_list, fn existing_pathway ->
-        existing_pathway.id == pathway_id
-      end)
-
-    cond do
-      is_nil(pathway) ->
-        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
-
-      pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
-        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
-
-      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
-        {:noreply, assign(socket, :pathway_error, "Pathway is not fully associated with stops.")}
-
-      not stop_belongs_to_station?(
-        pathway.from_stop,
-        station.stop_id,
-        socket.assigns.platform_stop_ids
-      ) or
-          not stop_belongs_to_station?(
-            pathway.to_stop,
-            station.stop_id,
-            socket.assigns.platform_stop_ids
-          ) ->
-        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
-
-      true ->
-        case Gtfs.delete_pathway(pathway) do
-          {:ok, _deleted_pathway} ->
-            Gtfs.record_change(
-              socket.assigns.audit_ctx,
-              :pathway,
-              pathway,
-              "deleted",
-              %{}
-            )
-
-            refreshed_socket = refresh_lists(socket)
-
-            remaining_siblings =
-              pair_siblings_for(
-                %{from_stop_id: pathway.from_stop_id, to_stop_id: pathway.to_stop_id},
-                refreshed_socket.assigns.pathways_list
-              )
-
-            next_socket =
-              case remaining_siblings do
-                [remaining_pathway] ->
-                  refreshed_pathway = Gtfs.get_pathway_with_stops!(remaining_pathway.id)
-
-                  refreshed_socket
-                  |> assign(:show_pathway_drawer, true)
-                  |> assign(:editing_pathway_pair, [refreshed_pathway])
-                  |> assign(:active_pathway_tab, :first)
-                  |> assign(:pathway_form_dirty, false)
-                  |> assign(:editing_pathway, refreshed_pathway)
-                  |> assign(:pathway_form, to_form(pathway_form_params(refreshed_pathway)))
-
-                _ ->
-                  refreshed_socket
-                  |> assign(:show_pathway_drawer, false)
-                  |> assign(:editing_pathway_pair, [])
-                  |> assign(:active_pathway_tab, :first)
-                  |> assign(:pathway_form_dirty, false)
-                  |> assign(:editing_pathway, nil)
-                  |> assign(:pathway_form, to_form(%{}))
-              end
-
-            {:noreply, assign(next_socket, :pathway_error, nil)}
-
-          {:error, _changeset} ->
-            {:noreply, assign(socket, :pathway_error, "Failed to delete pathway")}
-        end
+    if confirmed_action?(socket, :delete_pathway, pathway_id) do
+      do_delete_pathway(pathway_id, socket)
+    else
+      {:noreply, reject_unconfirmed_action(socket)}
     end
   end
 
@@ -2844,31 +2804,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("delete_walkability_test", %{"id" => id}, socket) do
-    organization_id = socket.assigns.current_organization.id
-
-    case Validations.get_walkability_test(id) do
-      nil ->
-        {:noreply, put_flash(socket, :error, "Walkability test not found.")}
-
-      walkability_test ->
-        case validate_walkability_test_scope(socket, walkability_test) do
-          {:ok, _stop} ->
-            case Validations.delete_walkability_test(walkability_test) do
-              {:ok, _deleted} ->
-                purge_otp_artifact(organization_id, socket.assigns.current_gtfs_version.id)
-
-                {:noreply,
-                 socket
-                 |> reset_walkability_drawer()
-                 |> refresh_lists()}
-
-              {:error, _changeset} ->
-                {:noreply, put_flash(socket, :error, "Failed to delete walkability test.")}
-            end
-
-          {:error, message} ->
-            {:noreply, put_flash(socket, :error, message)}
-        end
+    if confirmed_action?(socket, :delete_walkability_test, id) do
+      do_delete_walkability_test(id, socket)
+    else
+      {:noreply, reject_unconfirmed_action(socket)}
     end
   end
 
@@ -3191,40 +3130,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("remove_level_from_station", %{"id" => level_uuid}, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
-
-    case Gtfs.remove_level_from_station(
-           organization_id,
-           gtfs_version_id,
-           station.id,
-           station.stop_id,
-           level_uuid
-         ) do
-      {:ok, :removed} ->
-        levels_data = Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
-        levels = Enum.map(levels_data, & &1.level)
-        station_level_ids = Enum.map(levels, & &1.id)
-
-        available_levels =
-          Gtfs.list_all_levels(organization_id, gtfs_version_id)
-          |> Enum.reject(&(&1.id in station_level_ids))
-          |> Enum.sort_by(&(&1.level_name || &1.level_id), :asc)
-
-        active_level = List.first(levels)
-
-        {:noreply,
-         socket
-         |> assign(:levels, levels)
-         |> assign(:available_levels, available_levels)
-         |> assign(:active_level, active_level)
-         |> assign(:show_level_modal, nil)
-         |> assign(:level_form, to_form(%{}))
-         |> refresh_level_and_stop_level_cache(active_level)}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to remove level from station.")}
+    if confirmed_action?(socket, :remove_level_from_station, level_uuid) do
+      do_remove_level_from_station(level_uuid, socket)
+    else
+      {:noreply, reject_unconfirmed_action(socket)}
     end
   end
 
@@ -5251,6 +5160,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       walkability_test.organization_id != organization_id ->
         {:error, "Unauthorized walkability test access."}
 
+      walkability_test.gtfs_version_id != gtfs_version_id ->
+        {:error, "Unauthorized walkability test access."}
+
       is_nil(stop) ->
         {:error, "Walkability test stop not found."}
 
@@ -5268,6 +5180,405 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:ok, stop}
     end
   end
+
+  defp do_remove_from_diagram(stop_id, socket) do
+    socket = clear_confirmation(socket)
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    station_stop_id = socket.assigns.station.stop_id
+
+    case Gtfs.remove_child_stop_from_diagram(org_id, version_id, station_stop_id, stop_id) do
+      {:ok, _stop} ->
+        {:noreply,
+         socket
+         |> refresh_lists()
+         |> put_flash(:info, "Stop removed from diagram.")
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:active_point_id, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Stop not found for this station.")
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
+    end
+  end
+
+  defp do_delete_child_stop(stop_id, socket) do
+    socket = clear_confirmation(socket)
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    station_stop_id = socket.assigns.station.stop_id
+
+    case Gtfs.delete_child_stop(org_id, version_id, station_stop_id, stop_id) do
+      {:ok, deleted_stop} ->
+        Gtfs.record_change(socket.assigns.audit_ctx, :stop, deleted_stop, "deleted", %{})
+
+        {:noreply,
+         socket
+         |> refresh_lists()
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:active_point_id, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Failed to delete child stop")
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
+    end
+  end
+
+  defp do_delete_pathway(pathway_id, socket) do
+    socket = clear_confirmation(socket)
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    pathway = Enum.find(socket.assigns.pathways_list, &(&1.id == pathway_id))
+
+    cond do
+      is_nil(pathway) or pathway.organization_id != organization_id or
+          pathway.gtfs_version_id != gtfs_version_id ->
+        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
+
+      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
+        {:noreply, assign(socket, :pathway_error, "Pathway is not fully associated with stops.")}
+
+      not stop_belongs_to_station?(
+        pathway.from_stop,
+        station.stop_id,
+        socket.assigns.platform_stop_ids
+      ) or
+          not stop_belongs_to_station?(
+            pathway.to_stop,
+            station.stop_id,
+            socket.assigns.platform_stop_ids
+          ) ->
+        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
+
+      true ->
+        case Gtfs.delete_pathway(pathway) do
+          {:ok, _deleted_pathway} ->
+            Gtfs.record_change(socket.assigns.audit_ctx, :pathway, pathway, "deleted", %{})
+            refreshed_socket = refresh_lists(socket)
+
+            remaining_siblings =
+              pair_siblings_for(
+                %{from_stop_id: pathway.from_stop_id, to_stop_id: pathway.to_stop_id},
+                refreshed_socket.assigns.pathways_list
+              )
+
+            next_socket =
+              case remaining_siblings do
+                [remaining_pathway] ->
+                  refreshed_pathway = Gtfs.get_pathway_with_stops!(remaining_pathway.id)
+
+                  refreshed_socket
+                  |> assign(:show_pathway_drawer, true)
+                  |> assign(:editing_pathway_pair, [refreshed_pathway])
+                  |> assign(:active_pathway_tab, :first)
+                  |> assign(:pathway_form_dirty, false)
+                  |> assign(:editing_pathway, refreshed_pathway)
+                  |> assign(:pathway_form, to_form(pathway_form_params(refreshed_pathway)))
+
+                _ ->
+                  refreshed_socket
+                  |> assign(:show_pathway_drawer, false)
+                  |> assign(:editing_pathway_pair, [])
+                  |> assign(:active_pathway_tab, :first)
+                  |> assign(:pathway_form_dirty, false)
+                  |> assign(:editing_pathway, nil)
+                  |> assign(:pathway_form, to_form(%{}))
+              end
+
+            {:noreply, assign(next_socket, :pathway_error, nil)}
+
+          {:error, _changeset} ->
+            {:noreply, assign(socket, :pathway_error, "Failed to delete pathway")}
+        end
+    end
+  end
+
+  defp do_delete_walkability_test(id, socket) do
+    socket = clear_confirmation(socket)
+    organization_id = socket.assigns.current_organization.id
+
+    case Validations.get_walkability_test(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Walkability test not found.")}
+
+      walkability_test ->
+        with {:ok, _stop} <- validate_walkability_test_scope(socket, walkability_test),
+             {:ok, _deleted} <- Validations.delete_walkability_test(walkability_test) do
+          purge_otp_artifact(organization_id, socket.assigns.current_gtfs_version.id)
+          {:noreply, socket |> reset_walkability_drawer() |> refresh_lists()}
+        else
+          {:error, message} when is_binary(message) ->
+            {:noreply, put_flash(socket, :error, message)}
+
+          {:error, _changeset} ->
+            {:noreply, put_flash(socket, :error, "Failed to delete walkability test.")}
+        end
+    end
+  end
+
+  defp do_remove_level_from_station(level_uuid, socket) do
+    socket = clear_confirmation(socket)
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    case Gtfs.remove_level_from_station(
+           organization_id,
+           gtfs_version_id,
+           station.id,
+           station.stop_id,
+           level_uuid
+         ) do
+      {:ok, :removed} ->
+        levels =
+          Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+          |> Enum.map(& &1.level)
+
+        station_level_ids = Enum.map(levels, & &1.id)
+
+        available_levels =
+          Gtfs.list_all_levels(organization_id, gtfs_version_id)
+          |> Enum.reject(&(&1.id in station_level_ids))
+          |> Enum.sort_by(&(&1.level_name || &1.level_id), :asc)
+
+        active_level = List.first(levels)
+
+        {:noreply,
+         socket
+         |> assign(:levels, levels)
+         |> assign(:available_levels, available_levels)
+         |> assign(:active_level, active_level)
+         |> assign(:show_level_modal, nil)
+         |> assign(:level_form, to_form(%{}))
+         |> refresh_level_and_stop_level_cache(active_level)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to remove level from station.")}
+    end
+  end
+
+  defp confirmation_payload(socket, "remove_from_diagram", id, origin_id) do
+    with {:ok, stop} <- confirmation_child_stop(socket, id) do
+      count = connected_pathway_count(socket, stop.stop_id)
+
+      {:ok,
+       confirmation(
+         :remove_from_diagram,
+         "remove_from_diagram",
+         stop.id,
+         origin_id,
+         "Remove stop from diagram?",
+         "This clears its placement and deletes #{count} connected #{pluralize(count, "pathway")}. The stop stays in this station.",
+         "Remove stop"
+       )}
+    end
+  end
+
+  defp confirmation_payload(socket, "delete_child_stop", id, origin_id) do
+    with {:ok, stop} <- confirmation_child_stop(socket, id) do
+      count = connected_pathway_count(socket, stop.stop_id)
+
+      {:ok,
+       confirmation(
+         :delete_child_stop,
+         "delete_child_stop",
+         stop.id,
+         origin_id,
+         "Delete stop?",
+         "This permanently deletes #{stop.stop_name || stop.stop_id} and #{count} connected #{pluralize(count, "pathway")}.",
+         "Delete stop"
+       )}
+    end
+  end
+
+  defp confirmation_payload(socket, "delete_pathway", id, origin_id) do
+    with {:ok, pathway} <- confirmation_pathway(socket, id) do
+      {:ok,
+       confirmation(
+         :delete_pathway,
+         "delete_pathway",
+         pathway.id,
+         origin_id,
+         "Delete pathway?",
+         "This permanently deletes pathway #{pathway.pathway_id} between its selected stops.",
+         "Delete pathway"
+       )}
+    end
+  end
+
+  defp confirmation_payload(socket, "remove_level_from_station", id, origin_id) do
+    with {:ok, level, child_stop_count} <- confirmation_level(socket, id) do
+      {:ok,
+       confirmation(
+         :remove_level_from_station,
+         "remove_level_from_station",
+         level.id,
+         origin_id,
+         "Remove level from station?",
+         "This unassigns #{child_stop_count} child #{pluralize(child_stop_count, "stop")} and removes this level's diagram. The shared level record stays available.",
+         "Remove level"
+       )}
+    end
+  end
+
+  defp confirmation_payload(socket, "delete_walkability_test", id, origin_id) do
+    with {:ok, walkability_test} <- confirmation_walkability_test(socket, id) do
+      {:ok,
+       confirmation(
+         :delete_walkability_test,
+         "delete_walkability_test",
+         walkability_test.id,
+         origin_id,
+         "Delete walkability test?",
+         "This permanently deletes the selected walkability test case.",
+         "Delete test"
+       )}
+    end
+  end
+
+  defp confirmation_payload(_socket, _action, _id, _origin_id), do: {:error, :unknown_action}
+
+  defp confirmation(action, event, id, origin_id, title, description, confirm_label) do
+    %{
+      action: action,
+      event: event,
+      id: id,
+      origin_id: safe_focus_origin(origin_id),
+      title: title,
+      description: description,
+      confirm_label: confirm_label,
+      pending_label: pending_label(action)
+    }
+  end
+
+  defp confirmation_child_stop(socket, id) do
+    with {:ok, stop} <- fetch_intent_stop(socket, id),
+         :ok <- ensure_stop_in_station_scope(socket, stop) do
+      {:ok, stop}
+    end
+  end
+
+  defp confirmation_pathway(socket, id) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    with {:ok, uuid} <- Ecto.UUID.cast(id),
+         %Pathway{} = pathway <- Gtfs.get_pathway(uuid),
+         true <- pathway.organization_id == organization_id,
+         true <- pathway.gtfs_version_id == gtfs_version_id,
+         loaded_pathway <- Gtfs.get_pathway_with_stops!(uuid),
+         false <- is_nil(loaded_pathway.from_stop),
+         false <- is_nil(loaded_pathway.to_stop),
+         true <-
+           stop_belongs_to_station?(
+             loaded_pathway.from_stop,
+             socket.assigns.station.stop_id,
+             socket.assigns.platform_stop_ids
+           ),
+         true <-
+           stop_belongs_to_station?(
+             loaded_pathway.to_stop,
+             socket.assigns.station.stop_id,
+             socket.assigns.platform_stop_ids
+           ) do
+      {:ok, loaded_pathway}
+    else
+      _ -> {:error, :out_of_scope}
+    end
+  end
+
+  defp confirmation_level(socket, id) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    with {:ok, uuid} <- Ecto.UUID.cast(id),
+         level when not is_nil(level) <- Gtfs.get_level(uuid),
+         stop_level when not is_nil(stop_level) <-
+           Gtfs.get_stop_level(organization_id, gtfs_version_id, station.id, uuid) do
+      count =
+        Gtfs.list_child_stops_for_parent(organization_id, gtfs_version_id, station.id)
+        |> Enum.count(&(&1.level_id == level.level_id))
+
+      _ = stop_level
+      {:ok, level, count}
+    else
+      _ -> {:error, :out_of_scope}
+    end
+  end
+
+  defp confirmation_walkability_test(socket, id) do
+    case Validations.get_walkability_test(id) do
+      nil ->
+        {:error, :not_found}
+
+      walkability_test ->
+        case validate_walkability_test_scope(socket, walkability_test) do
+          {:ok, _stop} -> {:ok, walkability_test}
+          {:error, _reason} -> {:error, :out_of_scope}
+        end
+    end
+  end
+
+  defp connected_pathway_count(socket, stop_id) do
+    Gtfs.list_pathways_for_stop(
+      socket.assigns.current_organization.id,
+      socket.assigns.current_gtfs_version.id,
+      stop_id
+    )
+    |> length()
+  end
+
+  defp confirmed_action?(socket, action, id) do
+    socket.assigns.confirmation_execution? and
+      match?(%{action: ^action, id: ^id}, socket.assigns.confirmation)
+  end
+
+  defp reject_unconfirmed_action(socket) do
+    socket
+    |> clear_confirmation()
+    |> put_flash(:error, "Confirm this action before making changes.")
+  end
+
+  defp clear_confirmation(socket) do
+    socket
+    |> assign(:confirmation, nil)
+    |> assign(:pending_action, nil)
+    |> assign(:confirmation_execution?, false)
+  end
+
+  defp confirmation_value(confirmation, key, default \\ "")
+  defp confirmation_value(nil, _key, default), do: default
+  defp confirmation_value(confirmation, key, default), do: Map.get(confirmation, key, default)
+
+  defp pending_label(:remove_from_diagram), do: "Removing stop…"
+  defp pending_label(:delete_child_stop), do: "Deleting stop…"
+  defp pending_label(:delete_pathway), do: "Deleting pathway…"
+  defp pending_label(:remove_level_from_station), do: "Removing level…"
+  defp pending_label(:delete_walkability_test), do: "Deleting test…"
+
+  defp safe_focus_origin(origin_id) when is_binary(origin_id) do
+    if Regex.match?(~r/^[A-Za-z][A-Za-z0-9_-]*$/, origin_id), do: origin_id, else: nil
+  end
+
+  defp safe_focus_origin(_origin_id), do: nil
+
+  defp pluralize(1, singular), do: singular
+  defp pluralize(_count, singular), do: "#{singular}s"
 
   defp clear_walkability_selection(socket) do
     current_params = socket.assigns.walkability_form.params || %{}
