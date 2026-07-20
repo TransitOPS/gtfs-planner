@@ -179,6 +179,16 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       assert has_element?(view, "#ds-page-colors", "--color-primary-content")
     end
+
+    test "renders the diagram palette production contract", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/colors")
+
+      assert has_element?(view, "#ds-diagram-palette-demo")
+      assert has_element?(view, "#ds-diagram-palette-demo [data-diagram-role=\"active_stop\"]")
+      assert has_element?(view, "#ds-diagram-palette-demo", "--diagram-label-halo")
+    end
   end
 
   describe "typography page" do
@@ -338,6 +348,21 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       assert has_element?(view, "#ds-status-badge-demo", "Pass")
       assert has_element?(view, "#ds-status-badge-demo", "In progress")
       assert has_element?(view, "#ds-status-badge-demo", "Unknown")
+    end
+
+    test "renders the transit presentation production contracts", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/badges")
+
+      assert has_element?(view, "#ds-transit-presentation-demo")
+
+      assert has_element?(
+               view,
+               "#ds-transit-presentation-demo [data-accessibility=\"accessible\"]"
+             )
+
+      assert has_element?(view, "#ds-transit-presentation-demo [data-pathway-summary]")
     end
   end
 

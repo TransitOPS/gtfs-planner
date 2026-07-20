@@ -17,6 +17,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
   import GtfsPlannerWeb.CoreComponents
 
   alias GtfsPlannerWeb.Components.RouteIdentity
+  alias GtfsPlannerWeb.Components.TransitPresentation
 
   @doc """
   Every `<.button>` variant × size combination, plus the disabled and with-icon forms.
@@ -446,6 +447,28 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           &lt;.status_badge status={run.status} /&gt; · known values get explicit labels and tones · unknown or blank renders Unknown · pass label="…" to override the word
         </code>
       </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Transit presentation</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Accessibility and pathway details use separate components. Each keeps a text label
+        alongside its visual treatment so the meaning is available without color.
+      </p>
+      <div id="ds-transit-presentation-demo" class="mt-3 space-y-3 border border-base-300 p-4">
+        <div class="flex flex-wrap gap-4">
+          <TransitPresentation.accessibility_status status={:accessible} />
+          <TransitPresentation.accessibility_status status={:not_accessible} />
+          <TransitPresentation.accessibility_status status={:unknown} />
+        </div>
+        <TransitPresentation.pathway_summary pathway={
+          %{
+            pathway_mode: 2,
+            is_bidirectional: false,
+            stair_count: 24,
+            length: Decimal.new("18.5"),
+            traversal_time: 32
+          }
+        } />
+      </div>
 
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
