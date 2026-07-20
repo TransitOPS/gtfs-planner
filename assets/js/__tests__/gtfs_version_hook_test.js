@@ -8,6 +8,7 @@ const WATCHDOG_MS = 5000;
 
 let originalLocation;
 let originalLocalStorage;
+let activeHooks = [];
 
 function setLocation(props) {
   Object.defineProperty(window, "location", {
@@ -33,6 +34,7 @@ function makeHook({ withSelect = true, pathname = "/gtfs/v1/stations", search = 
   hook.el = el;
   hook.pushEvent = vi.fn();
   hook.handleEvent = vi.fn();
+  activeHooks.push(hook);
   return hook;
 }
 
@@ -51,6 +53,10 @@ describe("GtfsVersionHook", () => {
   });
 
   afterEach(() => {
+    // Every mounted hook registers pagehide/pageshow listeners on window; tear them
+    // down so a later test cannot invoke a stale listener or leak a watchdog timer.
+    activeHooks.forEach((hook) => hook.destroyed());
+    activeHooks = [];
     vi.useRealTimers();
     vi.restoreAllMocks();
     Object.defineProperty(window, "location", {

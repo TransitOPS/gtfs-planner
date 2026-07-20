@@ -297,7 +297,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           phx-no-curly-interpolation
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
-          &lt;.checkbox_group id="invite-roles" name="demo[roles][]" label="Roles" options={[{"Admin", "admin"}]} selected={@roles} /&gt;
+          &lt;.checkbox_group id="ds-demo-roles" name="demo[roles][]" label="Roles" options={[{"Admin", "admin"}]} selected={@roles} /&gt;
         </code>
       </p>
 

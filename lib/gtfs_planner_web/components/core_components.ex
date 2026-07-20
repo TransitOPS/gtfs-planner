@@ -69,14 +69,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
           <p>{msg}</p>
         </div>
         <div class="flex-1" />
-        <button
-          type="button"
-          class="group self-start cursor-pointer min-h-11 min-w-11 flex items-center justify-center"
-          aria-label={gettext("Dismiss message")}
-          phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
-        >
-          <.icon name="hero-x-mark" class="size-5 opacity-40 group-hover:opacity-70" />
-        </button>
+        <div class="tooltip tooltip-bottom self-start" data-tip={gettext("Dismiss message")}>
+          <button
+            type="button"
+            class="group cursor-pointer min-h-11 min-w-11 flex items-center justify-center"
+            aria-label={gettext("Dismiss message")}
+            phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
+          >
+            <.icon name="hero-x-mark" class="size-5 opacity-40 group-hover:opacity-70" />
+          </button>
+        </div>
       </div>
     </div>
     """
@@ -413,8 +415,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :help, :string, default: nil, doc: "help text displayed below the checkboxes"
 
   def checkbox_group(assigns) do
-    help_id = if assigns.help, do: "#{assigns.id}-help"
-    error_id = if assigns.error, do: "#{assigns.id}-error"
+    help_id = if assigns.help not in [nil, ""], do: "#{assigns.id}-help"
+    error_id = if assigns.error not in [nil, ""], do: "#{assigns.id}-error"
 
     describedby =
       [help_id, error_id]
@@ -683,7 +685,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   def pagination(assigns) do
     total = max(assigns.total, 0)
     per_page = max(assigns.per_page, 1)
-    max_page = max(ceil(total / per_page), 1)
+    max_page = max(div(total + per_page - 1, per_page), 1)
     page = assigns.page |> max(1) |> min(max_page)
 
     start_item = if total == 0, do: 0, else: (page - 1) * per_page + 1
@@ -1470,7 +1472,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :upload, Phoenix.LiveView.UploadConfig, required: true
   attr :label, :string, required: true
   attr :help, :string, required: true
-  attr :cancel_event, :string, required: true
+  attr :cancel_event, :string, default: "cancel_upload"
   attr :target, :any, default: nil
   attr :error, :string, default: nil
   slot :failure, doc: "view-level failure message"
@@ -1527,7 +1529,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             </div>
             <ul :if={upload_errors(@upload, entry) != []} class="mt-1 text-xs text-error">
               <li :for={error <- upload_errors(@upload, entry)}>
-                {translate_error(error)}
+                {upload_error_to_string(error)}
               </li>
             </ul>
           </div>
@@ -1545,8 +1547,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
       </ul>
 
       <ul :if={@upload.errors != []} id={"#{@id}-rejected"} class="text-sm text-error">
-        <li :for={error <- @upload.errors}>
-          {upload_error_to_string(error)}
+        <li :for={{_ref, reason} <- @upload.errors}>
+          {upload_error_to_string(reason)}
         </li>
       </ul>
     </div>
@@ -1581,7 +1583,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :id, :string, required: true
   attr :pressed, :boolean, required: true
   attr :event, :string, required: true
-  attr :value, :string, required: true
+  attr :value, :any, default: nil
   attr :label, :string, required: true
   attr :target, :any, default: nil
   attr :pending, :boolean, default: false
@@ -1634,7 +1636,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :name, :string, required: true
   attr :legend, :string, required: true
   attr :options, :list, required: true
-  attr :value, :string, required: true
+  attr :value, :any, required: true
   attr :event, :string, required: true
   attr :target, :any, default: nil
   attr :disabled, :boolean, default: false
@@ -1642,34 +1644,33 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   def segmented_control(assigns) do
     ~H"""
-    <fieldset id={@id} class="space-y-2" disabled={@disabled}>
-      <legend class="text-sm font-semibold">{@legend}</legend>
-      <p :if={@disabled && @disabled_reason} class="text-xs text-base-content/60">
-        {@disabled_reason}
-      </p>
-      <div class="flex flex-wrap gap-2">
-        <label
-          :for={{label, val} <- @options}
-          class={[
-            "h-11 min-w-[44px] px-4 flex items-center justify-center text-sm font-semibold border rounded-lg cursor-pointer transition-colors",
-            @value == val && "bg-primary text-primary-content border-primary",
-            @value != val && "bg-base-100 text-base-content border-base-300 hover:border-primary"
-          ]}
-        >
-          <input
-            type="radio"
-            name={@name}
-            value={val}
-            checked={@value == val}
-            class="sr-only"
-            phx-click={@event}
-            phx-value={val}
-            phx-target={@target}
-          />
-          {label}
-        </label>
-      </div>
-    </fieldset>
+    <form phx-change={@event} phx-target={@target}>
+      <fieldset id={@id} class="space-y-2" disabled={@disabled}>
+        <legend class="text-sm font-semibold">{@legend}</legend>
+        <p :if={@disabled && @disabled_reason} class="text-xs text-base-content/60">
+          {@disabled_reason}
+        </p>
+        <div class="flex flex-wrap gap-2">
+          <label
+            :for={{label, val} <- @options}
+            class={[
+              "h-11 min-w-[44px] px-4 flex items-center justify-center text-sm font-semibold border rounded-lg cursor-pointer transition-colors",
+              @value == val && "bg-primary text-primary-content border-primary",
+              @value != val && "bg-base-100 text-base-content border-base-300 hover:border-primary"
+            ]}
+          >
+            <input
+              type="radio"
+              name={@name}
+              value={val}
+              checked={@value == val}
+              class="sr-only"
+            />
+            {label}
+          </label>
+        </div>
+      </fieldset>
+    </form>
     """
   end
 

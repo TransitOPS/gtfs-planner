@@ -615,7 +615,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert LazyHTML.attribute(list_radio, "checked") == []
     end
 
-    test "radio inputs send configured event and value" do
+    test "form sends configured change event and radios carry their value" do
       assigns = %{value: "list"}
 
       html =
@@ -631,9 +631,14 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
         """)
 
       doc = LazyHTML.from_fragment(html)
+
+      # phx-change on a wrapping form fires for both mouse and keyboard selection
+      # (arrow keys emit change, not click), so the server always receives the event.
+      form = LazyHTML.query(doc, "form")
+      assert LazyHTML.attribute(form, "phx-change") == ["change_view"]
+
       list_radio = LazyHTML.query(doc, ~s(#view-mode input[value="list"]))
-      assert LazyHTML.attribute(list_radio, "phx-click") == ["change_view"]
-      assert LazyHTML.attribute(list_radio, "phx-value") == ["list"]
+      assert LazyHTML.attribute(list_radio, "name") == ["view_mode"]
     end
 
     test "disabled fieldset shows disabled reason" do

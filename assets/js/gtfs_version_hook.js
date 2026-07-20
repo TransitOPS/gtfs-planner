@@ -25,6 +25,9 @@ const GtfsVersionHook = {
     this.pagehideHandler = () => this.onPagehide();
     window.addEventListener("pagehide", this.pagehideHandler);
 
+    this.pageshowHandler = () => this.onPageshow();
+    window.addEventListener("pageshow", this.pageshowHandler);
+
     this.bindSelect();
     this.bindRetry();
   },
@@ -41,6 +44,10 @@ const GtfsVersionHook = {
     if (this.pagehideHandler) {
       window.removeEventListener("pagehide", this.pagehideHandler);
       this.pagehideHandler = null;
+    }
+    if (this.pageshowHandler) {
+      window.removeEventListener("pageshow", this.pageshowHandler);
+      this.pageshowHandler = null;
     }
     this.pendingValue = null;
     this.priorValue = null;
@@ -182,6 +189,17 @@ const GtfsVersionHook = {
   onPagehide() {
     this.navigated = true;
     this.clearWatchdog();
+  },
+
+  onPageshow() {
+    // pagehide fires on tab switch as well as navigation, leaving `navigated`
+    // stuck true. Reset it when the page becomes visible again so the watchdog
+    // and recovery paths stay live. If a selection is still pending (navigation
+    // never happened), surface the failure so the user can retry.
+    this.navigated = false;
+    if (this.pendingValue !== null) {
+      this.recoverFromFailure(this.pendingValue);
+    }
   },
 
   setBusy(busy) {

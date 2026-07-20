@@ -275,7 +275,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
     end
   end
 
-  def handle_event("change_view", %{"value" => view_mode}, socket) do
+  def handle_event("change_view", %{"view_mode" => view_mode}, socket) do
     {:noreply, assign(socket, :view_mode, view_mode)}
   end
 

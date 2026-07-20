@@ -34,7 +34,8 @@ async function getGtfsVersionId(page) {
     .locator('#app-header nav a[href*="/gtfs/"]')
     .first()
     .getAttribute("href");
-  const match = href.match(/\/gtfs\/([^/]+)\//);
+  const match = href && href.match(/\/gtfs\/([^/]+)\//);
+  if (!match) throw new Error("No /gtfs/ version link found: " + href);
   return match[1];
 }
 

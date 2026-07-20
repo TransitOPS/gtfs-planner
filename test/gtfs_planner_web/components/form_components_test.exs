@@ -420,7 +420,7 @@ defmodule GtfsPlannerWeb.FormComponentsTest do
         upload: %Phoenix.LiveView.UploadConfig{
           ref: "test-ref",
           entries: [entry],
-          errors: [:too_many_files],
+          errors: [{"test-ref", :too_many_files}],
           max_entries: 1,
           max_file_size: 52_428_800,
           accept: [".zip"]

@@ -166,6 +166,7 @@ body {
 
   .ds-stack-table tbody td[data-label="Actions"] {
     justify-content: flex-end;
+    width: auto;
   }
 
   .ds-stack-table tbody td[data-label="Actions"]::before {
