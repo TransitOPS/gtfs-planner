@@ -52,13 +52,22 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           phx-target={@myself}
           phx-change="validate"
           phx-submit="save"
-          class="flex items-center gap-2"
+          class="flex flex-wrap items-center gap-2"
         >
-          <.input
-            field={@form[:name]}
+          <label for="gtfs-version-rename-input" class="text-sm font-medium text-base-content/70">
+            Version name
+          </label>
+          <input
             type="text"
-            label={"Rename \"#{@current_version.name}\""}
-            class="input input-sm w-48"
+            id="gtfs-version-rename-input"
+            name="gtfs_version[name]"
+            value={Phoenix.HTML.Form.normalize_value("text", @form[:name].value)}
+            aria-invalid={to_string(@form[:name].errors != [])}
+            aria-describedby={@form[:name].errors != [] && "gtfs-version-rename-error"}
+            class={[
+              "input input-sm w-48",
+              @form[:name].errors != [] && "input-error"
+            ]}
           />
           <button type="submit" class="btn btn-primary btn-sm" phx-disable-with="Saving name…">
             Save changes
@@ -71,6 +80,13 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           >
             Cancel
           </button>
+          <p
+            :if={@form[:name].errors != []}
+            id="gtfs-version-rename-error"
+            class="w-full text-sm text-error"
+          >
+            {@form[:name].errors |> Enum.map(&translate_error/1) |> Enum.join(", ")}
+          </p>
         </.form>
       <% else %>
         <label

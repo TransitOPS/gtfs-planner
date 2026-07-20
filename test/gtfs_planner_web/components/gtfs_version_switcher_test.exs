@@ -110,8 +110,10 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       assert has_element?(view, "#gtfs-version-rename-form")
 
       form_html = view |> element("#gtfs-version-rename-form") |> render()
+      # Prefilled via the input value; the label stays a short, stable noun so a
+      # long current name cannot distort the inline editor.
       assert form_html =~ ~s(value="Current Version")
-      assert form_html =~ ~s(Rename &quot;Current Version&quot;)
+      assert form_html =~ "Version name"
     end
 
     test "validate surfaces duplicate-name error", %{
