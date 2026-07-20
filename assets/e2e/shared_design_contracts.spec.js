@@ -46,7 +46,9 @@ async function navigateToGtfsPage(page, versionId, subpath = "routes") {
 
 // ── Shell and navigation at different viewports ──
 test.describe("Shell and navigation responsive behavior", () => {
-  test("320px viewport: no body overflow, all tasks visible", async ({ page }) => {
+  test("320px viewport: no body overflow, all tasks visible", async ({
+    page,
+  }) => {
     await loginAsAdmin(page);
     await page.setViewportSize({ width: 320, height: 568 });
 
@@ -95,28 +97,33 @@ test.describe("Shell and navigation responsive behavior", () => {
     expect(bodyOverflow).toBe(true);
   });
 
-  test("200% zoom: content reflows without overflow", async ({ page }) => {
+  test("200% zoom equivalent: content reflows without overflow", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await loginAsAdmin(page);
 
-    // Use CDP to set page scale factor (Chromium's zoom mechanism)
-    const client = await page.context().newCDPSession(page);
-    await client.send("Emulation.setPageScaleFactor", { pageScaleFactor: 2.0 });
+    // At 200% browser zoom, a 1280x800 device viewport has a 640x400 CSS
+    // layout viewport. Exercise that layout viewport directly so media queries
+    // and reflow run, unlike pinch/page-scale emulation.
+    await page.setViewportSize({ width: 640, height: 400 });
 
-    const bodyOverflow = await page.evaluate(() => {
-      return document.body.scrollWidth <= window.innerWidth;
+    const layout = await page.evaluate(() => {
+      return {
+        innerWidth: window.innerWidth,
+        bodyFitsViewport: document.body.scrollWidth <= window.innerWidth,
+      };
     });
-    expect(bodyOverflow).toBe(true);
-
-    // Reset zoom
-    await client.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1.0 });
-    await client.detach();
+    expect(layout.innerWidth).toBe(640);
+    expect(layout.bodyFitsViewport).toBe(true);
   });
 });
 
 // ── Organizations trial (stacked table) ──
 test.describe("Organizations trial responsive behavior", () => {
-  test("stacked table at 320px: one representation, long names wrap", async ({ page }) => {
+  test("stacked table at 320px: one representation, long names wrap", async ({
+    page,
+  }) => {
     await loginAsAdmin(page);
     await page.setViewportSize({ width: 320, height: 568 });
 
@@ -143,13 +150,15 @@ test.describe("Organizations trial responsive behavior", () => {
     expect(bodyOverflow).toBe(true);
 
     // Check long organization name wraps (from browser seed)
-    const longOrg = page.locator("text=Metropolitan Regional Transit Authority");
-    if (await longOrg.count() > 0) {
-      const box = await longOrg.boundingBox();
-      expect(box).not.toBeNull();
-      // Should wrap to multiple lines or fit within viewport
-      expect(box.width).toBeLessThanOrEqual(320);
-    }
+    const longOrg = page.getByRole("link", {
+      name: "Metropolitan Regional Transit Authority of the Greater Metropolitan Area",
+      exact: true,
+    });
+    await expect(longOrg).toBeVisible();
+    const box = await longOrg.boundingBox();
+    expect(box).not.toBeNull();
+    // Should wrap to multiple lines or fit within viewport
+    expect(box.width).toBeLessThanOrEqual(320);
   });
 
   test("organization name is primary link", async ({ page }) => {
@@ -166,26 +175,40 @@ test.describe("Organizations trial responsive behavior", () => {
   });
 
   test("keyboard navigation follows visual order", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 568 });
     await loginAsAdmin(page);
 
-    // Tab through the page
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Tab");
+    const tableLinks = page.locator("#organizations a[href]");
+    const linkCount = await tableLinks.count();
+    expect(linkCount).toBeGreaterThan(0);
 
-    // Check focus is visible
-    const focusedElement = await page.evaluate(() => {
-      const el = document.activeElement;
-      if (!el) return null;
-      const rect = el.getBoundingClientRect();
-      return {
-        tag: el.tagName,
-        visible: rect.width > 0 && rect.height > 0,
-      };
+    const visualOrder = await tableLinks.evaluateAll((links) => {
+      return links
+        .map((link) => {
+          const rect = link.getBoundingClientRect();
+          return {
+            href: link.getAttribute("href"),
+            top: rect.top,
+            left: rect.left,
+          };
+        })
+        .sort((a, b) => {
+          return Math.abs(a.top - b.top) > 1 ? a.top - b.top : a.left - b.left;
+        })
+        .map(({ href }) => href);
     });
 
-    expect(focusedElement).not.toBeNull();
-    expect(focusedElement.visible).toBe(true);
+    await page.getByRole("link", { name: "Create Organization" }).focus();
+
+    const tabOrder = [];
+    for (let i = 0; i < linkCount; i++) {
+      await page.keyboard.press("Tab");
+      tabOrder.push(
+        await page.evaluate(() => document.activeElement?.getAttribute("href")),
+      );
+    }
+
+    expect(tabOrder).toEqual(visualOrder);
   });
 });
 
@@ -224,13 +247,19 @@ test.describe("Routes trial responsive behavior", () => {
 
     const badges = page.locator("tbody#routes span[style*='background-color']");
     const count = await badges.count();
+    expect(count).toBeGreaterThan(0);
 
-    if (count > 0) {
-      const firstBadge = badges.first();
-      await expect(firstBadge).toBeVisible();
+    for (let i = 0; i < count; i++) {
+      const badge = badges.nth(i);
+      await expect(badge).toBeVisible();
 
-      const text = await firstBadge.textContent();
+      const text = await badge.textContent();
       expect(text.trim().length).toBeGreaterThan(0);
+
+      const rawStyle = await badge.getAttribute("style");
+      expect(rawStyle).toMatch(
+        /^background-color:\s*#[0-9a-f]{6};\s*color:\s*#[0-9a-f]{6}$/i,
+      );
     }
   });
 
@@ -240,12 +269,13 @@ test.describe("Routes trial responsive behavior", () => {
     const versionId = await getGtfsVersionId(page);
     await navigateToGtfsPage(page, versionId);
 
-    const longRoute = page.locator("td[data-label='Short Name']").first();
-    if (await longRoute.count() > 0) {
-      const box = await longRoute.boundingBox();
-      expect(box).not.toBeNull();
-      expect(box.width).toBeLessThanOrEqual(320);
-    }
+    const longRoute = page
+      .locator("td[data-label='Short Name']")
+      .filter({ hasText: "Express Route 1" });
+    await expect(longRoute).toBeVisible();
+    const box = await longRoute.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.width).toBeLessThanOrEqual(320);
   });
 });
 
@@ -278,17 +308,18 @@ test.describe("Reduced motion behavior", () => {
     // Set reduced motion preference
     await page.emulateMedia({ reducedMotion: "reduce" });
 
-    await loginAsAdmin(page);
+    await loginAsAdmin(page, "/design/feedback");
 
     // Check that motion-safe classes are disabled
-    const skeleton = page.locator(".motion-safe\\:animate-pulse");
-    if (await skeleton.count() > 0) {
-      const animation = await skeleton.evaluate((el) => {
-        return window.getComputedStyle(el).animationName;
-      });
-      // Should be "none" under reduced motion
-      expect(animation).toBe("none");
-    }
+    const skeleton = page.locator(
+      "#ds-skeleton-demo .motion-safe\\:animate-pulse",
+    );
+    await expect(skeleton).toBeVisible();
+    const animation = await skeleton.evaluate((el) => {
+      return window.getComputedStyle(el).animationName;
+    });
+    // Should be "none" under reduced motion
+    expect(animation).toBe("none");
   });
 });
 

@@ -953,22 +953,24 @@ defmodule GtfsPlannerWeb.Design.ProposalPages do
           pressed={@filter_active}
           event="toggle_filter"
           value="active"
-          label="Active"
-        />
+        >
+          Active
+        </.pressed_filter>
         <.pressed_filter
           id="filter-inactive"
           pressed={@filter_inactive}
           event="toggle_filter"
           value="inactive"
-          label="Inactive"
-        />
+        >
+          Inactive
+        </.pressed_filter>
       </div>
       <p class="mt-3">
         <code
           phx-no-curly-interpolation
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
-          &lt;.pressed_filter id="filter-active" pressed={@filter_active} event="toggle_filter" value="active" label="Active" /&gt;
+          &lt;.pressed_filter id="filter-active" pressed={@filter_active} event="toggle_filter" value="active"&gt;Active&lt;/.pressed_filter&gt;
         </code>
       </p>
 

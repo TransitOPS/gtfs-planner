@@ -134,6 +134,14 @@ defmodule GtfsPlannerWeb.FormComponentsTest do
   end
 
   describe "simple_form/1" do
+    test "requires a form binding in its public contract" do
+      simple_form = GtfsPlannerWeb.CoreComponents.__components__()[:simple_form]
+      for_attr = Enum.find(simple_form.attrs, &(&1.name == :for))
+
+      assert for_attr.required
+      refute Keyword.has_key?(for_attr.opts, :default)
+    end
+
     test "requires and renders the caller ID" do
       assigns = %{}
 
@@ -197,6 +205,30 @@ defmodule GtfsPlannerWeb.FormComponentsTest do
   end
 
   describe "checkbox_group/1" do
+    test "treats an empty error as no error" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.checkbox_group
+          id="roles-group"
+          name="roles[]"
+          label="Roles"
+          options={[{"Admin", "admin"}]}
+          error=""
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      fieldset = LazyHTML.query(doc, "#roles-group")
+      classes = LazyHTML.attribute(fieldset, "class") |> List.first()
+
+      assert LazyHTML.attribute(fieldset, "aria-invalid") == ["false"]
+      refute classes =~ "text-error"
+      refute html =~ "roles-group-error"
+      refute html =~ "hero-exclamation-circle"
+    end
+
     test "renders one fieldset with a legend" do
       assigns = %{}
 

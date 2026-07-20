@@ -435,9 +435,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
     ~H"""
     <fieldset
       id={@id}
-      class={["fieldset mb-2", @error && "text-error"]}
+      class={["fieldset mb-2", @error not in [nil, ""] && "text-error"]}
       aria-describedby={@describedby}
-      aria-invalid={to_string(@error != nil)}
+      aria-invalid={to_string(@error not in [nil, ""])}
     >
       <legend class="fieldset-legend text-base">
         {@label}
@@ -459,7 +459,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       </div>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
       <p
-        :if={@error}
+        :if={@error not in [nil, ""]}
         id={@error_id}
         class="mt-1.5 flex gap-2 items-center text-sm text-error"
       >
@@ -795,7 +795,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   """
   attr :id, :string, required: true, doc: "the unique id of the form"
-  attr :for, :any, default: nil, doc: "the data structure for the form"
+  attr :for, :any, required: true, doc: "the data structure for the form"
   attr :as, :any, default: nil, doc: "the server side parameter to collect all input under"
 
   attr :rest, :global,
@@ -1577,19 +1577,20 @@ defmodule GtfsPlannerWeb.CoreComponents do
         pressed={@filter_active}
         event="toggle_filter"
         value="active"
-        label="Active"
-      />
+      >
+        Active
+      </.pressed_filter>
   """
   attr :id, :string, required: true
   attr :pressed, :boolean, required: true
   attr :event, :string, required: true
   attr :value, :any, default: nil
-  attr :label, :string, required: true
   attr :target, :any, default: nil
   attr :pending, :boolean, default: false
   attr :pending_label, :string, default: nil
   attr :disabled, :boolean, default: false
   attr :disabled_reason, :string, default: nil
+  slot :inner_block, required: true
 
   def pressed_filter(assigns) do
     ~H"""
@@ -1610,7 +1611,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       disabled={@disabled || @pending}
       title={if @disabled, do: @disabled_reason, else: nil}
     >
-      {if @pending, do: @pending_label || "Loading…", else: @label}
+      {if @pending, do: @pending_label || "Loading…", else: render_slot(@inner_block)}
     </button>
     """
   end

@@ -5,6 +5,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
   import Phoenix.Component
   import GtfsPlannerWeb.CoreComponents
 
+  alias GtfsPlannerWeb.Layouts
   alias GtfsPlannerWeb.Navigation
 
   defp render_nav(assigns) do
@@ -450,8 +451,9 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
           pressed={@pressed}
           event="toggle_filter"
           value="active"
-          label="Active"
-        />
+        >
+          <span>Active</span>
+        </.pressed_filter>
         """)
 
       doc = LazyHTML.from_fragment(html)
@@ -470,8 +472,9 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
           pressed={@pressed}
           event="toggle_filter"
           value="active"
-          label="Active"
-        />
+        >
+          Active
+        </.pressed_filter>
         """)
 
       doc = LazyHTML.from_fragment(html)
@@ -489,8 +492,9 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
           pressed={@pressed}
           event="toggle_filter"
           value="active"
-          label="Active"
-        />
+        >
+          Active
+        </.pressed_filter>
         """)
 
       doc = LazyHTML.from_fragment(html)
@@ -510,8 +514,9 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
           pressed={@pressed}
           event="toggle_filter"
           value="active"
-          label="Active"
-        />
+        >
+          Active
+        </.pressed_filter>
         """)
 
       doc = LazyHTML.from_fragment(html)
@@ -530,10 +535,11 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
           pressed={@pressed}
           event="toggle_filter"
           value="active"
-          label="Active"
           pending={true}
           pending_label="Loading…"
-        />
+        >
+          Active
+        </.pressed_filter>
         """)
 
       assert html =~ "Loading…"
@@ -552,16 +558,42 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
           pressed={@pressed}
           event="toggle_filter"
           value="active"
-          label="Active"
           disabled={true}
           disabled_reason="Not available"
-        />
+        >
+          Active
+        </.pressed_filter>
         """)
 
       doc = LazyHTML.from_fragment(html)
       button = LazyHTML.query(doc, "#filter-active")
       assert LazyHTML.attribute(button, "disabled") == [""]
       assert LazyHTML.attribute(button, "title") == ["Not available"]
+    end
+  end
+
+  describe "app layout version switcher guard" do
+    test "does not render the switcher without a current organization" do
+      assigns = %{
+        current_user: editor_user(),
+        current_gtfs_version: gtfs_version(),
+        available_versions: [{42, "v1"}]
+      }
+
+      html =
+        rendered_to_string(~H"""
+        <Layouts.app
+          flash={%{}}
+          current_user={@current_user}
+          current_gtfs_version={@current_gtfs_version}
+          available_versions={@available_versions}
+        >
+          <p>Page content</p>
+        </Layouts.app>
+        """)
+
+      assert html =~ "Page content"
+      refute html =~ "id=\"gtfs-version-switcher\""
     end
   end
 
