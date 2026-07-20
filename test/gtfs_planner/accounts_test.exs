@@ -525,6 +525,13 @@ defmodule GtfsPlanner.AccountsTest do
       assert Accounts.confirm_user(token) == :error
       refute Accounts.get_user!(user.id).confirmed_at
     end
+
+    test "consumes the token exactly once", %{user: user, token: token} do
+      assert {:ok, _} = Accounts.confirm_user(token)
+      assert Accounts.confirm_user(token) == :error
+      assert Accounts.get_user!(user.id).confirmed_at
+      refute Repo.get_by(UserToken, user_id: user.id, context: "confirm")
+    end
   end
 
   describe "deliver_user_reset_password_instructions/2" do
