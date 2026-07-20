@@ -6,7 +6,14 @@ defmodule GtfsPlanner.Accounts do
   import Ecto.Query, warn: false
   alias GtfsPlanner.Repo
 
-  alias GtfsPlanner.Accounts.{FirstAdminForm, User, UserOrgMembership, UserToken}
+  alias GtfsPlanner.Accounts.{
+    FirstAdminForm,
+    PasswordResetRequestForm,
+    User,
+    UserOrgMembership,
+    UserToken
+  }
+
   alias GtfsPlanner.Accounts.UserNotifier
   alias GtfsPlanner.Organizations.Organization
 
@@ -409,6 +416,24 @@ defmodule GtfsPlanner.Accounts do
   end
 
   ## Reset password
+
+  @doc """
+  Returns an `%Ecto.Changeset{}` for tracking password-reset request changes.
+
+  Builds a `PasswordResetRequestForm` changeset that validates the email
+  syntactically — trimmed presence, shape, and maximum length — without
+  querying accounts or exposing account existence.
+
+  ## Examples
+
+      iex> change_password_reset_request(%{"email" => "user@example.com"})
+      %Ecto.Changeset{data: %PasswordResetRequestForm{}}
+
+  """
+  @spec change_password_reset_request(map()) :: Ecto.Changeset.t()
+  def change_password_reset_request(attrs \\ %{}) do
+    PasswordResetRequestForm.changeset(attrs)
+  end
 
   @doc ~S"""
   Delivers the reset password email to the given user.
