@@ -671,7 +671,7 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert html =~ ~r/aria-describedby="name-help name-error"/
     end
 
-    test "error container owns a stable id and alert semantics" do
+    test "error container owns a stable id and visible text" do
       assigns = %{}
 
       html =
@@ -680,9 +680,10 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
         """)
 
       assert html =~ "id=\"name-error\""
-      assert html =~ ~r/role="alert"/
-      assert html =~ ~r/aria-live="assertive"/
+      assert html =~ "can&#39;t be blank"
       assert html =~ ~r/aria-describedby="name-error"/
+      refute html =~ "role=\"alert\""
+      refute html =~ "aria-live"
     end
 
     test "sets aria-invalid when errors exist and clears it otherwise" do
@@ -725,114 +726,18 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
 
       assert select_html =~ "id=\"role-error\""
       assert select_html =~ ~r/aria-invalid="true"/
-      assert select_html =~ ~r/role="alert"/
       assert select_html =~ ~r/aria-describedby="role-error"/
+      refute select_html =~ "role=\"alert\""
+      refute select_html =~ "aria-live"
 
       assert textarea_html =~ "id=\"notes-error\""
       assert textarea_html =~ ~r/aria-invalid="true"/
-      assert textarea_html =~ ~r/role="alert"/
       assert textarea_html =~ ~r/aria-describedby="notes-error"/
-    end
-
-    test "keeps alert semantics when announce_errors is explicitly true" do
-      assigns = %{}
-
-      html =
-        rendered_to_string(~H"""
-        <.input
-          id="name"
-          name="name"
-          label="Name"
-          errors={["can't be blank"]}
-          announce_errors={true}
-        />
-        """)
-
-      assert html =~ "id=\"name-error\""
-      assert html =~ ~r/role="alert"/
-      assert html =~ ~r/aria-live="assertive"/
-      assert html =~ ~r/aria-describedby="name-error"/
-    end
-
-    test "announce_errors={false} omits only the live-region attributes" do
-      assigns = %{}
-
-      html =
-        rendered_to_string(~H"""
-        <.input
-          id="name"
-          name="name"
-          label="Name"
-          errors={["can't be blank"]}
-          announce_errors={false}
-        />
-        """)
-
-      refute html =~ "role=\"alert\""
-      refute html =~ "aria-live"
-      assert html =~ "id=\"name-error\""
-      assert html =~ ~r/aria-invalid="true"/
-      assert html =~ ~r/aria-describedby="name-error"/
-      assert html =~ "can&#39;t be blank"
-    end
-
-    test "checkbox, select, and textarea clauses honor announce_errors={false}" do
-      assigns = %{}
-
-      checkbox_html =
-        rendered_to_string(~H"""
-        <.input
-          id="active"
-          name="active"
-          type="checkbox"
-          label="Active"
-          errors={["is invalid"]}
-          announce_errors={false}
-        />
-        """)
-
-      select_html =
-        rendered_to_string(~H"""
-        <.input
-          id="role"
-          name="role"
-          type="select"
-          label="Role"
-          options={[{"Admin", "admin"}]}
-          errors={["is invalid"]}
-          announce_errors={false}
-        />
-        """)
-
-      textarea_html =
-        rendered_to_string(~H"""
-        <.input
-          id="notes"
-          name="notes"
-          type="textarea"
-          label="Notes"
-          errors={["is invalid"]}
-          announce_errors={false}
-        />
-        """)
-
-      refute checkbox_html =~ "role=\"alert\""
-      refute checkbox_html =~ "aria-live"
-      assert checkbox_html =~ "id=\"active-error\""
-      assert checkbox_html =~ ~r/aria-describedby="active-error"/
-
-      refute select_html =~ "role=\"alert\""
-      refute select_html =~ "aria-live"
-      assert select_html =~ "id=\"role-error\""
-      assert select_html =~ ~r/aria-describedby="role-error"/
-
       refute textarea_html =~ "role=\"alert\""
       refute textarea_html =~ "aria-live"
-      assert textarea_html =~ "id=\"notes-error\""
-      assert textarea_html =~ ~r/aria-describedby="notes-error"/
     end
 
-    test "multiple errors render inside one referenced alert container" do
+    test "multiple errors render inside one referenced container" do
       assigns = %{}
 
       html =

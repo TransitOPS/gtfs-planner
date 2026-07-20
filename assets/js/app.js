@@ -38,14 +38,19 @@ const liveSocket = new LiveSocket("/live", Socket, {
   hooks: {...colocatedHooks, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, MapAlignment: MapAlignmentHook, OverlayDialog: OverlayDialogHook, LiveSelect: LiveSelect.LiveSelect},
 })
 
-// Show progress bar on live navigation and form submits
-topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
-window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
+const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
+
+function semanticPrimaryColor() {
+  return getComputedStyle(document.documentElement).getPropertyValue("--color-primary").trim() || "#29d"
+}
+
+topbar.config({barColors: {0: semanticPrimaryColor()}, shadowColor: "rgba(0, 0, 0, 0)"})
+window.addEventListener("phx:page-loading-start", _info => topbar.show(prefersReducedMotion.matches ? 0 : 300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 window.addEventListener("phx:scroll_to_error", (e) => {
   requestAnimationFrame(() => {
     const el = document.getElementById(e.detail.id)
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" })
+    if (el) el.scrollIntoView({ behavior: prefersReducedMotion.matches ? "auto" : "smooth", block: "start" })
   })
 })
 

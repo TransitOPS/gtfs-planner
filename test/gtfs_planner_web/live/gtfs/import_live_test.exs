@@ -339,7 +339,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert html =~ "id=\"gtfs-import-version-name-error\""
       assert html =~ ~r/aria-describedby="gtfs-import-version-name-error"/
       assert html =~ ~r/aria-invalid="true"/
-      assert html =~ ~r/role="alert"/
       assert html =~ "Version name is required"
     end
 

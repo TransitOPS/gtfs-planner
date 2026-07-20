@@ -43,7 +43,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
       id="gtfs-version-switcher"
       phx-hook="GtfsVersionHook"
       data-organization-id={@organization_id}
-      class="flex items-center gap-2 bg-base-200 rounded-md pl-3 pr-1 py-1"
+      class="inline-flex w-fit flex-wrap items-center gap-2 bg-base-200 rounded-md pl-3 pr-1 py-1"
     >
       <%= if @editing? do %>
         <.form
@@ -52,15 +52,26 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           phx-target={@myself}
           phx-change="validate"
           phx-submit="save"
-          class="flex items-center gap-2"
+          class="flex flex-wrap items-center gap-2"
         >
-          <.input
-            field={@form[:name]}
+          <label for="gtfs-version-rename-input" class="text-sm font-medium text-base-content/70">
+            Version name
+          </label>
+          <input
             type="text"
-            label={"Rename \"#{@current_version.name}\""}
-            class="input input-sm w-48"
+            id="gtfs-version-rename-input"
+            name="gtfs_version[name]"
+            value={Phoenix.HTML.Form.normalize_value("text", @form[:name].value)}
+            aria-invalid={to_string(@form[:name].errors != [])}
+            aria-describedby={@form[:name].errors != [] && "gtfs-version-rename-error"}
+            class={[
+              "input input-sm w-48",
+              @form[:name].errors != [] && "input-error"
+            ]}
           />
-          <button type="submit" class="btn btn-primary btn-sm">Save changes</button>
+          <button type="submit" class="btn btn-primary btn-sm" phx-disable-with="Saving name…">
+            Save changes
+          </button>
           <button
             type="button"
             phx-click="cancel_edit"
@@ -69,11 +80,18 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           >
             Cancel
           </button>
+          <p
+            :if={@form[:name].errors != []}
+            id="gtfs-version-rename-error"
+            class="w-full text-sm text-error"
+          >
+            {@form[:name].errors |> Enum.map(&translate_error/1) |> Enum.join(", ")}
+          </p>
         </.form>
       <% else %>
         <label
           for="gtfs-version-select"
-          class="text-sm font-medium text-base-content/70 whitespace-nowrap"
+          class="text-sm font-medium text-base-content/70"
         >
           GTFS Version:
         </label>
@@ -81,7 +99,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           id="gtfs-version-select"
           name="version"
           aria-label="Select GTFS version"
-          class="select select-sm select-ghost rounded-md bg-base-100 min-w-[120px] focus:outline-none focus:ring-2 focus:ring-primary"
+          class="select select-ghost rounded-md bg-base-100 w-auto min-w-[120px] min-h-11 focus:outline-none focus:ring-2 focus:ring-primary"
         >
           <option :for={{id, name} <- @versions} value={id} selected={id == @current_version.id}>
             {name}
@@ -98,6 +116,15 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           <.icon name="hero-pencil-square" class="w-4 h-4" />
         </button>
       <% end %>
+      <div id="gtfs-version-pending" hidden class="text-sm text-base-content/70">
+        Switching version…
+      </div>
+      <div id="gtfs-version-failure" hidden class="flex items-center gap-2">
+        <span class="text-sm text-error">Version switch failed.</span>
+        <button type="button" id="gtfs-version-retry" class="btn btn-ghost btn-xs text-primary">
+          Retry
+        </button>
+      </div>
     </div>
     """
   end

@@ -36,11 +36,16 @@ defmodule GtfsPlannerWeb.Navigation do
 
   def top_nav(assigns) do
     ~H"""
-    <nav role="navigation" aria-label="Main navigation" class="flex items-center gap-2">
+    <nav
+      role="navigation"
+      aria-label="Main navigation"
+      class="flex flex-wrap items-center gap-1"
+    >
       <%= if is_administrator?(@current_user) do %>
         <.link
           navigate="/admin/organizations"
-          class={pill_class(active_tab?(@current_path, "/admin/organizations"))}
+          class={nav_link_class(path_family_active?(@current_path, ["admin", "organizations"]))}
+          aria-current={path_family_active?(@current_path, ["admin", "organizations"]) && "page"}
         >
           Organizations
         </.link>
@@ -49,7 +54,8 @@ defmodule GtfsPlannerWeb.Navigation do
       <%= if has_role?(@user_roles, :pathways_studio_admin) && @current_organization do %>
         <.link
           navigate="/admin/users"
-          class={pill_class(active_tab?(@current_path, "/admin/users"))}
+          class={nav_link_class(path_family_active?(@current_path, ["admin", "users"]))}
+          aria-current={path_family_active?(@current_path, ["admin", "users"]) && "page"}
         >
           <.icon name="hero-user-group" class="w-4 h-4" /> Users
         </.link>
@@ -59,7 +65,8 @@ defmodule GtfsPlannerWeb.Navigation do
               @current_gtfs_version do %>
         <.link
           navigate={"/gtfs/#{@current_gtfs_version.id}/routes"}
-          class={pill_class(gtfs_tab_active?(@current_path, "routes"))}
+          class={nav_link_class(gtfs_family_active?(@current_path, "routes"))}
+          aria-current={gtfs_family_active?(@current_path, "routes") && "page"}
         >
           <.icon name="hero-arrow-path" class="w-4 h-4" /> Routes
         </.link>
@@ -69,7 +76,8 @@ defmodule GtfsPlannerWeb.Navigation do
               @current_gtfs_version do %>
         <.link
           navigate={"/gtfs/#{@current_gtfs_version.id}/stops"}
-          class={pill_class(gtfs_tab_active?(@current_path, "stops"))}
+          class={nav_link_class(gtfs_family_active?(@current_path, "stops"))}
+          aria-current={gtfs_family_active?(@current_path, "stops") && "page"}
         >
           <.icon name="hero-map-pin" class="w-4 h-4" /> Stations
         </.link>
@@ -79,7 +87,8 @@ defmodule GtfsPlannerWeb.Navigation do
               @current_gtfs_version do %>
         <.link
           navigate={"/gtfs/#{@current_gtfs_version.id}/import"}
-          class={pill_class(gtfs_tab_active?(@current_path, "import"))}
+          class={nav_link_class(gtfs_family_active?(@current_path, "import"))}
+          aria-current={gtfs_family_active?(@current_path, "import") && "page"}
         >
           <.icon name="hero-arrow-down-tray" class="w-4 h-4" /> Import
         </.link>
@@ -89,7 +98,8 @@ defmodule GtfsPlannerWeb.Navigation do
               @current_gtfs_version do %>
         <.link
           navigate={"/gtfs/#{@current_gtfs_version.id}/export"}
-          class={pill_class(gtfs_tab_active?(@current_path, "export"))}
+          class={nav_link_class(gtfs_family_active?(@current_path, "export"))}
+          aria-current={gtfs_family_active?(@current_path, "export") && "page"}
         >
           <.icon name="hero-arrow-up-tray" class="w-4 h-4" /> Export
         </.link>
@@ -98,30 +108,39 @@ defmodule GtfsPlannerWeb.Navigation do
     """
   end
 
-  # Returns pill classes based on active state
-  # Uses literal class strings for Tailwind JIT compatibility
-  defp pill_class(is_active) do
+  defp nav_link_class(is_active) do
     base =
-      "inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-base font-medium transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-600"
+      "inline-flex items-center gap-1.5 px-3 py-2 min-h-11 rounded-md text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
 
     state =
       if is_active do
-        "bg-[#009966] text-white hover:bg-[#008855]"
+        "font-semibold text-base-content bg-base-200"
       else
-        "bg-emerald-50 text-gray-700 hover:bg-emerald-100 hover:text-emerald-700"
+        "font-medium text-base-content/70 hover:text-base-content hover:bg-base-200"
       end
 
     [base, state]
   end
 
-  defp active_tab?(current_path, tab_path) do
-    String.starts_with?(current_path, tab_path)
+  defp path_segments(current_path) do
+    current_path
+    |> URI.parse()
+    |> Map.get(:path, "/")
+    |> String.split("/", trim: true)
   end
 
-  # Checks if a GTFS tab is active on versioned GTFS routes.
-  defp gtfs_tab_active?(current_path, tab_name) do
-    String.starts_with?(current_path, "/gtfs") &&
-      String.contains?(current_path, tab_name)
+  defp path_family_active?(current_path, family_segments) do
+    segments = path_segments(current_path)
+    Enum.take(segments, length(family_segments)) == family_segments
+  end
+
+  defp gtfs_family_active?(current_path, task) do
+    segments = path_segments(current_path)
+
+    case segments do
+      ["gtfs", _version, ^task | _rest] -> true
+      _ -> false
+    end
   end
 
   defp has_role?(user_roles, role) when is_atom(role) do

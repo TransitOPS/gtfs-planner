@@ -60,29 +60,29 @@ defmodule GtfsPlannerWeb.Layouts do
     ~H"""
     <a
       href="#main-content"
-      class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-base-100"
+      class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-base-100 focus:text-base-content"
     >
       Skip to main content
     </a>
     <header
       id="app-header"
-      class="navbar bg-base-100 px-4 sm:px-6 lg:px-8 py-3 border-b border-base-300 items-center"
+      class="bg-base-100 border-b border-base-300 px-4 sm:px-6 lg:px-8 py-3"
     >
-      <div class="flex-none">
-        <.link
-          href={~p"/"}
-          class="flex items-center gap-2"
-          aria-label="Pathways Studio - Go to homepage"
-        >
-          <div class="bg-emerald-600 p-2 rounded-lg">
-            <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
-          </div>
-          <span class="text-xl font-semibold tracking-tight text-emerald-700">Pathways Studio</span>
-        </.link>
-      </div>
+      <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+        <div class="flex-none">
+          <.link
+            href={~p"/"}
+            class="flex items-center gap-2 min-h-11"
+            aria-label="Pathways Studio - Go to homepage"
+          >
+            <div class="bg-brand p-2 rounded-lg">
+              <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
+            </div>
+            <span class="text-xl font-semibold tracking-tight text-brand">Pathways Studio</span>
+          </.link>
+        </div>
 
-      <%= if @current_user do %>
-        <div class="flex-1 flex justify-start items-center pl-8">
+        <%= if @current_user do %>
           <Navigation.top_nav
             current_user={@current_user}
             current_organization={assigns[:current_organization]}
@@ -90,30 +90,30 @@ defmodule GtfsPlannerWeb.Layouts do
             current_path={@current_path}
             current_gtfs_version={@current_gtfs_version}
           />
-        </div>
-        <div class="flex-none flex items-center gap-4">
-          <%= if @current_gtfs_version && @available_versions != [] do %>
-            <.live_component
-              module={GtfsPlannerWeb.Components.GtfsVersionSwitcher}
-              id="gtfs-version-switcher"
-              current_version={@current_gtfs_version}
-              versions={@available_versions}
-              organization_id={@current_organization.id}
-            />
-          <% end %>
-          <.link
-            href={~p"/users/log_out"}
-            method="delete"
-            class="inline-flex items-center gap-1.5 text-gray-600 hover:text-gray-900 transition-colors"
-            aria-label="Log out of your account"
-          >
-            <.icon name="hero-arrow-right-on-rectangle" class="w-5 h-5" />
-            <span class="text-sm font-medium">Log out</span>
-          </.link>
-        </div>
-      <% else %>
-        <div class="flex-1"></div>
-      <% end %>
+          <div class="flex flex-wrap items-center gap-3 sm:ml-auto">
+            <%= if @current_organization && @current_gtfs_version && @available_versions != [] do %>
+              <.live_component
+                module={GtfsPlannerWeb.Components.GtfsVersionSwitcher}
+                id="gtfs-version-switcher"
+                current_version={@current_gtfs_version}
+                versions={@available_versions}
+                organization_id={@current_organization.id}
+              />
+            <% end %>
+            <.link
+              href={~p"/users/log_out"}
+              method="delete"
+              class="inline-flex items-center gap-1.5 min-h-11 px-2 text-base-content/70 hover:text-base-content transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+              aria-label="Log out of your account"
+            >
+              <.icon name="hero-arrow-right-on-rectangle" class="w-5 h-5" />
+              <span class="text-sm font-medium">Log out</span>
+            </.link>
+          </div>
+        <% else %>
+          <div class="flex-1"></div>
+        <% end %>
+      </div>
     </header>
 
     <%= if @sub_header != [] do %>
@@ -152,7 +152,7 @@ defmodule GtfsPlannerWeb.Layouts do
 
   def flash_group(assigns) do
     ~H"""
-    <div id={@id} aria-live="polite">
+    <div id={@id}>
       <.flash kind={:info} flash={@flash} />
       <.flash kind={:error} flash={@flash} />
 
@@ -204,20 +204,20 @@ defmodule GtfsPlannerWeb.Layouts do
     ~H"""
     <a
       href="#main-content"
-      class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-base-100"
+      class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-base-100 focus:text-base-content"
     >
       Skip to main content
     </a>
 
     <main id="main-content" class="min-h-screen flex items-start justify-center px-4 py-12 sm:py-16">
       <div class="w-full max-w-md">
-        <div class="card bg-base-100 card-border shadow-sm">
-          <div class="card-body">
+        <div class="bg-base-100 border border-base-300 rounded-lg">
+          <div class="p-6">
             <div class="flex items-center justify-center gap-3 mb-6">
-              <div class="bg-emerald-600 p-2 rounded-lg">
+              <div class="bg-brand p-2 rounded-lg">
                 <img src={~p"/images/gtfs-logo.svg"} alt="" class="h-8 w-8 brightness-0 invert" />
               </div>
-              <span class="text-xl font-semibold tracking-tight text-emerald-700">
+              <span class="text-xl font-semibold tracking-tight text-brand">
                 Pathways Studio
               </span>
             </div>

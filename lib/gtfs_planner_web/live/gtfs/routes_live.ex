@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Components.RouteIdentity
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @impl true
@@ -117,7 +118,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   end
 
   @impl true
-  def handle_event("sort", %{"column" => column}, socket) do
+  def handle_event("sort", %{"key" => column}, socket) do
     column_atom = parse_column_atom(column)
     current_sort_by = socket.assigns.sort_by
     current_sort_dir = socket.assigns.sort_dir
@@ -268,139 +269,61 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
       <div :if={not @routes_empty?} class="mt-6">
         <div class="bg-base-100 border border-base-300 rounded-lg overflow-hidden">
-          <div class="overflow-x-auto">
-            <table class="table">
-              <thead>
-                <tr class="bg-base-300">
-                  <th class="w-[15%]">
-                    <button
-                      type="button"
-                      class="flex items-center gap-1 cursor-pointer"
-                      phx-click="sort"
-                      phx-value-column="route_id"
-                      aria-sort={
-                        if @sort_by == :route_id do
-                          if @sort_dir == :asc, do: "ascending", else: "descending"
-                        else
-                          "none"
-                        end
-                      }
-                    >
-                      Route ID
-                      <span :if={@sort_by == :route_id}>
-                        {if @sort_dir == :asc, do: "▲", else: "▼"}
-                      </span>
-                    </button>
-                  </th>
-                  <th class="w-[15%]">
-                    <button
-                      type="button"
-                      class="flex items-center gap-1 cursor-pointer"
-                      phx-click="sort"
-                      phx-value-column="route_short_name"
-                      aria-sort={
-                        if @sort_by == :route_short_name do
-                          if @sort_dir == :asc, do: "ascending", else: "descending"
-                        else
-                          "none"
-                        end
-                      }
-                    >
-                      Short Name
-                      <span :if={@sort_by == :route_short_name}>
-                        {if @sort_dir == :asc, do: "▲", else: "▼"}
-                      </span>
-                    </button>
-                  </th>
-                  <th class="w-[40%]">
-                    <button
-                      type="button"
-                      class="flex items-center gap-1 cursor-pointer"
-                      phx-click="sort"
-                      phx-value-column="route_long_name"
-                      aria-sort={
-                        if @sort_by == :route_long_name do
-                          if @sort_dir == :asc, do: "ascending", else: "descending"
-                        else
-                          "none"
-                        end
-                      }
-                    >
-                      Long Name
-                      <span :if={@sort_by == :route_long_name}>
-                        {if @sort_dir == :asc, do: "▲", else: "▼"}
-                      </span>
-                    </button>
-                  </th>
-                  <th class="w-[15%]">
-                    <button
-                      type="button"
-                      class="flex items-center gap-1 cursor-pointer"
-                      phx-click="sort"
-                      phx-value-column="route_type"
-                      aria-sort={
-                        if @sort_by == :route_type do
-                          if @sort_dir == :asc, do: "ascending", else: "descending"
-                        else
-                          "none"
-                        end
-                      }
-                    >
-                      Type
-                      <span :if={@sort_by == :route_type}>
-                        {if @sort_dir == :asc, do: "▲", else: "▼"}
-                      </span>
-                    </button>
-                  </th>
-                  <th class="w-[15%]">Preview</th>
-                </tr>
-              </thead>
-              <tbody id="routes" phx-update="stream">
-                <tr :for={{id, route} <- @streams.routes} id={id}>
-                  <td>
-                    <.link
-                      navigate={"/gtfs/#{@current_gtfs_version.id}/routes/#{route.route_id}"}
-                      class="link link-primary"
-                    >
-                      {route.route_id}
-                    </.link>
-                  </td>
-                  <td>{route.route_short_name || "—"}</td>
-                  <td>{route.route_long_name || "—"}</td>
-                  <td>{Route.route_type_label(route.route_type)}</td>
-                  <td>
-                    <.route_badge route={route} />
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <.table id="routes" rows={@streams.routes}>
+            <:col
+              :let={{_id, route}}
+              label="Route ID"
+              sort_key="route_id"
+              sort_event="sort"
+              sort={column_sort_state(@sort_by, @sort_dir, :route_id)}
+            >
+              <.link
+                navigate={"/gtfs/#{@current_gtfs_version.id}/routes/#{route.route_id}"}
+                class="link link-primary font-semibold"
+              >
+                {route.route_id}
+              </.link>
+            </:col>
+            <:col
+              :let={{_id, route}}
+              label="Short Name"
+              sort_key="route_short_name"
+              sort_event="sort"
+              sort={column_sort_state(@sort_by, @sort_dir, :route_short_name)}
+            >
+              {route.route_short_name || "—"}
+            </:col>
+            <:col
+              :let={{_id, route}}
+              label="Long Name"
+              sort_key="route_long_name"
+              sort_event="sort"
+              sort={column_sort_state(@sort_by, @sort_dir, :route_long_name)}
+            >
+              {route.route_long_name || "—"}
+            </:col>
+            <:col
+              :let={{_id, route}}
+              label="Type"
+              sort_key="route_type"
+              sort_event="sort"
+              sort={column_sort_state(@sort_by, @sort_dir, :route_type)}
+            >
+              {Route.route_type_label(route.route_type)}
+            </:col>
+            <:col :let={{_id, route}} label="Badge">
+              <RouteIdentity.route_badge route={route} />
+            </:col>
+          </.table>
         </div>
 
-        <%!-- Pagination --%>
-        <div :if={@total_count > 0} class="mt-4 flex items-center justify-between">
-          <div class="text-sm text-base-content/60">
-            Showing {max((@page - 1) * @per_page + 1, 1)}–{min(@page * @per_page, @total_count)} of {@total_count} routes
-          </div>
-          <div class="flex gap-2">
-            <button
-              class="btn btn-sm btn-ghost"
-              phx-click="paginate"
-              phx-value-page={@page - 1}
-              disabled={@page <= 1}
-            >
-              Previous
-            </button>
-            <button
-              class="btn btn-sm btn-ghost"
-              phx-click="paginate"
-              phx-value-page={@page + 1}
-              disabled={@page * @per_page >= @total_count}
-            >
-              Next
-            </button>
-          </div>
-        </div>
+        <.pagination
+          :if={@total_count > 0}
+          page={@page}
+          per_page={@per_page}
+          total={@total_count}
+          entity="routes"
+        />
       </div>
     </Layouts.app>
     """
@@ -463,4 +386,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       ArgumentError -> :route_id
     end
   end
+
+  defp column_sort_state(sort_by, sort_dir, column) when column == sort_by do
+    case sort_dir do
+      :asc -> "asc"
+      :desc -> "desc"
+    end
+  end
+
+  defp column_sort_state(_sort_by, _sort_dir, _column), do: "none"
 end

@@ -176,10 +176,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       # Side Entrance has no pathways → zero reachability → alert
-      assert has_element?(view, "[role='alert']:not(#client-error):not(#server-error)")
+      assert has_element?(
+               view,
+               "[role='alert']:not(#client-error):not(#server-error):not(#gtfs-version-failure)"
+             )
 
       alert_html =
-        view |> element("[role='alert']:not(#client-error):not(#server-error)") |> render()
+        view
+        |> element(
+          "[role='alert']:not(#client-error):not(#server-error):not(#gtfs-version-failure)"
+        )
+        |> render()
 
       assert alert_html =~ "Side Entrance"
       assert alert_html =~ "Needs immediate attention"

@@ -54,8 +54,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
     <div
       :if={msg = render_slot(@inner_block) || Phoenix.Flash.get(@flash, @kind)}
       id={@id}
-      phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
-      role="alert"
       class="toast toast-top toast-end z-[60]"
       {@rest}
     >
@@ -71,9 +69,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
           <p>{msg}</p>
         </div>
         <div class="flex-1" />
-        <button type="button" class="group self-start cursor-pointer" aria-label={gettext("close")}>
-          <.icon name="hero-x-mark" class="size-5 opacity-40 group-hover:opacity-70" />
-        </button>
+        <div class="tooltip tooltip-bottom self-start" data-tip={gettext("Dismiss message")}>
+          <button
+            type="button"
+            class="group cursor-pointer min-h-11 min-w-11 flex items-center justify-center"
+            aria-label={gettext("Dismiss message")}
+            phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
+          >
+            <.icon name="hero-x-mark" class="size-5 opacity-40 group-hover:opacity-70" />
+          </button>
+        </div>
       </div>
     </div>
     """
@@ -211,15 +216,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :class, :any, default: nil, doc: "the input class to use over defaults"
   attr :error_class, :any, default: nil, doc: "the input error class to use over defaults"
 
-  attr :announce_errors, :boolean,
-    default: true,
-    doc: """
-    when false, the inline error keeps its stable id, text, aria-invalid, and
-    aria-describedby association but is not a live region (no role="alert" or
-    aria-live="assertive"). Disable only when the form owner supplies deterministic
-    submit-time focus plus an associated description or focusable error summary.
-    """
-
   attr :rest, :global,
     include: ~w(accept autocomplete capture cols disabled form list max maxlength min minlength
                 multiple pattern placeholder readonly required rows size step)
@@ -283,7 +279,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </span>
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
   end
@@ -313,7 +309,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </select>
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
   end
@@ -339,7 +335,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
   end
@@ -368,7 +364,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         />
       </label>
       <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
-      <.error id={@error_id} errors={@errors} announce_errors={@announce_errors} />
+      <.error id={@error_id} errors={@errors} />
     </div>
     """
   end
@@ -401,6 +397,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   ## Examples
 
       <.checkbox_group
+        id="invite-roles"
         name="invite[roles][]"
         label="Roles"
         options={[{"Admin", "admin"}, {"Editor", "editor"}]}
@@ -408,6 +405,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         required
       />
   """
+  attr :id, :string, required: true, doc: "the stable component id"
   attr :name, :string, required: true, doc: "the input name for the checkbox group"
   attr :label, :string, required: true, doc: "the label for the checkbox group"
   attr :options, :list, required: true, doc: "list of {label, value} tuples"
@@ -417,16 +415,40 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :help, :string, default: nil, doc: "help text displayed below the checkboxes"
 
   def checkbox_group(assigns) do
+    help_id = if assigns.help not in [nil, ""], do: "#{assigns.id}-help"
+    error_id = if assigns.error not in [nil, ""], do: "#{assigns.id}-error"
+
+    describedby =
+      [help_id, error_id]
+      |> Enum.reject(&is_nil/1)
+      |> case do
+        [] -> nil
+        ids -> Enum.join(ids, " ")
+      end
+
+    assigns =
+      assigns
+      |> assign(:help_id, help_id)
+      |> assign(:error_id, error_id)
+      |> assign(:describedby, describedby)
+
     ~H"""
-    <fieldset class="fieldset mb-2" aria-describedby={@error && "#{@name}-error"}>
+    <fieldset
+      id={@id}
+      class={["fieldset mb-2", @error not in [nil, ""] && "text-error"]}
+      aria-describedby={@describedby}
+      aria-invalid={to_string(@error not in [nil, ""])}
+    >
       <legend class="fieldset-legend text-base">
         {@label}
-        <span :if={@required} class="text-error">*</span>
+        <span :if={@required} class="text-sm text-base-content/60">(required)</span>
+        <span :if={!@required} class="text-sm text-base-content/60">(optional)</span>
       </legend>
       <div class="space-y-2 mt-2" role="group" aria-label={@label}>
         <label :for={{label, value} <- @options} class="flex items-center gap-2 cursor-pointer">
           <input
             type="checkbox"
+            id={"#{@id}-#{value}"}
             name={@name}
             value={value}
             checked={value in @selected}
@@ -435,12 +457,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
           <span class="label">{label}</span>
         </label>
       </div>
-      <p :if={@help} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
+      <p :if={@help} id={@help_id} class="mt-1.5 text-sm text-base-content/70">{@help}</p>
       <p
-        :if={@error}
-        id={"#{@name}-error"}
-        role="alert"
-        aria-live="polite"
+        :if={@error not in [nil, ""]}
+        id={@error_id}
         class="mt-1.5 flex gap-2 items-center text-sm text-error"
       >
         <.icon name="hero-exclamation-circle" class="size-5" />
@@ -450,14 +470,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
     """
   end
 
-  # Helper used by inputs to generate form errors. All messages for a field are
-  # rendered inside one referenced alert container carrying the deterministic
-  # error id the control points at via aria-describedby. When announce_errors is
-  # false, only the live-region attributes are dropped; the id, text, and
-  # description wiring stay identical.
   attr :id, :string, default: nil
   attr :errors, :list, default: []
-  attr :announce_errors, :boolean, default: true
 
   defp error(assigns) do
     ~H"""
@@ -465,8 +479,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
       :if={@errors != []}
       id={@id}
       class="mt-1.5 flex flex-col gap-1 text-sm text-error"
-      role={@announce_errors && "alert"}
-      aria-live={@announce_errors && "assertive"}
     >
       <span :for={msg <- @errors} class="flex gap-2 items-center">
         <.icon name="hero-exclamation-circle" class="size-5" />
@@ -486,22 +498,26 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   def header(assigns) do
     ~H"""
-    <header class={[@class, @actions != [] && "flex items-center justify-between gap-6", "pb-4"]}>
-      <div>
-        <h1 class="text-lg font-semibold leading-8">
+    <header class={[
+      @class,
+      @actions != [] && "flex flex-col sm:flex-row sm:items-center justify-between gap-4",
+      "pb-4"
+    ]}>
+      <div class="min-w-0">
+        <h1 class="text-2xl font-bold leading-8 break-words">
           {render_slot(@inner_block)}
         </h1>
-        <p :if={@subtitle != []} class="text-sm text-base-content/70">
+        <p :if={@subtitle != []} class="mt-1 text-sm text-base-content/70">
           {render_slot(@subtitle)}
         </p>
       </div>
-      <div class="flex-none">{render_slot(@actions)}</div>
+      <div class="flex-none flex flex-wrap items-center gap-2">{render_slot(@actions)}</div>
     </header>
     """
   end
 
   @doc """
-  Renders a table with generic styling.
+  Renders a responsive data table with one semantic representation.
 
   ## Examples
 
@@ -513,14 +529,23 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :id, :string, required: true
   attr :rows, :list, required: true
   attr :row_id, :any, default: nil, doc: "the function for generating the row id"
-  attr :row_click, :any, default: nil, doc: "the function for handling phx-click on each row"
 
   attr :row_item, :any,
     default: &Function.identity/1,
     doc: "the function for mapping each row before calling the :col and :action slots"
 
+  attr :responsive, :string,
+    values: ~w(stack scroll),
+    default: "scroll",
+    doc:
+      "\"stack\" presents labeled records on narrow screens; \"scroll\" uses local horizontal overflow"
+
+  attr :sort_target, :any,
+    default: nil,
+    doc: "LiveComponent target for sort events"
+
   slot :col, required: true do
-    attr :label, :string
+    attr :label, :string, required: true
     attr :align, :string, doc: "\"left\" (default) or \"right\""
 
     attr :sort, :string,
@@ -539,70 +564,73 @@ defmodule GtfsPlannerWeb.CoreComponents do
       end
 
     ~H"""
-    <table class="table">
-      <thead>
-        <tr>
-          <th
-            :for={col <- @col}
-            class={if(col[:align] == "right", do: "text-right", else: "text-left")}
-            aria-sort={sort_aria(col[:sort])}
-          >
-            <button
-              :if={col[:sort_event]}
-              type="button"
-              class="inline-flex items-center gap-1"
-              phx-click={col[:sort_event]}
-              phx-value-key={col[:sort_key]}
+    <div id={"#{@id}-container"} class={table_container_class(@responsive)}>
+      <table class={["table", @responsive == "stack" && "ds-stack-table"]}>
+        <thead>
+          <tr>
+            <th
+              :for={col <- @col}
+              class={if(col[:align] == "right", do: "text-right", else: "text-left")}
+              aria-sort={sort_aria(col[:sort])}
             >
-              {col[:label]}
-              <span
-                :if={col[:sort]}
-                class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
-                aria-hidden="true"
+              <button
+                :if={col[:sort_event]}
+                type="button"
+                class="inline-flex items-center gap-1 min-h-11"
+                phx-click={col[:sort_event]}
+                phx-value-key={col[:sort_key]}
+                phx-target={@sort_target}
               >
-                {sort_arrow(col[:sort])}
+                {col[:label]}
+                <span
+                  :if={col[:sort]}
+                  class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
+                  aria-hidden="true"
+                >
+                  {sort_arrow(col[:sort])}
+                </span>
+              </button>
+              <span :if={!col[:sort_event]} class="inline-flex items-center gap-1">
+                {col[:label]}
+                <span
+                  :if={col[:sort]}
+                  class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
+                  aria-hidden="true"
+                >
+                  {sort_arrow(col[:sort])}
+                </span>
               </span>
-            </button>
-            <span :if={!col[:sort_event]} class="inline-flex items-center gap-1">
-              {col[:label]}
-              <span
-                :if={col[:sort]}
-                class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
-                aria-hidden="true"
-              >
-                {sort_arrow(col[:sort])}
-              </span>
-            </span>
-          </th>
-          <th :if={@action != []}>
-            <span class="sr-only">{gettext("Actions")}</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
-        <tr :for={row <- @rows} id={@row_id && @row_id.(row)}>
-          <td
-            :for={col <- @col}
-            phx-click={@row_click && @row_click.(row)}
-            class={[
-              if(col[:align] == "right", do: "text-right", else: "text-left"),
-              @row_click && "hover:cursor-pointer"
-            ]}
-          >
-            {render_slot(col, @row_item.(row))}
-          </td>
-          <td :if={@action != []} class="w-0 font-semibold">
-            <div class="flex gap-4">
-              <%= for action <- @action do %>
-                {render_slot(action, @row_item.(row))}
-              <% end %>
-            </div>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+            </th>
+            <th :if={@action != []}>
+              <span class="sr-only">{gettext("Actions")}</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
+          <tr :for={row <- @rows} id={@row_id && @row_id.(row)}>
+            <td
+              :for={col <- @col}
+              data-label={col[:label]}
+              class={if(col[:align] == "right", do: "text-right", else: "text-left")}
+            >
+              {render_slot(col, @row_item.(row))}
+            </td>
+            <td :if={@action != []} data-label="Actions" class="w-0 font-semibold">
+              <div class="flex gap-4">
+                <%= for action <- @action do %>
+                  {render_slot(action, @row_item.(row))}
+                <% end %>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     """
   end
+
+  defp table_container_class("stack"), do: "overflow-visible"
+  defp table_container_class("scroll"), do: "overflow-x-auto"
 
   defp sort_aria("asc"), do: "ascending"
   defp sort_aria("desc"), do: "descending"
@@ -641,26 +669,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
   end
 
   @doc """
-  Renders a route badge with color, text color, and short name.
-
-  ## Examples
-
-      <.route_badge route={@route} />
-  """
-  attr :route, :map, required: true
-
-  def route_badge(assigns) do
-    ~H"""
-    <span
-      class="inline-flex items-center justify-center px-2 py-0.5 text-xs font-medium rounded"
-      style={"background-color: ##{@route.route_color}; color: ##{@route.route_text_color}"}
-    >
-      {@route.route_short_name || "—"}
-    </span>
-    """
-  end
-
-  @doc """
   Renders pagination controls with previous/next buttons and item count.
 
   ## Examples
@@ -671,16 +679,24 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :per_page, :integer, required: true
   attr :total, :integer, required: true
   attr :entity, :string, default: nil, doc: "optional noun appended to the count, e.g. \"routes\""
+  attr :event, :string, default: "paginate", doc: "event name emitted by Previous and Next"
+  attr :target, :any, default: nil, doc: "LiveComponent target for pagination events"
 
   def pagination(assigns) do
-    # Handle empty state: when total is 0, show 0-0 instead of 1-0
-    start_item = if assigns.total == 0, do: 0, else: (assigns.page - 1) * assigns.per_page + 1
-    end_item = min(assigns.page * assigns.per_page, assigns.total)
-    has_prev = assigns.page > 1
-    has_next = end_item < assigns.total
+    total = max(assigns.total, 0)
+    per_page = max(assigns.per_page, 1)
+    max_page = max(div(total + per_page - 1, per_page), 1)
+    page = assigns.page |> max(1) |> min(max_page)
+
+    start_item = if total == 0, do: 0, else: (page - 1) * per_page + 1
+    end_item = min(page * per_page, total)
+    has_prev = page > 1
+    has_next = end_item < total
 
     assigns =
       assigns
+      |> assign(:total, total)
+      |> assign(:page, page)
       |> assign(:start_item, start_item)
       |> assign(:end_item, end_item)
       |> assign(:has_prev, has_prev)
@@ -694,18 +710,20 @@ defmodule GtfsPlannerWeb.CoreComponents do
       <div class="flex gap-2">
         <button
           type="button"
-          class="btn btn-sm btn-ghost"
-          phx-click="paginate"
+          class="btn btn-sm btn-ghost min-h-11"
+          phx-click={@event}
           phx-value-page={@page - 1}
+          phx-target={@target}
           disabled={!@has_prev}
         >
           Previous
         </button>
         <button
           type="button"
-          class="btn btn-sm btn-ghost"
-          phx-click="paginate"
+          class="btn btn-sm btn-ghost min-h-11"
+          phx-click={@event}
           phx-value-page={@page + 1}
+          phx-target={@target}
           disabled={!@has_next}
         >
           Next
@@ -770,13 +788,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   ## Examples
 
-      <.simple_form for={@form} phx-submit="save">
+      <.simple_form for={@form} id="my-form" phx-submit="save">
         <.input field={@form[:email]} type="email" />
         <.input field={@form[:username]} type="text" />
       </.simple_form>
 
   """
-  attr :for, :any, default: nil, doc: "the data structure for the form"
+  attr :id, :string, required: true, doc: "the unique id of the form"
+  attr :for, :any, required: true, doc: "the data structure for the form"
   attr :as, :any, default: nil, doc: "the server side parameter to collect all input under"
 
   attr :rest, :global,
@@ -788,8 +807,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   def simple_form(assigns) do
     ~H"""
-    <.form :let={_f} for={@for} as={@as} {@rest}>
-      <div class="space-y-6">
+    <.form for={@for} as={@as} id={@id} {@rest}>
+      <div class="w-full max-w-2xl space-y-6">
         {render_slot(@inner_block)}
       </div>
       <div :if={@actions != []} class="mt-8 flex items-center justify-between gap-6">
@@ -811,7 +830,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   ## Examples
 
       <.drawer id="user-form" open={@show_form} on_close="close_form" title="Edit User">
-        <.simple_form for={@form} phx-submit="save">
+        <.simple_form for={@form} id="user-edit-form" phx-submit="save">
           <.input field={@form[:name]} type="text" label="Name" class="max-w-3xl" />
         </.simple_form>
       </.drawer>
@@ -942,90 +961,57 @@ defmodule GtfsPlannerWeb.CoreComponents do
       class="w-full px-4 sm:px-6 lg:px-8"
       aria-label="Station navigation"
     >
-      <%!-- Top row: Back button, station name, actions --%>
-      <div class="flex items-center justify-between py-3">
-        <div class="flex items-center gap-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 py-3">
+        <div class="flex items-center gap-2 min-w-0">
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops"}
-            class="btn btn-ghost btn-sm btn-square"
+            class="btn btn-ghost btn-square min-h-11 min-w-11"
             aria-label="Back to stations list"
           >
             <.icon name="hero-chevron-left" class="size-5" />
           </.link>
-          <h1 class="text-xl font-semibold leading-tight">
+          <h1 class="text-xl font-semibold leading-tight break-words min-w-0">
             {@station.stop_name || @station.stop_id}
           </h1>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
           {render_slot(@actions)}
         </div>
       </div>
-      <%!-- Bottom row: Underline tabs + diagram controls --%>
-      <div class="flex items-end justify-between border-b border-base-300">
-        <%!-- Left: Tabs --%>
-        <div class="flex items-end gap-6" role="tablist">
+      <div class="flex flex-wrap items-end justify-between gap-4 border-b border-base-300">
+        <div class="flex flex-wrap items-end gap-1">
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :details && "border-primary text-base-content",
-              @active_tab != :details &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :details}
+            class={sub_nav_link_class(@active_tab == :details)}
             aria-current={@active_tab == :details && "page"}
           >
             Details
           </.link>
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/diagram"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :diagram && "border-primary text-base-content",
-              @active_tab != :diagram &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :diagram}
+            class={sub_nav_link_class(@active_tab == :diagram)}
             aria-current={@active_tab == :diagram && "page"}
           >
             Diagram
           </.link>
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/report"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :report && "border-primary text-base-content",
-              @active_tab != :report &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :report}
+            class={sub_nav_link_class(@active_tab == :report)}
             aria-current={@active_tab == :report && "page"}
           >
             Reports
           </.link>
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/reachability"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :reachability && "border-primary text-base-content",
-              @active_tab != :reachability &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :reachability}
+            class={sub_nav_link_class(@active_tab == :reachability)}
             aria-current={@active_tab == :reachability && "page"}
           >
             Reachability
           </.link>
         </div>
 
-        <%!-- Right: Diagram controls (only on diagram tab) --%>
-        <div :if={@active_tab == :diagram} class="flex items-center gap-4 pb-2">
-          <%!-- Level context --%>
-          <div class="flex items-center gap-2">
+        <div :if={@active_tab == :diagram} class="flex flex-wrap items-center gap-4 pb-2">
+          <div class="flex flex-wrap items-center gap-2">
             <.button
               type="button"
               size="sm"
@@ -1058,8 +1044,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             </.button>
           </div>
 
-          <%!-- Canvas actions --%>
-          <div :if={@active_level && @uploads} class="flex items-center gap-2">
+          <div :if={@active_level && @uploads} class="flex flex-wrap items-center gap-2">
             <form
               id="diagram-upload-form-sub-nav"
               phx-change="upload_diagram"
@@ -1087,6 +1072,20 @@ defmodule GtfsPlannerWeb.CoreComponents do
       </div>
     </nav>
     """
+  end
+
+  defp sub_nav_link_class(is_active) do
+    base =
+      "inline-flex items-center px-3 py-2.5 min-h-11 text-sm transition-colors border-b-2 -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+
+    state =
+      if is_active do
+        "font-semibold border-primary text-base-content"
+      else
+        "font-medium border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
+      end
+
+    [base, state]
   end
 
   defp diagram_upload_error_to_string(:too_large), do: "File is too large (max 10 MB)"
@@ -1121,7 +1120,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :active_tab, :atom, values: [:details, :patterns], default: :details
 
   def route_sub_nav(assigns) do
-    # Build route display name: short_name - long_name or route_id
     route_display =
       cond do
         assigns.route.route_short_name && assigns.route.route_long_name ->
@@ -1141,48 +1139,32 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
     ~H"""
     <nav class="w-full px-4 sm:px-6 lg:px-8" aria-label="Route navigation">
-      <%!-- Top row: Back button and route name --%>
-      <div class="flex items-center justify-between py-3">
-        <div class="flex items-center gap-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 py-3">
+        <div class="flex items-center gap-2 min-w-0">
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/routes"}
-            class="btn btn-ghost btn-sm btn-square"
+            class="btn btn-ghost btn-square min-h-11 min-w-11"
             aria-label="Back to routes list"
           >
             <.icon name="hero-chevron-left" class="size-5" />
           </.link>
-          <h1 class="text-xl font-semibold leading-tight">
+          <h1 class="text-xl font-semibold leading-tight break-words min-w-0">
             {@route_display}
           </h1>
         </div>
       </div>
-      <%!-- Bottom row: Underline tabs --%>
-      <div class="flex items-end justify-between border-b border-base-300">
-        <div class="flex items-end gap-6" role="tablist">
+      <div class="flex flex-wrap items-end justify-between gap-4 border-b border-base-300">
+        <div class="flex flex-wrap items-end gap-1">
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :details && "border-primary text-base-content",
-              @active_tab != :details &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :details}
+            class={sub_nav_link_class(@active_tab == :details)}
             aria-current={@active_tab == :details && "page"}
           >
             Details
           </.link>
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns"}
-            class={[
-              "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              @active_tab == :patterns && "border-primary text-base-content",
-              @active_tab != :patterns &&
-                "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
-            ]}
-            role="tab"
-            aria-selected={@active_tab == :patterns}
+            class={sub_nav_link_class(@active_tab == :patterns)}
             aria-current={@active_tab == :patterns && "page"}
           >
             Patterns
@@ -1234,10 +1216,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
   @doc """
   Renders a status badge with a colored dot and a colored word.
 
-  One vocabulary for every status in the app. Status is normalized to a string,
-  so an atom or a string works. Unrecognized values (including `draft`) render
-  with the muted treatment rather than raising, so migrating a call site never
-  crashes on an unexpected value. Pass `label` to override the displayed word.
+  One vocabulary for every status in the app. Known values map to explicit
+  human labels and tones; unrecognized or blank values render `Unknown` with
+  a neutral treatment. Pass `label` to override the displayed word.
 
   ## Examples
 
@@ -1250,27 +1231,30 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :class, :any, default: nil, doc: "extra classes for sizing tweaks"
   attr :rest, :global
 
+  @status_presentation %{
+    "pass" => {"Pass", "bg-success", "text-success"},
+    "completed" => {"Completed", "bg-success", "text-success"},
+    "warning" => {"Warning", "bg-warning", "text-warning"},
+    "failed" => {"Failed", "bg-error", "text-error"},
+    "error" => {"Error", "bg-error", "text-error"},
+    "running" => {"Running", "bg-info", "text-info"},
+    "info" => {"Info", "bg-info", "text-info"},
+    "started" => {"Started", "bg-base-content/40", "text-base-content/60"},
+    "draft" => {"Draft", "bg-base-content/40", "text-base-content/60"},
+    "in_progress" => {"In progress", "bg-info", "text-info"}
+  }
+
+  @status_unknown {"Unknown", "bg-base-content/40", "text-base-content/60"}
+
   def status_badge(assigns) do
     status = to_string(assigns.status)
-
-    {dot_class, text_class} =
-      case status do
-        "pass" -> {"bg-success", "text-success"}
-        "completed" -> {"bg-success", "text-success"}
-        "warning" -> {"bg-warning", "text-warning"}
-        "failed" -> {"bg-error", "text-error"}
-        "error" -> {"bg-error", "text-error"}
-        "running" -> {"bg-info", "text-info"}
-        "info" -> {"bg-info", "text-info"}
-        "started" -> {"bg-base-content/40", "text-base-content/60"}
-        _ -> {"bg-base-content/40", "text-base-content/60"}
-      end
+    {label, dot_class, text_class} = Map.get(@status_presentation, status, @status_unknown)
 
     assigns =
       assigns
       |> assign(:dot_class, dot_class)
       |> assign(:text_class, text_class)
-      |> assign(:word, assigns.label || String.capitalize(status))
+      |> assign(:word, assigns.label || label)
 
     ~H"""
     <span
@@ -1326,7 +1310,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   Show it only for the first paint of a slow view, never to replace content
   already on screen. The bars animate under `motion-safe:` and are hidden from
-  assistive tech; a visually-hidden live region announces `label` instead.
+  assistive tech; the label is visually available above the bars.
   Callers needing exact column mirroring pass their own bars as the inner block.
 
   ## Examples
@@ -1334,7 +1318,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       <.skeleton rows={5} label="Loading routes" />
   """
   attr :rows, :integer, default: 3
-  attr :label, :string, default: "Loading", doc: "announced to assistive tech"
+  attr :label, :string, default: "Loading", doc: "visually available loading copy"
   attr :class, :any, default: nil
   attr :rest, :global
   slot :inner_block, doc: "replaces the default bars for exact column mirroring"
@@ -1342,7 +1326,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   def skeleton(assigns) do
     ~H"""
     <div class={@class} {@rest}>
-      <span class="sr-only" role="status">{@label}</span>
+      <p class="text-sm text-base-content/60 mb-2">{@label}</p>
       <div
         :if={@inner_block == []}
         class="space-y-3 motion-safe:animate-pulse"
@@ -1465,6 +1449,229 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </div>
       </div>
     </dialog>
+    """
+  end
+
+  @doc """
+  Renders a file upload field with Phoenix LiveView's UploadConfig.
+
+  Experimental. Presents a labeled native file input, constraints, entry progress,
+  cancellation, rejection, and failure states. Does not consume or persist files.
+
+  ## Examples
+
+      <.upload_field
+        id="feed-upload"
+        upload={@uploads.feed}
+        label="GTFS feed"
+        help="ZIP file, max 50MB"
+        cancel_event="cancel_upload"
+      />
+  """
+  attr :id, :string, required: true
+  attr :upload, Phoenix.LiveView.UploadConfig, required: true
+  attr :label, :string, required: true
+  attr :help, :string, required: true
+  attr :cancel_event, :string, default: "cancel_upload"
+  attr :target, :any, default: nil
+  attr :error, :string, default: nil
+  slot :failure, doc: "view-level failure message"
+
+  def upload_field(assigns) do
+    ~H"""
+    <div id={@id} class="space-y-2">
+      <label for={"#{@id}-input"} class="block text-sm font-semibold">
+        {@label}
+      </label>
+      <p id={"#{@id}-help"} class="text-sm text-base-content/60">
+        {@help}
+      </p>
+
+      <label
+        for={"#{@id}-input"}
+        class="block border-2 border-dashed border-base-300 rounded-lg p-4 cursor-pointer hover:border-primary focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20"
+      >
+        <span class="text-sm text-base-content/70">
+          Click to select a file or drag and drop
+        </span>
+        <.live_file_input upload={@upload} id={"#{@id}-input"} class="sr-only" />
+      </label>
+
+      <p :if={@error} id={"#{@id}-error"} class="text-sm text-error">
+        {@error}
+      </p>
+
+      <div :if={@failure != []} id={"#{@id}-failure"} class="text-sm text-error">
+        {render_slot(@failure)}
+      </div>
+
+      <ul :if={@upload.entries != []} id={"#{@id}-entries"} class="space-y-2">
+        <li
+          :for={entry <- @upload.entries}
+          id={"#{@id}-entry-#{entry.ref}"}
+          class="flex items-center gap-2"
+        >
+          <div class="flex-1 min-w-0">
+            <p class="text-sm font-medium truncate" title={entry.client_name}>
+              {entry.client_name}
+            </p>
+            <div class="flex items-center gap-2 mt-1">
+              <div class="flex-1 h-2 bg-base-300 rounded-full overflow-hidden">
+                <div
+                  class="h-full bg-primary transition-all"
+                  style={"width: #{entry.progress}%"}
+                >
+                </div>
+              </div>
+              <span class="text-xs text-base-content/60 tabular-nums">
+                {entry.progress}%
+              </span>
+            </div>
+            <ul :if={upload_errors(@upload, entry) != []} class="mt-1 text-xs text-error">
+              <li :for={error <- upload_errors(@upload, entry)}>
+                {upload_error_to_string(error)}
+              </li>
+            </ul>
+          </div>
+          <button
+            type="button"
+            class="h-11 w-11 flex items-center justify-center text-base-content/60 hover:text-error"
+            phx-click={@cancel_event}
+            phx-value-ref={entry.ref}
+            phx-target={@target}
+            aria-label={"Cancel #{entry.client_name}"}
+          >
+            <.icon name="hero-x-mark" class="size-5" />
+          </button>
+        </li>
+      </ul>
+
+      <ul :if={@upload.errors != []} id={"#{@id}-rejected"} class="text-sm text-error">
+        <li :for={{_ref, reason} <- @upload.errors}>
+          {upload_error_to_string(reason)}
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  defp upload_error_to_string(:too_large), do: "File is too large"
+  defp upload_error_to_string(:too_many_files), do: "Too many files"
+  defp upload_error_to_string(:not_accepted), do: "File type not accepted"
+  defp upload_error_to_string(:external_client_failure), do: "Upload failed"
+  defp upload_error_to_string({:error, reason}), do: reason
+  defp upload_error_to_string(error) when is_binary(error), do: error
+  defp upload_error_to_string(error) when is_atom(error), do: Atom.to_string(error)
+  defp upload_error_to_string(_), do: "Upload error"
+
+  @doc """
+  Renders a pressed filter button with aria-pressed state.
+
+  Experimental. A toggle button for filtering data. Server-owned pressed state,
+  pending/disabled copy, configured event/value/target.
+
+  ## Examples
+
+      <.pressed_filter
+        id="filter-active"
+        pressed={@filter_active}
+        event="toggle_filter"
+        value="active"
+      >
+        Active
+      </.pressed_filter>
+  """
+  attr :id, :string, required: true
+  attr :pressed, :boolean, required: true
+  attr :event, :string, required: true
+  attr :value, :any, default: nil
+  attr :target, :any, default: nil
+  attr :pending, :boolean, default: false
+  attr :pending_label, :string, default: nil
+  attr :disabled, :boolean, default: false
+  attr :disabled_reason, :string, default: nil
+  slot :inner_block, required: true
+
+  def pressed_filter(assigns) do
+    ~H"""
+    <button
+      id={@id}
+      type="button"
+      class={[
+        "h-11 min-w-[44px] px-4 text-sm font-semibold border rounded-lg transition-colors",
+        @pressed && "bg-primary text-primary-content border-primary",
+        !@pressed && "bg-base-100 text-base-content border-base-300 hover:border-primary",
+        @disabled && "opacity-50 cursor-not-allowed"
+      ]}
+      phx-click={@event}
+      phx-value={@value}
+      phx-target={@target}
+      phx-disable-with={if @pending, do: @pending_label || "Loading…", else: nil}
+      aria-pressed={to_string(@pressed)}
+      disabled={@disabled || @pending}
+      title={if @disabled, do: @disabled_reason, else: nil}
+    >
+      {if @pending, do: @pending_label || "Loading…", else: render_slot(@inner_block)}
+    </button>
+    """
+  end
+
+  @doc """
+  Renders a segmented control with native radio inputs.
+
+  Experimental. A fieldset with visible legend and native same-name radio group.
+  Server-owned selected value, configured event/target, disabled explanation.
+
+  ## Examples
+
+      <.segmented_control
+        id="view-mode"
+        name="view_mode"
+        legend="View mode"
+        options={[{"List", "list"}, {"Map", "map"}, {"Table", "table"}]}
+        value={@view_mode}
+        event="change_view"
+      />
+  """
+  attr :id, :string, required: true
+  attr :name, :string, required: true
+  attr :legend, :string, required: true
+  attr :options, :list, required: true
+  attr :value, :any, required: true
+  attr :event, :string, required: true
+  attr :target, :any, default: nil
+  attr :disabled, :boolean, default: false
+  attr :disabled_reason, :string, default: nil
+
+  def segmented_control(assigns) do
+    ~H"""
+    <form phx-change={@event} phx-target={@target}>
+      <fieldset id={@id} class="space-y-2" disabled={@disabled}>
+        <legend class="text-sm font-semibold">{@legend}</legend>
+        <p :if={@disabled && @disabled_reason} class="text-xs text-base-content/60">
+          {@disabled_reason}
+        </p>
+        <div class="flex flex-wrap gap-2">
+          <label
+            :for={{label, val} <- @options}
+            class={[
+              "h-11 min-w-[44px] px-4 flex items-center justify-center text-sm font-semibold border rounded-lg cursor-pointer transition-colors",
+              @value == val && "bg-primary text-primary-content border-primary",
+              @value != val && "bg-base-100 text-base-content border-base-300 hover:border-primary"
+            ]}
+          >
+            <input
+              type="radio"
+              name={@name}
+              value={val}
+              checked={@value == val}
+              class="sr-only"
+            />
+            {label}
+          </label>
+        </div>
+      </fieldset>
+    </form>
     """
   end
 

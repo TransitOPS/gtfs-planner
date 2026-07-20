@@ -110,8 +110,10 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       assert has_element?(view, "#gtfs-version-rename-form")
 
       form_html = view |> element("#gtfs-version-rename-form") |> render()
+      # Prefilled via the input value; the label stays a short, stable noun so a
+      # long current name cannot distort the inline editor.
       assert form_html =~ ~s(value="Current Version")
-      assert form_html =~ ~s(Rename &quot;Current Version&quot;)
+      assert form_html =~ "Version name"
     end
 
     test "validate surfaces duplicate-name error", %{
@@ -266,6 +268,72 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
 
       form_html = view |> element("#gtfs-version-switcher") |> render()
       assert form_html =~ "Other Version"
+    end
+  end
+
+  describe "pending and failure regions" do
+    test "renders a hidden pending element with switching copy", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      assert has_element?(view, "#gtfs-version-pending[hidden]")
+      pending_html = view |> element("#gtfs-version-pending") |> render()
+      assert pending_html =~ "Switching version"
+    end
+
+    test "renders a hidden failure region with retry button", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      assert has_element?(view, "#gtfs-version-failure[hidden]")
+      assert has_element?(view, "#gtfs-version-retry")
+    end
+
+    test "pending element carries no live-region announcement contract (decision 0.12)", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      pending_html = view |> element("#gtfs-version-pending") |> render()
+      assert pending_html =~ "Switching version"
+      refute pending_html =~ "aria-live"
+    end
+
+    test "failure region carries no alert-role announcement contract (decision 0.12)", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      failure_html = view |> element("#gtfs-version-failure") |> render()
+      assert failure_html =~ "Version switch failed"
+      refute failure_html =~ ~s(role="alert")
+    end
+  end
+
+  describe "rename pending state" do
+    test "rename submit button shows task-specific pending label", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      {:ok, view, _html} = mount_host(conn, current, org)
+
+      view
+      |> element(~s(#gtfs-version-switcher [aria-label="Rename version"]))
+      |> render_click()
+
+      submit_html = view |> element("#gtfs-version-rename-form button[type=submit]") |> render()
+      assert submit_html =~ ~s(phx-disable-with="Saving name…")
     end
   end
 

@@ -137,6 +137,32 @@ case Accounts.register_first_admin(%{
       "Browser seed: diagram ready — /gtfs/#{diagram_version.id}/stops/BROWSER_STATION/diagram"
     )
 
+    # ── Long-name fixtures for responsive data-view browser tests ──
+    {:ok, _long_org} =
+      Organizations.create_organization(%{
+        name: "Metropolitan Regional Transit Authority of the Greater Metropolitan Area",
+        alias: "metro-regional-transit-authority-greater-metropolitan-area"
+      })
+
+    IO.puts("Browser seed: long-name organization for reflow tests")
+
+    Enum.each(1..3, fn idx ->
+      {:ok, _long_route} =
+        Gtfs.create_route(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: "LONG_ROUTE_#{idx}",
+          route_short_name:
+            "Express Route #{idx} — Downtown to University District via Waterfront and Convention Center",
+          route_long_name:
+            "Metropolitan Express Route #{idx} connecting Downtown Transit Center to University District via Waterfront Promenade, Convention Center, and Medical Campus",
+          route_type: 3,
+          route_color: "FF5733"
+        })
+    end)
+
+    IO.puts("Browser seed: long-name routes for reflow tests")
+
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"
 end

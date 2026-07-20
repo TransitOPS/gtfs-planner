@@ -265,22 +265,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
   end
 
   describe "badges page" do
-    test "renders at least three route badges", %{conn: conn, user: user} do
-      conn = log_in_user(conn, user)
-
-      {:ok, view, _html} = live(conn, ~p"/design/badges")
-
-      badges =
-        view
-        |> render()
-        |> LazyHTML.from_fragment()
-        |> LazyHTML.query(~s(#ds-page-badges span[style^="background-color:"]))
-        |> Enum.count()
-
-      assert badges >= 3
-    end
-
-    test "applies each sample route's colors to its badge", %{conn: conn, user: user} do
+    test "renders route badges with validated inline styles", %{conn: conn, user: user} do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/badges")
@@ -290,30 +275,49 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
                ~s(#ds-page-badges span[style="background-color: #D32F2F; color: #FFFFFF"]),
                "42"
              )
-
-      assert has_element?(
-               view,
-               ~s(#ds-page-badges span[style="background-color: #1976D2; color: #FFFFFF"]),
-               "A"
-             )
-
-      assert has_element?(
-               view,
-               ~s(#ds-page-badges span[style="background-color: #43A047; color: #000000"]),
-               "7X"
-             )
     end
 
-    test "falls back to an em dash for a route with no short name", %{conn: conn, user: user} do
+    test "corrects low-contrast foreground to black", %{conn: conn, user: user} do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/badges")
 
       assert has_element?(
                view,
-               ~s(#ds-page-badges span[style="background-color: #9E9E9E; color: #000000"]),
-               "—"
+               ~s(#ds-page-badges span[style="background-color: #FFFF00; color: #000000"]),
+               "A"
              )
+    end
+
+    test "renders neutral treatment for invalid background without inline style", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/badges")
+
+      html = render(view)
+      assert html =~ "7X"
+      refute html =~ "ZZZZZZ"
+    end
+
+    test "falls back to route ID when short name is missing", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/badges")
+
+      assert has_element?(view, "#ds-page-badges span", "R-99")
+    end
+
+    test "renders known and unknown status badges", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/badges")
+
+      assert has_element?(view, "#ds-status-badge-demo", "Pass")
+      assert has_element?(view, "#ds-status-badge-demo", "In progress")
+      assert has_element?(view, "#ds-status-badge-demo", "Unknown")
     end
   end
 
@@ -432,31 +436,24 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       assert has_element?(view, "#ds-inputs-demo-form")
     end
 
-    # Pinned reference for the shared announce_errors contract: assertive inline
-    # announcement is the default, and opting out is licensed only alongside
-    # deterministic submit-time focus plus a described or focusable recovery path.
-    test "documents the announce_errors opt-out contract", %{conn: conn, user: user} do
+    test "documents the repaired error contract", %{conn: conn, user: user} do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/inputs")
 
-      assert has_element?(view, "#ds-inputs-announce-errors")
+      assert has_element?(view, "#ds-inputs-error-contract")
 
       contract_text =
         view
         |> render()
         |> LazyHTML.from_fragment()
-        |> LazyHTML.query("#ds-inputs-announce-errors")
+        |> LazyHTML.query("#ds-inputs-error-contract")
         |> LazyHTML.text()
         |> String.replace(~r/\s+/, " ")
 
-      assert contract_text =~ "announce_errors"
-      assert contract_text =~ "defaults to true"
-      assert contract_text =~ ~s(role="alert")
-      assert contract_text =~ ~s(aria-live="assertive")
-      assert contract_text =~ "deterministic submit-time focus"
       assert contract_text =~ "aria-describedby"
-      assert contract_text =~ "focusable error summary"
+      assert contract_text =~ "aria-invalid"
+      assert contract_text =~ "deterministic"
     end
   end
 
@@ -509,7 +506,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
         view
         |> render()
         |> LazyHTML.from_fragment()
-        |> LazyHTML.query("#ds-page-tables table.table thead th")
+        |> LazyHTML.query("#ds-demo-table-wrapper thead th")
         # The ID column carries a sort indicator, so strip the arrow glyph to compare labels.
         |> Enum.map(
           &(&1
@@ -656,15 +653,15 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       assert has_element?(view, "#ds-flash-demo #ds-flash-error", "Sample error message")
     end
 
-    # The examples must be the real <.flash>, not replica markup: these classes and the
-    # role come from core_components.ex and are what the page documents.
+    # The examples must be the real <.flash>, not replica markup: these classes come from
+    # core_components.ex and are what the page documents.
     test "renders each example as the real flash component", %{conn: conn, user: user} do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/feedback")
 
-      assert has_element?(view, ~s(#ds-flash-info[role="alert"] .alert.alert-info))
-      assert has_element?(view, ~s(#ds-flash-error[role="alert"] .alert.alert-error))
+      assert has_element?(view, ~s(#ds-flash-info .alert.alert-info))
+      assert has_element?(view, ~s(#ds-flash-error .alert.alert-error))
     end
 
     # The containment rule is `#ds-flash-demo .toast { position: static; }`. CSS is not
@@ -745,6 +742,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     end
 
     # The demo emits no custom event: <.flash>'s root pushes the built-in
+    # The close button is the only element that dismisses the flash. Clicking it sends
     # `lv:clear-flash`, which LiveView handles internally. The examples render from their
     # inner block, so dismissing one does not remove it.
     test "dismissing a flash example does not crash the LiveView", %{conn: conn, user: user} do
@@ -752,7 +750,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/design/feedback")
 
-      view |> element("#ds-flash-info") |> render_click()
+      view |> element("#ds-flash-info button[aria-label='Dismiss message']") |> render_click()
 
       assert has_element?(view, "#ds-flash-demo #ds-flash-info", "Sample info message")
       assert has_element?(view, "#ds-flash-demo #ds-flash-error", "Sample error message")
@@ -796,18 +794,27 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/design/navigation")
 
-      # HEEx renders `aria-selected={true}` as a valueless attribute, so the marked tab
-      # is `[aria-selected]`, never `[aria-selected="true"]`.
       assert has_element?(
                view,
-               ~s(#station-sub-nav a[role="tab"][aria-current="page"]),
+               ~s(#station-sub-nav a[aria-current="page"]),
                "Details"
              )
 
-      assert has_element?(view, ~s(#station-sub-nav a[role="tab"][aria-selected]), "Details")
+      refute has_element?(view, ~s(#station-sub-nav [role="tablist"]))
+      refute has_element?(view, ~s(#station-sub-nav [role="tab"]))
 
       refute has_element?(view, "#diagram-upload-form-sub-nav")
       refute has_element?(view, "#station-sub-nav-upload")
+    end
+
+    test "documents long-content wrapping and ordinary nav semantics", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/navigation")
+
+      assert has_element?(view, "#ds-page-navigation", "break-words")
+      assert has_element?(view, "#ds-page-navigation", "min-h-11")
+      assert has_element?(view, "#ds-page-navigation", ~s(aria-current="page"))
     end
 
     # INV-4: an unhandled event crashes the LiveView for every page. On :details both

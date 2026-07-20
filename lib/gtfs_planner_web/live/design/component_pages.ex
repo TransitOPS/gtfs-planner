@@ -16,6 +16,8 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
 
   import GtfsPlannerWeb.CoreComponents
 
+  alias GtfsPlannerWeb.Components.RouteIdentity
+
   @doc """
   Every `<.button>` variant × size combination, plus the disabled and with-icon forms.
   """
@@ -247,27 +249,30 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </p>
 
-      <h2 class="mt-8 text-lg font-semibold">Error announcement</h2>
+      <h2 class="mt-8 text-lg font-semibold">Error contract</h2>
       <ul
-        id="ds-inputs-announce-errors"
+        id="ds-inputs-error-contract"
         class="mt-2 list-disc space-y-1 pl-5 text-base-content/70"
       >
         <li>
-          <code class="font-mono text-sm">announce_errors</code>
-          defaults to <code class="font-mono text-sm">true</code>: the inline error is an
-          assertive live region (<code class="font-mono text-sm">role="alert"</code> + <code class="font-mono text-sm">aria-live="assertive"</code>).
+          Every input derives deterministic help and error IDs from its <code class="font-mono text-sm">id</code>:
+          <code phx-no-curly-interpolation class="font-mono text-sm">{id}-help</code>
+          and <code phx-no-curly-interpolation class="font-mono text-sm">{id}-error</code>.
         </li>
         <li>
-          A form may set
-          <code phx-no-curly-interpolation class="font-mono text-sm">announce_errors={false}</code>
-          only when it supplies deterministic submit-time focus to the first invalid control
-          plus an associated <code class="font-mono text-sm">aria-describedby</code>
-          description or a focusable error summary.
-        </li>
-        <li>
-          Opting out changes nothing else: the error id, error text, <code class="font-mono text-sm">aria-invalid</code>, and
           <code class="font-mono text-sm">aria-describedby</code>
-          wiring stay identical.
+          combines both IDs when present, so the control references every applicable
+          description.
+        </li>
+        <li>
+          <code class="font-mono text-sm">aria-invalid="true"</code>
+          is set only when errors exist. Errors are visible, actionable text — never
+          color alone.
+        </li>
+        <li>
+          Forms that need submit-time focus (like the first-admin setup) own that
+          behavior through their own hook and error summary, not through the input
+          component.
         </li>
       </ul>
 
@@ -279,6 +284,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       </p>
       <div class="mt-3 max-w-xl border border-base-300 p-4">
         <.checkbox_group
+          id="ds-demo-roles"
           name="demo[roles][]"
           label="Roles"
           options={[{"Admin", "admin"}, {"Editor", "editor"}]}
@@ -291,7 +297,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           phx-no-curly-interpolation
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
-          &lt;.checkbox_group name="demo[roles][]" label="Roles" options={[{"Admin", "admin"}]} selected={@roles} /&gt;
+          &lt;.checkbox_group id="ds-demo-roles" name="demo[roles][]" label="Roles" options={[{"Admin", "admin"}]} selected={@roles} /&gt;
         </code>
       </p>
 
@@ -316,25 +322,25 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
   end
 
   @doc """
-  `<.route_badge>` across representative GTFS route color inputs.
+  `<RouteIdentity.route_badge>` across representative GTFS route color inputs,
+  plus the `<.status_badge>` vocabulary.
   """
   def badges(assigns) do
     ~H"""
     <section id="ds-page-badges" class="max-w-4xl">
       <h1 class="text-2xl font-bold">Badges</h1>
       <p class="mt-2 text-base-content/70">
-        <code class="font-mono text-sm">&lt;.route_badge&gt;</code>
-        renders a route's identity using the colors the GTFS feed supplies. It takes a
-        map with <code class="font-mono text-sm">route_color</code>, <code class="font-mono text-sm">route_text_color</code>, and
-        <code class="font-mono text-sm">route_short_name</code>
-        — a route struct satisfies it directly.
+        <code class="font-mono text-sm">RouteIdentity.route_badge</code>
+        renders a route's identity using validated feed colors. Invalid or missing
+        colors receive a neutral semantic treatment; contrast is corrected to at
+        least 4.5:1. Text identity is always present, independent of hue.
       </p>
 
-      <h2 class="mt-8 text-lg font-semibold">Samples</h2>
+      <h2 class="mt-8 text-lg font-semibold">Route badge</h2>
       <dl class="mt-3 divide-y divide-base-300 border-y border-base-300">
         <div class="grid grid-cols-4 items-center gap-4 py-3">
           <dt>
-            <.route_badge route={
+            <RouteIdentity.route_badge route={
               %{route_color: "D32F2F", route_text_color: "FFFFFF", route_short_name: "42"}
             } />
           </dt>
@@ -343,15 +349,15 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
               phx-no-curly-interpolation
               class="ds-code-caption font-mono text-xs text-base-content/70"
             >
-              %{route_color: "D32F2F", route_text_color: "FFFFFF", route_short_name: "42"}
+              valid colors, contrast passes → feed foreground retained
             </code>
           </dd>
         </div>
 
         <div class="grid grid-cols-4 items-center gap-4 py-3">
           <dt>
-            <.route_badge route={
-              %{route_color: "1976D2", route_text_color: "FFFFFF", route_short_name: "A"}
+            <RouteIdentity.route_badge route={
+              %{route_color: "FFFF00", route_text_color: "FFFFFF", route_short_name: "A"}
             } />
           </dt>
           <dd class="col-span-3">
@@ -359,15 +365,15 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
               phx-no-curly-interpolation
               class="ds-code-caption font-mono text-xs text-base-content/70"
             >
-              %{route_color: "1976D2", route_text_color: "FFFFFF", route_short_name: "A"}
+              low-contrast foreground → corrected to black
             </code>
           </dd>
         </div>
 
         <div class="grid grid-cols-4 items-center gap-4 py-3">
           <dt>
-            <.route_badge route={
-              %{route_color: "43A047", route_text_color: "000000", route_short_name: "7X"}
+            <RouteIdentity.route_badge route={
+              %{route_color: "ZZZZZZ", route_text_color: "FFFFFF", route_short_name: "7X"}
             } />
           </dt>
           <dd class="col-span-3">
@@ -375,15 +381,20 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
               phx-no-curly-interpolation
               class="ds-code-caption font-mono text-xs text-base-content/70"
             >
-              %{route_color: "43A047", route_text_color: "000000", route_short_name: "7X"}
+              invalid background → neutral semantic treatment, no inline style
             </code>
           </dd>
         </div>
 
         <div class="grid grid-cols-4 items-center gap-4 py-3">
           <dt>
-            <.route_badge route={
-              %{route_color: "9E9E9E", route_text_color: "000000", route_short_name: nil}
+            <RouteIdentity.route_badge route={
+              %{
+                route_color: "9E9E9E",
+                route_text_color: "000000",
+                route_short_name: nil,
+                route_id: "R-99"
+              }
             } />
           </dt>
           <dd class="col-span-3">
@@ -391,28 +402,59 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
               phx-no-curly-interpolation
               class="ds-code-caption font-mono text-xs text-base-content/70"
             >
-              %{route_color: "9E9E9E", route_text_color: "000000", route_short_name: nil} → falls back to an em dash
+              missing short name → falls back to route ID
             </code>
           </dd>
         </div>
       </dl>
 
+      <h2 class="mt-8 text-lg font-semibold">Status badge</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        One vocabulary for every status in the app: a colored dot beside a colored word,
+        never color alone. Known values render explicit labels; unrecognized or blank
+        values render <code class="font-mono text-sm">Unknown</code> with a neutral treatment.
+      </p>
+
+      <div id="ds-status-badge-demo" class="mt-3 flex flex-wrap gap-2 border border-base-300 p-4">
+        <.status_badge status={:pass} />
+        <.status_badge status={:completed} />
+        <.status_badge status={:running} />
+        <.status_badge status={:in_progress} />
+        <.status_badge status={:info} />
+        <.status_badge status={:warning} />
+        <.status_badge status={:failed} />
+        <.status_badge status={:error} />
+        <.status_badge status={:started} />
+        <.status_badge status={:draft} />
+        <.status_badge status={:some_unknown_thing} />
+      </div>
+      <p class="mt-3">
+        <code
+          phx-no-curly-interpolation
+          class="ds-code-caption font-mono text-xs text-base-content/70"
+        >
+          &lt;.status_badge status={run.status} /&gt; · known values get explicit labels and tones · unknown or blank renders Unknown · pass label="…" to override the word
+        </code>
+      </p>
+
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>
-          Hex values carry no <code class="font-mono text-sm">#</code>
-          — the component prepends it. That matches the GTFS spec, which stores
-          <code class="font-mono text-sm">route_color</code>
-          as six hex digits.
+          Feed colors are validated as six-digit hex before reaching inline style.
+          Invalid or missing colors get the neutral semantic treatment.
         </li>
         <li>
-          A route with no short name renders an em dash, so the badge keeps its shape in
-          a column instead of collapsing.
+          Foreground contrast is corrected to at least 4.5:1; the badge never
+          relies on hue alone for identification.
         </li>
         <li>
-          The feed owns the color pair, so contrast is not guaranteed. Never let the
-          badge be the only way to tell two routes apart — keep the route name in text
-          beside it.
+          Badge text falls back from short name to route ID to <code class="font-mono text-sm">Unknown route</code>, so every badge
+          carries a text identity.
+        </li>
+        <li>
+          Use <code class="font-mono text-sm">&lt;.status_badge&gt;</code>, not a bare
+          colored dot, for run and check status: the word survives a screenshot and a
+          colorblind reader, and one vocabulary keeps every status reading the same.
         </li>
       </ul>
     </section>
@@ -424,8 +466,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
   `<.pagination>` demo.
 
   The pagination demo is driven by the `:pagination_page` assign and emits the
-  `paginate` event that `DesignSystemLive` handles; `<.pagination>` hardcodes both the
-  event name and `phx-value-page` (`core_components.ex:584-585`), so the demo range
+  `paginate` event (the default) that `DesignSystemLive` handles. The demo range
   here (`total={45}`, `per_page={10}` → 5 pages) must stay in step with the clamp in
   `DesignSystemLive.handle_event("paginate", ...)`. A test pins the two together.
   """
@@ -439,6 +480,11 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         takes an <code class="font-mono text-sm">id</code>, a list of <code class="font-mono text-sm">rows</code>, and one
         <code class="font-mono text-sm">&lt;:col&gt;</code>
         slot per column. Rows can be a plain list, as below, or a LiveView stream.
+        The default <code class="font-mono text-sm">responsive="scroll"</code>
+        wraps the table in a local horizontal
+        overflow container; <code class="font-mono text-sm">responsive="stack"</code>
+        presents labeled records on narrow
+        screens without cloning the table.
       </p>
 
       <h2 class="mt-8 text-lg font-semibold">Table</h2>
@@ -450,7 +496,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         its color, never color alone.
       </p>
 
-      <div class="mt-3 border border-base-300">
+      <div id="ds-demo-table-wrapper" class="mt-3 border border-base-300">
         <.table id="ds-demo-table" rows={sample_routes()}>
           <:col :let={route} label="ID" align="right" sort="asc">
             <span class="tabular-nums">{route.id}</span>
@@ -478,6 +524,67 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </p>
 
+      <h2 class="mt-8 text-lg font-semibold">Long content</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Wide tables stay inside their local overflow wrapper; the body never clips.
+      </p>
+
+      <div id="ds-demo-table-long" class="mt-3 border border-base-300">
+        <.table id="ds-demo-long" rows={sample_routes()}>
+          <:col :let={route} label="Route identifier" align="right">
+            <span class="tabular-nums">{route.id}</span>
+          </:col>
+          <:col :let={route} label="Full route name and description">
+            {route.name} — This is a deliberately long route description to test overflow behavior at narrow viewports without clipping the body.
+          </:col>
+          <:col :let={route} label="Status">{route.status}</:col>
+          <:action :let={route}>
+            <.button variant="quiet" size="sm" aria-label={"Edit route #{route.name}"}>
+              Edit
+            </.button>
+          </:action>
+        </.table>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Empty</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        An empty dataset renders headers and an empty tbody. Pair with
+        <code class="font-mono text-sm">&lt;.empty_state&gt;</code>
+        above the table for a first-use message.
+      </p>
+
+      <div id="ds-demo-table-empty" class="mt-3 border border-base-300">
+        <.table id="ds-demo-empty" rows={[]}>
+          <:col label="ID" align="right"></:col>
+          <:col label="Name"></:col>
+          <:col label="Status"></:col>
+        </.table>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Stack mode</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        <code class="font-mono text-sm">responsive="stack"</code>
+        presents each row as a labeled record on narrow screens.
+        Headers remain in the DOM; CSS hides them visually and uses
+        <code class="font-mono text-sm">data-label</code>
+        to label each cell.
+      </p>
+
+      <div id="ds-demo-table-stack" class="mt-3 border border-base-300">
+        <.table id="ds-demo-stack" rows={sample_routes()} responsive="stack">
+          <:col :let={route} label="ID" align="right">
+            <span class="tabular-nums">{route.id}</span>
+          </:col>
+          <:col :let={route} label="Name">{route.name}</:col>
+          <:col :let={route} label="Status">{route.status}</:col>
+          <:action :let={route}>
+            <.button variant="quiet" size="sm" aria-label={"Edit route #{route.name}"}>
+              Edit
+            </.button>
+          </:action>
+        </.table>
+      </div>
+
       <h2 class="mt-8 text-lg font-semibold">List</h2>
       <p class="mt-1 text-sm text-base-content/60">
         Definition pairs for one record. Use it where a table would have one row and
@@ -504,6 +611,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       <p class="mt-1 text-sm text-base-content/60">
         Live: the buttons below move a real assign. Previous and Next disable at the
         ends of the range rather than disappearing, so the controls never shift position.
+        The component normalizes negative totals, zero per-page, and out-of-range pages.
       </p>
 
       <div id="ds-pagination-demo" class="mt-3 border border-base-300 px-4">
@@ -514,9 +622,19 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           phx-no-curly-interpolation
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
-          &lt;.pagination page={@page} per_page={10} total={45} entity="routes" /&gt; · entity is the noun in the count · emits phx-click="paginate" with phx-value-page
+          &lt;.pagination page={@page} per_page={10} total={45} entity="routes" /&gt; · event defaults to "paginate" · entity is the noun in the count · event and target are configurable
         </code>
       </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Pagination — empty</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Zero total renders <code class="font-mono text-sm">0–0 of 0</code>
+        with both controls disabled.
+      </p>
+
+      <div id="ds-pagination-empty" class="mt-3 border border-base-300 px-4">
+        <.pagination page={1} per_page={10} total={0} entity="routes" />
+      </div>
 
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
@@ -536,10 +654,11 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </li>
         <li>
           <code class="font-mono text-sm">&lt;.pagination&gt;</code>
-          hardcodes <code class="font-mono text-sm">phx-click="paginate"</code>
+          emits <code class="font-mono text-sm">phx-click</code>
+          with the configured <code class="font-mono text-sm">event</code>
+          (default <code class="font-mono text-sm">"paginate"</code>)
           and appends the optional <code class="font-mono text-sm">entity</code>
-          noun to the count. It needs a matching
-          <code class="font-mono text-sm">handle_event("paginate", …)</code>
+          noun to the count. It needs a matching <code class="font-mono text-sm">handle_event/3</code>
           that parses <code class="font-mono text-sm">phx-value-page</code>
           — it arrives as a string — and clamps it before assigning.
         </li>
@@ -552,6 +671,13 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           state and the arrow; add <code class="font-mono text-sm">sort_event</code>
           and <code class="font-mono text-sm">sort_key</code>
           to make the header an interactive sort button.
+        </li>
+        <li>
+          Use <code class="font-mono text-sm">responsive="stack"</code>
+          for record-oriented narrow layouts;
+          the default <code class="font-mono text-sm">"scroll"</code>
+          keeps the table in a local overflow wrapper.
+          Both modes render one table, one tbody, and one row per record — no duplication.
         </li>
       </ul>
     </section>
@@ -600,8 +726,8 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         In the app these appear as a toast pinned to the top right. The two below are the
         real component, shown in place by a page-scoped rule that returns them to normal
         flow — see <code class="font-mono text-sm">#ds-flash-demo</code>
-        in <code class="font-mono text-sm">assets/css/app.css</code>. Clicking one
-        dismisses it exactly as it would in the app.
+        in <code class="font-mono text-sm">assets/css/app.css</code>. Only the close button
+        dismisses the message; the message content itself is not clickable.
       </p>
 
       <div id="ds-flash-demo" class="mt-3 space-y-3 border border-base-300 p-4">
@@ -693,27 +819,29 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       <h2 class="mt-8 text-lg font-semibold">Status badge</h2>
       <p class="mt-1 text-sm text-base-content/60">
         One vocabulary for every status in the app: a colored dot beside a colored word,
-        never color alone. An unrecognized value renders muted rather than crashing, so a
-        new status never breaks a page.
+        never color alone. Known values render explicit labels; unrecognized or blank
+        values render <code class="font-mono text-sm">Unknown</code> with a neutral treatment.
       </p>
 
       <div id="ds-status-badge-demo" class="mt-3 flex flex-wrap gap-2 border border-base-300 p-4">
         <.status_badge status={:pass} />
         <.status_badge status={:completed} />
         <.status_badge status={:running} />
+        <.status_badge status={:in_progress} />
         <.status_badge status={:info} />
         <.status_badge status={:warning} />
         <.status_badge status={:failed} />
         <.status_badge status={:error} />
         <.status_badge status={:started} />
         <.status_badge status={:draft} />
+        <.status_badge status={:some_unknown_thing} />
       </div>
       <p class="mt-3">
         <code
           phx-no-curly-interpolation
           class="ds-code-caption font-mono text-xs text-base-content/70"
         >
-          &lt;.status_badge status={run.status} /&gt; · pass and completed read success, failed and error read error, an unknown status falls back to muted · pass label="…" to override the word
+          &lt;.status_badge status={run.status} /&gt; · known values get explicit labels and tones · unknown or blank renders Unknown · pass label="…" to override the word
         </code>
       </p>
 
@@ -807,9 +935,8 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           name the object on the confirm button.
         </li>
         <li>
-          The flash container is <code class="font-mono text-sm">aria-live="polite"</code>,
-          so a screen reader announces a message without stealing focus. A state change
-          the user cannot see must still be announced.
+          Flash messages are dismissed only by the explicit close button. The message
+          content and any recovery links remain interactive and do not dismiss the flash.
         </li>
       </ul>
     </section>
@@ -910,17 +1037,27 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         </code>
       </p>
 
+      <h2 class="mt-8 text-lg font-semibold">Long-content states</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Station and route names wrap at narrow widths via <code class="font-mono text-sm">break-words</code>.
+        The back button and tab links maintain 44 px targets (<code class="font-mono text-sm">min-h-11</code>)
+        regardless of content length. Sub-navigation links use ordinary
+        <code class="font-mono text-sm">navigate</code>
+        semantics with <code class="font-mono text-sm">aria-current="page"</code>
+        — no tablist or tab roles.
+      </p>
+
       <h2 class="mt-8 text-lg font-semibold">Use</h2>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
         <li>
           Pass <code class="font-mono text-sm">active_tab</code>
-          on every page that renders a sub-nav. It is what marks the current tab <code class="font-mono text-sm">aria-current="page"</code>, so an omitted value
+          on every page that renders a sub-nav. It is what marks the current link <code class="font-mono text-sm">aria-current="page"</code>, so an omitted value
           silently tells the user they are somewhere else.
         </li>
         <li>
-          The tabs are <code class="font-mono text-sm">navigate</code>
-          links, not events. They are real navigation and belong in the browser's
-          history — do not reimplement them as click handlers.
+          The tabs are ordinary <code class="font-mono text-sm">navigate</code>
+          links, not events or tab roles. They are real navigation and belong in the
+          browser's history — do not reimplement them as click handlers.
         </li>
         <li>
           One header per view. The actions slot holds that view's primary action; if you

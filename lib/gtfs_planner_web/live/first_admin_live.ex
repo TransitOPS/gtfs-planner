@@ -50,7 +50,6 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
               type="email"
               label="Email"
               placeholder="admin@company.com"
-              announce_errors={false}
               required
             />
             <.input
@@ -59,7 +58,6 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
               type="password"
               label="Password"
               errors={@password_errors}
-              announce_errors={false}
               required
             />
             <.input
@@ -68,7 +66,6 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
               type="password"
               label="Confirm password"
               errors={@password_confirmation_errors}
-              announce_errors={false}
               required
             />
             <.input
@@ -77,7 +74,6 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
               type="text"
               label="Organization name"
               placeholder="My Transit Agency"
-              announce_errors={false}
               required
             />
             <.input
@@ -87,7 +83,6 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
               label="Organization alias (optional)"
               placeholder="my-transit-agency"
               help="Used in URLs, e.g., /gtfs/my-transit-agency"
-              announce_errors={false}
             />
           </div>
           <div class="mt-8">

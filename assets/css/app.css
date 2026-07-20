@@ -22,6 +22,13 @@
 /* Custom theme: Inter font */
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+
+  /* Brand identity color (product logo + wordmark). This is a fixed brand mark,
+     intentionally distinct from `--color-primary` (the daisyUI action color).
+     ~emerald-700 (#047857); 4.9:1 on base-100 so the wordmark passes AA.
+     Generates the `bg-brand` / `text-brand` utilities used by the shell. */
+  --color-brand: oklch(52% 0.12 165);
+  --color-brand-content: oklch(100% 0 0); /* white icon/text on the brand tile */
 }
 
 /* daisyUI Tailwind Plugin. You can update this file by fetching the latest version with:
@@ -105,7 +112,66 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   min-height: 100vh;
-  overflow-x: hidden;
+}
+
+#app-header {
+  overflow: visible;
+}
+
+#station-sub-nav {
+  overflow: visible;
+}
+
+/* ── Responsive data-view contracts ── */
+
+/* Stack mode: present each row as a labeled record on narrow screens.
+   Headers stay in the DOM; CSS hides them visually and turns each cell
+   into a labeled block using its data-label attribute. */
+@media (max-width: 639px) {
+  .ds-stack-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  .ds-stack-table tbody tr {
+    display: block;
+    border-top: 1px solid oklch(var(--bc) / 0.1);
+    padding: 0.5rem 0;
+  }
+
+  .ds-stack-table tbody td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+    padding: 0.25rem 0;
+    text-align: right;
+    border-bottom: none;
+    overflow-wrap: anywhere;
+  }
+
+  .ds-stack-table tbody td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    text-align: left;
+    flex-shrink: 0;
+  }
+
+  .ds-stack-table tbody td[data-label="Actions"] {
+    justify-content: flex-end;
+    width: auto;
+  }
+
+  .ds-stack-table tbody td[data-label="Actions"]::before {
+    display: none;
+  }
 }
 
 /* Custom override for LiveSelect input text color to ensure theme compatibility */
@@ -362,6 +428,18 @@ dialog[role="alertdialog"][open] > div > div {
 
   #diagram-overlay g[tabindex]:focus-visible {
     transition-duration: 0ms;
+  }
+
+  /* Shared reduced-motion: disable skeleton pulse and general transitions */
+  .motion-safe\:animate-pulse {
+    animation: none !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
   }
 }
 
