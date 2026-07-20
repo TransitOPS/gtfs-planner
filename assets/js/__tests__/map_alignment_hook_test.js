@@ -1723,3 +1723,35 @@ describe("map_alignment_hook other-level isolation across active transform", () 
     otherLevels.destroy();
   });
 });
+
+describe("map_alignment_hook generation bridge", () => {
+  it("tags readiness and transform events with the current generation", () => {
+    const hook = {
+      ...MapAlignmentHook,
+      generation: "map-42",
+      _computeAlignment: vi.fn(() => ({
+        center_lat: 40.7,
+        center_lon: -74.0,
+        scale_mpp: 0.25,
+        rotation_deg: 3,
+      })),
+      _isValidAlignmentPayload: vi.fn(() => true),
+      pushEvent: vi.fn(),
+    };
+
+    hook._emitMapState("ready");
+    hook._pushAlignmentEventIfValid("preview_coordinate_application");
+
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(1, "map_state", {
+      generation: "map-42",
+      state: "ready",
+    });
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(2, "preview_coordinate_application", {
+      generation: "map-42",
+      center_lat: 40.7,
+      center_lon: -74.0,
+      scale_mpp: 0.25,
+      rotation_deg: 3,
+    });
+  });
+});

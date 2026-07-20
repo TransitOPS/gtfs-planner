@@ -116,6 +116,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:rollback_preview, nil)
      |> assign(:floorplan_image_w, nil)
      |> assign(:floorplan_image_h, nil)
+     |> assign(:map_generation, "unmounted")
+     |> assign(:map_state, :loading)
+     |> assign(:coordinate_preview, nil)
+     |> assign(:coordinate_confirmation, false)
+     |> assign(:coordinate_apply_form, to_form(%{"phrase" => ""}, as: :coordinate_preview))
      |> assign(:station_stop_levels_cache, empty_station_stop_levels_cache())
      |> allow_upload(:diagram,
        accept: ~w(.png .jpg .jpeg),
@@ -906,6 +911,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 cross_level_pathway_total={@cross_level_pathway_total}
                 cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
                 other_levels_floorplan_count={MapSet.size(@other_levels_floorplan)}
+                map_generation={@map_generation}
+                map_state={@map_state}
+                coordinate_preview={@coordinate_preview}
+                coordinate_confirmation={@coordinate_confirmation}
+                coordinate_apply_form={@coordinate_apply_form}
               />
             </div>
           <% else %>
@@ -1223,6 +1233,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> load_station_stop_levels_cache()
          |> assign(:other_levels_floorplan, MapSet.new())
          |> assign(:other_levels_stops, MapSet.new())
+         |> reset_map_workflow()
          |> load_level_data(selected_level)}
     end
   end
@@ -1279,6 +1290,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> restream_mode_dependent_layers()
           |> assign(:other_levels_floorplan, MapSet.new())
           |> assign(:other_levels_stops, MapSet.new())
+          |> reset_map_workflow()
           |> assign_other_levels()
           |> push_child_stop_markers()
 
@@ -2342,49 +2354,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event(
         "save_alignment",
-        %{
-          "center_lat" => lat,
-          "center_lon" => lon,
-          "scale_mpp" => mpp,
-          "rotation_deg" => rot
-        },
+        %{"generation" => generation} = params,
         socket
       ) do
-    case socket.assigns.active_stop_level do
-      %StopLevel{} = stop_level ->
-        attrs = %{
-          floorplan_center_lat: lat,
-          floorplan_center_lon: lon,
-          floorplan_scale_mpp: mpp,
-          floorplan_rotation_deg: rot
-        }
-
-        case Gtfs.save_stop_level_alignment(stop_level, attrs) do
-          {:ok, updated} ->
-            {:noreply,
-             socket
-             |> assign(:active_stop_level, updated)
-             |> load_station_stop_levels_cache()
-             |> put_flash(:info, "Alignment saved")}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply,
-             put_flash(
-               socket,
-               :error,
-               alignment_changeset_error_message("Could not save alignment", changeset)
-             )}
-        end
-
-      _ ->
-        {:noreply, put_flash(socket, :error, "No level selected")}
+    if current_map_generation?(socket, generation) do
+      save_alignment(params, socket)
+    else
+      {:noreply, socket}
     end
   end
 
+  def handle_event("save_alignment", _params, socket), do: {:noreply, socket}
+
   @impl true
   def handle_event(
-        "save_and_apply_alignment",
+        "preview_coordinate_application",
         %{
+          "generation" => generation,
           "center_lat" => lat,
           "center_lon" => lon,
           "scale_mpp" => mpp,
@@ -2397,6 +2383,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     image_h = socket.assigns.floorplan_image_h
 
     cond do
+      not current_map_generation?(socket, generation) ->
+        {:noreply, socket}
+
       is_nil(stop_level) ->
         {:noreply, put_flash(socket, :error, "No level selected")}
 
@@ -2411,20 +2400,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           floorplan_rotation_deg: rot
         }
 
-        case Gtfs.save_and_apply_stop_level_alignment(stop_level.id, attrs, image_w, image_h) do
-          {:ok,
-           %{
-             active_stop_level: updated,
-             apply_result: %{touched_stop_count: touched_stop_count}
-           }} ->
+        case Gtfs.preview_stop_level_coordinate_application(
+               stop_level.id,
+               attrs,
+               image_w,
+               image_h
+             ) do
+          {:ok, preview} ->
             {:noreply,
              socket
-             |> assign(:active_stop_level, updated)
-             |> assign(:other_level_markers_cache, %{})
-             |> assign(:other_level_counts_cache, %{})
-             |> load_station_stop_levels_cache()
-             |> refresh_lists()
-             |> put_flash(:info, "Set lat/lon for #{touched_stop_count} child stops")}
+             |> assign(:coordinate_preview, Map.put(preview, :generation, generation))
+             |> assign(:coordinate_confirmation, false)
+             |> assign(
+               :coordinate_apply_form,
+               to_form(%{"phrase" => ""}, as: :coordinate_preview)
+             )}
 
           {:error, %Ecto.Changeset{} = changeset} ->
             {:noreply,
@@ -2440,10 +2430,86 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
+  def handle_event("preview_coordinate_application", _params, socket), do: {:noreply, socket}
+
+  # The former immediate persistence event is deliberately inert. Map hooks
+  # now submit only a generation-tagged preview request, and the server-owned
+  # confirmation below is the sole route to coordinate persistence.
+  def handle_event("save_and_apply_alignment", _params, socket), do: {:noreply, socket}
+
   @impl true
-  def handle_event("set_image_natural_size", %{"w" => w, "h" => h}, socket) do
-    case {coerce_positive_integer(w), coerce_positive_integer(h)} do
-      {{:ok, w_int}, {:ok, h_int}} ->
+  def handle_event("open_coordinate_preview_confirmation", _params, socket) do
+    if current_coordinate_preview?(socket) do
+      {:noreply, assign(socket, :coordinate_confirmation, true)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_coordinate_preview", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:coordinate_confirmation, false)
+     |> assign(:coordinate_apply_form, to_form(%{"phrase" => ""}, as: :coordinate_preview))}
+  end
+
+  @impl true
+  def handle_event(
+        "apply_coordinate_preview",
+        %{"coordinate_preview" => %{"phrase" => "APPLY"}},
+        socket
+      ) do
+    case socket.assigns.coordinate_preview do
+      %{generation: generation} = preview ->
+        if current_map_generation?(socket, generation) do
+          case Gtfs.apply_stop_level_coordinate_preview(Map.delete(preview, :generation)) do
+            {:ok, %{active_stop_level: updated, touched_stop_count: count}} ->
+              {:noreply,
+               socket
+               |> assign(:active_stop_level, updated)
+               |> assign(:coordinate_preview, nil)
+               |> assign(:coordinate_confirmation, false)
+               |> assign(:other_level_markers_cache, %{})
+               |> assign(:other_level_counts_cache, %{})
+               |> load_station_stop_levels_cache()
+               |> refresh_lists()
+               |> put_flash(:info, "Applied coordinates to #{count} child stops")}
+
+            {:error, reason} when reason in [:stale_preview, :busy] ->
+              {:noreply,
+               socket
+               |> clear_coordinate_preview()
+               |> put_flash(:error, coordinate_preview_error_message(reason))}
+
+            {:error, _reason} ->
+              {:noreply,
+               socket
+               |> clear_coordinate_preview()
+               |> put_flash(:error, "Could not apply coordinate preview")}
+          end
+        else
+          {:noreply, socket}
+        end
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("apply_coordinate_preview", _params, socket) do
+    {:noreply, put_flash(socket, :error, "Type APPLY to confirm coordinate changes")}
+  end
+
+  @impl true
+  def handle_event(
+        "set_image_natural_size",
+        %{"generation" => generation, "w" => w, "h" => h},
+        socket
+      ) do
+    case {current_map_generation?(socket, generation), coerce_positive_integer(w),
+          coerce_positive_integer(h)} do
+      {true, {:ok, w_int}, {:ok, h_int}} ->
         {:noreply,
          socket
          |> assign(:floorplan_image_w, w_int)
@@ -2458,8 +2524,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_event("set_image_natural_size", _params, socket), do: {:noreply, socket}
 
   @impl true
-  def handle_event("map_ready", _params, socket) do
-    {:noreply, push_child_stop_markers(socket)}
+  def handle_event("map_ready", %{"generation" => generation}, socket) do
+    if current_map_generation?(socket, generation),
+      do: {:noreply, push_child_stop_markers(socket)},
+      else: {:noreply, socket}
+  end
+
+  def handle_event("map_ready", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("map_state", %{"generation" => generation, "state" => state}, socket) do
+    if current_map_generation?(socket, generation) and
+         state in ~w(loading ready degraded offline reconnecting fatal) do
+      {:noreply, assign(socket, :map_state, map_state_from_string(state))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("map_state", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("retry_map_alignment", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:map_state, :reconnecting)
+     |> push_event("retry_map_alignment", %{generation: socket.assigns.map_generation})}
   end
 
   @impl true
@@ -3595,6 +3685,92 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp apply_alignment_error_message(:invalid_image_dims), do: "Floorplan image not ready"
   defp apply_alignment_error_message({:transform, _}), do: "Invalid alignment values"
   defp apply_alignment_error_message(_), do: "Could not apply alignment"
+
+  defp reset_map_workflow(socket) do
+    socket
+    |> assign(:map_generation, Ecto.UUID.generate())
+    |> assign(:map_state, :loading)
+    |> assign(:floorplan_image_w, nil)
+    |> assign(:floorplan_image_h, nil)
+    |> clear_coordinate_preview()
+  end
+
+  defp clear_coordinate_preview(socket) do
+    socket
+    |> assign(:coordinate_preview, nil)
+    |> assign(:coordinate_confirmation, false)
+    |> assign(:coordinate_apply_form, to_form(%{"phrase" => ""}, as: :coordinate_preview))
+  end
+
+  defp current_map_generation?(socket, generation) when is_binary(generation) do
+    socket.assigns.mode == :map and socket.assigns.map_generation == generation
+  end
+
+  defp current_map_generation?(_socket, _generation), do: false
+
+  defp current_coordinate_preview?(socket) do
+    case socket.assigns.coordinate_preview do
+      %{generation: generation, stop_level_id: stop_level_id} ->
+        current_map_generation?(socket, generation) and
+          match?(%StopLevel{id: ^stop_level_id}, socket.assigns.active_stop_level)
+
+      _ ->
+        false
+    end
+  end
+
+  defp coordinate_preview_error_message(:stale_preview),
+    do: "The station changed. Preview the coordinate changes again."
+
+  defp coordinate_preview_error_message(:busy),
+    do: "The coordinate update is busy. Preview the coordinate changes again."
+
+  defp map_state_from_string("loading"), do: :loading
+  defp map_state_from_string("ready"), do: :ready
+  defp map_state_from_string("degraded"), do: :degraded
+  defp map_state_from_string("offline"), do: :offline
+  defp map_state_from_string("reconnecting"), do: :reconnecting
+  defp map_state_from_string("fatal"), do: :fatal
+
+  defp save_alignment(
+         %{
+           "center_lat" => lat,
+           "center_lon" => lon,
+           "scale_mpp" => mpp,
+           "rotation_deg" => rot
+         },
+         socket
+       ) do
+    case socket.assigns.active_stop_level do
+      %StopLevel{} = stop_level ->
+        attrs = %{
+          floorplan_center_lat: lat,
+          floorplan_center_lon: lon,
+          floorplan_scale_mpp: mpp,
+          floorplan_rotation_deg: rot
+        }
+
+        case Gtfs.save_stop_level_alignment(stop_level, attrs) do
+          {:ok, updated} ->
+            {:noreply,
+             socket
+             |> assign(:active_stop_level, updated)
+             |> load_station_stop_levels_cache()
+             |> put_flash(:info, "Alignment saved")}
+
+          {:error, %Ecto.Changeset{} = changeset} ->
+            {:noreply,
+             put_flash(
+               socket,
+               :error,
+               alignment_changeset_error_message("Could not save alignment", changeset)
+             )}
+        end
+
+      _ ->
+        {:noreply, put_flash(socket, :error, "No level selected")}
+    end
+  end
 
   defp alignment_changeset_error_message(prefix, %Ecto.Changeset{} = changeset) do
     detail =

@@ -499,6 +499,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :cross_level_pathway_total, :integer, default: 0
   attr :cross_level_pathway_with_geo, :integer, default: 0
   attr :other_levels_floorplan_count, :integer, default: 0
+  attr :map_generation, :string, required: true
+  attr :map_state, :atom, default: :loading
+  attr :coordinate_preview, :map, default: nil
+  attr :coordinate_confirmation, :boolean, default: false
+  attr :coordinate_apply_form, :any, required: true
 
   def map_canvas(assigns) do
     floorplan_url =
@@ -552,6 +557,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
         data-image-natural-width={@image_natural_width}
         data-image-natural-height={@image_natural_height}
+        data-map-generation={@map_generation}
       >
         <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
         <div
@@ -709,7 +715,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </div>
           <% end %>
 
-          <div id="map-alignment-actions" class="ml-auto flex items-center gap-3">
+          <div
+            id="map-alignment-transform-controls"
+            class="flex flex-wrap gap-1"
+            aria-label="Floorplan transform controls"
+          >
+            <button
+              :for={{label, action, coarse} <- transform_controls()}
+              id={"map-transform-#{action}-#{if coarse, do: "coarse", else: "fine"}"}
+              type="button"
+              class="btn btn-sm min-h-11 min-w-11"
+              data-map-transform-action={action}
+              data-map-transform-coarse={to_string(coarse)}
+              title={label}
+            >
+              {label}
+            </button>
+          </div>
+
+          <div id="map-alignment-actions" class="ml-auto flex flex-wrap items-center gap-3">
             <span
               id="map-alignment-preview-status"
               class="text-xs text-base-content/70"
@@ -718,20 +742,147 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               Preview not ready
             </span>
             <button
+              id="map-alignment-save"
+              type="button"
+              class="btn btn-sm min-h-11"
+              disabled={@map_state != :ready}
+            >
+              Save alignment
+            </button>
+            <button
               id="map-alignment-apply"
               type="button"
-              class="btn btn-sm btn-primary"
-              title="Set lat/lon for child stops from the floorplan's current position on the map"
-              disabled={is_nil(@image_natural_width) or is_nil(@image_natural_height)}
+              class="btn btn-sm btn-primary min-h-11"
+              title="Preview coordinate changes before applying them"
+              disabled={
+                @map_state != :ready or is_nil(@image_natural_width) or is_nil(@image_natural_height)
+              }
             >
-              Save floorplan and stops
+              Preview coordinate changes
+            </button>
+            <button
+              :if={@map_state in [:offline, :degraded, :fatal]}
+              id="map-alignment-retry"
+              type="button"
+              class="btn btn-sm min-h-11"
+              phx-click="retry_map_alignment"
+            >
+              Retry map
             </button>
           </div>
         </div>
+
+        <%= if @coordinate_preview do %>
+          <section
+            id="coordinate-preview"
+            class="mt-5 border border-warning/40 bg-warning/10 p-4"
+            aria-labelledby="coordinate-preview-heading"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 id="coordinate-preview-heading" class="font-semibold">
+                  Preview coordinate changes
+                </h3>
+                <p class="text-sm text-base-content/70">
+                  {@coordinate_preview.stop_count} child stops will be updated. There is no one-click undo.
+                </p>
+              </div>
+              <button
+                id="confirm-coordinate-preview"
+                type="button"
+                class="btn btn-warning min-h-11"
+                phx-click="open_coordinate_preview_confirmation"
+              >
+                Apply preview
+              </button>
+            </div>
+            <div class="mt-3 overflow-x-auto">
+              <table id="coordinate-preview-table" class="table table-sm">
+                <thead>
+                  <tr>
+                    <th>Stop</th>
+                    <th class="text-right">Before</th>
+                    <th class="text-right">After</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    :for={row <- @coordinate_preview.rows}
+                    id={"coordinate-preview-row-#{row.stop_id}"}
+                  >
+                    <td class="font-mono text-xs">{row.stop_id}</td>
+                    <td class="text-right text-xs">{coordinate_pair(row.old_lat, row.old_lon)}</td>
+                    <td class="text-right text-xs">{coordinate_pair(row.new_lat, row.new_lon)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        <% end %>
+
+        <%= if @coordinate_confirmation do %>
+          <section
+            id="coordinate-preview-confirmation"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="coordinate-preview-confirmation-heading"
+            class="mt-4 border border-error/40 bg-base-100 p-4 shadow-lg"
+          >
+            <h3 id="coordinate-preview-confirmation-heading" class="font-semibold">
+              Apply coordinate changes?
+            </h3>
+            <p class="mt-1 text-sm text-base-content/70">
+              Type APPLY to confirm {@coordinate_preview.stop_count} coordinate updates. This action has no one-click undo.
+            </p>
+            <.form
+              for={@coordinate_apply_form}
+              id="coordinate-preview-confirmation-form"
+              class="mt-3 flex flex-wrap items-end gap-2"
+              phx-submit="apply_coordinate_preview"
+            >
+              <.input
+                field={@coordinate_apply_form[:phrase]}
+                type="text"
+                label="Confirmation"
+                autocomplete="off"
+              />
+              <button id="apply-coordinate-preview" type="submit" class="btn btn-error min-h-11">
+                Apply coordinates
+              </button>
+              <button
+                id="cancel-coordinate-preview"
+                type="button"
+                class="btn btn-ghost min-h-11"
+                phx-click="cancel_coordinate_preview"
+              >
+                Cancel
+              </button>
+            </.form>
+          </section>
+        <% end %>
       </div>
     </div>
     """
   end
+
+  defp transform_controls do
+    [
+      {"←", "left", false},
+      {"← 10", "left", true},
+      {"→", "right", false},
+      {"→ 10", "right", true},
+      {"↑", "up", false},
+      {"↓", "down", false},
+      {"↺", "rotate-left", false},
+      {"↻", "rotate-right", true},
+      {"−", "scale-down", false},
+      {"+", "scale-up", true},
+      {"Reset", "reset", false}
+    ]
+  end
+
+  defp coordinate_pair(nil, nil), do: "—"
+  defp coordinate_pair(lat, lon), do: "#{lat}, #{lon}"
 
   # ============================================================================
   # Diagram Canvas
