@@ -625,6 +625,25 @@ defmodule GtfsPlanner.AccountsTest do
 
       refute Repo.get_by(UserToken, user_id: user.id)
     end
+
+    test "consumes the reset token so a replay cannot resolve the user again", %{user: user} do
+      token =
+        extract_user_token(fn url ->
+          Accounts.deliver_user_reset_password_instructions(user, fn token ->
+            "#{url}/users/reset_password/#{token}"
+          end)
+        end)
+
+      assert Accounts.get_user_by_reset_password_token(token).id == user.id
+
+      {:ok, _updated_user} =
+        Accounts.reset_user_password(user, %{
+          password: "new valid password",
+          password_confirmation: "new valid password"
+        })
+
+      refute Accounts.get_user_by_reset_password_token(token)
+    end
   end
 
   describe "invite_user/2" do
