@@ -32,6 +32,26 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
   @size_classes %{"sm" => "btn-sm", "md" => nil, "lg" => "btn-lg"}
 
+  # Every word `#ds-status-badge-demo` renders, in page order. Pinned independently
+  # of core_components.ex: the vocabulary is the contract the normative pages
+  # document, so the test must fail if either side drifts.
+  @status_demo_words [
+    "Pass",
+    "Completed",
+    "Running",
+    "In progress",
+    "Info",
+    "Warning",
+    "Failed",
+    "Error",
+    "Started",
+    "Draft",
+    "Active",
+    "Deactivated",
+    "Invitation pending",
+    "Unknown"
+  ]
+
   # The demo route rows the tables page renders. Pinned here so the page cannot
   # quietly lose a row.
   @sample_route_rows [
@@ -755,6 +775,43 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       assert has_element?(view, "#ds-flash-demo #ds-flash-info", "Sample info message")
       assert has_element?(view, "#ds-flash-demo #ds-flash-error", "Sample error message")
     end
+
+    # AC-7: the administration membership states are documented on the normative
+    # page, so a consumer reads them from the design system instead of inventing
+    # a local badge.
+    test "documents the administration membership statuses", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/feedback")
+
+      assert has_element?(view, "#ds-status-badge-demo", "Active")
+      assert has_element?(view, "#ds-status-badge-demo", "Deactivated")
+      assert has_element?(view, "#ds-status-badge-demo", "Invitation pending")
+    end
+
+    # C-007: the normative example is the whole vocabulary, in order. Pinned here
+    # independently of core_components.ex so that adding a status to one side
+    # without the other fails.
+    test "renders the full status vocabulary in one demo", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/feedback")
+
+      assert demo_status_words(render(view)) == @status_demo_words
+    end
+  end
+
+  # C-007: the two normative status demos document one vocabulary. If a status is
+  # added to either page alone, the pages disagree about what the app can say.
+  describe "status vocabulary synchronization" do
+    test "badges and feedback pages render the same status vocabulary", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, badges_view, _html} = live(conn, ~p"/design/badges")
+      {:ok, feedback_view, _html} = live(conn, ~p"/design/feedback")
+
+      assert demo_status_words(render(badges_view)) == demo_status_words(render(feedback_view))
+    end
   end
 
   describe "navigation page" do
@@ -1385,5 +1442,15 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("#{scope} [phx-click]:not([phx-target])")
     |> LazyHTML.attribute("phx-click")
+  end
+
+  # The rendered word of each badge in the status demo, in page order.
+  # <.status_badge> puts the label in the `font-medium` span beside its
+  # aria-hidden dot, so this reads what a sighted user actually sees.
+  defp demo_status_words(html) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#ds-status-badge-demo span.font-medium")
+    |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
   end
 end

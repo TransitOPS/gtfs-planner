@@ -414,6 +414,13 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         never color alone. Known values render explicit labels; unrecognized or blank
         values render <code class="font-mono text-sm">Unknown</code> with a neutral treatment.
       </p>
+      <p class="mt-1 text-sm text-base-content/60">
+        Membership states share this vocabulary: <code class="font-mono text-sm">:active</code>
+        is available, <code class="font-mono text-sm">:deactivated</code>
+        is access revoked, <code class="font-mono text-sm">:invitation_pending</code>
+        is awaiting the invitee. A role is a category, not a state — render roles as
+        neutral chips, never as a badge colored like a status.
+      </p>
 
       <div id="ds-status-badge-demo" class="mt-3 flex flex-wrap gap-2 border border-base-300 p-4">
         <.status_badge status={:pass} />
@@ -426,6 +433,9 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         <.status_badge status={:error} />
         <.status_badge status={:started} />
         <.status_badge status={:draft} />
+        <.status_badge status={:active} />
+        <.status_badge status={:deactivated} />
+        <.status_badge status={:invitation_pending} />
         <.status_badge status={:some_unknown_thing} />
       </div>
       <p class="mt-3">
@@ -689,8 +699,9 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
   `<.callout>`, `<.status_badge>`, `<.skeleton>`, and `<.empty_state>` components.
 
   The four graduated components take literal values and emit no events, so they render
-  statically: every `<.callout>` kind, the full `<.status_badge>` vocabulary (including
-  the muted fallback an unknown status gets), a `<.skeleton>`, and both empty states —
+  statically: every `<.callout>` kind, the full `<.status_badge>` vocabulary (run states,
+  the three membership states, and the muted fallback an unknown status gets), a
+  `<.skeleton>`, and both empty states —
   first-use with a primary CTA and filtered-empty with a clear-search undo.
 
   Both flash examples pass inner-block content and an explicit `id`. The content is
@@ -822,6 +833,13 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         never color alone. Known values render explicit labels; unrecognized or blank
         values render <code class="font-mono text-sm">Unknown</code> with a neutral treatment.
       </p>
+      <p class="mt-1 text-sm text-base-content/60">
+        Membership states share this vocabulary: <code class="font-mono text-sm">:active</code>
+        is available, <code class="font-mono text-sm">:deactivated</code>
+        is access revoked, <code class="font-mono text-sm">:invitation_pending</code>
+        is awaiting the invitee. A role is a category, not a state — render roles as
+        neutral chips, never as a badge colored like a status.
+      </p>
 
       <div id="ds-status-badge-demo" class="mt-3 flex flex-wrap gap-2 border border-base-300 p-4">
         <.status_badge status={:pass} />
@@ -834,6 +852,9 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
         <.status_badge status={:error} />
         <.status_badge status={:started} />
         <.status_badge status={:draft} />
+        <.status_badge status={:active} />
+        <.status_badge status={:deactivated} />
+        <.status_badge status={:invitation_pending} />
         <.status_badge status={:some_unknown_thing} />
       </div>
       <p class="mt-3">

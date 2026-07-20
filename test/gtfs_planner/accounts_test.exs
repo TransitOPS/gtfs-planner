@@ -6,6 +6,7 @@ defmodule GtfsPlanner.AccountsTest do
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Versions.GtfsVersion
   import GtfsPlanner.OrganizationsFixtures
+  import Swoosh.TestAssertions
 
   describe "get_user!/1" do
     test "raises if id does not exist" do
@@ -684,6 +685,238 @@ defmodule GtfsPlanner.AccountsTest do
     end
   end
 
+  describe "invite_member/4" do
+    setup do
+      previous_mailer = Application.get_env(:gtfs_planner, GtfsPlanner.Mailer)
+
+      on_exit(fn ->
+        if previous_mailer do
+          Application.put_env(:gtfs_planner, GtfsPlanner.Mailer, previous_mailer)
+        else
+          Application.delete_env(:gtfs_planner, GtfsPlanner.Mailer)
+        end
+      end)
+
+      %{organization: organization_fixture()}
+    end
+
+    test "commits user, membership, and usable token, then sends exactly one invite", %{
+      organization: organization
+    } do
+      email = unique_user_email()
+
+      assert {:ok, %User{} = user} =
+               Accounts.invite_member(
+                 String.upcase(email),
+                 organization.id,
+                 ["pathways_studio_admin"],
+                 &invite_url/1
+               )
+
+      assert user.email == email
+
+      assert membership =
+               Repo.get_by(UserOrgMembership, user_id: user.id, organization_id: organization.id)
+
+      assert membership.roles == ["pathways_studio_admin"]
+      assert membership.deactivated_at == nil
+
+      assert [invite_token] = invite_tokens(user)
+      assert invite_token.sent_to == email
+
+      assert_email_sent(to: [{"", email}])
+      assert_no_email_sent()
+    end
+
+    test "delivers a token that resolves back to the invited user", %{organization: organization} do
+      email = unique_user_email()
+
+      token =
+        extract_user_token(fn _url ->
+          Accounts.invite_member(
+            email,
+            organization.id,
+            ["pathways_studio_editor"],
+            &invite_url/1
+          )
+
+          {:ok, :sent}
+        end)
+
+      assert Accounts.get_user_by_invite_token(token).email == email
+    end
+
+    test "reuses an existing user instead of creating a second account", %{
+      organization: organization
+    } do
+      existing = user_fixture()
+
+      assert {:ok, %User{id: id}} =
+               Accounts.invite_member(
+                 existing.email,
+                 organization.id,
+                 ["pathways_studio_editor"],
+                 &invite_url/1
+               )
+
+      assert id == existing.id
+      assert Repo.aggregate(from(u in User, where: u.email == ^existing.email), :count) == 1
+    end
+
+    test "returns an insert-action changeset and commits nothing for invalid input", %{
+      organization: organization
+    } do
+      users_before = Repo.aggregate(User, :count)
+      memberships_before = Repo.aggregate(UserOrgMembership, :count)
+
+      assert {:error, changeset} =
+               Accounts.invite_member("not-an-email", organization.id, [], &invite_url/1)
+
+      assert changeset.action == :insert
+      assert errors_on(changeset).email == ["must have the @ sign and no spaces"]
+      assert errors_on(changeset).roles == ["must select at least one role"]
+
+      assert Repo.aggregate(User, :count) == users_before
+      assert Repo.aggregate(UserOrgMembership, :count) == memberships_before
+      assert_no_email_sent()
+    end
+
+    test "rejects the system administrator role before touching the database", %{
+      organization: organization
+    } do
+      users_before = Repo.aggregate(User, :count)
+
+      assert {:error, changeset} =
+               Accounts.invite_member(
+                 unique_user_email(),
+                 organization.id,
+                 ["administrator"],
+                 &invite_url/1
+               )
+
+      assert errors_on(changeset).roles == ["contains an invalid role"]
+      assert Repo.aggregate(User, :count) == users_before
+      assert_no_email_sent()
+    end
+
+    test "rolls back the whole command when the membership already exists", %{
+      organization: organization
+    } do
+      email = unique_user_email()
+
+      assert {:ok, user} =
+               Accounts.invite_member(
+                 email,
+                 organization.id,
+                 ["pathways_studio_editor"],
+                 &invite_url/1
+               )
+
+      assert_email_sent(to: [{"", email}])
+
+      tokens_before = length(invite_tokens(user))
+      memberships_before = Repo.aggregate(UserOrgMembership, :count)
+
+      assert {:error, changeset} =
+               Accounts.invite_member(
+                 email,
+                 organization.id,
+                 ["pathways_studio_admin"],
+                 &invite_url/1
+               )
+
+      assert changeset.action == :insert
+
+      assert errors_on(changeset).base == [
+               "This person is already a member of this organization."
+             ]
+
+      assert length(invite_tokens(user)) == tokens_before
+      assert Repo.aggregate(UserOrgMembership, :count) == memberships_before
+
+      assert Repo.get_by(UserOrgMembership,
+               user_id: user.id,
+               organization_id: organization.id
+             ).roles == ["pathways_studio_editor"]
+
+      assert_no_email_sent()
+    end
+
+    test "adds a second membership and token for a user who belongs to another organization", %{
+      organization: organization
+    } do
+      other_organization = organization_fixture()
+      email = unique_user_email()
+
+      assert {:ok, user} =
+               Accounts.invite_member(
+                 email,
+                 other_organization.id,
+                 ["pathways_studio_editor"],
+                 &invite_url/1
+               )
+
+      assert {:ok, %User{id: reused_id}} =
+               Accounts.invite_member(
+                 email,
+                 organization.id,
+                 ["pathways_studio_admin"],
+                 &invite_url/1
+               )
+
+      assert reused_id == user.id
+
+      assert Repo.aggregate(from(m in UserOrgMembership, where: m.user_id == ^user.id), :count) ==
+               2
+
+      assert length(invite_tokens(user)) == 2
+    end
+
+    test "rolls back the new user when the organization does not exist" do
+      users_before = Repo.aggregate(User, :count)
+      tokens_before = Repo.aggregate(UserToken, :count)
+
+      assert {:error, changeset} =
+               Accounts.invite_member(
+                 unique_user_email(),
+                 Ecto.UUID.generate(),
+                 ["pathways_studio_editor"],
+                 &invite_url/1
+               )
+
+      assert changeset.action == :insert
+      assert Repo.aggregate(User, :count) == users_before
+      assert Repo.aggregate(UserToken, :count) == tokens_before
+      assert Repo.aggregate(UserOrgMembership, :count) == 0
+      assert_no_email_sent()
+    end
+
+    test "keeps membership and token committed when delivery fails after commit", %{
+      organization: organization
+    } do
+      Application.put_env(:gtfs_planner, GtfsPlanner.Mailer,
+        adapter: GtfsPlanner.MailerFailureAdapter
+      )
+
+      email = unique_user_email()
+
+      assert {:partial, :delivery_failed, %User{} = user, reason} =
+               Accounts.invite_member(
+                 email,
+                 organization.id,
+                 ["pathways_studio_editor"],
+                 &invite_url/1
+               )
+
+      assert reason == :simulated_delivery_failure
+      assert user.email == email
+
+      assert Repo.get_by(UserOrgMembership, user_id: user.id, organization_id: organization.id)
+      assert [_invite_token] = invite_tokens(user)
+      assert_no_email_sent()
+    end
+  end
+
   describe "deliver_user_invite/2" do
     setup do
       %{user: user_fixture()}
@@ -1249,5 +1482,11 @@ defmodule GtfsPlanner.AccountsTest do
       assert Repo.aggregate(GtfsVersion, :count, :id) == version_count
       assert Repo.aggregate(UserOrgMembership, :count, :id) == membership_count
     end
+  end
+
+  defp invite_url(token), do: "http://localhost:4000/users/accept_invite/#{token}"
+
+  defp invite_tokens(%User{} = user) do
+    Repo.all(from t in UserToken, where: t.user_id == ^user.id and t.context == "invite")
   end
 end

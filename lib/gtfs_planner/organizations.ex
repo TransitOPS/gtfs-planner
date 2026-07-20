@@ -5,10 +5,13 @@ defmodule GtfsPlanner.Organizations do
 
   import Ecto.Query, warn: false
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Organizations.AdminReadAdapter
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Organizations.ApiKey
   alias GtfsPlanner.Accounts.{User, UserOrgMembership}
   alias GtfsPlanner.Versions
+
+  @default_admin_read_adapter AdminReadAdapter.Repo
 
   @doc """
   Returns the list of organizations.
@@ -471,7 +474,77 @@ defmodule GtfsPlanner.Organizations do
     end
   end
 
+  @doc """
+  Lists organizations for the administration screens.
+
+  Unlike `list_organizations/0`, this returns an explicit outcome so the caller
+  can tell a working empty list apart from a database connection that is
+  temporarily unavailable.
+
+  ## Examples
+
+      iex> list_organizations_for_admin()
+      {:ok, [%Organization{}, ...]}
+
+      iex> list_organizations_for_admin()
+      {:error, :unavailable}
+  """
+  @spec list_organizations_for_admin() ::
+          {:ok, [Organization.t()]} | {:error, :unavailable}
+  def list_organizations_for_admin do
+    admin_read_adapter().list_organizations()
+  end
+
+  @doc """
+  Fetches one organization for the administration screens.
+
+  The id must already be a well-formed UUID; malformed route text is classified
+  by the caller before it reaches this function.
+
+  ## Examples
+
+      iex> fetch_organization_for_admin(organization_id)
+      {:ok, %Organization{}}
+
+      iex> fetch_organization_for_admin(unknown_organization_id)
+      {:error, :not_found}
+  """
+  @spec fetch_organization_for_admin(Ecto.UUID.t()) ::
+          {:ok, Organization.t()} | {:error, :not_found | :unavailable}
+  def fetch_organization_for_admin(id) do
+    admin_read_adapter().fetch_organization(id)
+  end
+
+  @doc """
+  Lists an organization's members for the administration screens.
+
+  Members keep the `list_users_in_organization/1` shape.
+
+  ## Examples
+
+      iex> list_users_for_admin(organization_id)
+      {:ok, [%{user: %User{}, roles: ["pathways_studio_admin"], deactivated_at: nil}, ...]}
+
+      iex> list_users_for_admin(organization_id)
+      {:error, :unavailable}
+  """
+  @spec list_users_for_admin(Ecto.UUID.t()) ::
+          {:ok, [AdminReadAdapter.member()]} | {:error, :unavailable}
+  def list_users_for_admin(organization_id) do
+    admin_read_adapter().list_users(organization_id)
+  end
+
   # Private helper functions
+
+  # Resolved per call so tests and future runtime configuration take effect
+  # without recompiling this context.
+  defp admin_read_adapter do
+    Application.get_env(
+      :gtfs_planner,
+      :organizations_admin_read_adapter,
+      @default_admin_read_adapter
+    )
+  end
 
   defp insert_organization(attrs) do
     %Organization{}

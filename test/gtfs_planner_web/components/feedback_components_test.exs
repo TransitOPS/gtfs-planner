@@ -188,6 +188,109 @@ defmodule GtfsPlannerWeb.Components.FeedbackComponentsTest do
     end
   end
 
+  # AC-7 / C-007: administration membership states are part of the one graduated
+  # vocabulary, not a locally rebuilt badge. C-009 keeps every state colour *plus*
+  # text, so the word survives a greyscale screenshot and a colourblind reader.
+  describe "status_badge/1 administration vocabulary" do
+    test "renders active as Active with a success tone" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.status_badge status={:active} />
+        """)
+
+      assert badge_word(html) == "Active"
+      assert badge_word_class(html) =~ "text-success"
+      assert badge_dot_class(html) =~ "bg-success"
+    end
+
+    test "renders deactivated as Deactivated with an error tone" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.status_badge status={:deactivated} />
+        """)
+
+      assert badge_word(html) == "Deactivated"
+      assert badge_word_class(html) =~ "text-error"
+      assert badge_dot_class(html) =~ "bg-error"
+    end
+
+    test "renders invitation_pending as Invitation pending with a warning tone" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.status_badge status={:invitation_pending} />
+        """)
+
+      assert badge_word(html) == "Invitation pending"
+      assert badge_word_class(html) =~ "text-warning"
+      assert badge_dot_class(html) =~ "bg-warning"
+    end
+
+    test "accepts the administration statuses as strings" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.status_badge status="invitation_pending" />
+        """)
+
+      assert badge_word(html) == "Invitation pending"
+      refute badge_word(html) == "Unknown"
+    end
+
+    test "gives each administration status a distinct tone" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.status_badge status={:active} />
+        <.status_badge status={:deactivated} />
+        <.status_badge status={:invitation_pending} />
+        """)
+
+      dots =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("span[aria-hidden='true']")
+        |> LazyHTML.attribute("class")
+
+      assert Enum.count(dots) == 3
+      assert dots == Enum.uniq(dots)
+    end
+
+    test "pairs every administration status with a visible word beside an aria-hidden dot" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.status_badge status={:deactivated} />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "span[aria-hidden='true']")) == 1
+      assert LazyHTML.text(LazyHTML.query(doc, "span[aria-hidden='true']")) == ""
+      assert LazyHTML.text(doc) =~ "Deactivated"
+    end
+
+    test "label override still applies to an administration status" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.status_badge status={:invitation_pending} label="Awaiting first sign-in" />
+        """)
+
+      assert badge_word(html) == "Awaiting first sign-in"
+      assert badge_word_class(html) =~ "text-warning"
+    end
+  end
+
   describe "status_badge/1 neutral unknown fallback" do
     test "renders Unknown for unrecognized atom status" do
       assigns = %{}
@@ -249,5 +352,32 @@ defmodule GtfsPlannerWeb.Components.FeedbackComponentsTest do
 
       assert html =~ "Building graph"
     end
+  end
+
+  # <.status_badge> renders an aria-hidden dot span followed by a `font-medium`
+  # word span. Reading the two separately keeps the assertions on the rendered
+  # label and tone rather than on a raw-HTML substring.
+  defp badge_word(html) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("span.font-medium")
+    |> LazyHTML.text()
+    |> String.trim()
+  end
+
+  defp badge_word_class(html) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("span.font-medium")
+    |> LazyHTML.attribute("class")
+    |> List.first()
+  end
+
+  defp badge_dot_class(html) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("span[aria-hidden='true']")
+    |> LazyHTML.attribute("class")
+    |> List.first()
   end
 end

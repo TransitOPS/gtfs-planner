@@ -97,9 +97,9 @@ defmodule GtfsPlannerWeb.AccessControlTest do
     test "admin can access /admin/users", %{conn: conn, user: user, organization: organization} do
       add_role(user, organization, [:pathways_studio_admin])
 
-      {:ok, _view, html} = live(conn, ~p"/admin/users")
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
 
-      assert html =~ "Manage Users"
+      assert has_element?(view, "#members-state")
     end
 
     test "editor cannot access /admin/users", %{

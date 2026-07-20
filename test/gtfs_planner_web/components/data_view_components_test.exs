@@ -5,6 +5,8 @@ defmodule GtfsPlannerWeb.DataViewComponentsTest do
   import Phoenix.Component
   import GtfsPlannerWeb.CoreComponents
 
+  alias Phoenix.LiveView.LiveStream
+
   describe "table/1 — static rows" do
     test "renders one table, one tbody, and one row per record" do
       assigns = %{rows: [%{id: 1, name: "A"}, %{id: 2, name: "B"}]}
@@ -280,6 +282,121 @@ defmodule GtfsPlannerWeb.DataViewComponentsTest do
     end
   end
 
+  # AC-7 / C-009: two 44 px actions must reflow inside a narrow stacked row instead
+  # of overflowing it. C-008 / cross-step-contract: wrapping is the only change —
+  # the table keeps one <table>, one <tbody>, one row per record, and stream mode.
+  describe "table/1 — wrapped action groups" do
+    test "action group wraps" do
+      assigns = %{rows: [%{id: 1, name: "A"}]}
+
+      html =
+        rendered_to_string(~H"""
+        <.table id="t" rows={@rows} responsive="stack">
+          <:col :let={r} label="Name">{r.name}</:col>
+          <:action :let={r}>
+            <button>Resend invite {r.name}</button>
+          </:action>
+          <:action :let={r}>
+            <button>Deactivate {r.name}</button>
+          </:action>
+        </.table>
+        """)
+
+      assert action_group_class(html) =~ "flex-wrap"
+    end
+
+    test "keeps both actions in one action cell per row" do
+      assigns = %{rows: [%{id: 1, name: "A"}, %{id: 2, name: "B"}]}
+
+      html =
+        rendered_to_string(~H"""
+        <.table id="t" rows={@rows} row_id={&"member-#{&1.id}"} responsive="stack">
+          <:col :let={r} label="Name">{r.name}</:col>
+          <:action :let={r}>
+            <button>Resend invite {r.name}</button>
+          </:action>
+          <:action :let={r}>
+            <button>Deactivate {r.name}</button>
+          </:action>
+        </.table>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "table")) == 1
+      assert Enum.count(LazyHTML.query(doc, "tbody")) == 1
+      assert Enum.count(LazyHTML.query(doc, "tbody tr")) == 2
+      assert Enum.count(LazyHTML.query(doc, "td[data-label=\"Actions\"]")) == 2
+      assert Enum.count(LazyHTML.query(doc, "tr#member-1 td[data-label=\"Actions\"] button")) == 2
+      assert Enum.count(LazyHTML.query(doc, "tr#member-2 td[data-label=\"Actions\"] button")) == 2
+    end
+
+    test "wraps action groups in scroll mode too" do
+      assigns = %{rows: [%{id: 1, name: "A"}]}
+
+      html =
+        rendered_to_string(~H"""
+        <.table id="t" rows={@rows} responsive="scroll">
+          <:col :let={r} label="Name">{r.name}</:col>
+          <:action :let={r}>
+            <button>Deactivate {r.name}</button>
+          </:action>
+        </.table>
+        """)
+
+      assert action_group_class(html) =~ "flex-wrap"
+    end
+
+    test "keeps stream semantics with wrapped actions" do
+      # The real struct `stream/4` puts in `@streams.members`, built directly
+      # because `stream/4` needs a mounted socket that a component test has no
+      # way to produce. table/1 branches on this struct type, so a plain list
+      # would not exercise the stream path at all.
+      members = LiveStream.new(:members, 0, [%{id: "1", name: "A"}, %{id: "2", name: "B"}], [])
+
+      assigns = %{members: members}
+
+      html =
+        rendered_to_string(~H"""
+        <.table id="members" rows={@members} responsive="stack">
+          <:col :let={{_id, r}} label="Name">{r.name}</:col>
+          <:action :let={{_id, r}}>
+            <button>Resend invite {r.name}</button>
+          </:action>
+          <:action :let={{_id, r}}>
+            <button>Deactivate {r.name}</button>
+          </:action>
+        </.table>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      tbody = LazyHTML.query(doc, "tbody#members")
+
+      assert Enum.count(tbody) == 1
+      assert LazyHTML.attribute(tbody, "phx-update") == ["stream"]
+      assert Enum.count(LazyHTML.query(doc, "tbody#members > tr")) == 2
+      assert Enum.count(LazyHTML.query(doc, "tr#members-1")) == 1
+      assert Enum.count(LazyHTML.query(doc, "tr#members-2")) == 1
+      assert action_group_class(html) =~ "flex-wrap"
+    end
+
+    test "leaves the action cell absent when no action slot is given" do
+      assigns = %{rows: [%{id: 1, name: "A"}]}
+
+      html =
+        rendered_to_string(~H"""
+        <.table id="t" rows={@rows} responsive="stack">
+          <:col :let={r} label="Name">{r.name}</:col>
+        </.table>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.empty?(LazyHTML.query(doc, "td[data-label=\"Actions\"]"))
+      assert Enum.count(LazyHTML.query(doc, "tbody tr")) == 1
+    end
+  end
+
   describe "pagination/1 — normalized range" do
     test "renders bounded range for first page" do
       assigns = %{page: 1, per_page: 10, total: 25}
@@ -505,5 +622,14 @@ defmodule GtfsPlannerWeb.DataViewComponentsTest do
 
       assert LazyHTML.attribute(next_btn, "disabled") == [""]
     end
+  end
+
+  # The action slot renders into a single flex container inside the Actions cell.
+  defp action_group_class(html) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("td[data-label=\"Actions\"] > div")
+    |> LazyHTML.attribute("class")
+    |> List.first()
   end
 end

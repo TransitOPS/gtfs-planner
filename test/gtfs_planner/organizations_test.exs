@@ -2,11 +2,16 @@ defmodule GtfsPlanner.OrganizationsTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Organizations
+  alias GtfsPlanner.Organizations.AdminReadAdapterMock
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Organizations.ApiKey
 
+  import ExUnit.CaptureLog
+  import Mox
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.AccountsFixtures
+
+  @adapter_key :organizations_admin_read_adapter
 
   describe "list_organizations/0" do
     test "returns all organizations" do
@@ -663,6 +668,236 @@ defmodule GtfsPlanner.OrganizationsTest do
 
       assert List.first(users).user.email == "alpha@example.com"
       assert List.last(users).user.email == "zulu@example.com"
+    end
+  end
+
+  describe "list_organizations_for_admin/0 with the default Repo adapter" do
+    test "returns every organization in the same shape as the raw read" do
+      org1 = organization_fixture()
+      org2 = organization_fixture()
+
+      assert Organizations.list_organizations_for_admin() == {:ok, [org1, org2]}
+    end
+
+    test "returns an empty list when no organization exists" do
+      assert Organizations.list_organizations_for_admin() == {:ok, []}
+    end
+  end
+
+  describe "fetch_organization_for_admin/1 with the default Repo adapter" do
+    test "returns the organization for a stored id" do
+      organization = organization_fixture()
+
+      assert Organizations.fetch_organization_for_admin(organization.id) ==
+               {:ok, organization}
+    end
+
+    test "returns not_found for a well-formed but absent organization id" do
+      assert Organizations.fetch_organization_for_admin(Ecto.UUID.generate()) ==
+               {:error, :not_found}
+    end
+
+    test "raises rather than reporting unavailable for a malformed organization id" do
+      assert_raise Ecto.Query.CastError, fn ->
+        Organizations.fetch_organization_for_admin("not-a-uuid")
+      end
+    end
+  end
+
+  describe "list_users_for_admin/1 with the default Repo adapter" do
+    test "returns members with the existing user, roles, and deactivated_at shape" do
+      org = organization_fixture()
+      user = user_fixture(%{email: "alpha@example.com"})
+
+      {:ok, _} =
+        Organizations.add_user_to_organization(user.id, org.id, ["pathways_studio_admin"])
+
+      assert {:ok, [member]} = Organizations.list_users_for_admin(org.id)
+      assert %{user: %GtfsPlanner.Accounts.User{}, roles: _, deactivated_at: _} = member
+      assert Enum.sort(Map.keys(member)) == [:deactivated_at, :roles, :user]
+      assert member.user.id == user.id
+      assert member.roles == ["pathways_studio_admin"]
+      assert member.deactivated_at == nil
+    end
+
+    test "returns exactly what the raw member read returns, including ordering" do
+      org = organization_fixture()
+      zulu = user_fixture(%{email: "zulu@example.com"})
+      alpha = user_fixture(%{email: "alpha@example.com"})
+
+      {:ok, _} = Organizations.add_user_to_organization(zulu.id, org.id)
+      {:ok, _} = Organizations.add_user_to_organization(alpha.id, org.id)
+      {:ok, _} = Organizations.deactivate_user_in_organization(zulu.id, org.id)
+
+      raw = Organizations.list_users_in_organization(org.id)
+
+      assert Organizations.list_users_for_admin(org.id) == {:ok, raw}
+      assert Enum.map(raw, & &1.user.email) == ["alpha@example.com", "zulu@example.com"]
+      assert Enum.find(raw, &(&1.user.id == zulu.id)).deactivated_at != nil
+    end
+
+    test "returns an empty list for an organization with no members" do
+      org = organization_fixture()
+
+      assert Organizations.list_users_for_admin(org.id) == {:ok, []}
+    end
+
+    test "returns an empty list for a well-formed but absent organization id" do
+      assert Organizations.list_users_for_admin(Ecto.UUID.generate()) == {:ok, []}
+    end
+
+    test "raises rather than reporting unavailable for a malformed organization id" do
+      assert_raise Ecto.Query.CastError, fn ->
+        Organizations.list_users_for_admin("not-a-uuid")
+      end
+    end
+  end
+
+  describe "administration reads with a configured adapter" do
+    setup :verify_on_exit!
+
+    setup do
+      previous = Application.fetch_env(:gtfs_planner, @adapter_key)
+      Application.put_env(:gtfs_planner, @adapter_key, AdminReadAdapterMock)
+
+      on_exit(fn ->
+        case previous do
+          {:ok, value} -> Application.put_env(:gtfs_planner, @adapter_key, value)
+          :error -> Application.delete_env(:gtfs_planner, @adapter_key)
+        end
+      end)
+
+      :ok
+    end
+
+    test "each wrapper delegates to the configured adapter" do
+      organization = organization_fixture()
+      member = %{user: user_fixture(), roles: ["pathways_studio_admin"], deactivated_at: nil}
+
+      expect(AdminReadAdapterMock, :list_organizations, fn -> {:ok, [organization]} end)
+
+      expect(AdminReadAdapterMock, :fetch_organization, fn id ->
+        assert id == organization.id
+        {:ok, organization}
+      end)
+
+      expect(AdminReadAdapterMock, :list_users, fn id ->
+        assert id == organization.id
+        {:ok, [member]}
+      end)
+
+      assert Organizations.list_organizations_for_admin() == {:ok, [organization]}
+      assert Organizations.fetch_organization_for_admin(organization.id) == {:ok, organization}
+      assert Organizations.list_users_for_admin(organization.id) == {:ok, [member]}
+    end
+
+    test "each wrapper reports unavailable when the configured adapter reports it" do
+      id = Ecto.UUID.generate()
+
+      expect(AdminReadAdapterMock, :list_organizations, fn -> {:error, :unavailable} end)
+      expect(AdminReadAdapterMock, :fetch_organization, fn _ -> {:error, :unavailable} end)
+      expect(AdminReadAdapterMock, :list_users, fn _ -> {:error, :unavailable} end)
+
+      assert Organizations.list_organizations_for_admin() == {:error, :unavailable}
+      assert Organizations.fetch_organization_for_admin(id) == {:error, :unavailable}
+      assert Organizations.list_users_for_admin(id) == {:error, :unavailable}
+    end
+
+    test "fetch_organization_for_admin/1 reports not_found when the adapter reports it" do
+      expect(AdminReadAdapterMock, :fetch_organization, fn _ -> {:error, :not_found} end)
+
+      assert Organizations.fetch_organization_for_admin(Ecto.UUID.generate()) ==
+               {:error, :not_found}
+    end
+
+    test "raw read APIs keep their current return values while an adapter is configured" do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      {:ok, _} =
+        Organizations.add_user_to_organization(user.id, organization.id, [
+          "pathways_studio_admin"
+        ])
+
+      assert Organizations.list_organizations() == [organization]
+      assert Organizations.get_organization(organization.id) == organization
+      assert Organizations.get_organization(Ecto.UUID.generate()) == nil
+
+      assert [%{user: %{id: user_id}, roles: ["pathways_studio_admin"], deactivated_at: nil}] =
+               Organizations.list_users_in_organization(organization.id)
+
+      assert user_id == user.id
+    end
+
+    test "an adapter exception is not translated into unavailable" do
+      expect(AdminReadAdapterMock, :list_organizations, fn -> raise ArgumentError, "boom" end)
+
+      assert_raise ArgumentError, "boom", fn ->
+        Organizations.list_organizations_for_admin()
+      end
+    end
+
+    test "the configured adapter is resolved per call, not memoized at compile time" do
+      Application.delete_env(:gtfs_planner, @adapter_key)
+      organization = organization_fixture()
+
+      assert Organizations.list_organizations_for_admin() == {:ok, [organization]}
+    end
+  end
+
+  describe "AdminReadAdapter.Repo connection failures" do
+    alias GtfsPlanner.Organizations.AdminReadAdapter
+
+    test "maps only DBConnection.ConnectionError to unavailable" do
+      id = Ecto.UUID.generate()
+
+      capture_log(fn ->
+        with_unreachable_repo(fn ->
+          assert AdminReadAdapter.Repo.list_organizations() == {:error, :unavailable}
+          assert AdminReadAdapter.Repo.fetch_organization(id) == {:error, :unavailable}
+          assert AdminReadAdapter.Repo.list_users(id) == {:error, :unavailable}
+        end)
+      end)
+    end
+
+    test "leaves a cast error visible instead of reporting unavailable" do
+      assert_raise Ecto.Query.CastError, fn ->
+        AdminReadAdapter.Repo.fetch_organization("not-a-uuid")
+      end
+
+      assert_raise Ecto.Query.CastError, fn ->
+        AdminReadAdapter.Repo.list_users("not-a-uuid")
+      end
+    end
+  end
+
+  # Points the calling process at a real but unreachable Postgres pool so that
+  # every checkout is dropped from the queue with a DBConnection.ConnectionError.
+  defp with_unreachable_repo(fun) do
+    {:ok, pid} =
+      GtfsPlanner.Repo.start_link(
+        name: nil,
+        hostname: "127.0.0.1",
+        port: 1,
+        username: "postgres",
+        password: "postgres",
+        database: "gtfs_planner_unreachable",
+        pool: DBConnection.ConnectionPool,
+        pool_size: 1,
+        queue_target: 20,
+        queue_interval: 20,
+        connect_timeout: 100,
+        log: false
+      )
+
+    previous = GtfsPlanner.Repo.get_dynamic_repo()
+    GtfsPlanner.Repo.put_dynamic_repo(pid)
+
+    try do
+      fun.()
+    after
+      GtfsPlanner.Repo.put_dynamic_repo(previous)
+      Supervisor.stop(pid)
     end
   end
 end

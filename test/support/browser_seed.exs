@@ -4,6 +4,9 @@
 #
 # User 1 (admin): browser-test@gtfs-planner.test — used by overlays.spec.js
 # User 2 (editor): diagram-test@gtfs-planner.test — used by diagram_keyboard.spec.js
+# User 3 (org admin): admin-contracts@gtfs-planner.test — used by
+#   admin_design_contracts.spec.js, together with its own "Admin Contracts Org"
+#   and its deterministic active/deactivated/pending/multi-role/long-email members.
 #
 # Both users belong to the same org. The editor user can access GTFS routes
 # because it has the pathways_studio_editor role and a session-scoped
@@ -166,7 +169,7 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: long-name routes for reflow tests")
 
-    # ── Auth fixtures for authentication.spec.js (Package 10) ──
+# ── Auth fixtures for authentication.spec.js (Package 10) ──
     #
     # Deterministic, test-only token fixtures. Each raw value is a fixed
     # 32-byte binary; only its SHA-256 digest is persisted (production-shaped
@@ -326,6 +329,101 @@ case Accounts.register_first_admin(%{
     )
 
     IO.puts("Browser seed: auth invite-expired user #{auth_invite_expired.email}")
+
+    # ── Administration design-contract fixtures (admin_design_contracts.spec.js) ──
+    #
+    # A dedicated organization keeps every administration mutation away from the
+    # organizations used by the other browser specs. The administrator below holds
+    # only `pathways_studio_admin`, so `AssignOrganization` resolves this
+    # organization from the session (the system-`administrator` org-skip does not
+    # apply) and `/admin/users` is scoped to it.
+    {:ok, admin_org} =
+      Organizations.create_organization(%{
+        name: "Admin Contracts Org",
+        alias: "admin-contracts"
+      })
+
+    {:ok, org_admin} =
+      Accounts.register_user(%{
+        email: "admin-contracts@gtfs-planner.test",
+        password: "AdminContracts123!"
+      })
+
+    Repo.update!(User.confirm_changeset(org_admin))
+
+    {:ok, _org_admin_membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: org_admin.id,
+        organization_id: admin_org.id,
+        roles: ["pathways_studio_admin"]
+      })
+
+    IO.puts("Browser seed: created organization admin #{org_admin.email} (id=#{org_admin.id})")
+
+    # An accepted member has a password. `Admin.Components.member_status/1` derives
+    # "Invitation pending" from a nil `hashed_password`, so accepted fixtures must
+    # be registered and pending fixtures must go through `User.invite_changeset/2`.
+    add_accepted_member = fn email, roles ->
+      {:ok, member} = Accounts.register_user(%{email: email, password: "ContractsMember123!"})
+      Repo.update!(User.confirm_changeset(member))
+
+      {:ok, _membership} =
+        Accounts.create_user_org_membership(%{
+          user_id: member.id,
+          organization_id: admin_org.id,
+          roles: roles
+        })
+
+      member
+    end
+
+    _active_member =
+      add_accepted_member.("contracts-active@gtfs-planner.test", ["pathways_studio_editor"])
+
+    _multi_role_member =
+      add_accepted_member.("contracts-multirole@gtfs-planner.test", [
+        "pathways_studio_admin",
+        "pathways_studio_editor"
+      ])
+
+    # Long local part and long domain, for reflow and target-size measurement.
+    _long_email_member =
+      add_accepted_member.(
+        "contracts-very-long-email-address-for-responsive-verification@long-domain-name-for-administration.gtfs-planner.test",
+        ["pathways_studio_editor"]
+      )
+
+    # Dedicated destructive target: the deactivation-confirmation workflow owns
+    # this row and restores it, so the file stays re-runnable.
+    _deactivation_target =
+      add_accepted_member.("contracts-deactivate-target@gtfs-planner.test", [
+        "pathways_studio_editor"
+      ])
+
+    # Already deactivated, so the "Activate user" row action is present on load.
+    deactivated_member =
+      add_accepted_member.("contracts-deactivated@gtfs-planner.test", ["pathways_studio_editor"])
+
+    {:ok, _deactivated_membership} =
+      Organizations.deactivate_user_in_organization(deactivated_member.id, admin_org.id)
+
+    # Invitation pending: `invite_user/2` uses `User.invite_changeset/2`, which
+    # sets no password, so the row renders "Invitation pending" and offers
+    # "Resend invite".
+    {:ok, pending_member} =
+      Accounts.invite_user("contracts-pending@gtfs-planner.test", admin_org.id)
+
+    {:ok, _pending_membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: pending_member.id,
+        organization_id: admin_org.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+    IO.puts(
+      "Browser seed: administration fixtures in #{admin_org.name} (id=#{admin_org.id}) — " <>
+        "active, multi-role, long-email, deactivate-target, deactivated, invitation-pending"
+    )
 
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"
