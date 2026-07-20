@@ -616,7 +616,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               {render_slot(col, @row_item.(row))}
             </td>
             <td :if={@action != []} data-label="Actions" class="w-0 font-semibold">
-              <div class="flex gap-4">
+              <div class="flex flex-wrap gap-4">
                 <%= for action <- @action do %>
                   {render_slot(action, @row_item.(row))}
                 <% end %>
@@ -1220,11 +1220,18 @@ defmodule GtfsPlannerWeb.CoreComponents do
   human labels and tones; unrecognized or blank values render `Unknown` with
   a neutral treatment. Pass `label` to override the displayed word.
 
+  Membership states use the same vocabulary: `:active` reads as available
+  (success), `:deactivated` as access revoked (error), and
+  `:invitation_pending` as awaiting the invitee (warning). Roles are
+  categories, not statuses — render them as neutral chips, never as a badge
+  colored like a state.
+
   ## Examples
 
       <.status_badge status={:pass} />
       <.status_badge status="running" />
       <.status_badge status={run.status} label="In progress" />
+      <.status_badge status={:invitation_pending} />
   """
   attr :status, :any, required: true, doc: "the status value, as a string or atom"
   attr :label, :string, default: nil, doc: "overrides the displayed word"
@@ -1241,7 +1248,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
     "info" => {"Info", "bg-info", "text-info"},
     "started" => {"Started", "bg-base-content/40", "text-base-content/60"},
     "draft" => {"Draft", "bg-base-content/40", "text-base-content/60"},
-    "in_progress" => {"In progress", "bg-info", "text-info"}
+    "in_progress" => {"In progress", "bg-info", "text-info"},
+    "active" => {"Active", "bg-success", "text-success"},
+    "deactivated" => {"Deactivated", "bg-error", "text-error"},
+    "invitation_pending" => {"Invitation pending", "bg-warning", "text-warning"}
   }
 
   @status_unknown {"Unknown", "bg-base-content/40", "text-base-content/60"}
