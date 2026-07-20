@@ -61,7 +61,15 @@ const APPLY_DISABLED_TITLE = "Waiting for the floorplan image to load";
 // Preview status copy (operator-facing, plain language). Shown before the
 // floorplan image is ready or after the active marker layer is cleared.
 const PREVIEW_STATUS_NOT_READY = "Preview not ready";
-const MAP_STATES = new Set(["loading", "ready", "degraded", "offline", "reconnecting", "fatal"]);
+const MAP_STATES = new Set([
+  "initializing",
+  "ready",
+  "imagery_unavailable",
+  "buildings_degraded",
+  "offline",
+  "reconnecting",
+  "fatal",
+]);
 
 // Ready-state status: front-load the two deterministic counts. Diagram-mode pins
 // are anchored to the floorplan image; geo-mode pins fall back to map position.
@@ -267,7 +275,7 @@ const MapAlignmentHook = {
 
     this.leafletMap = map;
     this._tileLayers = [imageryLayer, roadsLayer];
-    this._emitMapState("loading");
+    this._emitMapState("initializing");
     this._bindRuntimeStateEvents();
 
     this._activePinsRoot = root.querySelector("#map-alignment-pins-active");
@@ -1078,10 +1086,10 @@ const MapAlignmentHook = {
 
   _bindRuntimeStateEvents() {
     const markReady = () => this._emitMapState("ready");
-    const markDegraded = () => this._emitMapState("degraded");
+    const markImageryUnavailable = () => this._emitMapState("imagery_unavailable");
     this._tileLayers.filter(Boolean).forEach((layer) => {
       layer.on?.("load", markReady);
-      layer.on?.("tileerror", markDegraded);
+      layer.on?.("tileerror", markImageryUnavailable);
     });
     this._onOnline = () => {
       this._emitMapState("reconnecting");
@@ -1145,7 +1153,7 @@ const MapAlignmentHook = {
           }
         }).addTo(this.leafletMap);
       })
-      .catch(() => { /* silent: buildings overlay is optional */ });
+      .catch(() => this._emitMapState("buildings_degraded"));
   },
 
   _handleZoomSliderInput(e) {

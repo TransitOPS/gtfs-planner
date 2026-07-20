@@ -1242,6 +1242,56 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       refute has_element?(view, "#map-alignment-apply[disabled]")
     end
 
+    test "optional building degradation keeps alignment controls usable and fatal failure explains disablement",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           stop_level: stop_level
+         } do
+      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "map"})
+      [_, generation] = Regex.run(~r/data-map-generation="([^"]+)"/, render(view))
+
+      render_hook(view, "set_image_natural_size", %{
+        "generation" => generation,
+        "w" => 1024,
+        "h" => 768
+      })
+
+      render_hook(view, "map_state", %{
+        "generation" => generation,
+        "state" => "buildings_degraded"
+      })
+
+      refute has_element?(view, "#map-alignment-save[disabled]")
+      refute has_element?(view, "#map-alignment-apply[disabled]")
+
+      assert has_element?(
+               view,
+               "#map-alignment-state",
+               "Building outlines are unavailable. You can continue aligning the floorplan."
+             )
+
+      render_hook(view, "map_state", %{"generation" => generation, "state" => "fatal"})
+
+      assert has_element?(view, "#map-alignment-save[disabled]")
+      assert has_element?(view, "#map-alignment-apply[disabled]")
+
+      assert has_element?(
+               view,
+               "#map-alignment-disabled-reason",
+               "Map service is unavailable. Retry the map before saving or previewing coordinates."
+             )
+    end
+
     test "infer button is hidden in map mode", %{
       conn: conn,
       user: user,

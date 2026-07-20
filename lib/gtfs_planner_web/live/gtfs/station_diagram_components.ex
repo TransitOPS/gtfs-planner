@@ -8,11 +8,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   import GtfsPlannerWeb.CoreComponents
   import GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
 
-  alias GtfsPlannerWeb.Components.TransitPresentation
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlannerWeb.Components.TransitPresentation
   alias LiveSelect.Component
   alias Phoenix.LiveView.JS
 
@@ -501,7 +501,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :cross_level_pathway_with_geo, :integer, default: 0
   attr :other_levels_floorplan_count, :integer, default: 0
   attr :map_generation, :string, required: true
-  attr :map_state, :atom, default: :loading
+  attr :map_state, :atom, default: :initializing
   attr :coordinate_preview, :map, default: nil
   attr :coordinate_confirmation, :boolean, default: false
   attr :coordinate_apply_form, :any, required: true
@@ -538,6 +538,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:initial_lat, initial_lat)
       |> assign(:initial_lon, initial_lon)
       |> assign(:has_alignment?, has_alignment?)
+      |> assign(:map_state_message, map_state_message(assigns.map_state))
+      |> assign(
+        :map_controls_disabled_reason,
+        map_controls_disabled_reason(
+          assigns.map_state,
+          assigns.image_natural_width,
+          assigns.image_natural_height
+        )
+      )
       |> assign(:canvas_id, canvas_id)
 
     ~H"""
@@ -746,7 +755,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               id="map-alignment-save"
               type="button"
               class="btn btn-sm min-h-11"
-              disabled={@map_state != :ready}
+              disabled={@map_state == :fatal}
             >
               Save alignment
             </button>
@@ -756,13 +765,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               class="btn btn-sm btn-primary min-h-11"
               title="Preview coordinate changes before applying them"
               disabled={
-                @map_state != :ready or is_nil(@image_natural_width) or is_nil(@image_natural_height)
+                @map_state == :fatal or
+                  invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
               }
             >
               Preview coordinate changes
             </button>
             <button
-              :if={@map_state in [:offline, :degraded, :fatal]}
+              :if={@map_state in [:offline, :imagery_unavailable, :buildings_degraded, :fatal]}
               id="map-alignment-retry"
               type="button"
               class="btn btn-sm min-h-11"
@@ -770,6 +780,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             >
               Retry map
             </button>
+            <p
+              :if={@map_state_message}
+              id="map-alignment-state"
+              class="basis-full text-xs text-base-content/70"
+              aria-live="polite"
+            >
+              {@map_state_message}
+            </p>
+            <p
+              :if={@map_controls_disabled_reason}
+              id="map-alignment-disabled-reason"
+              class="basis-full text-xs text-base-content/70"
+            >
+              {@map_controls_disabled_reason}
+            </p>
           </div>
         </div>
 
@@ -865,6 +890,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     </div>
     """
   end
+
+  defp invalid_floorplan_image_dims?(width, height),
+    do: not (is_integer(width) and width > 0 and is_integer(height) and height > 0)
+
+  defp map_controls_disabled_reason(:fatal, _width, _height),
+    do: "Map service is unavailable. Retry the map before saving or previewing coordinates."
+
+  defp map_controls_disabled_reason(_map_state, width, height) do
+    if invalid_floorplan_image_dims?(width, height),
+      do: "Floorplan image is not ready. Preview coordinates after it loads.",
+      else: nil
+  end
+
+  defp map_state_message(:initializing), do: "Loading map…"
+
+  defp map_state_message(:imagery_unavailable),
+    do: "Map imagery is unavailable. You can continue aligning the floorplan."
+
+  defp map_state_message(:buildings_degraded),
+    do: "Building outlines are unavailable. You can continue aligning the floorplan."
+
+  defp map_state_message(:offline), do: "You are offline. The floorplan remains available."
+  defp map_state_message(:reconnecting), do: "Reconnecting to the map…"
+  defp map_state_message(:fatal), do: "Map service is unavailable. Retry to continue."
+  defp map_state_message(_map_state), do: nil
 
   defp transform_controls do
     [

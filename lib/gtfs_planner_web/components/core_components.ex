@@ -1045,43 +1045,28 @@ defmodule GtfsPlannerWeb.CoreComponents do
             </.button>
           </div>
 
-          <div :if={@active_level && @uploads} class="flex flex-wrap items-center gap-2">
+          <div :if={@uploads} class="w-full sm:w-auto">
             <form
               id="diagram-upload-form-sub-nav"
               phx-change="upload_diagram"
             >
-              <label
+              <.upload_field
                 id="station-sub-nav-upload"
-                for={@uploads.diagram.ref}
-                tabindex="0"
-                role="button"
-                class="btn btn-sm btn-outline cursor-pointer border-base-300 bg-base-100 text-base-content hover:bg-base-200"
+                upload={@uploads.diagram}
+                label={if @has_diagram, do: "Replace diagram", else: "Upload diagram"}
+                help="PNG or JPEG, up to 10 MB."
+                cancel_event="cancel_diagram_upload"
+                error={@diagram_error}
+                state={@upload_phase}
+                pending_label={diagram_upload_pending_label(@upload_phase)}
+                disabled={diagram_upload_disabled?(@active_level, @upload_phase)}
+                disabled_reason={diagram_upload_disabled_reason(@active_level, @upload_phase)}
               >
-                {if @has_diagram, do: "Replace diagram", else: "Upload diagram"}
-                <.live_file_input
-                  upload={@uploads.diagram}
-                  class="hidden"
-                />
-              </label>
+                <:failure :if={diagram_upload_entry_errors?(@uploads.diagram)}>
+                  Correct the errors listed for the selected file, then choose another diagram.
+                </:failure>
+              </.upload_field>
             </form>
-            <span :for={error <- upload_errors(@uploads.diagram)} class="text-error text-sm">
-              {diagram_upload_error_to_string(error)}
-            </span>
-            <%= for entry <- @uploads.diagram.entries do %>
-              <span :for={error <- upload_errors(@uploads.diagram, entry)} class="text-error text-sm">
-                {diagram_upload_error_to_string(error)}
-              </span>
-            <% end %>
-            <span :if={@diagram_error} class="text-error text-sm">{@diagram_error}</span>
-            <span
-              :if={@upload_phase in [:validating, :probing_candidate, :committing]}
-              id="diagram-upload-pending"
-              role="status"
-              aria-live="polite"
-              class="text-sm text-base-content/70"
-            >
-              {diagram_upload_pending_label(@upload_phase)}
-            </span>
           </div>
         </div>
       </div>
@@ -1089,9 +1074,42 @@ defmodule GtfsPlannerWeb.CoreComponents do
     """
   end
 
+  defp diagram_upload_pending_label(:awaiting_replacement_confirmation),
+    do: "Confirm replacement to continue."
+
   defp diagram_upload_pending_label(:validating), do: "Validating diagram…"
   defp diagram_upload_pending_label(:probing_candidate), do: "Checking diagram readiness…"
   defp diagram_upload_pending_label(:committing), do: "Replacing diagram…"
+  defp diagram_upload_pending_label(_), do: "Uploading diagram…"
+
+  defp diagram_upload_disabled?(nil, _upload_phase), do: true
+
+  defp diagram_upload_disabled?(_active_level, upload_phase),
+    do:
+      upload_phase in [
+        :awaiting_replacement_confirmation,
+        :validating,
+        :probing_candidate,
+        :committing
+      ]
+
+  defp diagram_upload_disabled_reason(nil, _upload_phase),
+    do: "Select a level before uploading a diagram."
+
+  defp diagram_upload_disabled_reason(_active_level, upload_phase)
+       when upload_phase in [
+              :awaiting_replacement_confirmation,
+              :validating,
+              :probing_candidate,
+              :committing
+            ],
+       do: "Finish or cancel the current diagram upload before selecting another file."
+
+  defp diagram_upload_disabled_reason(_active_level, _upload_phase), do: nil
+
+  defp diagram_upload_entry_errors?(upload) do
+    upload.errors != [] or Enum.any?(upload.entries, &(upload_errors(upload, &1) != []))
+  end
 
   defp sub_nav_link_class(is_active) do
     base =
@@ -1106,19 +1124,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
     [base, state]
   end
-
-  defp diagram_upload_error_to_string(:too_large), do: "File is too large (max 10 MB)"
-
-  defp diagram_upload_error_to_string(:not_accepted),
-    do: "File type not accepted (PNG, JPG, JPEG only)"
-
-  defp diagram_upload_error_to_string(:too_many_files),
-    do: "Only one file can be uploaded at a time"
-
-  defp diagram_upload_error_to_string(:external_client_failure), do: "Upload failed"
-  defp diagram_upload_error_to_string({:error, reason}), do: reason
-  defp diagram_upload_error_to_string(error) when is_binary(error), do: error
-  defp diagram_upload_error_to_string(_), do: "Upload error"
 
   @doc """
   Renders a full-width sub-navigation bar for route pages.
@@ -1506,7 +1511,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :error, :string, default: nil
 
   attr :state, :atom,
-    values: [:idle, :uploading, :validating, :failed, :succeeded],
+    values: [
+      :idle,
+      :uploading,
+      :awaiting_replacement_confirmation,
+      :validating,
+      :probing_candidate,
+      :committing,
+      :failed,
+      :succeeded
+    ],
     default: :idle
 
   attr :disabled, :boolean, default: false
@@ -1517,7 +1531,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
   def upload_field(assigns) do
     assigns =
       assigns
-      |> assign(:pending?, assigns.state in [:uploading, :validating])
+      |> assign(
+        :pending?,
+        assigns.state in [
+          :uploading,
+          :awaiting_replacement_confirmation,
+          :validating,
+          :probing_candidate,
+          :committing
+        ]
+      )
       |> assign(:failure?, assigns.failure != [] or assigns.state == :failed)
       |> assign(:input_describedby, upload_input_describedby(assigns))
 

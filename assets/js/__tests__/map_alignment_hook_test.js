@@ -1730,7 +1730,7 @@ describe("map_alignment_hook other-level isolation across active transform", () 
 });
 
 describe("map_alignment_hook generation bridge", () => {
-  it("tags readiness and transform events with the current generation", () => {
+  it("tags distinct map degradation states and transform events with the current generation", () => {
     const hook = {
       ...MapAlignmentHook,
       generation: "map-42",
@@ -1744,19 +1744,86 @@ describe("map_alignment_hook generation bridge", () => {
       pushEvent: vi.fn(),
     };
 
+    hook._emitMapState("initializing");
+    hook._emitMapState("imagery_unavailable");
+    hook._emitMapState("buildings_degraded");
     hook._emitMapState("ready");
     hook._pushAlignmentEventIfValid("preview_coordinate_application");
 
     expect(hook.pushEvent).toHaveBeenNthCalledWith(1, "map_state", {
       generation: "map-42",
+      state: "initializing",
+    });
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(2, "map_state", {
+      generation: "map-42",
+      state: "imagery_unavailable",
+    });
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(3, "map_state", {
+      generation: "map-42",
+      state: "buildings_degraded",
+    });
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(4, "map_state", {
+      generation: "map-42",
       state: "ready",
     });
-    expect(hook.pushEvent).toHaveBeenNthCalledWith(2, "preview_coordinate_application", {
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(5, "preview_coordinate_application", {
       generation: "map-42",
       center_lat: 40.7,
       center_lon: -74.0,
       scale_mpp: 0.25,
       rotation_deg: 3,
     });
+  });
+
+  it("reports an optional buildings-overlay failure separately from imagery", async () => {
+    const originalLeaflet = window.L;
+    window.L = {};
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("unavailable"))));
+
+    try {
+      const hook = {
+        ...MapAlignmentHook,
+        leafletMap: {},
+        _buildingsLayer: null,
+        _emitMapState: vi.fn(),
+      };
+
+      hook._fetchBuildings(40.7, -74.0);
+      await vi.waitFor(() => {
+        expect(hook._emitMapState).toHaveBeenCalledWith("buildings_degraded");
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      window.L = originalLeaflet;
+    }
+  });
+
+  it("reports tile errors as unavailable imagery", () => {
+    const handlers = {};
+    const hook = {
+      ...MapAlignmentHook,
+      generation: "map-42",
+      pushEvent: vi.fn(),
+      _tileLayers: [
+        {
+          on: vi.fn((event, handler) => {
+            handlers[event] = handler;
+          }),
+        },
+      ],
+    };
+
+    try {
+      hook._bindRuntimeStateEvents();
+      handlers.tileerror();
+
+      expect(hook.pushEvent).toHaveBeenCalledWith("map_state", {
+        generation: "map-42",
+        state: "imagery_unavailable",
+      });
+    } finally {
+      window.removeEventListener("online", hook._onOnline);
+      window.removeEventListener("offline", hook._onOffline);
+    }
   });
 });

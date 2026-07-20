@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   require Logger
 
   import GtfsPlannerWeb.Gtfs.StationDiagramComponents
-  alias GtfsPlannerWeb.Components.DiagramPalette
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
@@ -23,6 +22,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Otp.Materializer
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Components.DiagramPalette
   alias LiveSelect.Component, as: LiveSelectComponent
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -118,7 +118,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:floorplan_image_w, nil)
      |> assign(:floorplan_image_h, nil)
      |> assign(:map_generation, "unmounted")
-     |> assign(:map_state, :loading)
+     |> assign(:map_state, :initializing)
      |> assign(:coordinate_preview, nil)
      |> assign(:coordinate_confirmation, false)
      |> assign(:coordinate_apply_form, to_form(%{"phrase" => ""}, as: :coordinate_preview))
@@ -1171,11 +1171,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               |> assign(:confirmation_execution?, true)
 
             case event do
-              "remove_from_diagram" -> handle_event(event, %{"id" => id}, socket)
-              "delete_child_stop" -> handle_event(event, %{"id" => id}, socket)
-              "delete_pathway" -> handle_event(event, %{"id" => id}, socket)
-              "remove_level_from_station" -> handle_event(event, %{"id" => id}, socket)
-              "delete_walkability_test" -> handle_event(event, %{"id" => id}, socket)
+              "remove_from_diagram" ->
+                handle_event(event, %{"id" => id}, socket)
+
+              "delete_child_stop" ->
+                handle_event(event, %{"id" => id}, socket)
+
+              "delete_pathway" ->
+                handle_event(event, %{"id" => id}, socket)
+
+              "remove_level_from_station" ->
+                handle_event(event, %{"id" => id}, socket)
+
+              "delete_walkability_test" ->
+                handle_event(event, %{"id" => id}, socket)
+
+              _ ->
+                {:noreply,
+                 socket
+                 |> assign(:pending_action, nil)
+                 |> assign(:confirmation_execution?, false)
+                 |> clear_confirmation()
+                 |> put_flash(:error, "Unsupported confirmation action.")}
             end
 
           {:error, _reason} ->
@@ -2544,7 +2561,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("map_state", %{"generation" => generation, "state" => state}, socket) do
     if current_map_generation?(socket, generation) and
-         state in ~w(loading ready degraded offline reconnecting fatal) do
+         state in ~w(initializing ready imagery_unavailable buildings_degraded offline reconnecting fatal) do
       {:noreply, assign(socket, :map_state, map_state_from_string(state))}
     else
       {:noreply, socket}
@@ -3698,7 +3715,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp reset_map_workflow(socket) do
     socket
     |> assign(:map_generation, Ecto.UUID.generate())
-    |> assign(:map_state, :loading)
+    |> assign(:map_state, :initializing)
     |> assign(:floorplan_image_w, nil)
     |> assign(:floorplan_image_h, nil)
     |> clear_coordinate_preview()
@@ -3734,9 +3751,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp coordinate_preview_error_message(:busy),
     do: "The coordinate update is busy. Preview the coordinate changes again."
 
-  defp map_state_from_string("loading"), do: :loading
+  defp map_state_from_string("initializing"), do: :initializing
   defp map_state_from_string("ready"), do: :ready
-  defp map_state_from_string("degraded"), do: :degraded
+  defp map_state_from_string("imagery_unavailable"), do: :imagery_unavailable
+  defp map_state_from_string("buildings_degraded"), do: :buildings_degraded
   defp map_state_from_string("offline"), do: :offline
   defp map_state_from_string("reconnecting"), do: :reconnecting
   defp map_state_from_string("fatal"), do: :fatal
@@ -4843,21 +4861,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp begin_diagram_upload(socket, entry) do
-    with {:ok, stop_level} <- active_stop_level_for_upload(socket) do
-      socket = assign(socket, :active_stop_level, stop_level)
-      pending = upload_identity(socket, stop_level, entry.ref)
+    case active_stop_level_for_upload(socket) do
+      {:ok, stop_level} ->
+        socket = assign(socket, :active_stop_level, stop_level)
+        pending = upload_identity(socket, stop_level, entry.ref)
 
-      if is_binary(stop_level.diagram_filename) and stop_level.diagram_filename != "" do
-        socket
-        |> assign(:upload_phase, :awaiting_replacement_confirmation)
-        |> assign(:pending_diagram_upload, pending)
-        |> assign(:diagram_replacement_confirmation, %{entry_ref: entry.ref})
-        |> assign(:diagram_error, nil)
-      else
-        stage_uploaded_diagram_candidate(socket, pending)
-      end
-    else
-      {:error, message} -> upload_failed(socket, message)
+        if is_binary(stop_level.diagram_filename) and stop_level.diagram_filename != "" do
+          socket
+          |> assign(:upload_phase, :awaiting_replacement_confirmation)
+          |> assign(:pending_diagram_upload, pending)
+          |> assign(:diagram_replacement_confirmation, %{entry_ref: entry.ref})
+          |> assign(:diagram_error, nil)
+        else
+          stage_uploaded_diagram_candidate(socket, pending)
+        end
+
+      {:error, message} ->
+        upload_failed(socket, message)
     end
   end
 
@@ -4915,23 +4935,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp consume_and_stage_diagram_candidate(socket, entry, pending) do
-    case consume_uploaded_entry(socket, entry, fn %{path: path} ->
-           with {:ok, binary} <- File.read(path),
-                {:ok, %{extension: extension}} <-
-                  DiagramUploadValidator.validate(entry.client_name, binary),
-                {:ok, filename} <-
-                  DiagramStorage.store_candidate(
-                    pending.organization_id,
-                    pending.gtfs_version_id,
-                    pending.station_stop_id,
-                    extension,
-                    binary
-                  ) do
-             {:ok, {:candidate, filename}}
-           else
-             {:error, reason} -> {:ok, {:error, reason}}
-           end
-         end) do
+    case consume_uploaded_entry(socket, entry, &store_diagram_candidate(&1, entry, pending)) do
       {:candidate, filename} ->
         stage_candidate_probe(socket, pending, filename)
 
@@ -4941,6 +4945,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
       {:postpone, postponed_socket} ->
         postponed_socket
+    end
+  end
+
+  defp store_diagram_candidate(%{path: path}, entry, pending) do
+    with {:ok, binary} <- File.read(path),
+         {:ok, %{extension: extension}} <-
+           DiagramUploadValidator.validate(entry.client_name, binary),
+         {:ok, filename} <-
+           DiagramStorage.store_candidate(
+             pending.organization_id,
+             pending.gtfs_version_id,
+             pending.station_stop_id,
+             extension,
+             binary
+           ) do
+      {:ok, {:candidate, filename}}
+    else
+      {:error, reason} -> {:ok, {:error, reason}}
     end
   end
 
@@ -4976,19 +4998,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        when result in ["ready", "failed"] do
     case socket.assigns.pending_diagram_upload do
       %{candidate_ref: ^ref} = pending when socket.assigns.upload_phase == :probing_candidate ->
-        if pending_identity_current?(socket, pending) do
-          if result == "ready",
-            do: commit_diagram_candidate(socket, pending),
-            else:
-              delete_candidate_and_fail(
-                socket,
-                pending,
-                pending.candidate_filename,
-                "The diagram could not be opened. Select another file."
-              )
-        else
-          delete_candidate_and_reset(socket, pending)
-        end
+        resolve_diagram_candidate_probe(socket, pending, result)
 
       _ ->
         socket
@@ -4996,6 +5006,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp handle_diagram_candidate_probe_result(socket, _params), do: socket
+
+  defp resolve_diagram_candidate_probe(socket, pending, result) do
+    case pending_identity_current?(socket, pending) do
+      true when result == "ready" ->
+        commit_diagram_candidate(socket, pending)
+
+      true ->
+        delete_candidate_and_fail(
+          socket,
+          pending,
+          pending.candidate_filename,
+          "The diagram could not be opened. Select another file."
+        )
+
+      false ->
+        delete_candidate_and_reset(socket, pending)
+    end
+  end
 
   defp pending_identity_current?(socket, pending) do
     current = socket.assigns
@@ -5729,19 +5757,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp do_delete_pathway(pathway_id, socket) do
     socket = clear_confirmation(socket)
+
+    case pathway_for_deletion(socket, pathway_id) do
+      {:ok, pathway} -> delete_pathway_and_refresh(socket, pathway)
+      {:error, message} -> {:noreply, assign(socket, :pathway_error, message)}
+    end
+  end
+
+  defp pathway_for_deletion(socket, pathway_id) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
-
     pathway = Enum.find(socket.assigns.pathways_list, &(&1.id == pathway_id))
 
     cond do
       is_nil(pathway) or pathway.organization_id != organization_id or
           pathway.gtfs_version_id != gtfs_version_id ->
-        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
+        {:error, "Unauthorized pathway access."}
 
       is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
-        {:noreply, assign(socket, :pathway_error, "Pathway is not fully associated with stops.")}
+        {:error, "Pathway is not fully associated with stops."}
 
       not stop_belongs_to_station?(
         pathway.from_stop,
@@ -5753,49 +5788,54 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             station.stop_id,
             socket.assigns.platform_stop_ids
           ) ->
-        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
+        {:error, "Unauthorized pathway access."}
 
       true ->
-        case Gtfs.delete_pathway(pathway) do
-          {:ok, _deleted_pathway} ->
-            Gtfs.record_change(socket.assigns.audit_ctx, :pathway, pathway, "deleted", %{})
-            refreshed_socket = refresh_lists(socket)
-
-            remaining_siblings =
-              pair_siblings_for(
-                %{from_stop_id: pathway.from_stop_id, to_stop_id: pathway.to_stop_id},
-                refreshed_socket.assigns.pathways_list
-              )
-
-            next_socket =
-              case remaining_siblings do
-                [remaining_pathway] ->
-                  refreshed_pathway = Gtfs.get_pathway_with_stops!(remaining_pathway.id)
-
-                  refreshed_socket
-                  |> assign(:show_pathway_drawer, true)
-                  |> assign(:editing_pathway_pair, [refreshed_pathway])
-                  |> assign(:active_pathway_tab, :first)
-                  |> assign(:pathway_form_dirty, false)
-                  |> assign(:editing_pathway, refreshed_pathway)
-                  |> assign(:pathway_form, to_form(pathway_form_params(refreshed_pathway)))
-
-                _ ->
-                  refreshed_socket
-                  |> assign(:show_pathway_drawer, false)
-                  |> assign(:editing_pathway_pair, [])
-                  |> assign(:active_pathway_tab, :first)
-                  |> assign(:pathway_form_dirty, false)
-                  |> assign(:editing_pathway, nil)
-                  |> assign(:pathway_form, to_form(%{}))
-              end
-
-            {:noreply, assign(next_socket, :pathway_error, nil)}
-
-          {:error, _changeset} ->
-            {:noreply, assign(socket, :pathway_error, "Failed to delete pathway")}
-        end
+        {:ok, pathway}
     end
+  end
+
+  defp delete_pathway_and_refresh(socket, pathway) do
+    case Gtfs.delete_pathway(pathway) do
+      {:ok, _deleted_pathway} ->
+        Gtfs.record_change(socket.assigns.audit_ctx, :pathway, pathway, "deleted", %{})
+        refreshed_socket = refresh_lists(socket)
+
+        remaining_siblings =
+          pair_siblings_for(
+            %{from_stop_id: pathway.from_stop_id, to_stop_id: pathway.to_stop_id},
+            refreshed_socket.assigns.pathways_list
+          )
+
+        next_socket = update_pathway_drawer(refreshed_socket, remaining_siblings)
+
+        {:noreply, assign(next_socket, :pathway_error, nil)}
+
+      {:error, _changeset} ->
+        {:noreply, assign(socket, :pathway_error, "Failed to delete pathway")}
+    end
+  end
+
+  defp update_pathway_drawer(refreshed_socket, [remaining_pathway]) do
+    refreshed_pathway = Gtfs.get_pathway_with_stops!(remaining_pathway.id)
+
+    refreshed_socket
+    |> assign(:show_pathway_drawer, true)
+    |> assign(:editing_pathway_pair, [refreshed_pathway])
+    |> assign(:active_pathway_tab, :first)
+    |> assign(:pathway_form_dirty, false)
+    |> assign(:editing_pathway, refreshed_pathway)
+    |> assign(:pathway_form, to_form(pathway_form_params(refreshed_pathway)))
+  end
+
+  defp update_pathway_drawer(refreshed_socket, _remaining_siblings) do
+    refreshed_socket
+    |> assign(:show_pathway_drawer, false)
+    |> assign(:editing_pathway_pair, [])
+    |> assign(:active_pathway_tab, :first)
+    |> assign(:pathway_form_dirty, false)
+    |> assign(:editing_pathway, nil)
+    |> assign(:pathway_form, to_form(%{}))
   end
 
   defp do_delete_walkability_test(id, socket) do

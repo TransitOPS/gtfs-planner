@@ -264,6 +264,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
             uploads: nil,
             has_diagram: false,
             diagram_error: nil,
+            upload_phase: :idle,
             actions: []
           },
           assigns
@@ -280,6 +281,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
         uploads={@uploads}
         has_diagram={@has_diagram}
         diagram_error={@diagram_error}
+        upload_phase={@upload_phase}
       >
         <:actions :if={@actions != []}>
           <button :for={a <- @actions}>{a}</button>
@@ -348,6 +350,63 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     test "diagram controls do not render on details tab" do
       html = render_station_sub_nav(%{active_tab: :details})
       refute html =~ "Add level"
+    end
+
+    test "diagram upload uses the shared field with progress, cancellation, and disabled guidance" do
+      entry = %Phoenix.LiveView.UploadEntry{
+        ref: "diagram-entry",
+        client_name: "central-station.png",
+        progress: 64,
+        valid?: true
+      }
+
+      upload = %Phoenix.LiveView.UploadConfig{
+        ref: "diagram-ref",
+        entries: [entry],
+        errors: [],
+        max_entries: 1,
+        max_file_size: 10_000_000,
+        accept: [".png", ".jpg", ".jpeg"]
+      }
+
+      html =
+        render_station_sub_nav(%{
+          active_tab: :diagram,
+          active_level: %{id: "level-1"},
+          uploads: %{diagram: upload},
+          has_diagram: true,
+          upload_phase: :uploading
+        })
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert LazyHTML.query(doc, "#station-sub-nav-upload[data-upload-state='uploading']") != []
+      assert LazyHTML.query(doc, "#station-sub-nav-upload-help") != []
+      assert LazyHTML.query(doc, "#station-sub-nav-upload-entry-diagram-entry progress") != []
+
+      cancel =
+        LazyHTML.query(
+          doc,
+          "#station-sub-nav-upload-entry-diagram-entry button[phx-click='cancel_diagram_upload']"
+        )
+
+      assert LazyHTML.attribute(cancel, "phx-value-ref") == ["diagram-entry"]
+      assert html =~ "central-station.png"
+
+      disabled_html =
+        render_station_sub_nav(%{
+          active_tab: :diagram,
+          uploads: %{diagram: upload}
+        })
+
+      disabled_doc = LazyHTML.from_fragment(disabled_html)
+
+      assert LazyHTML.query(disabled_doc, "#station-sub-nav-upload-disabled-reason") != []
+
+      assert LazyHTML.query(
+               disabled_doc,
+               "#station-sub-nav-upload input[type='file'][disabled]"
+             ) != []
     end
   end
 
