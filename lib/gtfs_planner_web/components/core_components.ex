@@ -120,8 +120,15 @@ defmodule GtfsPlannerWeb.CoreComponents do
     # and this is the keyboard affordance for every button in the app. The offset
     # keeps the ring readable on a filled button, where a ring in the button's own
     # color would otherwise sit on top of it.
+    #
+    # `min-h-11` enforces the 44 px minimum target height the design-system contract
+    # requires for every interactive control. daisyUI's `.btn` defaults to 40 px;
+    # callers previously had to remember to add `min-h-11` per-call-site. Hoisting
+    # it here aligns every button with the contract asserted by the shared browser
+    # suite (`assets/e2e/shared_design_contracts.spec.js`) without weakening any
+    # existing variant or size override.
     base_classes =
-      "font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
+      "min-h-11 font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
 
     assigns =
       assign_new(assigns, :class, fn ->
