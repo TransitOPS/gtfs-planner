@@ -57,6 +57,16 @@ const DRAG_THRESHOLD_UNITS = 2;
 const PAN_FRACTION = 0.25;
 const ZOOM_FACTOR = 1.5;
 
+function paletteColor(root, variable, fallback) {
+  const page = root?.closest?.("#diagram-page");
+  const computed = page && typeof getComputedStyle === "function"
+    ? getComputedStyle(page).getPropertyValue(variable)
+    : "";
+  const value = (computed || page?.style?.getPropertyValue(variable) || "").trim();
+
+  return value || fallback;
+}
+
 function parallelOffsetFromSegment(x1, y1, x2, y2, offset) {
   const dx = x2 - x1;
   const dy = y2 - y1;
@@ -1049,7 +1059,7 @@ const DiagramCanvasHook = {
       this.tooltipEl.style.borderColor = "";
     }
 
-    this.tooltipEl.style.color = "#FFFFFF";
+    this.tooltipEl.style.color = paletteColor(this.el, "--diagram-label-halo", "#FFFFFF");
     this.tooltipEl.setAttribute("aria-hidden", "false");
     this.tooltipEl.classList.remove("is-hidden");
     this.tooltipEl.classList.add("is-visible");

@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   import GtfsPlannerWeb.CoreComponents
   import GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
 
+  alias GtfsPlannerWeb.Components.TransitPresentation
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.Pathway
@@ -1832,6 +1833,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             id={dom_id}
             class="group pointer-events-auto"
             data-stop-id={stop.id}
+            data-stop-state={if(@active_point_id == stop.id, do: "selected", else: "active")}
             data-stop-center-x={cx}
             data-stop-center-y={cy}
             data-editable="stop"
@@ -3767,6 +3769,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-0.5">
         Pathway Diagram
       </h4>
+      <TransitPresentation.pathway_summary pathway={@editing_pathway} class="mb-2" />
       <svg
         data-pathway-preview="true"
         viewBox="0 0 480 40"
@@ -3876,6 +3879,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp parse_preview_int(val, _fallback) when is_integer(val), do: val
   defp parse_preview_int(_val, fallback), do: fallback
+
+  defp accessibility_status(1), do: :accessible
+  defp accessibility_status(2), do: :not_accessible
+  defp accessibility_status(_), do: :unknown
 
   defp pathway_preview_line(%{mode: 1} = assigns) do
     ~H"""
@@ -4513,9 +4520,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
           <div>
             <span class="block text-xs font-semibold text-base-content/40">Accessible</span>
-            <span class="font-medium">
-              {Stop.wheelchair_boarding_label(@walkability_stop.wheelchair_boarding) || "—"}
-            </span>
+            <TransitPresentation.accessibility_status status={
+              accessibility_status(@walkability_stop.wheelchair_boarding)
+            } />
           </div>
         </div>
       </div>
@@ -4948,7 +4955,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </:col>
             <:col :let={stop} label="Platform">{stop.platform_code || "—"}</:col>
             <:col :let={stop} label="Accessible">
-              {Stop.wheelchair_boarding_label(stop.wheelchair_boarding) || "—"}
+              <TransitPresentation.accessibility_status status={
+                accessibility_status(stop.wheelchair_boarding)
+              } />
             </:col>
             <:col :let={stop} label="Reachability Tests">
               <div class="space-y-1">
@@ -5009,7 +5018,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </:col>
           <:col :let={stop} label="Platform">{stop.platform_code || "—"}</:col>
           <:col :let={stop} label="Accessible">
-            {Stop.wheelchair_boarding_label(stop.wheelchair_boarding) || "—"}
+            <TransitPresentation.accessibility_status status={
+              accessibility_status(stop.wheelchair_boarding)
+            } />
           </:col>
         </.table>
       </div>

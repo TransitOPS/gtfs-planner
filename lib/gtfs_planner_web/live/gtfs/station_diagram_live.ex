@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   require Logger
 
   import GtfsPlannerWeb.Gtfs.StationDiagramComponents
+  alias GtfsPlannerWeb.Components.DiagramPalette
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
@@ -852,7 +853,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div id="diagram-page">
+    <div id="diagram-page" style={DiagramPalette.css_custom_properties()}>
       <Layouts.app
         flash={@flash}
         current_user={@current_user}

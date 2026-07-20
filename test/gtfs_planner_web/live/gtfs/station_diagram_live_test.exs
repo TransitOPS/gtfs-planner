@@ -8356,6 +8356,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "switch_mode", %{"mode" => "nope"})
       assert has_element?(view, "#diagram-page")
+      assert has_element?(view, "#diagram-page[style*='--diagram-active-stop']")
     end
   end
 
@@ -12843,6 +12844,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#stop-tab-details")
       assert has_element?(view, "#stop-tab-history")
+      assert has_element?(view, "#stop-tabs[phx-hook='TablistHook'][role='tablist']")
+
+      assert has_element?(
+               view,
+               "#stop-tab-details[aria-controls='stop-panel-details'][tabindex='0']"
+             )
+
+      assert has_element?(
+               view,
+               "#stop-tab-history[aria-controls='stop-panel-history'][tabindex='-1']"
+             )
     end
 
     test "child stop create drawer does not render history tabs", %{

@@ -264,6 +264,58 @@ body {
   transform: translateY(0);
 }
 
+/* DiagramPalette is emitted on #diagram-page. These selectors keep SVG's
+   durable geometry (shapes, arrows, dashes, and labels) while routing its
+   role colors through the one named palette for arbitrary operator imagery. */
+#diagram-page [data-pathway-line],
+#diagram-page [data-pathway-connector],
+#diagram-page [data-pathway-rail],
+#diagram-page [data-pathway-center-tick],
+#diagram-page [data-pathway-center-cross],
+#diagram-page [data-pathway-center-bar] {
+  stroke: var(--diagram-pathway-forward) !important;
+}
+
+#diagram-page #pathway-arrow path,
+#diagram-page [data-cross-level-badge-stairs],
+#diagram-page [data-cross-level-badge-elevator] {
+  fill: var(--diagram-pathway-forward) !important;
+}
+
+#diagram-page [data-pathway-label] {
+  fill: var(--diagram-label) !important;
+  stroke: var(--diagram-label-halo) !important;
+}
+
+#diagram-page g[data-stop-state] [data-stop-marker] {
+  fill: var(--diagram-active-stop) !important;
+  stroke: var(--diagram-label-halo) !important;
+}
+
+#diagram-page g[data-stop-state] [data-location-type="2"] {
+  fill: var(--diagram-label-halo) !important;
+  stroke: var(--diagram-active-stop) !important;
+}
+
+#diagram-page g[data-stop-state="selected"] [data-stop-marker] {
+  fill: var(--diagram-selection) !important;
+}
+
+#diagram-page [data-stop-label] {
+  fill: var(--diagram-label) !important;
+  stroke: var(--diagram-label-halo) !important;
+}
+
+#diagram-page [data-ruler-line],
+#diagram-page [data-ruler-endpoint],
+#diagram-page [data-ruler-label] {
+  stroke: var(--diagram-ruler) !important;
+}
+
+#diagram-page [data-ruler-label] {
+  fill: var(--diagram-ruler) !important;
+}
+
 /* ── Native dialog overlay presentation ── */
 
 /* Backdrop: dim the page behind every open modal dialog.

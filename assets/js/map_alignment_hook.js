@@ -35,6 +35,7 @@ import {
 import {
   DIAGRAM_BASE_COLOR,
   appendStopBadges,
+  paletteColor,
   symbolForLocationType,
   treatmentForLocationType,
 } from "./stop_icon_symbols";
@@ -283,7 +284,8 @@ const MapAlignmentHook = {
           const pt = this.leafletMap.latLngToContainerPoint([lat, lon]);
           return pt ? {x: pt.x, y: pt.y} : null;
         },
-        symbolFor: symbolForLocationType
+        symbolFor: symbolForLocationType,
+        paletteRoot: root.closest("#diagram-page")
       });
       this._otherLevels.setOpacity(0.7);
     } else {
@@ -1135,7 +1137,12 @@ const MapAlignmentHook = {
       .then((geojson) => {
         if (!geojson || !this.leafletMap) return;
         this._buildingsLayer = L.geoJSON(geojson, {
-          style: {color: "#2563eb", weight: 2, fill: false, interactive: false}
+          style: {
+            color: paletteColor(this.el.closest("#diagram-page"), "--diagram-building-outline", "#374151"),
+            weight: 2,
+            fill: false,
+            interactive: false
+          }
         }).addTo(this.leafletMap);
       })
       .catch(() => { /* silent: buildings overlay is optional */ });
@@ -1212,9 +1219,15 @@ const MapAlignmentHook = {
       })
       .filter(Boolean);
 
+    const activeStopColor = paletteColor(
+      this.el.closest("#diagram-page"),
+      "--diagram-active-stop",
+      DIAGRAM_BASE_COLOR
+    );
+
     this._activePinsRoot.innerHTML = "";
     this._activeChildStops.forEach((s) => {
-      const treatment = treatmentForLocationType(s.location_type, DIAGRAM_BASE_COLOR);
+      const treatment = treatmentForLocationType(s.location_type, activeStopColor);
       const pin = document.createElement("div");
       pin.className =
         "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
@@ -1252,7 +1265,7 @@ const MapAlignmentHook = {
         tip.textContent = fallbackLabel;
       }
 
-      appendStopBadges(pin, s.badges, DIAGRAM_BASE_COLOR);
+      appendStopBadges(pin, s.badges, activeStopColor);
 
       this._activePinsRoot.appendChild(pin);
       s._el = pin;
