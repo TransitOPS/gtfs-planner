@@ -163,11 +163,20 @@ defmodule GtfsPlannerWeb.Admin.Components do
 
   Deactivated wins over invitation pending, which wins over active. A revoked
   member is reported as revoked even while their invitation is unaccepted.
+
+  An invitation is pending exactly while the invited account still has no
+  password. `GtfsPlanner.Accounts.invite_member/4` creates the user through
+  `User.invite_changeset/2`, which sets no password, and
+  `Accounts.accept_invite_set_password/2` is the only transition that sets one.
+  `Accounts.resend_user_invite/2` uses the same signal and answers
+  `{:error, :already_accepted}` once a password exists, so deriving the badge
+  from `hashed_password` keeps the rendered status and the offered recovery
+  action in agreement.
   """
   def member_status(%{deactivated_at: deactivated_at}) when not is_nil(deactivated_at),
     do: :deactivated
 
-  def member_status(%{user: %{confirmed_at: nil}}), do: :invitation_pending
+  def member_status(%{user: %{hashed_password: nil}}), do: :invitation_pending
   def member_status(_member), do: :active
 
   # A LiveStream yields {dom_id, item}; a plain list yields the item itself.

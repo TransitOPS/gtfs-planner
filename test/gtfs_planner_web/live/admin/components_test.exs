@@ -18,7 +18,7 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
       user: %User{
         id: @active_id,
         email: "active@example.com",
-        confirmed_at: ~N[2026-01-01 00:00:00]
+        hashed_password: "hashed"
       },
       roles: ["pathways_studio_admin"],
       deactivated_at: nil
@@ -27,7 +27,7 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
 
   defp pending_member do
     %{
-      user: %User{id: @pending_id, email: "pending@example.com", confirmed_at: nil},
+      user: %User{id: @pending_id, email: "pending@example.com", hashed_password: nil},
       roles: ["pathways_studio_editor"],
       deactivated_at: nil
     }
@@ -38,7 +38,7 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
       user: %User{
         id: @deactivated_id,
         email: "deactivated@example.com",
-        confirmed_at: ~N[2026-01-01 00:00:00]
+        hashed_password: "hashed"
       },
       roles: ["pathways_studio_admin", "pathways_studio_editor"],
       deactivated_at: ~U[2026-02-01 00:00:00Z]
@@ -149,16 +149,16 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
       assert row_status(html, @active_id) == "Active"
     end
 
-    test "renders Invitation pending for an unconfirmed member" do
+    test "renders Invitation pending for a member who has not accepted the invitation" do
       html = render_view([pending_member()])
 
       assert row_status(html, @pending_id) == "Invitation pending"
     end
 
-    test "prefers Deactivated over Invitation pending for an unconfirmed deactivated member" do
+    test "prefers Deactivated over Invitation pending for a deactivated unaccepted member" do
       member = %{
         deactivated_member()
-        | user: %User{deactivated_member().user | confirmed_at: nil}
+        | user: %User{deactivated_member().user | hashed_password: nil}
       }
 
       html = render_view([member])
