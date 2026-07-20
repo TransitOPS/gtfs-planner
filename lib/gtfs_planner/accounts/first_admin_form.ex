@@ -7,6 +7,12 @@ defmodule GtfsPlanner.Accounts.FirstAdminForm do
   browser-facing field namespace, converts valid input into transaction
   attributes, normalizes transaction failures into safe form errors, and
   removes secrets from failed-submit state.
+
+  The organization alias is optional in the browser: a blank or
+  whitespace-only alias uses the organization name as the alias candidate
+  handed to `GtfsPlanner.Organizations.Organization.changeset/2`, which
+  remains the sole normalization and uniqueness authority. The candidate
+  is never written back into the visible composite field.
   """
 
   use Ecto.Schema
@@ -129,8 +135,22 @@ defmodule GtfsPlanner.Accounts.FirstAdminForm do
   defp organization_attrs(changeset) do
     %{
       name: get_field(changeset, :organization_name),
-      alias: get_field(changeset, :organization_alias)
+      alias: alias_candidate(changeset)
     }
+  end
+
+  defp alias_candidate(changeset) do
+    case get_field(changeset, :organization_alias) do
+      explicit when is_binary(explicit) ->
+        if String.trim(explicit) == "" do
+          get_field(changeset, :organization_name)
+        else
+          explicit
+        end
+
+      _blank ->
+        get_field(changeset, :organization_name)
+    end
   end
 
   defp copy_errors(changeset, errors) do

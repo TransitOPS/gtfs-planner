@@ -1115,5 +1115,113 @@ defmodule GtfsPlanner.AccountsTest do
       assert Repo.aggregate(GtfsVersion, :count, :id) == version_count
       assert Repo.aggregate(UserOrgMembership, :count, :id) == membership_count
     end
+
+    test "blank alias persists the normalized organization-name alias" do
+      suffix = System.unique_integer([:positive])
+      org_name = "Blank Alias Org #{suffix}"
+
+      assert {:ok, %User{}} =
+               Accounts.register_first_admin(%{
+                 email: unique_user_email(),
+                 password: valid_user_password(),
+                 password_confirmation: valid_user_password(),
+                 organization_name: org_name,
+                 organization_alias: ""
+               })
+
+      org = Repo.get_by(Organization, name: org_name)
+      assert org
+      assert org.alias == "blank-alias-org-#{suffix}"
+    end
+
+    test "whitespace-only alias persists the normalized organization-name alias" do
+      suffix = System.unique_integer([:positive])
+      org_name = "Whitespace Alias Org #{suffix}"
+
+      assert {:ok, %User{}} =
+               Accounts.register_first_admin(%{
+                 email: unique_user_email(),
+                 password: valid_user_password(),
+                 password_confirmation: valid_user_password(),
+                 organization_name: org_name,
+                 organization_alias: "   "
+               })
+
+      org = Repo.get_by(Organization, name: org_name)
+      assert org
+      assert org.alias == "whitespace-alias-org-#{suffix}"
+    end
+
+    test "explicit alias remains authoritative through registration" do
+      suffix = System.unique_integer([:positive])
+      org_name = "Explicit Alias Org #{suffix}"
+
+      assert {:ok, %User{}} =
+               Accounts.register_first_admin(%{
+                 email: unique_user_email(),
+                 password: valid_user_password(),
+                 password_confirmation: valid_user_password(),
+                 organization_name: org_name,
+                 organization_alias: "custom-path-#{suffix}"
+               })
+
+      org = Repo.get_by(Organization, alias: "custom-path-#{suffix}")
+      assert org
+      assert org.name == org_name
+    end
+
+    test "generated alias collision maps to organization_alias and rolls back every write" do
+      suffix = System.unique_integer([:positive])
+      org_name = "Collision Org #{suffix}"
+
+      _existing_org =
+        organization_fixture(%{name: "Existing Org", alias: "collision-org-#{suffix}"})
+
+      user_count = Repo.aggregate(User, :count, :id)
+      org_count = Repo.aggregate(Organization, :count, :id)
+      version_count = Repo.aggregate(GtfsVersion, :count, :id)
+      membership_count = Repo.aggregate(UserOrgMembership, :count, :id)
+
+      assert {:error, %Ecto.Changeset{action: :insert} = changeset} =
+               Accounts.register_first_admin(%{
+                 email: unique_user_email(),
+                 password: valid_user_password(),
+                 password_confirmation: valid_user_password(),
+                 organization_name: org_name,
+                 organization_alias: ""
+               })
+
+      assert errors_on(changeset) == %{organization_alias: ["has already been taken"]}
+      assert get_field(changeset, :organization_alias) == nil
+
+      assert Repo.aggregate(User, :count, :id) == user_count
+      assert Repo.aggregate(Organization, :count, :id) == org_count
+      assert Repo.aggregate(GtfsVersion, :count, :id) == version_count
+      assert Repo.aggregate(UserOrgMembership, :count, :id) == membership_count
+    end
+
+    test "unsluggable generated candidate fails before the transaction and writes nothing" do
+      user_count = Repo.aggregate(User, :count, :id)
+      org_count = Repo.aggregate(Organization, :count, :id)
+      version_count = Repo.aggregate(GtfsVersion, :count, :id)
+      membership_count = Repo.aggregate(UserOrgMembership, :count, :id)
+
+      assert {:error, %Ecto.Changeset{action: :insert} = changeset} =
+               Accounts.register_first_admin(%{
+                 email: unique_user_email(),
+                 password: valid_user_password(),
+                 password_confirmation: valid_user_password(),
+                 organization_name: "!!!",
+                 organization_alias: ""
+               })
+
+      assert errors_on(changeset) == %{organization_alias: ["can't be blank"]}
+      assert get_field(changeset, :organization_alias) == nil
+
+      assert Repo.aggregate(User, :count, :id) == user_count
+      assert Repo.aggregate(Organization, :count, :id) == org_count
+      assert Repo.aggregate(GtfsVersion, :count, :id) == version_count
+      assert Repo.aggregate(UserOrgMembership, :count, :id) == membership_count
+    end
   end
 end
