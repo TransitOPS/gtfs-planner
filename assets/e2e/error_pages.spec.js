@@ -118,6 +118,7 @@ test.describe("Real 404 keyboard focus and target", () => {
       focusIndicator.outlineWidth > 0;
     const hasVisibleBoxShadow =
       focusIndicator.boxShadow !== "none" && focusIndicator.boxShadow !== "";
+    expect(focusIndicator.matchesFocusVisible).toBe(true);
     expect(
       hasVisibleOutline || hasVisibleBoxShadow,
       "expected a visible outline or box-shadow on #error-page-404-home",
@@ -171,5 +172,31 @@ test.describe("Real 404 keyboard focus and target", () => {
     // destination.
     await page.waitForURL("**/users/log_in", { timeout: 10_000 });
     expect(page.url()).toMatch(/\/users\/log_in$/);
+  });
+
+  test("Return home remains a native recovery link with JavaScript disabled", async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+
+    try {
+      const response = await page.goto(MISSING_PATH);
+      expect(response).not.toBeNull();
+      expect(response.status()).toBe(404);
+
+      const target = page.locator("a#error-page-404-home");
+      await expect(target).toHaveAttribute("href", "/");
+      await target.focus();
+
+      await Promise.all([
+        page.waitForURL("**/users/log_in", { timeout: 10_000 }),
+        page.keyboard.press("Enter"),
+      ]);
+
+      expect(page.url()).toMatch(/\/users\/log_in$/);
+    } finally {
+      await context.close();
+    }
   });
 });
