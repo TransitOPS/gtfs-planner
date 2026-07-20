@@ -65,6 +65,8 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       |> assign(:organization_feedback, nil)
       |> assign(:member_feedback, nil)
       |> assign(:pending_deactivation, nil)
+      |> assign(:deactivation_return_focus_id, nil)
+      |> assign(:org_drawer_return_focus_id, nil)
       |> assign_organization_form(Organizations.change_organization(%Organization{}))
       |> assign_invite_form(InviteForm.changeset(%{}))
       |> stream(:organizations, [], dom_id: &organization_dom_id/1)
@@ -91,6 +93,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
     |> assign(:organization, nil)
     |> assign_organization_form(Organizations.change_organization(%Organization{}))
     |> load_organizations()
+    |> assign_org_drawer_return_focus(:new)
   end
 
   defp apply_action(socket, :edit, %{"org_id" => org_id}) do
@@ -104,6 +107,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
           Organizations.change_organization(socket.assigns.organization)
         )
         |> load_organizations()
+        |> assign_org_drawer_return_focus(:edit)
 
       _unresolved ->
         assign(socket, :page_title, "Organization")
@@ -407,7 +411,11 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   def handle_event("request_deactivation", %{"user-id" => user_id}, socket) do
     case resolve_member(socket, user_id) do
       {:ok, member} ->
-        {:noreply, socket |> clear_feedback() |> assign(:pending_deactivation, member)}
+        {:noreply,
+         socket
+         |> clear_feedback()
+         |> assign(:pending_deactivation, member)
+         |> assign(:deactivation_return_focus_id, "deactivate-user-#{member.user.id}")}
 
       {:error, :not_found} ->
         {:noreply, refuse_stale(socket)}
@@ -453,6 +461,8 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       {:ok, _membership} ->
         socket
         |> assign(:pending_deactivation, nil)
+        # The row now offers activation, so that is where focus belongs.
+        |> assign(:deactivation_return_focus_id, "activate-user-#{member.user.id}")
         |> put_feedback("success", "#{member.user.email} deactivated.", member.user.id)
         |> load_members()
 
@@ -477,7 +487,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          |> push_patch(to: ~p"/admin/organizations")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
-        {:noreply, assign_organization_form(socket, Map.put(changeset, :action, :validate))}
+        {:noreply, assign_organization_form(socket, Map.put(changeset, :action, :insert))}
     end
   end
 
@@ -491,7 +501,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          |> push_patch(to: ~p"/admin/organizations")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
-        {:noreply, assign_organization_form(socket, Map.put(changeset, :action, :validate))}
+        {:noreply, assign_organization_form(socket, Map.put(changeset, :action, :update))}
     end
   end
 
@@ -516,7 +526,26 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   # ---------------------------------------------------------------------------
 
   defp assign_organization_form(socket, changeset) do
-    assign(socket, :organization_form, to_form(changeset))
+    socket
+    |> assign(:organization_form, to_form(changeset))
+    |> assign(:organization_name_errors, submitted_errors(changeset, :name))
+    |> assign(:organization_alias_errors, submitted_errors(changeset, :alias))
+  end
+
+  # The drawer closes by patching back to the index, so the live action that
+  # opened it is already gone when the overlay hook restores focus. The trigger
+  # is therefore resolved once, when the drawer opens, and kept.
+  defp assign_org_drawer_return_focus(socket, :edit) do
+    assign(
+      socket,
+      :org_drawer_return_focus_id,
+      "edit-organization-#{socket.assigns.organization.id}"
+    )
+  end
+
+  defp assign_org_drawer_return_focus(socket, :new) do
+    target = if header_create?(socket.assigns), do: "create-organization-trigger"
+    assign(socket, :org_drawer_return_focus_id, target)
   end
 
   # Roles arrive as a list, a map, or not at all when every box is unchecked.
@@ -546,8 +575,9 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
 
   # On submit the errors are authoritative and always shown. While changing,
   # the shared input falls back to the repository's touched-input behaviour.
-  defp submitted_errors(%Ecto.Changeset{action: :insert} = changeset, field),
-    do: field_errors(changeset, field)
+  defp submitted_errors(%Ecto.Changeset{action: action} = changeset, field)
+       when action in [:insert, :update],
+       do: field_errors(changeset, field)
 
   defp submitted_errors(_changeset, _field), do: []
 
@@ -580,13 +610,6 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
     not (assigns.members_state == :ready and assigns.members_empty?)
   end
 
-  defp org_drawer_return_focus(%{live_action: :edit, organization: %Organization{id: id}}),
-    do: "edit-organization-#{id}"
-
-  defp org_drawer_return_focus(assigns) do
-    if header_create?(assigns), do: "create-organization-trigger"
-  end
-
   defp record_error_title(:unavailable), do: "Organizations are unavailable right now"
   defp record_error_title(_state), do: "That organization was not found"
 
@@ -599,6 +622,8 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
 
   attr :form, Phoenix.HTML.Form, required: true
   attr :live_action, :atom, required: true
+  attr :name_errors, :list, required: true
+  attr :alias_errors, :list, required: true
 
   defp organization_form(assigns) do
     ~H"""
@@ -614,6 +639,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         type="text"
         label="Name"
         maxlength="255"
+        errors={@name_errors}
         required
       />
       <.input
@@ -622,14 +648,15 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         type="text"
         label="Alias"
         maxlength="255"
+        errors={@alias_errors}
         required
         help="Lowercase, with spaces replaced by hyphens."
       />
 
       <:actions>
         <div class="flex-1"></div>
-        <.button variant="quiet" patch={~p"/admin/organizations"}>Cancel</.button>
-        <.button type="submit" phx-disable-with="Saving…">
+        <.button variant="quiet" class="min-h-11" patch={~p"/admin/organizations"}>Cancel</.button>
+        <.button type="submit" class="min-h-11" phx-disable-with="Saving…">
           {if @live_action == :new, do: "Create organization", else: "Save changes"}
         </.button>
       </:actions>
@@ -678,10 +705,12 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
 
       <:actions>
         <div class="flex-1"></div>
-        <.button variant="quiet" patch={~p"/admin/organizations/#{@organization.id}"}>
+        <.button variant="quiet" class="min-h-11" patch={~p"/admin/organizations/#{@organization.id}"}>
           Cancel
         </.button>
-        <.button type="submit" phx-disable-with="Sending invite…">Send invite</.button>
+        <.button type="submit" class="min-h-11" phx-disable-with="Sending invite…">
+          Send invite
+        </.button>
       </:actions>
     </.simple_form>
     """
@@ -722,7 +751,17 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
           this.handleEvent("focus_first_invite_error", () => {
             const form = document.getElementById("invite-form");
             const invalid = form && form.querySelector('[aria-invalid="true"]');
-            if (invalid) invalid.focus();
+            if (!invalid) return;
+            // A grouped control (the roles fieldset) carries the invalid state
+            // but is not focusable itself, so descend to its first control.
+            const focusable = invalid.matches("input, select, textarea, button")
+              ? invalid
+              : invalid.querySelector(
+                  "input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])"
+                );
+            // The event can arrive before LiveView finishes patching and
+            // restoring focus, so claim focus on the next frame instead.
+            requestAnimationFrame(() => (focusable || invalid).focus());
           })
         }
       }
@@ -789,12 +828,18 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       {@organization.name}
       <:subtitle>Organization</:subtitle>
       <:actions>
-        <.button id="back-to-organizations" variant="secondary" navigate={~p"/admin/organizations"}>
+        <.button
+          id="back-to-organizations"
+          variant="secondary"
+          class="min-h-11"
+          navigate={~p"/admin/organizations"}
+        >
           Back to organizations
         </.button>
         <.button
           :if={header_invite?(assigns)}
           id="invite-member-trigger"
+          class="min-h-11"
           patch={~p"/admin/organizations/#{@organization.id}/invite"}
         >
           Invite member
@@ -887,7 +932,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       pending_label="Deactivating user…"
       on_confirm="confirm_deactivation"
       on_cancel="cancel_deactivation"
-      return_focus_id={@pending_deactivation && "deactivate-user-#{@pending_deactivation.user.id}"}
+      return_focus_id={@deactivation_return_focus_id}
       described_by="deactivate-user-dialog-body"
     >
       <span :if={@pending_deactivation}>
@@ -908,6 +953,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         <.button
           :if={header_create?(assigns)}
           id="create-organization-trigger"
+          class="min-h-11"
           patch={~p"/admin/organizations/new"}
         >
           Create organization
@@ -952,7 +998,9 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       >
         Create the first organization to give its members access to Pathways Studio.
         <:action>
-          <.button navigate={~p"/admin/organizations/new"}>Create organization</.button>
+          <.button class="min-h-11" navigate={~p"/admin/organizations/new"}>
+            Create organization
+          </.button>
         </:action>
       </.empty_state>
 
@@ -995,12 +1043,14 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       title="Organization"
       initial_focus={:first_field}
       initial_focus_id="organization-name"
-      return_focus_id={org_drawer_return_focus(assigns)}
+      return_focus_id={@org_drawer_return_focus_id}
     >
       <.organization_form
         :if={@live_action in [:new, :edit]}
         form={@organization_form}
         live_action={@live_action}
+        name_errors={@organization_name_errors}
+        alias_errors={@organization_alias_errors}
       />
     </.drawer>
     """

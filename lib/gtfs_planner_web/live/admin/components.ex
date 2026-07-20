@@ -81,7 +81,7 @@ defmodule GtfsPlannerWeb.Admin.Components do
     <.empty_state :if={@empty?} id={"#{@id}-empty"} title={@empty_title}>
       {@empty_description}
       <:action :if={@invite_path}>
-        <.button navigate={@invite_path}>{@invite_label}</.button>
+        <.button class="min-h-11" navigate={@invite_path}>{@invite_label}</.button>
       </:action>
     </.empty_state>
 

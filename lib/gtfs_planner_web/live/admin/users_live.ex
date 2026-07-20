@@ -42,6 +42,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
       |> assign(:members_state, :ready)
       |> assign(:member_feedback, nil)
       |> assign(:pending_deactivation, nil)
+      |> assign(:deactivation_return_focus_id, nil)
       |> assign(:organization_form, organization_form(socket.assigns.current_organization))
       |> assign_invite_form(InviteForm.changeset(%{}))
       |> stream(:members, [], dom_id: &Components.member_dom_id/1)
@@ -264,7 +265,8 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
         {:noreply,
          socket
          |> clear_feedback()
-         |> assign(:pending_deactivation, member)}
+         |> assign(:pending_deactivation, member)
+         |> assign(:deactivation_return_focus_id, "deactivate-user-#{member.user.id}")}
 
       {:error, :not_found} ->
         {:noreply, refuse_stale(socket)}
@@ -341,6 +343,8 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
       {:ok, _membership} ->
         socket
         |> assign(:pending_deactivation, nil)
+        # The row now offers activation, so that is where focus belongs.
+        |> assign(:deactivation_return_focus_id, "activate-user-#{member.user.id}")
         |> put_feedback("success", "#{member.user.email} deactivated.", member.user.id)
         |> load_members()
 
@@ -456,8 +460,10 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
 
       <:actions>
         <div class="flex-1"></div>
-        <.button variant="quiet" patch={~p"/admin/users"}>Cancel</.button>
-        <.button type="submit" phx-disable-with="Sending invite…">Send invite</.button>
+        <.button variant="quiet" class="min-h-11" patch={~p"/admin/users"}>Cancel</.button>
+        <.button type="submit" class="min-h-11" phx-disable-with="Sending invite…">
+          Send invite
+        </.button>
       </:actions>
     </.simple_form>
     """
@@ -484,8 +490,8 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
 
       <:actions>
         <div class="flex-1"></div>
-        <.button variant="quiet" patch={~p"/admin/users"}>Cancel</.button>
-        <.button type="submit" phx-disable-with="Saving…">Save changes</.button>
+        <.button variant="quiet" class="min-h-11" patch={~p"/admin/users"}>Cancel</.button>
+        <.button type="submit" class="min-h-11" phx-disable-with="Saving…">Save changes</.button>
       </:actions>
     </.simple_form>
     """
@@ -511,6 +517,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
             <.button
               id="organization-settings-trigger"
               variant="secondary"
+              class="min-h-11"
               patch={~p"/admin/users/organization-settings"}
             >
               Organization settings
@@ -518,6 +525,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
             <.button
               :if={header_invite?(assigns)}
               id="invite-user-trigger"
+              class="min-h-11"
               patch={~p"/admin/users/invite"}
             >
               Invite user
@@ -612,9 +620,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
           pending_label="Deactivating user…"
           on_confirm="confirm_deactivation"
           on_cancel="cancel_deactivation"
-          return_focus_id={
-            @pending_deactivation && "deactivate-user-#{@pending_deactivation.user.id}"
-          }
+          return_focus_id={@deactivation_return_focus_id}
           described_by="deactivate-user-dialog-body"
         >
           <span :if={@pending_deactivation}>
@@ -635,7 +641,17 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
           this.handleEvent("focus_first_invite_error", () => {
             const form = document.getElementById("invite-form");
             const invalid = form && form.querySelector('[aria-invalid="true"]');
-            if (invalid) invalid.focus();
+            if (!invalid) return;
+            // A grouped control (the roles fieldset) carries the invalid state
+            // but is not focusable itself, so descend to its first control.
+            const focusable = invalid.matches("input, select, textarea, button")
+              ? invalid
+              : invalid.querySelector(
+                  "input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])"
+                );
+            // The event can arrive before LiveView finishes patching and
+            // restoring focus, so claim focus on the next frame instead.
+            requestAnimationFrame(() => (focusable || invalid).focus());
           })
         }
       }
