@@ -66,6 +66,138 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
 
       assert has_element?(view, "#first-admin-submit")
       refute has_element?(view, @summary_selector)
+
+      for control_id <- @field_control_ids do
+        assert has_element?(
+                 view,
+                 ~s(##{control_id}[phx-blur="validate"][phx-debounce="blur"])
+               )
+      end
+    end
+  end
+
+  describe "task copy and pending contract" do
+    test "renders the exact title, H1, help copy, and pending contract", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      assert page_title(view) == "Create administrator account · Pathways Studio"
+      assert has_element?(view, "h1", "Create administrator account")
+
+      h1s =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("h1")
+        |> LazyHTML.to_tree()
+
+      assert length(h1s) == 1
+
+      assert has_element?(view, "#first-admin-password-help", "Use 12–72 characters.")
+
+      assert has_element?(
+               view,
+               ~s(#first-admin-password[aria-describedby="first-admin-password-help"])
+             )
+
+      assert has_element?(
+               view,
+               "#first-admin-password-confirmation-help",
+               "Must match the password above."
+             )
+
+      refute has_element?(
+               view,
+               "#first-admin-password-confirmation-help",
+               "Use 12–72 characters."
+             )
+
+      assert has_element?(
+               view,
+               "#first-admin-organization-alias-help",
+               "Leave blank to generate it from the organization name."
+             )
+
+      alias_help_html = view |> element("#first-admin-organization-alias-help") |> render()
+      refute alias_help_html =~ "/gtfs/"
+
+      assert has_element?(view, "#first-admin-submit", "Create administrator account")
+
+      assert has_element?(
+               view,
+               ~s(#first-admin-submit[phx-disable-with="Creating account…"])
+             )
+
+      assert has_element?(view, ~s(#first_admin_form[class~="phx-submit-loading:opacity-60"]))
+      refute has_element?(view, ~s(#first-admin-submit[class~="phx-submit-loading:opacity-60"]))
+    end
+  end
+
+  describe "blur validation" do
+    test "untouched controls stay clean while the blurred control validates", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      for control_id <- @field_control_ids do
+        assert has_element?(view, ~s(##{control_id}[aria-invalid="false"]))
+        refute has_element?(view, "##{control_id}-error")
+      end
+
+      view
+      |> element("#first-admin-email")
+      |> render_blur(%{
+        "admin" => %{
+          "email" => "not-an-email",
+          "_unused_password" => "",
+          "_unused_password_confirmation" => "",
+          "_unused_organization_name" => "",
+          "_unused_organization_alias" => ""
+        }
+      })
+
+      assert has_element?(view, ~s(#first-admin-email[aria-invalid="true"]))
+      assert has_element?(view, "#first-admin-email-error")
+
+      for control_id <- @field_control_ids -- ["first-admin-email"] do
+        assert has_element?(view, ~s(##{control_id}[aria-invalid="false"]))
+        refute has_element?(view, "##{control_id}-error")
+      end
+
+      refute has_element?(view, @summary_selector)
+      refute_push_event(view, "focus_first_admin_error", %{})
+    end
+
+    test "a metadata-only blur event is a safe no-op", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      view |> element("#first-admin-email") |> render_blur()
+
+      for control_id <- @field_control_ids do
+        assert has_element?(view, ~s(##{control_id}[aria-invalid="false"]))
+        refute has_element?(view, "##{control_id}-error")
+      end
+
+      assert has_element?(view, ~s(#first_admin_form[phx-submit="setup"]))
+      refute has_element?(view, @summary_selector)
+      refute_push_event(view, "focus_first_admin_error", %{})
+    end
+
+    test "a used but blank optional alias stays truthful on blur", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      view
+      |> element("#first-admin-organization-alias")
+      |> render_blur(%{
+        "admin" => %{
+          "organization_alias" => "",
+          "organization_name" => "My Transit Agency",
+          "_unused_email" => "",
+          "_unused_password" => "",
+          "_unused_password_confirmation" => ""
+        }
+      })
+
+      assert has_element?(view, ~s(#first-admin-organization-alias[aria-invalid="false"]))
+      refute has_element?(view, "#first-admin-organization-alias-error")
+      refute has_element?(view, @summary_selector)
     end
   end
 
@@ -300,14 +432,91 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
       assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/first")
     end
 
-    test "redirects a valid first submit to /users/log_in", %{conn: conn} do
+    test "redirects a valid first submit to login with the administrator-created message",
+         %{conn: conn} do
       admin_params = valid_admin_params()
       {:ok, view, _html} = live(conn, ~p"/first")
+
+      result =
+        view
+        |> element("#first_admin_form")
+        |> render_submit(%{"admin" => admin_params})
+
+      assert {:error, {:redirect, %{to: "/users/log_in"}}} = result
+
+      {:ok, conn} = follow_redirect(result, conn)
+      assert html_response(conn, 200) =~ "Administrator account created. Log in to continue."
+    end
+
+    test "generated-alias collision keeps the optional alias visibly blank and retries",
+         %{conn: conn} do
+      organization_fixture(%{name: "Existing Org", alias: "my-transit-agency"})
+      email = unique_user_email()
+
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      user_count = Repo.aggregate(User, :count, :id)
+      org_count = Repo.aggregate(Organization, :count, :id)
+
+      view
+      |> element("#first_admin_form")
+      |> render_submit(%{
+        "admin" => %{
+          "email" => email,
+          "password" => "valid setup password 123",
+          "password_confirmation" => "valid setup password 123",
+          "organization_name" => "My Transit Agency",
+          "organization_alias" => ""
+        }
+      })
+
+      assert has_element?(view, @summary_selector)
+      assert has_element?(view, ~s(#{@summary_selector} a[href="#first-admin-organization-alias"]))
+
+      assert has_element?(
+               view,
+               ~s(#first-admin-organization-alias[aria-invalid="true"])
+             )
+
+      assert has_element?(view, "#first-admin-organization-alias-error")
+
+      alias_values =
+        view
+        |> element("#first-admin-organization-alias")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#first-admin-organization-alias")
+        |> LazyHTML.attribute("value")
+
+      assert alias_values == [""]
+
+      assert has_element?(view, ~s(#first-admin-email[value="#{email}"]))
+
+      assert has_element?(
+               view,
+               ~s(#first-admin-organization-name[value="My Transit Agency"])
+             )
+
+      assert Repo.aggregate(User, :count, :id) == user_count
+      assert Repo.aggregate(Organization, :count, :id) == org_count
+
+      assert_push_event(view, "focus_first_admin_error", %{})
 
       assert {:error, {:redirect, %{to: "/users/log_in"}}} =
                view
                |> element("#first_admin_form")
-               |> render_submit(%{"admin" => admin_params})
+               |> render_submit(%{
+                 "admin" => %{
+                   "email" => email,
+                   "password" => "valid setup password 123",
+                   "password_confirmation" => "valid setup password 123",
+                   "organization_name" => "My Transit Agency",
+                   "organization_alias" => unique_organization_alias()
+                 }
+               })
+
+      assert Repo.aggregate(User, :count, :id) == user_count + 1
+      assert Repo.aggregate(Organization, :count, :id) == org_count + 1
     end
 
     test "persists exactly one record set when an invalid submit is corrected in the same view",
