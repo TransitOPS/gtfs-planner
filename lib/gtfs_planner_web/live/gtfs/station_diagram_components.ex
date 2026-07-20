@@ -4497,6 +4497,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :walkability_field_errors, :map, default: %{}
   attr :walkability_mode, :atom, default: :create
   attr :editing_walkability_test, :any, default: nil
+  attr :delete_event, :string, default: "request_confirmation"
 
   def walkability_test_drawer(assigns) do
     ~H"""
@@ -4522,6 +4523,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         walkability_field_errors={@walkability_field_errors}
         walkability_mode={@walkability_mode}
         editing_walkability_test={@editing_walkability_test}
+        delete_event={@delete_event}
       />
     </.drawer>
     """
@@ -4536,6 +4538,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :walkability_field_errors, :map, default: %{}
   attr :walkability_mode, :atom, default: :create
   attr :editing_walkability_test, :any, default: nil
+  attr :delete_event, :string, default: "request_confirmation"
 
   defp walkability_test_form(assigns) do
     ~H"""
@@ -4725,7 +4728,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               type="button"
               id="walkability-test-delete-in-form"
               class="btn btn-outline btn-error mt-3"
-              phx-click="request_confirmation"
+              phx-click={@delete_event}
               phx-value-action="delete_walkability_test"
               phx-value-id={@editing_walkability_test.id}
               phx-value-origin="walkability-test-delete-in-form"

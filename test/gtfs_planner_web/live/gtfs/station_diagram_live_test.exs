@@ -8422,7 +8422,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "span.text-error",
+               "#station-sub-nav-upload-rejected",
                "File type not accepted (PNG, JPG, JPEG only)"
              )
     end
@@ -8444,7 +8444,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_upload(upload, "big.png")
 
-      assert has_element?(view, "span.text-error", "File is too large (max 10 MB)")
+      assert has_element?(
+               view,
+               "#station-sub-nav-upload-rejected",
+               "File is too large (max 10 MB)"
+             )
     end
   end
 

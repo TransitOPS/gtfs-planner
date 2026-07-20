@@ -11,6 +11,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Repo
 
+  defp map_generation(view) do
+    [_, generation] = Regex.run(~r/data-map-generation="([^"]+)"/, render(view))
+    generation
+  end
+
+  defp set_image_natural_size(view, width, height) do
+    render_hook(view, "set_image_natural_size", %{
+      "generation" => map_generation(view),
+      "w" => width,
+      "h" => height
+    })
+  end
+
+  defp map_event(view, event, params) do
+    render_hook(view, event, Map.put(params, "generation", map_generation(view)))
+  end
+
+  defp apply_coordinate_preview(view) do
+    render_click(element(view, "#confirm-coordinate-preview"))
+
+    render_submit(
+      element(view, "#coordinate-preview-confirmation-form"),
+      %{"coordinate_preview" => %{"phrase" => "APPLY"}}
+    )
+  end
+
   describe "StationDiagramLive - map mode" do
     setup do
       organization = organization_fixture()
@@ -85,7 +111,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert has_element?(view, "button[phx-value-mode='map'][disabled]")
+      assert has_element?(view, "#diagram-mode-option-map[disabled]")
     end
 
     test "switch_mode to map swaps to the map canvas", %{
@@ -575,17 +601,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       # Switch back to L0 and apply: geo-codes AC13_CHILD on the active level and invalidates
       # the per-level counts/markers caches.
       render_hook(view, "switch_level", %{"level_id" => active_level.id})
-      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
+      set_image_natural_size(view, 1024, 768)
 
       html =
-        render_hook(view, "save_and_apply_alignment", %{
+        map_event(view, "preview_coordinate_application", %{
           "center_lat" => 40.7128,
           "center_lon" => -74.0060,
           "scale_mpp" => 0.35,
           "rotation_deg" => 0.0
         })
 
-      assert html =~ "Set lat/lon for 1 child stops"
+      assert html =~ "Preview coordinate changes"
+      apply_coordinate_preview(view)
 
       # Switch back to the target level so L0 is "other" again; its count must reflect the
       # newly written geo coordinate (caches were invalidated on Apply).
@@ -723,7 +750,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
       render_hook(view, "canvas_click", %{"x" => 50, "y" => 50})
 
-      assert has_element?(view, "button[phx-value-mode='map'].bg-blue-600")
+      assert has_element?(view, "#diagram-mode-option-map[checked]")
     end
 
     test "stop_clicked in map mode is a no-op", %{
@@ -949,7 +976,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#map-alignment-lat-input")
       assert has_element?(view, "#map-alignment-lon-input")
       assert has_element?(view, "#map-alignment-apply-center")
-      refute has_element?(view, "#map-alignment-save")
+      assert has_element?(view, "#map-alignment-save", "Save alignment")
       assert has_element?(view, "#map-alignment-apply")
       refute has_element?(view, "#map-alignment-infer")
       refute has_element?(view, "#map-canvas-wrapper", "Infer from anchors")
@@ -977,11 +1004,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       html = render(view)
 
-      assert html =~ "Save floorplan and stops"
-      assert has_element?(view, "#map-alignment-apply.btn-primary", "Save floorplan and stops")
-
-      # #map-alignment-save must not appear in the normal control row.
-      refute has_element?(view, "#map-alignment-save")
+      assert has_element?(view, "#map-alignment-save", "Save alignment")
+      assert has_element?(view, "#map-alignment-apply.btn-primary", "Preview coordinate changes")
 
       # Exactly one visible primary save action in the control row.
       assert html
@@ -1009,7 +1033,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
-      render_hook(view, "save_alignment", %{
+      map_event(view, "save_alignment", %{
         "center_lat" => 40.7128,
         "center_lon" => -74.0060,
         "scale_mpp" => 0.35,
@@ -1060,7 +1084,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
       # Before saving alignment, the middle level (once it becomes "other") would be ineligible.
-      render_hook(view, "save_alignment", %{
+      map_event(view, "save_alignment", %{
         "center_lat" => 40.7128,
         "center_lon" => -74.0060,
         "scale_mpp" => 0.35,
@@ -1095,7 +1119,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
       html =
-        render_hook(view, "save_alignment", %{
+        map_event(view, "save_alignment", %{
           "center_lat" => 200,
           "center_lon" => 0,
           "scale_mpp" => 0.5,
@@ -1236,7 +1260,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
+      set_image_natural_size(view, 1024, 768)
 
       assert has_element?(view, "#map-alignment-apply")
       refute has_element?(view, "#map-alignment-apply[disabled]")
@@ -1307,7 +1331,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
+      set_image_natural_size(view, 1024, 768)
 
       refute has_element?(view, "#map-alignment-infer")
       refute render(view) =~ "Infer from anchors"
@@ -1347,7 +1371,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "set_image_natural_size", %{"w" => 1000, "h" => 800})
+      set_image_natural_size(view, 1000, 800)
 
       refute has_element?(view, "#map-alignment-infer")
     end
@@ -1367,7 +1391,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
+      set_image_natural_size(view, 1024, 768)
 
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.floorplan_image_w == 1024
@@ -1389,7 +1413,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "set_image_natural_size", %{"w" => 1024.7, "h" => 768.4})
+      set_image_natural_size(view, 1024.7, 768.4)
 
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.floorplan_image_w == 1024
@@ -1411,7 +1435,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "set_image_natural_size", %{"w" => 0, "h" => -5})
+      set_image_natural_size(view, 0, -5)
 
       assigns = :sys.get_state(view.pid).socket.assigns
       assert assigns.floorplan_image_w == nil
@@ -1446,21 +1470,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "set_image_natural_size", %{"w" => 1024, "h" => 768})
+      set_image_natural_size(view, 1024, 768)
 
       # Drain the markers pushed on mode switch so the post-apply assertion below
       # proves the re-push, not the initial push.
       assert_push_event(view, "set_active_child_stops", %{stops: _})
 
       html =
-        render_hook(view, "save_and_apply_alignment", %{
+        map_event(view, "preview_coordinate_application", %{
           "center_lat" => 40.7128,
           "center_lon" => -74.0060,
           "scale_mpp" => 0.35,
           "rotation_deg" => 0.0
         })
 
-      assert html =~ "Set lat/lon for 1 child stops"
+      assert html =~ "Preview coordinate changes"
+      apply_coordinate_preview(view)
 
       # Active marker payloads are re-pushed after apply so pins reflect the
       # persisted geography.
@@ -1509,7 +1534,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
       html =
-        render_hook(view, "save_and_apply_alignment", %{
+        map_event(view, "preview_coordinate_application", %{
           "center_lat" => 40.7128,
           "center_lon" => -74.0060,
           "scale_mpp" => 0.35,
@@ -1580,7 +1605,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "set_image_natural_size", %{"w" => 1000, "h" => 800})
+      set_image_natural_size(view, 1000, 800)
 
       html = render_hook(view, "infer_alignment", %{})
 
@@ -1625,7 +1650,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
-      render_hook(view, "set_image_natural_size", %{"w" => 1000, "h" => 800})
+      set_image_natural_size(view, 1000, 800)
 
       html = render_hook(view, "infer_alignment", %{})
 

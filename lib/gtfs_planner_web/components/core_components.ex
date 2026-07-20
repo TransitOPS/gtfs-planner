@@ -1057,6 +1057,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
                 help="PNG or JPEG, up to 10 MB."
                 cancel_event="cancel_diagram_upload"
                 error={@diagram_error}
+                error_formatter={&diagram_upload_error_to_string/1}
                 state={@upload_phase}
                 pending_label={diagram_upload_pending_label(@upload_phase)}
                 disabled={diagram_upload_disabled?(@active_level, @upload_phase)}
@@ -1110,6 +1111,19 @@ defmodule GtfsPlannerWeb.CoreComponents do
   defp diagram_upload_entry_errors?(upload) do
     upload.errors != [] or Enum.any?(upload.entries, &(upload_errors(upload, &1) != []))
   end
+
+  defp diagram_upload_error_to_string(:too_large), do: "File is too large (max 10 MB)"
+
+  defp diagram_upload_error_to_string(:not_accepted),
+    do: "File type not accepted (PNG, JPG, JPEG only)"
+
+  defp diagram_upload_error_to_string(:too_many_files),
+    do: "Only one diagram can be uploaded at a time"
+
+  defp diagram_upload_error_to_string(:external_client_failure), do: "Upload failed"
+  defp diagram_upload_error_to_string({:error, reason}), do: reason
+  defp diagram_upload_error_to_string(error) when is_binary(error), do: error
+  defp diagram_upload_error_to_string(_), do: "Upload error"
 
   defp sub_nav_link_class(is_active) do
     base =
@@ -1509,6 +1523,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :cancel_event, :string, default: "cancel_upload"
   attr :target, :any, default: nil
   attr :error, :string, default: nil
+  attr :error_formatter, :any, default: nil
 
   attr :state, :atom,
     values: [
@@ -1543,6 +1558,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       )
       |> assign(:failure?, assigns.failure != [] or assigns.state == :failed)
       |> assign(:input_describedby, upload_input_describedby(assigns))
+      |> assign(:error_formatter, assigns.error_formatter || (&upload_error_to_string/1))
 
     ~H"""
     <div id={@id} data-upload-state={@state} class="space-y-2">
@@ -1628,7 +1644,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               class="mt-1 text-xs text-error"
             >
               <li :for={error <- upload_errors(@upload, entry)}>
-                {upload_error_to_string(error)}
+                {@error_formatter.(error)}
               </li>
             </ul>
           </div>
@@ -1647,7 +1663,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
       <ul :if={@upload.errors != []} id={"#{@id}-rejected"} class="text-sm text-error">
         <li :for={{_ref, reason} <- @upload.errors}>
-          {upload_error_to_string(reason)}
+          {@error_formatter.(reason)}
         </li>
       </ul>
     </div>

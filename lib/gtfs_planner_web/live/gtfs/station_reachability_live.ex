@@ -617,6 +617,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
           walkability_field_errors={@walkability_field_errors}
           walkability_mode={@walkability_mode}
           editing_walkability_test={@editing_walkability_test}
+          delete_event="delete_walkability_test"
         />
       </section>
     </Layouts.app>
