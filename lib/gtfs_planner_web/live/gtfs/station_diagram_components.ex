@@ -91,7 +91,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp diagram_upload_error_to_string(:too_large), do: "File is too large (max 10 MB)"
 
   defp diagram_upload_error_to_string(:not_accepted),
-    do: "File type not accepted (PNG, JPG, JPEG, SVG only)"
+    do: "File type not accepted (PNG, JPG, JPEG only)"
 
   defp diagram_upload_error_to_string(:too_many_files),
     do: "Only one file can be uploaded at a time"

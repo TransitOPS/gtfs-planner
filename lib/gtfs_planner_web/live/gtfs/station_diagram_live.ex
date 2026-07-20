@@ -109,7 +109,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:floorplan_image_h, nil)
      |> assign(:station_stop_levels_cache, empty_station_stop_levels_cache())
      |> allow_upload(:diagram,
-       accept: ~w(.png .jpg .jpeg .svg),
+       accept: ~w(.png .jpg .jpeg),
        max_file_size: 10_000_000,
        max_entries: 1,
        auto_upload: true,

@@ -8256,7 +8256,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(
                view,
                "span.text-error",
-               "File type not accepted (PNG, JPG, JPEG, SVG only)"
+               "File type not accepted (PNG, JPG, JPEG only)"
              )
     end
 
