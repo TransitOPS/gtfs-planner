@@ -1490,7 +1490,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
       |> render_click()
 
-      assert has_element?(view, "#diagram-page[data-immersive='true']")
+      assert has_element?(view, "#diagram-page:not([data-immersive])")
 
       refute has_element?(view, "#pathways-#{pathway.id}[phx-click='edit_pathway']")
       refute has_element?(view, "#pathway-form")
@@ -3484,7 +3484,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       html = render(view)
 
       # Assert the upload button shows "Upload Diagram" when no diagram exists
-      assert html =~ "Upload Diagram"
+      assert html =~ "Upload diagram"
       refute html =~ "Replace diagram"
     end
 
@@ -3523,10 +3523,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert has_element?(view, ".join button:nth-child(1)[phx-value-mode='view']", "View")
-      assert has_element?(view, ".join button:nth-child(2)[phx-value-mode='add']", "Add Stop")
-      assert has_element?(view, ".join button:nth-child(3)[phx-value-mode='connect']", "Connect")
-      assert has_element?(view, "button[phx-value-mode='view']:not([disabled]).bg-blue-600")
+      assert has_element?(view, "#diagram-mode input[type='radio'][name='mode'][value='view']")
+      assert has_element?(view, "#diagram-mode input[value='add'][disabled]")
+      assert has_element?(view, "#diagram-mode input[value='connect'][disabled]")
+      assert has_element?(view, "#diagram-mode input[value='view'][checked]")
     end
 
     test "view mode shows contextual text and default cursor with diagram", %{
@@ -3553,7 +3553,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "svg.cursor-crosshair")
     end
 
-    test "immersive data attribute toggles by mode", %{
+    test "keeps page context visible while editing and provides explicit workspace entry", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -3568,16 +3568,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       assert has_element?(view, "#diagram-page:not([data-immersive])")
+      assert has_element?(view, "#diagram-mode")
+      assert has_element?(view, "#enter-diagram-workspace")
+      assert has_element?(view, "#diagram-workspace-heading[tabindex='-1']")
 
       view
       |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
       |> render_click()
 
-      assert has_element?(view, "#diagram-page[data-immersive='true']")
+      assert has_element?(view, "#diagram-page:not([data-immersive])")
+      assert has_element?(view, "#exit-diagram-editing")
 
       render_hook(view, "switch_mode", %{"mode" => "connect"})
 
-      assert has_element?(view, "#diagram-page[data-immersive='true']")
+      assert has_element?(view, "#diagram-page:not([data-immersive])")
 
       view
       |> element("button[phx-click='switch_mode'][phx-value-mode='view']")
@@ -7754,7 +7758,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#diagram-action-strip .ml-auto > button[phx-click='toggle_measurement'] + div.join button[phx-value-mode='view']"
+               "#diagram-action-strip .ml-auto #diagram-mode input[value='view']"
              )
 
       assert has_element?(view, "#diagram-overlay[data-mode='view']")

@@ -186,124 +186,16 @@ body {
   min-height: 0;
 }
 
-#diagram-page[data-immersive="true"] {
-  height: 100vh;
-  height: 100dvh;
-  overflow: hidden;
+.diagram-workspace {
+  scroll-margin-top: 1rem;
 }
 
-#diagram-page #app-header {
-  transition: transform 300ms ease-out, max-height 300ms ease-out, opacity 200ms ease-out;
-  max-height: 200px;
-  overflow: hidden;
-}
-
-#diagram-page[data-immersive="true"] #app-header {
-  transform: translateY(-100%);
-  min-height: 0;
-  height: 0;
-  max-height: 0;
-  opacity: 0;
-  border-bottom-width: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-#diagram-page #station-sub-nav {
-  transition: transform 300ms ease-out, max-height 300ms ease-out, opacity 200ms ease-out;
-  max-height: 500px;
-  overflow: hidden;
-}
-
-#diagram-page[data-immersive="true"] #station-sub-nav {
-  transform: translateY(-100%);
-  max-height: 0;
-  opacity: 0;
-}
-
-#diagram-page #sub-header-wrapper {
-  transition: flex-grow 300ms ease-out;
-  flex-grow: 0;
-}
-
-#diagram-page[data-immersive="true"] #sub-header-wrapper {
-  flex-grow: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-bottom: none;
-}
-
-#diagram-page #diagram-canvas-wrapper {
-  transition: flex-grow 300ms ease-out, padding 300ms ease-out;
-  flex-grow: 0;
-}
-
-#diagram-page[data-immersive="true"] #diagram-canvas-wrapper {
-  flex-grow: 1;
-  display: flex;
-  flex-direction: column;
-  padding: 0;
-  min-height: 0;
-}
-
-#diagram-page[data-immersive="true"] #diagram-canvas-wrapper > .relative {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  border-radius: 0;
-  border: none;
-  min-height: 0;
-}
-
-#diagram-page[data-immersive="true"] #diagram-canvas-wrapper svg[phx-hook="DiagramCanvas"] {
-  flex: 1;
-  min-height: 0;
-}
-
-#diagram-page #map-canvas-wrapper {
-  transition: flex-grow 300ms ease-out, padding 300ms ease-out;
-  flex-grow: 0;
-}
-
-#diagram-page[data-immersive="true"] #map-canvas-wrapper {
-  flex-grow: 1;
-  display: flex;
-  flex-direction: column;
-  padding: 0;
-  min-height: 0;
-}
-
-#diagram-page[data-immersive="true"] #map-canvas-wrapper > div {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-#diagram-page[data-immersive="true"] .map-canvas {
-  flex: 1;
-  min-height: 0;
-  aspect-ratio: auto;
-  border-radius: 0;
-  border: none;
-}
-
-
-
-#diagram-page #main-content {
-  transition: padding 300ms ease-out;
-}
-
-#diagram-page[data-immersive="true"] #main-content {
-  max-height: 0;
-  padding: 0;
-  margin: 0;
-  overflow: hidden;
-}
-
-body:has(#diagram-page[data-immersive="true"]) {
-  overflow: hidden;
+@media (min-width: 768px) {
+  .diagram-workspace {
+    max-height: min(72rem, calc(100vh - 13rem));
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
 }
 
 /* Design system flash containment (/design/feedback).
@@ -409,12 +301,9 @@ dialog[role="alertdialog"][open] > div > div {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #diagram-page #app-header,
-  #diagram-page #station-sub-nav,
-  #diagram-page #sub-header-wrapper,
+  .diagram-workspace,
   #diagram-page #diagram-canvas-wrapper,
-  #diagram-page #map-canvas-wrapper,
-  #diagram-page #main-content {
+  #diagram-page #map-canvas-wrapper {
     transition-duration: 0ms;
   }
 

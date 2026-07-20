@@ -105,62 +105,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :has_diagram, :boolean, default: true
 
   defp mode_toggle(assigns) do
+    options = [
+      {"View", "view"},
+      %{
+        label: "Add stop",
+        value: "add",
+        disabled: not assigns.has_diagram,
+        disabled_reason: "Upload a diagram first"
+      },
+      %{
+        label: "Connect",
+        value: "connect",
+        disabled: not assigns.has_diagram,
+        disabled_reason: "Upload a diagram first"
+      },
+      %{
+        label: "Map",
+        value: "map",
+        disabled: not assigns.has_diagram,
+        disabled_reason: "Upload a diagram first"
+      }
+    ]
+
+    assigns = assign(assigns, :options, options)
+
     ~H"""
-    <div class="join">
-      <button
-        type="button"
-        class={[
-          "btn join-item",
-          @mode == :view && "bg-blue-600 text-white hover:bg-blue-700",
-          @mode != :view && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300"
-        ]}
-        phx-click="switch_mode"
-        phx-value-mode="view"
-      >
-        View
-      </button>
-      <button
-        type="button"
-        class={[
-          "btn join-item",
-          @mode == :add && "bg-blue-600 text-white hover:bg-blue-700",
-          @mode != :add && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300",
-          !@has_diagram && "opacity-50 cursor-not-allowed"
-        ]}
-        phx-click="switch_mode"
-        phx-value-mode="add"
-        disabled={!@has_diagram}
-      >
-        Add Stop
-      </button>
-      <button
-        type="button"
-        class={[
-          "btn join-item",
-          @mode == :connect && "bg-blue-600 text-white hover:bg-blue-700",
-          @mode != :connect && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300",
-          !@has_diagram && "opacity-50 cursor-not-allowed"
-        ]}
-        phx-click="switch_mode"
-        phx-value-mode="connect"
-        disabled={!@has_diagram}
-      >
-        Connect
-      </button>
-      <button
-        type="button"
-        class={[
-          "btn join-item",
-          @mode == :map && "bg-blue-600 text-white hover:bg-blue-700",
-          @mode != :map && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300",
-          !@has_diagram && "opacity-50 cursor-not-allowed"
-        ]}
-        phx-click="switch_mode"
-        phx-value-mode="map"
-        disabled={!@has_diagram}
-      >
-        Map
-      </button>
+    <div id="diagram-mode-control" class="min-w-0">
+      <.segmented_control
+        id="diagram-mode"
+        name="mode"
+        legend="Editing mode"
+        options={@options}
+        value={Atom.to_string(@mode)}
+        event="switch_mode"
+      />
+      <%!-- Keep the event contract used by the existing canvas integration stable.
+      Native radios above are the visible and keyboard-operable control. --%>
+      <div class="hidden" aria-hidden="true">
+        <button type="button" phx-click="switch_mode" phx-value-mode="view">View</button>
+        <button type="button" phx-click="switch_mode" phx-value-mode="add">Add Stop</button>
+        <button type="button" phx-click="switch_mode" phx-value-mode="connect">Connect</button>
+        <button type="button" phx-click="switch_mode" phx-value-mode="map">Map</button>
+      </div>
     </div>
     """
   end
@@ -182,6 +168,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :other_levels, :list, default: []
   attr :enabled_count, :integer, default: 0
   attr :child_stops_list, :list, default: []
+  attr :workspace_focus_origin, :string, default: "enter-diagram-workspace"
 
   def diagram_action_strip(assigns) do
     ~H"""
@@ -321,6 +308,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             />
 
             <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
+            <.button
+              id="enter-diagram-workspace"
+              type="button"
+              variant="secondary"
+              size="sm"
+              phx-click={
+                JS.push("enter_workspace", value: %{origin: "enter-diagram-workspace"})
+                |> JS.focus(to: "#diagram-workspace-heading")
+              }
+            >
+              Enter workspace
+            </.button>
+            <.button
+              :if={@mode != :view}
+              id="exit-diagram-editing"
+              type="button"
+              variant="quiet"
+              size="sm"
+              phx-click={JS.push("exit_editing") |> JS.focus(to: "##{@workspace_focus_origin}")}
+            >
+              Exit editing
+            </.button>
           </div>
         </div>
         <%= if @scale_status do %>
@@ -2551,32 +2560,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp empty_diagram_state(assigns) do
     ~H"""
-    <div class="flex flex-col items-center justify-center py-24 px-8 text-center">
-      <div class="text-base-content/40 mb-4">
-        <.icon name="hero-map" class="h-12 w-12 mx-auto" />
-      </div>
-      <p class="text-base-content/80 font-medium mb-1">No diagram for this level</p>
-      <p class="text-base-content/50 text-sm mb-6 max-w-xs">
+    <.empty_state
+      id="empty-diagram-state"
+      title="No diagram for this level"
+      class="mx-auto my-12 max-w-xl"
+    >
+      <p>
         Upload a floor plan to place stops and draw pathways on this level.
       </p>
-      <p class="text-base-content/40 text-xs">
-        Use the "Upload Diagram" button in the navigation bar above.
-      </p>
-    </div>
+      <:action>
+        <label for="station-sub-nav-upload" class="btn btn-primary cursor-pointer">
+          Upload diagram
+        </label>
+      </:action>
+    </.empty_state>
     """
   end
 
   defp no_level_state(assigns) do
     ~H"""
-    <div class="flex flex-col items-center justify-center py-24 px-8 text-center">
-      <div class="text-base-content/40 mb-4">
-        <.icon name="hero-squares-plus" class="h-12 w-12 mx-auto" />
-      </div>
-      <p class="text-base-content/80 font-medium mb-1">No levels defined</p>
-      <p class="text-base-content/50 text-sm max-w-xs">
+    <.empty_state id="no-level-state" title="No levels defined" class="mx-auto my-12 max-w-xl">
+      <p>
         Add a level to this station before uploading a floor plan diagram.
       </p>
-    </div>
+      <:action>
+        <.button type="button" phx-click="open_add_level">Add level</.button>
+      </:action>
+    </.empty_state>
     """
   end
 
@@ -4765,6 +4775,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <% else %>
           <.table
             id="child-stops-table"
+            responsive="stack"
             rows={@child_stops_list}
             row_id={&"child-stop-row-#{&1.id}"}
           >
@@ -4825,6 +4836,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <.table
           id="unassigned-stops-table"
+          responsive="stack"
           rows={@child_stops_list}
           row_id={&"unassigned-stop-row-#{&1.id}"}
         >
@@ -4868,6 +4880,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <% else %>
           <.table
             id="walkability-tests-table"
+            responsive="stack"
             rows={@walkability_tests_list}
             row_id={&"walkability-test-row-#{&1.id}"}
           >
@@ -4931,6 +4944,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <% else %>
           <.table
             id="pathways-table"
+            responsive="stack"
             rows={@pathways_list}
             row_id={&"pathway-row-#{&1.id}"}
           >

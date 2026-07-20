@@ -34,6 +34,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:page_title, "Station Diagram")
      |> assign(:user_roles, user_roles)
      |> assign(:mode, :view)
+     |> assign(:workspace_focus_origin, "enter-diagram-workspace")
      |> assign(:measurement_enabled, false)
      |> assign(:scale_status, nil)
      |> assign(:placement_status, nil)
@@ -846,7 +847,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div id="diagram-page" data-immersive={if @mode in [:add, :connect, :map], do: "true"}>
+    <div id="diagram-page">
       <Layouts.app
         flash={@flash}
         current_user={@current_user}
@@ -883,6 +884,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             other_levels={@other_levels}
             enabled_count={MapSet.size(MapSet.union(@other_levels_floorplan, @other_levels_stops))}
             child_stops_list={@child_stops_list}
+            workspace_focus_origin={@workspace_focus_origin}
           />
           <%= if @mode == :map do %>
             <div id="map-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
@@ -907,28 +909,45 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               />
             </div>
           <% else %>
-            <div id="diagram-canvas-wrapper" class="w-full px-4 sm:px-6 lg:px-8 py-4">
-              <.diagram_canvas
-                station={@station}
-                active_level={@active_level}
-                active_stop_level={@active_stop_level}
-                streams={@streams}
-                active_point_id={@active_point_id}
-                pending_xy={@pending_xy}
-                selected_stop_id={@selected_stop_id}
-                mode={@mode}
-                uploads={@uploads}
-                cross_level_badges_by_stop={@cross_level_badges_by_stop}
-                diagram_error={@diagram_error}
-                organization_id={@current_organization.id}
-                gtfs_version_id={@current_gtfs_version.id}
-                ruler_point_a={@ruler_point_a}
-                ruler_point_b={@ruler_point_b}
-                scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
-                scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
-                measurement_enabled={@measurement_enabled}
-              />
-            </div>
+            <section
+              id="diagram-workspace"
+              class="diagram-workspace w-full px-4 sm:px-6 lg:px-8 py-4"
+              aria-labelledby="diagram-workspace-heading"
+            >
+              <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 id="diagram-workspace-heading" tabindex="-1" class="text-lg font-semibold">
+                    Diagram workspace
+                  </h2>
+                  <p class="text-sm text-base-content/70">
+                    {workspace_context(@active_level, @mode)}
+                  </p>
+                </div>
+                <span class="badge badge-outline">{mode_label(@mode)}</span>
+              </div>
+              <div id="diagram-canvas-wrapper">
+                <.diagram_canvas
+                  station={@station}
+                  active_level={@active_level}
+                  active_stop_level={@active_stop_level}
+                  streams={@streams}
+                  active_point_id={@active_point_id}
+                  pending_xy={@pending_xy}
+                  selected_stop_id={@selected_stop_id}
+                  mode={@mode}
+                  uploads={@uploads}
+                  cross_level_badges_by_stop={@cross_level_badges_by_stop}
+                  diagram_error={@diagram_error}
+                  organization_id={@current_organization.id}
+                  gtfs_version_id={@current_gtfs_version.id}
+                  ruler_point_a={@ruler_point_a}
+                  ruler_point_b={@ruler_point_b}
+                  scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
+                  scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
+                  measurement_enabled={@measurement_enabled}
+                />
+              </div>
+            </section>
           <% end %>
         </:sub_header>
 
@@ -1268,6 +1287,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       :error ->
         {:noreply, put_flash(socket, :error, "Invalid mode selection")}
     end
+  end
+
+  @impl true
+  def handle_event("enter_workspace", %{"origin" => "enter-diagram-workspace"}, socket) do
+    {:noreply, assign(socket, :workspace_focus_origin, "enter-diagram-workspace")}
+  end
+
+  def handle_event("enter_workspace", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("exit_editing", _params, socket) do
+    socket =
+      socket
+      |> assign(:mode, :view)
+      |> assign(:selected_from_stop, nil)
+      |> assign(:dragging_stop_id, nil)
+      |> reset_reposition_state()
+      |> assign(:pending_xy, nil)
+      |> assign(:active_point_id, nil)
+      |> maybe_disable_measurement_for_mode(:view)
+      |> restream_mode_dependent_layers()
+      |> assign(:other_levels_floorplan, MapSet.new())
+      |> assign(:other_levels_stops, MapSet.new())
+      |> assign_other_levels()
+      |> push_child_stop_markers()
+
+    {:noreply, socket}
   end
 
   def handle_event("switch_mode", _params, socket) do
@@ -4393,6 +4439,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp parse_mode("connect"), do: {:ok, :connect}
   defp parse_mode("map"), do: {:ok, :map}
   defp parse_mode(_), do: :error
+
+  defp mode_label(:view), do: "View"
+  defp mode_label(:add), do: "Add stop"
+  defp mode_label(:connect), do: "Connect"
+  defp mode_label(:map), do: "Map"
+
+  defp workspace_context(nil, _mode), do: "Choose a level to begin editing its diagram."
+
+  defp workspace_context(level, mode) do
+    level_name = level.level_name || level.level_id
+    "#{level_name} · #{mode_label(mode)} mode"
+  end
 
   defp toggle_other_level(socket, mapset_assign, level_id, eligibility_key) do
     current = Map.get(socket.assigns, mapset_assign, MapSet.new())
