@@ -48,6 +48,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       class="flex gap-6 mb-4 border-b border-base-300"
       role="tablist"
       aria-orientation="horizontal"
+      phx-hook="TablistHook"
     >
       <button
         id={"#{@entity_type}-tab-details"}

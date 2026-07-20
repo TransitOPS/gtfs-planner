@@ -21,6 +21,7 @@ alias GtfsPlanner.Accounts
 alias GtfsPlanner.Accounts.User
 alias GtfsPlanner.Accounts.UserToken
 alias GtfsPlanner.Gtfs
+alias GtfsPlanner.Gtfs.DiagramStorage
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Repo
 alias GtfsPlanner.Versions
@@ -99,6 +100,24 @@ case Accounts.register_first_admin(%{
       })
 
     IO.puts("Browser seed: stop_level #{stop_level.id} with diagram")
+
+    # The route deliberately serves only files that exist within the versioned,
+    # publication-scoped namespace. Store a tiny valid raster at the exact
+    # filename referenced above so browser tests exercise the real canvas,
+    # upload replacement, and map image loading paths.
+    one_pixel_png =
+      Base.decode64!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLqXQAAAABJRU5ErkJggg=="
+      )
+
+    :ok =
+      DiagramStorage.store_import_image(
+        org.id,
+        diagram_version.id,
+        station.stop_id,
+        stop_level.diagram_filename,
+        one_pixel_png
+      )
 
     # Create child stops with diagram coordinates
     {:ok, _child_a} =

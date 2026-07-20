@@ -14,7 +14,7 @@
  * payload = { active_level_id, levels: [LevelRender] }
  */
 
-import { appendStopBadges, treatmentForLocationType } from "./stop_icon_symbols";
+import { appendStopBadges, paletteColor, treatmentForLocationType } from "./stop_icon_symbols";
 
 const DEFAULT_OPACITY = 0.7;
 
@@ -31,7 +31,7 @@ function tooltipLabel(stop) {
 }
 
 export function createOtherLevelsLayers(deps) {
-  const { overlaysRoot, pinsRoot, applyOverlayTransform, projectLatLng } = deps || {};
+  const { overlaysRoot, pinsRoot, applyOverlayTransform, projectLatLng, paletteRoot } = deps || {};
 
   if (!overlaysRoot) throw new Error("createOtherLevelsLayers: overlaysRoot is required");
   if (!pinsRoot) throw new Error("createOtherLevelsLayers: pinsRoot is required");
@@ -126,8 +126,9 @@ export function createOtherLevelsLayers(deps) {
     }
 
     group.pinGroupEl.innerHTML = "";
+    const markerColor = color || paletteColor(paletteRoot, "--diagram-other-level-stop", "#4B5563");
     group.markers = stops.map((stop) => {
-      const marker = createMarker(levelId, color, stop);
+      const marker = createMarker(levelId, markerColor, stop);
       group.pinGroupEl.appendChild(marker.el);
       positionMarker(marker);
       return marker;

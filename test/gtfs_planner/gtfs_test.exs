@@ -3587,6 +3587,307 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "alignment coordinate previews" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_ALIGNMENT_PREVIEW",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_ALIGNMENT_PREVIEW",
+          level_index: 0.0
+        })
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        stop_level: stop_level
+      }
+    end
+
+    test "preview is ordered, stable, and read-only", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      later_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_PLATFORM_LATER",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 60, y: 40},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      earlier_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_PLATFORM_EARLIER",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("3.0"),
+          stop_lon: Decimal.new("4.0")
+        })
+
+      scope = %Scope{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_id: station.id,
+        station_stop_id: station.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      pin_id = Ecto.UUID.generate()
+
+      assert %{synced_count: 1, errors: []} =
+               Gtfs.sync_journal_entries(scope, [
+                 %{
+                   id: pin_id,
+                   target_type: "pin",
+                   stop_level_id: stop_level.id,
+                   diagram_x: 50.0,
+                   diagram_y: 40.0,
+                   captured_at: ~U[2026-07-20 12:00:00Z]
+                 }
+               ])
+
+      attrs = preview_alignment_attrs()
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      assert {:ok, preview} =
+               Gtfs.preview_stop_level_coordinate_application(stop_level.id, attrs, 1000, 800)
+
+      assert {:ok, same_preview} =
+               Gtfs.preview_stop_level_coordinate_application(stop_level.id, attrs, 1000, 800)
+
+      assert preview == same_preview
+      assert preview.stop_count == 2
+      assert Enum.map(preview.rows, & &1.stop_id) == Enum.sort([later_stop.id, earlier_stop.id])
+      assert Enum.all?(preview.rows, &match?(%Decimal{}, &1.old_lat))
+      assert Enum.all?(preview.rows, &match?(%Decimal{}, &1.old_lon))
+      assert is_binary(preview.fingerprint)
+      assert byte_size(preview.fingerprint) == 64
+      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+      assert Decimal.equal?(Repo.get!(Stop, later_stop.id).stop_lat, Decimal.new("1.0"))
+      assert Decimal.equal?(Repo.get!(Stop, earlier_stop.id).stop_lon, Decimal.new("4.0"))
+      assert %{lat: nil, lon: nil} = Repo.get!(JournalEntry, pin_id)
+      refute_receive {[:stop_levels, :updated], _}
+      refute_receive {[:stops, :updated], _}
+    end
+
+    test "apply rejects a changed eligible input without writes", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_STALE_PLATFORM",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      assert {:ok, preview} =
+               Gtfs.preview_stop_level_coordinate_application(
+                 stop_level.id,
+                 preview_alignment_attrs(),
+                 1000,
+                 800
+               )
+
+      {:ok, changed_child} = Gtfs.update_stop_diagram_coordinate(child, %{x: 55, y: 40})
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      assert {:error, :stale_preview} = Gtfs.apply_stop_level_coordinate_preview(preview)
+
+      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+      assert Decimal.equal?(Repo.get!(Stop, child.id).stop_lat, Decimal.new("1.0"))
+      assert Repo.get!(Stop, changed_child.id).diagram_coordinate == %{"x" => 55, "y" => 40}
+      refute_receive {[:stop_levels, :updated], _}
+      refute_receive {[:stops, :updated], _}
+    end
+
+    test "apply commits the preview's alignment, coordinates, and pins together", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_APPLY_PLATFORM",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      scope = %Scope{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_id: station.id,
+        station_stop_id: station.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      pin_id = Ecto.UUID.generate()
+
+      assert %{synced_count: 1, errors: []} =
+               Gtfs.sync_journal_entries(scope, [
+                 %{
+                   id: pin_id,
+                   target_type: "pin",
+                   stop_level_id: stop_level.id,
+                   diagram_x: 50.0,
+                   diagram_y: 40.0,
+                   captured_at: ~U[2026-07-20 12:00:00Z]
+                 }
+               ])
+
+      assert {:ok, preview} =
+               Gtfs.preview_stop_level_coordinate_application(
+                 stop_level.id,
+                 preview_alignment_attrs(),
+                 1000,
+                 800
+               )
+
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      assert {:ok, %{active_stop_level: updated, rows: rows, touched_stop_count: 1}} =
+               Gtfs.apply_stop_level_coordinate_preview(preview)
+
+      assert updated.id == stop_level.id
+      assert [row] = rows
+      assert row.stop_id == child.id
+      assert_in_delta row.new_lat, 40.7128, 1.0e-9
+      assert_in_delta row.new_lon, -74.006, 1.0e-9
+      assert_receive {[:stop_levels, :updated], %{id: updated_id}}
+      assert updated_id == stop_level.id
+      assert_receive {[:stops, :updated], %{id: child_id}}
+      assert child_id == child.id
+
+      assert_in_delta Decimal.to_float(Repo.get!(Stop, child.id).stop_lat), 40.7128, 1.0e-9
+      assert_in_delta Decimal.to_float(Repo.get!(Stop, child.id).stop_lon), -74.006, 1.0e-9
+      assert_in_delta Repo.get!(JournalEntry, pin_id).lat, 40.7128, 1.0e-9
+      assert_in_delta Repo.get!(JournalEntry, pin_id).lon, -74.006, 1.0e-9
+
+      assert {:error, :stale_preview} = Gtfs.apply_stop_level_coordinate_preview(preview)
+      refute_receive {[:stop_levels, :updated], _}
+      refute_receive {[:stops, :updated], _}
+    end
+
+    test "a failed pin refresh rolls back the alignment and child coordinates", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_level: stop_level
+    } do
+      child =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PREVIEW_PIN_ROLLBACK_PLATFORM",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      scope = %Scope{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_id: station.id,
+        station_stop_id: station.stop_id,
+        actor_id: Ecto.UUID.generate()
+      }
+
+      pin_id = Ecto.UUID.generate()
+
+      assert %{synced_count: 1, errors: []} =
+               Gtfs.sync_journal_entries(scope, [
+                 %{
+                   id: pin_id,
+                   target_type: "pin",
+                   stop_level_id: stop_level.id,
+                   diagram_x: 50.0,
+                   diagram_y: 0.0,
+                   captured_at: ~U[2026-07-20 12:00:00Z]
+                 }
+               ])
+
+      unsafe_alignment = %{
+        floorplan_center_lat: 89.9,
+        floorplan_center_lon: 0.0,
+        floorplan_scale_mpp: 30.0,
+        floorplan_rotation_deg: 0.0
+      }
+
+      assert {:ok, preview} =
+               Gtfs.preview_stop_level_coordinate_application(
+                 stop_level.id,
+                 unsafe_alignment,
+                 1000,
+                 800
+               )
+
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stop_levels")
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "stops")
+
+      assert {:error, %Ecto.Changeset{}} = Gtfs.apply_stop_level_coordinate_preview(preview)
+
+      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).floorplan_center_lat == nil
+      assert Decimal.equal?(Repo.get!(Stop, child.id).stop_lat, Decimal.new("1.0"))
+      assert Decimal.equal?(Repo.get!(Stop, child.id).stop_lon, Decimal.new("2.0"))
+      assert %{lat: nil, lon: nil} = Repo.get!(JournalEntry, pin_id)
+      refute_receive {[:stop_levels, :updated], _}
+      refute_receive {[:stops, :updated], _}
+    end
+  end
+
+  defp preview_alignment_attrs do
+    %{
+      floorplan_center_lat: 40.7128,
+      floorplan_center_lon: -74.006,
+      floorplan_scale_mpp: 0.25,
+      floorplan_rotation_deg: 0.0
+    }
+  end
+
   describe "derive_child_stop_coords/3" do
     setup do
       organization = organization_fixture()

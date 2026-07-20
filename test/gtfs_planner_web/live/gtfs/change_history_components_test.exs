@@ -10,6 +10,24 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
     assert function_exported?(ChangeHistoryComponents, :change_log_list, 1)
   end
 
+  test "history tabs expose the hook-owned roving-focus relationships" do
+    html =
+      render_component(&ChangeHistoryComponents.history_tab_strip/1,
+        entity_type: "stop",
+        entity_id: "stop-1",
+        history_active: false
+      )
+
+    assert html =~ ~s(id="stop-tabs")
+    assert html =~ ~s(phx-hook="TablistHook")
+    assert html =~ ~s(id="stop-tab-details")
+    assert html =~ ~s(aria-controls="stop-panel-details")
+    assert html =~ ~s(id="stop-tab-history")
+    assert html =~ ~s(aria-controls="stop-panel-history")
+    assert html =~ ~s(tabindex="0")
+    assert html =~ ~s(tabindex="-1")
+  end
+
   describe "display_name/1" do
     test "extracts and titlecases the local part of an email" do
       assert ChangeHistoryComponents.__test_display_name__("ryan.mahoney@example.com") ==

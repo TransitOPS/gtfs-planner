@@ -25,8 +25,8 @@ function cssBorderColor(value) {
   return el.style.borderColor;
 }
 
-function expectPinTreatment(pin, locationType) {
-  const treatment = treatmentForLocationType(locationType, DIAGRAM_BASE_COLOR);
+function expectPinTreatment(pin, locationType, color = DIAGRAM_BASE_COLOR) {
+  const treatment = treatmentForLocationType(locationType, color);
   const dot = pin.firstChild;
 
   expect(pin.style.width).toBe(treatment.width);
@@ -430,8 +430,10 @@ describe("map_alignment_hook apply button enablement", () => {
 describe("map_alignment_hook active child stops rendering", () => {
   it("ignores stale active child-stop payload for non-active level", () => {
     document.body.innerHTML = `
+      <div id="diagram-page" style="--diagram-active-stop: #7C3AED">
       <div id="root" data-active-level-id="active-level">
         <div id="map-alignment-pins-active"></div>
+      </div>
       </div>
     `;
 
@@ -499,8 +501,10 @@ describe("map_alignment_hook active child stops rendering", () => {
 
   it("renders active child stops with diagram colors, halo, and shared geometry", () => {
     document.body.innerHTML = `
-      <div id="root" data-active-level-id="active-level">
-        <div id="map-alignment-pins-active"></div>
+      <div id="diagram-page" style="--diagram-active-stop: #7C3AED">
+        <div id="root" data-active-level-id="active-level">
+          <div id="map-alignment-pins-active"></div>
+        </div>
       </div>
     `;
 
@@ -525,38 +529,39 @@ describe("map_alignment_hook active child stops rendering", () => {
       ],
     });
 
-    // Every active marker renders in the unified base color (fill === border),
-    // with shape — not color — encoding the location type.
+    // The production hook resolves the named role from #diagram-page. Shape —
+    // not color — still distinguishes location types.
+    const paletteColor = "#7C3AED";
     const boardingPin = activePinsRoot.children[0];
     const boardingDot = boardingPin.firstChild;
-    expectPinTreatment(boardingPin, 0);
+    expectPinTreatment(boardingPin, 0, paletteColor);
     expect(symbolForLocationType(0)).toBe("rect_upright");
-    expect(boardingDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
-    expect(boardingDot.style.borderColor).toBe(cssBorderColor(DIAGRAM_BASE_COLOR));
+    expect(boardingDot.style.backgroundColor).toBe(cssColor(paletteColor));
+    expect(boardingDot.style.borderColor).toBe(cssBorderColor(paletteColor));
 
     const boardingPointPin = activePinsRoot.children[1];
     const boardingPointDot = boardingPointPin.firstChild;
-    expectPinTreatment(boardingPointPin, 4);
+    expectPinTreatment(boardingPointPin, 4, paletteColor);
     expect(symbolForLocationType(4)).toBe("rect_square");
-    expect(boardingPointDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
-    expect(boardingPointDot.style.borderColor).toBe(cssBorderColor(DIAGRAM_BASE_COLOR));
+    expect(boardingPointDot.style.backgroundColor).toBe(cssColor(paletteColor));
+    expect(boardingPointDot.style.borderColor).toBe(cssBorderColor(paletteColor));
     expect(boardingPointPin.style.width).not.toBe(boardingPin.style.width);
     expect(boardingPointPin.style.height).not.toBe(boardingPin.style.height);
 
     // Entrance/Exit (2) gets no white-fill outline — same solid color as the rest.
     const entrancePin = activePinsRoot.children[2];
     const entranceDot = entrancePin.firstChild;
-    expectPinTreatment(entrancePin, 2);
+    expectPinTreatment(entrancePin, 2, paletteColor);
     expect(symbolForLocationType(2)).toBe("rect_upright");
-    expect(entranceDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
-    expect(entranceDot.style.borderColor).toBe(cssBorderColor(DIAGRAM_BASE_COLOR));
+    expect(entranceDot.style.backgroundColor).toBe(cssColor(paletteColor));
+    expect(entranceDot.style.borderColor).toBe(cssBorderColor(paletteColor));
 
     const genericPin = activePinsRoot.children[3];
     const genericDot = genericPin.firstChild;
-    expectPinTreatment(genericPin, "bad");
+    expectPinTreatment(genericPin, "bad", paletteColor);
     expect(symbolForLocationType("bad")).toBe("circle");
-    expect(genericDot.style.backgroundColor).toBe(cssColor(DIAGRAM_BASE_COLOR));
-    expect(genericDot.style.borderColor).toBe(cssBorderColor(DIAGRAM_BASE_COLOR));
+    expect(genericDot.style.backgroundColor).toBe(cssColor(paletteColor));
+    expect(genericDot.style.borderColor).toBe(cssBorderColor(paletteColor));
   });
 
   it("renders cross-level pathway badges beside active child stops", () => {
@@ -1721,5 +1726,104 @@ describe("map_alignment_hook other-level isolation across active transform", () 
     expect(otherOverlayImg.style.transform).toBe(overlayTransformBefore);
 
     otherLevels.destroy();
+  });
+});
+
+describe("map_alignment_hook generation bridge", () => {
+  it("tags distinct map degradation states and transform events with the current generation", () => {
+    const hook = {
+      ...MapAlignmentHook,
+      generation: "map-42",
+      _computeAlignment: vi.fn(() => ({
+        center_lat: 40.7,
+        center_lon: -74.0,
+        scale_mpp: 0.25,
+        rotation_deg: 3,
+      })),
+      _isValidAlignmentPayload: vi.fn(() => true),
+      pushEvent: vi.fn(),
+    };
+
+    hook._emitMapState("initializing");
+    hook._emitMapState("imagery_unavailable");
+    hook._emitMapState("buildings_degraded");
+    hook._emitMapState("ready");
+    hook._pushAlignmentEventIfValid("preview_coordinate_application");
+
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(1, "map_state", {
+      generation: "map-42",
+      state: "initializing",
+    });
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(2, "map_state", {
+      generation: "map-42",
+      state: "imagery_unavailable",
+    });
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(3, "map_state", {
+      generation: "map-42",
+      state: "buildings_degraded",
+    });
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(4, "map_state", {
+      generation: "map-42",
+      state: "ready",
+    });
+    expect(hook.pushEvent).toHaveBeenNthCalledWith(5, "preview_coordinate_application", {
+      generation: "map-42",
+      center_lat: 40.7,
+      center_lon: -74.0,
+      scale_mpp: 0.25,
+      rotation_deg: 3,
+    });
+  });
+
+  it("reports an optional buildings-overlay failure separately from imagery", async () => {
+    const originalLeaflet = window.L;
+    window.L = {};
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("unavailable"))));
+
+    try {
+      const hook = {
+        ...MapAlignmentHook,
+        leafletMap: {},
+        _buildingsLayer: null,
+        _emitMapState: vi.fn(),
+      };
+
+      hook._fetchBuildings(40.7, -74.0);
+      await vi.waitFor(() => {
+        expect(hook._emitMapState).toHaveBeenCalledWith("buildings_degraded");
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      window.L = originalLeaflet;
+    }
+  });
+
+  it("reports tile errors as unavailable imagery", () => {
+    const handlers = {};
+    const hook = {
+      ...MapAlignmentHook,
+      generation: "map-42",
+      pushEvent: vi.fn(),
+      _tileLayers: [
+        {
+          on: vi.fn((event, handler) => {
+            handlers[event] = handler;
+          }),
+        },
+      ],
+    };
+
+    try {
+      hook._bindRuntimeStateEvents();
+      handlers.tileerror();
+
+      expect(hook.pushEvent).toHaveBeenCalledWith("map_state", {
+        generation: "map-42",
+        state: "imagery_unavailable",
+      });
+    } finally {
+      window.removeEventListener("online", hook._onOnline);
+      window.removeEventListener("offline", hook._onOffline);
+    }
   });
 });

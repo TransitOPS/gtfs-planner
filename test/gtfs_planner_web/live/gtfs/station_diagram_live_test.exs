@@ -15,6 +15,146 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
 
+  describe "StationDiagramLive - server-owned destructive confirmations" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_STATION",
+          stop_name: "Confirmation Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "confirm_level",
+          level_name: "Confirmation Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level
+      }
+    end
+
+    test "mount renders stable server-owned forms and a closed confirmation dialog", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      assert has_element?(view, "#station-diagram-confirmation[data-open='false']")
+      assert has_element?(view, "#ruler-form")
+      refute has_element?(view, "[data-confirm]")
+    end
+
+    test "forged destructive confirmation cannot delete a foreign child stop", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      foreign_station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "FOREIGN_CONFIRM_STATION",
+          location_type: 1
+        })
+
+      foreign_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "FOREIGN_CONFIRM_STOP",
+          location_type: 0,
+          parent_station: foreign_station.stop_id,
+          level_id: level.level_id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      render_hook(view, "request_confirmation", %{
+        "action" => "delete_child_stop",
+        "id" => foreign_stop.id,
+        "origin" => "forged-origin"
+      })
+
+      refute has_element?(view, "#station-diagram-confirmation[data-open='true']")
+      assert Gtfs.get_stop(foreign_stop.id)
+    end
+
+    test "confirmed child-stop deletion uses the server-owned payload and restores its origin", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CONFIRM_DELETE_CHILD",
+          stop_name: "Delete after confirmation",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 24.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#child-stop-row-#{child_stop.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> element("#delete-child-stop-button")
+      |> render_click()
+
+      assert has_element?(view, "#station-diagram-confirmation[data-open='true']")
+      assert has_element?(view, "#station-diagram-confirmation-confirm", "Delete stop")
+
+      assert has_element?(
+               view,
+               "#station-diagram-confirmation[data-return-focus-id='delete-child-stop-button']"
+             )
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
+      |> render_click()
+
+      assert is_nil(Gtfs.get_stop(child_stop.id))
+      assert has_element?(view, "#station-diagram-confirmation[data-open='false']")
+    end
+  end
+
   describe "StationDiagramLive - child stop editing" do
     setup do
       organization = organization_fixture()
@@ -1350,7 +1490,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
       |> render_click()
 
-      assert has_element?(view, "#diagram-page[data-immersive='true']")
+      assert has_element?(view, "#diagram-page:not([data-immersive])")
 
       refute has_element?(view, "#pathways-#{pathway.id}[phx-click='edit_pathway']")
       refute has_element?(view, "#pathway-form")
@@ -2833,6 +2973,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("#remove-from-diagram-button")
       |> render_click()
 
+      view
+      |> element("#station-diagram-confirmation-confirm")
+      |> render_click()
+
       # The stop should no longer be in the child stops table
       refute has_element?(view, "#child-stop-row-#{child_a.id}")
 
@@ -3340,7 +3484,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       html = render(view)
 
       # Assert the upload button shows "Upload Diagram" when no diagram exists
-      assert html =~ "Upload Diagram"
+      assert html =~ "Upload diagram"
       refute html =~ "Replace diagram"
     end
 
@@ -3379,10 +3523,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert has_element?(view, ".join button:nth-child(1)[phx-value-mode='view']", "View")
-      assert has_element?(view, ".join button:nth-child(2)[phx-value-mode='add']", "Add Stop")
-      assert has_element?(view, ".join button:nth-child(3)[phx-value-mode='connect']", "Connect")
-      assert has_element?(view, "button[phx-value-mode='view']:not([disabled]).bg-blue-600")
+      assert has_element?(view, "#diagram-mode input[type='radio'][name='mode'][value='view']")
+      assert has_element?(view, "#diagram-mode input[value='add'][disabled]")
+      assert has_element?(view, "#diagram-mode input[value='connect'][disabled]")
+      assert has_element?(view, "#diagram-mode input[value='view'][checked]")
     end
 
     test "view mode shows contextual text and default cursor with diagram", %{
@@ -3409,7 +3553,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "svg.cursor-crosshair")
     end
 
-    test "immersive data attribute toggles by mode", %{
+    test "keeps page context visible while editing and provides explicit workspace entry", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -3424,16 +3568,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       assert has_element?(view, "#diagram-page:not([data-immersive])")
+      assert has_element?(view, "#diagram-mode")
+      assert has_element?(view, "#enter-diagram-workspace")
+      assert has_element?(view, "#diagram-workspace-heading[tabindex='-1']")
 
       view
       |> element("button[phx-click='switch_mode'][phx-value-mode='add']")
       |> render_click()
 
-      assert has_element?(view, "#diagram-page[data-immersive='true']")
+      assert has_element?(view, "#diagram-page:not([data-immersive])")
+      assert has_element?(view, "#exit-diagram-editing")
 
       render_hook(view, "switch_mode", %{"mode" => "connect"})
 
-      assert has_element?(view, "#diagram-page[data-immersive='true']")
+      assert has_element?(view, "#diagram-page:not([data-immersive])")
 
       view
       |> element("button[phx-click='switch_mode'][phx-value-mode='view']")
@@ -5606,7 +5754,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#child_stops-#{level_1_stop.id} [data-cross-level-pathway-badge][data-pathway-id='#{cross_level_pathway.id}']"
              )
 
-      render_hook(view, "delete_pathway", %{"id" => cross_level_pathway.id})
+      render_hook(view, "request_confirmation", %{
+        "action" => "delete_pathway",
+        "id" => cross_level_pathway.id,
+        "origin" => "cross-level-delete-pathway"
+      })
+
+      render_hook(view, "confirm_destructive_action", %{})
 
       refute has_element?(view, "#pathway-row-#{cross_level_pathway.id}")
 
@@ -6490,6 +6644,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("#walkability-test-delete-in-form")
       |> render_click()
 
+      view
+      |> element("#station-diagram-confirmation-confirm")
+      |> render_click()
+
       refute has_element?(view, "#walkability-test-row-#{walkability_test.id}")
       refute has_element?(view, "#child-stop-row-#{child_stop.id}", "1 test case")
       assert is_nil(Validations.get_walkability_test(walkability_test.id))
@@ -6782,6 +6940,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       view
       |> element("#walkability-test-delete-in-form")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
       |> render_click()
 
       refute has_element?(view, "#walkability-test-row-#{walkability_test.id}")
@@ -7294,7 +7456,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#pathway-pair-tabs")
 
       view
-      |> element("button[phx-click='delete_pathway']")
+      |> element("#delete-pathway-button")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
       |> render_click()
 
       [remaining] =
@@ -7592,7 +7758,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#diagram-action-strip .ml-auto > button[phx-click='toggle_measurement'] + div.join button[phx-value-mode='view']"
+               "#diagram-action-strip .ml-auto #diagram-mode input[value='view']"
              )
 
       assert has_element?(view, "#diagram-overlay[data-mode='view']")
@@ -8190,6 +8356,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "switch_mode", %{"mode" => "nope"})
       assert has_element?(view, "#diagram-page")
+      assert has_element?(view, "#diagram-page[style*='--diagram-active-stop']")
     end
   end
 
@@ -8255,8 +8422,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "span.text-error",
-               "File type not accepted (PNG, JPG, JPEG, SVG only)"
+               "#station-sub-nav-upload-rejected",
+               "File type not accepted (PNG, JPG, JPEG only)"
              )
     end
 
@@ -8277,7 +8444,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_upload(upload, "big.png")
 
-      assert has_element?(view, "span.text-error", "File is too large (max 10 MB)")
+      assert has_element?(
+               view,
+               "#station-sub-nav-upload-rejected",
+               "File is too large (max 10 MB)"
+             )
     end
   end
 
@@ -8451,12 +8622,41 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       file_input(view, form_selector, :diagram, [
         %{
           name: filename,
-          content: content,
+          content: valid_png(content),
           type: "image/png"
         }
       ])
 
     render_upload(upload, filename)
+    confirm_uploaded_diagram(view)
+  end
+
+  defp confirm_uploaded_diagram(view) do
+    if has_element?(view, "#diagram-replacement-confirmation[data-open='true']") do
+      view
+      |> element("#diagram-replacement-confirmation-confirm")
+      |> render_click()
+    end
+
+    html = render(view)
+
+    case Regex.run(~r/data-candidate-ref="([^"]+)"/, html) do
+      [_, candidate_ref] ->
+        render_hook(view, "diagram_candidate_probe_result", %{
+          "candidate_ref" => candidate_ref,
+          "result" => "ready"
+        })
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp valid_png(content) do
+    padding = :binary.copy(<<0>>, 17)
+
+    <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, "IHDR", content::binary, padding::binary, 0,
+      0, 0, 0, "IEND", 174, 66, 96, 130>>
   end
 
   # ============================================================================
@@ -8788,7 +8988,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       view |> element("input[aria-label='Select RESET_CHILD for renaming']") |> render_click()
       assert has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
 
-      view |> element("button", "Cancel") |> render_click()
+      view |> element("#naming-drawer-close") |> render_click()
       html = view |> element("[phx-click='open_naming_drawer']") |> render_click()
       refute has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
       assert has_element?(view, "input[aria-label='Select RESET_CHILD for renaming'][checked]")
@@ -10124,7 +10324,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       view
-      |> element("button[phx-click='delete_child_stop'][phx-value-id='#{child_stop.id}']")
+      |> element("#delete-child-stop-button")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
       |> render_click()
 
       logs =
@@ -10414,7 +10618,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       view
-      |> element("button[phx-click='delete_pathway']")
+      |> element("#delete-pathway-button")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
       |> render_click()
 
       logs =
@@ -12640,6 +12848,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#stop-tab-details")
       assert has_element?(view, "#stop-tab-history")
+      assert has_element?(view, "#stop-tabs[phx-hook='TablistHook'][role='tablist']")
+
+      assert has_element?(
+               view,
+               "#stop-tab-details[aria-controls='stop-panel-details'][tabindex='0']"
+             )
+
+      assert has_element?(
+               view,
+               "#stop-tab-history[aria-controls='stop-panel-history'][tabindex='-1']"
+             )
     end
 
     test "child stop create drawer does not render history tabs", %{
@@ -14044,7 +14263,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # The manual write lands only beneath the current published version.
       assert File.exists?(current_path)
-      assert File.read!(current_path) == "current-version payload"
+      assert File.read!(current_path) == valid_png("current-version payload")
 
       # The same station filename under the other version is never written.
       other_version_same_filename =

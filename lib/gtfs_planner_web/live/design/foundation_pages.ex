@@ -12,6 +12,8 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
 
   import GtfsPlannerWeb.CoreComponents
 
+  alias GtfsPlannerWeb.Components.DiagramPalette
+
   @doc """
   What the design system is, the stack it rests on, and the house rules.
   """
@@ -219,6 +221,26 @@ defmodule GtfsPlannerWeb.Design.FoundationPages do
         pair it with <code class="font-mono text-sm">text-accent-content</code>
         and never write <code class="font-mono text-sm">text-accent</code>.
       </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Station diagram roles</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        Station diagrams use named CSS variables from one palette contract. Color is paired
+        with text, marker shape, outline, direction, or line style because an operator image
+        can make any color hard to read.
+      </p>
+      <dl id="ds-diagram-palette-demo" class="mt-3 divide-y divide-base-300 border-y border-base-300">
+        <div
+          :for={
+            {role, metadata} <-
+              DiagramPalette.roles() |> Enum.sort_by(fn {role, _metadata} -> role end)
+          }
+          data-diagram-role={role}
+          class="grid grid-cols-[1fr_2fr] gap-4 py-2"
+        >
+          <dt class="font-mono text-sm">{metadata.css_variable}</dt>
+          <dd class="text-sm text-base-content/70">{metadata.cue}</dd>
+        </div>
+      </dl>
     </section>
     """
   end

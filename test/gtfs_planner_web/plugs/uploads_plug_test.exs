@@ -3,7 +3,7 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
   # request against `Versions` publication state before touching the filesystem, and
   # each test still swaps the global `:uploads_path` config, so tests cannot share a
   # sandbox connection or the upload root.
-  use GtfsPlanner.DataCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: false
 
   import Plug.Test
   import Plug.Conn
@@ -197,14 +197,16 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn2.status == nil
     end
 
-    test "handles nested path segments correctly", %{uploads_path: uploads_path} do
+    test "handles nested non-diagram upload path segments correctly", %{
+      uploads_path: uploads_path
+    } do
       # Create deeply nested file
-      file_dir = Path.join([uploads_path, "diagrams", "org", "stop", "subdir"])
+      file_dir = Path.join([uploads_path, "exports", "org", "stop", "subdir"])
       File.mkdir_p!(file_dir)
       File.write!(Path.join(file_dir, "file.txt"), "nested content")
 
       conn =
-        conn(:get, "/uploads/diagrams/org/stop/subdir/file.txt")
+        conn(:get, "/uploads/exports/org/stop/subdir/file.txt")
         |> UploadsPlug.call([])
 
       assert conn.halted
@@ -311,6 +313,88 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn.halted
       assert conn.status == 200
       assert conn.resp_body == content
+    end
+
+    test "is reachable through the production endpoint before router dispatch", %{
+      conn: conn,
+      uploads_path: uploads_path,
+      org: org,
+      version: version
+    } do
+      content = "endpoint png bytes"
+
+      write_versioned_file(
+        uploads_path,
+        org.id,
+        version.id,
+        "STATION_ENDPOINT",
+        "floor.jpeg",
+        content
+      )
+
+      conn = get(conn, "/uploads/diagrams/#{org.id}/#{version.id}/STATION_ENDPOINT/floor.jpeg")
+
+      assert conn.status == 200
+      assert conn.resp_body == content
+      assert get_resp_header(conn, "content-type") == ["image/jpeg"]
+      assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+    end
+
+    test "uses strict PNG/JPEG headers and sandboxes legacy SVG diagrams", %{
+      uploads_path: uploads_path,
+      org: org,
+      version: version
+    } do
+      write_versioned_file(uploads_path, org.id, version.id, "STATION_A", "floor.png", "png")
+
+      png_conn =
+        conn(:get, "/uploads/diagrams/#{org.id}/#{version.id}/STATION_A/floor.png")
+        |> UploadsPlug.call([])
+
+      assert png_conn.status == 200
+      assert get_resp_header(png_conn, "content-type") == ["image/png"]
+      assert get_resp_header(png_conn, "x-content-type-options") == ["nosniff"]
+      assert get_resp_header(png_conn, "content-security-policy") == []
+
+      legacy_dir = Path.join([uploads_path, "diagrams", org.id, "STATION_A"])
+      File.mkdir_p!(legacy_dir)
+      File.write!(Path.join(legacy_dir, "floor.svg"), "<svg></svg>")
+
+      svg_conn =
+        conn(:get, "/uploads/diagrams/#{org.id}/STATION_A/floor.svg")
+        |> UploadsPlug.call([])
+
+      assert svg_conn.status == 200
+      assert get_resp_header(svg_conn, "content-type") == ["image/svg+xml"]
+      assert get_resp_header(svg_conn, "x-content-type-options") == ["nosniff"]
+
+      assert get_resp_header(svg_conn, "content-security-policy") == [
+               "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+             ]
+    end
+
+    test "returns 404 instead of generic static delivery for unknown or malformed diagram paths",
+         %{
+           uploads_path: uploads_path,
+           org: org,
+           version: version
+         } do
+      write_versioned_file(uploads_path, org.id, version.id, "STATION_A", "floor.txt", "secret")
+
+      unknown_extension =
+        conn(:get, "/uploads/diagrams/#{org.id}/#{version.id}/STATION_A/floor.txt")
+        |> UploadsPlug.call([])
+
+      assert unknown_extension.halted
+      assert unknown_extension.status == 404
+      refute unknown_extension.resp_body == "secret"
+
+      malformed =
+        conn(:get, "/uploads/diagrams/#{org.id}/#{version.id}/STATION_A/nested/floor.png")
+        |> UploadsPlug.call([])
+
+      assert malformed.halted
+      assert malformed.status == 404
     end
 
     test "public production path contains the organization and version ID", %{

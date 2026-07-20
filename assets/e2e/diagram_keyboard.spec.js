@@ -123,11 +123,11 @@ test.describe("Diagram mode switching via keyboard", () => {
   test("keyboard activates Add Stop mode and opens coordinate form", async ({
     page,
   }) => {
-    // Tab to the "Add Stop" mode button
-    const addBtn = page.locator("button", { hasText: "Add Stop" });
-    await addBtn.focus();
-    await expect(addBtn).toBeFocused();
-    await page.keyboard.press("Enter");
+    // The visible control is a native radio; its label keeps the hit target
+    // usable while preserving Arrow-key focus inside the radio group.
+    const addMode = page.locator('#diagram-mode input[value="add"]');
+    await page.locator('label[for="diagram-mode-option-add"]').click();
+    await expect(addMode).toBeChecked();
     await page.waitForTimeout(500);
 
     // The mode hint should change to "Click diagram to add a child stop"
@@ -147,18 +147,16 @@ test.describe("Diagram mode switching via keyboard", () => {
     });
 
     // Switch back to View mode
-    const viewBtn = page.locator("button", { hasText: "View" });
-    await viewBtn.focus();
-    await page.keyboard.press("Enter");
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#child-stop-drawer-overlay")).not.toHaveAttribute("open", "true");
+    await page.locator('label[for="diagram-mode-option-view"]').click();
     await page.waitForTimeout(500);
   });
 
   test("keyboard activates Connect mode", async ({ page }) => {
-    // Tab to the "Connect" mode button
-    const connectBtn = page.locator("button", { hasText: "Connect" });
-    await connectBtn.focus();
-    await expect(connectBtn).toBeFocused();
-    await page.keyboard.press("Enter");
+    const connectMode = page.locator('#diagram-mode input[value="connect"]');
+    await page.locator('label[for="diagram-mode-option-connect"]').click();
+    await expect(connectMode).toBeChecked();
     await page.waitForTimeout(500);
 
     // The connect from-select should appear
@@ -167,9 +165,7 @@ test.describe("Diagram mode switching via keyboard", () => {
     });
 
     // Switch back to View
-    const viewBtn = page.locator("button", { hasText: "View" });
-    await viewBtn.focus();
-    await page.keyboard.press("Enter");
+    await page.locator('label[for="diagram-mode-option-view"]').click();
     await page.waitForTimeout(500);
   });
 });

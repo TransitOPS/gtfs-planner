@@ -9,6 +9,7 @@ import {
   borderRadiusForSymbol,
   createBadgeElement,
   dimensionsForSymbol,
+  paletteColor,
   symbolForLocationType,
   treatmentForLocationType,
 } from "../stop_icon_symbols";
@@ -27,9 +28,18 @@ describe("stop_icon_symbols vocabulary", () => {
   });
 
   it("exports the canonical diagram colors", () => {
-    expect(DIAGRAM_BASE_COLOR).toBe("#0080FF");
-    expect(DIAGRAM_ACTIVE_COLOR).toBe("#FF4500");
+    expect(DIAGRAM_BASE_COLOR).toBe("#0B5FFF");
+    expect(DIAGRAM_ACTIVE_COLOR).toBe("#BE123C");
     expect(HALO_COLOR).toBe("#FFFFFF");
+  });
+
+  it("reads a named palette role from the production page root with a safe fallback", () => {
+    const root = document.createElement("div");
+    root.style.setProperty("--diagram-active-stop", "#7C3AED");
+    document.body.appendChild(root);
+
+    expect(paletteColor(root, "--diagram-active-stop", DIAGRAM_BASE_COLOR)).toBe("#7C3AED");
+    expect(paletteColor(root, "--diagram-missing", DIAGRAM_BASE_COLOR)).toBe(DIAGRAM_BASE_COLOR);
   });
 
   it("defines dimensions and border radii for every symbol", () => {

@@ -12,6 +12,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlannerWeb.Components.TransitPresentation
   alias LiveSelect.Component
   alias Phoenix.LiveView.JS
 
@@ -91,7 +92,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp diagram_upload_error_to_string(:too_large), do: "File is too large (max 10 MB)"
 
   defp diagram_upload_error_to_string(:not_accepted),
-    do: "File type not accepted (PNG, JPG, JPEG, SVG only)"
+    do: "File type not accepted (PNG, JPG, JPEG only)"
 
   defp diagram_upload_error_to_string(:too_many_files),
     do: "Only one file can be uploaded at a time"
@@ -105,62 +106,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :has_diagram, :boolean, default: true
 
   defp mode_toggle(assigns) do
+    options = [
+      {"View", "view"},
+      %{
+        label: "Add stop",
+        value: "add",
+        disabled: not assigns.has_diagram,
+        disabled_reason: "Upload a diagram first"
+      },
+      %{
+        label: "Connect",
+        value: "connect",
+        disabled: not assigns.has_diagram,
+        disabled_reason: "Upload a diagram first"
+      },
+      %{
+        label: "Map",
+        value: "map",
+        disabled: not assigns.has_diagram,
+        disabled_reason: "Upload a diagram first"
+      }
+    ]
+
+    assigns = assign(assigns, :options, options)
+
     ~H"""
-    <div class="join">
-      <button
-        type="button"
-        class={[
-          "btn join-item",
-          @mode == :view && "bg-blue-600 text-white hover:bg-blue-700",
-          @mode != :view && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300"
-        ]}
-        phx-click="switch_mode"
-        phx-value-mode="view"
-      >
-        View
-      </button>
-      <button
-        type="button"
-        class={[
-          "btn join-item",
-          @mode == :add && "bg-blue-600 text-white hover:bg-blue-700",
-          @mode != :add && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300",
-          !@has_diagram && "opacity-50 cursor-not-allowed"
-        ]}
-        phx-click="switch_mode"
-        phx-value-mode="add"
-        disabled={!@has_diagram}
-      >
-        Add Stop
-      </button>
-      <button
-        type="button"
-        class={[
-          "btn join-item",
-          @mode == :connect && "bg-blue-600 text-white hover:bg-blue-700",
-          @mode != :connect && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300",
-          !@has_diagram && "opacity-50 cursor-not-allowed"
-        ]}
-        phx-click="switch_mode"
-        phx-value-mode="connect"
-        disabled={!@has_diagram}
-      >
-        Connect
-      </button>
-      <button
-        type="button"
-        class={[
-          "btn join-item",
-          @mode == :map && "bg-blue-600 text-white hover:bg-blue-700",
-          @mode != :map && "bg-white text-blue-600 hover:bg-blue-50 border-blue-300",
-          !@has_diagram && "opacity-50 cursor-not-allowed"
-        ]}
-        phx-click="switch_mode"
-        phx-value-mode="map"
-        disabled={!@has_diagram}
-      >
-        Map
-      </button>
+    <div id="diagram-mode-control" class="min-w-0">
+      <.segmented_control
+        id="diagram-mode"
+        name="mode"
+        legend="Editing mode"
+        options={@options}
+        value={Atom.to_string(@mode)}
+        event="switch_mode"
+      />
+      <%!-- Keep the event contract used by the existing canvas integration stable.
+      Native radios above are the visible and keyboard-operable control. --%>
+      <div class="hidden" aria-hidden="true">
+        <button type="button" phx-click="switch_mode" phx-value-mode="view">View</button>
+        <button type="button" phx-click="switch_mode" phx-value-mode="add">Add Stop</button>
+        <button type="button" phx-click="switch_mode" phx-value-mode="connect">Connect</button>
+        <button type="button" phx-click="switch_mode" phx-value-mode="map">Map</button>
+      </div>
     </div>
     """
   end
@@ -182,6 +169,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :other_levels, :list, default: []
   attr :enabled_count, :integer, default: 0
   attr :child_stops_list, :list, default: []
+  attr :workspace_focus_origin, :string, default: "enter-diagram-workspace"
 
   def diagram_action_strip(assigns) do
     ~H"""
@@ -321,6 +309,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             />
 
             <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
+            <.button
+              id="enter-diagram-workspace"
+              type="button"
+              variant="secondary"
+              size="sm"
+              phx-click={
+                JS.push("enter_workspace", value: %{origin: "enter-diagram-workspace"})
+                |> JS.focus(to: "#diagram-workspace-heading")
+              }
+            >
+              Enter workspace
+            </.button>
+            <.button
+              :if={@mode != :view}
+              id="exit-diagram-editing"
+              type="button"
+              variant="quiet"
+              size="sm"
+              phx-click={JS.push("exit_editing") |> JS.focus(to: "##{@workspace_focus_origin}")}
+            >
+              Exit editing
+            </.button>
           </div>
         </div>
         <%= if @scale_status do %>
@@ -490,6 +500,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :cross_level_pathway_total, :integer, default: 0
   attr :cross_level_pathway_with_geo, :integer, default: 0
   attr :other_levels_floorplan_count, :integer, default: 0
+  attr :map_generation, :string, required: true
+  attr :map_state, :atom, default: :initializing
+  attr :coordinate_preview, :map, default: nil
+  attr :coordinate_confirmation, :boolean, default: false
+  attr :coordinate_apply_form, :any, required: true
 
   def map_canvas(assigns) do
     floorplan_url =
@@ -523,6 +538,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:initial_lat, initial_lat)
       |> assign(:initial_lon, initial_lon)
       |> assign(:has_alignment?, has_alignment?)
+      |> assign(:map_state_message, map_state_message(assigns.map_state))
+      |> assign(
+        :map_controls_disabled_reason,
+        map_controls_disabled_reason(
+          assigns.map_state,
+          assigns.image_natural_width,
+          assigns.image_natural_height
+        )
+      )
       |> assign(:canvas_id, canvas_id)
 
     ~H"""
@@ -543,6 +567,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         data-align-rotation-deg={if @has_alignment?, do: @align_rotation_deg}
         data-image-natural-width={@image_natural_width}
         data-image-natural-height={@image_natural_height}
+        data-map-generation={@map_generation}
       >
         <div id="map-alignment-leaflet" class="absolute inset-0" style="z-index: 0;"></div>
         <div
@@ -700,7 +725,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </div>
           <% end %>
 
-          <div id="map-alignment-actions" class="ml-auto flex items-center gap-3">
+          <div
+            id="map-alignment-transform-controls"
+            class="flex flex-wrap gap-1"
+            aria-label="Floorplan transform controls"
+          >
+            <button
+              :for={{label, action, coarse} <- transform_controls()}
+              id={"map-transform-#{action}-#{if coarse, do: "coarse", else: "fine"}"}
+              type="button"
+              class="btn btn-sm min-h-11 min-w-11"
+              data-map-transform-action={action}
+              data-map-transform-coarse={to_string(coarse)}
+              title={label}
+            >
+              {label}
+            </button>
+          </div>
+
+          <div id="map-alignment-actions" class="ml-auto flex flex-wrap items-center gap-3">
             <span
               id="map-alignment-preview-status"
               class="text-xs text-base-content/70"
@@ -709,20 +752,188 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               Preview not ready
             </span>
             <button
+              id="map-alignment-save"
+              type="button"
+              class="btn btn-sm min-h-11"
+              disabled={@map_state == :fatal}
+            >
+              Save alignment
+            </button>
+            <button
               id="map-alignment-apply"
               type="button"
-              class="btn btn-sm btn-primary"
-              title="Set lat/lon for child stops from the floorplan's current position on the map"
-              disabled={is_nil(@image_natural_width) or is_nil(@image_natural_height)}
+              class="btn btn-sm btn-primary min-h-11"
+              title="Preview coordinate changes before applying them"
+              disabled={
+                @map_state == :fatal or
+                  invalid_floorplan_image_dims?(@image_natural_width, @image_natural_height)
+              }
             >
-              Save floorplan and stops
+              Preview coordinate changes
             </button>
+            <button
+              :if={@map_state in [:offline, :imagery_unavailable, :buildings_degraded, :fatal]}
+              id="map-alignment-retry"
+              type="button"
+              class="btn btn-sm min-h-11"
+              phx-click="retry_map_alignment"
+            >
+              Retry map
+            </button>
+            <p
+              :if={@map_state_message}
+              id="map-alignment-state"
+              class="basis-full text-xs text-base-content/70"
+              aria-live="polite"
+            >
+              {@map_state_message}
+            </p>
+            <p
+              :if={@map_controls_disabled_reason}
+              id="map-alignment-disabled-reason"
+              class="basis-full text-xs text-base-content/70"
+            >
+              {@map_controls_disabled_reason}
+            </p>
           </div>
         </div>
+
+        <%= if @coordinate_preview do %>
+          <section
+            id="coordinate-preview"
+            class="mt-5 border border-warning/40 bg-warning/10 p-4"
+            aria-labelledby="coordinate-preview-heading"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 id="coordinate-preview-heading" class="font-semibold">
+                  Preview coordinate changes
+                </h3>
+                <p class="text-sm text-base-content/70">
+                  {@coordinate_preview.stop_count} child stops will be updated. There is no one-click undo.
+                </p>
+              </div>
+              <button
+                id="confirm-coordinate-preview"
+                type="button"
+                class="btn btn-warning min-h-11"
+                phx-click="open_coordinate_preview_confirmation"
+              >
+                Apply preview
+              </button>
+            </div>
+            <div class="mt-3 overflow-x-auto">
+              <table id="coordinate-preview-table" class="table table-sm">
+                <thead>
+                  <tr>
+                    <th>Stop</th>
+                    <th class="text-right">Before</th>
+                    <th class="text-right">After</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    :for={row <- @coordinate_preview.rows}
+                    id={"coordinate-preview-row-#{row.stop_id}"}
+                  >
+                    <td class="font-mono text-xs">{row.stop_id}</td>
+                    <td class="text-right text-xs">{coordinate_pair(row.old_lat, row.old_lon)}</td>
+                    <td class="text-right text-xs">{coordinate_pair(row.new_lat, row.new_lon)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        <% end %>
+
+        <%= if @coordinate_confirmation do %>
+          <section
+            id="coordinate-preview-confirmation"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="coordinate-preview-confirmation-heading"
+            class="mt-4 border border-error/40 bg-base-100 p-4 shadow-lg"
+          >
+            <h3 id="coordinate-preview-confirmation-heading" class="font-semibold">
+              Apply coordinate changes?
+            </h3>
+            <p class="mt-1 text-sm text-base-content/70">
+              Type APPLY to confirm {@coordinate_preview.stop_count} coordinate updates. This action has no one-click undo.
+            </p>
+            <.form
+              for={@coordinate_apply_form}
+              id="coordinate-preview-confirmation-form"
+              class="mt-3 flex flex-wrap items-end gap-2"
+              phx-submit="apply_coordinate_preview"
+            >
+              <.input
+                field={@coordinate_apply_form[:phrase]}
+                type="text"
+                label="Confirmation"
+                autocomplete="off"
+              />
+              <button id="apply-coordinate-preview" type="submit" class="btn btn-error min-h-11">
+                Apply coordinates
+              </button>
+              <button
+                id="cancel-coordinate-preview"
+                type="button"
+                class="btn btn-ghost min-h-11"
+                phx-click="cancel_coordinate_preview"
+              >
+                Cancel
+              </button>
+            </.form>
+          </section>
+        <% end %>
       </div>
     </div>
     """
   end
+
+  defp invalid_floorplan_image_dims?(width, height),
+    do: not (is_integer(width) and width > 0 and is_integer(height) and height > 0)
+
+  defp map_controls_disabled_reason(:fatal, _width, _height),
+    do: "Map service is unavailable. Retry the map before saving or previewing coordinates."
+
+  defp map_controls_disabled_reason(_map_state, width, height) do
+    if invalid_floorplan_image_dims?(width, height),
+      do: "Floorplan image is not ready. Preview coordinates after it loads.",
+      else: nil
+  end
+
+  defp map_state_message(:initializing), do: "Loading map…"
+
+  defp map_state_message(:imagery_unavailable),
+    do: "Map imagery is unavailable. You can continue aligning the floorplan."
+
+  defp map_state_message(:buildings_degraded),
+    do: "Building outlines are unavailable. You can continue aligning the floorplan."
+
+  defp map_state_message(:offline), do: "You are offline. The floorplan remains available."
+  defp map_state_message(:reconnecting), do: "Reconnecting to the map…"
+  defp map_state_message(:fatal), do: "Map service is unavailable. Retry to continue."
+  defp map_state_message(_map_state), do: nil
+
+  defp transform_controls do
+    [
+      {"←", "left", false},
+      {"← 10", "left", true},
+      {"→", "right", false},
+      {"→ 10", "right", true},
+      {"↑", "up", false},
+      {"↓", "down", false},
+      {"↺", "rotate-left", false},
+      {"↻", "rotate-right", true},
+      {"−", "scale-down", false},
+      {"+", "scale-up", true},
+      {"Reset", "reset", false}
+    ]
+  end
+
+  defp coordinate_pair(nil, nil), do: "—"
+  defp coordinate_pair(lat, lon), do: "#{lat}, #{lon}"
 
   # ============================================================================
   # Diagram Canvas
@@ -1672,6 +1883,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             id={dom_id}
             class="group pointer-events-auto"
             data-stop-id={stop.id}
+            data-stop-state={if(@active_point_id == stop.id, do: "selected", else: "active")}
             data-stop-center-x={cx}
             data-stop-center-y={cy}
             data-editable="stop"
@@ -2551,32 +2763,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp empty_diagram_state(assigns) do
     ~H"""
-    <div class="flex flex-col items-center justify-center py-24 px-8 text-center">
-      <div class="text-base-content/40 mb-4">
-        <.icon name="hero-map" class="h-12 w-12 mx-auto" />
-      </div>
-      <p class="text-base-content/80 font-medium mb-1">No diagram for this level</p>
-      <p class="text-base-content/50 text-sm mb-6 max-w-xs">
+    <.empty_state
+      id="empty-diagram-state"
+      title="No diagram for this level"
+      class="mx-auto my-12 max-w-xl"
+    >
+      <p>
         Upload a floor plan to place stops and draw pathways on this level.
       </p>
-      <p class="text-base-content/40 text-xs">
-        Use the "Upload Diagram" button in the navigation bar above.
-      </p>
-    </div>
+      <:action>
+        <label for="station-sub-nav-upload" class="btn btn-primary cursor-pointer">
+          Upload diagram
+        </label>
+      </:action>
+    </.empty_state>
     """
   end
 
   defp no_level_state(assigns) do
     ~H"""
-    <div class="flex flex-col items-center justify-center py-24 px-8 text-center">
-      <div class="text-base-content/40 mb-4">
-        <.icon name="hero-squares-plus" class="h-12 w-12 mx-auto" />
-      </div>
-      <p class="text-base-content/80 font-medium mb-1">No levels defined</p>
-      <p class="text-base-content/50 text-sm max-w-xs">
+    <.empty_state id="no-level-state" title="No levels defined" class="mx-auto my-12 max-w-xl">
+      <p>
         Add a level to this station before uploading a floor plan diagram.
       </p>
-    </div>
+      <:action>
+        <.button type="button" phx-click="open_add_level">Add level</.button>
+      </:action>
+    </.empty_state>
     """
   end
 
@@ -3167,9 +3380,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             id="remove-from-diagram-button"
             type="button"
             class="btn btn-warning btn-sm btn-active text-white"
-            phx-click="remove_from_diagram"
+            phx-click="request_confirmation"
+            phx-value-action="remove_from_diagram"
             phx-value-id={@selected_stop_id}
-            data-confirm="Remove this stop from the diagram? It will move to the unassigned list."
+            phx-value-origin="remove-from-diagram-button"
           >
             Remove
           </button>
@@ -3182,11 +3396,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <div class="flex items-center justify-between gap-4">
           <p>This will also delete any pathways connected to this stop.</p>
           <button
+            id="delete-child-stop-button"
             type="button"
             class="btn btn-error btn-sm btn-active text-white"
-            phx-click="delete_child_stop"
+            phx-click="request_confirmation"
+            phx-value-action="delete_child_stop"
             phx-value-id={@selected_stop_id}
-            data-confirm="Are you sure you want to delete this child stop? Any pathways connected to it will also be deleted."
+            phx-value-origin="delete-child-stop-button"
           >
             Delete Stop
           </button>
@@ -3603,6 +3819,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-0.5">
         Pathway Diagram
       </h4>
+      <TransitPresentation.pathway_summary pathway={@editing_pathway} class="mb-2" />
       <svg
         data-pathway-preview="true"
         viewBox="0 0 480 40"
@@ -3712,6 +3929,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp parse_preview_int(val, _fallback) when is_integer(val), do: val
   defp parse_preview_int(_val, fallback), do: fallback
+
+  defp accessibility_status(1), do: :accessible
+  defp accessibility_status(2), do: :not_accessible
+  defp accessibility_status(_), do: :unknown
 
   defp pathway_preview_line(%{mode: 1} = assigns) do
     ~H"""
@@ -4014,11 +4235,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <p class="text-xs text-error/70 mt-1">This action cannot be undone.</p>
           </div>
           <button
+            id="delete-pathway-button"
             type="button"
             class="btn btn-error btn-sm btn-active text-white"
-            phx-click="delete_pathway"
+            phx-click="request_confirmation"
+            phx-value-action="delete_pathway"
             phx-value-id={@editing_pathway.id}
-            data-confirm="Are you sure you want to delete this pathway? This action cannot be undone."
+            phx-value-origin="delete-pathway-button"
           >
             Delete Pathway
           </button>
@@ -4244,11 +4467,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </p>
           </div>
           <button
+            id="remove-level-from-station-button"
             type="button"
             class="btn btn-error btn-sm btn-active text-white"
-            phx-click="remove_level_from_station"
+            phx-click="request_confirmation"
+            phx-value-action="remove_level_from_station"
             phx-value-id={@editing_level_uuid}
-            data-confirm="Remove this level from the station? Child stops on this level will become unassigned."
+            phx-value-origin="remove-level-from-station-button"
           >
             Remove Level
           </button>
@@ -4272,6 +4497,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :walkability_field_errors, :map, default: %{}
   attr :walkability_mode, :atom, default: :create
   attr :editing_walkability_test, :any, default: nil
+  attr :delete_event, :string, default: "request_confirmation"
 
   def walkability_test_drawer(assigns) do
     ~H"""
@@ -4297,6 +4523,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         walkability_field_errors={@walkability_field_errors}
         walkability_mode={@walkability_mode}
         editing_walkability_test={@editing_walkability_test}
+        delete_event={@delete_event}
       />
     </.drawer>
     """
@@ -4311,6 +4538,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :walkability_field_errors, :map, default: %{}
   attr :walkability_mode, :atom, default: :create
   attr :editing_walkability_test, :any, default: nil
+  attr :delete_event, :string, default: "request_confirmation"
 
   defp walkability_test_form(assigns) do
     ~H"""
@@ -4345,9 +4573,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
           <div>
             <span class="block text-xs font-semibold text-base-content/40">Accessible</span>
-            <span class="font-medium">
-              {Stop.wheelchair_boarding_label(@walkability_stop.wheelchair_boarding) || "—"}
-            </span>
+            <TransitPresentation.accessibility_status status={
+              accessibility_status(@walkability_stop.wheelchair_boarding)
+            } />
           </div>
         </div>
       </div>
@@ -4500,9 +4728,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               type="button"
               id="walkability-test-delete-in-form"
               class="btn btn-outline btn-error mt-3"
-              phx-click="delete_walkability_test"
+              phx-click={@delete_event}
+              phx-value-action="delete_walkability_test"
               phx-value-id={@editing_walkability_test.id}
-              data-confirm="Delete this walkability test case?"
+              phx-value-origin="walkability-test-delete-in-form"
             >
               Delete Test Case
             </button>
@@ -4757,6 +4986,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <% else %>
           <.table
             id="child-stops-table"
+            responsive="stack"
             rows={@child_stops_list}
             row_id={&"child-stop-row-#{&1.id}"}
           >
@@ -4778,7 +5008,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             </:col>
             <:col :let={stop} label="Platform">{stop.platform_code || "—"}</:col>
             <:col :let={stop} label="Accessible">
-              {Stop.wheelchair_boarding_label(stop.wheelchair_boarding) || "—"}
+              <TransitPresentation.accessibility_status status={
+                accessibility_status(stop.wheelchair_boarding)
+              } />
             </:col>
             <:col :let={stop} label="Reachability Tests">
               <div class="space-y-1">
@@ -4817,6 +5049,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
         <.table
           id="unassigned-stops-table"
+          responsive="stack"
           rows={@child_stops_list}
           row_id={&"unassigned-stop-row-#{&1.id}"}
         >
@@ -4838,7 +5071,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </:col>
           <:col :let={stop} label="Platform">{stop.platform_code || "—"}</:col>
           <:col :let={stop} label="Accessible">
-            {Stop.wheelchair_boarding_label(stop.wheelchair_boarding) || "—"}
+            <TransitPresentation.accessibility_status status={
+              accessibility_status(stop.wheelchair_boarding)
+            } />
           </:col>
         </.table>
       </div>
@@ -4860,6 +5095,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <% else %>
           <.table
             id="walkability-tests-table"
+            responsive="stack"
             rows={@walkability_tests_list}
             row_id={&"walkability-test-row-#{&1.id}"}
           >
@@ -4923,6 +5159,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <% else %>
           <.table
             id="pathways-table"
+            responsive="stack"
             rows={@pathways_list}
             row_id={&"pathway-row-#{&1.id}"}
           >

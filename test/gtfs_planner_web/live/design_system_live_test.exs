@@ -179,6 +179,16 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       assert has_element?(view, "#ds-page-colors", "--color-primary-content")
     end
+
+    test "renders the diagram palette production contract", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/colors")
+
+      assert has_element?(view, "#ds-diagram-palette-demo")
+      assert has_element?(view, "#ds-diagram-palette-demo [data-diagram-role=\"active_stop\"]")
+      assert has_element?(view, "#ds-diagram-palette-demo", "--diagram-label-halo")
+    end
   end
 
   describe "typography page" do
@@ -339,6 +349,21 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       assert has_element?(view, "#ds-status-badge-demo", "In progress")
       assert has_element?(view, "#ds-status-badge-demo", "Unknown")
     end
+
+    test "renders the transit presentation production contracts", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/badges")
+
+      assert has_element?(view, "#ds-transit-presentation-demo")
+
+      assert has_element?(
+               view,
+               "#ds-transit-presentation-demo [data-accessibility=\"accessible\"]"
+             )
+
+      assert has_element?(view, "#ds-transit-presentation-demo [data-pathway-summary]")
+    end
   end
 
   describe "inputs page" do
@@ -375,7 +400,49 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
       assert has_element?(view, ~s(#demo_kind option[value="rail"]), "Rail")
     end
 
-    test "carries exactly one form on the page and it is the demo form", %{conn: conn, user: user} do
+    test "renders the shared upload and segmented-control contracts on the Components route", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/inputs")
+
+      assert has_element?(
+               view,
+               "#ds-upload-field-demo input[type='file'][aria-labelledby='ds-component-upload-label']"
+             )
+
+      assert has_element?(view, "#ds-segmented-control-demo #ds-component-mode")
+
+      assert has_element?(
+               view,
+               "#ds-component-mode input[name='component_mode'][value='map'][disabled]"
+             )
+
+      assert has_element?(view, "#ds-component-mode-option-map-reason", "Upload a diagram first")
+    end
+
+    test "handles native segmented-control changes without a focus-push side effect", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/inputs")
+
+      view
+      |> form("#ds-component-mode-form", component_mode: "list")
+      |> render_change()
+
+      assert has_element?(view, "#ds-component-mode input[value='list'][checked]")
+      refute has_element?(view, "#ds-component-mode [phx-focus]")
+    end
+
+    test "keeps the standalone segmented-control form separate from the input demo form", %{
+      conn: conn,
+      user: user
+    } do
       conn = log_in_user(conn, user)
 
       {:ok, view, _html} = live(conn, ~p"/design/inputs")
@@ -386,8 +453,12 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
         |> LazyHTML.from_fragment()
         |> LazyHTML.query("#ds-page-inputs form")
 
-      assert Enum.count(forms) == 1
-      assert forms |> LazyHTML.attribute("id") == ["ds-inputs-demo-form"]
+      assert Enum.count(forms) == 2
+
+      assert forms |> LazyHTML.attribute("id") == [
+               "ds-inputs-demo-form",
+               "ds-component-mode-form"
+             ]
     end
 
     test "renders the checkbox_group fieldset with its legend and options", %{

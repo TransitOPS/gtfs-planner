@@ -20,6 +20,9 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
   @legacy_bytes <<1, 2, 3, 4, 5>>
   @import_bytes_a <<10, 20, 30>>
   @import_bytes_b <<40, 50, 60>>
+  @candidate_png <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, "IHDR", 0, 0, 0, 1, 0, 0, 0, 1,
+                   8, 2, 0, 0, 0, 144, 119, 83, 222, 0, 0, 0, 0, "IEND", 174, 66, 96, 130>>
+  @candidate_jpeg <<255, 216, 255, 224, 0, 0, 255, 217>>
 
   setup do
     previous = Application.get_env(:gtfs_planner, :uploads_path)
@@ -157,6 +160,239 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
                  "plan.png",
                  @import_bytes_a
                )
+    end
+  end
+
+  describe "candidate storage" do
+    test "stages validated bytes under an unguessable reserved filename in only the exact station directory",
+         %{organization: org, version: version, station: station} do
+      assert {:ok, candidate} =
+               DiagramStorage.store_candidate(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 ".png",
+                 @candidate_png
+               )
+
+      assert candidate =~ ~r/\A[0-9a-f]{32}\.candidate\.png\z/
+
+      assert {:ok, candidate_path} =
+               DiagramStorage.published_path(org.id, version.id, station.stop_id, candidate)
+
+      assert File.read!(candidate_path) == @candidate_png
+      assert candidate_path =~ "/#{PathSafety.stop_storage_dir(station.stop_id)}/"
+    end
+
+    test "rejects invalid candidate inputs without writing a broad or non-candidate path",
+         %{root: root, organization: org, version: version, station: station} do
+      assert {:error, :unsupported_type} =
+               DiagramStorage.store_candidate(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 ".svg",
+                 "<svg/>"
+               )
+
+      assert {:error, :content_mismatch} =
+               DiagramStorage.store_candidate(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 ".png",
+                 "not a PNG"
+               )
+
+      assert {:error, :not_candidate} =
+               DiagramStorage.delete_unreferenced_candidate(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 "plan.png",
+                 []
+               )
+
+      assert [] == Path.wildcard(Path.join([root, "diagrams", "**", "*.candidate.*"]))
+    end
+
+    test "commits only an extant candidate and preserves the previous diagram when its candidate disappears",
+         %{organization: org, version: version, station: station, level: level} do
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "previous.png",
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
+
+      assert {:ok, candidate} =
+               DiagramStorage.store_candidate(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 ".jpg",
+                 @candidate_jpeg
+               )
+
+      assert {:ok, candidate_path} =
+               DiagramStorage.published_path(org.id, version.id, station.stop_id, candidate)
+
+      File.rm!(candidate_path)
+
+      assert {:error, :not_found} = DiagramStorage.commit_candidate(stop_level, candidate)
+
+      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).diagram_filename ==
+               "previous.png"
+    end
+
+    test "cleanup retains referenced and young candidates while deleting only aged unreferenced files",
+         %{organization: org, version: version, station: station, level: level} do
+      {:ok, referenced} =
+        DiagramStorage.store_candidate(
+          org.id,
+          version.id,
+          station.stop_id,
+          ".jpeg",
+          @candidate_jpeg
+        )
+
+      {:ok, unreferenced} =
+        DiagramStorage.store_candidate(
+          org.id,
+          version.id,
+          station.stop_id,
+          ".png",
+          @candidate_png
+        )
+
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: referenced,
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
+
+      assert {:ok, 0} =
+               DiagramStorage.cleanup_stale_candidates(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 DateTime.add(DateTime.utc_now(), -60, :second)
+               )
+
+      assert {:ok, 1} =
+               DiagramStorage.cleanup_stale_candidates(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 DateTime.add(DateTime.utc_now(), 60, :second)
+               )
+
+      assert {:ok, _} =
+               DiagramStorage.published_path(org.id, version.id, station.stop_id, referenced)
+
+      assert {:error, :not_found} =
+               DiagramStorage.published_path(org.id, version.id, station.stop_id, unreferenced)
+
+      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).diagram_filename == referenced
+    end
+
+    test "never deletes a matching candidate from a sibling station scope",
+         %{organization: org, version: version, station: station} do
+      sibling =
+        stop_fixture(org.id, version.id,
+          stop_id: "station_sibling_#{System.unique_integer([:positive])}",
+          location_type: 1
+        )
+
+      {:ok, sibling_candidate} =
+        DiagramStorage.store_candidate(
+          org.id,
+          version.id,
+          sibling.stop_id,
+          ".png",
+          @candidate_png
+        )
+
+      assert :ok =
+               DiagramStorage.delete_unreferenced_candidate(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 sibling_candidate,
+                 []
+               )
+
+      assert {:ok, _} =
+               DiagramStorage.published_path(
+                 org.id,
+                 version.id,
+                 sibling.stop_id,
+                 sibling_candidate
+               )
+    end
+
+    test "cleanup-first and commit-first outcomes retain a committed reference or fail commit safely",
+         %{organization: org, version: version, station: station, level: level} do
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "previous.png",
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
+
+      {:ok, cleanup_first} =
+        DiagramStorage.store_candidate(
+          org.id,
+          version.id,
+          station.stop_id,
+          ".png",
+          @candidate_png
+        )
+
+      assert :ok =
+               DiagramStorage.delete_unreferenced_candidate(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 cleanup_first,
+                 []
+               )
+
+      assert {:error, :not_found} = DiagramStorage.commit_candidate(stop_level, cleanup_first)
+
+      assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).diagram_filename ==
+               "previous.png"
+
+      {:ok, commit_first} =
+        DiagramStorage.store_candidate(
+          org.id,
+          version.id,
+          station.stop_id,
+          ".png",
+          @candidate_png
+        )
+
+      assert {:ok, committed} = DiagramStorage.commit_candidate(stop_level, commit_first)
+      assert committed.diagram_filename == commit_first
+
+      assert :ok =
+               DiagramStorage.delete_unreferenced_candidate(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 commit_first,
+                 []
+               )
+
+      assert {:ok, _} =
+               DiagramStorage.published_path(org.id, version.id, station.stop_id, commit_first)
     end
   end
 

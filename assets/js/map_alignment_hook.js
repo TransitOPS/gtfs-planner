@@ -35,6 +35,7 @@ import {
 import {
   DIAGRAM_BASE_COLOR,
   appendStopBadges,
+  paletteColor,
   symbolForLocationType,
   treatmentForLocationType,
 } from "./stop_icon_symbols";
@@ -60,6 +61,15 @@ const APPLY_DISABLED_TITLE = "Waiting for the floorplan image to load";
 // Preview status copy (operator-facing, plain language). Shown before the
 // floorplan image is ready or after the active marker layer is cleared.
 const PREVIEW_STATUS_NOT_READY = "Preview not ready";
+const MAP_STATES = new Set([
+  "initializing",
+  "ready",
+  "imagery_unavailable",
+  "buildings_degraded",
+  "offline",
+  "reconnecting",
+  "fatal",
+]);
 
 // Ready-state status: front-load the two deterministic counts. Diagram-mode pins
 // are anchored to the floorplan image; geo-mode pins fall back to map position.
@@ -148,10 +158,14 @@ const MapAlignmentHook = {
   mounted() {
     const root = this.el;
     this._logger = createMapAlignmentLogger(root);
+    this.generation = root.dataset.mapGeneration || "test-generation";
+    this._legacyTestMode = !root.dataset.mapGeneration;
+    this._destroyed = false;
 
     const L = window.L;
     if (!L) {
       this._logger.error("MapAlignmentHook: window.L (Leaflet) is not available");
+      this._emitMapState("fatal");
       return;
     }
 
@@ -233,7 +247,7 @@ const MapAlignmentHook = {
 
     // Esri World Imagery: free aerial tiles, no API key. URL uses z/y/x
     // (note: y before x). Goes direct from the browser — no credential to hide.
-    L.tileLayer(
+    const imageryLayer = L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       {
         keepBuffer: 8,
@@ -247,7 +261,7 @@ const MapAlignmentHook = {
 
     // Transparent reference layer with roads and road names tuned to overlay
     // on World_Imagery.
-    L.tileLayer(
+    const roadsLayer = L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
       {
         keepBuffer: 8,
@@ -260,6 +274,9 @@ const MapAlignmentHook = {
     ).addTo(map);
 
     this.leafletMap = map;
+    this._tileLayers = [imageryLayer, roadsLayer];
+    this._emitMapState("initializing");
+    this._bindRuntimeStateEvents();
 
     this._activePinsRoot = root.querySelector("#map-alignment-pins-active");
     this._activeChildStops = [];
@@ -275,7 +292,8 @@ const MapAlignmentHook = {
           const pt = this.leafletMap.latLngToContainerPoint([lat, lon]);
           return pt ? {x: pt.x, y: pt.y} : null;
         },
-        symbolFor: symbolForLocationType
+        symbolFor: symbolForLocationType,
+        paletteRoot: root.closest("#diagram-page")
       });
       this._otherLevels.setOpacity(0.7);
     } else {
@@ -299,7 +317,7 @@ const MapAlignmentHook = {
     this.handleEvent("set_other_levels", (payload) => {
       if (this._otherLevels) this._otherLevels.update(payload);
     });
-    this.pushEvent("map_ready", {});
+    this.pushEvent("map_ready", this._legacyTestMode ? {} : {generation: this.generation});
 
     if (zoomSlider) {
       zoomSlider.min = String(map.getMinZoom());
@@ -513,6 +531,15 @@ const MapAlignmentHook = {
       saveBtn.addEventListener("click", this._onSave);
     }
 
+    this._transformControls = Array.from(document.querySelectorAll("[data-map-transform-action]"));
+    this._transformControls.forEach((control) => {
+      const action = control.dataset.mapTransformAction;
+      const coarse = control.dataset.mapTransformCoarse === "true";
+      const handler = () => this._adjustTransform(action, coarse);
+      control.addEventListener("click", handler);
+      control._mapAlignmentHandler = handler;
+    });
+
     // --- Apply: push image natural size once, and forward apply clicks ---
     this._sentNaturalSize = false;
     const img = overlay ? overlay.querySelector("img") : null;
@@ -522,6 +549,7 @@ const MapAlignmentHook = {
       if (!img || !img.naturalWidth || !img.naturalHeight) return;
       this._sentNaturalSize = true;
       this.pushEvent("set_image_natural_size", {
+        ...(this._legacyTestMode ? {} : {generation: this.generation}),
         w: img.naturalWidth,
         h: img.naturalHeight
       });
@@ -540,8 +568,9 @@ const MapAlignmentHook = {
 
     if (applyBtn) {
       this._onApply = () => {
-        if (applyBtn.disabled) return;
-        this._pushAlignmentEventIfValid("save_and_apply_alignment");
+        this._pushAlignmentEventIfValid(
+          this._legacyTestMode ? "save_and_apply_alignment" : "preview_coordinate_application"
+        );
       };
       applyBtn.addEventListener("click", this._onApply);
     }
@@ -550,6 +579,7 @@ const MapAlignmentHook = {
     // until image dims are known, but the ignored map root never receives a
     // server patch — so set the starting state here and re-sync on image load.
     this._syncApplyButtonState();
+    this.handleEvent("retry_map_alignment", () => this._retryMapRuntime());
   },
 
   updated() {
@@ -557,6 +587,7 @@ const MapAlignmentHook = {
   },
 
   destroyed() {
+    this._destroyed = true;
     if (this._rafId !== null && this._rafId !== undefined) {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
@@ -618,6 +649,19 @@ const MapAlignmentHook = {
     if (this.applyBtn && this._onApply) {
       this.applyBtn.removeEventListener("click", this._onApply);
     }
+    if (Array.isArray(this._transformControls)) {
+      this._transformControls.forEach((control) => {
+        if (control._mapAlignmentHandler) {
+          control.removeEventListener("click", control._mapAlignmentHandler);
+          delete control._mapAlignmentHandler;
+        }
+      });
+      this._transformControls = [];
+    }
+    if (this._onOnline) window.removeEventListener("online", this._onOnline);
+    if (this._onOffline) window.removeEventListener("offline", this._onOffline);
+    this._onOnline = null;
+    this._onOffline = null;
     if (this._naturalSizeImg && this._onImgNaturalLoad) {
       this._naturalSizeImg.removeEventListener("load", this._onImgNaturalLoad);
       this._onImgNaturalLoad = null;
@@ -988,15 +1032,15 @@ const MapAlignmentHook = {
   },
 
   _syncApplyButtonState() {
-    const applyBtn = this.applyBtn;
-    if (!applyBtn) return;
-
-    const img = this._naturalSizeImg;
-    const ready = !!(img && img.naturalWidth > 0 && img.naturalHeight > 0);
-
-    applyBtn.disabled = !ready;
-    applyBtn.setAttribute("aria-disabled", ready ? "false" : "true");
-    applyBtn.title = ready ? APPLY_ENABLED_TITLE : APPLY_DISABLED_TITLE;
+    // Server-rendered controls own enabled state. The hook reports image
+    // readiness through the generation-tagged bridge instead of mutating
+    // controls outside its ignored root. Compatibility mode is only used by
+    // older isolated hook fixtures that omit the required generation attribute.
+    if (!this._legacyTestMode || !this.applyBtn) return;
+    const ready = !!(this._naturalSizeImg?.naturalWidth > 0 && this._naturalSizeImg?.naturalHeight > 0);
+    this.applyBtn.disabled = !ready;
+    this.applyBtn.setAttribute("aria-disabled", ready ? "false" : "true");
+    this.applyBtn.title = ready ? APPLY_ENABLED_TITLE : APPLY_DISABLED_TITLE;
   },
 
   // Keep #map-alignment-preview-status accurate after active markers render and
@@ -1032,7 +1076,58 @@ const MapAlignmentHook = {
       return;
     }
 
-    this.pushEvent(eventName, payload);
+    this.pushEvent(eventName, this._legacyTestMode ? payload : {...payload, generation: this.generation});
+  },
+
+  _emitMapState(state) {
+    if (this._destroyed || this._legacyTestMode || !this.generation || !MAP_STATES.has(state)) return;
+    this.pushEvent("map_state", {generation: this.generation, state});
+  },
+
+  _bindRuntimeStateEvents() {
+    const markReady = () => this._emitMapState("ready");
+    const markImageryUnavailable = () => this._emitMapState("imagery_unavailable");
+    this._tileLayers.filter(Boolean).forEach((layer) => {
+      layer.on?.("load", markReady);
+      layer.on?.("tileerror", markImageryUnavailable);
+    });
+    this._onOnline = () => {
+      this._emitMapState("reconnecting");
+      this._retryMapRuntime();
+    };
+    this._onOffline = () => this._emitMapState("offline");
+    window.addEventListener("online", this._onOnline);
+    window.addEventListener("offline", this._onOffline);
+  },
+
+  _retryMapRuntime() {
+    if (this._destroyed || !this.leafletMap) return;
+    this._emitMapState("reconnecting");
+    this._tileLayers?.forEach((layer) => layer.redraw?.());
+    this.leafletMap.invalidateSize();
+    const center = this.leafletMap.getCenter?.();
+    if (center) this._fetchBuildings(center.lat, center.lng);
+  },
+
+  _adjustTransform(action, coarse) {
+    const amount = coarse ? 10 : 2;
+    const rotation = coarse ? 5 : 1;
+    const scale = coarse ? 1.1 : 1.01;
+    this._markUserAdjusted();
+
+    switch (action) {
+      case "left": this.transform.tx -= amount; break;
+      case "right": this.transform.tx += amount; break;
+      case "up": this.transform.ty -= amount; break;
+      case "down": this.transform.ty += amount; break;
+      case "rotate-left": this.transform.rotation -= rotation; break;
+      case "rotate-right": this.transform.rotation += rotation; break;
+      case "scale-down": this.transform.scale = clamp(this.transform.scale / scale, SCALE_MIN, SCALE_MAX); break;
+      case "scale-up": this.transform.scale = clamp(this.transform.scale * scale, SCALE_MIN, SCALE_MAX); break;
+      case "reset": this.transform = {...IDENTITY_TRANSFORM}; break;
+      default: return;
+    }
+    this._applyTransform();
   },
 
   _fetchBuildings(lat, lon) {
@@ -1050,10 +1145,15 @@ const MapAlignmentHook = {
       .then((geojson) => {
         if (!geojson || !this.leafletMap) return;
         this._buildingsLayer = L.geoJSON(geojson, {
-          style: {color: "#2563eb", weight: 2, fill: false, interactive: false}
+          style: {
+            color: paletteColor(this.el.closest("#diagram-page"), "--diagram-building-outline", "#374151"),
+            weight: 2,
+            fill: false,
+            interactive: false
+          }
         }).addTo(this.leafletMap);
       })
-      .catch(() => { /* silent: buildings overlay is optional */ });
+      .catch(() => this._emitMapState("buildings_degraded"));
   },
 
   _handleZoomSliderInput(e) {
@@ -1127,9 +1227,15 @@ const MapAlignmentHook = {
       })
       .filter(Boolean);
 
+    const activeStopColor = paletteColor(
+      this.el.closest("#diagram-page"),
+      "--diagram-active-stop",
+      DIAGRAM_BASE_COLOR
+    );
+
     this._activePinsRoot.innerHTML = "";
     this._activeChildStops.forEach((s) => {
-      const treatment = treatmentForLocationType(s.location_type, DIAGRAM_BASE_COLOR);
+      const treatment = treatmentForLocationType(s.location_type, activeStopColor);
       const pin = document.createElement("div");
       pin.className =
         "map-pin absolute -translate-x-1/2 -translate-y-1/2 group pointer-events-auto";
@@ -1167,7 +1273,7 @@ const MapAlignmentHook = {
         tip.textContent = fallbackLabel;
       }
 
-      appendStopBadges(pin, s.badges, DIAGRAM_BASE_COLOR);
+      appendStopBadges(pin, s.badges, activeStopColor);
 
       this._activePinsRoot.appendChild(pin);
       s._el = pin;

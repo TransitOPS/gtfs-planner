@@ -8,9 +8,23 @@
  * vocabulary.
  */
 
-export const DIAGRAM_BASE_COLOR = "#0080FF";
-export const DIAGRAM_ACTIVE_COLOR = "#FF4500";
+// These mirror DiagramPalette's safe fallbacks. Production renderers resolve
+// the custom property from #diagram-page; the literal only protects isolated
+// hook fixtures and a missing stylesheet from becoming invisible.
+export const DIAGRAM_BASE_COLOR = "#0B5FFF";
+export const DIAGRAM_ACTIVE_COLOR = "#BE123C";
 export const HALO_COLOR = "#FFFFFF";
+
+export function paletteColor(root, variable, fallback) {
+  if (root) {
+    const computed =
+      typeof getComputedStyle === "function" ? getComputedStyle(root).getPropertyValue(variable) : "";
+    const value = (computed || root.style?.getPropertyValue(variable) || "").trim();
+    if (value) return value;
+  }
+
+  return fallback;
+}
 
 export const BADGE_SIZE_PX = 11;
 const BADGE_GAP_PX = 2;
