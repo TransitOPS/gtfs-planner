@@ -35,6 +35,7 @@ config :gtfs_planner, GtfsPlannerWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   render_errors: [
     formats: [html: GtfsPlannerWeb.ErrorHTML, json: GtfsPlannerWeb.ErrorJSON],
+    root_layout: [html: {GtfsPlannerWeb.Layouts, :root}],
     layout: false
   ],
   pubsub_server: GtfsPlanner.PubSub,
