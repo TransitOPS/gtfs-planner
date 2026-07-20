@@ -905,7 +905,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/design/navigation")
 
-      assert has_element?(view, "#ds-page-navigation nav#station-sub-nav", "Demo Central")
+      assert has_element?(view, "#ds-page-navigation #station-sub-nav", "Demo Central")
 
       assert has_element?(
                view,

@@ -93,13 +93,13 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
           for="gtfs-version-select"
           class="text-sm font-medium text-base-content/70"
         >
-          GTFS Version:
+          Version
         </label>
         <select
           id="gtfs-version-select"
           name="version"
           aria-label="Select GTFS version"
-          class="select select-ghost rounded-md bg-base-100 w-auto min-w-[120px] min-h-11 focus:outline-none focus:ring-2 focus:ring-primary"
+          class="select select-ghost rounded-md bg-base-100 w-44 min-h-11 focus:outline-none focus:ring-2 focus:ring-primary"
         >
           <option :for={{id, name} <- @versions} value={id} selected={id == @current_version.id}>
             {name}

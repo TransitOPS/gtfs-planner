@@ -27,128 +27,60 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   @stop_label_max_lines 3
 
   # ============================================================================
-  # Toolbar
+  # Editing Presence Control
   # ============================================================================
 
-  attr :levels, :list, required: true
-  attr :active_level, :any, required: true
-  attr :mode, :atom, required: true
-  attr :uploads, :any, required: true
-  attr :diagram_error, :string, default: nil
+  attr :station_editing_status, :any, default: nil
+  attr :current_user, :any, required: true
 
-  def toolbar(assigns) do
+  def editing_presence_control(assigns) do
+    is_owner =
+      assigns.station_editing_status != nil and
+        assigns.station_editing_status.user_id == assigns.current_user.id
+
+    assigns = assign(assigns, :is_owner, is_owner)
+
     ~H"""
-    <div class="mt-6 flex flex-wrap items-center gap-4">
-      <form phx-change="switch_level" class="flex items-center gap-2">
-        <label class="text-sm font-medium">Level:</label>
-        <select class="select select-sm select-bordered" name="level_id">
-          <%= for level <- @levels do %>
-            <option value={level.id} selected={@active_level && level.id == @active_level.id}>
-              {level.level_name || level.level_id} ({trunc(level.level_index)})
-            </option>
-          <% end %>
-        </select>
-      </form>
-
-      <button type="button" class="btn btn-sm btn-ghost" phx-click="open_add_level">
-        Add Level
-      </button>
-
-      <button
-        :if={@active_level}
-        type="button"
-        class="btn btn-sm btn-ghost"
-        phx-click="open_edit_level"
-      >
-        Edit Level
-      </button>
-
-      <div :if={@active_level} class="flex items-center gap-2">
-        <form
-          id="diagram-upload-form-toolbar"
-          phx-change="upload_diagram"
+    <%= cond do %>
+      <% is_nil(@station_editing_status) -> %>
+        <.button
+          id="mark-editing-button"
+          type="button"
+          variant="secondary"
+          class="border-control-border bg-base-100 text-base-content hover:bg-base-200"
+          phx-click="set_station_editing_status"
         >
-          <label class="btn btn-sm btn-ghost cursor-pointer">
-            Upload Diagram
-            <.live_file_input upload={@uploads.diagram} id="toolbar-diagram-upload" class="hidden" />
-          </label>
-        </form>
-        <span :for={error <- upload_errors(@uploads.diagram)} class="text-error text-sm">
-          {diagram_upload_error_to_string(error)}
-        </span>
-        <%= for entry <- @uploads.diagram.entries do %>
-          <span :for={error <- upload_errors(@uploads.diagram, entry)} class="text-error text-sm">
-            {diagram_upload_error_to_string(error)}
+          Mark as editing
+        </.button>
+      <% @is_owner -> %>
+        <div class="inline-flex items-center gap-2 rounded-full border border-info/40 bg-base-100 px-3 py-1.5 text-sm">
+          <span id="editing-status-text" role="status" class="text-info">
+            You're editing
           </span>
-        <% end %>
-        <span :if={@diagram_error} class="text-error text-sm">{@diagram_error}</span>
-      </div>
-
-      <.mode_toggle mode={@mode} />
-    </div>
-    """
-  end
-
-  defp diagram_upload_error_to_string(:too_large), do: "File is too large (max 10 MB)"
-
-  defp diagram_upload_error_to_string(:not_accepted),
-    do: "File type not accepted (PNG, JPG, JPEG only)"
-
-  defp diagram_upload_error_to_string(:too_many_files),
-    do: "Only one file can be uploaded at a time"
-
-  defp diagram_upload_error_to_string(:external_client_failure), do: "Upload failed"
-  defp diagram_upload_error_to_string({:error, reason}), do: reason
-  defp diagram_upload_error_to_string(error) when is_binary(error), do: error
-  defp diagram_upload_error_to_string(_), do: "Upload error"
-
-  attr :mode, :atom, required: true
-  attr :has_diagram, :boolean, default: true
-
-  defp mode_toggle(assigns) do
-    options = [
-      {"View", "view"},
-      %{
-        label: "Add stop",
-        value: "add",
-        disabled: not assigns.has_diagram,
-        disabled_reason: "Upload a diagram first"
-      },
-      %{
-        label: "Connect",
-        value: "connect",
-        disabled: not assigns.has_diagram,
-        disabled_reason: "Upload a diagram first"
-      },
-      %{
-        label: "Map",
-        value: "map",
-        disabled: not assigns.has_diagram,
-        disabled_reason: "Upload a diagram first"
-      }
-    ]
-
-    assigns = assign(assigns, :options, options)
-
-    ~H"""
-    <div id="diagram-mode-control" class="min-w-0">
-      <.segmented_control
-        id="diagram-mode"
-        name="mode"
-        legend="Editing mode"
-        options={@options}
-        value={Atom.to_string(@mode)}
-        event="switch_mode"
-      />
-      <%!-- Keep the event contract used by the existing canvas integration stable.
-      Native radios above are the visible and keyboard-operable control. --%>
-      <div class="hidden" aria-hidden="true">
-        <button type="button" phx-click="switch_mode" phx-value-mode="view">View</button>
-        <button type="button" phx-click="switch_mode" phx-value-mode="add">Add Stop</button>
-        <button type="button" phx-click="switch_mode" phx-value-mode="connect">Connect</button>
-        <button type="button" phx-click="switch_mode" phx-value-mode="map">Map</button>
-      </div>
-    </div>
+          <.button
+            id="done-editing-button"
+            type="button"
+            variant="quiet"
+            size="sm"
+            phx-click="clear_station_editing_status"
+          >
+            I'm done
+          </.button>
+        </div>
+      <% true -> %>
+        <div class="inline-flex items-center gap-2 rounded-full border border-info/40 bg-base-100 px-3 py-1.5 text-sm">
+          <span id="editing-status-text" role="status" class="text-info">
+            {@station_editing_status.user.email} is editing
+            <time
+              datetime={DateTime.to_iso8601(@station_editing_status.started_at)}
+              class="sr-only"
+              title={DateTime.to_iso8601(@station_editing_status.started_at)}
+            >
+              {DateTime.to_iso8601(@station_editing_status.started_at)}
+            </time>
+          </span>
+        </div>
+    <% end %>
     """
   end
 
@@ -164,197 +96,491 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :ruler_point_b, :any, default: nil
   attr :has_scale, :boolean, default: false
   attr :scale_status, :any, default: nil
+  attr :active_stop_level, :any, default: nil
   attr :levels, :list, default: []
   attr :active_level, :any, default: nil
+  attr :active_level_name, :string, default: ""
   attr :other_levels, :list, default: []
   attr :enabled_count, :integer, default: 0
   attr :child_stops_list, :list, default: []
-  attr :workspace_focus_origin, :string, default: "enter-diagram-workspace"
+  attr :stop_search_form, :any, required: true
+  attr :station, :any, required: true
 
   def diagram_action_strip(assigns) do
-    ~H"""
-    <%= if @levels != [] do %>
-      <div
-        id="diagram-action-strip"
-        class="sticky top-0 z-10 bg-blue-50 border-b border-blue-200"
-      >
-        <div class="flex items-center justify-between px-4 py-3">
-          <div class="flex min-w-0 flex-1 items-center gap-2">
-            <form phx-change="switch_level" class="flex items-center gap-2">
-              <label class="text-sm font-medium text-blue-900">Level:</label>
-              <select class="select select-sm select-bordered bg-white" name="level_id">
-                <%= for level <- @levels do %>
-                  <option value={level.id} selected={@active_level && level.id == @active_level.id}>
-                    {level.level_name || level.level_id}
-                  </option>
-                <% end %>
-              </select>
-            </form>
-            <%= if @has_diagram do %>
-              <%= cond do %>
-                <% @mode == :view -> %>
-                  <span class="text-sm text-blue-700 font-medium">
-                    {view_mode_instruction(@measurement_enabled, @ruler_point_a, @ruler_point_b)}
-                  </span>
-                <% @mode == :add -> %>
-                  <span class="text-sm text-blue-700 font-medium">
-                    Click diagram to add a child stop
-                  </span>
-                <% @mode == :connect && @selected_from_stop == nil -> %>
-                  <form
-                    phx-change="select_from_stop"
-                    id="connect-from-form"
-                    class="flex items-center gap-2"
-                  >
-                    <label class="text-sm font-medium text-blue-900">From:</label>
-                    <select name="from_id" class="select select-sm select-bordered bg-white">
-                      <option value="">Select a stop...</option>
-                      <%= for stop <- @child_stops_list do %>
-                        <option value={stop.id}>
-                          {stop.stop_name || stop.stop_id}
-                        </option>
-                      <% end %>
-                    </select>
-                  </form>
-                <% @mode == :connect && @selected_from_stop != nil -> %>
-                  <span class="text-sm text-blue-700 font-medium">
-                    From: {@selected_from_stop.stop_name || @selected_from_stop.stop_id}
-                  </span>
-                  <form
-                    phx-change="select_to_stop"
-                    id="connect-to-form"
-                    class="flex items-center gap-2"
-                  >
-                    <label class="text-sm font-medium text-blue-900">— To:</label>
-                    <select name="to_id" class="select select-sm select-bordered bg-white">
-                      <option value="">Select destination...</option>
-                      <%= for stop <- @child_stops_list, stop.id != @selected_from_stop.id do %>
-                        <option value={stop.id}>
-                          {stop.stop_name || stop.stop_id}
-                        </option>
-                      <% end %>
-                    </select>
-                  </form>
-                  <button
-                    type="button"
-                    class="btn btn-ghost btn-sm text-blue-700 hover:text-blue-900 hover:bg-blue-100"
-                    phx-click="clear_from_selection"
-                  >
-                    <.icon name="hero-x-mark" class="w-4 h-4" />
-                  </button>
-                <% @mode == :map -> %>
-                  <span class="text-sm text-blue-700 font-medium">
-                    Align the floorplan over real-world imagery
-                  </span>
-                <% true -> %>
-                  <span class="text-sm text-blue-700"></span>
-              <% end %>
-            <% end %>
-            <%= if @mode == :add do %>
-              <button
-                id="keyboard-create-stop"
-                type="button"
-                class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
-                phx-click="open_create_form"
-              >
-                Enter coordinates
-              </button>
-            <% end %>
-          </div>
-          <div class="ml-auto flex items-center gap-2">
-            <%= if @mode == :view and @has_diagram do %>
-              <form id="stop-search-form" phx-submit="search_stop" class="flex items-center">
-                <input
-                  type="text"
-                  name="stop_id_query"
-                  placeholder="Find stop_id"
-                  aria-label="Search by stop ID"
-                  class="input input-sm input-bordered bg-white w-40"
-                  autocomplete="off"
-                />
-              </form>
-              <%= if @measurement_enabled do %>
-                <button
-                  type="button"
-                  class="btn btn-sm bg-orange-500 text-white hover:bg-orange-600"
-                  phx-click="toggle_measurement"
-                >
-                  Cancel Set Scale
-                </button>
-              <% else %>
-                <%= if @has_scale do %>
-                  <button
-                    type="button"
-                    class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
-                    phx-click="clear_calibration"
-                  >
-                    Clear Scale
-                  </button>
-                <% else %>
-                  <button
-                    type="button"
-                    class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
-                    phx-click="toggle_measurement"
-                  >
-                    Set Scale
-                  </button>
-                <% end %>
-              <% end %>
-            <% end %>
+    open_panel =
+      JS.toggle(to: "#level-control-panel")
+      |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#level-control-trigger")
 
+    close_panel =
+      JS.hide(to: "#level-control-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#level-control-trigger")
+
+    scale_open =
+      JS.toggle(to: "#scale-actions-panel")
+      |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#scale-actions-trigger")
+
+    scale_close =
+      JS.hide(to: "#scale-actions-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#scale-actions-trigger")
+
+    mode_options = [
+      {"View", "view"},
+      %{
+        label: "Add stop",
+        value: "add",
+        disabled: not assigns.has_diagram
+      },
+      %{
+        label: "Connect",
+        value: "connect",
+        disabled: not assigns.has_diagram
+      },
+      %{
+        label: "Align",
+        value: "map",
+        disabled: not assigns.has_diagram
+      }
+    ]
+
+    scale_value =
+      case assigns[:active_stop_level] do
+        %{scale_meters_per_unit: %Decimal{} = mpu} ->
+          mpu
+          |> Decimal.round(3)
+          |> Decimal.normalize()
+          |> Decimal.to_string()
+
+        _ ->
+          nil
+      end
+
+    assigns =
+      assigns
+      |> assign(:open_panel, open_panel)
+      |> assign(:close_panel, close_panel)
+      |> assign(:scale_open, scale_open)
+      |> assign(:scale_close, scale_close)
+      |> assign(:mode_options, mode_options)
+      |> assign(:scale_value, scale_value)
+      |> assign(:group_disabled_reason, nil)
+
+    ~H"""
+    <div
+      id="diagram-action-strip"
+      class="sticky top-0 z-20 relative border-b border-base-300 bg-base-200 px-4 sm:px-6 lg:px-8 py-2"
+    >
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <a
+          id="skip-to-floorplan"
+          href="#floorplan-workspace"
+          phx-click={JS.focus(to: "#floorplan-workspace")}
+          class="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-2 focus:z-40 focus:bg-primary focus:text-primary-content focus:text-sm focus:font-medium focus:rounded-md focus:px-3 focus:py-1.5 focus:shadow-lg"
+        >
+          Skip to floorplan
+        </a>
+
+        <span
+          :if={@mode in [:add, :connect, :map]}
+          class="text-sm font-medium text-base-content shrink-0"
+        >
+          {@station.stop_name || @station.stop_id}
+        </span>
+
+        <.level_disclosure
+          levels={@levels}
+          active_level={@active_level}
+          active_level_name={@active_level_name}
+          has_diagram={@has_diagram}
+          open_panel={@open_panel}
+          close_panel={@close_panel}
+        />
+
+        <%= cond do %>
+          <% @mode == :view -> %>
+            <.scale_control
+              active_stop_level={@active_stop_level}
+              measurement_enabled={@measurement_enabled}
+              has_scale={@has_scale}
+              scale_value={@scale_value}
+              scale_open={@scale_open}
+              scale_close={@scale_close}
+            />
+            <span :if={@measurement_enabled} class="text-sm text-base-content/60 mx-auto">
+              {view_mode_instruction(@measurement_enabled, @ruler_point_a, @ruler_point_b)}
+            </span>
+            <.form
+              :if={not @measurement_enabled}
+              for={@stop_search_form}
+              id="stop-search-form"
+              phx-submit="search_stop"
+              class="ml-auto flex items-center"
+            >
+              <div class="flex h-11 w-full items-center gap-2 rounded-md border border-control-border bg-base-100 px-3 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20 sm:w-52">
+                <span
+                  class="hero-magnifying-glass size-4 shrink-0 text-base-content/50"
+                  aria-hidden="true"
+                >
+                </span>
+                <input
+                  type="search"
+                  id="stop-id-search"
+                  name="stop_id_query"
+                  value={@stop_search_form[:stop_id_query].value}
+                  aria-label="Search stops by ID"
+                  placeholder="Search stops"
+                  autocomplete="off"
+                  class="w-full min-w-0 bg-transparent text-sm focus:outline-none"
+                />
+              </div>
+            </.form>
+          <% @mode == :add -> %>
+            <span class="text-sm text-base-content/60 mx-auto">
+              Click floorplan to add a child stop
+            </span>
+            <button
+              id="keyboard-create-stop"
+              type="button"
+              class="btn btn-sm btn-ghost min-h-11"
+              phx-click="open_create_form"
+            >
+              Enter coordinates
+            </button>
+          <% @mode == :connect && @selected_from_stop == nil -> %>
+            <span class="text-sm text-base-content/60 mx-auto">
+              Click a stop to start a connection
+            </span>
+          <% @mode == :connect && @selected_from_stop != nil -> %>
+            <div class="mx-auto flex items-center gap-2">
+              <span class="text-sm text-base-content/60">
+                From <span class="font-medium text-base-content">{@selected_from_stop.stop_name || @selected_from_stop.stop_id}</span> · click the destination stop
+              </span>
+              <button
+                type="button"
+                class="btn btn-sm btn-ghost min-h-11 min-w-11"
+                phx-click="clear_from_selection"
+                aria-label="Clear starting stop"
+              >
+                <.icon name="hero-x-mark" class="size-4" />
+              </button>
+            </div>
+          <% @mode == :map -> %>
+            <span class="text-sm text-base-content/60 mx-auto">
+              Align the floorplan over real-world imagery
+            </span>
             <.other_levels_panel
-              :if={@mode == :map and @has_diagram}
+              :if={@has_diagram}
               other_levels={@other_levels}
               enabled_count={@enabled_count}
             />
+        <% end %>
 
-            <.mode_toggle mode={@mode} has_diagram={@has_diagram} />
-            <.button
-              id="enter-diagram-workspace"
-              type="button"
-              variant="secondary"
-              size="sm"
-              phx-click={
-                JS.push("enter_workspace", value: %{origin: "enter-diagram-workspace"})
-                |> JS.focus(to: "#diagram-workspace-heading")
-              }
-            >
-              Enter workspace
-            </.button>
-            <.button
-              :if={@mode != :view}
-              id="exit-diagram-editing"
-              type="button"
-              variant="quiet"
-              size="sm"
-              phx-click={JS.push("exit_editing") |> JS.focus(to: "##{@workspace_focus_origin}")}
-            >
-              Exit editing
-            </.button>
-          </div>
+        <.segmented_control
+          id="diagram-mode"
+          name="mode"
+          legend="Editing mode"
+          legend_class="sr-only"
+          options={@mode_options}
+          value={Atom.to_string(@mode)}
+          event="switch_mode"
+          appearance={:joined}
+          disabled_reason={@group_disabled_reason}
+        />
+      </div>
+
+      <div
+        :if={@scale_status}
+        id="scale-status"
+        role="status"
+        aria-live="polite"
+        class="flex items-center gap-2 pt-2 text-sm text-base-content/70"
+      >
+        <span>{@scale_status}</span>
+        <button
+          type="button"
+          class="btn btn-ghost btn-xs min-h-11 min-w-11"
+          phx-click="dismiss_scale_status"
+          aria-label="Dismiss status"
+        >
+          <.icon name="hero-x-mark" class="size-4" />
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  # ============================================================================
+  # Level Disclosure
+  # ============================================================================
+
+  attr :levels, :list, required: true
+  attr :active_level, :any, default: nil
+  attr :active_level_name, :string, default: ""
+  attr :has_diagram, :boolean, required: true
+  attr :open_panel, :any, required: true
+  attr :close_panel, :any, required: true
+
+  defp level_disclosure(assigns) do
+    ~H"""
+    <div id="level-control" class="relative">
+      <button
+        id="level-control-trigger"
+        type="button"
+        class="inline-flex items-center gap-2 bg-base-100 border border-control-border rounded-md pl-3 pr-2 min-h-11 text-sm font-medium hover:bg-base-200"
+        aria-expanded="false"
+        aria-controls="level-control-panel"
+        aria-label={"Level, #{@active_level_name}"}
+        phx-click={@open_panel}
+      >
+        <span class="text-base-content/60 font-normal">Level</span>
+        <span class="text-base-content">{@active_level_name}</span>
+        <.icon name="hero-chevron-down" class="size-3.5 text-base-content/60" />
+      </button>
+
+      <div
+        id="level-control-panel"
+        phx-click-away={@close_panel}
+        phx-window-keydown={@close_panel}
+        phx-key="escape"
+        style="display: none;"
+        class="absolute left-0 top-full mt-1 w-60 border border-base-300 bg-base-100 rounded-lg shadow-lg z-30 text-sm"
+      >
+        <div class="px-3 py-1.5 text-[11px] font-medium text-base-content/40 uppercase tracking-wide">
+          Switch level
         </div>
-        <%= if @scale_status do %>
-          <div
-            id="scale-status"
-            role="status"
-            aria-live="polite"
-            class="flex items-center gap-2 px-4 pb-2 text-sm text-blue-800"
+        <form phx-change="switch_level">
+          <button
+            :for={level <- @levels}
+            id={"level-option-#{level.id}"}
+            type="submit"
+            name="level_id"
+            value={level.id}
+            class={[
+              "flex items-center justify-between w-full px-3 py-2 min-h-11 hover:bg-base-200",
+              @active_level && level.id == @active_level.id &&
+                "bg-primary/10 text-primary font-medium",
+              @active_level && level.id == @active_level.id && "aria-current-true"
+            ]}
+            aria-current={@active_level && level.id == @active_level.id && "true"}
+            phx-click={@close_panel}
           >
-            <span>{@scale_status}</span>
+            <span class="flex items-center gap-2">
+              {level.level_name || level.level_id}
+              <span
+                :if={not level_has_diagram?(level)}
+                class="text-[11px] text-warning"
+              >
+                No floorplan
+              </span>
+            </span>
+            <span :if={@active_level && level.id == @active_level.id} aria-hidden="true">
+              <.icon name="hero-check" class="size-4" />
+            </span>
+          </button>
+        </form>
+        <div class="border-t border-base-300 my-1"></div>
+        <button
+          id="add-level-action"
+          type="button"
+          class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
+          phx-click={@close_panel |> JS.push("open_add_level")}
+        >
+          Add level…
+        </button>
+        <button
+          :if={@active_level}
+          id="edit-level-action"
+          type="button"
+          class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
+          phx-click={@close_panel |> JS.push("open_edit_level")}
+        >
+          Edit {@active_level_name}…
+        </button>
+        <button
+          :if={@active_level && @has_diagram}
+          id="replace-floorplan-action"
+          type="button"
+          class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
+          phx-click={@close_panel |> JS.push("open_diagram_upload_drawer")}
+        >
+          Replace floorplan…
+        </button>
+
+        <div class="border-t border-base-300 my-1"></div>
+        <div class="px-3 py-1.5 text-[11px] font-medium text-base-content/40 uppercase tracking-wide">
+          Station
+        </div>
+        <button
+          id="apply-naming-action"
+          type="button"
+          class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
+          phx-click={@close_panel |> JS.push("open_naming_drawer")}
+        >
+          Apply naming…
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  defp level_has_diagram?(%{diagram_filename: filename})
+       when is_binary(filename) and filename != "", do: true
+
+  defp level_has_diagram?(_), do: false
+
+  # ============================================================================
+  # Scale Control
+  # ============================================================================
+
+  attr :active_stop_level, :any, default: nil
+  attr :measurement_enabled, :boolean, default: false
+  attr :has_scale, :boolean, default: false
+  attr :scale_value, :string, default: nil
+  attr :scale_open, :any, required: true
+  attr :scale_close, :any, required: true
+
+  defp scale_control(assigns) do
+    ~H"""
+    <%= cond do %>
+      <% @measurement_enabled -> %>
+        <div class="inline-flex items-center gap-2">
+          <span class="inline-flex items-center gap-1.5 text-xs font-medium text-warning border border-warning/40 rounded-full px-2.5 py-1.5">
+            Setting scale
+          </span>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm min-h-11"
+            phx-click="toggle_measurement"
+          >
+            Cancel
+          </button>
+        </div>
+      <% @has_scale -> %>
+        <div class="relative">
+          <div class="inline-flex items-stretch overflow-hidden rounded-full border border-success/60 text-xs font-medium text-success">
             <button
               type="button"
-              class="btn btn-ghost btn-sm text-blue-700 hover:text-blue-900 hover:bg-blue-100"
-              phx-click="dismiss_scale_status"
-              aria-label="Dismiss status"
+              class="inline-flex items-center gap-1.5 pl-3 pr-2 py-1.5 hover:bg-success/10"
+              phx-click="toggle_measurement"
+              aria-label={"Scale set to #{@scale_value} meters per diagram unit. Recalibrate."}
             >
-              <.icon name="hero-x-mark" class="w-4 h-4" />
+              <span>Scale</span>
+              <span>·</span>
+              <span>{@scale_value} m/unit</span>
+            </button>
+            <button
+              id="scale-actions-trigger"
+              type="button"
+              class="inline-flex items-center justify-center border-l border-success/60 px-2 py-1.5 hover:bg-success/10"
+              aria-expanded="false"
+              aria-controls="scale-actions-panel"
+              aria-label="Scale options"
+              phx-click={@scale_open}
+            >
+              <.icon name="hero-chevron-down" class="size-3.5" />
             </button>
           </div>
-        <% end %>
-      </div>
+          <div
+            id="scale-actions-panel"
+            phx-click-away={@scale_close}
+            phx-window-keydown={@scale_close}
+            phx-key="escape"
+            style="display: none;"
+            class="absolute left-0 top-full mt-1 w-48 border border-base-300 bg-base-100 rounded-lg shadow-lg z-30 text-sm"
+          >
+            <button
+              type="button"
+              class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
+              phx-click={@scale_close |> JS.push("toggle_measurement")}
+            >
+              Recalibrate scale
+            </button>
+            <button
+              type="button"
+              class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
+              phx-click={@scale_close |> JS.push("clear_calibration")}
+            >
+              Clear scale
+            </button>
+          </div>
+        </div>
+      <% true -> %>
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 text-xs font-medium text-warning border border-warning/60 rounded-full px-2.5 py-1.5 hover:border-warning"
+          phx-click="toggle_measurement"
+          aria-label="No scale set. Set scale."
+        >
+          No scale · Set scale
+        </button>
     <% end %>
     """
   end
+
+  # ============================================================================
+  # Diagram Upload Drawer
+  # ============================================================================
+
+  attr :open, :boolean, required: true
+  attr :upload, Phoenix.LiveView.UploadConfig, required: true
+  attr :active_level, :any, required: true
+  attr :active_level_name, :string, required: true
+  attr :upload_phase, :atom, required: true
+  attr :diagram_error, :string, default: nil
+  attr :has_diagram, :boolean, default: false
+
+  def diagram_upload_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="diagram-upload-drawer"
+      open={@open}
+      on_close="close_diagram_upload_drawer"
+      title={"Replace floorplan for #{@active_level_name}"}
+      initial_focus={:first_field}
+      return_focus_id="level-control-trigger"
+      class="max-w-[min(100vw,32rem)]"
+    >
+      <form
+        :if={@has_diagram}
+        id="diagram-upload-form-replace"
+        phx-change="upload_diagram"
+        class="space-y-4"
+      >
+        <.upload_field
+          id="replace-floorplan-upload"
+          upload={@upload}
+          label="Floorplan image"
+          help="PNG or JPEG, up to 10 MB."
+          cancel_event="cancel_diagram_upload"
+          state={upload_phase_to_state(@upload_phase)}
+          disabled={@upload_phase in [:uploading, :validating, :probing_candidate, :committing]}
+          pending_label={upload_pending_label(@upload_phase)}
+        />
+        <p :if={@diagram_error} class="text-sm text-error">
+          {@diagram_error}
+        </p>
+      </form>
+    </.drawer>
+    """
+  end
+
+  defp upload_phase_to_state(:idle), do: :idle
+  defp upload_phase_to_state(:uploading), do: :uploading
+  defp upload_phase_to_state(:validating), do: :validating
+  defp upload_phase_to_state(:probing_candidate), do: :probing_candidate
+  defp upload_phase_to_state(:committing), do: :committing
+
+  defp upload_phase_to_state(:awaiting_replacement_confirmation),
+    do: :awaiting_replacement_confirmation
+
+  defp upload_phase_to_state(:failed), do: :failed
+  defp upload_phase_to_state(:succeeded), do: :succeeded
+  defp upload_phase_to_state(_), do: :idle
+
+  defp upload_pending_label(:uploading), do: "Uploading diagram…"
+  defp upload_pending_label(:validating), do: "Validating diagram…"
+  defp upload_pending_label(:probing_candidate), do: "Probing candidate…"
+  defp upload_pending_label(:committing), do: "Committing diagram…"
+  defp upload_pending_label(_), do: "Uploading diagram…"
 
   attr :other_levels, :list, default: []
   attr :enabled_count, :integer, default: 0
@@ -378,7 +604,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <button
         id="other-levels-button"
         type="button"
-        class="btn btn-sm btn-ghost text-blue-700 hover:bg-blue-100"
+        class="btn btn-sm btn-ghost min-h-11"
         aria-haspopup="dialog"
         aria-controls="other-levels-panel"
         aria-expanded="false"
@@ -398,13 +624,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         phx-window-keydown={@close_panel}
         phx-key="escape"
         style="display: none;"
-        class="absolute right-0 z-20 mt-2 w-80 rounded-lg border border-base-300 bg-white shadow-lg"
+        class="absolute right-0 z-20 mt-2 w-80 rounded-lg border border-base-300 bg-base-100 shadow-lg"
       >
         <div class="flex items-center justify-between border-b border-base-200 px-4 py-2">
           <span class="text-sm font-medium text-base-content">Other levels</span>
           <button
             type="button"
-            class="btn btn-ghost btn-xs text-blue-700 hover:bg-blue-100"
+            class="btn btn-ghost btn-xs min-h-11"
             phx-click="clear_other_levels"
           >
             Clear
@@ -595,7 +821,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           type="button"
           title="Drag to rotate the floorplan"
           aria-label="Rotate floorplan"
-          class="absolute top-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
+          class="absolute top-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-base-content/70 hover:bg-base-200"
           style="z-index: 3;"
         >
           <.icon name="hero-arrow-path" class="w-4 h-4" />
@@ -619,7 +845,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           type="button"
           title="Drag to resize the floorplan"
           aria-label="Resize floorplan"
-          class="absolute bottom-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-blue-700 hover:bg-blue-50"
+          class="absolute bottom-2 right-2 w-8 h-8 bg-white border border-base-300 rounded-full shadow flex items-center justify-center cursor-grab text-base-content/70 hover:bg-base-200"
           style="z-index: 3;"
         >
           <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
@@ -957,6 +1183,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :scale_point_a, :any, default: nil
   attr :scale_point_b, :any, default: nil
   attr :measurement_enabled, :boolean, default: false
+  attr :has_diagram, :boolean, default: false
+  attr :upload, :any, default: nil
+  attr :upload_phase, :atom, default: :idle
 
   def diagram_canvas(assigns) do
     canvas_key = diagram_canvas_key(assigns.active_level, assigns.active_stop_level)
@@ -1020,7 +1249,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
           <.diagram_hints_and_legend has_scale={@scale_point_a != nil and @scale_point_b != nil} />
         <% @active_level -> %>
-          <.empty_diagram_state />
+          <.empty_diagram_state
+            has_diagram={@has_diagram}
+            upload={@upload}
+            upload_phase={@upload_phase}
+          />
         <% true -> %>
           <.no_level_state />
       <% end %>
@@ -2761,20 +2994,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
+  attr :has_diagram, :boolean, default: false
+  attr :upload, :any, default: nil
+  attr :upload_phase, :atom, default: :idle
+
   defp empty_diagram_state(assigns) do
     ~H"""
     <.empty_state
       id="empty-diagram-state"
-      title="No diagram for this level"
+      title="No floorplan for this level"
       class="mx-auto my-12 max-w-xl"
     >
       <p>
-        Upload a floor plan to place stops and draw pathways on this level.
+        Upload a floorplan image to place stops and pathways on it.
       </p>
       <:action>
-        <label for="station-sub-nav-upload" class="btn btn-primary cursor-pointer">
-          Upload diagram
-        </label>
+        <form id="diagram-upload-form-empty" phx-change="upload_diagram" class="space-y-2">
+          <.upload_field
+            :if={@upload}
+            id="empty-floorplan-upload"
+            upload={@upload}
+            label="Floorplan image"
+            help="PNG or JPEG, up to 10 MB."
+            cancel_event="cancel_diagram_upload"
+            appearance={:button}
+            action_label="Upload floorplan"
+            state={upload_phase_to_state(@upload_phase)}
+            disabled={@upload_phase in [:uploading, :validating, :probing_candidate, :committing]}
+            pending_label={upload_pending_label(@upload_phase)}
+          />
+        </form>
       </:action>
     </.empty_state>
     """
@@ -2782,9 +3031,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp no_level_state(assigns) do
     ~H"""
-    <.empty_state id="no-level-state" title="No levels defined" class="mx-auto my-12 max-w-xl">
+    <.empty_state
+      id="no-level-state"
+      title="Choose a level to begin"
+      class="mx-auto my-12 max-w-xl"
+    >
       <p>
-        Add a level to this station before uploading a floor plan diagram.
+        Add a level before uploading a floorplan.
       </p>
       <:action>
         <.button type="button" phx-click="open_add_level">Add level</.button>

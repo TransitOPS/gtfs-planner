@@ -29,6 +29,14 @@
      Generates the `bg-brand` / `text-brand` utilities used by the shell. */
   --color-brand: oklch(52% 0.12 165);
   --color-brand-content: oklch(100% 0 0); /* white icon/text on the brand tile */
+
+  /* Control outline color. `base-300` (~1.1:1 on base-100) is too faint to read as
+     a control boundary. This is base-content mixed to ~2.1:1 on base-100 —
+     intentionally softer than WCAG 1.4.11's 3:1 floor per design call, since these
+     controls are also identified by fill, label, and placeholder, not the border
+     alone. Generates the `border-control-border` utility. Backgrounds and purely
+     decorative dividers stay on `base-300`. */
+  --color-control-border: color-mix(in oklab, var(--color-base-content) 34%, var(--color-base-100));
 }
 
 /* daisyUI Tailwind Plugin. You can update this file by fetching the latest version with:
@@ -120,6 +128,48 @@ body {
 
 #station-sub-nav {
   overflow: visible;
+}
+
+/* ── Immersive editing modes (Add stop / Connect / Align) ──
+   Entering an editing mode hides the global header and station sub-nav so the
+   action strip + canvas fill the viewport. `display: none` (not an off-screen
+   transform) keeps the hidden chrome out of the tab order, so no invisible
+   element is tabbable (AC-19). Station, level, and mode context are preserved
+   in the sticky action strip; selecting View exits back to the full page. */
+#diagram-page[data-immersive="true"] #app-header,
+#diagram-page[data-immersive="true"] #station-sub-nav {
+  display: none;
+}
+
+/* Align mode: the map fills the freed viewport height and its control bar
+   anchors to the bottom of the screen instead of sitting below a tall square
+   that forces a page scroll. */
+#diagram-page[data-immersive="true"] #map-canvas-wrapper {
+  height: calc(100vh - 4rem);
+  display: flex;
+  flex-direction: column;
+  padding-top: 0.5rem;
+  padding-bottom: 0;
+}
+
+#diagram-page[data-immersive="true"] #map-canvas-wrapper > div {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#diagram-page[data-immersive="true"] #map-canvas-wrapper .map-canvas {
+  flex: 1 1 auto;
+  min-height: 0;
+  aspect-ratio: auto;
+}
+
+/* Add stop / Connect: the floorplan workspace grows into the freed space. */
+@media (min-width: 768px) {
+  #diagram-page[data-immersive="true"] .diagram-workspace {
+    max-height: calc(100vh - 4.5rem);
+  }
 }
 
 /* ── Responsive data-view contracts ── */

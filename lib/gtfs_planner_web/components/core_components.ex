@@ -910,11 +910,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
   @doc """
   Renders a full-width sub-navigation bar for station pages.
 
-  Provides a back button, prominent station name, underline-style tabs for
+  Provides a back button, prominent station name, ordinary navigation links for
   switching between views, and a slot for contextual action buttons.
-
-  When `active_tab` is `:diagram`, displays a third row with level controls
-  and canvas mode toggle.
 
   ## Examples
 
@@ -928,12 +925,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
         station={@station}
         gtfs_version_id={@current_gtfs_version.id}
         active_tab={:diagram}
-        levels={@levels}
-        active_level={@active_level}
-        mode={@mode}
-        uploads={@uploads}
-        diagram_error={@diagram_error}
-      />
+      >
+        <:actions>
+          <.button variant="secondary" size="sm">Apply naming</.button>
+        </:actions>
+      </.station_sub_nav>
   """
   attr :station, :map, required: true, doc: "the station stop record"
   attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
@@ -942,28 +938,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
     values: [:details, :diagram, :report, :reachability],
     default: :details
 
-  attr :levels, :list, default: [], doc: "list of levels for the station (diagram tab)"
-  attr :active_level, :any, default: nil, doc: "the currently selected level (diagram tab)"
-  attr :mode, :atom, default: :add, doc: "canvas mode - :add or :connect (diagram tab)"
-  attr :uploads, :any, default: nil, doc: "uploads struct for diagram upload (diagram tab)"
-
-  attr :has_diagram, :boolean,
-    default: false,
-    doc: "whether the active level has a diagram uploaded"
-
-  attr :diagram_error, :string, default: nil, doc: "error message for diagram upload"
-  attr :upload_phase, :atom, default: :idle, doc: "server-owned diagram upload phase"
   slot :actions, doc: "contextual action buttons"
 
   def station_sub_nav(assigns) do
+    station_title = assigns.station.stop_name || assigns.station.stop_id
+    assigns = assign(assigns, :station_title, station_title)
+
     ~H"""
-    <nav
-      id="station-sub-nav"
-      class="w-full px-4 sm:px-6 lg:px-8"
-      aria-label="Station navigation"
-    >
-      <div class="flex flex-wrap items-center justify-between gap-2 py-3">
-        <div class="flex items-center gap-2 min-w-0">
+    <div id="station-sub-nav" class="w-full px-4 sm:px-6 lg:px-8">
+      <div class="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex min-w-0 items-center gap-2">
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops"}
             class="btn btn-ghost btn-square min-h-11 min-w-11"
@@ -971,16 +955,22 @@ defmodule GtfsPlannerWeb.CoreComponents do
           >
             <.icon name="hero-chevron-left" class="size-5" />
           </.link>
-          <h1 class="text-xl font-semibold leading-tight break-words min-w-0">
-            {@station.stop_name || @station.stop_id}
+          <h1
+            class="min-w-0 break-words text-xl font-semibold leading-tight sm:truncate"
+            title={@station_title}
+          >
+            {@station_title}
           </h1>
         </div>
-        <div class="flex flex-wrap items-center gap-2">
+        <div class="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           {render_slot(@actions)}
         </div>
       </div>
-      <div class="flex flex-wrap items-end justify-between gap-4 border-b border-base-300">
-        <div class="flex flex-wrap items-end gap-1">
+      <nav
+        aria-label="Station views"
+        class="overflow-x-auto border-b border-base-300"
+      >
+        <div class="flex min-w-max items-end gap-1 sm:min-w-0">
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}"}
             class={sub_nav_link_class(@active_tab == :details)}
@@ -993,7 +983,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             class={sub_nav_link_class(@active_tab == :diagram)}
             aria-current={@active_tab == :diagram && "page"}
           >
-            Diagram
+            Floorplans
           </.link>
           <.link
             navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/report"}
@@ -1010,124 +1000,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
             Reachability
           </.link>
         </div>
-
-        <div :if={@active_tab == :diagram} class="flex flex-wrap items-center gap-4 pb-2">
-          <div class="flex flex-wrap items-center gap-2">
-            <.button
-              type="button"
-              size="sm"
-              variant="secondary"
-              class="border-base-300 bg-base-100 text-base-content hover:bg-base-200"
-              phx-click="open_add_level"
-            >
-              Add level
-            </.button>
-
-            <.button
-              :if={@active_level}
-              type="button"
-              size="sm"
-              variant="secondary"
-              class="border-base-300 bg-base-100 text-base-content hover:bg-base-200"
-              phx-click="open_edit_level"
-            >
-              Edit level
-            </.button>
-
-            <.button
-              type="button"
-              size="sm"
-              variant="secondary"
-              class="border-base-300 bg-base-100 text-base-content hover:bg-base-200"
-              phx-click="open_naming_drawer"
-            >
-              Apply naming
-            </.button>
-          </div>
-
-          <div :if={@uploads} class="w-full sm:w-auto">
-            <form
-              id="diagram-upload-form-sub-nav"
-              phx-change="upload_diagram"
-            >
-              <.upload_field
-                id="station-sub-nav-upload"
-                upload={@uploads.diagram}
-                label={if @has_diagram, do: "Replace diagram", else: "Upload diagram"}
-                help="PNG or JPEG, up to 10 MB."
-                cancel_event="cancel_diagram_upload"
-                error={@diagram_error}
-                error_formatter={&diagram_upload_error_to_string/1}
-                state={@upload_phase}
-                pending_label={diagram_upload_pending_label(@upload_phase)}
-                disabled={diagram_upload_disabled?(@active_level, @upload_phase)}
-                disabled_reason={diagram_upload_disabled_reason(@active_level, @upload_phase)}
-              >
-                <:failure :if={diagram_upload_entry_errors?(@uploads.diagram)}>
-                  Correct the errors listed for the selected file, then choose another diagram.
-                </:failure>
-              </.upload_field>
-            </form>
-          </div>
-        </div>
-      </div>
-    </nav>
+      </nav>
+    </div>
     """
   end
 
-  defp diagram_upload_pending_label(:awaiting_replacement_confirmation),
-    do: "Confirm replacement to continue."
-
-  defp diagram_upload_pending_label(:validating), do: "Validating diagram…"
-  defp diagram_upload_pending_label(:probing_candidate), do: "Checking diagram readiness…"
-  defp diagram_upload_pending_label(:committing), do: "Replacing diagram…"
-  defp diagram_upload_pending_label(_), do: "Uploading diagram…"
-
-  defp diagram_upload_disabled?(nil, _upload_phase), do: true
-
-  defp diagram_upload_disabled?(_active_level, upload_phase),
-    do:
-      upload_phase in [
-        :awaiting_replacement_confirmation,
-        :validating,
-        :probing_candidate,
-        :committing
-      ]
-
-  defp diagram_upload_disabled_reason(nil, _upload_phase),
-    do: "Select a level before uploading a diagram."
-
-  defp diagram_upload_disabled_reason(_active_level, upload_phase)
-       when upload_phase in [
-              :awaiting_replacement_confirmation,
-              :validating,
-              :probing_candidate,
-              :committing
-            ],
-       do: "Finish or cancel the current diagram upload before selecting another file."
-
-  defp diagram_upload_disabled_reason(_active_level, _upload_phase), do: nil
-
-  defp diagram_upload_entry_errors?(upload) do
-    upload.errors != [] or Enum.any?(upload.entries, &(upload_errors(upload, &1) != []))
-  end
-
-  defp diagram_upload_error_to_string(:too_large), do: "File is too large (max 10 MB)"
-
-  defp diagram_upload_error_to_string(:not_accepted),
-    do: "File type not accepted (PNG, JPG, JPEG only)"
-
-  defp diagram_upload_error_to_string(:too_many_files),
-    do: "Only one diagram can be uploaded at a time"
-
-  defp diagram_upload_error_to_string(:external_client_failure), do: "Upload failed"
-  defp diagram_upload_error_to_string({:error, reason}), do: reason
-  defp diagram_upload_error_to_string(error) when is_binary(error), do: error
-  defp diagram_upload_error_to_string(_), do: "Upload error"
-
   defp sub_nav_link_class(is_active) do
     base =
-      "inline-flex items-center px-3 py-2.5 min-h-11 text-sm transition-colors border-b-2 -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+      "inline-flex shrink-0 items-center px-3 py-2.5 min-h-11 text-sm transition-colors border-b-2 -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
 
     state =
       if is_active do
@@ -1474,7 +1354,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             <button
               id={"#{@id}-cancel"}
               type="button"
-              class="h-[44px] min-w-[44px] border border-base-300 px-4 text-sm font-semibold"
+              class="h-[44px] min-w-[44px] border border-control-border px-4 text-sm font-semibold"
               phx-click={@on_cancel}
               phx-target={@target}
               data-dialog-dismiss
@@ -1525,6 +1405,15 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :error, :string, default: nil
   attr :error_formatter, :any, default: nil
 
+  attr :appearance, :atom,
+    values: [:dropzone, :button],
+    default: :dropzone,
+    doc: "visual presentation of the file chooser"
+
+  attr :action_label, :string,
+    default: "Click to select a file or drag and drop",
+    doc: "visible label on the file chooser target"
+
   attr :state, :atom,
     values: [
       :idle,
@@ -1570,16 +1459,37 @@ defmodule GtfsPlannerWeb.CoreComponents do
       </p>
 
       <label
+        :if={@appearance == :dropzone}
         aria-disabled={if @disabled, do: "true", else: nil}
         class={[
-          "block rounded-lg border-2 border-dashed border-base-300 p-4 transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20",
+          "block rounded-lg border-2 border-dashed border-control-border p-4 transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20",
           !@disabled && "cursor-pointer hover:border-primary",
           @disabled && "cursor-not-allowed opacity-60"
         ]}
       >
         <span class="text-sm text-base-content/70">
-          {if @disabled, do: "Upload unavailable", else: "Click to select a file or drag and drop"}
+          {if @disabled, do: "Upload unavailable", else: @action_label}
         </span>
+        <.live_file_input
+          upload={@upload}
+          class="sr-only"
+          disabled={@disabled}
+          aria-labelledby={"#{@id}-label"}
+          aria-describedby={@input_describedby}
+          aria-invalid={to_string(@error != nil or @failure?)}
+        />
+      </label>
+
+      <label
+        :if={@appearance == :button}
+        aria-disabled={if @disabled, do: "true", else: nil}
+        class={[
+          "btn btn-primary inline-flex min-h-11 items-center justify-center px-4",
+          !@disabled && "cursor-pointer",
+          @disabled && "btn-disabled cursor-not-allowed opacity-60"
+        ]}
+      >
+        <span>{if @disabled, do: "Upload unavailable", else: @action_label}</span>
         <.live_file_input
           upload={@upload}
           class="sr-only"
@@ -1726,7 +1636,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       class={[
         "h-11 min-w-[44px] px-4 text-sm font-semibold border rounded-lg transition-colors",
         @pressed && "bg-primary text-primary-content border-primary",
-        !@pressed && "bg-base-100 text-base-content border-base-300 hover:border-primary",
+        !@pressed && "bg-base-100 text-base-content border-control-border hover:border-primary",
         @disabled && "opacity-50 cursor-not-allowed"
       ]}
       phx-click={@event}
@@ -1769,39 +1679,71 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :disabled, :boolean, default: false
   attr :disabled_reason, :string, default: nil
 
+  attr :appearance, :atom,
+    values: [:separate, :joined],
+    default: :separate,
+    doc: "separate chips or one contiguous joined control"
+
+  attr :legend_class, :any, default: nil, doc: "optional classes for the legend (e.g. sr-only)"
+
   def segmented_control(assigns) do
+    normalized = normalize_segmented_options(assigns.options, assigns.id)
+    any_option_disabled? = Enum.any?(normalized, & &1.disabled)
+    show_group_reason? = assigns.disabled_reason not in [nil, ""]
+
+    describedby =
+      cond do
+        show_group_reason? -> "#{assigns.id}-disabled-reason"
+        true -> nil
+      end
+
     assigns =
-      assign(
-        assigns,
-        :normalized_options,
-        normalize_segmented_options(assigns.options, assigns.id)
-      )
+      assigns
+      |> assign(:normalized_options, normalized)
+      |> assign(:any_option_disabled?, any_option_disabled?)
+      |> assign(:show_group_reason?, show_group_reason?)
+      |> assign(:describedby, describedby)
 
     ~H"""
-    <form id={"#{@id}-form"} phx-change={@event} phx-target={@target}>
+    <form id={"#{@id}-form"} phx-change={@event} phx-target={@target} class="min-w-0 w-full sm:w-auto">
       <fieldset
         id={@id}
-        class="space-y-2"
+        class={[
+          "space-y-2",
+          @appearance == :joined && "w-full sm:w-auto"
+        ]}
         disabled={@disabled}
-        aria-describedby={if @disabled && @disabled_reason, do: "#{@id}-disabled-reason", else: nil}
+        aria-describedby={@describedby}
       >
-        <legend class="text-sm font-semibold">{@legend}</legend>
+        <legend class={@legend_class || "text-sm font-semibold"}>{@legend}</legend>
         <p
-          :if={@disabled && @disabled_reason}
+          :if={@show_group_reason?}
           id={"#{@id}-disabled-reason"}
           class="text-xs text-base-content/60"
         >
           {@disabled_reason}
         </p>
-        <div class="flex flex-wrap gap-2">
+        <div class={[
+          @appearance == :separate && "flex flex-wrap gap-2",
+          @appearance == :joined &&
+            "flex w-full overflow-hidden rounded-md border border-control-border bg-base-100 p-0.5 sm:w-auto"
+        ]}>
           <label
             :for={option <- @normalized_options}
             for={option.id}
             class={[
-              "h-11 min-w-[44px] px-4 flex items-center justify-center text-sm font-semibold border rounded-lg cursor-pointer transition-colors",
-              @value == option.value && "bg-primary text-primary-content border-primary",
-              @value != option.value &&
-                "bg-base-100 text-base-content border-base-300 hover:border-primary",
+              @appearance == :separate &&
+                "h-11 min-w-[44px] px-4 flex items-center justify-center text-sm font-semibold border rounded-lg cursor-pointer transition-colors",
+              @appearance == :joined &&
+                "flex h-11 min-h-11 min-w-0 flex-1 items-center justify-center px-3 text-sm font-medium cursor-pointer transition-colors sm:flex-none sm:px-4",
+              @appearance == :separate && @value == option.value &&
+                "bg-primary text-primary-content border-primary",
+              @appearance == :separate && @value != option.value &&
+                "bg-base-100 text-base-content border-control-border hover:border-primary",
+              @appearance == :joined && @value == option.value &&
+                "rounded bg-primary font-semibold text-primary-content",
+              @appearance == :joined && @value != option.value &&
+                "rounded text-base-content hover:bg-base-200",
               option.disabled && "cursor-not-allowed opacity-60"
             ]}
           >
@@ -1812,7 +1754,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
               value={option.value}
               checked={@value == option.value}
               disabled={option.disabled}
-              aria-describedby={option.disabled_reason && "#{option.id}-reason"}
+              aria-describedby={
+                cond do
+                  option.disabled_reason -> "#{option.id}-reason"
+                  @show_group_reason? -> @describedby
+                  true -> nil
+                end
+              }
               class="sr-only"
             />
             {option.label}

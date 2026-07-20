@@ -806,7 +806,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               <label class="label">
                 <span class="label-text">GTFS Files</span>
               </label>
-              <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-base-300 rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
+              <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-control-border rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
                 <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
                   <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/60" />
                   <p class="mb-2 text-sm font-medium">
@@ -1149,7 +1149,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             phx-change="validate_diff"
             phx-submit="compute_diff"
           >
-            <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-base-300 rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
+            <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-control-border rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
               <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
                 <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/60" />
                 <p class="mb-2 text-sm font-medium">

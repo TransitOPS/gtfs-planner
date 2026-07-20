@@ -26,7 +26,7 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
     },
     pathway_forward: %{
       css_variable: "--diagram-pathway-forward",
-      color: "#0F766E",
+      color: "#FF00FF",
       cue: "solid line with forward arrow"
     },
     pathway_reverse: %{
