@@ -6,18 +6,14 @@ defmodule GtfsPlannerWeb.ErrorHTML do
   """
   use GtfsPlannerWeb, :html
 
-  # If you want to customize your error pages,
-  # uncomment the embed_templates/1 call below
-  # and add pages to the error directory:
-  #
-  #   * lib/gtfs_planner_web/controllers/error_html/404.html.heex
-  #   * lib/gtfs_planner_web/controllers/error_html/500.html.heex
-  #
-  # embed_templates "error_html/*"
+  # Embeds the dedicated 404 and 500 templates under `error_html/`. The
+  # catch-all `render/2` below continues to handle every other status name
+  # (e.g. `422.html`) by falling back to Phoenix's status phrase.
+  embed_templates "error_html/*"
 
   # The default is to render a plain text page based on
-  # the template name. For example, "404.html" becomes
-  # "Not Found".
+  # the template name. For example, "422.html" becomes
+  # "Unprocessable Content".
   def render(template, _assigns) do
     Phoenix.Controller.status_message_from_template(template)
   end

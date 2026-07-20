@@ -1,0 +1,22 @@
+<Layouts.app flash={%{}}>
+  <section id="error-page-500" class="space-y-6">
+    <p
+      id="error-page-500-status"
+      class="text-sm font-semibold uppercase tracking-wider text-base-content/60"
+    >
+      Error 500
+    </p>
+    <h1 class="text-3xl font-bold tracking-tight sm:text-4xl">Page didn't load</h1>
+    <p class="text-base text-base-content/70">
+      Something went wrong while loading this page.
+    </p>
+    <div class="flex flex-wrap items-center gap-3">
+      <.button id="error-page-500-reload" variant="primary" href="">
+        Try again
+      </.button>
+      <.button id="error-page-500-home" variant="secondary" href="/">
+        Return home
+      </.button>
+    </div>
+  </section>
+</Layouts.app>
