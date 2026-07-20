@@ -91,21 +91,7 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
          |> Accounts.change_password_reset_request()
          |> Ecto.Changeset.apply_action(:insert) do
       {:ok, request} ->
-        if user = Accounts.get_user_by_email(request.email) do
-          user
-          |> Accounts.deliver_user_reset_password_instructions(
-            &url(~p"/users/reset_password/#{&1}")
-          )
-          |> case do
-            {:ok, _email} ->
-              :ok
-
-            {:error, _reason} ->
-              # Safe outcome class only — never the address, token, mail content,
-              # or the inspected adapter reason.
-              Logger.warning("Password reset instructions could not be delivered")
-          end
-        end
+        maybe_deliver_reset_instructions(request.email)
 
         {:noreply,
          socket
@@ -117,6 +103,25 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
          socket
          |> assign(form: to_form(changeset, as: :user))
          |> push_event("focus_form_error", %{form_id: "reset_password_form", fallback_id: nil})}
+    end
+  end
+
+  # Delivers reset instructions only when the address belongs to an account.
+  # An absent account and a delivery failure are both silent to the caller so
+  # the browser outcome stays identical (anti-enumeration); a delivery failure
+  # logs a safe outcome class only — never the address, token, mail content, or
+  # the inspected adapter reason.
+  defp maybe_deliver_reset_instructions(email) do
+    with %GtfsPlanner.Accounts.User{} = user <- Accounts.get_user_by_email(email),
+         {:ok, _delivered} <-
+           Accounts.deliver_user_reset_password_instructions(
+             user,
+             &url(~p"/users/reset_password/#{&1}")
+           ) do
+      :ok
+    else
+      nil -> :ok
+      {:error, _reason} -> Logger.warning("Password reset instructions could not be delivered")
     end
   end
 end

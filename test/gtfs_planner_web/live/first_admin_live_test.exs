@@ -471,7 +471,11 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
       })
 
       assert has_element?(view, @summary_selector)
-      assert has_element?(view, ~s(#{@summary_selector} a[href="#first-admin-organization-alias"]))
+
+      assert has_element?(
+               view,
+               ~s(#{@summary_selector} a[href="#first-admin-organization-alias"])
+             )
 
       assert has_element?(
                view,
