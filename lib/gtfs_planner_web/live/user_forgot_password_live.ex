@@ -2,75 +2,126 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
   use GtfsPlannerWeb, :live_view
 
   require Logger
+
   alias GtfsPlanner.Accounts
+
+  # Absent account, successful delivery, and delivery failure all produce this
+  # identical login outcome so the response never discloses whether the address
+  # belongs to an account.
+  @reset_request_message "If an account can receive password resets, instructions are on the way. Check your inbox and spam folder, or try again."
 
   def render(assigns) do
     ~H"""
     <Layouts.auth flash={@flash}>
-      <.header class="text-center">
-        Forgot your password?
-        <:subtitle>We'll send a password reset link to your inbox</:subtitle>
-      </.header>
+      <div id="reset-password-request-page" phx-hook="FormErrorFocus">
+        <.header class="text-center">
+          Reset password
+          <:subtitle>We'll send a password reset link to your inbox</:subtitle>
+        </.header>
 
-      <.simple_form
-        for={@form}
-        id="reset_password_form"
-        phx-submit="send_instructions"
-        phx-change="validate"
-      >
-        <.input
-          field={@form[:email]}
-          type="email"
-          label="Email"
-          placeholder="your@email.com"
-          required
-        />
+        <.simple_form
+          for={@form}
+          id="reset_password_form"
+          phx-change="validate"
+          phx-submit="send_instructions"
+          class="phx-submit-loading:opacity-60"
+        >
+          <.input
+            field={@form[:email]}
+            id="reset-password-email"
+            type="email"
+            label="Email"
+            placeholder="your@email.com"
+            phx-debounce="blur"
+            phx-blur="validate"
+            required
+          />
 
-        <:actions>
-          <.button phx-disable-with="Sending..." variant="primary">
-            Send password reset instructions
-          </.button>
-        </:actions>
-      </.simple_form>
+          <:actions>
+            <.link
+              navigate={~p"/users/log_in"}
+              class="text-sm font-semibold link link-hover text-base-content/70"
+            >
+              Back to log in
+            </.link>
+          </:actions>
 
-      <p class="text-center mt-4 text-sm leading-6 text-base-content/70">
-        <.link navigate={~p"/users/log_in"} class="font-semibold link link-primary">
-          Log in
-        </.link>
-        to your account
-      </p>
+          <:actions>
+            <.button
+              id="reset-password-request-submit"
+              type="submit"
+              phx-disable-with="Sending reset link…"
+              variant="primary"
+            >
+              Send reset link
+            </.button>
+          </:actions>
+        </.simple_form>
+      </div>
     </Layouts.auth>
     """
   end
 
   def mount(_params, _session, socket) do
-    socket = assign(socket, form: to_form(%{}, as: "user"))
-    {:ok, socket, temporary_assigns: [form: socket.assigns.form]}
-  end
-
-  def handle_event("send_instructions", %{"user" => %{"email" => email}}, socket) do
-    if user = Accounts.get_user_by_email(email) do
-      res =
-        Accounts.deliver_user_reset_password_instructions(
-          user,
-          &url(~p"/users/reset_password/#{&1}")
-        )
-
-      Logger.info("Delivering password reset user=#{email} #{inspect(res)}")
-    end
-
-    # Regardless of whether the user exists, we show the same success message
-    # to prevent email enumeration attacks
-    info =
-      "If your email is in our system, you will receive instructions to reset your password shortly."
-
-    {:noreply,
+    {:ok,
      socket
-     |> put_flash(:info, info)
-     |> redirect(to: ~p"/")}
+     |> assign(page_title: "Reset password")
+     |> assign(form: to_form(Accounts.change_password_reset_request(), as: :user))}
   end
 
   def handle_event("validate", %{"user" => user_params}, socket) do
-    {:noreply, assign(socket, form: to_form(user_params, as: "user"))}
+    changeset =
+      user_params
+      |> Accounts.change_password_reset_request()
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign(socket, form: to_form(changeset, as: :user))}
+  end
+
+  # `phx-blur` payloads carry only event metadata (`%{"key" => _, "value" => _}`), never
+  # form values. The `phx-debounce="blur"` form change that accompanies every field blur
+  # delivers the values and is handled by the clause above, so metadata-only payloads
+  # intentionally change nothing.
+  def handle_event("validate", _params, socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event("send_instructions", %{"user" => user_params}, socket) do
+    case user_params
+         |> Accounts.change_password_reset_request()
+         |> Ecto.Changeset.apply_action(:insert) do
+      {:ok, request} ->
+        maybe_deliver_reset_instructions(request.email)
+
+        {:noreply,
+         socket
+         |> put_flash(:info, @reset_request_message)
+         |> redirect(to: ~p"/users/log_in")}
+
+      {:error, changeset} ->
+        {:noreply,
+         socket
+         |> assign(form: to_form(changeset, as: :user))
+         |> push_event("focus_form_error", %{form_id: "reset_password_form", fallback_id: nil})}
+    end
+  end
+
+  # Delivers reset instructions only when the address belongs to an account.
+  # An absent account and a delivery failure are both silent to the caller so
+  # the browser outcome stays identical (anti-enumeration); a delivery failure
+  # logs a safe outcome class only — never the address, token, mail content, or
+  # the inspected adapter reason.
+  defp maybe_deliver_reset_instructions(email) do
+    with %GtfsPlanner.Accounts.User{} = user <- Accounts.get_user_by_email(email),
+         {:ok, _delivered} <-
+           Accounts.deliver_user_reset_password_instructions(
+             user,
+             &url(~p"/users/reset_password/#{&1}")
+           ) do
+      :ok
+    else
+      nil -> :ok
+      {:error, _reason} -> Logger.warning("Password reset instructions could not be delivered")
+    end
   end
 end

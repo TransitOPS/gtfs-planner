@@ -108,6 +108,82 @@ defmodule GtfsPlanner.Accounts.FirstAdminFormTest do
       assert Repo.aggregate(User, :count) == 0
       assert Repo.aggregate(Organization, :count) == 0
     end
+
+    test "accepts a blank alias by using the organization name as the alias candidate" do
+      changeset =
+        FirstAdminForm.changeset(%{
+          "email" => "admin@example.com",
+          "password" => "valid password 123",
+          "password_confirmation" => "valid password 123",
+          "organization_name" => "Demo Org",
+          "organization_alias" => ""
+        })
+
+      assert changeset.valid?
+      assert get_field(changeset, :organization_alias) == nil
+    end
+
+    test "treats a whitespace-only alias as blank and keeps the visible field blank" do
+      changeset =
+        FirstAdminForm.changeset(%{
+          "email" => "admin@example.com",
+          "password" => "valid password 123",
+          "password_confirmation" => "valid password 123",
+          "organization_name" => "Demo Org",
+          "organization_alias" => "   "
+        })
+
+      assert changeset.valid?
+      assert get_field(changeset, :organization_alias) == nil
+    end
+
+    test "maps an unsluggable generated candidate to organization_alias and keeps the field blank" do
+      changeset =
+        FirstAdminForm.changeset(%{
+          "email" => "admin@example.com",
+          "password" => "valid password 123",
+          "password_confirmation" => "valid password 123",
+          "organization_name" => "!!!",
+          "organization_alias" => ""
+        })
+
+      refute changeset.valid?
+      assert errors_on(changeset) == %{organization_alias: ["can't be blank"]}
+      assert get_field(changeset, :organization_alias) == nil
+      assert get_field(changeset, :organization_name) == "!!!"
+    end
+
+    test "reports an over-long generated candidate on organization_alias" do
+      changeset =
+        FirstAdminForm.changeset(%{
+          "email" => "admin@example.com",
+          "password" => "valid password 123",
+          "password_confirmation" => "valid password 123",
+          "organization_name" => String.duplicate("a", 256),
+          "organization_alias" => ""
+        })
+
+      refute changeset.valid?
+
+      assert errors_on(changeset) == %{
+               organization_name: ["should be at most 255 character(s)"],
+               organization_alias: ["should be at most 255 character(s)"]
+             }
+    end
+
+    test "reports an over-long explicit alias through the existing authority" do
+      changeset =
+        FirstAdminForm.changeset(%{
+          "email" => "admin@example.com",
+          "password" => "valid password 123",
+          "password_confirmation" => "valid password 123",
+          "organization_name" => "Demo Org",
+          "organization_alias" => String.duplicate("a", 256)
+        })
+
+      refute changeset.valid?
+      assert errors_on(changeset) == %{organization_alias: ["should be at most 255 character(s)"]}
+    end
   end
 
   describe "registration_attrs/1" do
@@ -126,6 +202,54 @@ defmodule GtfsPlanner.Accounts.FirstAdminFormTest do
       assert_raise FunctionClauseError, fn ->
         FirstAdminForm.registration_attrs(changeset)
       end
+    end
+
+    test "uses the organization name as the alias candidate for a blank alias" do
+      changeset =
+        FirstAdminForm.changeset(%{
+          "email" => "admin@example.com",
+          "password" => "valid password 123",
+          "password_confirmation" => "valid password 123",
+          "organization_name" => "Demo Org",
+          "organization_alias" => ""
+        })
+
+      assert FirstAdminForm.registration_attrs(changeset) == %{
+               user: %{email: "admin@example.com", password: "valid password 123"},
+               organization: %{name: "Demo Org", alias: "Demo Org"}
+             }
+    end
+
+    test "uses the organization name as the alias candidate for a whitespace-only alias" do
+      changeset =
+        FirstAdminForm.changeset(%{
+          "email" => "admin@example.com",
+          "password" => "valid password 123",
+          "password_confirmation" => "valid password 123",
+          "organization_name" => "Demo Org",
+          "organization_alias" => " \t "
+        })
+
+      assert FirstAdminForm.registration_attrs(changeset) == %{
+               user: %{email: "admin@example.com", password: "valid password 123"},
+               organization: %{name: "Demo Org", alias: "Demo Org"}
+             }
+    end
+
+    test "keeps an explicit alias authoritative over the organization name" do
+      changeset =
+        FirstAdminForm.changeset(%{
+          "email" => "admin@example.com",
+          "password" => "valid password 123",
+          "password_confirmation" => "valid password 123",
+          "organization_name" => "Demo Org",
+          "organization_alias" => "Custom Alias"
+        })
+
+      assert FirstAdminForm.registration_attrs(changeset) == %{
+               user: %{email: "admin@example.com", password: "valid password 123"},
+               organization: %{name: "Demo Org", alias: "Custom Alias"}
+             }
     end
   end
 
@@ -326,6 +450,33 @@ defmodule GtfsPlanner.Accounts.FirstAdminFormTest do
       paramless = Ecto.Changeset.change(%FirstAdminForm{})
 
       assert FirstAdminForm.sanitize_secrets(paramless).params == nil
+    end
+
+    test "keeps a blank alias visibly blank while removing secrets from a failed submit" do
+      changeset =
+        FirstAdminForm.changeset(%{
+          "email" => "admin@example.com",
+          "password" => "short",
+          "password_confirmation" => "short",
+          "organization_name" => "!!!",
+          "organization_alias" => ""
+        })
+
+      sanitized = FirstAdminForm.sanitize_secrets(changeset)
+
+      assert sanitized.params == %{
+               "email" => "admin@example.com",
+               "organization_name" => "!!!",
+               "organization_alias" => ""
+             }
+
+      assert sanitized.changes == %{email: "admin@example.com", organization_name: "!!!"}
+      assert get_field(sanitized, :organization_alias) == nil
+
+      assert errors_on(sanitized) == %{
+               password: ["should be at least 12 character(s)"],
+               organization_alias: ["can't be blank"]
+             }
     end
   end
 end

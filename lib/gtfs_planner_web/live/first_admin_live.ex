@@ -17,7 +17,7 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
     <Layouts.auth flash={@flash}>
       <div id="first-admin-page" phx-hook=".FirstAdminErrorFocus">
         <.header class="text-center">
-          Welcome to Pathways Studio
+          Create administrator account
           <:subtitle>Set up your administrator account and organization</:subtitle>
         </.header>
 
@@ -42,61 +42,77 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
           </ul>
         </section>
 
-        <.form for={@form} id="first_admin_form" phx-change="validate" phx-submit="setup">
-          <div class="space-y-6">
-            <.input
-              field={@form[:email]}
-              id="first-admin-email"
-              type="email"
-              label="Email"
-              placeholder="admin@company.com"
-              required
-            />
-            <.input
-              field={@form[:password]}
-              id="first-admin-password"
-              type="password"
-              label="Password"
-              errors={@password_errors}
-              required
-            />
-            <.input
-              field={@form[:password_confirmation]}
-              id="first-admin-password-confirmation"
-              type="password"
-              label="Confirm password"
-              errors={@password_confirmation_errors}
-              required
-            />
-            <.input
-              field={@form[:organization_name]}
-              id="first-admin-organization-name"
-              type="text"
-              label="Organization name"
-              placeholder="My Transit Agency"
-              required
-            />
-            <.input
-              field={@form[:organization_alias]}
-              id="first-admin-organization-alias"
-              type="text"
-              label="Organization alias (optional)"
-              placeholder="my-transit-agency"
-              help="Used in URLs, e.g., /gtfs/my-transit-agency"
-            />
-          </div>
-          <div class="mt-8">
+        <.simple_form
+          for={@form}
+          id="first_admin_form"
+          phx-change="validate"
+          phx-submit="setup"
+          class="phx-submit-loading:opacity-60"
+        >
+          <.input
+            field={@form[:email]}
+            id="first-admin-email"
+            type="email"
+            label="Email"
+            placeholder="admin@company.com"
+            phx-debounce="blur"
+            phx-blur="validate"
+            required
+          />
+          <.input
+            field={@form[:password]}
+            id="first-admin-password"
+            type="password"
+            label="Password"
+            help="Use 12–72 characters."
+            errors={@password_errors}
+            phx-debounce="blur"
+            phx-blur="validate"
+            required
+          />
+          <.input
+            field={@form[:password_confirmation]}
+            id="first-admin-password-confirmation"
+            type="password"
+            label="Confirm password"
+            help="Must match the password above."
+            errors={@password_confirmation_errors}
+            phx-debounce="blur"
+            phx-blur="validate"
+            required
+          />
+          <.input
+            field={@form[:organization_name]}
+            id="first-admin-organization-name"
+            type="text"
+            label="Organization name"
+            placeholder="My Transit Agency"
+            phx-debounce="blur"
+            phx-blur="validate"
+            required
+          />
+          <.input
+            field={@form[:organization_alias]}
+            id="first-admin-organization-alias"
+            type="text"
+            label="Organization alias (optional)"
+            placeholder="my-transit-agency"
+            help="Unique identifier for your organization. Leave blank to generate it from the organization name."
+            phx-debounce="blur"
+            phx-blur="validate"
+          />
+          <:actions>
             <.button
               id="first-admin-submit"
               type="submit"
-              phx-disable-with="Setting up..."
+              phx-disable-with="Creating account…"
               class="w-full"
               variant="primary"
             >
               Create administrator account
             </.button>
-          </div>
-        </.form>
+          </:actions>
+        </.simple_form>
       </div>
 
       <script :type={Phoenix.LiveView.ColocatedHook} name=".FirstAdminErrorFocus">
@@ -127,7 +143,7 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
     else
       {:ok,
        socket
-       |> assign(page_title: "Setup Administrator")
+       |> assign(page_title: "Create administrator account")
        |> assign_form(Accounts.change_first_admin())}
     end
   end
@@ -141,10 +157,21 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
     {:noreply, assign_form(socket, changeset)}
   end
 
+  # `phx-blur` payloads carry only event metadata (`%{"key" => _, "value" => _}`), never
+  # form values. The `phx-debounce="blur"` form change that accompanies every field blur
+  # delivers the values and is handled by the clause above, so metadata-only payloads
+  # intentionally change nothing.
+  def handle_event("validate", _params, socket) do
+    {:noreply, socket}
+  end
+
   def handle_event("setup", %{"admin" => admin_params}, socket) do
     case Accounts.register_first_admin(admin_params) do
       {:ok, _user} ->
-        {:noreply, redirect(socket, to: ~p"/users/log_in")}
+        {:noreply,
+         socket
+         |> put_flash(:info, "Administrator account created. Log in to continue.")
+         |> redirect(to: ~p"/users/log_in")}
 
       {:error, changeset} ->
         changeset = FirstAdminForm.sanitize_secrets(changeset)

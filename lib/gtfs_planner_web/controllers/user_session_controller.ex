@@ -19,10 +19,7 @@ defmodule GtfsPlannerWeb.UserSessionController do
       complete_login(conn, user, user_params, nil)
     else
       # In order to prevent user enumeration attacks, don't disclose whether the email is registered.
-      conn
-      |> put_flash(:error, "Invalid email or password")
-      |> put_flash(:email, String.slice(email, 0, 160))
-      |> redirect(to: ~p"/users/log_in")
+      reject_login(conn, "invalid_credentials", email)
     end
   end
 
@@ -77,24 +74,27 @@ defmodule GtfsPlannerWeb.UserSessionController do
 
       case UserAuth.log_in_user(attempt_conn, user, params) do
         {:error, :deactivated} ->
-          conn
-          |> put_flash(
-            :error,
-            "Your account has been deactivated. Contact your administrator."
-          )
-          |> redirect(to: ~p"/users/log_in")
+          reject_login(conn, "deactivated", user.email)
 
         %Plug.Conn{} = conn ->
           conn
       end
     else
       # User has no organization membership and is not an administrator
-      conn
-      |> put_flash(
-        :error,
-        "Your account has no organization assigned. Contact an administrator."
-      )
-      |> redirect(to: ~p"/users/log_in")
+      reject_login(conn, "organization_required", user.email)
     end
+  end
+
+  # Bounded native-login rejection shared by every policy branch: one exact
+  # recovery code plus the email truncated to 160 characters. A synchronous
+  # rejection never sets a global :error flash and never passes prose or
+  # markup to the view; UserLoginLive maps known codes to fixed copy. The
+  # policy codes are only issued after the credential check succeeds, so an
+  # unknown email and a wrong password share the identical recovery state.
+  defp reject_login(conn, code, email) do
+    conn
+    |> put_flash(:login_recovery, code)
+    |> put_flash(:email, String.slice(email, 0, 160))
+    |> redirect(to: ~p"/users/log_in")
   end
 end

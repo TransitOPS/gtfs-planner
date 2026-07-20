@@ -16,10 +16,13 @@
 
 alias GtfsPlanner.Accounts
 alias GtfsPlanner.Accounts.User
+alias GtfsPlanner.Accounts.UserToken
 alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Repo
 alias GtfsPlanner.Versions
+
+import Ecto.Query
 
 # ── Admin user (existing, used by overlays.spec.js) ──
 case Accounts.register_first_admin(%{
@@ -162,6 +165,167 @@ case Accounts.register_first_admin(%{
     end)
 
     IO.puts("Browser seed: long-name routes for reflow tests")
+
+    # ── Auth fixtures for authentication.spec.js (Package 10) ──
+    #
+    # Deterministic, test-only token fixtures. Each raw value is a fixed
+    # 32-byte binary; only its SHA-256 digest is persisted (production-shaped
+    # `%UserToken{token: <digest>}`), and the unpadded URL-safe Base64 of the
+    # raw value is mirrored verbatim in assets/e2e/authentication.spec.js so
+    # token URLs are reproducible without parsing mail or passing seed output
+    # between processes. One user/token per destructive case; expired rows are
+    # backdated beyond their context validity window (reset_password 1 day,
+    # confirm/invite 7 days). The replay cases reuse the valid token URL after
+    # the valid case consumes it, proving one-use semantics.
+    auth_insert_token = fn user, context, encoded, backdate ->
+      raw = Base.url_decode64!(encoded, padding: false)
+      digest = :crypto.hash(:sha256, raw)
+
+      token =
+        Repo.insert!(%UserToken{
+          token: digest,
+          context: context,
+          sent_to: user.email,
+          user_id: user.id
+        })
+
+      if backdate do
+        # update_all bypasses timestamp autogenerate so the expired row keeps
+        # its deterministic past inserted_at.
+        {1, _} =
+          from(t in GtfsPlanner.Accounts.UserToken, where: t.id == ^token.id)
+          |> Repo.update_all(set: [inserted_at: backdate])
+      end
+
+      token
+    end
+
+    auth_now = DateTime.utc_now()
+    # Beyond the 1-day reset_password window.
+    auth_expired_reset = DateTime.add(auth_now, -2, :day)
+    # Beyond the 7-day confirm/invite window.
+    auth_expired_week = DateTime.add(auth_now, -8, :day)
+
+    # Login recovery: deactivated member (valid credentials, deactivated membership).
+    {:ok, auth_deactivated} =
+      Accounts.register_user(%{
+        email: "auth-deactivated@gtfs-planner.test",
+        password: "AuthDeactivated123!"
+      })
+
+    Repo.update!(User.confirm_changeset(auth_deactivated))
+
+    {:ok, _auth_deactivated_membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: auth_deactivated.id,
+        organization_id: org.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+    {:ok, _} = Organizations.deactivate_user_in_organization(auth_deactivated.id, org.id)
+    IO.puts("Browser seed: auth deactivated user #{auth_deactivated.email}")
+
+    # Login recovery: confirmed user with no organization membership.
+    {:ok, auth_noorg} =
+      Accounts.register_user(%{
+        email: "auth-noorg@gtfs-planner.test",
+        password: "AuthNoOrg123!"
+      })
+
+    Repo.update!(User.confirm_changeset(auth_noorg))
+    IO.puts("Browser seed: auth no-org user #{auth_noorg.email}")
+
+    # Reset password: valid (consumed by the success case, replayed after).
+    {:ok, auth_reset} =
+      Accounts.register_user(%{
+        email: "auth-reset@gtfs-planner.test",
+        password: "AuthReset123!"
+      })
+
+    Repo.update!(User.confirm_changeset(auth_reset))
+
+    auth_insert_token.(
+      auth_reset,
+      "reset_password",
+      "YXV0aC1yZXNldC12YWxpZDAwMDAwMDAwMDAwMDAwMDA",
+      nil
+    )
+
+    IO.puts("Browser seed: auth reset user #{auth_reset.email}")
+
+    # Reset password: expired token (backdated beyond the 1-day window).
+    {:ok, auth_reset_expired} =
+      Accounts.register_user(%{
+        email: "auth-reset-expired@gtfs-planner.test",
+        password: "AuthResetExpired123!"
+      })
+
+    Repo.update!(User.confirm_changeset(auth_reset_expired))
+
+    auth_insert_token.(
+      auth_reset_expired,
+      "reset_password",
+      "YXV0aC1yZXNldC1leHBpcmVkMDAwMDAwMDAwMDAwMDA",
+      auth_expired_reset
+    )
+
+    IO.puts("Browser seed: auth reset-expired user #{auth_reset_expired.email}")
+
+    # Confirmation: valid (unconfirmed user; consumed by the success case, replayed after).
+    {:ok, auth_confirm} =
+      Accounts.register_user(%{
+        email: "auth-confirm@gtfs-planner.test",
+        password: "AuthConfirm123!"
+      })
+
+    auth_insert_token.(
+      auth_confirm,
+      "confirm",
+      "YXV0aC1jb25maXJtLXZhbGlkMDAwMDAwMDAwMDAwMDA",
+      nil
+    )
+
+    IO.puts("Browser seed: auth confirm user #{auth_confirm.email}")
+
+    # Confirmation: expired token (backdated beyond the 7-day window).
+    {:ok, auth_confirm_expired} =
+      Accounts.register_user(%{
+        email: "auth-confirm-expired@gtfs-planner.test",
+        password: "AuthConfirmExpired123!"
+      })
+
+    auth_insert_token.(
+      auth_confirm_expired,
+      "confirm",
+      "YXV0aC1jb25maXJtLWV4cGlyZWQwMDAwMDAwMDAwMDA",
+      auth_expired_week
+    )
+
+    IO.puts("Browser seed: auth confirm-expired user #{auth_confirm_expired.email}")
+
+    # Invitation: valid (invited user without a password; consumed, then replayed).
+    {:ok, auth_invite} =
+      %User{}
+      |> User.invite_changeset(%{email: "auth-invite@gtfs-planner.test"})
+      |> Repo.insert()
+
+    auth_insert_token.(auth_invite, "invite", "YXV0aC1pbnZpdGUtdmFsaWQwMDAwMDAwMDAwMDAwMDA", nil)
+    IO.puts("Browser seed: auth invite user #{auth_invite.email}")
+
+    # Invitation: expired token (backdated beyond the 7-day window).
+    {:ok, auth_invite_expired} =
+      %User{}
+      |> User.invite_changeset(%{email: "auth-invite-expired@gtfs-planner.test"})
+      |> Repo.insert()
+
+    auth_insert_token.(
+      auth_invite_expired,
+      "invite",
+      "YXV0aC1pbnZpdGUtZXhwaXJlZDAwMDAwMDAwMDAwMDA",
+      auth_expired_week
+    )
+
+    IO.puts("Browser seed: auth invite-expired user #{auth_invite_expired.email}")
 
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"

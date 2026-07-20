@@ -128,6 +128,21 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
       assert has_element?(view, "#password-new-password")
       assert has_element?(view, "#password-confirmation")
     end
+
+    test "new password input has help text with describedby association", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, html} = live(conn, ~p"/users/settings")
+
+      assert has_element?(view, "#password-new-password-help")
+      assert html =~ "Use 12–72 characters."
+
+      assert has_element?(
+               view,
+               ~s(#password-new-password[aria-describedby="password-new-password-help"])
+             )
+    end
   end
 
   describe "validate handlers / form isolation" do

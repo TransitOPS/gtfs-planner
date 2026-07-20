@@ -84,6 +84,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
                   id="password-new-password"
                   type="password"
                   label="New password"
+                  help="Use 12–72 characters."
                   autocomplete="new-password"
                   required
                 />
