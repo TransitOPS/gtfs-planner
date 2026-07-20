@@ -952,6 +952,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
     doc: "whether the active level has a diagram uploaded"
 
   attr :diagram_error, :string, default: nil, doc: "error message for diagram upload"
+  attr :upload_phase, :atom, default: :idle, doc: "server-owned diagram upload phase"
   slot :actions, doc: "contextual action buttons"
 
   def station_sub_nav(assigns) do
@@ -1067,12 +1068,25 @@ defmodule GtfsPlannerWeb.CoreComponents do
               </span>
             <% end %>
             <span :if={@diagram_error} class="text-error text-sm">{@diagram_error}</span>
+            <span
+              :if={@upload_phase in [:validating, :probing_candidate, :committing]}
+              id="diagram-upload-pending"
+              role="status"
+              aria-live="polite"
+              class="text-sm text-base-content/70"
+            >
+              {diagram_upload_pending_label(@upload_phase)}
+            </span>
           </div>
         </div>
       </div>
     </nav>
     """
   end
+
+  defp diagram_upload_pending_label(:validating), do: "Validating diagram…"
+  defp diagram_upload_pending_label(:probing_candidate), do: "Checking diagram readiness…"
+  defp diagram_upload_pending_label(:committing), do: "Replacing diagram…"
 
   defp sub_nav_link_class(is_active) do
     base =

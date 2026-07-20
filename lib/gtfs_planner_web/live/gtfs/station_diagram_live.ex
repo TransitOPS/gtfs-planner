@@ -13,6 +13,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.DiagramStorage
+  alias GtfsPlanner.Gtfs.DiagramUploadValidator
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
@@ -54,6 +55,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:level_id_manually_edited, false)
      |> assign(:pathway_error, nil)
      |> assign(:diagram_error, nil)
+     |> assign(:upload_phase, :idle)
+     |> assign(:pending_diagram_upload, nil)
+     |> assign(:diagram_replacement_confirmation, nil)
      |> assign(:confirmation, nil)
      |> assign(:pending_action, nil)
      |> assign(:confirmation_execution?, false)
@@ -126,6 +130,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     if same_station_already_loaded?(socket, stop_id) do
       {:noreply, maybe_open_child_stop_from_params(socket, params)}
     else
+      socket = discard_pending_diagram_upload(socket)
       load_station_and_levels(socket, stop_id, params)
     end
   end
@@ -183,6 +188,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:walkability_last_results, [])
           |> assign(:walkability_mode, :create)
           |> assign(:editing_walkability_test, nil)
+
+        socket = cleanup_stale_diagram_candidates(socket)
 
         socket = load_station_stop_levels_cache(socket)
 
@@ -269,6 +276,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       actor_email: actor_email
     }
   end
+
+  defp pending_diagram_upload_value(nil, _key), do: nil
+  defp pending_diagram_upload_value(pending, key), do: Map.get(pending, key)
 
   @impl true
   def handle_info(:clear_edit_child_stop_param, socket) do
@@ -857,6 +867,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             uploads={@uploads}
             has_diagram={not is_nil(@active_stop_level && @active_stop_level.diagram_filename)}
             diagram_error={@diagram_error}
+            upload_phase={@upload_phase}
           />
           <.diagram_action_strip
             mode={@mode}
@@ -1038,6 +1049,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {confirmation_value(@confirmation, :description)}
         </.confirm_dialog>
 
+        <%= if @diagram_replacement_confirmation do %>
+          <.confirm_dialog
+            id="diagram-replacement-confirmation"
+            open={true}
+            title="Replace diagram?"
+            confirm_label="Replace diagram"
+            pending_label="Replacing diagram…"
+            on_confirm="confirm_diagram_replacement"
+            on_cancel="cancel_diagram_replacement"
+            pending={@upload_phase in [:validating, :probing_candidate, :committing]}
+            return_focus_id="station-sub-nav-upload"
+            described_by="diagram-replacement-confirmation-body"
+          >
+            Replacing this diagram resets its calibration. Alignment and placed stop coordinates remain.
+          </.confirm_dialog>
+        <% end %>
+
+        <div
+          id="diagram-candidate-probe"
+          phx-hook="DiagramCandidateProbe"
+          phx-update="ignore"
+          aria-hidden="true"
+        >
+        </div>
+        <span
+          id="diagram-candidate-identity"
+          class="hidden"
+          data-candidate-ref={pending_diagram_upload_value(@pending_diagram_upload, :candidate_ref)}
+        >
+        </span>
+
         <.lists_section
           active_level={@active_level}
           child_stops_list={@child_stops_list}
@@ -1143,6 +1185,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       selected_level ->
         {:noreply,
          socket
+         |> discard_pending_diagram_upload()
          |> disable_measurement()
          |> assign(:active_level, selected_level)
          |> assign(:pending_xy, nil)
@@ -3058,8 +3101,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("upload_diagram", _params, socket) do
-    # Upload is handled by allow_upload progress callback when entries complete.
     {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("confirm_diagram_replacement", _params, socket) do
+    case socket.assigns.pending_diagram_upload do
+      %{entry_ref: _entry_ref} = pending
+      when socket.assigns.upload_phase == :awaiting_replacement_confirmation ->
+        {:noreply, stage_uploaded_diagram_candidate(socket, pending)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_diagram_replacement", _params, socket) do
+    {:noreply, discard_pending_diagram_upload(socket)}
+  end
+
+  @impl true
+  def handle_event("cancel_diagram_upload", %{"ref" => entry_ref}, socket) do
+    socket =
+      case socket.assigns.pending_diagram_upload do
+        %{entry_ref: ^entry_ref} -> discard_pending_diagram_upload(socket)
+        _ -> cancel_upload(socket, :diagram, entry_ref)
+      end
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("diagram_candidate_probe_result", params, socket) do
+    {:noreply, handle_diagram_candidate_probe_result(socket, params)}
   end
 
   @impl true
@@ -4513,109 +4588,282 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     }
   end
 
-  defp build_diagram_storage_filename(level_id, client_name) do
-    extension =
-      client_name
-      |> Path.extname()
-      |> String.downcase()
-      |> String.replace(~r/[^.a-z0-9]/, "")
-
-    safe_extension = if extension == "", do: ".bin", else: extension
-    safe_level_id = level_id |> to_string() |> String.replace(~r/[^A-Za-z0-9_-]/, "_")
-    token = System.unique_integer([:positive, :monotonic])
-
-    "lvl_#{safe_level_id}_#{token}#{safe_extension}"
-  end
-
   defp handle_diagram_upload_progress(:diagram, entry, socket) do
     socket =
-      if entry.done? do
-        persist_uploaded_diagram(socket, entry)
-      else
-        socket
+      cond do
+        not entry.done? -> assign(socket, :upload_phase, :uploading)
+        socket.assigns.upload_phase not in [:idle, :uploading, :failed, :succeeded] -> socket
+        true -> begin_diagram_upload(socket, entry)
       end
 
     {:noreply, socket}
   end
 
-  defp persist_uploaded_diagram(socket, entry) do
+  defp begin_diagram_upload(socket, entry) do
+    with {:ok, stop_level} <- active_stop_level_for_upload(socket) do
+      socket = assign(socket, :active_stop_level, stop_level)
+      pending = upload_identity(socket, stop_level, entry.ref)
+
+      if is_binary(stop_level.diagram_filename) and stop_level.diagram_filename != "" do
+        socket
+        |> assign(:upload_phase, :awaiting_replacement_confirmation)
+        |> assign(:pending_diagram_upload, pending)
+        |> assign(:diagram_replacement_confirmation, %{entry_ref: entry.ref})
+        |> assign(:diagram_error, nil)
+      else
+        stage_uploaded_diagram_candidate(socket, pending)
+      end
+    else
+      {:error, message} -> upload_failed(socket, message)
+    end
+  end
+
+  defp active_stop_level_for_upload(socket) do
     station = socket.assigns.station
     active_level = socket.assigns.active_level
 
     cond do
       is_nil(active_level) ->
-        assign(socket, :diagram_error, "No active level selected")
+        {:error, "Select a level before uploading a diagram."}
+
+      match?(%StopLevel{}, socket.assigns.active_stop_level) ->
+        {:ok, socket.assigns.active_stop_level}
 
       true ->
-        stop_level_result =
-          case socket.assigns.active_stop_level do
-            nil ->
-              Gtfs.create_stop_level(%{
-                stop_id: station.id,
-                level_id: active_level.id,
-                organization_id: socket.assigns.current_organization.id,
-                gtfs_version_id: socket.assigns.current_gtfs_version.id
-              })
-
-            existing ->
-              {:ok, existing}
-          end
-
-        case stop_level_result do
-          {:error, _changeset} ->
-            assign(socket, :diagram_error, "Failed to associate level with station")
-
-          {:ok, stop_level} ->
-            organization_id = socket.assigns.current_organization.id
-            gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-            case consume_uploaded_entry(socket, entry, fn %{path: path} ->
-                   storage_filename =
-                     build_diagram_storage_filename(stop_level.level_id, entry.client_name)
-
-                   # Route the manual write through DiagramStorage so it lands in the
-                   # immutable `<org>/<version>/<station>/<file>` namespace. A write for
-                   # the current published version can never alter another version's
-                   # bytes (INV-005).
-                   with true <- PathSafety.safe_path_component?(storage_filename),
-                        {:ok, binary} <- File.read(path),
-                        :ok <-
-                          DiagramStorage.store_import_image(
-                            to_string(organization_id),
-                            to_string(gtfs_version_id),
-                            station.stop_id,
-                            storage_filename,
-                            binary
-                          ) do
-                     {:ok, {:saved, storage_filename}}
-                   else
-                     false -> {:ok, {:error, :unsafe_path_component}}
-                     {:error, reason} -> {:ok, {:error, reason}}
-                   end
-                 end) do
-              {:saved, filename} when is_binary(filename) ->
-                persist_stop_level_diagram(socket, stop_level, filename)
-
-              {:error, _reason} ->
-                assign(socket, :diagram_error, "Invalid diagram upload path")
-
-              {:postpone, postponed_socket} ->
-                postponed_socket
-            end
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: active_level.id,
+          organization_id: socket.assigns.current_organization.id,
+          gtfs_version_id: socket.assigns.current_gtfs_version.id
+        })
+        |> case do
+          {:ok, stop_level} -> {:ok, stop_level}
+          {:error, _changeset} -> {:error, "Unable to prepare this level for a diagram."}
         end
     end
   end
 
-  defp persist_stop_level_diagram(socket, stop_level, filename) do
-    case Gtfs.update_stop_level_diagram(stop_level, filename) do
+  defp upload_identity(socket, stop_level, entry_ref) do
+    %{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      station_stop_id: socket.assigns.station.stop_id,
+      stop_level_id: stop_level.id,
+      entry_ref: entry_ref
+    }
+  end
+
+  defp stage_uploaded_diagram_candidate(socket, pending) do
+    socket =
+      socket
+      |> assign(:upload_phase, :validating)
+      |> assign(:pending_diagram_upload, pending)
+      |> assign(:diagram_replacement_confirmation, nil)
+      |> assign(:diagram_error, nil)
+
+    case find_upload_entry(socket, pending.entry_ref) do
+      nil -> upload_failed(socket, "The diagram upload is no longer available. Select it again.")
+      entry -> consume_and_stage_diagram_candidate(socket, entry, pending)
+    end
+  end
+
+  defp find_upload_entry(socket, entry_ref) do
+    Enum.find(socket.assigns.uploads.diagram.entries, &(&1.ref == entry_ref))
+  end
+
+  defp consume_and_stage_diagram_candidate(socket, entry, pending) do
+    case consume_uploaded_entry(socket, entry, fn %{path: path} ->
+           with {:ok, binary} <- File.read(path),
+                {:ok, %{extension: extension}} <-
+                  DiagramUploadValidator.validate(entry.client_name, binary),
+                {:ok, filename} <-
+                  DiagramStorage.store_candidate(
+                    pending.organization_id,
+                    pending.gtfs_version_id,
+                    pending.station_stop_id,
+                    extension,
+                    binary
+                  ) do
+             {:ok, {:candidate, filename}}
+           else
+             {:error, reason} -> {:ok, {:error, reason}}
+           end
+         end) do
+      {:candidate, filename} ->
+        stage_candidate_probe(socket, pending, filename)
+
+      {:error, reason} ->
+        Logger.warning("station diagram candidate validation failed: #{inspect(reason)}")
+        upload_failed(socket, "The selected file is not a valid PNG or JPEG diagram.")
+
+      {:postpone, postponed_socket} ->
+        postponed_socket
+    end
+  end
+
+  defp stage_candidate_probe(socket, pending, filename) do
+    if Versions.published_gtfs_version_for_org?(pending.organization_id, pending.gtfs_version_id) do
+      candidate_ref = Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+      pending = Map.merge(pending, %{candidate_filename: filename, candidate_ref: candidate_ref})
+
+      socket
+      |> assign(:upload_phase, :probing_candidate)
+      |> assign(:pending_diagram_upload, pending)
+      |> push_event("probe_diagram_candidate", %{
+        candidate_ref: candidate_ref,
+        url: candidate_url(pending, filename)
+      })
+    else
+      delete_candidate_and_fail(
+        socket,
+        pending,
+        filename,
+        "This version is not published. Select a diagram after publication."
+      )
+    end
+  end
+
+  defp candidate_url(pending, filename) do
+    station_dir = PathSafety.stop_storage_dir(pending.station_stop_id)
+
+    "/uploads/diagrams/#{pending.organization_id}/#{pending.gtfs_version_id}/#{station_dir}/#{URI.encode(filename)}?candidate=1"
+  end
+
+  defp handle_diagram_candidate_probe_result(socket, %{"candidate_ref" => ref, "result" => result})
+       when result in ["ready", "failed"] do
+    case socket.assigns.pending_diagram_upload do
+      %{candidate_ref: ^ref} = pending when socket.assigns.upload_phase == :probing_candidate ->
+        if pending_identity_current?(socket, pending) do
+          if result == "ready",
+            do: commit_diagram_candidate(socket, pending),
+            else:
+              delete_candidate_and_fail(
+                socket,
+                pending,
+                pending.candidate_filename,
+                "The diagram could not be opened. Select another file."
+              )
+        else
+          delete_candidate_and_reset(socket, pending)
+        end
+
+      _ ->
+        socket
+    end
+  end
+
+  defp handle_diagram_candidate_probe_result(socket, _params), do: socket
+
+  defp pending_identity_current?(socket, pending) do
+    current = socket.assigns
+
+    current.current_organization.id == pending.organization_id and
+      current.current_gtfs_version.id == pending.gtfs_version_id and
+      current.station.stop_id == pending.station_stop_id and
+      match?(%StopLevel{id: id} when id == pending.stop_level_id, current.active_stop_level)
+  end
+
+  defp commit_diagram_candidate(socket, pending) do
+    case DiagramStorage.commit_candidate(
+           socket.assigns.active_stop_level,
+           pending.candidate_filename
+         ) do
       {:ok, updated_stop_level} ->
         socket
         |> assign(:active_stop_level, updated_stop_level)
+        |> assign(:upload_phase, :succeeded)
+        |> assign(:pending_diagram_upload, nil)
         |> disable_measurement()
         |> assign(:diagram_error, nil)
 
-      {:error, _changeset} ->
-        assign(socket, :diagram_error, "Failed to save diagram")
+      {:error, _reason} ->
+        delete_candidate_and_fail(
+          socket,
+          pending,
+          pending.candidate_filename,
+          "The diagram could not be saved. Your previous diagram is unchanged."
+        )
+    end
+  end
+
+  defp discard_pending_diagram_upload(socket) do
+    socket
+    |> cleanup_pending_candidate()
+    |> cancel_pending_upload_entry()
+    |> assign(:upload_phase, :idle)
+    |> assign(:pending_diagram_upload, nil)
+    |> assign(:diagram_replacement_confirmation, nil)
+  end
+
+  defp delete_candidate_and_fail(socket, pending, filename, message) do
+    socket = delete_candidate(socket, pending, filename)
+    upload_failed(socket, message)
+  end
+
+  defp delete_candidate_and_reset(socket, pending) do
+    socket
+    |> delete_candidate(pending, pending.candidate_filename)
+    |> assign(:upload_phase, :idle)
+    |> assign(:pending_diagram_upload, nil)
+  end
+
+  defp upload_failed(socket, message) do
+    socket
+    |> assign(:upload_phase, :failed)
+    |> assign(:pending_diagram_upload, nil)
+    |> assign(:diagram_replacement_confirmation, nil)
+    |> assign(:diagram_error, message)
+  end
+
+  defp cleanup_pending_candidate(socket) do
+    case socket.assigns.pending_diagram_upload do
+      %{candidate_filename: filename} = pending -> delete_candidate(socket, pending, filename)
+      _ -> socket
+    end
+  end
+
+  defp delete_candidate(socket, pending, filename) do
+    case DiagramStorage.delete_unreferenced_candidate(
+           pending.organization_id,
+           pending.gtfs_version_id,
+           pending.station_stop_id,
+           filename
+         ) do
+      :ok ->
+        socket
+
+      {:error, reason} ->
+        Logger.warning("station diagram candidate cleanup failed: #{inspect(reason)}")
+        socket
+    end
+  end
+
+  defp cancel_pending_upload_entry(socket) do
+    case socket.assigns.pending_diagram_upload do
+      %{entry_ref: entry_ref} -> cancel_upload(socket, :diagram, entry_ref)
+      _ -> socket
+    end
+  end
+
+  defp cleanup_stale_diagram_candidates(socket) do
+    if connected?(socket) and socket.assigns[:station] do
+      cutoff = DateTime.add(DateTime.utc_now(), -86_400, :second)
+
+      case DiagramStorage.cleanup_stale_candidates(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             socket.assigns.station.stop_id,
+             cutoff
+           ) do
+        {:ok, _count} ->
+          socket
+
+        {:error, reason} ->
+          Logger.warning("station diagram stale candidate cleanup failed: #{inspect(reason)}")
+          socket
+      end
+    else
+      socket
     end
   end
 

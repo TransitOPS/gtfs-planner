@@ -8613,12 +8613,41 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       file_input(view, form_selector, :diagram, [
         %{
           name: filename,
-          content: content,
+          content: valid_png(content),
           type: "image/png"
         }
       ])
 
     render_upload(upload, filename)
+    confirm_uploaded_diagram(view)
+  end
+
+  defp confirm_uploaded_diagram(view) do
+    if has_element?(view, "#diagram-replacement-confirmation[data-open='true']") do
+      view
+      |> element("#diagram-replacement-confirmation-confirm")
+      |> render_click()
+    end
+
+    html = render(view)
+
+    case Regex.run(~r/data-candidate-ref="([^"]+)"/, html) do
+      [_, candidate_ref] ->
+        render_hook(view, "diagram_candidate_probe_result", %{
+          "candidate_ref" => candidate_ref,
+          "result" => "ready"
+        })
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp valid_png(content) do
+    padding = :binary.copy(<<0>>, 17)
+
+    <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, "IHDR", content::binary, padding::binary, 0,
+      0, 0, 0, "IEND", 174, 66, 96, 130>>
   end
 
   # ============================================================================
@@ -14214,7 +14243,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # The manual write lands only beneath the current published version.
       assert File.exists?(current_path)
-      assert File.read!(current_path) == "current-version payload"
+      assert File.read!(current_path) == valid_png("current-version payload")
 
       # The same station filename under the other version is never written.
       other_version_same_filename =

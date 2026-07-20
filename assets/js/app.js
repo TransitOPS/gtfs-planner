@@ -26,6 +26,7 @@ import {hooks as colocatedHooks} from "phoenix-colocated/gtfs_planner"
 import topbar from "../vendor/topbar.cjs"
 import GtfsVersionHook from "./gtfs_version_hook"
 import DiagramCanvasHook from "./diagram_canvas_hook"
+import DiagramCandidateProbe from "./diagram_candidate_probe_hook"
 import MapAlignmentHook from "./map_alignment_hook"
 import OverlayDialogHook from "./overlay_dialog_hook"
 import FormErrorFocusHook from "./form_error_focus_hook"
@@ -36,7 +37,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, MapAlignment: MapAlignmentHook, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, LiveSelect: LiveSelect.LiveSelect},
+  hooks: {...colocatedHooks, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, LiveSelect: LiveSelect.LiveSelect},
 })
 
 const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
