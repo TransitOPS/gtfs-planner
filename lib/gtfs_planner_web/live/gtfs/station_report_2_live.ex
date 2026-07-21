@@ -307,29 +307,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   @impl true
   def handle_event(
-        "toggle_connectivity_source_keydown",
-        %{"dimension" => dimension_str, "source_stop_id" => source_stop_id, "key" => key},
-        socket
-      ) do
-    if key in ["Enter", " ", "Space", "Spacebar"] do
-      member = {parse_dimension(dimension_str), source_stop_id}
-
-      {:noreply,
-       put_expansion(socket,
-         expanded_sources: toggle_member(socket.assigns.expanded_sources, member)
-       )}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  @impl true
-  def handle_event("toggle_connectivity_source_keydown", _params, socket) do
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_event(
         "toggle_route_expand",
         %{"source_id" => source_id, "target_id" => target_id},
         socket
@@ -472,23 +449,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         />
       </:sub_header>
 
-      <div class="hidden print:block print:font-bold print:text-2xl print:leading-[1.3] print:text-gray-900 print:mb-8 print:font-[Inter,ui-sans-serif,system-ui,sans-serif]">
-        <div>Pathways Report:</div>
-        <div :if={@station}>{@station.stop_name || @station.stop_id}</div>
-      </div>
-
       <div id="station-report-2" class="space-y-6">
         <.report_status state={@view_state} reason={@refresh_reason} error={@report_error} />
 
         <%= if @model do %>
-          <.report_toc station_name={@station.stop_name || @station.stop_id}>
+          <.report_toc station_name={@station.stop_name || @station.stop_id} model={@model}>
             <button
               id="report-expand-all"
               type="button"
+              data-report-control
               phx-click="toggle_expand_all"
               aria-expanded={to_string(@all_expanded)}
               aria-controls="station-report-2"
-              class="print:hidden inline-flex min-h-11 items-center gap-1.5 rounded border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+              class="print:hidden inline-flex min-h-11 items-center gap-1.5 border border-base-300 bg-base-100 px-3 py-1.5 text-sm font-medium motion-safe:transition-colors hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
             >
               <.icon
                 name={

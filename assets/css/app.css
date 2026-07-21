@@ -434,23 +434,40 @@ dialog[role="alertdialog"][open] > div > div {
   }
 }
 
-/* Print styles for Report 2 */
+/* ── Station report render modes ──
+   Screen and print render the same DOM from the same normalized model. Screen
+   disclosure decides only what is visible; these rules decide what a printed
+   report contains. Collapsed evidence carries its own `print:` utility, so a
+   freshly loaded report prints complete without any prior click. */
 @media print {
+  /* Application chrome, controls, and drawers are not evidence. */
   #app-header,
-  #sub-header-wrapper {
+  #sub-header-wrapper,
+  dialog,
+  #station-report-2 [data-report-control] {
     display: none !important;
   }
 
-  #station-report-2 section {
+  /* Break between sections, not before the first one — the previous rule left
+     page one blank. */
+  #station-report-2 > section + section {
     break-before: page;
   }
 
-  #station-report-2 *,
-  #station-report-2 *::before,
-  #station-report-2 *::after {
-    border-radius: 0 !important;
-    border-left: none !important;
-    border-right: none !important;
-    background-color: transparent !important;
+  /* Usable pagination: keep one check, one source, and one row intact, and
+     repeat table headers on every page they continue onto. */
+  #station-report-2 [data-check],
+  #station-report-2 [data-source-row],
+  #station-report-2 tr {
+    break-inside: avoid;
+  }
+
+  #station-report-2 thead {
+    display: table-header-group;
+  }
+
+  /* A local scroll region would otherwise clip its own printed rows. */
+  #station-report-2 [role="region"] {
+    overflow: visible !important;
   }
 }

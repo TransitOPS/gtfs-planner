@@ -262,7 +262,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
 
       assert has_element?(
                view,
-               "#connectivity-detail-entrance_to_platform-ENT_A[class*='print:table-row']"
+               "#connectivity-detail-entrance_to_platform-ENT_A[class*='print:block']"
              )
     end
 
@@ -652,7 +652,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       }
     end
 
-    test "reachable stairs-only route highlights row with red error styling and renders No", %{
+    test "a reachable stairs-only route states not accessible in words", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -670,56 +670,30 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       )
       |> render_click()
 
+      target = target_button("ENT_INACC", "PLAT_INACC")
+
+      # Accessibility is the shared three-state presentation, not a generic badge
+      # and never colour alone.
       assert has_element?(
                view,
-               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC'].bg-red-50"
+               "#{target} [data-accessibility='not_accessible']",
+               "Not accessible"
              )
 
-      assert has_element?(
-               view,
-               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC'].hover\\:bg-red-100"
-             )
+      assert has_element?(view, "#{target}[aria-expanded='false']")
 
-      row_html =
-        view
-        |> element(
-          "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC']"
-        )
-        |> render()
-
-      assert row_html =~ ~r/>\s*No\s*</
-
-      view
-      |> element(
-        "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC']"
-      )
-      |> render_click()
+      view |> element(target) |> render_click()
 
       assert has_element?(view, "#route-ENT_INACC-PLAT_INACC")
+      assert has_element?(view, "#{target}[aria-expanded='true']")
+      refute has_element?(view, "#route-ENT_INACC-PLAT_INACC[class*='hidden']")
 
-      assert has_element?(
-               view,
-               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC'].bg-red-50"
-             )
-
-      view
-      |> element(
-        "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC']"
-      )
-      |> render_click()
+      view |> element(target) |> render_click()
 
       # Collapsed on screen, still in the document for print.
       assert has_element?(view, "#route-ENT_INACC-PLAT_INACC[class*='hidden']")
-
-      assert has_element?(
-               view,
-               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC'][aria-expanded='false']"
-             )
-
-      assert has_element?(
-               view,
-               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_INACC'][phx-value-target_id='PLAT_INACC'].bg-red-50"
-             )
+      assert has_element?(view, "#route-ENT_INACC-PLAT_INACC[class*='print:block']")
+      assert has_element?(view, "#{target}[aria-expanded='false']")
     end
   end
 
@@ -866,5 +840,219 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
 
       assert has_element?(view, "#report2-reachability-connectivity")
     end
+
+    test "a dimension with no sources explains the gap instead of an empty table", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      for dimension <- [:entrance_to_platform, :platform_to_platform, :platform_to_exit] do
+        assert has_element?(view, "#connectivity-empty-#{dimension}"),
+               "expected an explained empty state for #{dimension}"
+      end
+
+      section_html = view |> element("#report2-reachability-connectivity") |> render()
+      refute section_html =~ ~r|<tbody[^>]*>\s*</tbody>|
+    end
+  end
+
+  describe "Connectivity presentation contracts" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_PRES",
+          stop_name: "Presentation Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      _level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L_PRES",
+          level_name: "Street",
+          level_index: 0.0
+        })
+
+      connected =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_FULL",
+          stop_name: "Connected Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L_PRES"
+        })
+
+      _orphan =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "ENT_NONE",
+          stop_name: "Orphan Entrance",
+          location_type: 2,
+          parent_station: station.stop_id,
+          level_id: "L_PRES"
+        })
+
+      plat_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_A",
+          stop_name: "Platform A",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L_PRES"
+        })
+
+      _plat_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "PLAT_B",
+          stop_name: "Platform B",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "L_PRES"
+        })
+
+      # ENT_FULL reaches PLAT_A only, so its row is partial; ENT_NONE reaches
+      # nothing, so its row is none. PLAT_A reaches no other platform.
+      _pw =
+        pathway_fixture(organization.id, gtfs_version.id, connected.stop_id, plat_a.stop_id, %{
+          pathway_id: "PW_PRES",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          traversal_time: 40
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station
+      }
+    end
+
+    test "reachability states are readable as words for partial and none", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(
+               view,
+               "[data-source-row='entrance_to_platform-ENT_FULL'] [data-reachability='partial']",
+               "Partially reachable"
+             )
+
+      assert has_element?(
+               view,
+               "[data-source-row='entrance_to_platform-ENT_NONE'] [data-reachability='none']",
+               "Not reachable"
+             )
+    end
+
+    test "a source row discloses through a real button, never an interactive row", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      button =
+        "button[phx-click='toggle_connectivity_source'][phx-value-dimension='entrance_to_platform'][phx-value-source_stop_id='ENT_FULL']"
+
+      assert has_element?(
+               view,
+               "#{button}[aria-expanded='false'][aria-controls='connectivity-detail-entrance_to_platform-ENT_FULL']"
+             )
+
+      view |> element(button) |> render_click()
+
+      assert has_element?(view, "#{button}[aria-expanded='true']")
+
+      refute has_element?(view, "#report2-reachability-connectivity tr[role='button']")
+      refute has_element?(view, "#report2-reachability-connectivity [phx-keydown]")
+    end
+
+    test "the dimension count strip reports sources, targets, and connected pairs", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      strip = "#connectivity-entrance_to_platform-counts"
+
+      assert has_element?(view, "#{strip}[data-role='count-strip'][data-mode='display']")
+      assert has_element?(view, "#{strip}-item-sources", "Sources")
+      assert has_element?(view, "#{strip}-item-targets", "Targets")
+      assert has_element?(view, "#{strip}-item-connected_pairs", "Connected pairs")
+      assert has_element?(view, "#{strip}-item-unreachable_pairs", "Unreachable pairs")
+      refute has_element?(view, "#{strip} button")
+    end
+
+    test "route totals and accessibility keep their calculated values", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      route_html = view |> element("#route-ENT_FULL-PLAT_A") |> render()
+
+      # 40s is the fixture's single traversal time; the presentation rewrite must
+      # not change what the Connectivity builder calculated.
+      assert route_html =~ "40s"
+
+      assert has_element?(
+               view,
+               "#{target_button("ENT_FULL", "PLAT_A")} [data-accessibility='accessible']",
+               "Accessible"
+             )
+
+      assert has_element?(
+               view,
+               "#{target_button("ENT_NONE", "PLAT_A")} [data-accessibility='unknown']",
+               "No data"
+             )
+    end
+  end
+
+  defp target_button(source_id, target_id) do
+    "button[phx-click='toggle_route_expand'][phx-value-source_id='#{source_id}'][phx-value-target_id='#{target_id}']"
   end
 end

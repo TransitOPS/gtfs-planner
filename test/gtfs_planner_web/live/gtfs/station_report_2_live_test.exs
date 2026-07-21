@@ -39,6 +39,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlannerWeb.Gtfs.StationReport2LiveTest.ControlledSnapshotSource
 
+  @long_stop_name "Northbound Interchange Concourse Generic Circulation Node Under Reconstruction"
+
   defp live_report(conn, path) do
     {:ok, view, _html} = live(conn, path)
     {view, render_async(view, 5_000)}
@@ -254,8 +256,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert html =~ "Unique stop IDs"
       assert html =~ "Minimum station children"
 
-      # Status badges render in data quality section
-      assert has_element?(view, "#report2-data-quality .bg-green-100", "Pass")
+      # Status is readable as a word, carried by the shared status vocabulary.
+      assert has_element?(view, "#report2-data-quality [data-status='pass']", "Pass")
     end
 
     test "GPS section renders real check rows", %{
@@ -277,8 +279,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert html =~ "Present"
       assert html =~ "Missing"
 
-      # GPS section has status badges
-      assert has_element?(view, "#report2-gps-checks .bg-green-100", "Pass")
+      # GPS section states each status in words
+      assert has_element?(view, "#report2-gps-checks [data-status='pass']", "Pass")
     end
 
     test "stop name links use phx-click select_entity", %{
@@ -499,7 +501,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert reloaded_stop.stop_name == "Changed Name"
     end
 
-    test "naming conventions section renders heading and summary", %{
+    test "naming conventions section renders heading and result counts", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -508,11 +510,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {_view, html} =
+      {view, html} =
         live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
       assert html =~ "Naming &amp; ID Conventions"
-      assert html =~ "of 6 checks failed"
+
+      # Result counts come from the shared count strip, in report vocabulary.
+      assert has_element?(view, "#naming-counts[data-role='count-strip'][data-mode='display']")
+      assert has_element?(view, "#naming-counts-item-passed", "Passed")
+      assert has_element?(view, "#naming-counts-item-failed", "Failed")
     end
 
     test "naming conventions section renders all 6 check rows", %{
@@ -564,7 +570,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       {view, _html} =
         live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
-      assert has_element?(view, "#report2-naming-conventions .bg-red-100", "FAIL")
+      assert has_element?(view, "#report2-naming-conventions [data-status='fail']", "Fail")
     end
 
     test "naming conventions passing check renders PASS badge", %{
@@ -579,7 +585,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       {view, _html} =
         live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
-      assert has_element?(view, "#report2-naming-conventions .bg-green-100", "PASS")
+      assert has_element?(view, "#report2-naming-conventions [data-status='pass']", "Pass")
     end
 
     test "naming conventions prefix mismatch includes expected prefix", %{
@@ -1214,7 +1220,292 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     end
   end
 
+  describe "report presentation contracts" do
+    setup %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      _level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "L1",
+          level_name: "Street",
+          level_index: 0.0
+        })
+
+      station = build_station(organization, gtfs_version, "STATION_1", "Station One")
+
+      # An isolated generic node whose name is long enough that any truncation
+      # would be visible, so "long values stay complete" is actually exercised.
+      _isolated =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "GEN_ISO_WITH_A_DELIBERATELY_LONG_IDENTIFIER",
+          stop_name: @long_stop_name,
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: "L1"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {view, _html} = live_report(conn, report_path(gtfs_version, station))
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        view: view
+      }
+    end
+
+    test "the report has one H1 and six peer section headings", ctx do
+      html = report_html(ctx)
+
+      assert count_occurrences(html, "<h1") == 1,
+             "the report must own exactly one H1"
+
+      assert count_occurrences(html, "<h2") == 6,
+             "the report must expose exactly six peer H2 sections"
+
+      view = ctx.view
+
+      for {id, title} <- [
+            {"report2-station-inventory", "Station Inventory"},
+            {"report2-data-quality", "Data Quality"},
+            {"report2-gps-checks", "GPS"},
+            {"report2-naming-conventions", "Naming"},
+            {"report2-reachability-connectivity", "Reachability"},
+            {"report2-pathway-field-completeness", "Pathway Field Completeness"}
+          ] do
+        assert has_element?(view, "##{id} > h2", title),
+               "expected #{id} to own an H2 titled #{title}"
+      end
+    end
+
+    test "check statuses are readable as words, not colour alone", ctx do
+      view = ctx.view
+
+      assert has_element?(
+               view,
+               "#report2-data-quality [data-check='isolated_nodes'] [data-status='fail']",
+               "Fail"
+             )
+
+      assert has_element?(
+               view,
+               "#report2-data-quality [data-check='duplicate_stop_ids'] [data-status='pass']",
+               "Pass"
+             )
+
+      assert has_element?(
+               view,
+               "#report2-naming-conventions [data-check='naming_node_prefix'] [data-status='fail']",
+               "Fail"
+             )
+    end
+
+    test "no literal status palette colours, raw SVG, or emoji remain in the report", ctx do
+      html = report_html(ctx)
+
+      for literal <- [
+            "bg-red-100",
+            "bg-green-100",
+            "bg-yellow-100",
+            "bg-emerald-50",
+            "bg-amber-50",
+            "text-teal-600",
+            "text-gray-500",
+            "text-red-700",
+            "text-green-800"
+          ] do
+        refute html =~ literal,
+               "report still renders the literal palette class #{literal}"
+      end
+
+      refute html =~ "<svg", "report still renders raw SVG instead of <.icon>"
+      refute html =~ "⚠", "report still renders an emoji as a meaningful glyph"
+    end
+
+    test "the report exposes a display-only count strip in report vocabulary", ctx do
+      view = ctx.view
+
+      assert has_element?(
+               view,
+               "#report-outcome-counts[data-role='count-strip'][data-mode='display']"
+             )
+
+      assert has_element?(view, "#report-outcome-counts-item-failed", "Failed")
+      assert has_element?(view, "#report-outcome-counts-item-passed", "Passed")
+      refute has_element?(view, "#report-outcome-counts button")
+    end
+
+    test "the report count strip agrees with the statuses the sections render", ctx do
+      html = report_html(ctx)
+
+      strip_failed =
+        ctx.view
+        |> element("#report-outcome-counts-item-failed [data-role='count-strip-value']")
+        |> render()
+        |> extract_integer()
+
+      rendered_failures = count_occurrences(html, ~s(data-status="fail"))
+
+      assert strip_failed == rendered_failures,
+             "count strip reports #{strip_failed} failures but #{rendered_failures} are rendered"
+
+      assert strip_failed > 0, "the fixture must produce at least one failing check"
+    end
+
+    test "long stop names stay complete and are never truncated", ctx do
+      view = ctx.view
+      html = report_html(ctx)
+
+      assert has_element?(
+               view,
+               "#check-detail-data-quality-isolated_nodes",
+               @long_stop_name
+             )
+
+      refute html =~ "truncate", "report still truncates a value instead of wrapping it"
+    end
+
+    test "no interactive table rows remain", ctx do
+      view = ctx.view
+
+      refute has_element?(view, "#station-report-2 tr[role='button']")
+      refute has_element?(view, "#station-report-2 tr[phx-click]")
+      refute has_element?(view, "#station-report-2 tr[tabindex]")
+    end
+
+    test "no table renders an empty body shell", ctx do
+      html = report_html(ctx)
+
+      refute html =~ ~r|<tbody[^>]*>\s*</tbody>|,
+             "a table renders an empty body instead of an explained empty state"
+    end
+
+    test "every disclosure control is print-excluded and carries a controlled region", ctx do
+      view = ctx.view
+      html = report_html(ctx)
+
+      controls =
+        ~r/<[a-z]+[^>]*data-report-control[^>]*>/
+        |> Regex.scan(html)
+        |> List.flatten()
+
+      assert controls != [], "the report renders no controls to exclude from print"
+
+      for control <- controls do
+        assert control =~ "print:hidden",
+               "a report control is not excluded from print: #{control}"
+      end
+
+      refute has_element?(
+               view,
+               "#station-report-2 button[aria-expanded]:not([aria-controls])"
+             )
+    end
+
+    test "collapsed disclosure regions stay in the document for print", ctx do
+      view = ctx.view
+
+      # A freshly loaded report has clicked nothing, yet every region is present
+      # and marked to reappear in print media.
+      assert has_element?(view, "[id^='check-detail-'][class*='print:']")
+      assert has_element?(view, "[id^='connectivity-detail-'][class*='print:block']")
+      assert has_element?(view, "[id^='route-'][class*='print:block']")
+      refute has_element?(view, "#station-report-2 [aria-expanded='true']")
+    end
+  end
+
+  describe "report empty states" do
+    setup %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_BARE",
+          stop_name: "Bare Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {view, _html} = live_report(conn, report_path(gtfs_version, station))
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        view: view
+      }
+    end
+
+    test "a station with no children explains every missing-data region", ctx do
+      view = ctx.view
+
+      assert has_element?(view, "#report2-levels-empty", "No levels")
+      assert has_element?(view, "#report2-pathway-field-completeness-empty", "No pathways")
+
+      for dimension <- [:entrance_to_platform, :platform_to_platform, :platform_to_exit] do
+        assert has_element?(view, "#connectivity-empty-#{dimension}"),
+               "expected an explained empty state for #{dimension}"
+      end
+    end
+
+    test "the ideal sections still render for a station with no children", ctx do
+      view = ctx.view
+
+      for id <- [
+            "report2-station-inventory",
+            "report2-data-quality",
+            "report2-gps-checks",
+            "report2-naming-conventions",
+            "report2-reachability-connectivity",
+            "report2-pathway-field-completeness"
+          ] do
+        assert has_element?(view, "##{id}")
+      end
+
+      refute report_html(ctx) =~ ~r|<tbody[^>]*>\s*</tbody>|
+    end
+
+    test "an empty report still reports zero counts rather than hiding the strip", ctx do
+      assert has_element?(ctx.view, "#report-outcome-counts-item-failed")
+      assert has_element?(ctx.view, "#report-outcome-counts-item-passed")
+    end
+  end
+
   # -- helpers --------------------------------------------------------------
+
+  defp report_html(%{view: view}) do
+    view |> element("#station-report-2") |> render()
+  end
+
+  defp count_occurrences(haystack, needle),
+    do: haystack |> :binary.matches(needle) |> length()
+
+  defp extract_integer(html) do
+    [value] = Regex.run(~r/(\d+)/, html, capture: :all_but_first)
+    String.to_integer(value)
+  end
 
   defp report_path(gtfs_version, station),
     do: "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report"
