@@ -95,10 +95,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       doc = LazyHTML.from_fragment(html)
 
       assert Enum.count(LazyHTML.query(doc, "h1")) == 1
-      assert Enum.count(LazyHTML.query(doc, "dl")) >= 1
-      assert Enum.count(LazyHTML.query(doc, "dt")) > 0
-      assert Enum.count(LazyHTML.query(doc, "dd")) > 0
-      assert Enum.count(LazyHTML.query(doc, "h3")) == 0
+      refute Enum.empty?(LazyHTML.query(doc, "dl"))
+      refute Enum.empty?(LazyHTML.query(doc, "dt"))
+      refute Enum.empty?(LazyHTML.query(doc, "dd"))
+      assert Enum.empty?(LazyHTML.query(doc, "h3"))
     end
 
     test "valid https URL renders as link with rel=noopener; malformed URL is plain text", %{
