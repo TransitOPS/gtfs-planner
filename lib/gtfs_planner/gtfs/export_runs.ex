@@ -1,0 +1,628 @@
+defmodule GtfsPlanner.Gtfs.ExportRuns do
+  @moduledoc """
+  Durable, tenant-scoped export transitions and download claims.
+
+  Workers own only a fenced generation/token. Artifact files remain private until
+  `mark_ready/5` commits verified metadata to the matching run row.
+  """
+
+  import Ecto.Query, warn: false
+
+  alias GtfsPlanner.Gtfs.Export.ArtifactStorage
+  alias GtfsPlanner.Gtfs.Export.Run
+  alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions.GtfsVersion
+
+  @type actor :: %{required(:id) => Ecto.UUID.t(), required(:email) => String.t()}
+
+  @lease_seconds Application.compile_env(:gtfs_planner, :export_run_lease_seconds, 300)
+  @download_claim_seconds Application.compile_env(
+                            :gtfs_planner,
+                            :export_download_claim_seconds,
+                            60
+                          )
+  @terminal_states [:ready, :failed, :interrupted, :cancelled, :expired]
+
+  @spec create_pending(Ecto.UUID.t(), Ecto.UUID.t(), actor(), :full | :pathways) ::
+          {:ok, Run.t()} | {:error, term()}
+  def create_pending(organization_id, version_id, actor, export_type)
+      when export_type in [:full, :pathways] do
+    transaction_with_broadcast(fn ->
+      if version_in_scope?(organization_id, version_id) do
+        lock_scope(organization_id, version_id, export_type)
+
+        case lock_active_run(organization_id, version_id, export_type) do
+          %Run{} = run ->
+            {{:ok, run}, []}
+
+          nil ->
+            attrs = %{
+              organization_id: organization_id,
+              gtfs_version_id: version_id,
+              actor_id: actor.id,
+              actor_email: actor.email,
+              export_type: export_type,
+              state: :pending,
+              phase: :preflight
+            }
+
+            case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
+              {:ok, run} -> {{:ok, run}, [run.id]}
+              {:error, changeset} -> {{:error, changeset}, []}
+            end
+        end
+      else
+        {{:error, :not_found}, []}
+      end
+    end)
+  end
+
+  def create_pending(_, _, _, _), do: {:error, :invalid_export_type}
+
+  @spec claim(Ecto.UUID.t(), Ecto.UUID.t(), :build) ::
+          {:ok, Run.t(), pos_integer(), Ecto.UUID.t()} | {:error, term()}
+  def claim(organization_id, run_id, :build) do
+    transaction_with_broadcast(fn ->
+      case lock_run(organization_id, run_id) do
+        %Run{} = run ->
+          claim_locked_run(organization_id, run, claimable?(run))
+
+        nil ->
+          {{:error, :not_found}, []}
+      end
+    end)
+  end
+
+  def claim(_, _, _), do: {:error, :invalid_operation}
+
+  defp claim_locked_run(organization_id, run, true) do
+    generation = run.lease_generation + 1
+    token = Ecto.UUID.generate()
+
+    {1, _} =
+      from(r in Run,
+        where: r.id == ^run.id and r.organization_id == ^organization_id,
+        update: [
+          set: [
+            state: :building,
+            phase: :preflight,
+            lease_generation: ^generation,
+            lease_token: ^token,
+            lease_expires_at:
+              fragment("CURRENT_TIMESTAMP + (? * interval '1 second')", ^@lease_seconds),
+            started_at: fragment("COALESCE(?, CURRENT_TIMESTAMP)", r.started_at),
+            updated_at: fragment("CURRENT_TIMESTAMP")
+          ]
+        ]
+      )
+      |> Repo.update_all([])
+
+    claimed = Repo.get!(Run, run.id)
+    {{:ok, claimed, generation, token}, [run.id]}
+  end
+
+  defp claim_locked_run(_organization_id, _run, false), do: {{:error, :invalid_transition}, []}
+
+  @spec renew_lease(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t()) ::
+          :ok | {:error, :lease_lost}
+  def renew_lease(organization_id, run_id, generation, token) do
+    transaction_with_broadcast(fn ->
+      case fenced_run(organization_id, run_id, generation, token) do
+        {:ok, run} ->
+          {1, _} =
+            from(r in Run,
+              where:
+                r.id == ^run.id and r.organization_id == ^organization_id and
+                  r.lease_generation == ^generation and r.lease_token == ^token and
+                  is_nil(r.cancel_requested_at) and
+                  r.lease_expires_at >= fragment("CURRENT_TIMESTAMP"),
+              update: [
+                set: [
+                  lease_expires_at:
+                    fragment("CURRENT_TIMESTAMP + (? * interval '1 second')", ^@lease_seconds),
+                  updated_at: fragment("CURRENT_TIMESTAMP")
+                ]
+              ]
+            )
+            |> Repo.update_all([])
+
+          {:ok, []}
+
+        {:error, _} ->
+          {{:error, :lease_lost}, []}
+      end
+    end)
+  end
+
+  @spec mark_ready(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t(), map()) ::
+          {:ok, Run.t()} | {:error, :lease_lost | term()}
+  def mark_ready(organization_id, run_id, generation, token, artifact) when is_map(artifact) do
+    transaction_with_broadcast(fn ->
+      with {:ok, run} <- fenced_run(organization_id, run_id, generation, token),
+           :ok <- matching_artifact?(run, artifact),
+           {:ok, _path} <- ArtifactStorage.verify(artifact),
+           {:ok, ready} <- ready_run(run, artifact) do
+        {{:ok, ready}, [run.id]}
+      else
+        {:error, :lease_lost} -> {{:error, :lease_lost}, []}
+        {:error, reason} -> {{:error, reason}, []}
+      end
+    end)
+  end
+
+  def mark_ready(_, _, _, _, _), do: {:error, :invalid_artifact}
+
+  @spec persist_warnings(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t(), [map()]) ::
+          {:ok, Run.t()} | {:error, :lease_lost | term()}
+  def persist_warnings(organization_id, run_id, generation, token, warnings)
+      when is_list(warnings) do
+    transaction_with_broadcast(fn ->
+      with {:ok, run} <- fenced_run(organization_id, run_id, generation, token),
+           {:ok, updated} <-
+             Repo.update(Run.system_changeset(run, %{warnings: warnings, phase: :packaging})) do
+        {{:ok, updated}, [run.id]}
+      else
+        {:error, :lease_lost} -> {{:error, :lease_lost}, []}
+        {:error, reason} -> {{:error, reason}, []}
+      end
+    end)
+  end
+
+  def persist_warnings(_, _, _, _, _), do: {:error, :invalid_warnings}
+
+  @spec fail_build(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t(), String.t()) ::
+          {:ok, Run.t()} | {:error, :lease_lost}
+  def fail_build(organization_id, run_id, generation, token, code) when is_binary(code) do
+    transaction_with_broadcast(fn ->
+      case lock_run(organization_id, run_id) do
+        %Run{} = run
+        when run.state == :building and run.lease_generation == generation and
+               run.lease_token == token ->
+          if lease_current?(run.id) do
+            state = if is_nil(run.cancel_requested_at), do: :failed, else: :cancelled
+
+            case close_build(run, state, String.slice(code, 0, 128)) do
+              {:ok, closed} -> {{:ok, closed}, [run.id]}
+              {:error, _} -> {{:error, :lease_lost}, []}
+            end
+          else
+            {{:error, :lease_lost}, []}
+          end
+
+        _ ->
+          {{:error, :lease_lost}, []}
+      end
+    end)
+  end
+
+  def fail_build(_, _, _, _, _), do: {:error, :lease_lost}
+
+  @spec request_cancel(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, term()}
+  def request_cancel(organization_id, run_id) do
+    transaction_with_broadcast(fn ->
+      case lock_run(organization_id, run_id) do
+        nil ->
+          {{:error, :not_found}, []}
+
+        %Run{state: :building, cancel_requested_at: nil} = run ->
+          {1, _} =
+            from(r in Run,
+              where: r.id == ^run.id and r.organization_id == ^organization_id,
+              update: [
+                set: [
+                  cancel_requested_at: fragment("CURRENT_TIMESTAMP"),
+                  updated_at: fragment("CURRENT_TIMESTAMP")
+                ]
+              ]
+            )
+            |> Repo.update_all([])
+
+          {{:ok, Repo.get!(Run, run.id)}, [run.id]}
+
+        %Run{state: :pending} = run ->
+          {1, _} =
+            from(r in Run,
+              where: r.id == ^run.id and r.organization_id == ^organization_id,
+              update: [
+                set: [
+                  state: :cancelled,
+                  phase: :cleanup,
+                  cancel_requested_at: fragment("CURRENT_TIMESTAMP"),
+                  started_at: fragment("CURRENT_TIMESTAMP"),
+                  finished_at: fragment("CURRENT_TIMESTAMP"),
+                  updated_at: fragment("CURRENT_TIMESTAMP")
+                ]
+              ]
+            )
+            |> Repo.update_all([])
+
+          {{:ok, Repo.get!(Run, run.id)}, [run.id]}
+
+        _ ->
+          {{:error, :invalid_transition}, []}
+      end
+    end)
+  end
+
+  @spec retry(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, term()}
+  def retry(organization_id, run_id) do
+    transaction_with_broadcast(fn ->
+      case lock_run(organization_id, run_id) do
+        %Run{state: state} = run when state in [:failed, :interrupted, :cancelled, :expired] ->
+          lock_scope(run.organization_id, run.gtfs_version_id, run.export_type)
+
+          case lock_active_run(run.organization_id, run.gtfs_version_id, run.export_type) do
+            nil ->
+              attrs = %{
+                organization_id: run.organization_id,
+                gtfs_version_id: run.gtfs_version_id,
+                actor_id: run.actor_id,
+                actor_email: run.actor_email,
+                version_name: run.version_name,
+                export_type: run.export_type,
+                state: :pending,
+                phase: :preflight
+              }
+
+              case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
+                {:ok, retry_run} -> {{:ok, retry_run}, [retry_run.id]}
+                {:error, changeset} -> {{:error, changeset}, []}
+              end
+
+            %Run{} ->
+              {{:error, :invalid_transition}, []}
+          end
+
+        nil ->
+          {{:error, :not_found}, []}
+
+        _ ->
+          {{:error, :invalid_transition}, []}
+      end
+    end)
+  end
+
+  @spec claim_download(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok,
+           %{path: String.t(), filename: String.t(), size: non_neg_integer(), sha256: String.t()}}
+          | {:error, :not_found}
+  def claim_download(organization_id, version_id, run_id) do
+    transaction_with_broadcast(fn ->
+      case lock_scoped_run(organization_id, version_id, run_id) do
+        %Run{state: :ready} = run ->
+          claim_ready_download(run)
+
+        _ ->
+          {{:error, :not_found}, []}
+      end
+    end)
+  end
+
+  @spec complete_download(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
+  def complete_download(organization_id, version_id, run_id) do
+    transaction_with_broadcast(fn ->
+      case lock_scoped_run(organization_id, version_id, run_id) do
+        %Run{state: :ready} = run ->
+          {_, _} =
+            from(r in Run,
+              where:
+                r.id == ^run.id and r.download_claimed_until >= fragment("CURRENT_TIMESTAMP"),
+              update: [
+                set: [download_claimed_until: nil, updated_at: fragment("CURRENT_TIMESTAMP")]
+              ]
+            )
+            |> Repo.update_all([])
+
+          {:ok, []}
+
+        _ ->
+          {:ok, []}
+      end
+    end)
+    |> case do
+      :ok -> :ok
+      _ -> :ok
+    end
+  end
+
+  @spec cleanup_expired(Ecto.UUID.t()) :: non_neg_integer()
+  def cleanup_expired(organization_id) do
+    transaction_with_broadcast(fn ->
+      runs =
+        from(r in Run,
+          where: r.organization_id == ^organization_id and r.state == :ready,
+          where: r.artifact_expires_at < fragment("CURRENT_TIMESTAMP"),
+          where:
+            is_nil(r.download_claimed_until) or
+              r.download_claimed_until < fragment("CURRENT_TIMESTAMP"),
+          lock: "FOR UPDATE"
+        )
+        |> Repo.all()
+
+      ids =
+        Enum.flat_map(runs, fn run ->
+          case expire_artifact(run) do
+            {:ok, _} -> [run.id]
+            _ -> []
+          end
+        end)
+
+      {length(ids), ids}
+    end)
+  end
+
+  @spec reconcile_expired(Ecto.UUID.t()) :: non_neg_integer()
+  def reconcile_expired(organization_id) do
+    transaction_with_broadcast(fn ->
+      runs =
+        from(r in Run,
+          where: r.organization_id == ^organization_id and r.state == :building,
+          where: r.lease_expires_at < fragment("CURRENT_TIMESTAMP"),
+          lock: "FOR UPDATE"
+        )
+        |> Repo.all()
+
+      ids =
+        Enum.flat_map(runs, fn run ->
+          state = if is_nil(run.cancel_requested_at), do: :interrupted, else: :cancelled
+
+          case close_build(run, state, "lease_expired") do
+            {:ok, _} -> [run.id]
+            _ -> []
+          end
+        end)
+
+      {length(ids), ids}
+    end)
+  end
+
+  @spec get_for_version(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) :: Run.t() | nil
+  def get_for_version(organization_id, version_id, run_id) do
+    from(r in Run,
+      where:
+        r.id == ^run_id and r.organization_id == ^organization_id and
+          r.gtfs_version_id == ^version_id
+    )
+    |> Repo.one()
+  end
+
+  @spec topic(Run.t() | Ecto.UUID.t()) :: String.t()
+  def topic(%Run{id: id}), do: topic(id)
+  def topic(run_id) when is_binary(run_id), do: "export-run:" <> run_id
+
+  defp ready_run(run, artifact) do
+    Repo.update(
+      Run.system_changeset(run, %{
+        state: :ready,
+        phase: :cleanup,
+        lease_token: nil,
+        lease_expires_at: nil,
+        artifact_key: artifact.key,
+        artifact_filename: artifact.filename,
+        artifact_sha256: artifact.sha256,
+        artifact_size_bytes: artifact.size,
+        artifact_expires_at: DateTime.add(DateTime.utc_now(), artifact_ttl_seconds()),
+        finished_at: DateTime.utc_now()
+      })
+    )
+  end
+
+  defp claim_ready_download(run) do
+    if artifact_current?(run) and download_claim_available?(run.id) do
+      artifact = artifact_from_run(run)
+
+      case ArtifactStorage.verify(artifact) do
+        {:ok, path} ->
+          {1, _} =
+            from(r in Run,
+              where:
+                r.id == ^run.id and r.state == :ready and
+                  r.artifact_expires_at >= fragment("CURRENT_TIMESTAMP"),
+              update: [
+                set: [
+                  download_claimed_until:
+                    fragment(
+                      "CURRENT_TIMESTAMP + (? * interval '1 second')",
+                      ^@download_claim_seconds
+                    ),
+                  download_count: r.download_count + 1,
+                  last_downloaded_at: fragment("CURRENT_TIMESTAMP"),
+                  updated_at: fragment("CURRENT_TIMESTAMP")
+                ]
+              ]
+            )
+            |> Repo.update_all([])
+
+          {{:ok,
+            %{
+              path: path,
+              filename: run.artifact_filename,
+              size: run.artifact_size_bytes,
+              sha256: run.artifact_sha256
+            }}, [run.id]}
+
+        {:error, :missing_or_corrupt_artifact} ->
+          _ = close_corrupt_artifact(run)
+          {{:error, :not_found}, [run.id]}
+      end
+    else
+      {{:error, :not_found}, []}
+    end
+  end
+
+  defp expire_artifact(run) do
+    artifact = artifact_from_run(run)
+    _ = ArtifactStorage.remove(artifact)
+
+    Repo.update(
+      Run.system_changeset(run, %{
+        state: :expired,
+        phase: :cleanup,
+        artifact_key: nil,
+        artifact_filename: nil,
+        artifact_sha256: nil,
+        artifact_size_bytes: nil,
+        artifact_expires_at: nil,
+        download_claimed_until: nil,
+        failure_code: "artifact_expired",
+        finished_at: DateTime.utc_now()
+      })
+    )
+  end
+
+  defp close_corrupt_artifact(run) do
+    _ = ArtifactStorage.remove(artifact_from_run(run))
+
+    Repo.update(
+      Run.system_changeset(run, %{
+        state: :failed,
+        phase: :cleanup,
+        artifact_key: nil,
+        artifact_filename: nil,
+        artifact_sha256: nil,
+        artifact_size_bytes: nil,
+        artifact_expires_at: nil,
+        download_claimed_until: nil,
+        failure_code: "missing_or_corrupt_artifact",
+        finished_at: DateTime.utc_now()
+      })
+    )
+  end
+
+  defp close_build(run, state, code) do
+    Repo.update(
+      Run.system_changeset(run, %{
+        state: state,
+        phase: :cleanup,
+        lease_token: nil,
+        lease_expires_at: nil,
+        failure_code: code,
+        finished_at: DateTime.utc_now()
+      })
+    )
+  end
+
+  defp matching_artifact?(run, artifact) do
+    if artifact.organization_id == run.organization_id and
+         artifact.gtfs_version_id == run.gtfs_version_id and artifact.run_id == run.id,
+       do: :ok,
+       else: {:error, :invalid_artifact}
+  end
+
+  defp artifact_current?(run) do
+    from(r in Run,
+      where:
+        r.id == ^run.id and r.state == :ready and
+          r.artifact_expires_at >= fragment("CURRENT_TIMESTAMP")
+    )
+    |> Repo.exists?()
+  end
+
+  defp download_claim_available?(run_id) do
+    from(r in Run,
+      where:
+        r.id == ^run_id and
+          (is_nil(r.download_claimed_until) or
+             r.download_claimed_until < fragment("CURRENT_TIMESTAMP"))
+    )
+    |> Repo.exists?()
+  end
+
+  defp artifact_from_run(run) do
+    %{
+      organization_id: run.organization_id,
+      gtfs_version_id: run.gtfs_version_id,
+      run_id: run.id,
+      key: run.artifact_key,
+      filename: run.artifact_filename,
+      sha256: run.artifact_sha256,
+      size: run.artifact_size_bytes
+    }
+  end
+
+  defp artifact_ttl_seconds do
+    Application.get_env(:gtfs_planner, :export_artifact_ttl_seconds, 86_400)
+  end
+
+  defp transaction_with_broadcast(fun) do
+    case Repo.transaction(fun) do
+      {:ok, {result, run_ids}} ->
+        Enum.uniq(run_ids)
+        |> Enum.each(
+          &Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, topic(&1), {:export_run_changed, &1})
+        )
+
+        result
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp lock_scope(organization_id, version_id, export_type) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      organization_id <> version_id <> Atom.to_string(export_type)
+    ])
+  end
+
+  defp version_in_scope?(organization_id, version_id) do
+    from(v in GtfsVersion, where: v.id == ^version_id and v.organization_id == ^organization_id)
+    |> Repo.exists?()
+  end
+
+  defp lock_active_run(organization_id, version_id, export_type) do
+    from(r in Run,
+      where:
+        r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id and
+          r.export_type == ^export_type and r.state not in ^@terminal_states,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  defp lock_run(organization_id, run_id) do
+    from(r in Run,
+      where: r.id == ^run_id and r.organization_id == ^organization_id,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  defp lock_scoped_run(organization_id, version_id, run_id) do
+    from(r in Run,
+      where:
+        r.id == ^run_id and r.organization_id == ^organization_id and
+          r.gtfs_version_id == ^version_id,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  defp claimable?(%Run{state: :pending, cancel_requested_at: nil}), do: true
+
+  defp claimable?(%Run{state: :building, cancel_requested_at: nil} = run) do
+    from(r in Run, where: r.id == ^run.id and r.lease_expires_at < fragment("CURRENT_TIMESTAMP"))
+    |> Repo.exists?()
+  end
+
+  defp claimable?(_), do: false
+
+  defp fenced_run(organization_id, run_id, generation, token) do
+    case lock_run(organization_id, run_id) do
+      %Run{} = run ->
+        if run.state == :building and run.lease_generation == generation and
+             run.lease_token == token and
+             is_nil(run.cancel_requested_at) and lease_current?(run.id),
+           do: {:ok, run},
+           else: {:error, :lease_lost}
+
+      nil ->
+        {:error, :not_found}
+    end
+  end
+
+  defp lease_current?(run_id) do
+    from(r in Run, where: r.id == ^run_id and r.lease_expires_at >= fragment("CURRENT_TIMESTAMP"))
+    |> Repo.exists?()
+  end
+end
