@@ -35,7 +35,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
       <%!-- Indent scale: card content ps-4, group tier ps-8, expanded route
             evidence ps-12. Backgrounds and rules stay full width; only the
             content indents, so depth reads at a glance. --%>
-      <div class="flex flex-wrap items-start justify-between gap-2 border-b border-base-300 bg-base-200 py-2.5 pe-4 ps-8">
+      <%!-- bg-base-300/50, not bg-base-200: the page body is base-200, so a
+            base-200 band inside a white card reads as a hole to the page and
+            de-emphasizes the group it is meant to announce. --%>
+      <div class="flex flex-wrap items-start justify-between gap-2 border-b border-base-300 bg-base-300/50 py-2.5 pe-4 ps-8">
         <div class="min-w-0">
           <div class="flex flex-wrap items-baseline gap-2">
             <h4 class="text-sm font-semibold break-words">{@group.source.name}</h4>
