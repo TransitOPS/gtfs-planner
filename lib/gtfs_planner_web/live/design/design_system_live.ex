@@ -28,6 +28,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
     %{slug: "tables", title: "Tables & Lists", group: "Components"},
     %{slug: "navigation", title: "Navigation", group: "Components"},
     %{slug: "badges", title: "Badges", group: "Components"},
+    %{slug: "counts", title: "Counts", group: "Components"},
     %{slug: "overlays", title: "Overlays", group: "Components"},
     %{slug: "autocomplete", title: "Autocomplete", group: "Components"},
     %{slug: "improvements", title: "Improvements", group: "Proposals"},
@@ -61,6 +62,8 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
      |> assign(:selected_result, nil)
      |> assign(:saved_locations, [])
      |> assign(:last_results, [])
+     |> assign(:count_strip_filter_key, "name")
+     |> assign(:count_strip_outcome, nil)
      |> assign(:filter_active, false)
      |> assign(:filter_inactive, true)
      |> assign(:view_mode, "list")
@@ -116,6 +119,27 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   # rendered by `ComponentPages.tables/1` — 5 pages.
   def handle_event("paginate", %{"page" => page}, socket) do
     {:noreply, assign(socket, :pagination_page, clamp_page(page))}
+  end
+
+  # The counts page's `<.count_strip>` filter demo, and the normative example of the
+  # consumer half of that contract. The strip dispatches whatever key it was given —
+  # a zero-count entry is `aria-disabled` but still focusable and clickable — so this
+  # handler is what refuses unknown and unavailable keys. It never converts the
+  # incoming key to an atom and never trusts it as a label.
+  def handle_event("count_strip_filter", %{"key" => key}, socket) do
+    available = Enum.filter(ComponentPages.history_filter_items(), &(&1.count > 0))
+
+    case Enum.find(available, &(&1.key == key)) do
+      nil ->
+        {:noreply,
+         assign(socket, :count_strip_outcome, "Ignored: no changes recorded for that field.")}
+
+      item ->
+        {:noreply,
+         socket
+         |> assign(:count_strip_filter_key, item.key)
+         |> assign(:count_strip_outcome, "Filtering by #{item.label}.")}
+    end
   end
 
   # The overlays page's `<.drawer>` demo. The drawer never closes itself: it renders
@@ -423,6 +447,8 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
   defp page_body(%{page: %{slug: "inputs"}} = assigns), do: ComponentPages.inputs(assigns)
 
   defp page_body(%{page: %{slug: "badges"}} = assigns), do: ComponentPages.badges(assigns)
+
+  defp page_body(%{page: %{slug: "counts"}} = assigns), do: ComponentPages.counts(assigns)
 
   defp page_body(%{page: %{slug: "tables"}} = assigns), do: ComponentPages.tables(assigns)
 

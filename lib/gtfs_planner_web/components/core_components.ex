@@ -1198,6 +1198,268 @@ defmodule GtfsPlannerWeb.CoreComponents do
     """
   end
 
+  @count_strip_tones [:neutral, :info, :success, :warning, :error]
+  @count_strip_required_fields [:key, :label, :count, :tone]
+  @count_strip_allowed_fields [:key, :label, :count, :tone, :disabled_reason]
+  @count_strip_key_format ~r/\A[A-Za-z0-9_-]+\z/
+
+  @count_strip_tone_classes %{
+    neutral: "bg-base-content/40",
+    info: "bg-info",
+    success: "bg-success",
+    warning: "bg-warning",
+    error: "bg-error"
+  }
+
+  @doc """
+  Renders a strip of labelled counts, either as read-only figures or as filters.
+
+  Shared structure only. The caller owns every word and every number: this
+  component never calculates counts, never maps a domain term to a label, and
+  never assigns meaning to a tone. `:tone` is wayfinding — the label always
+  carries the meaning, so a strip is readable without colour.
+
+  `event: nil` renders display-only non-buttons. A non-nil `event` renders one
+  native button per item carrying `aria-pressed`, `phx-click`, `phx-value-key`,
+  and the optional `phx-target`. `selected_key` decides which button is pressed;
+  every button always states `aria-pressed` so the state never appears or
+  disappears between renders.
+
+  A zero-count filter item stays present and keyboard-focusable and is marked
+  `aria-disabled="true"` with a dashed border; its count and any
+  `:disabled_reason` explain the unavailability on screen. Native `disabled` is
+  deliberately not used — it would remove the control from the tab order. A
+  focusable `aria-disabled` button can still dispatch, so **the consumer handler
+  must reject unknown and zero-count keys**; this component cannot.
+
+  Items are validated before rendering. An item that is not a map, is missing a
+  required field, carries an unsupported field, or holds an invalid key, label,
+  count, tone, or reason raises `ArgumentError`, as do duplicate keys, which
+  would produce duplicate DOM ids. Keys must match `[A-Za-z0-9_-]+` because each
+  one becomes the stable id `<id>-item-<key>` that tests and consumers query.
+
+      @type count_strip_item :: %{
+              required(:key) => String.t(),
+              required(:label) => String.t(),
+              required(:count) => non_neg_integer(),
+              required(:tone) => :neutral | :info | :success | :warning | :error,
+              optional(:disabled_reason) => String.t()
+            }
+
+  ## Examples
+
+      <.count_strip
+        id="report-counts"
+        items={[
+          %{key: "stops", label: "Stops", count: 128, tone: :neutral},
+          %{key: "missing_coordinates", label: "Missing coordinates", count: 3, tone: :warning}
+        ]}
+      />
+
+      <.count_strip
+        id="history-filter"
+        items={@field_counts}
+        selected_key={@selected_field}
+        event="filter_field"
+      />
+  """
+  attr :id, :string, required: true
+  attr :items, :list, required: true
+  attr :selected_key, :string, default: nil
+  attr :event, :string, default: nil
+  attr :target, :any, default: nil
+  attr :class, :any, default: nil
+
+  def count_strip(assigns) do
+    assigns = assign(assigns, :entries, normalize_count_strip_items(assigns.items, assigns.id))
+
+    ~H"""
+    <div
+      id={@id}
+      data-role="count-strip"
+      data-mode={if @event, do: "filter", else: "display"}
+      class={["flex flex-wrap items-center gap-2", @class]}
+    >
+      <%= if is_nil(@event) do %>
+        <span
+          :for={entry <- @entries}
+          id={entry.dom_id}
+          data-role="count-strip-item"
+          data-key={entry.key}
+          class="inline-flex max-w-full items-center gap-2 border border-base-300 bg-base-100 px-3 py-1.5 text-sm"
+        >
+          <.count_strip_body entry={entry} />
+        </span>
+      <% else %>
+        <button
+          :for={entry <- @entries}
+          id={entry.dom_id}
+          type="button"
+          data-role="count-strip-item"
+          data-key={entry.key}
+          aria-pressed={to_string(entry.key == @selected_key)}
+          aria-disabled={entry.unavailable? && "true"}
+          phx-click={@event}
+          phx-value-key={entry.key}
+          phx-target={@target}
+          class={[
+            "inline-flex min-h-11 min-w-11 max-w-full items-center gap-2 border px-3 py-1.5",
+            "text-left text-sm",
+            "motion-safe:transition-colors focus-visible:outline-none focus-visible:ring-2",
+            "focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
+            entry.key == @selected_key &&
+              "border-primary bg-primary font-semibold text-primary-content",
+            entry.key != @selected_key && entry.unavailable? &&
+              "border-dashed border-base-content/40 bg-base-100 text-base-content/70 cursor-not-allowed",
+            entry.key != @selected_key && !entry.unavailable? &&
+              "border-base-300 bg-base-100 text-base-content hover:border-primary"
+          ]}
+        >
+          <.count_strip_body entry={entry} />
+        </button>
+      <% end %>
+    </div>
+    """
+  end
+
+  attr :entry, :map, required: true
+
+  defp count_strip_body(assigns) do
+    ~H"""
+    <span
+      data-role="count-strip-tone"
+      class={["size-1.5 shrink-0 rounded-full", @entry.tone_class]}
+      aria-hidden="true"
+    >
+    </span>
+    <span data-role="count-strip-label" class="min-w-0 break-words">{@entry.label}</span>
+    <span data-role="count-strip-value" class="font-semibold tabular-nums">{@entry.count}</span>
+    <span
+      :if={@entry.disabled_reason}
+      data-role="count-strip-reason"
+      class="min-w-0 break-words text-xs font-normal"
+    >
+      {@entry.disabled_reason}
+    </span>
+    """
+  end
+
+  defp normalize_count_strip_items(items, id) when is_list(items) do
+    entries = Enum.map(items, &normalize_count_strip_item(&1, id))
+
+    duplicates =
+      entries
+      |> Enum.frequencies_by(& &1.key)
+      |> Enum.filter(fn {_key, count} -> count > 1 end)
+      |> Enum.map(&elem(&1, 0))
+
+    if duplicates != [] do
+      raise ArgumentError,
+            "count_strip #{inspect(id)} received duplicate item key(s) #{inspect(duplicates)}; " <>
+              "each key becomes a DOM id and must be unique"
+    end
+
+    entries
+  end
+
+  defp normalize_count_strip_items(items, id) do
+    raise ArgumentError,
+          "count_strip #{inspect(id)} expects :items to be a list, got: #{inspect(items)}"
+  end
+
+  defp normalize_count_strip_item(%{} = item, id) do
+    validate_count_strip_fields!(item, id)
+
+    key = validate_count_strip_key!(item.key, id)
+    count = validate_count_strip_count!(item.count, id)
+
+    %{
+      key: key,
+      label: validate_count_strip_label!(item.label, id),
+      count: count,
+      disabled_reason: validate_count_strip_reason!(Map.get(item, :disabled_reason), id),
+      dom_id: "#{id}-item-#{key}",
+      tone_class: count_strip_tone_class!(item.tone, id),
+      unavailable?: count == 0
+    }
+  end
+
+  defp normalize_count_strip_item(item, id) do
+    count_strip_error(id, "item must be a map, got: #{inspect(item)}")
+  end
+
+  defp validate_count_strip_fields!(item, id) do
+    fields = Map.keys(item)
+
+    case fields -- @count_strip_allowed_fields do
+      [] -> :ok
+      extra -> count_strip_error(id, "carries unsupported field(s) #{inspect(extra)}")
+    end
+
+    case @count_strip_required_fields -- fields do
+      [] -> :ok
+      missing -> count_strip_error(id, "is missing required field(s) #{inspect(missing)}")
+    end
+  end
+
+  defp validate_count_strip_key!(key, id) do
+    if is_binary(key) and Regex.match?(@count_strip_key_format, key) do
+      key
+    else
+      count_strip_error(
+        id,
+        ":key must be a non-empty string of letters, digits, hyphens, or underscores, " <>
+          "got: #{inspect(key)}"
+      )
+    end
+  end
+
+  defp validate_count_strip_label!(label, id) do
+    if is_binary(label) and String.trim(label) != "" do
+      label
+    else
+      count_strip_error(id, ":label must be a non-empty string, got: #{inspect(label)}")
+    end
+  end
+
+  defp validate_count_strip_count!(count, id) do
+    if is_integer(count) and count >= 0 do
+      count
+    else
+      count_strip_error(id, ":count must be a non-negative integer, got: #{inspect(count)}")
+    end
+  end
+
+  defp validate_count_strip_reason!(nil, _id), do: nil
+
+  defp validate_count_strip_reason!(reason, id) do
+    if is_binary(reason) and String.trim(reason) != "" do
+      reason
+    else
+      count_strip_error(
+        id,
+        ":disabled_reason must be a non-empty string when given, got: #{inspect(reason)}"
+      )
+    end
+  end
+
+  defp count_strip_tone_class!(tone, id) do
+    case Map.fetch(@count_strip_tone_classes, tone) do
+      {:ok, class} ->
+        class
+
+      :error ->
+        count_strip_error(
+          id,
+          ":tone must be one of #{inspect(@count_strip_tones)}, got: #{inspect(tone)}"
+        )
+    end
+  end
+
+  defp count_strip_error(id, message) do
+    raise ArgumentError, "count_strip #{inspect(id)} #{message}"
+  end
+
   @doc """
   Renders an empty state for a data view.
 

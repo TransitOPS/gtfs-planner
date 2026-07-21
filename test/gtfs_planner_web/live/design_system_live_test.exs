@@ -67,7 +67,7 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
     demo_form_submit paginate open_drawer close_drawer
     open_confirm cancel_confirm run_confirm confirm_success confirm_error
     live_select_change change address-form live_select_blur
-    save_location delete_location
+    save_location delete_location count_strip_filter
   )
 
   # The one geocoding result every autocomplete test searches for. Mirrors the shape
@@ -363,6 +363,150 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLiveTest do
              )
 
       assert has_element?(view, "#ds-transit-presentation-demo [data-pathway-summary]")
+    end
+  end
+
+  describe "counts page" do
+    test "renders the display-only report vocabulary as non-buttons", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/counts")
+
+      assert has_element?(view, "#ds-count-strip-report[data-mode=\"display\"]")
+      assert has_element?(view, "#ds-count-strip-report-item-stops", "Stops")
+      assert has_element?(view, "#ds-count-strip-report-item-stops", "128")
+      assert has_element?(view, "#ds-count-strip-report-item-missing_coordinates", "3")
+      refute has_element?(view, "#ds-count-strip-report button")
+      refute has_element?(view, "#ds-count-strip-report [aria-pressed]")
+    end
+
+    test "renders a zero display count without inventing a label", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/counts")
+
+      assert has_element?(view, "#ds-count-strip-report-item-unreachable_platforms", "0")
+    end
+
+    test "renders the filter vocabulary as buttons with explicit pressed state", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/counts")
+
+      assert has_element?(view, "#ds-count-strip-history[data-mode=\"filter\"]")
+
+      assert has_element?(
+               view,
+               "#ds-count-strip-history button#ds-count-strip-history-item-name[aria-pressed=\"true\"]"
+             )
+
+      assert has_element?(
+               view,
+               "#ds-count-strip-history-item-location[aria-pressed=\"false\"]"
+             )
+
+      assert has_element?(
+               view,
+               "#ds-count-strip-history-item-signposted_as[aria-pressed=\"false\"]"
+             )
+    end
+
+    test "renders a long filter label in full", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/counts")
+
+      assert has_element?(
+               view,
+               "#ds-count-strip-history-item-signposted_as",
+               "Parent station and pathway signposted name"
+             )
+    end
+
+    test "marks the zero-count filter item aria-disabled while keeping it focusable", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/counts")
+
+      selector = "#ds-count-strip-history-item-wheelchair_boarding"
+
+      assert has_element?(view, "#{selector}[aria-disabled=\"true\"]")
+      refute has_element?(view, "#{selector}[disabled]")
+      refute has_element?(view, "#{selector}[tabindex]")
+      assert has_element?(view, selector, "No changes in this version")
+    end
+
+    test "selecting an available key presses exactly that button", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/counts")
+
+      view |> element("#ds-count-strip-history-item-location") |> render_click()
+
+      assert has_element?(view, "#ds-count-strip-history-item-location[aria-pressed=\"true\"]")
+      assert has_element?(view, "#ds-count-strip-history-item-name[aria-pressed=\"false\"]")
+      assert has_element?(view, "#ds-count-strip-filter-outcome", "Location")
+    end
+
+    test "a zero-count click is dispatched but produces no accepted selection", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/counts")
+
+      view |> element("#ds-count-strip-history-item-location") |> render_click()
+      view |> element("#ds-count-strip-history-item-wheelchair_boarding") |> render_click()
+
+      assert has_element?(
+               view,
+               "#ds-count-strip-history-item-wheelchair_boarding[aria-pressed=\"false\"]"
+             )
+
+      assert has_element?(view, "#ds-count-strip-history-item-location[aria-pressed=\"true\"]")
+      assert has_element?(view, "#ds-count-strip-filter-outcome", "Ignored")
+    end
+
+    test "an unknown key is rejected by the consumer handler", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/counts")
+
+      render_click(view, "count_strip_filter", %{"key" => "not_a_field"})
+
+      assert has_element?(view, "#ds-count-strip-filter-outcome", "Ignored")
+      assert has_element?(view, "#ds-count-strip-history-item-name[aria-pressed=\"true\"]")
+      refute has_element?(view, "#ds-count-strip-history-item-not_a_field")
+    end
+
+    test "documents that the consumer owns labels, counts, and rejection", %{
+      conn: conn,
+      user: user
+    } do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/counts")
+
+      assert has_element?(view, "#ds-page-counts", "The component never calculates counts")
+      assert has_element?(view, "#ds-page-counts", "reject unknown or zero-count keys")
+    end
+
+    test "emits only events the LiveView handles", %{conn: conn, user: user} do
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/design/counts")
+
+      events = emitted_events(view, "#ds-page-counts")
+
+      assert "count_strip_filter" in events
+      assert Enum.all?(events, &(&1 in @handled_events))
     end
   end
 

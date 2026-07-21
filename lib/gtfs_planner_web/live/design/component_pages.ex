@@ -1526,6 +1526,129 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
     """
   end
 
+  @report_count_items [
+    %{key: "stops", label: "Stops", count: 128, tone: :neutral},
+    %{key: "pathways", label: "Pathways", count: 34, tone: :neutral},
+    %{key: "missing_coordinates", label: "Missing coordinates", count: 3, tone: :warning},
+    %{key: "unreachable_platforms", label: "Unreachable platforms", count: 0, tone: :neutral}
+  ]
+
+  @history_filter_items [
+    %{key: "name", label: "Name", count: 6, tone: :neutral},
+    %{key: "location", label: "Location", count: 2, tone: :info},
+    %{
+      key: "signposted_as",
+      label: "Parent station and pathway signposted name",
+      count: 1,
+      tone: :neutral
+    },
+    %{
+      key: "wheelchair_boarding",
+      label: "Wheelchair boarding",
+      count: 0,
+      tone: :neutral,
+      disabled_reason: "No changes in this version"
+    }
+  ]
+
+  @doc """
+  The filter vocabulary the Counts page renders.
+
+  `DesignSystemLive` validates every incoming `count_strip_filter` key against
+  this same list, which is the point of the demo: the strip dispatches whatever
+  key it was given, and the consumer decides what is acceptable.
+  """
+  def history_filter_items, do: @history_filter_items
+
+  @doc """
+  The shared `<.count_strip>` in display and filter modes, with selected, long-label,
+  and zero-count entries.
+  """
+  def counts(assigns) do
+    assigns =
+      assigns
+      |> assign(:report_count_items, @report_count_items)
+      |> assign(:history_filter_items, @history_filter_items)
+
+    ~H"""
+    <section id="ds-page-counts" class="max-w-4xl">
+      <h1 class="text-2xl font-bold">Counts</h1>
+      <p class="mt-2 text-base-content/70">
+        One strip of labelled counts, in two modes. The component owns structure,
+        interaction, and validation. The component never calculates counts and never
+        translates a domain term: the caller passes every label, number, and tone.
+      </p>
+
+      <h2 class="mt-8 text-lg font-semibold">Display</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        No <code class="font-mono text-sm">event</code>
+        means no buttons — figures only. Counts are tabular so digits line up between
+        entries. This is a station report vocabulary; nothing about it is built in.
+      </p>
+      <div class="mt-3 border border-base-300 p-4">
+        <.count_strip id="ds-count-strip-report" items={@report_count_items} />
+        <p class="mt-3">
+          <code
+            phx-no-curly-interpolation
+            class="ds-code-caption font-mono text-xs text-base-content/70"
+          >
+            &lt;.count_strip id="report-counts" items={[%{key: "stops", label: "Stops", count: 128, tone: :neutral}]} /&gt;
+          </code>
+        </p>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Filter</h2>
+      <p class="mt-1 text-sm text-base-content/60">
+        An <code class="font-mono text-sm">event</code>
+        turns each entry into a native button with <code class="font-mono text-sm">aria-pressed</code>, <code class="font-mono text-sm">phx-click</code>, and <code class="font-mono text-sm">phx-value-key</code>. This is a change-history
+        vocabulary — a second set of domain words over the same structure. The long
+        entry wraps rather than truncating; the zero entry stays in the tab order.
+      </p>
+      <div class="mt-3 border border-base-300 p-4">
+        <.count_strip
+          id="ds-count-strip-history"
+          items={@history_filter_items}
+          selected_key={@count_strip_filter_key}
+          event="count_strip_filter"
+        />
+        <p id="ds-count-strip-filter-outcome" class="mt-3 text-sm text-base-content/70">
+          {@count_strip_outcome || "Filtering by Name."}
+        </p>
+        <p class="mt-3">
+          <code
+            phx-no-curly-interpolation
+            class="ds-code-caption font-mono text-xs text-base-content/70"
+          >
+            &lt;.count_strip id="history-filter" items={@field_counts} selected_key={@selected_field} event="filter_field" /&gt;
+          </code>
+        </p>
+      </div>
+
+      <h2 class="mt-8 text-lg font-semibold">Use</h2>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-base-content/70">
+        <li>
+          The consumer owns the vocabulary. Pass the words your view already uses; do not
+          borrow error/warning/info as labels.
+        </li>
+        <li>
+          A zero entry is marked <code class="font-mono text-sm">aria-disabled</code>, not <code class="font-mono text-sm">disabled</code>: it stays focusable so a keyboard
+          user can read why it is unavailable. It still dispatches, so the handler must
+          reject unknown or zero-count keys on the server.
+        </li>
+        <li>
+          Tone is wayfinding, never the message. Every entry states its label and count in
+          words, so the strip reads correctly without colour.
+        </li>
+        <li>
+          A malformed item — wrong shape, extra field, negative count, unknown tone,
+          duplicate key — raises <code class="font-mono text-sm">ArgumentError</code>
+          at render time instead of shipping a broken strip.
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
   # Static demo data. A design system page shows the component, so these rows are
   # literals rather than a query: the page must render identically on an empty database.
   defp sample_routes do
