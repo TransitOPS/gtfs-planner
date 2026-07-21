@@ -72,8 +72,8 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
 
   defp storage_options do
     []
-    |> maybe_put(:max_run_bytes, :export_artifact_max_run_bytes)
-    |> maybe_put(:max_total_bytes, :export_artifact_max_total_bytes)
+    |> maybe_put(:max_run_bytes, :gtfs_task_artifacts_max_run_bytes)
+    |> maybe_put(:max_total_bytes, :gtfs_task_artifacts_max_total_bytes)
   end
 
   defp maybe_put(opts, option, config_key) do

@@ -44,6 +44,13 @@ config :swoosh, :api_client, false
 # Use isolated temp directory for uploads during tests
 config :gtfs_planner, :uploads_path, Path.join(System.tmp_dir!(), "gtfs_planner_test_uploads")
 
+# Durable task artifacts are private and intentionally separate from upload/static routing.
+config :gtfs_planner,
+  gtfs_task_artifacts_path: Path.join(System.tmp_dir!(), "gtfs_planner_test_task_artifacts"),
+  gtfs_task_artifacts_max_run_bytes: 150 * 1024 * 1024,
+  gtfs_task_artifacts_max_total_bytes: 1024 * 1024 * 1024,
+  gtfs_task_artifacts_ttl_seconds: 24 * 60 * 60
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 

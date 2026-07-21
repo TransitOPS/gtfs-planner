@@ -59,6 +59,10 @@ locals {
           "DATABASE_URL=ecto://${var.db_username}@${var.db_host}:${var.db_port}/${var.db_name}",
           "OTP_JAR_PATH=/opt/otp/otp.jar",
           "OTP_OSM_PATH=/opt/otp/data/philadelphia.osm.pbf",
+          "GTFS_TASK_ARTIFACTS_PATH=/app/var/gtfs-task-artifacts",
+          "GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES=157286400",
+          "GTFS_TASK_ARTIFACTS_MAX_TOTAL_BYTES=1073741824",
+          "GTFS_TASK_ARTIFACTS_TTL_SECONDS=86400",
           "GEOAPIFY_API_KEY=${var.geoapify_api_key}"
         ]
         networks = [
@@ -66,7 +70,8 @@ locals {
           var.db_host
         ]
         volumes = [
-          "${local.service_uploads_volume}:/app/lib/gtfs_planner-0.1.0/priv/static/uploads"
+          "${local.service_uploads_volume}:/app/lib/gtfs_planner-0.1.0/priv/static/uploads",
+          "${local.service_uploads_volume}:/app/var/gtfs-task-artifacts"
         ]
         labels = [
           "traefik.enable=true",

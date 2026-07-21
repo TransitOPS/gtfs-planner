@@ -11,6 +11,10 @@ locals {
     DATABASE_USE_IAM = true
     OTP_JAR_PATH     = "/opt/otp/otp.jar"
     OTP_OSM_PATH     = "/opt/otp/data/philadelphia.osm.pbf"
+    GTFS_TASK_ARTIFACTS_PATH            = "/app/var/gtfs-task-artifacts"
+    GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES   = 157286400
+    GTFS_TASK_ARTIFACTS_MAX_TOTAL_BYTES = 1073741824
+    GTFS_TASK_ARTIFACTS_TTL_SECONDS     = 86400
     GEOAPIFY_API_KEY = var.geoapify_api_key
   }
 }
@@ -45,6 +49,10 @@ resource "aws_ecs_task_definition" "this" {
       mountPoints = [
         {
           containerPath = "/app/lib/gtfs_planner-0.1.0/priv/static/uploads",
+          sourceVolume  = "uploads"
+        },
+        {
+          containerPath = "/app/var/gtfs-task-artifacts",
           sourceVolume  = "uploads"
         }
       ]

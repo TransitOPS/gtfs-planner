@@ -25,6 +25,48 @@ if System.get_env("PHX_SERVER") do
   config :gtfs_planner, GtfsPlannerWeb.Endpoint, server: true
 end
 
+parse_positive_env = fn variable, default ->
+  case Integer.parse(System.get_env(variable) || "") do
+    {value, ""} when value > 0 -> value
+    {_, ""} -> raise "environment variable #{variable} must be a positive integer"
+    _ -> default
+  end
+end
+
+task_artifacts_path =
+  case System.get_env("GTFS_TASK_ARTIFACTS_PATH") do
+    path when is_binary(path) and byte_size(path) > 0 ->
+      expanded_path = Path.expand(path)
+      temporary_root = Path.expand(System.tmp_dir!())
+
+      if config_env() == :prod and
+           (expanded_path == temporary_root or
+              String.starts_with?(expanded_path, temporary_root <> "/")) do
+        raise "environment variable GTFS_TASK_ARTIFACTS_PATH must not point under the temporary directory"
+      end
+
+      expanded_path
+
+    _ ->
+      if config_env() == :test,
+        do: Path.join(System.tmp_dir!(), "gtfs_planner_test_task_artifacts"),
+        else: nil
+  end
+
+config :gtfs_planner, :gtfs_task_artifacts_path, task_artifacts_path
+
+config :gtfs_planner,
+       :gtfs_task_artifacts_max_run_bytes,
+       parse_positive_env.("GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES", 150 * 1024 * 1024)
+
+config :gtfs_planner,
+       :gtfs_task_artifacts_max_total_bytes,
+       parse_positive_env.("GTFS_TASK_ARTIFACTS_MAX_TOTAL_BYTES", 1024 * 1024 * 1024)
+
+config :gtfs_planner,
+       :gtfs_task_artifacts_ttl_seconds,
+       parse_positive_env.("GTFS_TASK_ARTIFACTS_TTL_SECONDS", 24 * 60 * 60)
+
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 

@@ -29,7 +29,7 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
          true <- safe_filename?(filename),
          {:ok, root} <- root(opts),
          :ok <- capacity_available?(root, bytes, opts),
-         :ok <- File.mkdir_p(run_directory(root, organization_id, version_id, run_id)) do
+         :ok <- ensure_run_directory(root, organization_id, version_id, run_id) do
       publish_bytes(root, organization_id, version_id, run_id, filename, bytes)
     else
       false -> {:error, :invalid_artifact_filename}
@@ -120,8 +120,27 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
   end
 
   defp capacity_available?(root, bytes, opts) do
-    max_run_bytes = Keyword.get(opts, :max_run_bytes, @default_max_run_bytes)
-    max_total_bytes = Keyword.get(opts, :max_total_bytes, :infinity)
+    max_run_bytes =
+      Keyword.get(
+        opts,
+        :max_run_bytes,
+        Application.get_env(
+          :gtfs_planner,
+          :gtfs_task_artifacts_max_run_bytes,
+          @default_max_run_bytes
+        )
+      )
+
+    max_total_bytes =
+      Keyword.get(
+        opts,
+        :max_total_bytes,
+        Application.get_env(
+          :gtfs_planner,
+          :gtfs_task_artifacts_max_total_bytes,
+          1024 * 1024 * 1024
+        )
+      )
 
     with :ok <- valid_capacity?(max_run_bytes, max_total_bytes),
          :ok <- within_capacity?(byte_size(bytes), max_run_bytes) do
@@ -140,16 +159,15 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
   defp within_capacity?(size, limit) when size <= limit, do: :ok
   defp within_capacity?(_, _), do: {:error, :artifact_capacity_exceeded}
 
-  defp within_total_capacity?(_root, _size, :infinity), do: :ok
-
   defp within_total_capacity?(root, size, limit) do
     if stored_bytes(root) + size <= limit, do: :ok, else: {:error, :artifact_capacity_exceeded}
   end
 
   defp stored_bytes(root) do
-    [root, "export-runs", "**", "*.zip"]
-    |> Path.join()
+    root
+    |> Path.join("**/*")
     |> Path.wildcard()
+    |> Enum.filter(&File.regular?/1)
     |> Enum.map(&file_size/1)
     |> Enum.sum()
   end
@@ -165,6 +183,13 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
     case Keyword.get(opts, :root) || Application.get_env(:gtfs_planner, :gtfs_task_artifacts_path) do
       path when is_binary(path) and path != "" -> {:ok, Path.expand(path)}
       _ -> {:error, :artifact_storage_unavailable}
+    end
+  end
+
+  defp ensure_run_directory(root, organization_id, version_id, run_id) do
+    case File.mkdir_p(run_directory(root, organization_id, version_id, run_id)) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, :artifact_storage_unavailable}
     end
   end
 

@@ -11,7 +11,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
 
   @max_files 3
   @max_file_bytes 50_000_000
-  @max_total_bytes 150_000_000
+  @max_total_bytes 150 * 1024 * 1024
 
   @type staged_file :: %{
           required(:name) => String.t(),
@@ -28,7 +28,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
     with :ok <- validate_scope(organization_id, version_id, run_id),
          :ok <- validate_files(files),
          {:ok, root} <- root(opts),
-         :ok <- File.mkdir_p(run_directory(root, organization_id, version_id, run_id)) do
+         :ok <- ensure_run_directory(root, organization_id, version_id, run_id) do
       stage_files(root, organization_id, version_id, run_id, files)
       |> case do
         {:ok, staged} ->
@@ -91,6 +91,13 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
     end
   end
 
+  defp ensure_run_directory(root, organization_id, version_id, run_id) do
+    case File.mkdir_p(run_directory(root, organization_id, version_id, run_id)) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, :artifact_storage_unavailable}
+    end
+  end
+
   defp validate_scope(organization_id, version_id, run_id) do
     if Enum.all?([organization_id, version_id, run_id], &uuid?/1),
       do: :ok,
@@ -106,7 +113,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
 
     cond do
       files == [] or length(files) > @max_files -> {:error, :invalid_file_count}
-      total > @max_total_bytes -> {:error, :artifact_too_large}
+      total > configured_max_run_bytes() -> {:error, :artifact_capacity_exceeded}
       Enum.any?(files, &(not valid_file?(&1))) -> {:error, :invalid_staged_files}
       true -> :ok
     end
@@ -118,6 +125,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
   end
 
   defp valid_file?(_), do: false
+
+  defp configured_max_run_bytes do
+    Application.get_env(:gtfs_planner, :gtfs_task_artifacts_max_run_bytes, @max_total_bytes)
+  end
 
   defp safe_filename?(filename) do
     basename = Path.basename(filename)
