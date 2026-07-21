@@ -30,8 +30,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
      |> assign(:page, 1)
      |> assign(:per_page, 50)
      |> assign(:total_count, 0)
-     |> assign(:stops_empty?, true)
-     |> assign(:stops_state, :ready)
+     |> assign(:stops_empty?, false)
+     |> assign(:stops_state, :loading)
      |> assign(:available_routes, [])
      |> assign(:route_id, nil)
      |> assign(:direction_id, nil)
@@ -80,9 +80,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       |> assign(:route_id, route_id)
       |> assign(:direction_id, direction_id)
 
-    organization_id
-    |> Gtfs.load_stop_catalog(gtfs_version_id, opts)
-    |> apply_catalog_result(socket, page)
+    if connected?(socket) do
+      organization_id
+      |> Gtfs.load_stop_catalog(gtfs_version_id, opts)
+      |> apply_catalog_result(socket, page)
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -295,6 +299,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
               type="select"
               label="Route"
               prompt="All routes"
+              disabled={@stops_state == :loading}
               options={
                 Enum.map(@available_routes, fn r ->
                   display =
@@ -316,6 +321,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
                 type="select"
                 label="Direction"
                 prompt="All directions"
+                disabled={@stops_state == :loading}
                 options={[{"Direction 0", 0}, {"Direction 1", 1}]}
               />
             </div>
@@ -326,6 +332,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
               type="select"
               label="Accessibility"
               prompt="All accessibility"
+              disabled={@stops_state == :loading}
               options={[{"Accessible", 1}, {"Not accessible", 2}, {"No data", 0}]}
             />
           </div>
@@ -339,9 +346,24 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
               placeholder="Search names and IDs"
               phx-debounce="300"
               label="Search"
+              disabled={@stops_state == :loading}
             />
             <p class="mt-1 text-xs text-base-content/70">Search names and IDs</p>
           </.form>
+        </div>
+      </div>
+
+      <div
+        :if={@stops_state == :loading}
+        id="stops-loading"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+        class="mt-6"
+      >
+        <div class="flex items-center justify-center py-12">
+          <span class="loading loading-spinner loading-lg text-primary"></span>
+          <span class="ml-3 text-base-content/70">Loading stops...</span>
         </div>
       </div>
 

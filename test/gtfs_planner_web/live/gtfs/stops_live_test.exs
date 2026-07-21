@@ -220,7 +220,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       stub_catalog(fn _opts ->
         count = :atomics.add_get(call_count, 1, 1)
 
-        if count <= 2 do
+        if count <= 1 do
           {:error, :unavailable}
         else
           {:ok, stop_page([stop], 1, 1, [], %{})}
@@ -297,7 +297,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       stub_catalog(fn _opts ->
         count = :atomics.add_get(call_count, 1, 1)
 
-        if count <= 2 do
+        if count <= 1 do
           {:partial, stop_page([stop], 1, 1, [], %{}), :route_enrichment_unavailable}
         else
           {:ok, stop_page([stop], 1, 1, [route], %{stop.stop_id => [route]})}
@@ -352,13 +352,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         {:ok, stop_page(rows, total, canonical, [], %{})}
       end)
 
-      assert {:error, {:live_redirect, %{to: redirected_to}}} =
-               live(conn, "/gtfs/#{version.id}/stops?page=999")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?page=999")
 
-      assert redirected_to =~ "page=2"
-
-      {:ok, view, _html} = live(conn, redirected_to)
-      assert has_element?(view, "a", "CL051")
+      # Connected render triggers push_patch to canonical page=2 which
+      # live/2 processes internally; assert the rendered content reflects it.
+      html = render(view)
+      assert html =~ "CL051"
+      refute html =~ "CL001"
     end
   end
 
@@ -613,6 +613,181 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         assert html =~ "Stops"
         refute_redirected(view)
       end
+    end
+  end
+
+  describe "StopsLive loading lifecycle" do
+    setup :shared_setup
+    setup :set_mox_global
+
+    test "disconnected render shows loading without calling adapter", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn = get(conn, "/gtfs/#{version.id}/stops")
+
+      assert conn.status == 200
+      html = conn.resp_body
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "#stops-loading")) == 1
+
+      assert Enum.count(
+               LazyHTML.query(doc, "#stops-loading[aria-busy='true'][aria-live='polite']")
+             ) == 1
+
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-first-use-empty"))
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-constrained-empty"))
+    end
+
+    test "connected render calls adapter once and transitions to ready", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "LOAD1",
+          stop_name: "Loaded Stop",
+          parent_station: nil
+        })
+
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _ver, _opts ->
+        {:ok, stop_page([stop], 1, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      html = render(view)
+      assert html =~ "LOAD1"
+      refute html =~ "id=\"stops-loading\""
+    end
+
+    test "loading prevents empty-state rendering", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn = get(conn, "/gtfs/#{version.id}/stops")
+
+      assert conn.status == 200
+      html = conn.resp_body
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "#stops-loading")) == 1
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-first-use-empty"))
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-constrained-empty"))
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-unavailable"))
+      assert Enum.empty?(LazyHTML.query(doc, "#stops-enrichment-warning"))
+      assert Enum.empty?(LazyHTML.query(doc, "tbody#stops"))
+    end
+
+    test "loading state disables filter selects and search input", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      conn = get(conn, "/gtfs/#{version.id}/stops")
+
+      assert conn.status == 200
+      html = conn.resp_body
+
+      doc = LazyHTML.from_fragment(html)
+
+      route_select = LazyHTML.query(doc, "select#route_id")
+      refute Enum.empty?(route_select)
+      route_select_el = Enum.at(route_select, 0)
+      assert not is_nil(LazyHTML.attribute(route_select_el, "disabled"))
+
+      access_select = LazyHTML.query(doc, "select#wheelchair_boarding")
+      refute Enum.empty?(access_select)
+      access_select_el = Enum.at(access_select, 0)
+      assert not is_nil(LazyHTML.attribute(access_select_el, "disabled"))
+
+      search_input = LazyHTML.query(doc, "input#search")
+      refute Enum.empty?(search_input)
+      search_input_el = Enum.at(search_input, 0)
+      assert not is_nil(LazyHTML.attribute(search_input_el, "disabled"))
+    end
+
+    test "controls re-enable and table renders after loading resolves", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "RELOAD1",
+          stop_name: "Reload Stop",
+          parent_station: nil
+        })
+
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _ver, _opts ->
+        {:ok, stop_page([stop], 1, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "#stops-container")
+      assert has_element?(view, "a", "RELOAD1")
+
+      refute has_element?(view, "#route_id[disabled]")
+      refute has_element?(view, "#search[disabled]")
+    end
+
+    test "loading guard preserves URL-derived filter values", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "URLVAL1",
+          stop_name: "URL Value Stop",
+          parent_station: nil
+        })
+
+      conn = get(conn, "/gtfs/#{version.id}/stops?search=testsearch&wheelchair_boarding=1")
+
+      assert conn.status == 200
+      html = conn.resp_body
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(LazyHTML.query(doc, "#stops-loading")) == 1
+      assert Enum.count(LazyHTML.query(doc, "input#search[value='testsearch']")) == 1
+
+      expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _ver, opts ->
+        assert Keyword.get(opts, :search) == "testsearch"
+        {:ok, stop_page([stop], 1, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/stops?search=testsearch&wheelchair_boarding=1")
+
+      connected = render(view)
+      assert connected =~ "URLVAL1"
     end
   end
 
