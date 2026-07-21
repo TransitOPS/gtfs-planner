@@ -1,5 +1,12 @@
 # Warbler Authentication Implementation Specification
 
+> **Historical document.** This file records a prior Warbler/org-key design for
+> archaeology only. It is **not** the current GTFS Planner authentication
+> contract. Live companion access uses user-owned `api_session` Bearer tokens
+> (`POST /api/v1/auth/login`, `VerifyApiSession`). See
+> [API Authentication](./api-authentication.md) and
+> [Authentication Guide](./authentication-guide.md).
+
 ## Overview
 
 The Warbler project implements a comprehensive multi-tenant authentication system with organization-based access control, supporting both user authentication via email/password and programmatic access via API keys. The system is built on Phoenix LiveView with Ecto for database management and follows security best practices including secure password hashing, token-based authentication, and role-based authorization.

@@ -106,19 +106,28 @@ GTFS Planner includes a comprehensive authentication and authorization system wi
 
 ### API Authentication
 
-Programmatic access to GTFS Planner is available via API key authentication:
+Programmatic access to GTFS Planner uses user-owned companion API sessions:
 
-- **Bearer Token Format**: API keys use RFC 6750 compliant format: `Authorization: Bearer GtfsPlanner.V1.<encoded>`
-- **Organization Scoping**: API keys are scoped to specific organizations
-- **Role-Based Access**: API keys support role-based authorization
-- **Security Features**: Constant-time comparison and random delays prevent timing attacks
+- **Login**: Send the user's email and password to `POST /api/v1/auth/login`
+- **Bearer Token**: Send the returned opaque `api_session` token as `Authorization: Bearer <token>`
+- **Organization Scoping**: Send `X-Organization-Id` when selecting an organization, which is required for users with multiple memberships
+- **Expiration**: Companion session tokens expire 60 days after creation
+- **Legacy Credentials**: Retired `GtfsPlanner.V1.*` organization API keys are rejected with a 401 response
 
 #### Example API Request
 
 ```bash
-# Make an authenticated API request
-curl -H "Authorization: Bearer GtfsPlanner.V1.abcdefg" \
-     http://localhost:4000/api/organizations/my-org/data
+# Exchange user credentials for a companion session token
+TOKEN=$(curl -s -X POST http://localhost:4000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"member@example.com","password":"your-password"}' \
+  | jq -r '.data.token')
+
+# Make an authenticated, organization-scoped API request
+curl -s http://localhost:4000/api/v1/versions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID" \
+  -H 'Accept: application/json'
 ```
 
 ### Multi-Tenancy & Organizations
@@ -162,7 +171,7 @@ The authentication system supports flexible role-based access control:
 For detailed documentation on authentication features:
 
 - **[Authentication Guide](docs/authentication-guide.md)**: Complete overview of authentication architecture, flows, and best practices
-- **[API Authentication](docs/api-authentication.md)**: API key creation, usage, and authentication details
+- **[API Authentication](docs/api-authentication.md)**: Companion-session login, Bearer token, organization selection, and logout details
 - **[User Management](docs/user-management.md)**: User invitation, registration, and management workflows
 
 ## Development

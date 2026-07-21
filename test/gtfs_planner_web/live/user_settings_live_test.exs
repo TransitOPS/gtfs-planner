@@ -31,6 +31,64 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
       refute has_element?(view, "#emails")
     end
 
+    test "document title, H1/H2 hierarchy, section IDs, 40rem bounds, and secondary submits",
+         %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, html} = live(conn, ~p"/users/settings")
+
+      assert page_title(view) == "Account settings · Pathways Studio"
+
+      assert has_element?(view, "#account-settings-title", "Account settings")
+      assert has_element?(view, "#email-settings")
+      assert has_element?(view, "#email-settings-title", "Change email")
+      assert has_element?(view, "#password-settings")
+      assert has_element?(view, "#password-settings-title", "Change password")
+
+      assert html =~ ~r/id="email-settings"[^>]*class="[^"]*max-w-\[40rem\]/
+      assert html =~ ~r/id="password-settings"[^>]*class="[^"]*max-w-\[40rem\]/
+      assert html =~ ~r/id="email-settings"[^>]*class="[^"]*w-full/
+      assert html =~ ~r/id="password-settings"[^>]*class="[^"]*w-full/
+
+      assert has_element?(view, "#email-submit.btn-outline")
+      assert has_element?(view, "#password-submit.btn-outline")
+      refute has_element?(view, "#email-submit.btn-primary")
+      refute has_element?(view, "#password-submit.btn-primary")
+
+      refute html =~ "Email Change History"
+      refute html =~ "API key"
+      refute html =~ "api_key"
+      refute has_element?(view, "#emails")
+    end
+
+    test "retains authorized organization and version shell context from optional hook", %{
+      conn: conn
+    } do
+      organization = OrganizationsFixtures.organization_fixture(%{name: "Settings Shell Org"})
+      {:ok, _version} = GtfsPlanner.Versions.create_gtfs_version(organization.id, %{name: "Pub"})
+
+      user = user_fixture()
+
+      {:ok, _} =
+        Organizations.add_user_to_organization(user.id, organization.id, [
+          "pathways_studio_editor"
+        ])
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, _dash, dash_html} = live(conn, ~p"/")
+      assert dash_html =~ organization.name
+
+      {:ok, view, _html} = live(conn, ~p"/users/settings")
+
+      assert has_element?(view, "#account-settings")
+      # Version switcher only mounts when Layouts.app receives org + version + list.
+      assert has_element?(view, "#gtfs-version-switcher")
+      assert has_element?(view, ~s(a[href^="/gtfs/"]))
+      assert has_element?(view, ~s(a[href="/users/settings"][aria-current="page"]))
+    end
+
     test "every required visible control has the specified unique ID and name", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)

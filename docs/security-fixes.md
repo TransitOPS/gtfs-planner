@@ -7,7 +7,7 @@ This document tracks potential security items identified during the application 
 ### 1. Potential 500 Error on Malformed API Key
 **Severity:** Low  
 **Description:** `GtfsPlanner.Organizations.ApiKey.verify_token/2` uses bang versions of `Base.decode32!` and `Ecto.UUID.cast!`. If an API key with malformed Base32 or an invalid UUID is provided in the `Authorization` header, the application will raise an exception and likely return a 500 error instead of a 401 Unauthorized.  
-**Location:** `lib/gtfs_planner/organizations/api_key.ex:65`  
+**Historical location:** `lib/gtfs_planner/organizations/api_key.ex:65` (legacy API-key subsystem retired in Package 11)
 **Recommendation:** Use `Base.decode32/2` and `Ecto.UUID.cast/1` and handle the error cases gracefully within the `with` block.
 
 ### 2. Administrator Role Scope Check

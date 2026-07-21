@@ -10,120 +10,156 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
       current_user={@current_user}
       current_path={@current_path}
       user_roles={@user_roles}
+      current_organization={assigns[:current_organization]}
+      current_gtfs_version={assigns[:current_gtfs_version]}
+      available_versions={assigns[:available_versions] || []}
     >
       <div id="account-settings" phx-hook=".SettingsFormFocus" class="space-y-12">
-        <div>
-          <.header>
-            <span id="account-settings-title">Account Settings</span>
-            <:subtitle>Manage your account email address and password settings.</:subtitle>
-          </.header>
+        <.header>
+          <span id="account-settings-title">Account settings</span>
+          <:subtitle>Manage your email address and password.</:subtitle>
+        </.header>
 
-          <div class="space-y-12 max-w-3xl">
-            <div>
-              <.form
-                for={@email_form}
-                id="email_form"
-                phx-submit="update_email"
-                phx-change="validate_email"
-                phx-auto-recover="ignore"
-              >
-                <.input
-                  field={@email_form[:email]}
-                  id="email-address"
-                  type="email"
-                  label="Email"
-                  autocomplete="email"
-                  required
-                />
+        <section id="email-settings" class="w-full max-w-[40rem] space-y-4">
+          <h2 id="email-settings-title" class="text-lg font-semibold leading-7">
+            Change email
+          </h2>
+          <.form
+            for={@email_form}
+            id="email_form"
+            phx-submit="update_email"
+            phx-change="validate_email"
+            phx-auto-recover="ignore"
+          >
+            <.input
+              field={@email_form[:email]}
+              id="email-address"
+              type="email"
+              label="Email"
+              autocomplete="email"
+              required
+            />
 
-                <.input
-                  id="email-current-password"
-                  name="current_password"
-                  type="password"
-                  label="Current password"
-                  value={@email_current_password}
-                  errors={email_form_errors_for(@email_form, :current_password)}
-                  autocomplete="current-password"
-                  required
-                />
+            <.input
+              id="email-current-password"
+              name="current_password"
+              type="password"
+              label="Current password"
+              value={@email_current_password}
+              errors={email_form_errors_for(@email_form, :current_password)}
+              autocomplete="current-password"
+              required
+            />
 
-                <.button
-                  id="email-submit"
-                  type="submit"
-                  phx-disable-with="Sending confirmation…"
-                >
-                  Send confirmation
-                </.button>
-              </.form>
-            </div>
+            <.button
+              id="email-submit"
+              type="submit"
+              variant="secondary"
+              class="min-h-11"
+              phx-disable-with="Sending confirmation…"
+            >
+              Send confirmation
+            </.button>
+          </.form>
+        </section>
 
-            <div>
-              <.form
-                for={@password_form}
-                id="password_form"
-                phx-submit="update_password"
-                phx-change="validate_password"
-                phx-auto-recover="ignore"
-                action={@password_form_action}
-                method="post"
-                phx-trigger-action={@trigger_submit}
-              >
-                <.input
-                  id="password-current-password"
-                  name="current_password"
-                  type="password"
-                  label="Current password"
-                  value={@password_current_password}
-                  errors={password_form_errors_for(@password_form, :current_password)}
-                  autocomplete="current-password"
-                  required
-                />
+        <div class="border-t border-base-300" role="separator"></div>
 
-                <.input
-                  field={@password_form[:password]}
-                  id="password-new-password"
-                  type="password"
-                  label="New password"
-                  help="Use 12–72 characters."
-                  autocomplete="new-password"
-                  required
-                />
+        <section id="password-settings" class="w-full max-w-[40rem] space-y-4">
+          <h2 id="password-settings-title" class="text-lg font-semibold leading-7">
+            Change password
+          </h2>
+          <.form
+            for={@password_form}
+            id="password_form"
+            phx-submit="update_password"
+            phx-change="validate_password"
+            phx-auto-recover="ignore"
+            action={@password_form_action}
+            method="post"
+            phx-trigger-action={@trigger_submit}
+          >
+            <.input
+              id="password-current-password"
+              name="current_password"
+              type="password"
+              label="Current password"
+              value={@password_current_password}
+              errors={password_form_errors_for(@password_form, :current_password)}
+              autocomplete="current-password"
+              required
+            />
 
-                <.input
-                  field={@password_form[:password_confirmation]}
-                  id="password-confirmation"
-                  type="password"
-                  label="Confirm new password"
-                  autocomplete="new-password"
-                  required
-                />
+            <.input
+              field={@password_form[:password]}
+              id="password-new-password"
+              type="password"
+              label="New password"
+              help="Use 12–72 characters."
+              autocomplete="new-password"
+              required
+            />
 
-                <.button
-                  id="password-submit"
-                  type="submit"
-                  phx-disable-with="Changing password…"
-                >
-                  Change password
-                </.button>
-              </.form>
-            </div>
-          </div>
-        </div>
+            <.input
+              field={@password_form[:password_confirmation]}
+              id="password-confirmation"
+              type="password"
+              label="Confirm new password"
+              autocomplete="new-password"
+              required
+            />
+
+            <.button
+              id="password-submit"
+              type="submit"
+              variant="secondary"
+              class="min-h-11"
+              phx-disable-with="Changing password…"
+            >
+              Change password
+            </.button>
+          </.form>
+        </section>
       </div>
 
       <script :type={Phoenix.LiveView.ColocatedHook} name=".SettingsFormFocus">
         export default {
           mounted() {
+            this._focusTimer = null;
             this.handleEvent("focus_settings_error", (data) => {
               const formId = data.form_id;
-              if (["email_form", "password_form"].includes(formId)) {
-                const form = document.getElementById(formId);
-                if (form) {
-                  const invalid = form.querySelector("[aria-invalid=\"true\"]");
-                  if (invalid) invalid.focus();
-                }
+              if (!["email_form", "password_form"].includes(formId)) return;
+
+              if (this._focusTimer) {
+                clearInterval(this._focusTimer);
+                this._focusTimer = null;
               }
+
+              const focusFirstInvalid = () => {
+                const form = document.getElementById(formId);
+                if (!form) return false;
+                const invalid = form.querySelector('[aria-invalid="true"]');
+                if (!invalid) return false;
+                if (document.activeElement === invalid) return true;
+                invalid.focus({ preventScroll: false });
+                return document.activeElement === invalid;
+              };
+
+              // LiveView may restore focus onto the submit control after
+              // phx-disable-with ends. Keep correcting until the invalid field
+              // holds focus or the short post-patch window expires.
+              let attempts = 0;
+              this._focusTimer = setInterval(() => {
+                attempts += 1;
+                if (focusFirstInvalid() || attempts >= 10) {
+                  clearInterval(this._focusTimer);
+                  this._focusTimer = null;
+                }
+              }, 25);
             });
+          },
+          destroyed() {
+            if (this._focusTimer) clearInterval(this._focusTimer);
           }
         }
       </script>
@@ -137,6 +173,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
 
     socket =
       socket
+      |> assign(:page_title, "Account settings")
       |> assign(:user_roles, user_roles)
       |> assign(:email_form, to_form(Accounts.change_user_email(user)))
       |> assign(:password_form, to_form(Accounts.change_user_password(user)))

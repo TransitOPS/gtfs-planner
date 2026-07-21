@@ -49,6 +49,143 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     }
   end
 
+  defp org_admin_assigns(path) do
+    %{
+      current_user: editor_user(),
+      current_organization: org(),
+      user_roles: ["pathways_studio_admin"],
+      current_path: path,
+      current_gtfs_version: gtfs_version()
+    }
+  end
+
+  defp no_task_assigns(path) do
+    %{
+      current_user: editor_user(),
+      current_organization: org(),
+      user_roles: [],
+      current_path: path,
+      current_gtfs_version: nil
+    }
+  end
+
+  defp account_link(doc) do
+    LazyHTML.query(doc, ~s(a[href="/users/settings"]))
+  end
+
+  defp nav_link_texts(html) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("nav[aria-label='Main navigation'] a")
+    |> Enum.map(&String.trim(LazyHTML.text(&1)))
+  end
+
+  describe "Account settings universal link" do
+    test "administrator sees exactly one Account settings link" do
+      html = render_nav(admin_assigns("/"))
+      doc = LazyHTML.from_fragment(html)
+
+      links = account_link(doc)
+      assert Enum.count(links) == 1
+      assert LazyHTML.text(links) =~ "Account settings"
+      assert html =~ "hero-cog-6-tooth"
+    end
+
+    test "editor sees exactly one Account settings link and gated GTFS tasks" do
+      html = render_nav(editor_assigns("/"))
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(account_link(doc)) == 1
+      assert html =~ "Routes"
+      assert html =~ "Stations"
+      refute html =~ "Organizations"
+    end
+
+    test "organization admin sees Account settings and Users, not GTFS tasks" do
+      html = render_nav(org_admin_assigns("/"))
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(account_link(doc)) == 1
+      assert html =~ "Users"
+      refute html =~ "Routes"
+      refute html =~ "Organizations"
+    end
+
+    test "no-task role sees only Account settings" do
+      html = render_nav(no_task_assigns("/"))
+      texts = nav_link_texts(html)
+
+      assert texts == ["Account settings"]
+    end
+
+    test "Account settings activates on /users/settings" do
+      html = render_nav(editor_assigns("/users/settings"))
+      doc = LazyHTML.from_fragment(html)
+
+      active = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert Enum.count(active) == 1
+      assert LazyHTML.text(active) =~ "Account settings"
+    end
+
+    test "Account settings activates on nested /users/settings/confirm" do
+      html = render_nav(editor_assigns("/users/settings/confirm"))
+      doc = LazyHTML.from_fragment(html)
+
+      active = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert Enum.count(active) == 1
+      assert LazyHTML.text(active) =~ "Account settings"
+    end
+
+    test "Account settings does NOT activate on /users" do
+      html = render_nav(editor_assigns("/users"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = account_link(doc)
+      assert Enum.count(link) == 1
+      assert LazyHTML.attribute(link, "aria-current") == []
+      assert Enum.empty?(LazyHTML.query(doc, ~s(a[aria-current="page"])))
+    end
+
+    test "Account settings does NOT activate on lookalike /users/settings-backup" do
+      html = render_nav(editor_assigns("/users/settings-backup"))
+      doc = LazyHTML.from_fragment(html)
+
+      link = account_link(doc)
+      assert LazyHTML.attribute(link, "aria-current") == []
+    end
+
+    test "Account settings ignores query strings on the settings family" do
+      html = render_nav(editor_assigns("/users/settings?tab=email"))
+      doc = LazyHTML.from_fragment(html)
+
+      active = LazyHTML.query(doc, ~s(a[aria-current="page"]))
+      assert Enum.count(active) == 1
+      assert LazyHTML.text(active) =~ "Account settings"
+    end
+
+    test "Account settings link has 44px minimum target" do
+      html = render_nav(editor_assigns("/"))
+      doc = LazyHTML.from_fragment(html)
+
+      classes = LazyHTML.attribute(account_link(doc), "class") |> List.first()
+      assert classes =~ "min-h-11"
+    end
+
+    test "declared visual order places Account settings after task links" do
+      texts = nav_link_texts(render_nav(admin_assigns("/")))
+
+      assert texts == [
+               "Organizations",
+               "Users",
+               "Routes",
+               "Stations",
+               "Import",
+               "Export",
+               "Account settings"
+             ]
+    end
+  end
+
   describe "path-family matching — admin links" do
     test "Organizations activates on /admin/organizations" do
       html = render_nav(admin_assigns("/admin/organizations"))

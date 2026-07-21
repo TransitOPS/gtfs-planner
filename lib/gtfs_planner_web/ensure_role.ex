@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.EnsureRole do
   @moduledoc """
-  Role-based authorization for users and API keys.
+  Role-based authorization for authenticated users.
 
   This module provides functions to enforce role-based access control in
   both LiveViews (via on_mount hooks) and Plug pipelines (via ensure_role/2).
@@ -26,7 +26,8 @@ defmodule GtfsPlannerWeb.EnsureRole do
 
   ## Usage in Router
 
-  To require roles for API endpoints:
+  To require roles for browser or JSON pipelines after the current user and
+  organization are assigned:
 
       pipeline :require_admin do
         plug :ensure_role, :administrator
@@ -41,7 +42,6 @@ defmodule GtfsPlannerWeb.EnsureRole do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
-  alias GtfsPlanner.Organizations
 
   @doc """
   LiveView mount hook for role-based authorization.
@@ -137,8 +137,8 @@ defmodule GtfsPlannerWeb.EnsureRole do
   @doc """
   Plug function for role-based authorization.
 
-  Requires that the authenticated user or API key has the specified role(s)
-  in the current organization.
+  Requires that the authenticated user has the specified role(s) in the
+  current organization.
 
   ## Parameters
 
@@ -159,63 +159,25 @@ defmodule GtfsPlannerWeb.EnsureRole do
       plug :ensure_role, nil # requires org membership only
 
   """
-  def ensure_role(conn, role_spec) do
-    # Get user or API key from conn
-    user_id =
-      case conn.assigns[:current_user] do
-        nil -> nil
-        user -> user.id
-      end
-
-    api_key_id =
-      case conn.assigns[:current_api_key] do
-        nil -> nil
-        api_key -> api_key.id
-      end
-
-    organization_id =
-      case conn.assigns[:current_organization] do
-        nil -> nil
-        org -> org.id
-      end
-
-    cond do
-      is_nil(organization_id) ->
-        unauthorized(conn)
-
-      # Check user roles
-      not is_nil(user_id) ->
-        case Accounts.get_user_org_membership(user_id, organization_id) do
-          {:ok, membership} ->
-            if has_role?(membership.roles, role_spec) do
-              conn
-            else
-              unauthorized(conn)
-            end
-
-          {:error, _} ->
-            unauthorized(conn)
+  def ensure_role(
+        %{assigns: %{current_user: %{id: user_id}, current_organization: %{id: organization_id}}} =
+          conn,
+        role_spec
+      ) do
+    case Accounts.get_user_org_membership(user_id, organization_id) do
+      %UserOrgMembership{} = membership ->
+        if has_role?(membership.roles, role_spec) do
+          conn
+        else
+          unauthorized(conn)
         end
 
-      # Check API key roles
-      not is_nil(api_key_id) ->
-        case Organizations.get_api_key!(api_key_id) do
-          api_key when not is_nil(api_key) ->
-            if has_role?(api_key.roles, role_spec) do
-              conn
-            else
-              unauthorized(conn)
-            end
-
-          _ ->
-            unauthorized(conn)
-        end
-
-      # No user or API key
-      true ->
+      _ ->
         unauthorized(conn)
     end
   end
+
+  def ensure_role(conn, _role_spec), do: unauthorized(conn)
 
   @doc """
   Helper function to check if a set of roles matches a role specification.

@@ -104,6 +104,14 @@ defmodule GtfsPlannerWeb.Navigation do
           <.icon name="hero-arrow-up-tray" class="w-4 h-4" /> Export
         </.link>
       <% end %>
+
+      <.link
+        navigate="/users/settings"
+        class={nav_link_class(path_family_active?(@current_path, ["users", "settings"]))}
+        aria-current={path_family_active?(@current_path, ["users", "settings"]) && "page"}
+      >
+        <.icon name="hero-cog-6-tooth" class="w-4 h-4" /> Account settings
+      </.link>
     </nav>
     """
   end

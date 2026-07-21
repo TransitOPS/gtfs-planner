@@ -8,12 +8,15 @@ defmodule GtfsPlannerWeb.Api.V1.VersionControllerTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Versions
 
+  @password "valid user password 123456"
+  @unauthorized_json %{"error" => %{"code" => "unauthorized"}}
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
 
   defp setup_user_with_org(_context) do
-    user = user_fixture()
+    user = user_fixture(%{password: @password})
     org = organization_fixture()
 
     {:ok, _membership} =
@@ -32,6 +35,14 @@ defmodule GtfsPlannerWeb.Api.V1.VersionControllerTest do
     conn
     |> put_req_header("accept", "application/json")
     |> put_req_header("authorization", "Bearer #{token}")
+  end
+
+  defp session_conn(conn, token, org_id) do
+    conn
+    |> put_req_header("accept", "application/json")
+    |> put_req_header("content-type", "application/json")
+    |> put_req_header("authorization", "Bearer #{token}")
+    |> put_req_header("x-organization-id", org_id)
   end
 
   # ---------------------------------------------------------------------------
@@ -55,6 +66,44 @@ defmodule GtfsPlannerWeb.Api.V1.VersionControllerTest do
       # Verify shape of each entry
       entry = Enum.find(data, &(&1["id"] == v1.id))
       assert entry["name"] == "Version A"
+      assert is_binary(entry["created_at"])
+    end
+
+    test "login session token plus X-Organization-Id returns only the selected org versions",
+         %{conn: conn, user: user, org: org} do
+      selected_version = gtfs_version_fixture(org.id, %{name: "Selected Org Version"})
+
+      other_org = organization_fixture()
+
+      {:ok, _other_membership} =
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: other_org.id,
+          roles: ["pathways_studio_editor"]
+        })
+
+      other_version = gtfs_version_fixture(other_org.id, %{name: "Other Org Version"})
+
+      login =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("accept", "application/json")
+        |> post("/api/v1/auth/login", %{"email" => user.email, "password" => @password})
+
+      assert %{"data" => %{"token" => token}} = json_response(login, 200)
+
+      versions =
+        build_conn()
+        |> session_conn(token, org.id)
+        |> get("/api/v1/versions")
+
+      assert %{"data" => data} = json_response(versions, 200)
+      ids = Enum.map(data, & &1["id"])
+      assert selected_version.id in ids
+      refute other_version.id in ids
+
+      entry = Enum.find(data, &(&1["id"] == selected_version.id))
+      assert entry["name"] == "Selected Org Version"
       assert is_binary(entry["created_at"])
     end
 
@@ -104,6 +153,23 @@ defmodule GtfsPlannerWeb.Api.V1.VersionControllerTest do
         |> get("/api/v1/versions")
 
       assert conn.status == 401
+      assert json_response(conn, 401) == @unauthorized_json
+    end
+
+    test "returns 401 for Bearer GtfsPlanner.V1.<payload> with no authenticated assigns",
+         %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("accept", "application/json")
+        |> put_req_header("authorization", "Bearer GtfsPlanner.V1.some-legacy-key-material")
+        |> get("/api/v1/versions")
+
+      assert conn.status == 401
+      assert json_response(conn, 401) == @unauthorized_json
+      refute Map.has_key?(conn.assigns, :current_user)
+      refute Map.has_key?(conn.assigns, :current_user_id)
+      refute Map.has_key?(conn.assigns, :api_session_token)
+      refute Map.has_key?(conn.assigns, :current_api_key)
     end
   end
 end

@@ -5,6 +5,8 @@ defmodule GtfsPlannerWeb.Plugs.VerifyApiSessionTest do
 
   import GtfsPlanner.AccountsFixtures
 
+  @unauthorized_json %{"error" => %{"code" => "unauthorized"}}
+
   setup %{conn: conn} do
     user = user_fixture()
     token = GtfsPlanner.Accounts.generate_api_session_token(user)
@@ -23,6 +25,7 @@ defmodule GtfsPlannerWeb.Plugs.VerifyApiSessionTest do
       assert conn.assigns.current_user_id == user.id
       assert conn.assigns.api_session_token == token
       refute conn.halted
+      refute Map.has_key?(conn.assigns, :current_api_key)
     end
 
     test "returns 401 when Authorization header is missing", %{conn: conn} do
@@ -30,7 +33,10 @@ defmodule GtfsPlannerWeb.Plugs.VerifyApiSessionTest do
 
       assert conn.halted
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body) == %{"error" => %{"code" => "unauthorized"}}
+      assert Jason.decode!(conn.resp_body) == @unauthorized_json
+      refute Map.has_key?(conn.assigns, :current_user)
+      refute Map.has_key?(conn.assigns, :current_user_id)
+      refute Map.has_key?(conn.assigns, :api_session_token)
     end
 
     test "returns 401 for malformed Authorization header", %{conn: conn} do
@@ -41,7 +47,7 @@ defmodule GtfsPlannerWeb.Plugs.VerifyApiSessionTest do
 
       assert conn.halted
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body) == %{"error" => %{"code" => "unauthorized"}}
+      assert Jason.decode!(conn.resp_body) == @unauthorized_json
     end
 
     test "returns 401 for empty Bearer value", %{conn: conn} do
@@ -52,6 +58,7 @@ defmodule GtfsPlannerWeb.Plugs.VerifyApiSessionTest do
 
       assert conn.halted
       assert conn.status == 401
+      assert Jason.decode!(conn.resp_body) == @unauthorized_json
     end
 
     test "returns 401 for expired token (>60 days)", %{conn: conn, user: user} do
@@ -81,7 +88,10 @@ defmodule GtfsPlannerWeb.Plugs.VerifyApiSessionTest do
 
       assert conn.halted
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body) == %{"error" => %{"code" => "unauthorized"}}
+      assert Jason.decode!(conn.resp_body) == @unauthorized_json
+      refute Map.has_key?(conn.assigns, :current_user)
+      refute Map.has_key?(conn.assigns, :current_user_id)
+      refute Map.has_key?(conn.assigns, :api_session_token)
     end
 
     test "returns 401 for web session token (context 'session')", %{conn: conn, user: user} do
@@ -95,7 +105,7 @@ defmodule GtfsPlannerWeb.Plugs.VerifyApiSessionTest do
 
       assert conn.halted
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body) == %{"error" => %{"code" => "unauthorized"}}
+      assert Jason.decode!(conn.resp_body) == @unauthorized_json
     end
 
     test "returns 401 for completely invalid token string", %{conn: conn} do
@@ -106,6 +116,23 @@ defmodule GtfsPlannerWeb.Plugs.VerifyApiSessionTest do
 
       assert conn.halted
       assert conn.status == 401
+      assert Jason.decode!(conn.resp_body) == @unauthorized_json
+    end
+
+    test "returns 401 for legacy-shaped Bearer GtfsPlanner.V1.<payload> without auth assigns",
+         %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("authorization", "Bearer GtfsPlanner.V1.legacy-organization-key")
+        |> VerifyApiSession.call([])
+
+      assert conn.halted
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body) == @unauthorized_json
+      refute Map.has_key?(conn.assigns, :current_user)
+      refute Map.has_key?(conn.assigns, :current_user_id)
+      refute Map.has_key?(conn.assigns, :api_session_token)
+      refute Map.has_key?(conn.assigns, :current_api_key)
     end
   end
 end
