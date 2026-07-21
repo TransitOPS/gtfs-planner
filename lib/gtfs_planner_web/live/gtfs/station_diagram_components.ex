@@ -252,7 +252,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <% @mode == :connect && @selected_from_stop != nil -> %>
             <div class="mx-auto flex items-center gap-2">
               <span class="text-sm text-base-content/60">
-                From <span class="font-medium text-base-content">{@selected_from_stop.stop_name || @selected_from_stop.stop_id}</span> · click the destination stop
+                From
+                <span class="font-medium text-base-content">
+                  {@selected_from_stop.stop_name || @selected_from_stop.stop_id}
+                </span>
+                · click the destination stop
               </span>
               <button
                 type="button"
