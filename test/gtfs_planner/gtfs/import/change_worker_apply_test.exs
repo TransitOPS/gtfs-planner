@@ -247,8 +247,18 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
 
     assert %ChangeRun{state: :partial} = Repo.get!(ChangeRun, run.id)
 
+    artifact_root = Application.fetch_env!(:gtfs_planner, :gtfs_task_artifacts_path)
+    Application.delete_env(:gtfs_planner, :gtfs_task_artifacts_path)
+
+    retry_result =
+      try do
+        ChangeRuns.retry(organization.id, run.id)
+      after
+        Application.put_env(:gtfs_planner, :gtfs_task_artifacts_path, artifact_root)
+      end
+
     assert {:ok, %ChangeRun{progress_current: 0, progress_total: 1} = pending_apply} =
-             ChangeRuns.retry(organization.id, run.id)
+             retry_result
 
     assert {:ok, retried, retry_generation, retry_token} =
              ChangeRuns.claim(organization.id, pending_apply.id, :apply)

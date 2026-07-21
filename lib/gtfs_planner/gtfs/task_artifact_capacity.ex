@@ -1,14 +1,26 @@
 defmodule GtfsPlanner.Gtfs.TaskArtifactCapacity do
   @moduledoc false
 
+  @spec with_root_lock(String.t(), (-> term())) :: term()
+  def with_root_lock(root, fun) when is_binary(root) and is_function(fun, 0) do
+    expanded_root = Path.expand(root)
+    lock_id = {{__MODULE__, expanded_root}, self()}
+
+    :telemetry.execute(
+      [:gtfs_planner, :task_artifact_capacity, :lock_attempt],
+      %{},
+      %{root: expanded_root}
+    )
+
+    :global.trans(lock_id, fun)
+  end
+
   @spec within_limit(String.t(), non_neg_integer(), non_neg_integer() | :infinity, (-> term())) ::
           term()
   def within_limit(root, incoming_bytes, limit, fun)
       when is_binary(root) and is_integer(incoming_bytes) and incoming_bytes >= 0 and
              is_function(fun, 0) do
-    lock_id = {{__MODULE__, Path.expand(root)}, self()}
-
-    :global.trans(lock_id, fn ->
+    with_root_lock(root, fn ->
       if limit == :infinity or stored_bytes(root) + incoming_bytes <= limit,
         do: fun.(),
         else: {:error, :artifact_capacity_exceeded}

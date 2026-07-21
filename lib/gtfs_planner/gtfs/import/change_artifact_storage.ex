@@ -35,6 +35,14 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
 
   def stage(_, _, _, _, _), do: {:error, :invalid_staged_files}
 
+  @doc false
+  @spec with_root_lock((-> term()), keyword()) :: term() | {:error, term()}
+  def with_root_lock(fun, opts \\ []) when is_function(fun, 0) do
+    with {:ok, root} <- root(opts) do
+      TaskArtifactCapacity.with_root_lock(root, fun)
+    end
+  end
+
   defp stage_with_capacity(root, incoming_bytes, organization_id, version_id, run_id, files, opts) do
     TaskArtifactCapacity.within_limit(
       root,

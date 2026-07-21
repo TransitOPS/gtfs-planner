@@ -586,22 +586,57 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
   @spec retry(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, ChangeRun.t()} | {:error, term()}
   def retry(organization_id, run_id) do
-    transaction_with_broadcast(fn ->
-      case lock_run(organization_id, run_id) do
-        nil ->
-          {{:error, :not_found}, []}
+    case ChangeArtifactStorage.with_root_lock(fn ->
+           retry_with_artifacts(organization_id, run_id)
+         end) do
+      {:error, :artifact_storage_unavailable} ->
+        retry_without_artifact_storage_transaction(organization_id, run_id)
 
-        %ChangeRun{state: :partial} = run ->
-          retry_partial_run(run)
+      result ->
+        result
+    end
+  end
 
-        %ChangeRun{state: state} = run
-        when state in [:failed, :interrupted, :cancelled, :expired] ->
-          retry_terminal_run(run)
+  defp retry_with_artifacts(organization_id, run_id) do
+    transaction_with_broadcast(fn -> retry_locked_run(organization_id, run_id) end)
+  end
 
-        _run ->
-          {{:error, :invalid_transition}, []}
-      end
-    end)
+  defp retry_without_artifact_storage_transaction(organization_id, run_id) do
+    transaction_with_broadcast(fn -> retry_without_artifact_storage(organization_id, run_id) end)
+  end
+
+  defp retry_locked_run(organization_id, run_id) do
+    case lock_run(organization_id, run_id) do
+      nil ->
+        {{:error, :not_found}, []}
+
+      %ChangeRun{state: :partial} = run ->
+        retry_partial_run(run)
+
+      %ChangeRun{state: state} = run
+      when state in [:failed, :interrupted, :cancelled, :expired] ->
+        retry_terminal_run(run)
+
+      _run ->
+        {{:error, :invalid_transition}, []}
+    end
+  end
+
+  defp retry_without_artifact_storage(organization_id, run_id) do
+    case lock_run(organization_id, run_id) do
+      nil ->
+        {{:error, :not_found}, []}
+
+      %ChangeRun{state: :partial} = run ->
+        retry_partial_run(run)
+
+      %ChangeRun{state: state}
+      when state in [:failed, :interrupted, :cancelled, :expired] ->
+        {{:error, :missing_or_corrupt_artifact}, []}
+
+      _run ->
+        {{:error, :invalid_transition}, []}
+    end
   end
 
   defp retry_partial_run(run) do

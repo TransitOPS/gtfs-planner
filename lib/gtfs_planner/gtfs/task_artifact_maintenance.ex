@@ -46,8 +46,8 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
   end
 
   @doc false
-  @spec maintain() :: :ok
-  def maintain do
+  @spec maintain(keyword()) :: :ok
+  def maintain(opts \\ []) do
     organization_ids()
     |> Enum.each(fn organization_id ->
       safely(fn -> ChangeRuns.reconcile_expired(organization_id) end)
@@ -55,15 +55,29 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
       safely(fn -> ExportRuns.cleanup_expired(organization_id) end)
     end)
 
-    safely(fn ->
-      ChangeArtifactStorage.reconcile(retained_change_runs(),
-        orphan_grace_seconds: orphan_grace_seconds()
-      )
-    end)
+    safely(fn -> reconcile_change_artifacts(opts) end)
 
     safely(fn -> ArtifactStorage.reconcile(retained_export_run_ids()) end)
     safely(&cleanup_terminal_change_decisions/0)
     :ok
+  end
+
+  defp reconcile_change_artifacts(opts) do
+    ChangeArtifactStorage.with_root_lock(fn ->
+      runs = retained_change_runs()
+      after_change_snapshot(opts)
+
+      ChangeArtifactStorage.reconcile(runs,
+        orphan_grace_seconds: orphan_grace_seconds()
+      )
+    end)
+  end
+
+  defp after_change_snapshot(opts) do
+    case Keyword.get(opts, :after_change_snapshot) do
+      hook when is_function(hook, 0) -> hook.()
+      nil -> :ok
+    end
   end
 
   defp organization_ids do
