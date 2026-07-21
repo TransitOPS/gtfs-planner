@@ -51,7 +51,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
     def __test_relative_time__(local, now), do: relative_time(local, now)
     def __test_field_groups__(et), do: field_groups(et)
-    def __test_categorical_value__(key, value), do: categorical_value(key, value)
+    def __test_categorical_label__(key, value), do: categorical_label(key, value)
 
     def __test_apply_field_filter__(rows, entity_type, filter_key),
       do: apply_field_filter(rows, entity_type, filter_key)
@@ -675,9 +675,9 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   defp display_value(_entity_type, _field, :__missing__), do: TransitPresentation.absent_value()
 
   defp display_value(entity_type, field, value) do
-    case categorical_value({entity_type, field}, value) do
+    case categorical_label({entity_type, field}, value) do
       :passthrough -> value
-      {label, _tone} -> label
+      label -> label
     end
   end
 
@@ -1041,25 +1041,23 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     preview.entity_type == entity_type and preview.log.id == entry.id
   end
 
-  defp categorical_value({"stop", "wheelchair_boarding"}, 0),
-    do: {"No information", "bg-base-300"}
-
-  defp categorical_value({"stop", "wheelchair_boarding"}, 1),
-    do: {"Wheelchair accessible", "bg-emerald-600"}
-
-  defp categorical_value({"stop", "wheelchair_boarding"}, 2),
-    do: {"Not accessible", "bg-rose-600"}
+  # A coded GTFS value is translated to the word an operator reads. The shared
+  # version-diff row carries no colour dot, so the mapping is a label only —
+  # there is nothing left for a tone token to reach.
+  defp categorical_label({"stop", "wheelchair_boarding"}, 0), do: "No information"
+  defp categorical_label({"stop", "wheelchair_boarding"}, 1), do: "Wheelchair accessible"
+  defp categorical_label({"stop", "wheelchair_boarding"}, 2), do: "Not accessible"
 
   # Only documented codes are translated. An unrecognised or `nil` code falls
   # through untouched so the audit row shows what is actually stored instead of
   # the word "Unknown".
-  defp categorical_value({"stop", "location_type"}, code) when code in 0..4,
-    do: {Stop.location_type_label(code), nil}
+  defp categorical_label({"stop", "location_type"}, code) when code in 0..4,
+    do: Stop.location_type_label(code)
 
-  defp categorical_value({"pathway", "pathway_mode"}, code) when code in 1..7,
-    do: {Pathway.mode_label(code), nil}
+  defp categorical_label({"pathway", "pathway_mode"}, code) when code in 1..7,
+    do: Pathway.mode_label(code)
 
-  defp categorical_value({"pathway", "is_bidirectional"}, true), do: {"Bidirectional", nil}
-  defp categorical_value({"pathway", "is_bidirectional"}, false), do: {"One-way", nil}
-  defp categorical_value(_, _), do: :passthrough
+  defp categorical_label({"pathway", "is_bidirectional"}, true), do: "Bidirectional"
+  defp categorical_label({"pathway", "is_bidirectional"}, false), do: "One-way"
+  defp categorical_label(_, _), do: :passthrough
 end

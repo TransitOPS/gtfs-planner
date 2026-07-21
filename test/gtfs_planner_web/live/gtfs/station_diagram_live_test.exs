@@ -10965,11 +10965,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
       open_stop_history(view, stop)
-      html = render_async(view, 5_000)
+      render_async(view, 5_000)
 
-      assert html =~ ~s(id="history-stop")
-      assert html =~ ~s(data-state="ready")
-      assert html =~ "Renamed Platform"
+      assert has_element?(view, "#history-stop[data-state='ready']")
+      assert has_element?(view, "#history-stop", "Renamed Platform")
       assert has_element?(view, "#history-counts-stop")
       assert has_element?(view, "select#history-filter-stop")
     end
@@ -11002,10 +11001,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       view = open_diagram(conn, user, organization, gtfs_version, station)
 
       open_pathway_history(view, pathway)
-      html = render_async(view, 5_000)
+      render_async(view, 5_000)
 
-      assert html =~ ~s(id="history-pathway")
-      assert html =~ ~s(data-state="ready")
+      assert has_element?(view, "#history-pathway[data-state='ready']")
       assert has_element?(view, "#history-counts-pathway")
       assert has_element?(view, "select#history-filter-pathway")
     end
@@ -11023,10 +11021,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
       open_level_history(view)
-      html = render_async(view, 5_000)
+      render_async(view, 5_000)
 
-      assert html =~ ~s(id="history-level")
-      assert html =~ ~s(data-state="ready")
+      assert has_element?(view, "#history-level[data-state='ready']")
       assert has_element?(view, "#history-counts-level")
       assert has_element?(view, "select#history-filter-level")
     end
@@ -11065,8 +11062,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       task_pid = await_history(stop.id)
 
+      assert has_element?(view, "#history-stop[data-state='loading']")
       assert has_element?(view, "#history-loading-stop")
-      assert render(view) =~ ~s(data-state="loading")
 
       release_history(task_pid, :real)
       render_async(view, 5_000)
@@ -11105,7 +11102,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_async(view, 5_000)
 
       assert has_element?(view, "#history-retry-stop")
-      assert render(view) =~ ~s(data-state="error")
+      assert has_element?(view, "#history-stop[data-state='error']")
       # Prior entries stay visible as an explicit stale preview.
       assert has_element?(view, "#history-stale-stop")
 
@@ -11117,7 +11114,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       release_history(await_history(stop.id), :real)
       render_async(view, 5_000)
 
-      assert render(view) =~ ~s(data-state="ready")
+      assert has_element?(view, "#history-stop[data-state='ready']")
       assert :sys.get_state(view.pid).socket.assigns.history_field_filter == "position"
     end
 
@@ -11283,16 +11280,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
 
       task_pid = await_history(stop.id)
-      html = render(view)
 
-      assert html =~ ~s(data-state="refreshing")
-      assert html =~ "Refresh Platform"
+      assert has_element?(view, "#history-stop[data-state='refreshing']")
+      assert has_element?(view, "#history-stop", "Refresh Platform")
       assert has_element?(view, "#history-refreshing-stop")
 
       release_history(task_pid, :real)
       render_async(view, 5_000)
 
-      assert render(view) =~ ~s(data-state="ready")
+      assert has_element?(view, "#history-stop[data-state='ready']")
 
       assert [%{action: "rolled_back"} | _] =
                :sys.get_state(view.pid).socket.assigns.history_entries
@@ -11500,6 +11496,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#stop-panel-history[hidden]")
     end
   end
+
+  # Bounded document queries for the component-level history cases, which render
+  # a fragment rather than a live view. Every assertion names an element and an
+  # attribute instead of matching raw markup.
+  defp history_doc(html), do: LazyHTML.from_fragment(html)
+
+  defp nodes(doc, selector), do: doc |> LazyHTML.query(selector) |> Enum.count()
+
+  defp attr_values(doc, selector, name),
+    do: doc |> LazyHTML.query(selector) |> LazyHTML.attribute(name)
 
   defp pin_change_log_time(log_id, %DateTime{} = at) do
     {1, _} =
@@ -12174,7 +12180,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       result = render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
 
       assert result =~ "This change already matches the current state."
-      refute result =~ ~s(id="rollback-preview-stop")
+      refute has_element?(view, "#rollback-preview-stop")
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.rollback_preview == nil
@@ -13252,7 +13258,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
-      assert html =~ ~s(id="history-stop")
+      d = history_doc(html)
+
+      assert nodes(d, "#history-stop") == 1
       assert html =~ "No changes have been recorded for this stop"
     end
 
@@ -13267,14 +13275,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
-      assert html =~ ~s(id="history-stop")
-      assert html =~ ~s(id="history-entry-#{entry.id}")
+      d = history_doc(html)
+
+      assert nodes(d, "#history-stop ##{"history-entry-" <> entry.id}") == 1
       assert html =~ "Editor"
       assert html =~ "Apr 24"
       assert html =~ "12:30"
-      assert html =~ ~s(data-history-entry-action="undo")
-      assert html =~ ~s(data-testid="history-summary")
-      assert html =~ ~s(data-testid="history-date-header")
+
+      assert attr_values(d, "[data-history-entry-action]", "data-history-entry-action") == [
+               "undo"
+             ]
+
+      assert nodes(d, "[data-testid='history-summary']") == 1
+      assert nodes(d, "[data-testid='history-date-header']") == 1
     end
 
     test "updated entry with snapshot renders an undo rollback button" do
@@ -13288,9 +13301,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
-      assert html =~ ~s(data-history-entry-action="undo")
-      assert html =~ ~s(phx-click="preview_rollback_change_log")
-      assert html =~ ~s(phx-value-log-id="#{entry.id}")
+      d = history_doc(html)
+      action = "[data-history-entry-action='undo']"
+
+      assert nodes(d, action) == 1
+      assert attr_values(d, action, "phx-click") == ["preview_rollback_change_log"]
+      assert attr_values(d, action, "phx-value-log-id") == [entry.id]
     end
 
     test "updated entry with only non-reversible fields hides rollback button" do
@@ -13309,11 +13325,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
-      assert html =~ ~s(id="history-entry-#{entry.id}")
-      refute html =~ ~s(data-history-entry-action="undo")
-      refute html =~ ~s(data-history-entry-action="restore")
-      refute html =~ ~s(phx-click="preview_rollback_change_log")
-      refute html =~ ~s(phx-value-log-id="#{entry.id}")
+      d = history_doc(html)
+
+      assert nodes(d, "##{"history-entry-" <> entry.id}") == 1
+      assert nodes(d, "[data-history-entry-action='undo']") == 0
+      assert nodes(d, "[data-history-entry-action='restore']") == 0
+      assert nodes(d, "[phx-click='preview_rollback_change_log']") == 0
+      assert nodes(d, "[phx-value-log-id='#{entry.id}']") == 0
     end
 
     test "reverted original entry renders status and hides its revert button" do
@@ -13333,10 +13351,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
-      assert html =~ ~s(id="history-entry-#{original.id}")
+      d = history_doc(html)
+
+      assert nodes(d, "##{"history-entry-" <> original.id}") == 1
       assert html =~ "Reverted"
-      refute html =~ ~s(phx-value-log-id="#{original.id}")
-      assert html =~ ~s(phx-value-log-id="#{rollback.id}")
+      assert nodes(d, "[phx-value-log-id='#{original.id}']") == 0
+      assert nodes(d, "[phx-value-log-id='#{rollback.id}']") == 1
     end
 
     test "rolled_back entries are hidden from the timeline" do
@@ -13350,10 +13370,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
-      assert html =~ ~s(id="history-stop")
-      refute html =~ ~s(id="history-entry-#{entry.id}")
+      d = history_doc(html)
+
+      assert nodes(d, "#history-stop") == 1
+      assert nodes(d, "##{"history-entry-" <> entry.id}") == 0
       refute html =~ "rolled_back"
-      refute html =~ ~s(data-history-entry-action=)
+      assert nodes(d, "[data-history-entry-action]") == 0
     end
 
     test "created entry renders disabled original button without rollback wiring" do
@@ -13367,13 +13389,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
-      assert html =~ ~s(data-history-entry-action="original")
-      assert html =~ ~s(aria-disabled="true")
-      assert html =~ "disabled"
-      refute html =~ ~s(data-history-entry-action="undo")
-      refute html =~ ~s(data-history-entry-action="restore")
-      refute html =~ ~s(phx-click="preview_rollback_change_log")
-      refute html =~ ~s(phx-value-log-id="#{entry.id}")
+      d = history_doc(html)
+      original = "[data-history-entry-action='original']"
+
+      assert nodes(d, original) == 1
+      assert attr_values(d, original, "aria-disabled") == ["true"]
+      assert attr_values(d, original, "disabled") == [""]
+      assert nodes(d, "[data-history-entry-action='undo']") == 0
+      assert nodes(d, "[data-history-entry-action='restore']") == 0
+      assert nodes(d, "[phx-click='preview_rollback_change_log']") == 0
+      assert nodes(d, "[phx-value-log-id='#{entry.id}']") == 0
     end
 
     test "deleted entry renders no rollback button" do
@@ -13387,13 +13412,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
-      assert html =~ ~s(id="history-entry-#{entry.id}")
-      refute html =~ ~s(data-history-entry-action="undo")
-      refute html =~ ~s(data-history-entry-action="restore")
-      refute html =~ ~s(data-history-entry-action="reapply")
-      refute html =~ ~s(data-history-entry-action="original")
-      refute html =~ ~s(phx-click="preview_rollback_change_log")
-      refute html =~ ~s(phx-value-log-id="#{entry.id}")
+      d = history_doc(html)
+
+      assert nodes(d, "##{"history-entry-" <> entry.id}") == 1
+      assert nodes(d, "[data-history-entry-action]") == 0
+      assert nodes(d, "[phx-click='preview_rollback_change_log']") == 0
+      assert nodes(d, "[phx-value-log-id='#{entry.id}']") == 0
     end
 
     test "renders rollback_preview inside the targeted entry card" do
@@ -13414,13 +13438,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
-      assert html =~ ~s(id="rollback-preview-stop")
-      assert html =~ ~s(id="rollback-preview-cancel-stop")
-      assert html =~ ~s(id="rollback-preview-confirm-stop")
+      d = history_doc(html)
 
-      entry_open = String.split(html, ~s(id="history-entry-#{entry.id}")) |> Enum.at(1)
-      [card_html, _rest] = String.split(entry_open, "</li>", parts: 2)
-      assert card_html =~ ~s(id="rollback-preview-stop")
+      # The preview belongs to the entry it reverts, so it is asserted as a
+      # descendant of that entry rather than as a substring of the whole list.
+      assert nodes(d, "##{"history-entry-" <> entry.id} #rollback-preview-stop") == 1
+      assert nodes(d, "#rollback-preview-stop #rollback-preview-cancel-stop") == 1
+      assert nodes(d, "#rollback-preview-stop #rollback-preview-confirm-stop") == 1
     end
 
     test "does not render rollback_preview when it does not match any listed entry" do
@@ -13443,7 +13467,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           filter_form: Phoenix.Component.to_form(%{"key" => "all"})
         )
 
-      refute html =~ ~s(id="rollback-preview-stop")
+      assert nodes(history_doc(html), "#rollback-preview-stop") == 0
     end
   end
 
@@ -13475,12 +13499,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "Red Line"
       assert html =~ "location_type"
 
-      assert html =~ ~s(id="rollback-preview-cancel-stop")
-      assert html =~ ~s(cancel_rollback_preview)
+      d = history_doc(html)
 
-      assert html =~ ~s(id="rollback-preview-confirm-stop")
-      assert html =~ ~s(phx-click="confirm_rollback_change_log")
-      assert html =~ ~s(phx-value-log-id="#{log.id}")
+      # Cancel is a JS command chain: it pushes the cancel event and returns
+      # focus to the entry action that opened the preview (AC-19).
+      [cancel_command] = attr_values(d, "#rollback-preview-cancel-stop", "phx-click")
+
+      assert cancel_command =~ ~s("event":"cancel_rollback_preview")
+      assert cancel_command =~ ~s("to":"#history-entry-action-#{log.id}")
+
+      assert attr_values(d, "#rollback-preview-confirm-stop", "phx-click") ==
+               ["confirm_rollback_change_log"]
+
+      assert attr_values(d, "#rollback-preview-confirm-stop", "phx-value-log-id") == [log.id]
     end
 
     test "renders a preview with no known entity name using the log's natural key" do
@@ -15291,11 +15322,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       view |> element("#rollback-preview-confirm-stop") |> render_click()
       render_async(view, 5_000)
 
-      after_first =
+      # Scoped to this entity: an unscoped count also sees rows written by the
+      # browser fixtures that share this database.
+      rolled_back_count = fn ->
         Repo.aggregate(
-          from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.action == "rolled_back" and cl.organization_id == ^ctx.organization.id and
+                cl.gtfs_version_id == ^ctx.gtfs_version.id and cl.entity_id == ^stop.id
+          ),
           :count
         )
+      end
+
+      after_first = rolled_back_count.()
 
       assert after_first == 1
       restored_name = Gtfs.get_stop!(stop.id).stop_name
@@ -15303,10 +15343,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
       assert result =~ "already been reverted" or result =~ "stale"
 
-      assert Repo.aggregate(
-               from(cl in GtfsPlanner.Gtfs.ChangeLog, where: cl.action == "rolled_back"),
-               :count
-             ) == after_first
+      assert rolled_back_count.() == after_first
 
       assert Gtfs.get_stop!(stop.id).stop_name == restored_name
       assert_push_event(view, "focus_scoped_target", %{id: _})

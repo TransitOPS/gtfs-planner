@@ -336,14 +336,21 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
         history_active: false
       )
 
-    assert html =~ ~s(id="stop-tabs")
-    assert html =~ ~s(phx-hook="TablistHook")
-    assert html =~ ~s(id="stop-tab-details")
-    assert html =~ ~s(aria-controls="stop-panel-details")
-    assert html =~ ~s(id="stop-tab-history")
-    assert html =~ ~s(aria-controls="stop-panel-history")
-    assert html =~ ~s(tabindex="0")
-    assert html =~ ~s(tabindex="-1")
+    d = doc(html)
+
+    assert attrs_of(d, "#stop-tabs", "role") == ["tablist"]
+    assert attrs_of(d, "#stop-tabs", "phx-hook") == ["TablistHook"]
+
+    # Both tabs exist, each controls its own panel, and exactly one of them is
+    # the roving tab stop while Details is selected.
+    assert attrs_of(d, "#stop-tabs [role='tab']", "id") ==
+             ["stop-tab-details", "stop-tab-history"]
+
+    assert attrs_of(d, "#stop-tabs [role='tab']", "aria-controls") ==
+             ["stop-panel-details", "stop-panel-history"]
+
+    assert attrs_of(d, "#stop-tabs [role='tab']", "aria-selected") == ["true", "false"]
+    assert attrs_of(d, "#stop-tabs [role='tab']", "tabindex") == ["0", "-1"]
   end
 
   describe "display_name/1" do
@@ -464,59 +471,70 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
     end
   end
 
-  describe "categorical_value/2" do
-    test "stop wheelchair_boarding accessible" do
-      assert ChangeHistoryComponents.__test_categorical_value__(
-               {"stop", "wheelchair_boarding"},
-               1
-             ) == {"Wheelchair accessible", "bg-emerald-600"}
+  # A coded GTFS value must reach the audit row as the word an operator reads.
+  # The rendered outcome is the contract; the mapper carries no colour token,
+  # so nothing here names a utility class.
+  describe "coded values render as words" do
+    test "wheelchair boarding codes render their accessibility words" do
+      for {code, word} <- [
+            {0, "No information"},
+            {1, "Wheelchair accessible"},
+            {2, "Not accessible"}
+          ] do
+        entries = [
+          entry(
+            id: "log-1",
+            changed_fields: %{"wheelchair_boarding" => %{"from" => nil, "to" => code}}
+          )
+        ]
+
+        d = doc(render_history(entries: entries))
+
+        assert text_of(d, ~s(#history-diff-log-1 [data-role="version-diff-after"])) == word
+      end
     end
 
-    test "stop wheelchair_boarding no information" do
-      assert ChangeHistoryComponents.__test_categorical_value__(
-               {"stop", "wheelchair_boarding"},
-               0
-             ) == {"No information", "bg-base-300"}
+    test "an undocumented wheelchair boarding code renders what is stored" do
+      entries = [
+        entry(
+          id: "log-1",
+          changed_fields: %{"wheelchair_boarding" => %{"from" => nil, "to" => 9}}
+        )
+      ]
+
+      d = doc(render_history(entries: entries))
+
+      assert text_of(d, ~s(#history-diff-log-1 [data-role="version-diff-after"])) == "9"
     end
 
-    test "stop wheelchair_boarding not accessible" do
-      assert ChangeHistoryComponents.__test_categorical_value__(
-               {"stop", "wheelchair_boarding"},
-               2
-             ) == {"Not accessible", "bg-rose-600"}
-    end
-
-    test "non-categorical fields fall through to :passthrough" do
-      assert ChangeHistoryComponents.__test_categorical_value__({"stop", "stop_name"}, "x") ==
+    test "a non-categorical field passes its stored value through untranslated" do
+      assert ChangeHistoryComponents.__test_categorical_label__({"stop", "stop_name"}, "x") ==
                :passthrough
     end
 
-    test "pathway is_bidirectional true" do
-      assert ChangeHistoryComponents.__test_categorical_value__(
-               {"pathway", "is_bidirectional"},
-               true
-             ) == {"Bidirectional", nil}
-    end
+    test "pathway bidirectionality renders as a direction word" do
+      for {stored, word} <- [{true, "Bidirectional"}, {false, "One-way"}] do
+        entries = [
+          entry(
+            id: "log-1",
+            changed_fields: %{"is_bidirectional" => %{"from" => nil, "to" => stored}}
+          )
+        ]
 
-    test "pathway is_bidirectional false" do
-      assert ChangeHistoryComponents.__test_categorical_value__(
-               {"pathway", "is_bidirectional"},
-               false
-             ) == {"One-way", nil}
+        d = doc(render_history(entries: entries, entity_type: "pathway"))
+
+        assert text_of(d, ~s(#history-diff-log-1 [data-role="version-diff-after"])) == word
+      end
     end
 
     test "stop location_type uses Stop.location_type_label/1" do
-      assert ChangeHistoryComponents.__test_categorical_value__(
-               {"stop", "location_type"},
-               1
-             ) == {"Station", nil}
+      assert ChangeHistoryComponents.__test_categorical_label__({"stop", "location_type"}, 1) ==
+               "Station"
     end
 
     test "pathway pathway_mode uses Pathway.mode_label/1" do
-      assert ChangeHistoryComponents.__test_categorical_value__(
-               {"pathway", "pathway_mode"},
-               5
-             ) == {"Elevator", nil}
+      assert ChangeHistoryComponents.__test_categorical_label__({"pathway", "pathway_mode"}, 5) ==
+               "Elevator"
     end
   end
 
@@ -740,8 +758,15 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponentsTest do
 
       html = render_history(entries: entries)
 
-      assert text_of(doc(html), "#history-diff-log-1 [data-role=\"version-diff-after\"]") == long
-      refute html =~ "…"
+      d = doc(html)
+
+      assert text_of(d, ~s(#history-diff-log-1 [data-role="version-diff-after"])) == long
+
+      refute d
+             |> LazyHTML.query("#history-diff-log-1")
+             |> LazyHTML.text()
+             |> String.contains?("…"),
+             "the diff row still renders a truncation marker"
     end
 
     test "false, zero and nil render as those exact values" do

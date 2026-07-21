@@ -315,11 +315,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       )
       |> render_click()
 
-      html = render(view)
-      # Connected targets should show Reachable badge
-      assert html =~ "Reachable"
-      # Disconnected targets (Side Entrance → platforms) should show No path
-      assert html =~ "No path"
+      # Reachability is stated in words beside its semantic token, per AC-9.
+      assert has_element?(
+               view,
+               "[data-source-row='entrance_to_platform-ENT_A'] [data-route-status]",
+               "Reachable"
+             )
+
+      assert has_element?(
+               view,
+               "[data-source-row='entrance_to_platform-ENT_B'] [data-route-status]",
+               "No path"
+             )
     end
 
     test "expanding a target row shows step table", %{
@@ -348,13 +355,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       )
       |> render_click()
 
-      html = render(view)
       assert has_element?(view, "#route-ENT_A-PLAT_1")
-      # Step table should be visible with semantic table markup
-      assert html =~ "<thead>"
-      assert html =~ "Mode"
-      assert html =~ "Stop name"
-      assert html =~ "Instruction"
+
+      # The step table is a real table with real header cells.
+      for header <- ["Mode", "Stop name", "Instruction"] do
+        assert has_element?(view, "#route-ENT_A-PLAT_1 table thead tr th", header),
+               "expected a step-table column header #{inspect(header)}"
+      end
     end
 
     test "expanding a no-path target shows explanatory message", %{
@@ -375,9 +382,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       )
       |> render_click()
 
-      refute has_element?(
+      # An unreachable pair is named in words rather than painted, so the
+      # disclosure control carries no status colour of its own.
+      assert has_element?(
                view,
-               "button[phx-click='toggle_route_expand'][phx-value-source_id='ENT_B'][phx-value-target_id='PLAT_1'].bg-red-50"
+               "[data-source-row='entrance_to_platform-ENT_B'] [data-route-status='nopath']",
+               "No path"
              )
 
       # Click expand on a no-path target
@@ -387,8 +397,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
       )
       |> render_click()
 
-      html = render(view)
-      assert html =~ "No directed path exists"
+      assert has_element?(view, "#route-ENT_B-PLAT_1", "No directed path exists")
       refute has_element?(view, "#route-ENT_B-PLAT_1[class*='hidden']")
 
       # Click again to collapse
@@ -858,8 +867,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
                "expected an explained empty state for #{dimension}"
       end
 
-      section_html = view |> element("#report2-reachability-connectivity") |> render()
-      refute section_html =~ ~r|<tbody[^>]*>\s*</tbody>|
+      bodies =
+        view
+        |> element("#report2-reachability-connectivity")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("tbody")
+        |> Enum.to_list()
+
+      for body <- bodies do
+        refute body |> LazyHTML.query("tr") |> Enum.empty?(),
+               "the connectivity section renders an empty table body instead of an empty state"
+      end
     end
   end
 

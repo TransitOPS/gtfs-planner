@@ -1045,7 +1045,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       station: station
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {view, html} = live_report(conn, report_path(gtfs_version, station))
+      {view, _html} = live_report(conn, report_path(gtfs_version, station))
 
       for id <- [
             "report2-station-inventory",
@@ -1082,8 +1082,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert has_element?(view, "#check-detail-data-quality-isolated_nodes[class*='print:grid']")
 
       # The client-only expand-all mutation and native <details> disclosure are gone.
-      refute html =~ "ExpandAll"
-      refute html =~ "<details"
+      refute has_element?(view, "[phx-hook='ExpandAll']")
+      refute has_element?(view, "#station-report-2 details")
     end
 
     test "individual disclosure is server owned and survives an unrelated patch", %{
@@ -1266,12 +1266,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     end
 
     test "the report has one H1 and six peer section headings", ctx do
-      html = report_html(ctx)
+      doc = report_doc(ctx)
 
-      assert count_occurrences(html, "<h1") == 1,
+      assert element_count(doc, "h1") == 1,
              "the report must own exactly one H1"
 
-      assert count_occurrences(html, "<h2") == 6,
+      assert element_count(doc, "h2") == 6,
              "the report must expose exactly six peer H2 sections"
 
       view = ctx.view
@@ -1311,8 +1311,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
              )
     end
 
+    # AC-9 forbids literal status colour, raw SVG, and emoji glyphs inside the
+    # report. That obligation is stated as an absence, so it is the one place a
+    # colour utility may still be named — as a bounded negative class-token
+    # query against the report subtree, never a substring match on whole-page
+    # HTML.
     test "no literal status palette colours, raw SVG, or emoji remain in the report", ctx do
-      html = report_html(ctx)
+      doc = report_doc(ctx)
 
       for literal <- [
             "bg-red-100",
@@ -1325,12 +1330,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
             "text-red-700",
             "text-green-800"
           ] do
-        refute html =~ literal,
+        assert element_count(doc, ~s([class~="#{literal}"])) == 0,
                "report still renders the literal palette class #{literal}"
       end
 
-      refute html =~ "<svg", "report still renders raw SVG instead of <.icon>"
-      refute html =~ "⚠", "report still renders an emoji as a meaningful glyph"
+      assert element_count(doc, "svg") == 0,
+             "report still renders raw SVG instead of <.icon>"
+
+      refute doc |> LazyHTML.text() |> String.contains?("⚠"),
+             "report still renders an emoji as a meaningful glyph"
     end
 
     test "the report exposes a display-only count strip in report vocabulary", ctx do
@@ -1347,15 +1355,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     end
 
     test "the report count strip agrees with the statuses the sections render", ctx do
-      html = report_html(ctx)
-
       strip_failed =
         ctx.view
         |> element("#report-outcome-counts-item-failed [data-role='count-strip-value']")
         |> render()
         |> extract_integer()
 
-      rendered_failures = count_occurrences(html, ~s(data-status="fail"))
+      rendered_failures = ctx |> report_doc() |> element_count(~s([data-status="fail"]))
 
       assert strip_failed == rendered_failures,
              "count strip reports #{strip_failed} failures but #{rendered_failures} are rendered"
@@ -1365,7 +1371,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
     test "long stop names stay complete and are never truncated", ctx do
       view = ctx.view
-      html = report_html(ctx)
+      doc = report_doc(ctx)
 
       assert has_element?(
                view,
@@ -1373,7 +1379,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
                @long_stop_name
              )
 
-      refute html =~ "truncate", "report still truncates a value instead of wrapping it"
+      assert element_count(doc, "[class~=truncate]") == 0,
+             "report still truncates a value instead of wrapping it"
     end
 
     test "no interactive table rows remain", ctx do
@@ -1385,27 +1392,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     end
 
     test "no table renders an empty body shell", ctx do
-      html = report_html(ctx)
+      bodies = ctx |> report_doc() |> LazyHTML.query("tbody") |> Enum.to_list()
 
-      refute html =~ ~r|<tbody[^>]*>\s*</tbody>|,
-             "a table renders an empty body instead of an explained empty state"
+      assert bodies != [], "the fixture must render at least one comparison table"
+
+      for body <- bodies do
+        refute body |> LazyHTML.query("tr") |> Enum.empty?(),
+               "a table renders an empty body instead of an explained empty state"
+      end
     end
 
     test "every disclosure control is print-excluded and carries a controlled region", ctx do
       view = ctx.view
-      html = report_html(ctx)
+      doc = report_doc(ctx)
 
-      controls =
-        ~r/<[a-z]+[^>]*data-report-control[^>]*>/
-        |> Regex.scan(html)
-        |> List.flatten()
+      controls = element_count(doc, "[data-report-control]")
+      excluded = element_count(doc, ~s([data-report-control][class~="print:hidden"]))
 
-      assert controls != [], "the report renders no controls to exclude from print"
+      assert controls > 0, "the report renders no controls to exclude from print"
 
-      for control <- controls do
-        assert control =~ "print:hidden",
-               "a report control is not excluded from print: #{control}"
-      end
+      assert excluded == controls,
+             "#{controls - excluded} of #{controls} report controls are not excluded from print"
 
       refute has_element?(
                view,
@@ -1558,7 +1565,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       view = ctx.view
       open_stop_drawer(view, "Entrance One")
 
-      form_html = view |> element("form#report-stop-edit-form") |> render()
+      rendered_labels =
+        view
+        |> stop_form_doc()
+        |> LazyHTML.query("label")
+        |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
 
       for label <- [
             "Stop name (optional)",
@@ -1568,7 +1579,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
             "Platform code (optional)",
             "Level"
           ] do
-        assert form_html =~ label, "expected the visible label #{inspect(label)}"
+        # A `<label>` that wraps a `<select>` also contains its option text, so
+        # the caption is asserted as the label's leading text.
+        assert Enum.any?(rendered_labels, &String.starts_with?(&1, label)),
+               "expected #{inspect(label)} to caption a visible <label>, got #{inspect(rendered_labels)}"
       end
 
       # Raw GTFS keys stay available as secondary help, never as the label.
@@ -1600,14 +1614,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
              )
     end
 
-    test "the form stays one column so it fits a 320 px drawer", ctx do
+    # The measured one-column layout is a browser contract and is proven by
+    # `assets/e2e/station_reports_and_history.spec.js` (one distinct left edge at
+    # 320 px). What ExUnit owns is the structure that makes it possible: every
+    # editable control sits in its own row-level block under the form, so no two
+    # fields can ever share a row.
+    test "each editable field occupies its own form row so the form can stay one column", ctx do
       view = ctx.view
       open_stop_drawer(view, "Entrance One")
 
-      form_html = view |> element("form#report-stop-edit-form") |> render()
+      controls_per_row =
+        view
+        |> stop_form_doc()
+        |> LazyHTML.query("#report-stop-edit-form > *")
+        |> Enum.map(&element_count(&1, "input:not([type='hidden']), select, textarea"))
 
-      refute form_html =~ "grid-cols-2",
-             "the stop form must not place inputs side by side at any width"
+      assert Enum.sum(controls_per_row) == 6,
+             "expected the six editable stop fields, got #{Enum.sum(controls_per_row)}"
+
+      assert Enum.max(controls_per_row) == 1,
+             "a single form row holds more than one control: #{inspect(controls_per_row)}"
     end
 
     test "an invalid submit keeps the drawer, preserves input, and associates field errors",
@@ -1907,12 +1933,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
   # -- helpers --------------------------------------------------------------
 
   defp stop_link_opener_id(view, entity_name) do
-    html =
+    [id] =
       view
       |> element("[phx-click='select_entity'][phx-value-entity_type='stop']", entity_name)
       |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.attribute("id")
 
-    [id] = Regex.run(~r/\bid="([^"]+)"/, html, capture: :all_but_first)
     id
   end
 
@@ -1920,8 +1947,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     view |> element("#station-report-2") |> render()
   end
 
-  defp count_occurrences(haystack, needle),
-    do: haystack |> :binary.matches(needle) |> length()
+  # Bounded document queries. Every structural assertion is scoped to the report
+  # subtree (or to one form) rather than matched against whole-page HTML, so a
+  # match can only come from the contract under test.
+  defp report_doc(ctx), do: ctx |> report_html() |> LazyHTML.from_fragment()
+
+  defp stop_form_doc(view) do
+    view |> element("form#report-stop-edit-form") |> render() |> LazyHTML.from_fragment()
+  end
+
+  defp element_count(doc, selector), do: doc |> LazyHTML.query(selector) |> Enum.count()
 
   defp extract_integer(html) do
     [value] = Regex.run(~r/(\d+)/, html, capture: :all_but_first)

@@ -162,6 +162,60 @@ case Accounts.register_first_admin(%{
       "Browser seed: diagram ready — /gtfs/#{diagram_version.id}/stops/BROWSER_STATION/diagram"
     )
 
+    # ── Station report and change-history fixtures
+    #    (station_reports_and_history.spec.js, Package 15) ──
+    #
+    # Exactly one valid agency timezone, so the history panel renders the
+    # localized zone statement rather than the UTC fallback. Both branches are
+    # covered exhaustively in ExUnit; the browser proves the primary one.
+    {:ok, _agency} =
+      Gtfs.create_agency(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        agency_id: "BROWSER_AGENCY",
+        agency_name: "Browser Test Transit",
+        agency_url: "https://example.test",
+        agency_timezone: "America/New_York"
+      })
+
+    IO.puts("Browser seed: agency timezone America/New_York for history localization")
+
+    # One reachable entrance→platform route, so the station report renders a
+    # real connectivity route with a step table. Without it every pair is
+    # unreachable and print evidence never exercises the step-table path.
+    {:ok, _browser_pathway} =
+      Gtfs.create_pathway(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        pathway_id: "BROWSER_PW_ELEVATOR",
+        from_stop_id: "BROWSER_STOP_C",
+        to_stop_id: "BROWSER_STOP_A",
+        pathway_mode: 5,
+        is_bidirectional: true,
+        traversal_time: 45,
+        length: Decimal.new("12.5")
+      })
+
+    IO.puts("Browser seed: elevator pathway BROWSER_STOP_C → BROWSER_STOP_A")
+
+    # A long-named, long-id, unconnected generic node. It fails the isolated
+    # node check, so the report renders a failed-check detail whose value must
+    # wrap rather than truncate at 320 px. No diagram coordinate: it stays off
+    # the canvas so the existing diagram keyboard fixtures are unchanged.
+    {:ok, _browser_long_node} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_GENERIC_NODE_WITH_A_DELIBERATELY_LONG_IDENTIFIER_0001",
+        stop_name:
+          "Northbound Interchange Concourse Generic Circulation Node Under Reconstruction",
+        location_type: 3,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    IO.puts("Browser seed: long-named isolated generic node for report reflow tests")
+
     # ── Long-name fixtures for responsive data-view browser tests ──
     {:ok, _long_org} =
       Organizations.create_organization(%{
