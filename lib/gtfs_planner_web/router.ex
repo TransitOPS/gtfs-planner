@@ -69,10 +69,17 @@ defmodule GtfsPlannerWeb.Router do
     get "/map/tiles/:style/:z/:x/:y", MapTilesController, :show
     get "/map/buildings", MapBuildingsController, :index
 
-    live_session :require_authenticated_user,
-      on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do
+    live_session :require_authenticated_user_account,
+      on_mount: [
+        {GtfsPlannerWeb.UserAuth, :ensure_authenticated},
+        {GtfsPlannerWeb.AssignOrganization, :optional}
+      ] do
       live "/", DashboardLive, :index
       live "/users/settings", UserSettingsLive, :edit
+    end
+
+    live_session :require_authenticated_user_design,
+      on_mount: [{GtfsPlannerWeb.UserAuth, :ensure_authenticated}] do
       live "/design", Design.DesignSystemLive, :index
       live "/design/:page", Design.DesignSystemLive, :show
     end

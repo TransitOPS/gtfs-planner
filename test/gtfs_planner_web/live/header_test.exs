@@ -86,6 +86,66 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       assert has_element?(view, "#app-header nav[aria-label='Main navigation']")
     end
+
+    test "Account settings is visible on dashboard for authenticated users", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      assert has_element?(
+               view,
+               "#app-header nav[aria-label='Main navigation'] a[href='/users/settings']",
+               "Account settings"
+             )
+    end
+
+    test "Account settings is active on settings and inactive on dashboard", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, settings_view, _html} = live(conn, ~p"/users/settings")
+
+      assert has_element?(
+               settings_view,
+               "#app-header nav a[href='/users/settings'][aria-current='page']",
+               "Account settings"
+             )
+
+      {:ok, dash_view, _html} = live(conn, ~p"/")
+
+      refute has_element?(
+               dash_view,
+               "#app-header nav a[href='/users/settings'][aria-current='page']"
+             )
+
+      assert has_element?(
+               dash_view,
+               "#app-header nav a[href='/users/settings']:not([aria-current])"
+             )
+    end
+
+    test "optional account context assigns status without requiring organization", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, html} = live(conn, ~p"/")
+
+      # Dashboard remains reachable with no session organization (optional mode).
+      assert html =~ "Pathways Studio"
+      assert has_element?(view, "#app-header nav a[href='/users/settings']")
+    end
+
+    test "design routes remain reachable without optional organization assigns", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, html} = live(conn, ~p"/design/navigation")
+
+      assert html =~ "Navigation"
+      assert has_element?(view, "#ds-page-navigation")
+      assert has_element?(view, "#app-header nav a[href='/users/settings']")
+    end
   end
 
   describe "Document titles" do
@@ -94,6 +154,17 @@ defmodule GtfsPlannerWeb.HeaderTest do
       conn = log_in_user(conn, user)
 
       {:ok, _view, html} = live(conn, ~p"/")
+
+      assert html =~ "· Pathways Studio</title>"
+      assert html =~ ~s(data-default="Pathways Studio")
+      assert html =~ ~s(data-suffix=" · Pathways Studio")
+    end
+
+    test "settings title uses Pathways Studio shell", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, _view, html} = live(conn, ~p"/users/settings")
 
       assert html =~ "· Pathways Studio</title>"
       assert html =~ ~s(data-default="Pathways Studio")
