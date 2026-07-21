@@ -85,6 +85,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
        :form,
        to_form(%{"version_name" => ""}, as: :gtfs_import_form)
      )
+     |> assign(:diff_form, to_form(%{}, as: :diff_upload))
      |> assign(:import_result, nil)
      |> assign(:import_target, nil)
      |> assign(:published_version, nil)
@@ -771,7 +772,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       </.header>
 
       <div class="mt-8">
-        <div class="rounded-box border border-base-300 bg-base-100 p-6">
+        <div class="max-w-2xl bg-base-100 rounded-lg p-6">
           <.form
             for={@form}
             id="gtfs-import-form"
@@ -802,126 +803,34 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               />
             </div>
 
-            <div class="form-control">
-              <label class="label">
-                <span class="label-text">GTFS Files</span>
-              </label>
-              <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-control-border rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
-                <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
-                  <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/70" />
-                  <p class="mb-2 text-sm font-medium">
-                    <span class="text-primary">Click to upload</span> or drag and drop
-                  </p>
-                  <p class="text-xs text-base-content/70">
-                    GTFS .txt/.csv files or a .zip archive (max 50 files, 200MB each)
-                  </p>
-                </div>
-                <.live_file_input upload={@uploads.gtfs_files} id="gtfs-import-files" class="sr-only" />
-              </label>
-            </div>
+            <.upload_field
+              id="gtfs-import-upload"
+              upload={@uploads.gtfs_files}
+              label="GTFS files"
+              help="GTFS .txt or .csv files, or one .zip archive. Up to 50 files, 200 MB each."
+              action_label="Select GTFS files or drag and drop"
+              cancel_event="cancel-upload"
+              error_formatter={&upload_error_to_string/1}
+              state={upload_field_state(@uploads.gtfs_files)}
+            />
 
-            <%!-- Unrecognized files warning --%>
             <%= if @unrecognized_upload_files != [] do %>
-              <div class="alert alert-warning alert-soft mt-2">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="stroke-current shrink-0 h-6 w-6 text-warning"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                  />
-                </svg>
-                <div class="text-base-content">
-                  <h3 class="font-bold">Unrecognized Files</h3>
-                  <div class="text-xs">
-                    The following files are not recognized GTFS files and will be skipped during import: {Enum.join(
-                      @unrecognized_upload_files,
-                      ", "
-                    )}
-                  </div>
-                </div>
-              </div>
+              <.callout id="gtfs-import-unrecognized" kind="warning" title="Unrecognized files">
+                These files will be skipped: {Enum.join(@unrecognized_upload_files, ", ")}.
+              </.callout>
             <% end %>
 
-            <%!-- Upload errors --%>
-            <%= for error <- upload_errors(@uploads.gtfs_files) do %>
-              <div class="alert alert-error alert-soft mt-2">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="stroke-current shrink-0 h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                  />
-                </svg>
-                <span class="text-sm">{upload_error_to_string(error)}</span>
-              </div>
-            <% end %>
-
-            <div class="form-control">
-              <button
-                type="submit"
-                id="gtfs-import-submit"
-                class="btn btn-primary"
-                disabled={@uploads.gtfs_files.entries == [] || @importing}
-              >
-                <%= if @importing do %>
-                  <span class="loading loading-spinner loading-sm"></span> Importing…
-                <% else %>
-                  Import feed
-                <% end %>
-              </button>
-            </div>
-
-            <%!-- Upload entries display --%>
-            <%= for entry <- @uploads.gtfs_files.entries do %>
-              <div class={[
-                "flex items-center justify-between mt-2 p-2 rounded",
-                upload_errors(@uploads.gtfs_files, entry) == [] && "bg-base-200",
-                upload_errors(@uploads.gtfs_files, entry) != [] && "bg-error/10 border border-error"
-              ]}>
-                <div class="flex-1">
-                  <span class="text-sm font-medium">{entry.client_name}</span>
-                  <%= if upload_errors(@uploads.gtfs_files, entry) == [] do %>
-                    <div class="w-full bg-base-300 rounded-full h-2 mt-1">
-                      <div
-                        class="bg-primary h-2 rounded-full transition-all duration-300"
-                        style={"width: #{entry.progress}%"}
-                      >
-                      </div>
-                    </div>
-                    <span class="text-xs text-base-content/70">
-                      {entry.progress}% uploaded
-                    </span>
-                  <% else %>
-                    <%= for error <- upload_errors(@uploads.gtfs_files, entry) do %>
-                      <div class="flex items-center gap-2 mt-1">
-                        <.icon name="hero-exclamation-circle" class="w-4 h-4 text-error" />
-                        <span class="text-sm text-error">{upload_error_to_string(error)}</span>
-                      </div>
-                    <% end %>
-                  <% end %>
-                </div>
-                <button
-                  type="button"
-                  class="btn btn-ghost btn-xs ml-2"
-                  phx-click="cancel-upload"
-                  phx-value-ref={entry.ref}
-                >
-                  Cancel
-                </button>
-              </div>
-            <% end %>
+            <.button
+              id="gtfs-import-submit"
+              type="submit"
+              disabled={@uploads.gtfs_files.entries == [] || @importing}
+            >
+              <%= if @importing do %>
+                <span class="loading loading-spinner loading-sm"></span> Importing…
+              <% else %>
+                Import feed
+              <% end %>
+            </.button>
           </.form>
 
           <div id="gtfs-import-status" aria-live="polite" role="status">
@@ -933,7 +842,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       <span class="text-sm font-medium">
                         Processing: {@import_progress.file}
                       </span>
-                      <span class="text-sm text-base-content/70">
+                      <span class="text-sm text-base-content/60">
                         {@import_progress.processed} / {@import_progress.total} rows
                       </span>
                     </div>
@@ -957,55 +866,31 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             >
               <%= case @import_result do %>
                 <% {:ok, published, %Import.Result{counts: counts, unrecognized_files: unrecognized}} -> %>
-                  <div class="alert border border-green-300 bg-green-100 text-black">
-                    <.icon name="hero-check-circle" class="shrink-0 h-6 w-6" />
-                    <div>
-                      <h3 class="font-bold">Import successful</h3>
-                      <div class="text-xs">
-                        Imported into new version “{published.name}”: {counts.levels} levels, {counts.stops} stops, {counts.pathways} pathways.
-                      </div>
-                      <div :if={unrecognized != []} class="text-xs mt-1">
-                        Unrecognized files skipped: {Enum.join(unrecognized, ", ")}
-                      </div>
-                      <.link
-                        id="gtfs-import-view-version"
-                        navigate={~p"/gtfs/#{published.id}/routes"}
-                        class="link link-primary text-sm mt-2 inline-block"
-                      >
-                        View version
-                      </.link>
-                    </div>
-                  </div>
+                  <.callout kind="success" title="Import successful">
+                    Imported into new version “{published.name}”: {counts.levels} levels, {counts.stops} stops, {counts.pathways} pathways.
+                    <span :if={unrecognized != []}>
+                      Unrecognized files skipped: {Enum.join(unrecognized, ", ")}.
+                    </span>
+                    <.link
+                      id="gtfs-import-view-version"
+                      navigate={~p"/gtfs/#{published.id}/routes"}
+                      class="mt-2 inline-block text-primary underline"
+                    >
+                      View version
+                    </.link>
+                  </.callout>
                 <% {:error, target, {:publication_failed, _reason}} -> %>
-                  <div class="alert alert-error alert-soft">
-                    <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
-                    <div>
-                      <h3 class="font-bold">Publication failed</h3>
-                      <div class="text-xs">
-                        Version “{target_name(target)}” finished importing but could not be published. It remains unavailable for reconciliation.
-                      </div>
-                    </div>
-                  </div>
+                  <.callout kind="error" title="Publication failed">
+                    Version “{target_name(target)}” finished importing but could not be published. It remains unavailable for reconciliation.
+                  </.callout>
                 <% {:error, nil, :no_files_selected} -> %>
-                  <div class="alert alert-error alert-soft">
-                    <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
-                    <div>
-                      <h3 class="font-bold">Import failed</h3>
-                      <div class="text-xs">Select at least one file to import.</div>
-                    </div>
-                  </div>
+                  <.callout kind="error" title="Import failed">
+                    Select at least one file to import.
+                  </.callout>
                 <% {:error, target, reason} -> %>
-                  <div class="alert alert-error alert-soft">
-                    <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
-                    <div>
-                      <h3 class="font-bold">Import failed</h3>
-                      <div class="text-xs">
-                        Version “{target_name(target)}” was not published. {format_import_error(
-                          reason
-                        )}
-                      </div>
-                    </div>
-                  </div>
+                  <.callout kind="error" title="Import failed">
+                    Version “{target_name(target)}” was not published. {format_import_error(reason)}
+                  </.callout>
               <% end %>
             </div>
           <% end %>
@@ -1021,7 +906,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       </div>
 
       <div class="mt-8">
-        <div class="rounded-box border border-base-300 bg-base-100 p-6">
+        <div class="bg-base-100 rounded-lg p-6">
           <div class="flex flex-col gap-3">
             <h2 class="text-xl font-semibold">Import recovery</h2>
             <p class="text-sm text-base-content/70">
@@ -1045,7 +930,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               <.icon name={recovery_card_icon(run)} class="w-5 h-5 mb-2" />
               <div class="flex flex-col gap-1">
                 <p class="text-sm font-semibold">{run.version_name}</p>
-                <p class="text-xs text-base-content/70">{recovery_card_state_label(run)}</p>
+                <.status_badge
+                  status={recovery_badge_status(run)}
+                  label={recovery_card_state_label(run)}
+                />
                 <%= if run.committed_counts != %{} and run.state == "partial" do %>
                   <p class="text-xs text-base-content/70 mt-1">
                     {recovery_counts_summary(run.committed_counts)}
@@ -1111,7 +999,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                 <% end %>
 
                 <%= if run.state in ~w(pending running cleaning) do %>
-                  <span class="text-xs text-base-content/70 self-center">
+                  <span class="text-xs text-base-content/50 self-center">
                     {if run.state == "cleaning", do: "Cleanup in progress…", else: "In progress…"}
                   </span>
                 <% end %>
@@ -1120,113 +1008,65 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           </div>
 
           <%= if @recovery_empty do %>
-            <p
+            <.empty_state
               id="import-recovery-empty"
-              class="text-sm text-base-content/70 py-2"
+              class="py-6"
+              title="No recoverable imports"
             >
               No recoverable imports for this organization.
-            </p>
+            </.empty_state>
           <% end %>
         </div>
       </div>
 
       <div class="mt-8">
-        <div class="rounded-box border border-base-300 bg-base-100 p-6">
+        <div class="bg-base-100 rounded-lg p-6">
           <div class="flex flex-col gap-2">
-            <h2 class="text-xl font-semibold">Update Station Data</h2>
+            <h2 class="text-xl font-semibold">Update station data</h2>
             <p class="text-sm text-base-content/70">
               Upload `levels.txt`, `stops.txt`, and/or `pathways.txt` to review and apply station data diffs.
             </p>
-            <p id="diff-destination" class="text-xs text-base-content/70">
+            <p id="diff-destination" class="text-xs text-base-content/60">
               Reviewed changes apply to version “{version_display_name(@current_gtfs_version)}”.
             </p>
           </div>
 
           <.form
-            for={to_form(%{}, as: :diff_upload)}
+            for={@diff_form}
             id="diff-upload-form"
             class="mt-6 space-y-4"
             phx-change="validate_diff"
             phx-submit="compute_diff"
           >
-            <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-control-border rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
-              <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
-                <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/70" />
-                <p class="mb-2 text-sm font-medium">
-                  <span class="text-primary">Click to upload</span> or drag and drop
-                </p>
-                <p class="text-xs text-base-content/70">
-                  levels.txt, stops.txt, pathways.txt or a .zip archive (max 3 files, 50MB each)
-                </p>
-              </div>
-              <.live_file_input upload={@uploads.diff_files} class="sr-only" />
-            </label>
-
-            <%= for error <- upload_errors(@uploads.diff_files) do %>
-              <div class="alert alert-error alert-soft">
-                <.icon name="hero-exclamation-triangle" class="w-5 h-5" />
-                <span>{diff_upload_error_to_string(error)}</span>
-              </div>
-            <% end %>
-
-            <%= for entry <- @uploads.diff_files.entries do %>
-              <div class={[
-                "flex items-center justify-between mt-2 p-2 rounded",
-                upload_errors(@uploads.diff_files, entry) == [] && "bg-base-200",
-                upload_errors(@uploads.diff_files, entry) != [] && "bg-error/10 border border-error"
-              ]}>
-                <div class="flex-1">
-                  <span class="text-sm font-medium">{entry.client_name}</span>
-                  <%= if upload_errors(@uploads.diff_files, entry) == [] do %>
-                    <div class="w-full bg-base-300 rounded-full h-2 mt-1">
-                      <div
-                        class="bg-primary h-2 rounded-full transition-all duration-300"
-                        style={"width: #{entry.progress}%"}
-                      >
-                      </div>
-                    </div>
-                    <span class="text-xs text-base-content/70">
-                      {entry.progress}% uploaded
-                    </span>
-                  <% else %>
-                    <%= for error <- upload_errors(@uploads.diff_files, entry) do %>
-                      <div class="flex items-center gap-2 mt-1">
-                        <.icon name="hero-exclamation-circle" class="w-4 h-4 text-error" />
-                        <span class="text-sm text-error">{diff_upload_error_to_string(error)}</span>
-                      </div>
-                    <% end %>
-                  <% end %>
-                </div>
-                <button
-                  type="button"
-                  class="btn btn-ghost btn-xs ml-2"
-                  phx-click="cancel-diff-upload"
-                  phx-value-ref={entry.ref}
-                >
-                  Cancel
-                </button>
-              </div>
-            <% end %>
+            <.upload_field
+              id="diff-upload"
+              upload={@uploads.diff_files}
+              label="Station data files"
+              help="levels.txt, stops.txt, pathways.txt, or one .zip archive. Up to 3 files, 50 MB each."
+              action_label="Select station data files or drag and drop"
+              cancel_event="cancel-diff-upload"
+              error_formatter={&diff_upload_error_to_string/1}
+              state={upload_field_state(@uploads.diff_files)}
+            />
 
             <div class="flex flex-wrap gap-2">
-              <button
-                type="submit"
+              <.button
                 id="diff-compute-btn"
-                class="btn btn-primary"
+                type="submit"
                 disabled={@uploads.diff_files.entries == [] || @diff_step != :upload}
               >
-                Compute Diff
-              </button>
+                Compute diff
+              </.button>
 
               <%= if @diff_step == :review do %>
-                <button
-                  type="button"
+                <.button
                   id="diff-reset-btn"
-                  class="btn btn-outline"
+                  variant="secondary"
+                  type="button"
                   phx-click="reset-diff"
                 >
                   Reset
-                </button>
+                </.button>
               <% end %>
             </div>
           </.form>
@@ -1278,7 +1118,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         @diff_filter == filter &&
                           "border-primary text-base-content",
                         @diff_filter != filter &&
-                          "border-transparent text-base-content/70 hover:text-base-content hover:border-base-300"
+                          "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
                       ]}
                       phx-click="diff-filter"
                       phx-value-filter={filter}
@@ -1335,7 +1175,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       </li>
                     </ul>
                     <%= if failure.truncated? do %>
-                      <p class="text-xs text-base-content/70 mt-1">
+                      <p class="text-xs text-base-content/60 mt-1">
                         Showing first 100 of {failure.total_error_count} errors; further rows have the same issues.
                       </p>
                     <% end %>
@@ -1365,7 +1205,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   <div class="overflow-x-auto mt-3">
                     <table class="table table-xs w-full">
                       <thead>
-                        <tr class="text-xs uppercase tracking-wide text-base-content/70">
+                        <tr class="text-xs uppercase tracking-wide text-base-content/60">
                           <th>Type</th>
                           <th>ID</th>
                           <th>Action</th>
@@ -1407,7 +1247,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               <div class="overflow-x-auto">
                 <table class="table table-xs w-full">
                   <thead>
-                    <tr class="text-xs uppercase tracking-wide text-base-content/70">
+                    <tr class="text-xs uppercase tracking-wide text-base-content/60">
                       <th>Type</th>
                       <th>ID</th>
                       <th>Action</th>
@@ -1450,7 +1290,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         </span>
                         <span
                           :if={decision.user_edited}
-                          class="text-xs text-base-content/70"
+                          class="text-xs text-base-content/50"
                         >
                           (edited)
                         </span>
@@ -1466,13 +1306,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                         >
                           <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
                             <%= for {field, value} <- detail_fields(decision) do %>
-                              <span class="text-base-content/70 font-medium">{to_string(field)}</span>
+                              <span class="text-base-content/60 font-medium">{to_string(field)}</span>
                               <span class="font-mono">{format_value(value)}</span>
                             <% end %>
                           </div>
                           <p
                             :if={decision.dependency_keys != []}
-                            class="mt-2 text-xs text-base-content/70"
+                            class="mt-2 text-xs text-base-content/50"
                           >
                             Depends on: {Enum.join(decision.dependency_keys, ", ")}
                           </p>
@@ -1580,7 +1420,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             if (el) el.focus()
           })
           this.handleEvent("focus_gtfs_import_files", () => {
-            const el = this.el.querySelector("#gtfs-import-files")
+            const el = this.el.querySelector("#gtfs-import-upload-input input")
             if (el) el.focus()
           })
         }
@@ -1814,6 +1654,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp recovery_card_icon(%Run{state: "publication_failed"}), do: "hero-exclamation-triangle"
   defp recovery_card_icon(%Run{state: "cleaning"}), do: "hero-arrow-path"
   defp recovery_card_icon(%Run{}), do: "hero-clock"
+
+  defp recovery_badge_status(%Run{state: state}) when state in ~w(pending running cleaning),
+    do: :running
+
+  defp recovery_badge_status(%Run{state: "partial"}), do: :warning
+
+  defp recovery_badge_status(%Run{state: state})
+       when state in ~w(failed interrupted publication_failed cleanup_failed),
+       do: :failed
+
+  defp recovery_badge_status(%Run{}), do: :info
 
   defp recovery_card_state_label(%Run{state: "pending"}), do: "Import pending — preparing upload."
 
@@ -2378,6 +2229,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp upload_error_to_string({:error, reason}), do: reason
   defp upload_error_to_string(error) when is_binary(error), do: error
   defp upload_error_to_string(_), do: "Upload error"
+
+  defp upload_field_state(upload) do
+    if upload.errors != [] or Enum.any?(upload.entries, &(upload_errors(upload, &1) != [])) do
+      :failed
+    else
+      :idle
+    end
+  end
 
   defp diff_upload_error_to_string(:too_large), do: "File exceeds 50MB limit"
   defp diff_upload_error_to_string(:too_many_files), do: "Maximum 3 files allowed"

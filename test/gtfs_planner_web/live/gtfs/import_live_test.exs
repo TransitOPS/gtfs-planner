@@ -162,7 +162,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/import")
 
       assert html =~ "Import GTFS"
-      assert html =~ "GTFS Files"
+      assert html =~ "GTFS files"
       assert html =~ ".zip archive"
     end
 
@@ -254,6 +254,25 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert has_element?(view, "#gtfs-import-destination")
       assert has_element?(view, "#gtfs-import-submit", "Import feed")
       assert render(view) =~ version.name
+    end
+
+    test "uses shared, labeled upload fields and task actions for both import paths", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      assert has_element?(view, "#gtfs-import-upload[data-upload-state='idle']")
+      assert has_element?(view, "#gtfs-import-upload-label", "GTFS files")
+      assert has_element?(view, "#gtfs-import-upload-help")
+      assert has_element?(view, "#diff-upload[data-upload-state='idle']")
+      assert has_element?(view, "#diff-upload-label", "Station data files")
+      assert has_element?(view, "#diff-upload-help")
+      assert has_element?(view, "#diff-compute-btn[disabled]", "Compute diff")
+      assert has_element?(view, "#import-recovery-empty")
     end
 
     test "import button disabled with no files, enabled once a file is present", %{
@@ -358,7 +377,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       html = submit_import(view, "Pending State")
 
       assert html =~ "Importing"
-      assert html =~ ~r/id="gtfs-import-submit"[^>]*disabled/
+      assert has_element?(view, "#gtfs-import-submit[disabled]")
 
       # The polite live region is present to surface progress.
       assert html =~ ~r/id="gtfs-import-status"[^>]*aria-live="polite"/
