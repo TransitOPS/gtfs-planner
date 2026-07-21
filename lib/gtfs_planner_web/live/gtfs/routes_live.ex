@@ -461,6 +461,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   defp no_filter_active?(assigns) do
     params = assigns.filter_form.params
+
     params["route_type"] in [nil, ""] and
       params["agency_id"] in [nil, ""] and
       params["active"] in [nil, ""]

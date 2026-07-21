@@ -547,6 +547,7 @@ case Accounts.register_first_admin(%{
     IO.puts(
       "Browser seed: account password-mutation user #{password_user.email} (one-use per reset)"
     )
+
     # ── Catalog design-contract fixtures (catalog_design_contracts.spec.js) ──
     #
     # Deterministic stops, pathways, and versions that exercise the responsive
