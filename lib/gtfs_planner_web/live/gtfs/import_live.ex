@@ -7,31 +7,24 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   import Ecto.Query, only: [from: 2]
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import
 
   alias GtfsPlanner.Gtfs.Import.{
     Result,
-    Diff,
     ChangeArtifactStorage,
     ChangeDecision,
     ChangeRun,
     ChangeRunner,
     ChangeRuns,
-    Diff,
-    DiffDecision,
-    ParseError,
-    ParseFailure,
-    ParsedEntity,
-    RowParser
+    ParseError
   }
 
   alias GtfsPlanner.Gtfs.Import.Run
   alias GtfsPlanner.Gtfs.Import.Runner
   alias GtfsPlanner.Gtfs.ImportRuns
-  alias GtfsPlannerWeb.Components.TransitPresentation
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
+  alias GtfsPlannerWeb.Components.TransitPresentation
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_editor}
 
@@ -1712,422 +1705,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp diff_state_label(%ChangeRun{state: :expired}), do: "Review expired"
   defp diff_state_label(%ChangeRun{}), do: "Review updated"
 
-  defp categorize_diff_files(files) do
-    grouped =
-      Enum.reduce(files, %{levels: [], stops: [], pathways: []}, fn file, acc ->
-        basename =
-          file.filename
-          |> Path.basename()
-          |> String.downcase()
-
-        normalized_file = %{file | filename: basename}
-
-        case basename do
-          "levels.txt" -> Map.update!(acc, :levels, &[normalized_file | &1])
-          "stops.txt" -> Map.update!(acc, :stops, &[normalized_file | &1])
-          "pathways.txt" -> Map.update!(acc, :pathways, &[normalized_file | &1])
-          _ -> acc
-        end
-      end)
-
-    duplicate_errors =
-      grouped
-      |> Enum.flat_map(fn
-        {_type, []} ->
-          []
-
-        {_type, [_single]} ->
-          []
-
-        {_type, files_for_type} ->
-          basenames = files_for_type |> Enum.map(& &1.filename) |> Enum.uniq() |> Enum.join(", ")
-
-          [
-            %{
-              file: basenames,
-              row: nil,
-              reason: :duplicate_entity_file
-            }
-          ]
-      end)
-
-    if duplicate_errors == [] do
-      {:ok,
-       %{
-         levels: single_optional_file(grouped.levels),
-         stops: single_optional_file(grouped.stops),
-         pathways: single_optional_file(grouped.pathways)
-       }}
-    else
-      {:error, duplicate_errors}
-    end
+  defp non_zero_action_counts(summary) do
+    [:add, :modify, :conflict, :remove]
+    |> Enum.map(fn action -> {action, Map.get(summary, action, 0)} end)
+    |> Enum.reject(fn {_action, count} -> count == 0 end)
   end
-
-  defp single_optional_file([]), do: nil
-  defp single_optional_file([file]), do: file
-
-  defp normalize_archive_warnings(warnings) when is_list(warnings) do
-    Enum.map(warnings, fn warning ->
-      reason =
-        case warning.reason do
-          :unzip_failed -> :archive_unreadable
-          :archive_too_large -> :archive_too_large
-          :nested_archive -> :nested_archive
-          _unknown -> :archive_unreadable
-        end
-
-      %ParseError{
-        file: warning.filename,
-        reason: reason,
-        metadata: %{}
-      }
-    end)
-  end
-
-  defp normalize_duplicate_blocker(duplicate) do
-    %ParseError{
-      file: Map.get(duplicate, :file),
-      reason: :duplicate_entity_file,
-      metadata: %{}
-    }
-  end
-
-  defp build_stop_validation_map(db_stops, stops_result) do
-    db_ids = Enum.map(db_stops, & &1.stop_id)
-
-    uploaded_ids =
-      case stops_result do
-        {:ok, parsed_entity} ->
-          records_by_key = ParsedEntity.records_by_key(parsed_entity)
-          Map.values(records_by_key) |> Enum.map(&Map.get(&1, :stop_id))
-
-        {:error, %ParseFailure{preview_records_by_key: preview_records_by_key}} ->
-          Map.values(preview_records_by_key) |> Enum.map(&Map.get(&1, :stop_id))
-
-        :not_uploaded ->
-          []
-      end
-
-    (db_ids ++ uploaded_ids)
-    |> Enum.uniq()
-    |> Enum.reject(&(&1 in [nil, ""]))
-    |> Map.new(fn stop_id -> {stop_id, true} end)
-  end
-
-  defp stream_filtered_diff_decisions(socket) do
-    decisions =
-      socket.assigns.decisions_by_id
-      |> Map.values()
-      |> Enum.filter(fn decision ->
-        socket.assigns.diff_filter == :all or decision.action == socket.assigns.diff_filter
-      end)
-      |> Enum.sort_by(&display_decision_sort_key/1)
-      |> mark_group_boundaries()
-
-    stream(socket, :diff_decisions, decisions, reset: true)
-  end
-
-  defp mark_group_boundaries([]), do: []
-
-  defp mark_group_boundaries([%DiffDecision{} = first | rest]) do
-    {annotated, _} =
-      Enum.map_reduce(rest, first.entity_type, fn %DiffDecision{} = decision, prev_type ->
-        {%DiffDecision{decision | first_of_group: decision.entity_type != prev_type},
-         decision.entity_type}
-      end)
-
-    [%DiffDecision{first | first_of_group: true} | annotated]
-  end
-
-  defp display_decision_sort_key(decision) do
-    {entity_sort_rank(decision.entity_type), decision.natural_key,
-     action_sort_rank(decision.action)}
-  end
-
-  defp update_decision_status(socket, id, status) do
-    case Map.fetch(socket.assigns.decisions_by_id, id) do
-      {:ok, %DiffDecision{} = decision} ->
-        updated_decision = %DiffDecision{decision | status: status}
-
-        socket
-        |> assign(:decisions_by_id, Map.put(socket.assigns.decisions_by_id, id, updated_decision))
-        |> stream_filtered_diff_decisions()
-
-      :error ->
-        socket
-    end
-  end
-
-  defp order_apply_decisions(decisions) do
-    Enum.sort_by(decisions, fn decision ->
-      {decision_phase_rank(decision.action),
-       decision_entity_rank(decision.action, decision.entity_type)}
-    end)
-  end
-
-  defp decision_phase_rank(:add), do: 0
-  defp decision_phase_rank(:modify), do: 1
-  defp decision_phase_rank(:conflict), do: 1
-  defp decision_phase_rank(:remove), do: 2
-
-  defp decision_entity_rank(action, entity_type) when action in [:add, :modify, :conflict] do
-    case entity_type do
-      :level -> 0
-      :stop -> 1
-      :pathway -> 2
-    end
-  end
-
-  defp decision_entity_rank(:remove, entity_type) do
-    case entity_type do
-      :pathway -> 0
-      :stop -> 1
-      :level -> 2
-    end
-  end
-
-  defp apply_decision(%DiffDecision{action: :add, entity_type: :level, uploaded_attrs: attrs})
-       when is_map(attrs) do
-    attrs
-    |> Gtfs.create_level()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{action: :add, entity_type: :stop, uploaded_attrs: attrs})
-       when is_map(attrs) do
-    attrs
-    |> Gtfs.import_create_stop()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{action: :add, entity_type: :pathway, uploaded_attrs: attrs})
-       when is_map(attrs) do
-    attrs
-    |> Gtfs.create_pathway()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: action,
-         entity_type: :level,
-         current_record: current_record,
-         uploaded_attrs: uploaded_attrs
-       })
-       when action in [:modify, :conflict] and is_map(uploaded_attrs) and
-              not is_nil(current_record) do
-    managed_attrs = Map.take(uploaded_attrs, [:level_index, :level_name])
-
-    current_record
-    |> Gtfs.update_level(managed_attrs)
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: action,
-         entity_type: :stop,
-         current_record: current_record,
-         uploaded_attrs: uploaded_attrs
-       })
-       when action in [:modify, :conflict] and is_map(uploaded_attrs) and
-              not is_nil(current_record) do
-    managed_attrs =
-      Map.take(uploaded_attrs, [
-        :stop_name,
-        :stop_desc,
-        :stop_lat,
-        :stop_lon,
-        :location_type,
-        :wheelchair_boarding,
-        :platform_code,
-        :level_id,
-        :parent_station
-      ])
-
-    current_record
-    |> Gtfs.import_update_stop(managed_attrs)
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: action,
-         entity_type: :pathway,
-         current_record: current_record,
-         uploaded_attrs: uploaded_attrs
-       })
-       when action in [:modify, :conflict] and is_map(uploaded_attrs) and
-              not is_nil(current_record) do
-    managed_attrs =
-      Map.take(uploaded_attrs, [
-        :pathway_mode,
-        :is_bidirectional,
-        :traversal_time,
-        :length,
-        :stair_count,
-        :max_slope,
-        :min_width,
-        :signposted_as,
-        :reversed_signposted_as,
-        :from_stop_id,
-        :to_stop_id
-      ])
-
-    current_record
-    |> Gtfs.update_pathway(managed_attrs)
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: :remove,
-         entity_type: :level,
-         current_record: current_record
-       })
-       when not is_nil(current_record) do
-    current_record
-    |> Gtfs.delete_level()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: :remove,
-         entity_type: :stop,
-         current_record: current_record
-       })
-       when not is_nil(current_record) do
-    current_record
-    |> Gtfs.delete_stop()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: :remove,
-         entity_type: :pathway,
-         current_record: current_record
-       })
-       when not is_nil(current_record) do
-    current_record
-    |> Gtfs.delete_pathway()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(_), do: {:error, :invalid_decision}
-
-  defp normalize_apply_result({:ok, _record}), do: :ok
-  defp normalize_apply_result({:error, reason}), do: {:error, reason}
 
   defp approved_decision_count(decisions_by_id) do
     decisions_by_id
     |> Map.values()
     |> Enum.count(fn decision -> decision.status == :approved end)
-  end
-
-  defp successful_apply_count(apply_results) do
-    Enum.count(apply_results, fn {_decision_id, result} -> result == :ok end)
-  end
-
-  defp failed_apply_count(apply_results) do
-    Enum.count(apply_results, fn {_decision_id, result} -> match?({:error, _}, result) end)
-  end
-
-  defp failed_apply_results(apply_results) do
-    Enum.filter(apply_results, fn {_decision_id, result} -> match?({:error, _}, result) end)
-  end
-
-  defp entity_sort_rank(:level), do: 0
-  defp entity_sort_rank(:stop), do: 1
-  defp entity_sort_rank(:pathway), do: 2
-
-  defp action_sort_rank(:add), do: 0
-  defp action_sort_rank(:modify), do: 1
-  defp action_sort_rank(:conflict), do: 2
-  defp action_sort_rank(:remove), do: 3
-
-  defp format_value(nil), do: "nil"
-  defp format_value(value) when is_binary(value) and value == "", do: "\"\""
-  defp format_value(%Decimal{} = value), do: Decimal.to_string(value, :normal)
-  defp format_value(value) when is_binary(value), do: value
-  defp format_value(value), do: inspect(value)
-
-  defp action_dot_color(:add), do: "bg-emerald-600"
-  defp action_dot_color(:modify), do: "bg-amber-500"
-  defp action_dot_color(:conflict), do: "bg-red-600"
-  defp action_dot_color(:remove), do: "bg-base-content/40"
-
-  defp managed_fields_for(:level), do: [:level_name, :level_index]
-
-  defp managed_fields_for(:stop),
-    do: [
-      :stop_name,
-      :stop_desc,
-      :stop_lat,
-      :stop_lon,
-      :location_type,
-      :platform_code,
-      :level_id,
-      :parent_station,
-      :wheelchair_boarding
-    ]
-
-  defp managed_fields_for(:pathway),
-    do: [
-      :from_stop_id,
-      :to_stop_id,
-      :pathway_mode,
-      :is_bidirectional,
-      :traversal_time,
-      :length,
-      :stair_count,
-      :max_slope,
-      :min_width,
-      :signposted_as,
-      :reversed_signposted_as
-    ]
-
-  defp format_decision_details(%DiffDecision{action: :add} = d) do
-    managed_fields_for(d.entity_type)
-    |> Enum.map(fn field -> {field, Map.get(d.uploaded_attrs || %{}, field)} end)
-    |> Enum.reject(fn {_k, v} -> is_nil(v) or v == "" end)
-    |> Enum.map(fn {k, v} -> "#{k}: #{format_value(v)}" end)
-    |> Enum.join(", ")
-  end
-
-  defp format_decision_details(%DiffDecision{action: :remove} = d) do
-    record = d.current_record
-
-    managed_fields_for(d.entity_type)
-    |> Enum.map(fn field -> {field, record && Map.get(record, field)} end)
-    |> Enum.reject(fn {_k, v} -> is_nil(v) or v == "" end)
-    |> Enum.map(fn {k, v} -> "#{k}: #{format_value(v)}" end)
-    |> Enum.join(", ")
-  end
-
-  defp format_decision_details(%DiffDecision{changed_fields: fields}) do
-    fields
-    |> Enum.map(fn {field, {old, new}} ->
-      "#{field}: #{format_value(old)} \u2192 #{format_value(new)}"
-    end)
-    |> Enum.join(", ")
-  end
-
-  defp detail_fields(%DiffDecision{action: :add} = d) do
-    managed_fields_for(d.entity_type)
-    |> Enum.map(fn field -> {field, Map.get(d.uploaded_attrs || %{}, field)} end)
-  end
-
-  defp detail_fields(%DiffDecision{action: :remove} = d) do
-    record = d.current_record
-
-    managed_fields_for(d.entity_type)
-    |> Enum.map(fn field -> {field, record && Map.get(record, field)} end)
-  end
-
-  defp detail_fields(%DiffDecision{} = d) do
-    d.changed_fields
-  end
-
-  defp non_zero_action_counts(summary) do
-    [:add, :modify, :conflict, :remove]
-    |> Enum.map(fn action -> {action, Map.get(summary, action, 0)} end)
-    |> Enum.reject(fn {_action, count} -> count == 0 end)
   end
 
   defp decision_total(summary) do
@@ -2169,35 +1756,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp parse_reason_label(:semantic_row), do: "Invalid row value"
   defp parse_reason_label(:unexpected_parser_failure), do: "Unexpected parse failure"
 
-  defp format_failure_summary(%ParseFailure{
-         entity_type: entity_type,
-         total_error_count: total_error_count,
-         source_row_count: source_row_count
-       }) do
-    "#{entity_type_label(entity_type)} file could not be fully parsed: #{total_error_count} " <>
-      "#{pluralize(total_error_count, "error")} across #{source_row_count} rows."
-  end
-
   defp entity_type_label(:level), do: "Levels"
   defp entity_type_label(:stop), do: "Stops"
   defp entity_type_label(:pathway), do: "Pathways"
-
-  defp pluralize(1, singular), do: singular
-  defp pluralize(_count, singular), do: "#{singular}s"
-
-  defp format_apply_reason(%Ecto.Changeset{} = changeset) do
-    errors =
-      Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-        Enum.reduce(opts, msg, fn {key, value}, acc ->
-          String.replace(acc, "%{#{key}}", to_string(value))
-        end)
-      end)
-
-    inspect(errors)
-  end
-
-  defp format_apply_reason(reason) when is_binary(reason), do: reason
-  defp format_apply_reason(reason), do: inspect(reason)
 
   defp upload_error_to_string(:too_large), do: "File exceeds 200MB limit"
   defp upload_error_to_string(:too_many_files), do: "Maximum 50 files allowed"
