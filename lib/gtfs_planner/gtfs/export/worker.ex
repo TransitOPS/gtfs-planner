@@ -19,7 +19,11 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
          {:ok, _run} <- persist_warnings(run, generation, token, warnings),
          :ok <- renew(run, generation, token),
          {:ok, zip_bytes} <-
-           Export.export_to_zip(run.organization_id, run.gtfs_version_id, run.export_type),
+           export_module().export_to_zip(
+             run.organization_id,
+             run.gtfs_version_id,
+             run.export_type
+           ),
          :ok <- renew(run, generation, token),
          {:ok, artifact} <- publish(run, zip_bytes),
          {:ok, _ready} <-
@@ -42,7 +46,7 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
 
   defp preflight(run) do
     warnings =
-      case Preflight.run(run.organization_id, run.gtfs_version_id) do
+      case preflight_module().run(run.organization_id, run.gtfs_version_id) do
         :ok -> []
         {:error, issues} when is_list(issues) -> Enum.map(issues, &warning_from_issue/1)
         _ -> []
@@ -106,4 +110,10 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
   defp failure_code(:artifact_storage_unavailable), do: "artifact_storage_unavailable"
   defp failure_code(:artifact_capacity_exceeded), do: "artifact_capacity_exceeded"
   defp failure_code(_), do: "export_failed"
+
+  defp export_module,
+    do: Application.get_env(:gtfs_planner, :gtfs_export_module, Export)
+
+  defp preflight_module,
+    do: Application.get_env(:gtfs_planner, :otp_preflight_module, Preflight)
 end

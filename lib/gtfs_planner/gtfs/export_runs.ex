@@ -386,6 +386,19 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     |> Repo.one()
   end
 
+  @spec latest_for_version(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways) :: Run.t() | nil
+  def latest_for_version(organization_id, version_id, export_type)
+      when export_type in [:full, :pathways] do
+    from(r in Run,
+      where:
+        r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id and
+          r.export_type == ^export_type,
+      order_by: [desc: r.inserted_at],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
   @spec topic(Run.t() | Ecto.UUID.t()) :: String.t()
   def topic(%Run{id: id}), do: topic(id)
   def topic(run_id) when is_binary(run_id), do: "export-run:" <> run_id

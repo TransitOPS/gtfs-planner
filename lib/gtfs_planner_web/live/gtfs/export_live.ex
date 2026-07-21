@@ -5,6 +5,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   """
   use GtfsPlannerWeb, :live_view
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Export.Runner, as: ExportRunner
+  alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.Validator
   alias GtfsPlanner.Otp.Runtime
   alias GtfsPlanner.Validations
@@ -53,11 +55,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:page_title, "Export GTFS")
      |> assign(:user_roles, user_roles)
      |> assign(:export_type, :full)
+     |> assign(:export_form, export_form(:full))
      |> assign(:selected_validations, [])
      |> assign(:file_inventory, [])
-     |> assign(:exporting, false)
-     |> assign(:export_task, nil)
-     |> assign(:export_error, nil)
+     |> assign(:export_run, nil)
      |> assign(:validation_run_id, nil)
      |> assign(:validation_task, nil)
      |> assign(:pathways_prep_task, nil)
@@ -69,7 +70,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_error, nil)
      |> assign(:pathways_failure, nil)
      |> assign(:pathways_prep_error, nil)
-     |> assign(:export_warnings, [])
      |> assign(:recent_validation_display_counts_by_run_id, %{})
      |> assign(:recent_validation_station_names_by_run_id, %{})
      |> assign(:recent_validation_runs, [])}
@@ -77,18 +77,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_params(_params, _uri, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    export_type = socket.assigns.export_type
-
-    file_inventory =
-      organization_id
-      |> Gtfs.get_file_inventory(gtfs_version_id, export_type)
-      |> Enum.sort_by(fn {filename, _count} -> filename end)
-
     {:noreply,
      socket
-     |> assign(:file_inventory, file_inventory)
+     |> refresh_export_run()
+     |> refresh_file_inventory()
      |> assign_recent_validation_data()}
   end
 
@@ -121,7 +113,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   @impl Phoenix.LiveView
-  def handle_event("select_export_type", %{"type" => type}, socket) do
+  def handle_event("select_export_type", %{"export" => %{"type" => type}}, socket) do
     # Use whitelist mapping to prevent atom exhaustion from user input
     export_type =
       case type do
@@ -130,18 +122,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         _ -> :full
       end
 
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-    file_inventory =
-      organization_id
-      |> Gtfs.get_file_inventory(gtfs_version_id, export_type)
-      |> Enum.sort_by(fn {filename, _count} -> filename end)
-
     {:noreply,
      socket
      |> assign(:export_type, export_type)
-     |> assign(:file_inventory, file_inventory)}
+     |> assign(:export_form, export_form(export_type))
+     |> refresh_file_inventory()
+     |> refresh_export_run()}
   end
 
   @impl Phoenix.LiveView
@@ -226,26 +212,59 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   @impl Phoenix.LiveView
-  def handle_event("download_export", _params, socket) do
-    if socket.assigns.exporting do
-      {:noreply, put_flash(socket, :error, "Export already in progress")}
+  def handle_event("start_export", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    version = socket.assigns.current_gtfs_version
+
+    with {:ok, run} <-
+           ExportRuns.create_pending(
+             organization_id,
+             version.id,
+             export_actor(socket),
+             socket.assigns.export_type
+           ),
+         :ok <- subscribe_export_run(run),
+         {:ok, _pid} <- ExportRunner.start_build(organization_id, run.id) do
+      {:noreply, assign(socket, :export_run, run)}
     else
-      organization_id = socket.assigns.current_organization.id
-      gtfs_version_id = socket.assigns.current_gtfs_version.id
-      export_type = socket.assigns.export_type
+      {:error, :invalid_transition} ->
+        {:noreply, refresh_export_run(socket)}
 
-      task =
-        Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-          export_gtfs_zip(organization_id, gtfs_version_id, export_type)
-        end)
+      {:error, :artifact_storage_unavailable} ->
+        {:noreply, put_flash(socket, :error, "Export storage is unavailable. Try again later.")}
 
-      {:noreply,
-       socket
-       |> assign(:export_task, task)
-       |> assign(:exporting, true)
-       |> assign(:export_error, nil)
-       |> assign(:export_warnings, [])}
+      _ ->
+        {:noreply, put_flash(socket, :error, "Could not start the export. Try again.")}
     end
+  end
+
+  @impl Phoenix.LiveView
+  def handle_event("cancel_export", _params, socket) do
+    with %{id: run_id} <- socket.assigns.export_run,
+         {:ok, _run} <- ExportRuns.request_cancel(socket.assigns.current_organization.id, run_id) do
+      {:noreply, refresh_export_run(socket)}
+    else
+      _ -> {:noreply, put_flash(socket, :error, "The export could not be cancelled.")}
+    end
+  end
+
+  @impl Phoenix.LiveView
+  def handle_event("retry_export", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+
+    with %{id: run_id} <- socket.assigns.export_run,
+         {:ok, run} <- ExportRuns.retry(organization_id, run_id),
+         :ok <- subscribe_export_run(run),
+         {:ok, _pid} <- ExportRunner.start_build(organization_id, run.id) do
+      {:noreply, assign(socket, :export_run, run)}
+    else
+      _ -> {:noreply, put_flash(socket, :error, "The export could not be restarted.")}
+    end
+  end
+
+  @impl Phoenix.LiveView
+  def handle_info({:export_run_changed, _run_id}, socket) do
+    {:noreply, refresh_export_run(socket)}
   end
 
   @impl Phoenix.LiveView
@@ -419,39 +438,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
              })}
         end
 
-      socket.assigns.export_task && socket.assigns.export_task.ref == ref ->
-        Process.demonitor(ref, [:flush])
-
-        socket =
-          case result do
-            {:ok, zip_binary, []} ->
-              socket
-              |> push_gtfs_download(zip_binary)
-              |> put_flash(:info, "Export completed successfully")
-
-            {:ok, zip_binary, warnings} when warnings != [] ->
-              deduplicated = deduplicate_export_warnings(warnings)
-
-              socket
-              |> push_gtfs_download(zip_binary)
-              |> put_flash(:info, "Export completed with warnings")
-              |> assign(:export_warnings, deduplicated)
-
-            {:ok, zip_binary} ->
-              socket
-              |> push_gtfs_download(zip_binary)
-              |> put_flash(:info, "Export completed successfully")
-
-            {:error, reason} ->
-              socket
-              |> assign(:export_error, format_export_error(reason))
-          end
-
-        {:noreply,
-         socket
-         |> assign(:exporting, false)
-         |> assign(:export_task, nil)}
-
       socket.assigns.validation_task && socket.assigns.validation_task.ref == ref ->
         Process.demonitor(ref, [:flush])
 
@@ -546,15 +532,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            details: %{reason: inspect(reason)}
          })}
 
-      socket.assigns.export_task && socket.assigns.export_task.ref == ref ->
-        Logger.error("Export task crashed: #{inspect(reason)}")
-
-        {:noreply,
-         socket
-         |> assign(:export_error, "Export failed. Try again or contact support.")
-         |> assign(:exporting, false)
-         |> assign(:export_task, nil)}
-
       socket.assigns.validation_task && socket.assigns.validation_task.ref == ref ->
         require Logger
         Logger.error("Validation task crashed: #{inspect(reason)}")
@@ -597,7 +574,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         </h3>
         <ul class="mt-2 space-y-1 text-sm">
           <li :for={issue <- @export_warnings} class="border-l-2 border-warning/60 pl-3">
-            <p>{issue.message}</p>
+            <p>{Map.get(issue, :detail, Map.get(issue, "detail", "Preflight reported an issue"))}</p>
             <% details_line = format_export_warning_details(issue) %>
             <p
               :if={details_line}
@@ -632,105 +609,147 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       </.header>
 
       <%!-- Version Info Card --%>
-      <div class="mt-6 rounded-box border border-base-300 bg-base-100 p-6">
+      <div class="mt-6 bg-base-100 rounded-lg p-6 border border-base-300">
         <div class="flex items-center gap-3">
           <div class="flex-1">
             <h2 class="text-xl font-semibold text-base-content">
               {@current_gtfs_version.name}
             </h2>
-            <p class="text-sm text-base-content/70 mt-1">
+            <p class="text-sm text-base-content/60 mt-1">
               GTFS Version for {@current_organization.name}
             </p>
           </div>
         </div>
       </div>
 
-      <div
-        id="export-download-container"
-        phx-hook=".DownloadHook"
-        class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8"
-      >
+      <div id="export-download-container" class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8">
         <%!-- Export Column --%>
-        <div class="rounded-box border border-base-300 bg-base-100 p-6">
+        <section id="export-workspace" class="bg-base-100 rounded-lg p-6 border border-base-300">
           <h2 class="text-lg font-semibold mb-2">Export</h2>
           <p class="text-sm text-base-content/70 mb-4">
             Generate a GTFS zip file containing all data from this version. The export includes all required and optional GTFS files with current record counts.
           </p>
 
-          <div class="flex items-center gap-6 mb-6">
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="export_type"
-                class="radio"
-                phx-click="select_export_type"
-                phx-value-type="full"
-                checked={@export_type == :full}
-              />
-              <span>Full Export</span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="export_type"
-                class="radio"
-                phx-click="select_export_type"
-                phx-value-type="pathways"
-                checked={@export_type == :pathways}
-              />
-              <span>Pathways Export</span>
-            </label>
-          </div>
-          <div class="overflow-x-auto">
-            <table class="table">
+          <.form
+            for={@export_form}
+            id="gtfs-export-form"
+            phx-change="select_export_type"
+            class="mt-5 max-w-xl"
+          >
+            <fieldset>
+              <legend class="text-sm font-medium">Export type</legend>
+              <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                <label class="flex min-h-11 items-center gap-2 border border-base-300 px-3 py-2 cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                  <input
+                    type="radio"
+                    id="export-type-full"
+                    name={@export_form[:type].name}
+                    value="full"
+                    checked={@export_type == :full}
+                    class="radio radio-sm"
+                  />
+                  <span class="text-sm font-medium">Full export</span>
+                </label>
+                <label class="flex min-h-11 items-center gap-2 border border-base-300 px-3 py-2 cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                  <input
+                    type="radio"
+                    id="export-type-pathways"
+                    name={@export_form[:type].name}
+                    value="pathways"
+                    checked={@export_type == :pathways}
+                    class="radio radio-sm"
+                  />
+                  <span class="text-sm font-medium">Pathways export</span>
+                </label>
+              </div>
+            </fieldset>
+          </.form>
+
+          <div id="export-inventory" class="mt-6 overflow-x-auto border-y border-base-300">
+            <table class="w-full text-sm">
               <thead>
-                <tr>
-                  <th>File</th>
-                  <th class="text-right">Records</th>
+                <tr class="border-b border-base-300 text-left text-xs font-medium text-base-content/70">
+                  <th class="py-2">File</th>
+                  <th class="py-2 text-right">Records</th>
                 </tr>
               </thead>
               <tbody>
-                <tr :for={{filename, count} <- @file_inventory}>
-                  <td>{filename}</td>
-                  <td class="text-right">{count}</td>
+                <tr
+                  :for={{filename, count} <- @file_inventory}
+                  class="border-b border-base-200 last:border-0 hover:bg-base-200/60"
+                >
+                  <td class="py-2 font-mono text-xs">{filename}</td>
+                  <td class="py-2 text-right tabular-nums">{count}</td>
                 </tr>
               </tbody>
             </table>
           </div>
-          <%= if @export_error do %>
-            <div role="alert" class="alert alert-error mt-6">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                class="stroke-current shrink-0 h-6 w-6"
-                fill="none"
-                viewBox="0 0 24 24"
+          <.empty_state
+            :if={@file_inventory == []}
+            id="export-empty-inventory"
+            title="No files in this export"
+          >
+            This export type has no GTFS tables to package yet.
+          </.empty_state>
+
+          <div id="export-run-status" class="mt-6">
+            <%= if @export_run do %>
+              <.status_badge
+                status={export_badge_status(@export_run)}
+                label={export_state_label(@export_run)}
+              />
+              <p class="mt-2 text-sm text-base-content/70">{export_state_detail(@export_run)}</p>
+              <.export_warning_panel
+                :if={@export_run.warnings != []}
+                export_warnings={@export_run.warnings}
+              />
+              <.link
+                :if={@export_run.state == :ready}
+                id="export-download-link"
+                href={~p"/gtfs/#{@current_gtfs_version.id}/export-runs/#{@export_run.id}/download"}
+                class="btn btn-primary mt-4 min-h-11"
               >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
-              </svg>
-              <span>{@export_error}</span>
-            </div>
-          <% end %>
+                Download ZIP
+              </.link>
+              <.button
+                :if={
+                  @export_run.state in [:pending, :building] and
+                    is_nil(@export_run.cancel_requested_at)
+                }
+                id="cancel-export"
+                phx-click="cancel_export"
+                variant="secondary"
+                class="mt-4"
+              >
+                Cancel export
+              </.button>
+              <.button
+                :if={@export_run.state in [:failed, :interrupted, :cancelled, :expired]}
+                id="retry-export"
+                phx-click="retry_export"
+                class="mt-4"
+              >
+                Retry export
+              </.button>
+            <% else %>
+              <.empty_state id="export-empty-history" title="No export yet">
+                Start an export to create a downloadable, time-limited artifact.
+              </.empty_state>
+            <% end %>
+          </div>
 
-          <%= if @exporting do %>
-            <button class="btn btn-primary mt-6 w-full" disabled>
-              <span class="loading loading-spinner"></span> Exporting...
-            </button>
-          <% else %>
-            <button class="btn btn-primary mt-6 w-full" phx-click="download_export">
-              Export GTFS
-            </button>
-          <% end %>
-
-          <.export_warning_panel :if={@export_warnings != []} export_warnings={@export_warnings} />
-        </div>
+          <.button
+            id="start-export"
+            phx-click="start_export"
+            disabled={export_start_disabled?(@export_run)}
+            class="mt-6 w-full"
+          >
+            {export_start_label(@export_run)}
+          </.button>
+        </section>
 
         <%!-- Validate Column --%>
-        <div class="rounded-box border border-base-300 bg-base-100 p-6">
+        <div class="bg-base-100 rounded-lg p-6 border border-base-300">
           <h2 class="text-lg font-semibold mb-2">Validate</h2>
           <p class="text-sm text-base-content/70 mb-6">
             Run industry-standard validation checks to ensure data correctness before publishing. Includes MobilityData GTFS Validator and custom pathways trip tests.
@@ -740,7 +759,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             <section
               id="validation-error-panel"
               role="alert"
-              class="mb-6 rounded-box border border-error/40 bg-base-100"
+              class="mb-6 rounded-xl border border-error/40 bg-base-100"
             >
               <div class="flex items-start gap-3 border-b border-error/20 px-4 py-3">
                 <.icon name="hero-exclamation-triangle" class="mt-0.5 h-5 w-5 shrink-0 text-error" />
@@ -1024,7 +1043,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   />
                   <div>
                     <div class="font-medium">MobilityData GTFS Validator</div>
-                    <div class="text-xs text-base-content/70">
+                    <div class="text-xs text-base-content/60">
                       Industry-standard validation for GTFS compliance
                     </div>
                   </div>
@@ -1040,7 +1059,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   />
                   <div>
                     <div class="font-medium">Pathways Trip Tests</div>
-                    <div class="text-xs text-base-content/70">
+                    <div class="text-xs text-base-content/60">
                       Custom validation for pathways connectivity
                     </div>
                   </div>
@@ -1122,22 +1141,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         </div>
       </div>
     </Layouts.app>
-
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".DownloadHook">
-      export default {
-        mounted() {
-          this.handleEvent("download-file", ({data, filename}) => {
-            const blob = new Blob([Uint8Array.from(atob(data), c => c.charCodeAt(0))], {type: "application/zip"});
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = filename;
-            a.click();
-            URL.revokeObjectURL(url);
-          });
-        }
-      }
-    </script>
     """
   end
 
@@ -2754,161 +2757,95 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp otp_data_requirements_summary, do: @otp_data_requirements_summary
 
-  defp export_gtfs_zip(organization_id, gtfs_version_id, export_type) do
-    case export_module().export_to_zip(organization_id, gtfs_version_id, export_type) do
-      {:ok, zip_binary} ->
-        warnings =
-          case preflight_module().run(organization_id, gtfs_version_id) do
-            :ok -> []
-            {:error, issues} -> normalize_export_warnings(issues)
-          end
+  defp export_form(export_type),
+    do: to_form(%{"type" => Atom.to_string(export_type)}, as: :export)
 
-        {:ok, zip_binary, warnings}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+  defp export_actor(socket) do
+    %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
   end
 
-  defp format_export_error(:no_data), do: "No data available to export."
+  defp refresh_file_inventory(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
 
-  defp format_export_error(issues) when is_list(issues) do
-    issues
-    |> Enum.map(fn
-      %{message: message} when is_binary(message) and message != "" -> message
-      issue when is_map(issue) -> Map.get(issue, "message", inspect(issue))
-      other -> inspect(other)
-    end)
-    |> Enum.join("; ")
+    file_inventory =
+      organization_id
+      |> Gtfs.get_file_inventory(version_id, socket.assigns.export_type)
+      |> Enum.sort_by(fn {filename, _count} -> filename end)
+
+    assign(socket, :file_inventory, file_inventory)
   end
 
-  defp format_export_error(reason) when is_binary(reason), do: reason
-  defp format_export_error(_reason), do: "Export failed. Try again or contact support."
+  defp refresh_export_run(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
 
-  defp normalize_export_warnings(warnings) when is_list(warnings) do
-    Enum.map(warnings, fn
-      %{message: _} = warning -> warning
-      %{"message" => _} = warning -> normalize_string_keyed_warning(warning)
-      other -> %{message: inspect(other), code: :unknown}
-    end)
+    export_run =
+      ExportRuns.latest_for_version(organization_id, version_id, socket.assigns.export_type)
+
+    if export_run, do: subscribe_export_run(export_run)
+    assign(socket, :export_run, export_run)
   end
 
-  defp normalize_export_warnings(_), do: []
+  defp subscribe_export_run(run),
+    do: Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ExportRuns.topic(run))
 
-  defp normalize_string_keyed_warning(warning) do
-    base = %{message: Map.get(warning, "message", "")}
+  defp export_start_disabled?(%{state: state}) when state in [:pending, :building], do: true
+  defp export_start_disabled?(_run), do: false
 
-    base
-    |> maybe_put_warning_key(:code, Map.get(warning, "code"))
-    |> maybe_put_warning_key(:details, string_keys_to_known_atoms(Map.get(warning, "details")))
-    |> maybe_put_warning_key(:context, string_keys_to_known_atoms(Map.get(warning, "context")))
-    |> maybe_put_warning_key(:stop_id, Map.get(warning, "stop_id"))
-    |> maybe_put_warning_key(:pathway_id, Map.get(warning, "pathway_id"))
-    |> maybe_put_warning_key(:trip_id, Map.get(warning, "trip_id"))
-  end
+  defp export_start_label(%{state: state}) when state in [:pending, :building],
+    do: "Export in progress"
 
-  defp maybe_put_warning_key(map, _key, nil), do: map
-  defp maybe_put_warning_key(map, key, value), do: Map.put(map, key, value)
+  defp export_start_label(_run), do: "Export GTFS"
 
-  @known_warning_keys ~w(source_file source_field target_file target_field invalid_count file field identifier stop_id pathway_id trip_id value)a
+  defp export_badge_status(%{state: :ready}), do: :completed
+  defp export_badge_status(%{state: state}) when state in [:pending, :building], do: :running
+  defp export_badge_status(%{state: :cancelled}), do: :warning
+  defp export_badge_status(%{state: :expired}), do: :warning
+  defp export_badge_status(%{state: _state}), do: :failed
 
-  defp string_keys_to_known_atoms(nil), do: nil
+  defp export_state_label(%{state: :pending}), do: "Queued"
+  defp export_state_label(%{state: :building, cancel_requested_at: nil}), do: "Building"
+  defp export_state_label(%{state: :building}), do: "Cancellation requested"
+  defp export_state_label(%{state: :ready}), do: "Ready to download"
+  defp export_state_label(%{state: :failed}), do: "Export failed"
+  defp export_state_label(%{state: :interrupted}), do: "Export interrupted"
+  defp export_state_label(%{state: :cancelled}), do: "Export cancelled"
+  defp export_state_label(%{state: :expired}), do: "Download expired"
 
-  defp string_keys_to_known_atoms(map) when is_map(map) do
-    known_strings = Map.new(@known_warning_keys, fn atom -> {Atom.to_string(atom), atom} end)
+  defp export_state_detail(%{state: :ready}),
+    do: "The artifact is ready. Download links expire after the retention period."
 
-    Map.new(map, fn
-      {k, v} when is_binary(k) ->
-        case Map.fetch(known_strings, k) do
-          {:ok, atom_key} -> {atom_key, v}
-          :error -> {k, v}
-        end
+  defp export_state_detail(%{state: :building, cancel_requested_at: nil}),
+    do: "Packaging your GTFS data. You can leave this page and return later."
 
-      {k, v} ->
-        {k, v}
-    end)
-  end
+  defp export_state_detail(%{state: :building}),
+    do: "Cancellation will take effect at the next safe build boundary."
 
-  defp string_keys_to_known_atoms(other), do: other
+  defp export_state_detail(%{state: :failed, failure_code: "artifact_storage_unavailable"}),
+    do: "Export storage is unavailable. Try again later."
 
-  defp deduplicate_export_warnings(warnings) when is_list(warnings) do
-    Enum.uniq_by(warnings, fn warning ->
-      code = warning[:code] || :unknown
-      identity = export_warning_identity(warning)
-      {code, identity, warning[:message] || ""}
-    end)
-  end
+  defp export_state_detail(%{state: :expired}),
+    do: "The download artifact has expired. Create a new export to download it."
 
-  defp deduplicate_export_warnings(_), do: []
+  defp export_state_detail(%{state: :cancelled}),
+    do: "This export was cancelled before an artifact was published."
 
-  defp export_warning_identity(warning) do
-    cond do
-      id = deep_warning_field(warning, :stop_id) -> id
-      id = deep_warning_field(warning, :pathway_id) -> id
-      id = deep_warning_field(warning, :trip_id) -> id
-      true -> :unknown
-    end
-  end
+  defp export_state_detail(%{state: :interrupted}),
+    do: "The build stopped before publishing an artifact. Retry to create a new one."
 
-  defp deep_warning_field(warning, field) do
-    warning[field] ||
-      (is_map(warning[:details]) && warning[:details][field]) ||
-      (is_map(warning[:context]) && warning[:context][field]) ||
-      nil
-  end
+  defp export_state_detail(%{state: :failed}),
+    do: "The build did not publish an artifact. Retry to create a new one."
 
-  defp push_gtfs_download(socket, zip_binary) do
-    version_name = socket.assigns.current_gtfs_version.name
-    filename = "gtfs_#{version_name}_#{Date.utc_today()}.zip"
-
-    push_event(socket, "download-file", %{
-      data: Base.encode64(zip_binary),
-      filename: filename
-    })
-  end
+  defp export_state_detail(%{state: :pending}),
+    do: "Your export is queued and will begin shortly."
 
   defp format_export_warning_details(issue) do
-    details = issue[:details]
-    context = issue[:context]
-
-    cond do
-      is_map(details) and details[:source_file] ->
-        source_field =
-          if details[:source_field], do: ".#{details[:source_field]}", else: ""
-
-        target_file =
-          if details[:target_file], do: " -> #{details[:target_file]}", else: ""
-
-        invalid_count =
-          if details[:invalid_count], do: " (#{details[:invalid_count]} invalid)", else: ""
-
-        "#{details[:source_file]}#{source_field}#{target_file}#{invalid_count}"
-
-      is_map(context) ->
-        [:file, :field, :identifier, :stop_id, :pathway_id, :trip_id, :value]
-        |> Enum.map(fn key ->
-          case context[key] do
-            nil -> nil
-            "" -> nil
-            v -> "#{key}: #{v}"
-          end
-        end)
-        |> Enum.reject(&is_nil/1)
-        |> case do
-          [] -> nil
-          parts -> Enum.join(parts, " | ")
-        end
-
-      true ->
-        nil
+    issue
+    |> Map.get(:code, Map.get(issue, "code"))
+    |> case do
+      nil -> nil
+      code -> "Code: #{code}"
     end
-  end
-
-  defp export_module do
-    Application.get_env(:gtfs_planner, :gtfs_export_module, GtfsPlanner.Gtfs.Export)
-  end
-
-  defp preflight_module do
-    Application.get_env(:gtfs_planner, :otp_preflight_module, GtfsPlanner.Otp.Preflight)
   end
 end
