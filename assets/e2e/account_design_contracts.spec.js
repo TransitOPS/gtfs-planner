@@ -220,6 +220,7 @@ test.describe("account navigation", () => {
 
     const accountMetrics = await captureTargetMetrics(accountLink);
     expect(accountMetrics.height).toBeGreaterThanOrEqual(44);
+
     expect(Number.parseInt(accountMetrics.fontWeight, 10)).toBeGreaterThanOrEqual(
       600,
     );
