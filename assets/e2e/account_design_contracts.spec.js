@@ -197,16 +197,30 @@ test.describe("account navigation", () => {
     await waitForLiveView(page);
     await page.waitForSelector("#app-header nav[aria-label='Main navigation']");
 
-    const accountLink = page.locator(
-      "#app-header nav[aria-label='Main navigation'] a[href='/users/settings']",
-    );
+    // Account actions moved out of the task nav into the header account menu.
+    await expect(
+      page.locator(
+        "#app-header nav[aria-label='Main navigation'] a[href='/users/settings']",
+      ),
+    ).toHaveCount(0);
+
+    const menuTrigger = page.locator("#user-menu [data-user-menu-trigger]");
+    await expect(menuTrigger).toBeVisible();
+    await expect(menuTrigger).toHaveAttribute("aria-expanded", "false");
+    const triggerMetrics = await captureTargetMetrics(menuTrigger);
+    expect(triggerMetrics.height).toBeGreaterThanOrEqual(44);
+
+    await menuTrigger.click();
+    await expect(menuTrigger).toHaveAttribute("aria-expanded", "true");
+
+    const accountLink = page.locator("#user-menu-panel a[href='/users/settings']");
     await expect(accountLink).toBeVisible();
     await expect(accountLink).toHaveAttribute("aria-current", "page");
     await expect(accountLink).toContainText("Account settings");
 
     const accountMetrics = await captureTargetMetrics(accountLink);
     expect(accountMetrics.height).toBeGreaterThanOrEqual(44);
-    expect(accountMetrics.width).toBeGreaterThanOrEqual(44);
+
     expect(Number.parseInt(accountMetrics.fontWeight, 10)).toBeGreaterThanOrEqual(
       600,
     );
@@ -214,6 +228,14 @@ test.describe("account navigation", () => {
     const focus = await focusVisible(page, accountLink);
     expect(focus.isFocused).toBe(true);
     expect(focus.outlineVisible || focus.ringVisible).toBe(true);
+
+    // Escape closes the menu and returns focus to the trigger.
+    await page.keyboard.press("Escape");
+    await expect(menuTrigger).toHaveAttribute("aria-expanded", "false");
+    await expect(accountLink).toBeHidden();
+    expect(await menuTrigger.evaluate((el) => el === document.activeElement)).toBe(
+      true,
+    );
 
     for (const viewport of VIEWPORTS) {
       await page.setViewportSize({
@@ -228,28 +250,24 @@ test.describe("account navigation", () => {
 
       expect(await bodyFitsViewport(page)).toBe(true);
 
-      const navLinks = page.locator(
-        "#app-header nav[aria-label='Main navigation'] a",
+      const trigger = page.locator("#user-menu [data-user-menu-trigger]");
+      await expect(trigger).toBeVisible();
+      const triggerBox = await trigger.boundingBox();
+      expect(triggerBox).not.toBeNull();
+      expect(triggerBox.height).toBeGreaterThanOrEqual(44);
+
+      await trigger.click();
+      await expect(trigger).toHaveAttribute("aria-expanded", "true");
+
+      const menuAccountLink = page.locator(
+        "#user-menu-panel a[href='/users/settings']",
       );
-      const count = await navLinks.count();
-      expect(count).toBeGreaterThan(0);
+      await expect(menuAccountLink).toBeVisible();
+      const box = await menuAccountLink.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box.height).toBeGreaterThanOrEqual(44);
 
-      for (let i = 0; i < count; i++) {
-        const link = navLinks.nth(i);
-        await expect(link).toBeVisible();
-        const box = await link.boundingBox();
-        expect(box).not.toBeNull();
-        expect(box.height).toBeGreaterThanOrEqual(44);
-        expect(box.width).toBeGreaterThanOrEqual(44);
-      }
-
-      const texts = await navLinks.allTextContents();
-      const accountIndex = texts.findIndex((t) =>
-        t.includes("Account settings"),
-      );
-      expect(accountIndex).toBe(texts.length - 1);
-
-      const focused = await focusVisible(page, accountLink);
+      const focused = await focusVisible(page, menuAccountLink);
       expect(focused.isFocused).toBe(true);
       expect(focused.outlineVisible || focused.ringVisible).toBe(true);
     }

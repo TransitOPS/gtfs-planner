@@ -28,17 +28,17 @@ const GtfsVersionHook = {
     this.pageshowHandler = () => this.onPageshow();
     window.addEventListener("pageshow", this.pageshowHandler);
 
-    this.bindSelect();
+    this.bindOptions();
     this.bindRetry();
   },
 
   updated() {
-    this.bindSelect();
+    this.bindOptions();
     this.bindRetry();
   },
 
   destroyed() {
-    this.unbindSelect();
+    this.unbindOptions();
     this.unbindRetry();
     this.clearWatchdog();
     if (this.pagehideHandler) {
@@ -54,23 +54,37 @@ const GtfsVersionHook = {
     this.failedValue = null;
   },
 
-  bindSelect() {
-    const select = this.el.querySelector("select");
-    if (this.boundSelect === select) return;
-    this.unbindSelect();
-    if (!select) return;
-    this.boundSelect = select;
-    this.lastKnownValue = select.value;
-    this.changeHandler = (event) => this.selectVersion(event.target.value);
-    select.addEventListener("change", this.changeHandler);
+  bindOptions() {
+    const options = Array.from(this.el.querySelectorAll("[data-version-option]"));
+    if (this.sameOptions(options)) return;
+    this.unbindOptions();
+    if (options.length === 0) return;
+    this.optionHandlers = new Map();
+    options.forEach((btn) => {
+      const handler = () => this.selectVersion(btn.dataset.versionId);
+      btn.addEventListener("click", handler);
+      this.optionHandlers.set(btn, handler);
+    });
+    this.boundOptions = options;
   },
 
-  unbindSelect() {
-    if (this.boundSelect && this.changeHandler) {
-      this.boundSelect.removeEventListener("change", this.changeHandler);
+  sameOptions(options) {
+    if (!this.boundOptions || this.boundOptions.length !== options.length) return false;
+    return this.boundOptions.every((btn, i) => btn === options[i]);
+  },
+
+  unbindOptions() {
+    if (this.optionHandlers) {
+      this.optionHandlers.forEach((handler, btn) =>
+        btn.removeEventListener("click", handler),
+      );
     }
-    this.boundSelect = null;
-    this.changeHandler = null;
+    this.optionHandlers = null;
+    this.boundOptions = null;
+  },
+
+  currentVersion() {
+    return this.el.dataset.currentVersion;
   },
 
   bindRetry() {
@@ -93,11 +107,9 @@ const GtfsVersionHook = {
 
   selectVersion(versionId) {
     if (this.pendingValue !== null) return;
+    if (!versionId || versionId === this.currentVersion()) return;
 
-    const select = this.el.querySelector("select");
-    if (!select) return;
-
-    this.priorValue = this.lastKnownValue !== undefined ? this.lastKnownValue : select.value;
+    this.priorValue = this.currentVersion();
     this.pendingValue = versionId;
 
     this.setBusy(true);
@@ -160,12 +172,8 @@ const GtfsVersionHook = {
     this.failedValue = versionId;
     this.pendingValue = null;
 
-    const select = this.el.querySelector("select");
-    if (select && this.priorValue !== null) {
-      select.value = this.priorValue;
-      this.lastKnownValue = this.priorValue;
-    }
-
+    // No DOM value to restore: navigation never happened, so the trigger still
+    // shows the current version. Just re-enable the control and surface failure.
     this.setBusy(false);
     this.showPending(false);
     this.showFailure(true);
@@ -203,8 +211,11 @@ const GtfsVersionHook = {
   },
 
   setBusy(busy) {
-    const select = this.el.querySelector("select");
-    if (select) select.disabled = busy;
+    const trigger = this.el.querySelector("#gtfs-version-trigger");
+    if (trigger) trigger.disabled = busy;
+    this.el.querySelectorAll("[data-version-option]").forEach((btn) => {
+      btn.disabled = busy;
+    });
   },
 
   showPending(visible) {
