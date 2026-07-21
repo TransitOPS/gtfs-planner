@@ -1,13 +1,12 @@
 defmodule GtfsPlanner.Organizations do
   @moduledoc """
-  The Organizations context for multi-tenant organization management and API key authentication.
+  The Organizations context for multi-tenant organization management.
   """
 
   import Ecto.Query, warn: false
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Organizations.AdminReadAdapter
   alias GtfsPlanner.Organizations.Organization
-  alias GtfsPlanner.Organizations.ApiKey
   alias GtfsPlanner.Accounts.{User, UserOrgMembership}
   alias GtfsPlanner.Versions
 
@@ -139,130 +138,6 @@ defmodule GtfsPlanner.Organizations do
   """
   def change_organization(%Organization{} = organization, attrs \\ %{}) do
     Organization.changeset(organization, attrs)
-  end
-
-  @doc """
-  Returns the list of API keys for an organization.
-
-  ## Examples
-
-      iex> list_api_keys(organization_id)
-      [%ApiKey{}, ...]
-  """
-  def list_api_keys(organization_id) do
-    from(a in ApiKey, where: a.organization_id == ^organization_id)
-    |> Repo.all()
-  end
-
-  @doc """
-  Gets a single API key.
-
-  Raises `Ecto.NoResultsError` if the ApiKey does not exist.
-
-  ## Examples
-
-      iex> get_api_key!(123)
-      %ApiKey{}
-
-      iex> get_api_key!(456)
-      ** (Ecto.NoResultsError)
-  """
-  def get_api_key!(id), do: Repo.get!(ApiKey, id)
-
-  @doc """
-  Gets an API key by its token.
-
-  Returns nil if the token is invalid or the API key does not exist.
-
-  ## Examples
-
-      iex> get_api_key_by_token("GtfsPlanner.V1.abcdefg")
-      {:ok, %ApiKey{}}
-
-      iex> get_api_key_by_token("invalid")
-      {:error, :invalid}
-  """
-  def get_api_key_by_token(token) when is_binary(token) do
-    ApiKey.verify_token(token, Repo)
-  end
-
-  @doc """
-  Creates an API key for an organization.
-
-  ## Examples
-
-      iex> create_api_key(organization_id, %{description: "My Key", roles: ["read"]})
-      {:ok, {%ApiKey{}, "GtfsPlanner.V1.abcdefg"}}
-
-      iex> create_api_key(organization_id, %{description: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def create_api_key(organization_id, attrs \\ %{}) do
-    import Ecto.Changeset, only: [validate_required: 2]
-
-    changeset =
-      %ApiKey{organization_id: organization_id}
-      |> ApiKey.changeset(attrs)
-      |> validate_required([:organization_id])
-
-    {token, updated_changeset} = ApiKey.build_hashed_token(organization_id, changeset)
-
-    case Repo.insert(updated_changeset) do
-      {:ok, api_key} -> {:ok, {api_key, token}}
-      {:error, changeset} -> {:error, changeset}
-    end
-  end
-
-  @doc """
-  Updates an API key.
-
-  ## Examples
-
-      iex> update_api_key(api_key, %{description: "Updated Description"})
-      {:ok, %ApiKey{}}
-
-      iex> update_api_key(api_key, %{description: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def update_api_key(%ApiKey{} = api_key, attrs) do
-    api_key
-    |> ApiKey.update_changeset(attrs)
-    |> Repo.update()
-    |> broadcast([:api_keys, :updated])
-  end
-
-  @doc """
-  Deletes an API key.
-
-  ## Examples
-
-      iex> delete_api_key(api_key)
-      {:ok, %ApiKey{}}
-
-      iex> delete_api_key(api_key)
-      {:error, %Ecto.Changeset{}}
-  """
-  def delete_api_key(%ApiKey{} = api_key) do
-    Repo.delete(api_key)
-    |> broadcast([:api_keys, :deleted])
-  end
-
-  @doc """
-  Returns an `%Ecto.Changeset{}` for tracking API key changes.
-
-  ## Examples
-
-      iex> change_api_key(api_key)
-      %Ecto.Changeset{data: %ApiKey{}}
-  """
-  def change_api_key(api_key, attrs \\ %{})
-
-  def change_api_key(%ApiKey{id: id} = api_key, attrs) when not is_nil(id) do
-    ApiKey.update_changeset(api_key, attrs)
-  end
-
-  def change_api_key(%ApiKey{} = api_key, attrs) do
-    ApiKey.changeset(api_key, attrs)
   end
 
   @doc """

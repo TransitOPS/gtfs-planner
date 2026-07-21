@@ -146,7 +146,7 @@ end
 
 ## Role Management
 
-GTFS Planner implements a flexible role-based authorization system that works across user sessions and API keys.
+GTFS Planner implements a flexible role-based authorization system for browser sessions and companion API sessions (user-owned `api_session` tokens).
 
 ### Available Roles
 
@@ -289,10 +289,9 @@ Organization-scoped routes use the organization alias:
 ```
 /organizations/:org_alias/dashboard
 /organizations/:org_alias/users
-/organizations/:org_alias/api-keys
 ```
 
-The current organization is automatically assigned to the connection and accessible as `@current_organization` in LiveViews.
+The current organization is automatically assigned to the connection and accessible as `@current_organization` in LiveViews. Companion clients select an organization with `X-Organization-Id` after `POST /api/v1/auth/login` (see [API Authentication](./api-authentication.md)).
 
 ---
 
@@ -496,20 +495,20 @@ To update user password:
 3. Verify password was properly reset
 4. Clear browser cookies and cache
 
-#### API Key Issues
+#### Companion API session issues
 
-1. Verify token format: `GtfsPlanner.V1.<token>`
-2. Check token hasn't been deleted
-3. Ensure user has proper roles
-4. Verify organization alias is correct
+1. Confirm login via `POST /api/v1/auth/login` (not legacy organization keys)
+2. Send `Authorization: Bearer <api_session_token>`
+3. For multi-org users, send `X-Organization-Id`
+4. Ensure the membership still has the required roles for write routes
 
 ---
 
 ## Additional Resources
 
 - [Authentication Guide](./authentication-guide.md) - Complete authentication system documentation
-- [API Authentication](./api-authentication.md) - API key usage and authorization
-- [Warbler Authentication Implementation](./warbler-authentication-implementation.md) - Reference implementation
+- [API Authentication](./api-authentication.md) - Companion session usage and authorization
+- [Warbler Authentication Implementation](./warbler-authentication-implementation.md) - Historical reference only
 
 ---
 
@@ -519,9 +518,9 @@ For issues or questions related to user management:
 
 1. Check this documentation
 2. Review the authentication guide
-3. Consult the API authentication docs
+3. Consult the companion API authentication docs
 4. Open an issue on GitHub
 
 ---
 
-**Last Updated**: December 23, 2025
+**Last Updated**: July 20, 2026

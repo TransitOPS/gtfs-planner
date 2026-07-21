@@ -2,891 +2,154 @@
 
 ## Overview
 
-GTFS Planner implements a comprehensive, multi-tenant authentication and authorization system that provides secure user authentication, programmatic API access, and organization-based access control. The system is built on industry-standard security practices and integrates seamlessly with Phoenix LiveView and the existing application architecture.
+GTFS Planner provides multi-tenant authentication for:
 
-### Architecture
+1. **Browser sessions** — email/password LiveView login for operators
+2. **Companion API sessions** — user-owned Bearer tokens for the field companion
+3. **Organization membership and roles** — tenant scoping and authorization
 
-The authentication system is organized into three primary layers:
+Legacy organization API keys (`GtfsPlanner.V1.*`, `ApiKeyAuth`, org-key LiveView)
+are retired. Current programmatic access uses companion `api_session` tokens only.
+See [API Authentication](./api-authentication.md) for the companion contract.
 
-1. **Context Layer** (`GtfsPlanner.Accounts`, `GtfsPlanner.Organizations`): Contains business logic, schemas, and data access for authentication and organization management
-2. **Web Layer** (`GtfsPlannerWeb.UserAuth`, `GtfsPlannerWeb.ApiKeyAuth`, etc.): Provides authentication plugs, LiveView hooks, and HTTP controllers
-3. **Database Layer**: PostgreSQL tables for users, tokens, organizations, memberships, and API keys with proper constraints and indexes
+## Architecture layers
 
-## Creating the First Admin Account
+1. **Domain** (`GtfsPlanner.Accounts`, `GtfsPlanner.Organizations`) — users,
+   memberships, session/token lifecycle
+2. **Web** (`GtfsPlannerWeb.UserAuth`, companion plugs under
+   `GtfsPlannerWeb.Plugs`) — browser hooks and `/api/v1` Bearer verification
+3. **Database** — `users`, `users_tokens`, `organizations`, membership tables
 
-Since user registration requires an invitation from an existing organization administrator, you'll need to create the first admin account directly via the Elixir console (`iex`) to bootstrap the system.
+## Browser authentication
 
-### Step-by-Step Guide
+Operators sign in at `/users/log_in`. Sessions use the `"session"` token context
+and LiveView `on_mount` hooks from `UserAuth`. Organization context for account
+surfaces is assigned by `AssignOrganization`.
 
-#### 1. Start the application with the database
+Password reset, email confirmation, and invite acceptance flows remain on the
+browser pipeline. Account settings live at `/users/settings`.
 
-```bash
-# Start the Phoenix app with iex
-iex -S mix phx.server
+## Companion API authentication
 
-# Or start just the shell (if the server is already running)
-iex -S mix
+### Login
+
+```http
+POST /api/v1/auth/login
+Content-Type: application/json
+
+{"email":"member@example.com","password":"..."}
 ```
 
-#### 2. Create the first organization
+On success the server returns a Bearer token created by
+`Accounts.generate_api_session_token/1` (context `"api_session"`, 60-day TTL),
+plus the user, a default `organization_id`, roles, and `expires_at`.
+
+Exact error codes:
+
+- `400` / `bad_request` — missing credentials
+- `401` / `invalid_credentials` — bad email or password
+- `403` / `no_organization` — no membership
+
+### Protected calls
+
+```http
+Authorization: Bearer <api_session_token>
+X-Organization-Id: <organization-uuid>
+```
+
+Pipeline order for protected routes:
+
+1. CORS + JSON accept
+2. `VerifyApiSession`
+3. `AssignApiOrganization`
+4. `RequireApiEditor` on write routes only
+
+### Logout
+
+```http
+DELETE /api/v1/auth/session
+Authorization: Bearer <api_session_token>
+```
+
+Revokes that token. Replay yields `401` with
+`{"error":{"code":"unauthorized"}}`.
+
+### Rejected credentials
+
+Legacy-shaped Bearer values (`GtfsPlanner.V1.*`) and other invalid tokens receive
+the same unauthorized JSON. No `current_api_key` assign exists in the runtime.
+
+## Organization selection
+
+- Membership is required for companion access.
+- Multi-org users must send `X-Organization-Id`.
+- Single-org users may omit the header; the sole membership is selected.
+- Browser account pages use session + `AssignOrganization` rather than API headers.
+
+## Roles
+
+Roles live on organization memberships (`UserOrgMembership.roles`). Common values
+include `pathways_studio_admin` and `pathways_studio_editor`. Companion write
+routes require an editor membership on the selected organization via
+`RequireApiEditor`. LiveView admin surfaces use `EnsureRole` against the current
+user membership only.
+
+## Operator bootstrap (IEx)
 
 ```elixir
-# Create an initial organization
-alias GtfsPlanner.Organizations
+alias GtfsPlanner.{Accounts, Organizations}
 
-{:ok, organization} = Organizations.create_organization(%{
-  alias: "admin",
-  name: "GTFS Planner Administration"
-})
+{:ok, org} =
+  Organizations.create_organization(%{alias: "demo", name: "Demo Transit"})
+
+{:ok, user} =
+  Accounts.register_user(%{
+    email: "admin@example.com",
+    password: "a-strong-password"
+  })
+
+{:ok, _membership} =
+  Organizations.add_user_to_organization(user.id, org.id, [
+    "pathways_studio_admin",
+    "pathways_studio_editor"
+  ])
 ```
 
-This returns:
-
-```elixir
-%GtfsPlanner.Organizations.Organization{
-  id: 1,
-  alias: "admin",
-  name: "GTFS Planner Administration",
-  ...
-}
-```
-
-#### 3. Create the first admin user
-
-```elixir
-# Create the admin user with a password
-alias GtfsPlanner.Accounts
-
-{:ok, admin_user} = Accounts.register_user(%{
-  email: "admin@example.com",
-  password: "YourSecurePassword123!"
-})
-```
-
-This returns:
-
-```elixir
-%GtfsPlanner.Accounts.User{
-  id: 1,
-  email: "admin@example.com",
-  password_hash: "$argon2id$v=19$m=65536,t=3,p=4...",
-  confirmed_at: ~U[2025-12-23 20:00:00Z],
-  ...
-}
-```
-
-**Important**: The user is automatically confirmed (`confirmed_at` is set) so they can immediately log in.
-
-#### 4. Add the admin user to the organization with admin role
-
-```elixir
-# Add the user to the organization with administrator role
-{:ok, membership} = Organizations.add_user_to_organization(
-  admin_user.id,
-  organization.id,
-  ["administrator"]
-)
-```
-
-This returns:
-
-```elixir
-%GtfsPlanner.Accounts.UserOrgMembership{
-  id: 1,
-  user_id: 1,
-  organization_id: 1,
-  roles: ["administrator"],
-  ...
-}
-```
-
-#### 5. (Optional) Create an API key for programmatic access
-
-```elixir
-# Create an API key for the admin user
-{:ok, {api_key, token}} = Organizations.create_api_key(organization.id, %{
-  description: "Admin API Key",
-  roles: ["administrator"]
-})
-
-# The token is only returned once - save it securely!
-# token is: "GtfsPlanner.V1.abc123def456..."
-```
-
-**Important**: The unhashed API token is only returned when creating the key. Save it securely as you won't be able to retrieve it again. If lost, you'll need to create a new API key and delete the old one.
-
-#### 6. Verify the setup
-
-```elixir
-# Verify the user exists and has the admin role
-admin_user = Accounts.get_user_by_email("admin@example.com")
-organization = Organizations.get_organization_by_alias("admin")
-
-# Check membership
-memberships = Organizations.list_users_in_organization(organization.id)
-# Should return a list containing the admin_user with ["administrator"] roles
-```
-
-#### 7. Log in via the web interface
-
-Now you can:
-
-1. Navigate to `http://localhost:4000/users/log_in`
-2. Enter the email: `admin@example.com`
-3. Enter the password: `YourSecurePassword123!`
-4. You'll be logged in and redirected to `/organizations`
-
-### Complete Script Example
-
-Here's a complete script you can copy and paste into iex:
-
-```elixir
-alias GtfsPlanner.Organizations
-alias GtfsPlanner.Accounts
-
-# 1. Create organization
-{:ok, organization} = Organizations.create_organization(%{
-  alias: "admin",
-  name: "GTFS Planner Administration"
-})
-
-# 2. Create admin user
-{:ok, admin_user} = Accounts.register_user(%{
-  email: "admin@example.com",
-  password: "YourSecurePassword123!"
-})
-
-# 3. Add user to organization with admin role
-{:ok, _membership} = Organizations.add_user_to_organization(
-  admin_user.id,
-  organization.id,
-  ["administrator"]
-)
-
-# 4. (Optional) Create API key
-{:ok, {api_key, token}} = Organizations.create_api_key(organization.id, %{
-  description: "Admin API Key",
-  roles: ["administrator"]
-})
-
-# Display the API token (save this securely!)
-IO.puts("API Key: #{token}")
-
-IO.puts("\n✓ Setup complete!")
-IO.puts("✓ Admin user: admin@example.com")
-IO.puts("✓ Organization: admin")
-IO.puts("✓ API Token: #{token}")
-```
-
-### Security Notes
-
-- **Password Requirements**: Passwords must be 12-72 characters. Use a strong, unique password.
-- **API Token Storage**: Save the API token securely (password manager, secrets vault, etc.). It cannot be retrieved after creation.
-- **Email Configuration**: In production, ensure your email is configured so invitation emails can be sent to new users.
-- **Initial User Confirmation**: The `register_user/1` function automatically confirms the user (sets `confirmed_at`), so no email verification is needed for this initial admin account.
-
-### Troubleshooting
-
-**Email not set up yet?**
-
-If you don't have email configured yet, you can still create users via iex. The `register_user/1` function automatically confirms users, so they can log in immediately without email verification.
-
-**Need to verify user creation?**
-
-```elixir
-# Check if user exists
-user = Accounts.get_user_by_email("admin@example.com")
-# Returns %User{} or nil
-
-# Verify password works
-Accounts.User.valid_password?(user, "YourSecurePassword123!")
-# Returns true or false
-```
-
-**Need to reset the admin password?**
-
-```elixir
-# Get the user
-user = Accounts.get_user_by_email("admin@example.com")
-
-# Reset password
-{:ok, user} = Accounts.update_user_password(user, %{
-  "password" => "NewSecurePassword456!",
-  "current_password" => "YourSecurePassword123!"
-})
-```
-
-### Next Steps
-
-After creating the first admin account:
-
-1. **Log in** via the web interface at `/users/log_in`
-2. **Create additional organizations** for different tenants
-3. **Invite other users** via the user management interface
-4. **Set up role-based permissions** for different access levels
-5. **Create additional API keys** for programmatic access as needed
-
-## User Authentication
-
-### Password-Based Authentication
-
-Users authenticate with email and password using the following flow:
-
-1. User submits credentials via login form or API
-2. System validates email exists (with timing attack protection)
-3. Password is verified using Argon2 memory-hard hashing
-4. Session token is generated and stored in database
-5. User is logged in with session fixation protection
-
-**Implementation**: `GtfsPlanner.Accounts.get_user_by_email_and_password/2`
-
-### Password Security
-
-- **Hashing Algorithm**: Argon2id (memory-hard, resistant to GPU/ASIC attacks)
-- **Password Requirements**: 12-72 characters
-- **Storage**: Never stored in plaintext; only Argon2 hash is stored
-- **Timing Attack Protection**: Constant-time comparison and user-independent response times
-
-### Session Management
-
-Sessions are managed using database-backed tokens with the following properties:
-
-- **Token Expiry**: 60 days (configurable)
-- **Remember-Me**: Optional 60-day persistent cookie
-- **Session Fixation**: Tokens regenerated on login
-- **Revocation**: All sessions invalidated on password change or logout
-
-**Implementation**: `GtfsPlannerWeb.UserAuth.log_in_user/3`, `GtfsPlannerWeb.UserAuth.log_out_user/1`
-
-### LiveView Integration
-
-LiveViews automatically track authentication state using:
-
-- `:mount_current_user` hook: Assigns `current_user` without authentication requirement
-- `:ensure_authenticated` hook: Requires authenticated user, redirects to login if not
-- Session registry tracks connected sessions for disconnection on logout
-
-**Example**:
-
-```elixir
-defmodule GtfsPlannerWeb.DashboardLive do
-  use GtfsPlannerWeb, :live_view
-
-  on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
-
-  def mount(_params, _session, socket) do
-    {:ok, socket}
-  end
-end
-```
-
-## User Registration (Invitation)
-
-### Invitation Flow
-
-New users are invited to the system by organization administrators:
-
-1. Admin initiates invitation with user email and organization
-2. System generates invitation token (7-day expiry)
-3. Invitation email is sent with secure acceptance link
-4. User clicks link and sets initial password
-5. User account is activated and organization membership created
-6. User redirected to login page
-
-**Implementation**:
-
-```elixir
-# Invite user
-{:ok, user} = Accounts.invite_user(email, organization_id)
-
-# Send invitation
-Accounts.deliver_user_invite(user, accept_invite_url)
-
-# Accept invitation (token comes from URL)
-{:ok, user} = Accounts.get_user_by_invite_token(token)
-{:ok, user} = Accounts.accept_invite_set_password(user, password)
-```
-
-**Security Features**:
-
-- Tokens are single-use and invalidated after use
-- Invitation links expire after 7 days
-- Tokens hashed in database (never stored plaintext)
-- Organization membership created atomically with password set
-
-### Email Workflow
-
-Invitation emails are sent via Swoosh with the following:
-
-- **Sender**: Configured in `config/config.exs`
-- **Subject**: "You're invited to join GTFS Planner"
-- **Template**: HTML and plain text versions
-- **Tracking**: Tokens tracked in `users_tokens` table with `context: "invite"`
-
-**Implementation**: `GtfsPlanner.Accounts.UserNotifier.deliver_user_invite/2`
-
-## Password Reset
-
-### Reset Flow
-
-Users can reset forgotten passwords via email:
-
-1. User requests password reset with email address
-2. System generates reset token (1-day expiry)
-3. Reset instructions sent to email
-4. User clicks link and sets new password
-5. All existing sessions invalidated
-6. User redirected to login
-
-**Implementation**:
-
-```elixir
-# Request reset
-Accounts.deliver_user_reset_password_instructions(user, reset_url)
-
-# Reset password (token from URL)
-{:ok, user} = Accounts.get_user_by_reset_password_token(token)
-{:ok, user} = Accounts.reset_user_password(user, new_password)
-```
-
-**Security Features**:
-
-- Tokens expire after 1 day
-- Tokens are single-use
-- All sessions invalidated after password change
-- User-independent response time (security against enumeration)
-
-**Implementation**: `GtfsPlanner.Accounts.deliver_user_reset_password_instructions/2`, `GtfsPlanner.Accounts.reset_user_password/2`
-
-## API Key Authentication
-
-### API Key Format
-
-API keys follow RFC 6750 Bearer token format:
-
-```
-Authorization: Bearer GtfsPlanner.V1.abcdefg12345
-```
-
-For backward compatibility, the system also accepts:
-
-```
-Authorization: GtfsPlanner.V1.abcdefg12345
-```
-
-**Token Structure**:
-
-- `GtfsPlanner.V1`: Version prefix identifying the system
-- `abcdefg12345`: Base64-encoded random secret
-
-### API Key Flow
-
-1. Administrator creates API key for organization
-2. System generates cryptographically secure random secret
-3. Secret is hashed with SHA3-512 and stored in database
-4. Unhashed token is returned to administrator (display once)
-5. Client includes token in Authorization header
-6. System validates token and retrieves organization and roles
-7. Request proceeds with organization scope
-
-**Implementation**:
-
-```elixir
-# Create API key
-{:ok, {api_key, token}} = Organizations.create_api_key(organization.id, %{
-  description: "Production API Key",
-  roles: ["read", "write"]
-})
-
-# token is: "GtfsPlanner.V1.abc123..."
-# This is the only time the unhashed token is visible
-```
-
-### API Key Authentication
-
-**Implementation**: `GtfsPlannerWeb.ApiKeyAuth.fetch_current_api_key/2`
-
-The authentication plug:
-
-1. Extracts Authorization header from request
-2. Parses Bearer token format
-3. Looks up API key by hashed secret
-4. Validates organization association
-5. Assigns `current_api_key` and `current_organization` to connection
-
-**Security Features**:
-
-- Constant-time token comparison prevents timing attacks
-- Random delay (500-800ms) on failed authentication prevents enumeration
-- Tokens are organization-scoped (cannot access other organizations)
-- Keys support role-based authorization
-
-### API Key Authorization
-
-API keys support the same role-based authorization system as users. Roles are specified when creating or updating an API key and are enforced using `GtfsPlannerWeb.EnsureRole`.
-
-## Role-Based Authorization
-
-### Role System
-
-The authorization system supports flexible role matching:
-
-- **Single role**: `:administrator` (user must have this specific role)
-- **Any membership**: `nil` (user must be organization member, no role required)
-- **Any of list**: `any: [:read, :write]` (user must have at least one of the roles)
-- **All of list**: `all: [:read, :write]` (user must have all of the roles)
-
-### LiveView Authorization
-
-Use the `:ensure_role` mount hook to require specific roles:
-
-```elixir
-defmodule GtfsPlannerWeb.AdminLive do
-  use GtfsPlannerWeb, :live_view
-
-  on_mount {GtfsPlannerWeb.EnsureRole, :ensure_authenticated_and_role}
-  on_mount {GtfsPlannerWeb.EnsureRole, :ensure_role, [:administrator]}
-
-  def mount(_params, _session, socket) do
-    {:ok, socket}
-  end
-end
-```
-
-**Available hooks**:
-
-- `:ensure_role`: Generic hook, specify role as mount parameter
-- `:ensure_authenticated_and_role`: Requires authentication and organization membership
-
-### Plug Authorization
-
-For API endpoints and controller routes, use the `ensure_role/2` plug:
-
-```elixir
-pipeline :require_admin do
-  plug :accepts, ["json"]
-  plug GtfsPlannerWeb.ApiKeyAuth.fetch_current_api_key
-  plug GtfsPlannerWeb.EnsureRole, :ensure_role, :administrator
-end
-
-scope "/admin", as: :admin do
-  pipe_through :require_admin
-  # Admin routes here
-end
-```
-
-### Role Storage
-
-Roles are stored as PostgreSQL arrays in the database:
-
-- `users.roles`: Array of role strings for user-wide roles
-- `user_org_memberships.roles`: Array of role strings for organization-specific roles
-- `api_keys.roles`: Array of role strings for API key permissions
-
-**Implementation**: `GtfsPlannerWeb.EnsureRole.roles_match_spec/2`
-
-## Multi-Tenant Organization Management
-
-### Organization Scoping
-
-The system provides two methods of organization scoping:
-
-#### URL-Based Scoping (Browser)
-
-Organization is identified by alias in URL:
-
-```
-/organizations/:org_alias/dashboard
-```
-
-The `GtfsPlannerWeb.AssignOrganization` plug:
-
-1. Extracts `org_alias` from URL parameters
-2. Fetches organization from database
-3. Assigns `current_organization` to connection
-4. Returns 404 if organization not found
-
-**Implementation**: `GtfsPlannerWeb.AssignOrganization.call/2`
-
-#### API Key Scoping (API)
-
-API keys are inherently organization-scoped:
-
-- API key is created for a specific organization
-- Authentication automatically sets `current_organization`
-- No URL parameter required
-
-**Router Configuration**:
-
-```elixir
-# Browser routes with org scoping
-scope "/organizations/:org_alias" do
-  pipe_through [:browser, :require_authenticated_user, :require_organization]
-  # Organization-scoped routes
-end
-
-# API routes with key-based scoping
-scope "/api" do
-  pipe_through [:api, :require_authenticated_api_key]
-  # API-scoped routes
-end
-```
-
-### User Membership
-
-Users can belong to multiple organizations with different roles in each:
-
-```elixir
-# Add user to organization with roles
-{:ok, membership} = Organizations.add_user_to_organization(
-  user.id,
-  organization.id,
-  ["read", "write"]
-)
-
-# Update user roles in organization
-{:ok, membership} = Organizations.update_user_roles(
-  user.id,
-  organization.id,
-  ["read", "write", "admin"]
-)
-
-# Remove user from organization
-{:ok, _} = Organizations.remove_user_from_organization(user.id, organization.id)
-```
-
-**Constraints**:
-
-- Unique constraint on `(user_id, organization_id)` prevents duplicate memberships
-- Cascade delete: removing user or organization deletes memberships
-- Roles are validated on update
-
-### Organization Management
-
-**Organization CRUD**:
-
-```elixir
-# Create organization
-{:ok, org} = Organizations.create_organization(%{
-  alias: "transit-ops",
-  name: "Transit Operations"
-})
-
-# Get by alias
-org = Organizations.get_organization_by_alias("transit-ops")
-
-# List organizations for user
-organizations = Organizations.list_organizations_for_user(user.id)
-
-# List users in organization
-users = Organizations.list_users_in_organization(organization.id)
-```
-
-## Security Features
-
-### Password Security
-
-- **Argon2 Hashing**: Memory-hard algorithm resistant to GPU/ASIC attacks
-- **Minimum Length**: 12 characters (enforced in changeset)
-- **Maximum Length**: 72 characters (Argon2 limit)
-- **No Plaintext Storage**: Only Argon2 hash stored in database
-- **Timing Protection**: User-independent response times
-
-### Token Security
-
-- **Cryptographically Secure**: Generated with `:crypto.strong_rand_bytes/1`
-- **Hashed Storage**: Tokens always hashed before database storage
-- **Context-Based Expiry**: Different contexts have different expiry times
-- **Constant-Time Comparison**: Prevents timing attacks via `Plug.Crypto.secure_compare`
-- **Single-Use**: Email tokens invalidated after use
-- **Revocation**: Database storage enables instant revocation
-
-**Token Contexts**:
-
-- `"session"`: 60-day expiry, multiple concurrent allowed
-- `"confirm"`: 1-day expiry, single-use
-- `"reset_password"`: 1-day expiry, single-use
-- `"invite"`: 7-day expiry, single-use
-
-### Session Security
-
-- **Session Fixation Protection**: Token renewal on login
-- **Secure Cookies**: Signed cookies with `same_site: "Lax"`
-- **CSRF Protection**: Built-in Phoenix CSRF protection
-- **SSL Enforcement**: Configured for production environments
-- **LiveView Tracking**: Registry tracks sessions for disconnection
-
-### API Security
-
-- **Bearer Token Format**: RFC 6750 compliant
-- **Constant-Time Comparison**: Prevents token enumeration
-- **Rate Limiting**: Random delays (500-800ms) on failed auth
-- **Organization Scoping**: Keys cannot access other organizations
-- **Role-Based Permissions**: Fine-grained access control
-
-## Usage Examples
-
-### User Registration
-
-```elixir
-# Admin invites user
-{:ok, user} = Accounts.invite_user(
-  "user@example.com",
-  organization_id
-)
-
-# User accepts invite (in LiveView or controller)
-{:ok, user} = Accounts.get_user_by_invite_token(token)
-{:ok, user} = Accounts.accept_invite_set_password(user, password)
-```
-
-### User Authentication
-
-```elixir
-# In controller
-def create(conn, %{"user" => user_params}) do
-  user = Accounts.get_user_by_email_and_password(
-    user_params["email"],
-    user_params["password"]
-  )
-
-  if user do
-    UserAuth.log_in_user(conn, user, user_params)
-    |> redirect(to: ~p"/dashboard")
-  else
-    # Show error
-  end
-end
-```
-
-### Protected LiveView
-
-```elixir
-defmodule GtfsPlannerWeb.DashboardLive do
-  use GtfsPlannerWeb, :live_view
-
-  on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
-
-  def mount(_params, _session, socket) do
-    {:ok, socket}
-  end
-end
-```
-
-### Role-Protected Route
-
-```elixir
-# In router
-pipeline :require_admin do
-  plug :accepts, ["html"]
-  plug :fetch_current_user
-  plug :put_layout, {GtfsPlannerWeb.Layouts, :app}
-  plug GtfsPlannerWeb.EnsureRole, :ensure_role, :administrator
-end
-
-scope "/admin" do
-  pipe_through [:browser, :require_admin]
-  live "/users", AdminUsersLive, :index
-end
-```
-
-### API Key Usage
-
-```elixir
-# Create API key
-{:ok, {api_key, token}} = Organizations.create_api_key(organization.id, %{
-  description: "Production API",
-  roles: ["read", "write"]
-})
-
-# token is: "GtfsPlanner.V1.abc123..."
-
-# Client makes request with Authorization header
-curl -H "Authorization: Bearer GtfsPlanner.V1.abc123..." \
-  https://api.example.com/v1/organizations/123/data
-```
-
-### Password Reset
-
-```elixir
-# Request reset
-Accounts.deliver_user_reset_password_instructions(user, reset_url)
-
-# Reset password (from email link)
-{:ok, user} = Accounts.get_user_by_reset_password_token(token)
-{:ok, user} = Accounts.reset_user_password(user, new_password)
-```
-
-### Organization Management
-
-```elixir
-# Create organization
-{:ok, org} = Organizations.create_organization(%{
-  alias: "transit-ops",
-  name: "Transit Operations"
-})
-
-# Add user with roles
-{:ok, membership} = Organizations.add_user_to_organization(
-  user.id,
-  org.id,
-  ["read", "write"]
-)
-
-# Update roles
-{:ok, membership} = Organizations.update_user_roles(
-  user.id,
-  org.id,
-  ["read", "write", "admin"]
-)
-```
-
-## Configuration
-
-### Required Dependencies
-
-```elixir
-# mix.exs
-defp deps do
-  [
-    {:argon2_elixir, "~> 4.1"},
-    {:phoenix, "~> 1.8"},
-    {:phoenix_ecto, "~> 4.5"},
-    {:ecto_sql, "~> 3.10"},
-    {:swoosh, "~> 1.16"}
-  ]
-end
-```
-
-### Session Configuration
-
-```elixir
-# config/config.exs
-config :gtfs_planner, GtfsPlannerWeb.Endpoint,
-  session_options: [
-    store: :cookie,
-    key: "_gtfs_planner_key",
-    signing_salt: "secret_salt",
-    encryption_salt: "encryption_salt"
-  ]
-```
-
-### Email Configuration
-
-```elixir
-# config/dev.exs
-config :gtfs_planner, GtfsPlanner.Mailer,
-  adapter: Swoosh.Adapters.Local
-
-# config/prod.exs
-config :gtfs_planner, GtfsPlanner.Mailer,
-  adapter: Swoosh.Adapters.Sendgrid,
-  api_key: System.get_env("SENDGRID_API_KEY")
-```
-
-### Database Configuration
-
-Ensure PostgreSQL `citext` extension is enabled (handled in migrations):
-
-```elixir
-# Migration
-execute "CREATE EXTENSION IF NOT EXISTS citext"
-```
-
-## Best Practices
-
-### For Developers
-
-1. **Always use changesets** for validation and database operations
-2. **Use tagged tuples** `{:ok, result}` or `{:error, changeset}` from contexts
-3. **Leverage LiveView streams** for collections to avoid memory issues
-4. **Use pattern matching** for control flow instead of conditionals
-5. **Test authentication flows** with proper fixtures
-6. **Document role requirements** for protected routes
-
-### For Security
-
-1. **Never store passwords in plaintext** - always use Argon2 hashing
-2. **Validate all input** through changesets
-3. **Use HTTPS in production** for all authentication flows
-4. **Implement proper rate limiting** for API endpoints
-5. **Log security events** (failed logins, password resets, etc.)
-6. **Regularly rotate** API keys and session tokens
-7. **Use environment variables** for sensitive configuration
-
-### For Operations
-
-1. **Monitor failed authentication attempts** for suspicious activity
-2. **Set appropriate token expiry** based on security requirements
-3. **Implement email verification** for new registrations
-4. **Use organization scoping** to isolate tenant data
-5. **Audit admin activities** with proper logging
-6. **Regularly review** user roles and memberships
+Companion clients then call `POST /api/v1/auth/login` with that email and password.
+Do **not** create organization API keys; that subsystem has been removed from
+production code (the `api_keys` table may still exist until a later migration).
+
+## Security practices
+
+- Passwords are hashed (Argon2); tokens are stored hashed.
+- Prefer HTTPS in every non-local environment.
+- Rotate compromised companion sessions with logout or password change.
+- Never commit provider secrets (`GEOAPIFY_API_KEY`, mailer keys). Those are
+  third-party configuration keys, unrelated to companion auth.
 
 ## Troubleshooting
 
-### Common Issues
+**Companion 401 unauthorized**
 
-**User cannot log in**:
+- Confirm `Authorization: Bearer <token>` (no legacy `GtfsPlanner.V1.` prefix)
+- Confirm the token was not logged out or expired (60 days)
+- Confirm the user still has an active membership
 
-- Verify email exists (timing attack protection makes this difficult)
-- Check password length (12-72 characters)
-- Verify Argon2 hash matches (use `User.valid_password?/2`)
-- Check for active session tokens
+**403 no_organization on login**
 
-**API key authentication fails**:
+- Add the user to an organization before companion login
 
-- Verify Authorization header format: `Bearer GtfsPlanner.V1.abc123`
-- Check API key is not revoked or expired
-- Verify organization association
-- Ensure roles match requirements
+**Multi-org wrong tenant data**
 
-**LiveView authentication errors**:
+- Send the intended `X-Organization-Id`
 
-- Ensure correct mount hook is used
-- Check `current_scope` assignment in layouts
-- Verify session token is valid
-- Check browser cookie settings
+**Browser cannot access admin LiveViews**
 
-### Debugging
+- Check membership roles via `EnsureRole` / admin invite flows
 
-Enable logging for authentication:
+## Related docs
 
-```elixir
-# config/dev.exs
-config :logger, :console,
-  level: :debug
-```
-
-Check database for tokens:
-
-```elixir
-# List active session tokens
-from(t in UserToken,
-  where: t.context == "session",
-  where: t.inserted_at > ago(@session_validity_in_days, :day))
-|> Repo.all()
-```
-
-Verify API key hash:
-
-```elixir
-# Recreate hash for verification
-hash = ApiKey.hash_api_key(organization.id, api_key.secret, api_key.version, api_key.inserted_at)
-```
-
-## References
-
-- **Spec Document**: `docs/copy-auth-spec.md`
-- **API Authentication**: `docs/api-authentication.md`
-- **User Management**: `docs/user-management.md`
-- **Engineering Standards**: `docs/elixir-phoenix-standards.md`
-
-## Support
-
-For questions or issues related to authentication:
-
-1. Review this guide for common patterns
-2. Check test files for usage examples
-3. Refer to the implementation files for details
-4. Consult engineering standards for coding practices
+- [API Authentication](./api-authentication.md) — companion request contract
+- [User Management](./user-management.md) — invites, roles, memberships
+- [Warbler Authentication Implementation](./warbler-authentication-implementation.md) —
+  **historical** reference only; describes a prior org-key design

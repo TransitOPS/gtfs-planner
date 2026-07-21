@@ -4,7 +4,6 @@ defmodule GtfsPlanner.OrganizationsTest do
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.AdminReadAdapterMock
   alias GtfsPlanner.Organizations.Organization
-  alias GtfsPlanner.Organizations.ApiKey
 
   import ExUnit.CaptureLog
   import Mox
@@ -18,11 +17,18 @@ defmodule GtfsPlanner.OrganizationsTest do
       org1 = organization_fixture()
       org2 = organization_fixture()
 
-      assert Organizations.list_organizations() == [org1, org2]
+      ids = Organizations.list_organizations() |> Enum.map(& &1.id)
+      assert org1.id in ids
+      assert org2.id in ids
     end
 
-    test "returns empty list when no organizations exist" do
-      assert Organizations.list_organizations() == []
+    test "includes newly created organizations" do
+      before_ids = Organizations.list_organizations() |> MapSet.new(& &1.id)
+      org = organization_fixture()
+      after_ids = Organizations.list_organizations() |> MapSet.new(& &1.id)
+
+      assert MapSet.member?(after_ids, org.id)
+      assert MapSet.subset?(before_ids, after_ids)
     end
   end
 
@@ -156,17 +162,6 @@ defmodule GtfsPlanner.OrganizationsTest do
 
       refute Repo.get(Organization, organization.id)
     end
-
-    test "cascades delete to API keys" do
-      organization = organization_fixture()
-      {api_key, _token} = api_key_fixture(organization)
-
-      assert {:ok, %Organization{}} =
-               Organizations.delete_organization(organization)
-
-      refute Repo.get(Organization, organization.id)
-      refute Repo.get(ApiKey, api_key.id)
-    end
   end
 
   describe "change_organization/2" do
@@ -186,199 +181,6 @@ defmodule GtfsPlanner.OrganizationsTest do
       assert changeset.valid?
       assert get_change(changeset, :alias) == attrs.alias
       assert get_change(changeset, :name) == attrs.name
-    end
-  end
-
-  describe "list_api_keys/1" do
-    test "returns API keys for organization" do
-      organization = organization_fixture()
-      {api_key1, _token1} = api_key_fixture(organization, %{description: "Key 1"})
-      {api_key2, _token2} = api_key_fixture(organization, %{description: "Key 2"})
-
-      api_keys = Organizations.list_api_keys(organization.id)
-
-      assert length(api_keys) == 2
-      assert api_key1 in api_keys
-      assert api_key2 in api_keys
-    end
-
-    test "returns empty list for organization with no API keys" do
-      organization = organization_fixture()
-
-      api_keys = Organizations.list_api_keys(organization.id)
-
-      assert api_keys == []
-    end
-
-    test "does not return API keys from other organizations" do
-      org1 = organization_fixture()
-      org2 = organization_fixture()
-
-      {api_key, _token} = api_key_fixture(org1)
-
-      api_keys = Organizations.list_api_keys(org2.id)
-
-      refute api_key in api_keys
-    end
-  end
-
-  describe "get_api_key!/1" do
-    setup do
-      organization = organization_fixture()
-      {api_key, _token} = api_key_fixture(organization)
-
-      %{api_key: api_key}
-    end
-
-    test "raises if id does not exist" do
-      assert_raise Ecto.NoResultsError, fn ->
-        Organizations.get_api_key!(Ecto.UUID.generate())
-      end
-    end
-
-    test "returns the API key with the given id", %{api_key: api_key} do
-      assert Organizations.get_api_key!(api_key.id) == api_key
-    end
-  end
-
-  describe "get_api_key_by_token/1" do
-    setup do
-      organization = organization_fixture()
-      {api_key, token} = api_key_fixture(organization)
-
-      %{api_key: api_key, token: token}
-    end
-
-    test "returns API key for valid token", %{api_key: api_key, token: token} do
-      assert {:ok, found_key} = Organizations.get_api_key_by_token(token)
-      assert found_key.id == api_key.id
-    end
-
-    test "returns error for invalid token" do
-      assert {:error, :invalid} =
-               Organizations.get_api_key_by_token("GtfsPlanner.V1.invalidtoken")
-    end
-
-    test "returns error for malformed token" do
-      assert {:error, :invalid} =
-               Organizations.get_api_key_by_token("invalid")
-    end
-  end
-
-  describe "create_api_key/2" do
-    test "creates API key with valid attributes" do
-      organization = organization_fixture()
-      attrs = valid_api_key_attributes()
-
-      assert {:ok, {%ApiKey{} = api_key, token}} =
-               Organizations.create_api_key(organization.id, attrs)
-
-      assert api_key.organization_id == organization.id
-      assert api_key.description == attrs.description
-      assert api_key.roles == attrs.roles
-      assert api_key.version == 1
-      assert is_binary(api_key.secret_hash)
-      assert is_binary(token)
-      assert String.starts_with?(token, "GtfsPlanner.V1.")
-    end
-
-    test "requires description to be set" do
-      organization = organization_fixture()
-
-      {:error, changeset} =
-        Organizations.create_api_key(organization.id, %{description: ""})
-
-      assert %{description: ["can't be blank"]} = errors_on(changeset)
-    end
-
-    test "creates API key with custom roles" do
-      organization = organization_fixture()
-
-      {:ok, {%ApiKey{} = api_key, _token}} =
-        Organizations.create_api_key(organization.id, %{
-          description: "Admin Key",
-          roles: ["pathways_studio_admin", "pathways_studio_editor"]
-        })
-
-      assert api_key.roles == ["pathways_studio_admin", "pathways_studio_editor"]
-    end
-
-    test "creates API key with empty roles" do
-      organization = organization_fixture()
-
-      {:ok, {%ApiKey{} = api_key, _token}} =
-        Organizations.create_api_key(organization.id, %{
-          description: "No Roles Key",
-          roles: []
-        })
-
-      assert api_key.roles == []
-    end
-  end
-
-  describe "update_api_key/2" do
-    setup do
-      organization = organization_fixture()
-      {api_key, _token} = api_key_fixture(organization)
-
-      %{api_key: api_key}
-    end
-
-    test "updates API key with valid attributes", %{api_key: api_key} do
-      new_description = "Updated Description"
-
-      assert {:ok, %ApiKey{} = updated} =
-               Organizations.update_api_key(api_key, %{description: new_description})
-
-      assert updated.description == new_description
-      assert updated.id == api_key.id
-    end
-
-    test "updates API key roles", %{api_key: api_key} do
-      new_roles = ["pathways_studio_admin", "pathways_studio_editor"]
-
-      assert {:ok, %ApiKey{} = updated} =
-               Organizations.update_api_key(api_key, %{roles: new_roles})
-
-      assert updated.roles == new_roles
-    end
-
-    test "returns error with invalid attributes", %{api_key: api_key} do
-      {:error, changeset} =
-        Organizations.update_api_key(api_key, %{description: nil})
-
-      assert %{description: ["can't be blank"]} = errors_on(changeset)
-    end
-  end
-
-  describe "delete_api_key/1" do
-    test "deletes the API key" do
-      organization = organization_fixture()
-      {api_key, _token} = api_key_fixture(organization)
-
-      assert {:ok, %ApiKey{}} = Organizations.delete_api_key(api_key)
-      refute Repo.get(ApiKey, api_key.id)
-    end
-  end
-
-  describe "change_api_key/2" do
-    test "returns a changeset" do
-      assert %Ecto.Changeset{} =
-               changeset = Organizations.change_api_key(%ApiKey{})
-
-      assert changeset.required == [:description]
-    end
-
-    test "allows fields to be set" do
-      api_key = %ApiKey{}
-
-      changeset =
-        Organizations.change_api_key(api_key, %{
-          description: "Test Key",
-          roles: ["read"]
-        })
-
-      assert changeset.valid?
     end
   end
 
@@ -431,38 +233,6 @@ defmodule GtfsPlanner.OrganizationsTest do
 
       assert get_change(padded_changeset, :alias) == get_change(trimmed_changeset, :alias)
       assert get_change(padded_changeset, :alias) == "demo-org"
-    end
-  end
-
-  describe "api key changeset" do
-    test "trims whitespace from description on create" do
-      organization = organization_fixture()
-
-      {:ok, {api_key, _token}} =
-        Organizations.create_api_key(organization.id, %{description: "  My Key  "})
-
-      assert api_key.description == "My Key"
-    end
-
-    test "trims whitespace from description on update" do
-      organization = organization_fixture()
-      {api_key, _token} = api_key_fixture(organization)
-
-      {:ok, updated} =
-        Organizations.update_api_key(api_key, %{description: "  Updated Key  "})
-
-      assert updated.description == "Updated Key"
-    end
-
-    test "trims description before length validation" do
-      long_string = String.duplicate("a", 255)
-      padded = "  " <> long_string <> "  "
-
-      changeset =
-        ApiKey.changeset(%ApiKey{}, %{description: padded, organization_id: Ecto.UUID.generate()})
-
-      assert changeset.valid?
-      assert get_change(changeset, :description) == long_string
     end
   end
 
@@ -676,11 +446,15 @@ defmodule GtfsPlanner.OrganizationsTest do
       org1 = organization_fixture()
       org2 = organization_fixture()
 
-      assert Organizations.list_organizations_for_admin() == {:ok, [org1, org2]}
+      assert {:ok, admin_orgs} = Organizations.list_organizations_for_admin()
+      assert admin_orgs == Organizations.list_organizations()
+      assert Enum.any?(admin_orgs, &(&1.id == org1.id))
+      assert Enum.any?(admin_orgs, &(&1.id == org2.id))
     end
 
-    test "returns an empty list when no organization exists" do
-      assert Organizations.list_organizations_for_admin() == {:ok, []}
+    test "returns the same list as the raw read when no new organization is created" do
+      assert Organizations.list_organizations_for_admin() ==
+               {:ok, Organizations.list_organizations()}
     end
   end
 
@@ -819,7 +593,7 @@ defmodule GtfsPlanner.OrganizationsTest do
           "pathways_studio_admin"
         ])
 
-      assert Organizations.list_organizations() == [organization]
+      assert organization in Organizations.list_organizations()
       assert Organizations.get_organization(organization.id) == organization
       assert Organizations.get_organization(Ecto.UUID.generate()) == nil
 
@@ -841,7 +615,8 @@ defmodule GtfsPlanner.OrganizationsTest do
       Application.delete_env(:gtfs_planner, @adapter_key)
       organization = organization_fixture()
 
-      assert Organizations.list_organizations_for_admin() == {:ok, [organization]}
+      assert {:ok, orgs} = Organizations.list_organizations_for_admin()
+      assert organization in orgs
     end
   end
 

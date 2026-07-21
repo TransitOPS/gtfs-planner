@@ -35,7 +35,6 @@ defmodule GtfsPlannerWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
-    plug :fetch_current_api_key
   end
 
   scope "/", GtfsPlannerWeb do
@@ -225,7 +224,4 @@ defmodule GtfsPlannerWeb.Router do
 
   defp require_authenticated_user_pl(conn, opts),
     do: GtfsPlannerWeb.UserAuth.require_authenticated_user(conn, opts)
-
-  defp fetch_current_api_key(conn, opts),
-    do: GtfsPlannerWeb.ApiKeyAuth.fetch_current_api_key(conn, opts)
 end
