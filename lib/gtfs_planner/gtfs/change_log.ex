@@ -47,7 +47,6 @@ defmodule GtfsPlanner.Gtfs.ChangeLog do
     |> validate_required([
       :entity_type,
       :entity_external_id,
-      :station_stop_id,
       :actor_id,
       :actor_email,
       :action,

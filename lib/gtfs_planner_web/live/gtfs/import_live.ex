@@ -7,17 +7,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   import Ecto.Query, only: [from: 2]
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import
 
   alias GtfsPlanner.Gtfs.Import.{
     Result,
-    Diff,
-    DiffDecision,
-    RowParser,
-    ParsedEntity,
-    ParseError,
-    ParseFailure
+    ChangeArtifactStorage,
+    ChangeDecision,
+    ChangeRun,
+    ChangeRunner,
+    ChangeRuns,
+    ParseError
   }
 
   alias GtfsPlanner.Gtfs.Import.Run
@@ -25,6 +24,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
+  alias GtfsPlannerWeb.Components.TransitPresentation
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_editor}
 
@@ -60,12 +60,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     # a reconnect always reconstructs current state from PostgreSQL.
     ImportRuns.adopt_legacy_failed_targets(organization_id)
     ImportRuns.reconcile_expired(organization_id)
+    ChangeRuns.reconcile_expired(organization_id)
 
     recoverable_runs = ImportRuns.list_recoverable(organization_id)
+    route_version_id = socket.assigns.current_gtfs_version.id
+    change_run = ChangeRuns.latest_for_version(organization_id, route_version_id)
 
     for run <- recoverable_runs do
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
     end
+
+    if change_run, do: Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(change_run))
 
     {:ok,
      socket
@@ -85,6 +90,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
        :form,
        to_form(%{"version_name" => ""}, as: :gtfs_import_form)
      )
+     |> assign(:diff_form, to_form(%{}, as: :diff_upload))
      |> assign(:import_result, nil)
      |> assign(:import_target, nil)
      |> assign(:published_version, nil)
@@ -98,8 +104,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:processing_discard, false)
      |> assign(:processing_publish, nil)
      |> assign(:recovery_announce, nil)
-     |> assign(:diff_step, :upload)
-     |> assign(:diff_summary, empty_diff_summary())
+     |> assign(:change_run, change_run)
+     |> assign(:diff_step, diff_step(change_run))
+     |> assign(:diff_summary, run_summary(change_run))
      |> assign(:diff_filter, :all)
      |> assign(:diff_parse_failures, [])
      |> assign(:diff_blockers, [])
@@ -110,7 +117,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> stream(:diff_preview_decisions, [])
      |> stream(:import_recovery_runs, recoverable_runs,
        dom_id: fn run -> "import-run-#{run.id}" end
-     )}
+     )
+     |> refresh_change_review()}
   end
 
   @impl true
@@ -355,22 +363,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         {:ok, %{filename: entry.client_name, content: File.read!(path)}}
       end)
 
-    {expanded_files, archive_warnings} = Import.expand_archives(uploaded_files)
-    archive_blockers = normalize_archive_warnings(archive_warnings)
-
-    case categorize_diff_files(expanded_files) do
-      {:error, duplicate_errors} ->
-        blockers =
-          Enum.map(duplicate_errors, &normalize_duplicate_blocker/1) ++ archive_blockers
-
-        {:noreply, block_diff_review(socket, blockers)}
-
-      {:ok, _categorized_files} when archive_blockers != [] ->
-        {:noreply, block_diff_review(socket, archive_blockers)}
-
-      {:ok, categorized_files} ->
-        {:noreply, compute_diff_review(socket, categorized_files)}
-    end
+    {:noreply, start_change_review(socket, uploaded_files)}
   end
 
   @impl true
@@ -380,7 +373,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         {:noreply,
          socket
          |> assign(:diff_filter, filter_atom)
-         |> stream_filtered_diff_decisions()}
+         |> refresh_change_review()}
 
       :error ->
         {:noreply, socket}
@@ -389,35 +382,26 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   @impl true
   def handle_event("approve-decision", %{"id" => id}, socket) do
-    {:noreply, update_decision_status(socket, id, :approved)}
+    {:noreply, update_change_decision(socket, id, :approved)}
   end
 
   @impl true
   def handle_event("reject-decision", %{"id" => id}, socket) do
-    {:noreply, update_decision_status(socket, id, :rejected)}
+    {:noreply, update_change_decision(socket, id, :rejected)}
   end
 
   @impl true
   def handle_event("approve-all", %{"action" => action}, socket) do
     case Map.fetch(@diff_actions, action) do
       {:ok, action_atom} ->
-        decisions_by_id =
-          Enum.reduce(socket.assigns.decisions_by_id, %{}, fn {id, %DiffDecision{} = decision},
-                                                              acc ->
-            updated_decision =
-              if decision.action == action_atom do
-                %DiffDecision{decision | status: :approved}
-              else
-                decision
-              end
+        _ =
+          ChangeRuns.approve_all(
+            socket.assigns.current_organization.id,
+            socket.assigns.change_run.id,
+            action_atom
+          )
 
-            Map.put(acc, id, updated_decision)
-          end)
-
-        {:noreply,
-         socket
-         |> assign(:decisions_by_id, decisions_by_id)
-         |> stream_filtered_diff_decisions()}
+        {:noreply, refresh_change_review(socket)}
 
       :error ->
         {:noreply, socket}
@@ -426,26 +410,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   @impl true
   def handle_event("apply-decisions", _params, socket) do
-    approved_decisions =
-      socket.assigns.decisions_by_id
-      |> Map.values()
-      |> Enum.filter(fn decision -> decision.status == :approved end)
-      |> order_apply_decisions()
-
-    if socket.assigns.diff_step == :review and approved_decisions != [] do
-      apply_results =
-        Enum.map(approved_decisions, fn decision ->
-          {decision.id, apply_decision(decision)}
-        end)
-
-      {:noreply,
-       socket
-       |> assign(:apply_results, apply_results)
-       |> assign(:diff_step, :done)}
-    else
-      {:noreply, socket}
-    end
+    {:noreply, request_change_apply(socket)}
   end
+
+  @impl true
+  def handle_event("cancel-diff-run", _params, socket), do: {:noreply, cancel_change_run(socket)}
+
+  @impl true
+  def handle_event("retry-diff-run", _params, socket), do: {:noreply, retry_change_run(socket)}
 
   @impl true
   def handle_event("reset-diff", _params, socket) do
@@ -456,6 +428,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     {:noreply,
      socket
+     |> assign(:change_run, nil)
      |> assign(:diff_step, :upload)
      |> assign(:diff_summary, empty_diff_summary())
      |> assign(:diff_filter, :all)
@@ -474,6 +447,24 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   end
 
   def handle_info({:import_phase, _phase}, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:change_run_changed, run_id}, socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    socket =
+      case ChangeRuns.get_for_version(organization_id, version_id, run_id) do
+        %ChangeRun{} = run ->
+          Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(run))
+          socket |> assign(:change_run, run) |> refresh_change_review()
+
+        nil ->
+          socket
+      end
+
     {:noreply, socket}
   end
 
@@ -662,94 +653,143 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     |> assign(:recovery_empty, empty?)
   end
 
-  defp block_diff_review(socket, blockers) do
-    socket
-    |> assign(:diff_blockers, blockers)
-    |> assign(:diff_parse_failures, [])
-    |> assign(:diff_preview_count, 0)
-    |> assign(:diff_step, :upload)
-    |> assign(:diff_filter, :all)
-    |> assign(:diff_summary, empty_diff_summary())
-    |> assign(:apply_results, [])
-    |> assign(:decisions_by_id, %{})
-    |> stream(:diff_decisions, [], reset: true)
-    |> stream(:diff_preview_decisions, [], reset: true)
-  end
-
-  defp compute_diff_review(socket, categorized_files) do
+  defp start_change_review(socket, uploaded_files) do
     organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    version_id = socket.assigns.current_gtfs_version.id
+    actor = %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
+    run_id = Ecto.UUID.generate()
 
-    levels_result =
-      ParsedEntity.parse(
-        categorized_files.levels,
-        :level,
-        "levels.txt",
-        :level_id,
-        fn row_map ->
-          RowParser.level_row_to_attrs(row_map, organization_id, gtfs_version_id)
-        end
-      )
+    with {:ok, manifest} <-
+           ChangeArtifactStorage.stage(organization_id, version_id, run_id, uploaded_files),
+         {:ok, %ChangeRun{} = run} <-
+           ChangeRuns.create_pending_compute(organization_id, version_id, actor, manifest, run_id) do
+      if run.id != run_id, do: ChangeArtifactStorage.remove(organization_id, version_id, run_id)
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(run))
+      _ = ChangeRunner.start_compute(organization_id, run.id)
 
-    stops_result =
-      ParsedEntity.parse(
-        categorized_files.stops,
-        :stop,
-        "stops.txt",
-        :stop_id,
-        fn row_map ->
-          RowParser.stop_row_to_attrs(row_map, organization_id, gtfs_version_id)
-        end
-      )
-
-    db_levels = Gtfs.list_levels(organization_id, gtfs_version_id)
-    db_stops = Gtfs.list_stops(organization_id, gtfs_version_id)
-    db_pathways = Gtfs.list_pathways(organization_id, gtfs_version_id)
-    stop_validation_map = build_stop_validation_map(db_stops, stops_result)
-
-    pathways_result =
-      ParsedEntity.parse(
-        categorized_files.pathways,
-        :pathway,
-        "pathways.txt",
-        :pathway_id,
-        fn row_map ->
-          RowParser.pathway_row_to_attrs(
-            row_map,
-            organization_id,
-            gtfs_version_id,
-            stop_validation_map
-          )
-        end
-      )
-
-    parse_failures = parse_failures([levels_result, stops_result, pathways_result])
-    uploaded = %{levels: levels_result, stops: stops_result, pathways: pathways_result}
-    db = %{levels: db_levels, stops: db_stops, pathways: db_pathways}
-    diff_result = Diff.compute(uploaded, db)
-    decisions = diff_result.applicable
-    decisions_by_id = Map.new(decisions, fn decision -> {decision.id, decision} end)
-    preview_decisions = diff_result.preview
-
-    socket
-    |> assign(:diff_blockers, [])
-    |> assign(:diff_parse_failures, parse_failures)
-    |> assign(:diff_preview_count, length(preview_decisions))
-    |> assign(:diff_summary, Diff.summary(decisions))
-    |> assign(:diff_filter, :all)
-    |> assign(:apply_results, [])
-    |> assign(:decisions_by_id, decisions_by_id)
-    |> assign(:diff_step, :review)
-    |> stream(:diff_decisions, decisions, reset: true)
-    |> stream(:diff_preview_decisions, preview_decisions, reset: true)
+      socket
+      |> assign(:change_run, run)
+      |> assign(:diff_filter, :all)
+      |> refresh_change_review()
+    else
+      {:error, reason} ->
+        socket
+        |> assign(:diff_blockers, [%{reason: reason}])
+        |> assign(:diff_step, :upload)
+    end
   end
 
-  defp parse_failures(results) do
-    Enum.flat_map(results, fn
-      {:error, %ParseFailure{} = failure} -> [failure]
-      _result -> []
+  defp refresh_change_review(socket) do
+    case socket.assigns[:change_run] do
+      %ChangeRun{} = run ->
+        organization_id = socket.assigns.current_organization.id
+
+        run =
+          ChangeRuns.get_for_version(
+            organization_id,
+            socket.assigns.current_gtfs_version.id,
+            run.id
+          ) || run
+
+        decisions = ChangeRuns.list_decisions(organization_id, run.id)
+        applicable = Enum.reject(decisions, &(&1.status == :preview))
+        previews = Enum.filter(decisions, &(&1.status == :preview))
+        filtered = filter_decisions(applicable, socket.assigns.diff_filter)
+
+        socket
+        |> assign(:change_run, run)
+        |> assign(:diff_step, diff_step(run))
+        |> assign(:diff_summary, run_summary(run))
+        |> assign(:diff_blockers, run_blockers(run))
+        |> assign(:diff_parse_failures, run_diagnostics(run))
+        |> assign(:diff_preview_count, length(previews))
+        |> assign(:decisions_by_id, Map.new(applicable, &{&1.decision_id, &1}))
+        |> stream(:diff_decisions, filtered, reset: true)
+        |> stream(:diff_preview_decisions, previews, reset: true)
+
+      _ ->
+        socket
+    end
+  end
+
+  defp update_change_decision(socket, decision_id, status) do
+    with %ChangeRun{} = run <- socket.assigns[:change_run],
+         {:ok, _decision} <-
+           ChangeRuns.set_decision_status(
+             socket.assigns.current_organization.id,
+             run.id,
+             decision_id,
+             status
+           ) do
+      refresh_change_review(socket)
+    else
+      _ -> socket
+    end
+  end
+
+  defp request_change_apply(socket) do
+    with %ChangeRun{} = run <- socket.assigns[:change_run],
+         {:ok, pending} <-
+           ChangeRuns.request_apply(socket.assigns.current_organization.id, run.id) do
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(pending))
+      _ = ChangeRunner.start_apply(socket.assigns.current_organization.id, pending.id)
+      socket |> assign(:change_run, pending) |> refresh_change_review()
+    else
+      _ -> socket
+    end
+  end
+
+  defp cancel_change_run(socket) do
+    with %ChangeRun{} = run <- socket.assigns[:change_run],
+         {:ok, changed} <-
+           ChangeRuns.request_cancel(socket.assigns.current_organization.id, run.id) do
+      socket |> assign(:change_run, changed) |> refresh_change_review()
+    else
+      _ -> socket
+    end
+  end
+
+  defp retry_change_run(socket) do
+    with %ChangeRun{} = run <- socket.assigns[:change_run],
+         {:ok, retry} <- ChangeRuns.retry(socket.assigns.current_organization.id, run.id) do
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(retry))
+
+      case retry.state do
+        :pending_apply -> _ = ChangeRunner.start_apply(retry.organization_id, retry.id)
+        :pending_compute -> _ = ChangeRunner.start_compute(retry.organization_id, retry.id)
+        _ -> :ok
+      end
+
+      socket |> assign(:change_run, retry) |> refresh_change_review()
+    else
+      _ -> socket
+    end
+  end
+
+  defp filter_decisions(decisions, :all), do: decisions
+  defp filter_decisions(decisions, action), do: Enum.filter(decisions, &(&1.action == action))
+
+  defp diff_step(nil), do: :upload
+  defp diff_step(%ChangeRun{state: :review}), do: :review
+  defp diff_step(%ChangeRun{state: :completed}), do: :done
+  defp diff_step(%ChangeRun{}), do: :processing
+
+  defp run_summary(nil), do: empty_diff_summary()
+
+  defp run_summary(%ChangeRun{summary: summary}) when is_map(summary) do
+    Enum.reduce([:add, :modify, :remove, :conflict], empty_diff_summary(), fn key, acc ->
+      Map.put(acc, key, Map.get(summary, Atom.to_string(key), Map.get(summary, key, 0)))
     end)
   end
+
+  defp run_blockers(%ChangeRun{state: :review}), do: []
+  defp run_blockers(%ChangeRun{state: :failed, failure_code: code}), do: [%{reason: code}]
+  defp run_blockers(_), do: []
+
+  defp run_diagnostics(%ChangeRun{diagnostics: diagnostics}) when is_list(diagnostics),
+    do: diagnostics
+
+  defp run_diagnostics(_), do: []
 
   @impl true
   def render(assigns) do
@@ -771,7 +811,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       </.header>
 
       <div class="mt-8">
-        <div class="rounded-box border border-base-300 bg-base-100 p-6">
+        <div class="max-w-2xl bg-base-100 rounded-lg p-6">
           <.form
             for={@form}
             id="gtfs-import-form"
@@ -802,126 +842,34 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               />
             </div>
 
-            <div class="form-control">
-              <label class="label">
-                <span class="label-text">GTFS Files</span>
-              </label>
-              <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-control-border rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
-                <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
-                  <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/70" />
-                  <p class="mb-2 text-sm font-medium">
-                    <span class="text-primary">Click to upload</span> or drag and drop
-                  </p>
-                  <p class="text-xs text-base-content/70">
-                    GTFS .txt/.csv files or a .zip archive (max 50 files, 200MB each)
-                  </p>
-                </div>
-                <.live_file_input upload={@uploads.gtfs_files} id="gtfs-import-files" class="sr-only" />
-              </label>
-            </div>
+            <.upload_field
+              id="gtfs-import-upload"
+              upload={@uploads.gtfs_files}
+              label="GTFS files"
+              help="GTFS .txt or .csv files, or one .zip archive. Up to 50 files, 200 MB each."
+              action_label="Select GTFS files or drag and drop"
+              cancel_event="cancel-upload"
+              error_formatter={&upload_error_to_string/1}
+              state={upload_field_state(@uploads.gtfs_files)}
+            />
 
-            <%!-- Unrecognized files warning --%>
             <%= if @unrecognized_upload_files != [] do %>
-              <div class="alert alert-warning alert-soft mt-2">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="stroke-current shrink-0 h-6 w-6 text-warning"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                  />
-                </svg>
-                <div class="text-base-content">
-                  <h3 class="font-bold">Unrecognized Files</h3>
-                  <div class="text-xs">
-                    The following files are not recognized GTFS files and will be skipped during import: {Enum.join(
-                      @unrecognized_upload_files,
-                      ", "
-                    )}
-                  </div>
-                </div>
-              </div>
+              <.callout id="gtfs-import-unrecognized" kind="warning" title="Unrecognized files">
+                These files will be skipped: {Enum.join(@unrecognized_upload_files, ", ")}.
+              </.callout>
             <% end %>
 
-            <%!-- Upload errors --%>
-            <%= for error <- upload_errors(@uploads.gtfs_files) do %>
-              <div class="alert alert-error alert-soft mt-2">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="stroke-current shrink-0 h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                  />
-                </svg>
-                <span class="text-sm">{upload_error_to_string(error)}</span>
-              </div>
-            <% end %>
-
-            <div class="form-control">
-              <button
-                type="submit"
-                id="gtfs-import-submit"
-                class="btn btn-primary"
-                disabled={@uploads.gtfs_files.entries == [] || @importing}
-              >
-                <%= if @importing do %>
-                  <span class="loading loading-spinner loading-sm"></span> Importing…
-                <% else %>
-                  Import feed
-                <% end %>
-              </button>
-            </div>
-
-            <%!-- Upload entries display --%>
-            <%= for entry <- @uploads.gtfs_files.entries do %>
-              <div class={[
-                "flex items-center justify-between mt-2 p-2 rounded",
-                upload_errors(@uploads.gtfs_files, entry) == [] && "bg-base-200",
-                upload_errors(@uploads.gtfs_files, entry) != [] && "bg-error/10 border border-error"
-              ]}>
-                <div class="flex-1">
-                  <span class="text-sm font-medium">{entry.client_name}</span>
-                  <%= if upload_errors(@uploads.gtfs_files, entry) == [] do %>
-                    <div class="w-full bg-base-300 rounded-full h-2 mt-1">
-                      <div
-                        class="bg-primary h-2 rounded-full transition-all duration-300"
-                        style={"width: #{entry.progress}%"}
-                      >
-                      </div>
-                    </div>
-                    <span class="text-xs text-base-content/70">
-                      {entry.progress}% uploaded
-                    </span>
-                  <% else %>
-                    <%= for error <- upload_errors(@uploads.gtfs_files, entry) do %>
-                      <div class="flex items-center gap-2 mt-1">
-                        <.icon name="hero-exclamation-circle" class="w-4 h-4 text-error" />
-                        <span class="text-sm text-error">{upload_error_to_string(error)}</span>
-                      </div>
-                    <% end %>
-                  <% end %>
-                </div>
-                <button
-                  type="button"
-                  class="btn btn-ghost btn-xs ml-2"
-                  phx-click="cancel-upload"
-                  phx-value-ref={entry.ref}
-                >
-                  Cancel
-                </button>
-              </div>
-            <% end %>
+            <.button
+              id="gtfs-import-submit"
+              type="submit"
+              disabled={@uploads.gtfs_files.entries == [] || @importing}
+            >
+              <%= if @importing do %>
+                <span class="loading loading-spinner loading-sm"></span> Importing…
+              <% else %>
+                Import feed
+              <% end %>
+            </.button>
           </.form>
 
           <div id="gtfs-import-status" aria-live="polite" role="status">
@@ -933,7 +881,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                       <span class="text-sm font-medium">
                         Processing: {@import_progress.file}
                       </span>
-                      <span class="text-sm text-base-content/70">
+                      <span class="text-sm text-base-content/60">
                         {@import_progress.processed} / {@import_progress.total} rows
                       </span>
                     </div>
@@ -957,55 +905,31 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             >
               <%= case @import_result do %>
                 <% {:ok, published, %Import.Result{counts: counts, unrecognized_files: unrecognized}} -> %>
-                  <div class="alert border border-green-300 bg-green-100 text-black">
-                    <.icon name="hero-check-circle" class="shrink-0 h-6 w-6" />
-                    <div>
-                      <h3 class="font-bold">Import successful</h3>
-                      <div class="text-xs">
-                        Imported into new version “{published.name}”: {counts.levels} levels, {counts.stops} stops, {counts.pathways} pathways.
-                      </div>
-                      <div :if={unrecognized != []} class="text-xs mt-1">
-                        Unrecognized files skipped: {Enum.join(unrecognized, ", ")}
-                      </div>
-                      <.link
-                        id="gtfs-import-view-version"
-                        navigate={~p"/gtfs/#{published.id}/routes"}
-                        class="link link-primary text-sm mt-2 inline-block"
-                      >
-                        View version
-                      </.link>
-                    </div>
-                  </div>
+                  <.callout kind="success" title="Import successful">
+                    Imported into new version “{published.name}”: {counts.levels} levels, {counts.stops} stops, {counts.pathways} pathways.
+                    <span :if={unrecognized != []}>
+                      Unrecognized files skipped: {Enum.join(unrecognized, ", ")}.
+                    </span>
+                    <.link
+                      id="gtfs-import-view-version"
+                      navigate={~p"/gtfs/#{published.id}/routes"}
+                      class="mt-2 inline-block text-primary underline"
+                    >
+                      View version
+                    </.link>
+                  </.callout>
                 <% {:error, target, {:publication_failed, _reason}} -> %>
-                  <div class="alert alert-error alert-soft">
-                    <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
-                    <div>
-                      <h3 class="font-bold">Publication failed</h3>
-                      <div class="text-xs">
-                        Version “{target_name(target)}” finished importing but could not be published. It remains unavailable for reconciliation.
-                      </div>
-                    </div>
-                  </div>
+                  <.callout kind="error" title="Publication failed">
+                    Version “{target_name(target)}” finished importing but could not be published. It remains unavailable for reconciliation.
+                  </.callout>
                 <% {:error, nil, :no_files_selected} -> %>
-                  <div class="alert alert-error alert-soft">
-                    <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
-                    <div>
-                      <h3 class="font-bold">Import failed</h3>
-                      <div class="text-xs">Select at least one file to import.</div>
-                    </div>
-                  </div>
+                  <.callout kind="error" title="Import failed">
+                    Select at least one file to import.
+                  </.callout>
                 <% {:error, target, reason} -> %>
-                  <div class="alert alert-error alert-soft">
-                    <.icon name="hero-exclamation-triangle" class="shrink-0 h-6 w-6" />
-                    <div>
-                      <h3 class="font-bold">Import failed</h3>
-                      <div class="text-xs">
-                        Version “{target_name(target)}” was not published. {format_import_error(
-                          reason
-                        )}
-                      </div>
-                    </div>
-                  </div>
+                  <.callout kind="error" title="Import failed">
+                    Version “{target_name(target)}” was not published. {format_import_error(reason)}
+                  </.callout>
               <% end %>
             </div>
           <% end %>
@@ -1021,7 +945,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       </div>
 
       <div class="mt-8">
-        <div class="rounded-box border border-base-300 bg-base-100 p-6">
+        <div class="bg-base-100 rounded-lg p-6">
           <div class="flex flex-col gap-3">
             <h2 class="text-xl font-semibold">Import recovery</h2>
             <p class="text-sm text-base-content/70">
@@ -1045,7 +969,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               <.icon name={recovery_card_icon(run)} class="w-5 h-5 mb-2" />
               <div class="flex flex-col gap-1">
                 <p class="text-sm font-semibold">{run.version_name}</p>
-                <p class="text-xs text-base-content/70">{recovery_card_state_label(run)}</p>
+                <.status_badge
+                  status={recovery_badge_status(run)}
+                  label={recovery_card_state_label(run)}
+                />
                 <%= if run.committed_counts != %{} and run.state == "partial" do %>
                   <p class="text-xs text-base-content/70 mt-1">
                     {recovery_counts_summary(run.committed_counts)}
@@ -1111,7 +1038,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                 <% end %>
 
                 <%= if run.state in ~w(pending running cleaning) do %>
-                  <span class="text-xs text-base-content/70 self-center">
+                  <span class="text-xs text-base-content/50 self-center">
                     {if run.state == "cleaning", do: "Cleanup in progress…", else: "In progress…"}
                   </span>
                 <% end %>
@@ -1120,113 +1047,65 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           </div>
 
           <%= if @recovery_empty do %>
-            <p
+            <.empty_state
               id="import-recovery-empty"
-              class="text-sm text-base-content/70 py-2"
+              class="py-6"
+              title="No recoverable imports"
             >
               No recoverable imports for this organization.
-            </p>
+            </.empty_state>
           <% end %>
         </div>
       </div>
 
       <div class="mt-8">
-        <div class="rounded-box border border-base-300 bg-base-100 p-6">
+        <div class="bg-base-100 rounded-lg p-6">
           <div class="flex flex-col gap-2">
-            <h2 class="text-xl font-semibold">Update Station Data</h2>
+            <h2 class="text-xl font-semibold">Update station data</h2>
             <p class="text-sm text-base-content/70">
               Upload `levels.txt`, `stops.txt`, and/or `pathways.txt` to review and apply station data diffs.
             </p>
-            <p id="diff-destination" class="text-xs text-base-content/70">
+            <p id="diff-destination" class="text-xs text-base-content/60">
               Reviewed changes apply to version “{version_display_name(@current_gtfs_version)}”.
             </p>
           </div>
 
           <.form
-            for={to_form(%{}, as: :diff_upload)}
+            for={@diff_form}
             id="diff-upload-form"
             class="mt-6 space-y-4"
             phx-change="validate_diff"
             phx-submit="compute_diff"
           >
-            <label class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-control-border rounded-lg cursor-pointer bg-base-200 hover:bg-base-300 transition-colors">
-              <div class="flex flex-col items-center justify-center pt-5 pb-6 px-6">
-                <.icon name="hero-arrow-up-tray" class="w-10 h-10 mb-3 text-base-content/70" />
-                <p class="mb-2 text-sm font-medium">
-                  <span class="text-primary">Click to upload</span> or drag and drop
-                </p>
-                <p class="text-xs text-base-content/70">
-                  levels.txt, stops.txt, pathways.txt or a .zip archive (max 3 files, 50MB each)
-                </p>
-              </div>
-              <.live_file_input upload={@uploads.diff_files} class="sr-only" />
-            </label>
-
-            <%= for error <- upload_errors(@uploads.diff_files) do %>
-              <div class="alert alert-error alert-soft">
-                <.icon name="hero-exclamation-triangle" class="w-5 h-5" />
-                <span>{diff_upload_error_to_string(error)}</span>
-              </div>
-            <% end %>
-
-            <%= for entry <- @uploads.diff_files.entries do %>
-              <div class={[
-                "flex items-center justify-between mt-2 p-2 rounded",
-                upload_errors(@uploads.diff_files, entry) == [] && "bg-base-200",
-                upload_errors(@uploads.diff_files, entry) != [] && "bg-error/10 border border-error"
-              ]}>
-                <div class="flex-1">
-                  <span class="text-sm font-medium">{entry.client_name}</span>
-                  <%= if upload_errors(@uploads.diff_files, entry) == [] do %>
-                    <div class="w-full bg-base-300 rounded-full h-2 mt-1">
-                      <div
-                        class="bg-primary h-2 rounded-full transition-all duration-300"
-                        style={"width: #{entry.progress}%"}
-                      >
-                      </div>
-                    </div>
-                    <span class="text-xs text-base-content/70">
-                      {entry.progress}% uploaded
-                    </span>
-                  <% else %>
-                    <%= for error <- upload_errors(@uploads.diff_files, entry) do %>
-                      <div class="flex items-center gap-2 mt-1">
-                        <.icon name="hero-exclamation-circle" class="w-4 h-4 text-error" />
-                        <span class="text-sm text-error">{diff_upload_error_to_string(error)}</span>
-                      </div>
-                    <% end %>
-                  <% end %>
-                </div>
-                <button
-                  type="button"
-                  class="btn btn-ghost btn-xs ml-2"
-                  phx-click="cancel-diff-upload"
-                  phx-value-ref={entry.ref}
-                >
-                  Cancel
-                </button>
-              </div>
-            <% end %>
+            <.upload_field
+              id="diff-upload"
+              upload={@uploads.diff_files}
+              label="Station data files"
+              help="levels.txt, stops.txt, pathways.txt, or one .zip archive. Up to 3 files, 50 MB each."
+              action_label="Select station data files or drag and drop"
+              cancel_event="cancel-diff-upload"
+              error_formatter={&diff_upload_error_to_string/1}
+              state={upload_field_state(@uploads.diff_files)}
+            />
 
             <div class="flex flex-wrap gap-2">
-              <button
-                type="submit"
+              <.button
                 id="diff-compute-btn"
-                class="btn btn-primary"
+                type="submit"
                 disabled={@uploads.diff_files.entries == [] || @diff_step != :upload}
               >
-                Compute Diff
-              </button>
+                Compute diff
+              </.button>
 
               <%= if @diff_step == :review do %>
-                <button
-                  type="button"
+                <.button
                   id="diff-reset-btn"
-                  class="btn btn-outline"
+                  variant="secondary"
+                  type="button"
                   phx-click="reset-diff"
                 >
                   Reset
-                </button>
+                </.button>
               <% end %>
             </div>
           </.form>
@@ -1258,9 +1137,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
           <%= if @diff_step == :review do %>
             <div class="mt-8 border-t border-base-300 pt-6 space-y-4">
-              <%!-- Filter tabs + bulk actions --%>
-              <div class="flex items-end justify-between border-b border-base-300">
-                <div class="flex gap-6" role="tablist" aria-label="Filter decisions">
+              <%!-- Pressed filters + bulk actions --%>
+              <div class="flex flex-wrap items-end justify-between gap-3 border-b border-base-300">
+                <div class="flex flex-wrap gap-x-6 gap-y-1" aria-label="Filter decisions">
                   <%= for {filter, label, count} <- [
                     {:all, "All", decision_total(@diff_summary)},
                     {:add, "Add", @diff_summary.add},
@@ -1271,14 +1150,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                     <button
                       type="button"
                       id={"diff-filter-#{filter}"}
-                      role="tab"
-                      aria-selected={to_string(@diff_filter == filter)}
+                      aria-pressed={to_string(@diff_filter == filter)}
                       class={[
-                        "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+                        "min-h-11 pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
                         @diff_filter == filter &&
                           "border-primary text-base-content",
                         @diff_filter != filter &&
-                          "border-transparent text-base-content/70 hover:text-base-content hover:border-base-300"
+                          "border-transparent text-base-content/60 hover:text-base-content hover:border-base-300"
                       ]}
                       phx-click="diff-filter"
                       phx-value-filter={filter}
@@ -1289,11 +1167,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   <% end %>
                 </div>
 
-                <div class="flex gap-1 pb-3">
+                <div class="flex flex-wrap gap-1 pb-3">
                   <%= if @diff_filter != :all do %>
                     <button
                       type="button"
-                      class="btn btn-xs btn-outline"
+                      class="btn btn-xs btn-outline min-h-11"
                       phx-click="approve-all"
                       phx-value-action={@diff_filter}
                     >
@@ -1303,7 +1181,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                     <%= for {action, count} <- non_zero_action_counts(@diff_summary) do %>
                       <button
                         type="button"
-                        class="btn btn-xs btn-ghost"
+                        class="btn btn-xs btn-ghost min-h-11"
                         phx-click="approve-all"
                         phx-value-action={action}
                       >
@@ -1315,210 +1193,97 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               </div>
 
               <%= if @diff_parse_failures != [] do %>
-                <div id="diff-degraded-region" role="status" aria-live="polite" class="space-y-3">
-                  <.callout
-                    :for={failure <- @diff_parse_failures}
-                    id={"diff-failure-#{failure.entity_type}"}
-                    kind="error"
-                    title="Incomplete file"
-                  >
-                    <p class="text-sm font-medium">{failure.filename}</p>
-                    <p class="text-xs text-base-content/70 mt-0.5">
-                      {format_failure_summary(failure)}
-                    </p>
-                    <ul class="mt-1 space-y-1 text-xs list-disc list-inside">
-                      <li
-                        :for={{error, index} <- Enum.with_index(failure.diagnostics, 1)}
-                        id={"diff-diagnostic-#{failure.entity_type}-#{index}"}
-                      >
-                        {format_parse_error(error)}
-                      </li>
-                    </ul>
-                    <%= if failure.truncated? do %>
-                      <p class="text-xs text-base-content/70 mt-1">
-                        Showing first 100 of {failure.total_error_count} errors; further rows have the same issues.
-                      </p>
-                    <% end %>
-                  </.callout>
+                <.callout id="diff-degraded-region" kind="error" title="Incomplete file" role="status">
+                  <p class="text-sm">Some rows are preview-only until you upload corrected files.</p>
+                  <ul class="mt-2 list-inside list-disc text-xs">
+                    <li :for={diagnostic <- @diff_parse_failures}>{format_diagnostic(diagnostic)}</li>
+                  </ul>
                   <button
-                    type="button"
                     id="diff-degraded-choose-corrected-files"
-                    class="btn btn-primary btn-sm"
+                    type="button"
+                    class="btn btn-primary btn-sm mt-3 min-h-11"
                     phx-click="reset-diff"
                   >
                     Choose corrected files
                   </button>
-                </div>
+                </.callout>
               <% end %>
 
-              <%= if @diff_preview_count != 0 do %>
+              <div
+                :if={@diff_preview_count != 0}
+                id="diff-preview-region"
+                class="border border-base-300 bg-base-200 p-4"
+              >
+                <h3 class="text-sm font-semibold">Read-only preview</h3>
                 <div
-                  id="diff-preview-region"
-                  role="status"
-                  aria-live="polite"
-                  class="mt-4 rounded-lg border border-base-300 p-4 bg-base-200"
+                  id="diff-preview-decisions"
+                  phx-update="stream"
+                  class="mt-3 divide-y divide-base-300"
                 >
-                  <h3 class="text-sm font-semibold">Read-only preview</h3>
-                  <p class="text-xs text-base-content/70 mt-0.5">
-                    The following rows came from files that could not be fully validated. They are shown for reference only and cannot be approved, rejected, or applied until you upload corrected files.
-                  </p>
-                  <div class="overflow-x-auto mt-3">
-                    <table class="table table-xs w-full">
-                      <thead>
-                        <tr class="text-xs uppercase tracking-wide text-base-content/70">
-                          <th>Type</th>
-                          <th>ID</th>
-                          <th>Action</th>
-                          <th>Details</th>
-                        </tr>
-                      </thead>
-                      <tbody
-                        id="diff-preview-decisions"
-                        phx-update="stream"
-                      >
-                        <tr
-                          :for={{dom_id, decision} <- @streams.diff_preview_decisions}
-                          id={dom_id}
-                          class="hover:bg-base-200/50"
-                        >
-                          <td class="text-xs font-medium">{decision.entity_type}</td>
-                          <td class="font-mono text-xs">{decision.natural_key}</td>
-                          <td>
-                            <span class="inline-flex items-center gap-1.5">
-                              <span class={[
-                                "inline-block w-2 h-2 rounded-full shrink-0",
-                                action_dot_color(decision.action)
-                              ]}>
-                              </span>
-                              <span class="text-xs font-medium">{decision.action}</span>
-                            </span>
-                          </td>
-                          <td class="text-xs max-w-md truncate">
-                            {format_decision_details(decision)}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+                  <TransitPresentation.version_diff_row
+                    :for={{dom_id, decision} <- @streams.diff_preview_decisions}
+                    id={dom_id}
+                    action={decision.action}
+                    entity_label={entity_type_label(decision.entity_type)}
+                    natural_key={decision.natural_key}
+                    status={decision.status}
+                    changes={decision_changes(decision)}
+                    dependency_keys={decision.dependency_keys}
+                  />
                 </div>
-              <% end %>
+              </div>
 
-              <%!-- Decision table --%>
-              <div class="overflow-x-auto">
-                <table class="table table-xs w-full">
-                  <thead>
-                    <tr class="text-xs uppercase tracking-wide text-base-content/70">
-                      <th>Type</th>
-                      <th>ID</th>
-                      <th>Action</th>
-                      <th>Details</th>
-                      <th class="w-24 text-right">Decision</th>
-                    </tr>
-                  </thead>
-                  <tbody
-                    id="diff-decisions"
-                    phx-update="stream"
-                  >
-                    <tr
-                      id="diff-decisions-empty"
-                      class="hidden only:table-row"
-                    >
-                      <td colspan="5" class="text-sm text-base-content/70 py-6 text-center">
-                        No matching decisions for this filter.
-                      </td>
-                    </tr>
-                    <tr
-                      :for={{dom_id, decision} <- @streams.diff_decisions}
-                      id={dom_id}
+              <div
+                id="diff-decisions"
+                phx-update="stream"
+                class="divide-y divide-base-300 border-y border-base-300"
+              >
+                <p
+                  id="diff-decisions-empty"
+                  class="hidden py-6 text-center text-sm text-base-content/70 only:block"
+                >
+                  No matching decisions for this filter.
+                </p>
+                <TransitPresentation.version_diff_row
+                  :for={{dom_id, decision} <- @streams.diff_decisions}
+                  id={dom_id}
+                  action={decision.action}
+                  entity_label={entity_type_label(decision.entity_type)}
+                  natural_key={decision.natural_key}
+                  status={decision.status}
+                  changes={decision_changes(decision)}
+                  dependency_keys={decision.dependency_keys}
+                  edited?={decision.user_edited}
+                >
+                  <:actions :if={decision.status in [:pending, :approved, :rejected]}>
+                    <button
+                      type="button"
+                      aria-pressed={to_string(decision.status == :approved)}
                       class={[
-                        "hover:bg-base-200/50",
-                        decision.status == :approved && "bg-success/5",
-                        decision.status == :rejected && "bg-error/5 opacity-60",
-                        decision.first_of_group && "border-t-2 border-base-300"
+                        "btn btn-sm min-h-11",
+                        decision.status == :approved && "btn-success",
+                        decision.status != :approved && "btn-outline"
                       ]}
+                      phx-click="approve-decision"
+                      phx-value-id={decision.decision_id}
                     >
-                      <td class="text-xs font-medium">{decision.entity_type}</td>
-                      <td class="font-mono text-xs">{decision.natural_key}</td>
-                      <td>
-                        <span class="inline-flex items-center gap-1.5">
-                          <span class={[
-                            "inline-block w-2 h-2 rounded-full shrink-0",
-                            action_dot_color(decision.action)
-                          ]}>
-                          </span>
-                          <span class="text-xs font-medium">{decision.action}</span>
-                        </span>
-                        <span
-                          :if={decision.user_edited}
-                          class="text-xs text-base-content/70"
-                        >
-                          (edited)
-                        </span>
-                      </td>
-                      <td class="text-xs max-w-md">
-                        <div class="truncate" title={format_decision_details(decision)}>
-                          {format_decision_details(decision)}
-                        </div>
-                        <%!-- Inline expandable detail --%>
-                        <div
-                          id={"#{dom_id}-details"}
-                          class="hidden mt-2 pt-2 border-t border-base-300/50"
-                        >
-                          <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-                            <%= for {field, value} <- detail_fields(decision) do %>
-                              <span class="text-base-content/70 font-medium">{to_string(field)}</span>
-                              <span class="font-mono">{format_value(value)}</span>
-                            <% end %>
-                          </div>
-                          <p
-                            :if={decision.dependency_keys != []}
-                            class="mt-2 text-xs text-base-content/70"
-                          >
-                            Depends on: {Enum.join(decision.dependency_keys, ", ")}
-                          </p>
-                        </div>
-                      </td>
-                      <td class="text-right align-top">
-                        <div class="flex justify-end gap-1">
-                          <button
-                            type="button"
-                            class="btn btn-ghost btn-xs btn-square"
-                            phx-click={JS.toggle(to: "[id=\"#{dom_id}-details\"]")}
-                            aria-label="Toggle details"
-                          >
-                            <.icon name="hero-chevron-down" class="size-3" />
-                          </button>
-                          <button
-                            type="button"
-                            class={[
-                              "btn btn-xs btn-square",
-                              decision.status == :approved && "btn-success",
-                              decision.status != :approved && "btn-ghost"
-                            ]}
-                            phx-click="approve-decision"
-                            phx-value-id={decision.id}
-                            aria-label="Approve"
-                          >
-                            <.icon name="hero-check" class="size-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            class={[
-                              "btn btn-xs btn-square",
-                              decision.status == :rejected && "btn-error",
-                              decision.status != :rejected && "btn-ghost"
-                            ]}
-                            phx-click="reject-decision"
-                            phx-value-id={decision.id}
-                            aria-label="Reject"
-                          >
-                            <.icon name="hero-x-mark" class="size-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={to_string(decision.status == :rejected)}
+                      class={[
+                        "btn btn-sm min-h-11",
+                        decision.status == :rejected && "btn-error",
+                        decision.status != :rejected && "btn-ghost"
+                      ]}
+                      phx-click="reject-decision"
+                      phx-value-id={decision.decision_id}
+                    >
+                      Reject
+                    </button>
+                  </:actions>
+                </TransitPresentation.version_diff_row>
               </div>
 
               <button
@@ -1533,27 +1298,60 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             </div>
           <% end %>
 
+          <%= if @diff_step == :processing do %>
+            <div
+              id="diff-run-state"
+              data-state={@change_run.state}
+              class="mt-6 border-l-4 border-info bg-info/5 p-4"
+              role="status"
+            >
+              <p class="font-medium">{diff_state_label(@change_run)}</p>
+              <p
+                :if={@change_run.state in [:partial, :failed, :interrupted]}
+                id="diff-run-counts"
+                class="mt-1 text-sm tabular-nums text-base-content/80"
+              >
+                Applied {Map.get(@change_run.summary, "applied", 0)} · Failed {Map.get(
+                  @change_run.summary,
+                  "failed",
+                  0
+                )} · Unapplied {Map.get(@change_run.summary, "unapplied", 0)}
+              </p>
+              <p class="mt-1 text-sm text-base-content/70">
+                This review is durable. You can safely reconnect while it runs.
+              </p>
+              <button
+                :if={@change_run.state in [:computing, :applying, :pending_compute, :pending_apply]}
+                id="diff-cancel-btn"
+                type="button"
+                class="btn btn-ghost btn-sm mt-3 min-h-11"
+                phx-click="cancel-diff-run"
+              >
+                Cancel review
+              </button>
+              <button
+                :if={@change_run.state in [:partial, :failed, :interrupted, :cancelled, :expired]}
+                id="diff-retry-btn"
+                type="button"
+                class="btn btn-primary btn-sm mt-3 min-h-11"
+                phx-click="retry-diff-run"
+              >
+                Retry
+              </button>
+            </div>
+          <% end %>
+
           <%= if @diff_step == :done do %>
             <div class="mt-8 border-t border-base-300 pt-6 space-y-4">
               <div class="rounded-lg border border-base-300 p-4 bg-base-200">
                 <p class="text-sm font-semibold">
-                  Applied {successful_apply_count(@apply_results)} decisions successfully, {failed_apply_count(
-                    @apply_results
-                  )} failed.
+                  Applied {Map.get(@change_run.summary, "applied", 0)} · Failed {Map.get(
+                    @change_run.summary,
+                    "failed",
+                    0
+                  )} · Unapplied {Map.get(@change_run.summary, "unapplied", 0)}
                 </p>
               </div>
-
-              <%= if failed_apply_results(@apply_results) != [] do %>
-                <div class="space-y-2">
-                  <div
-                    :for={{decision_id, {:error, reason}} <- failed_apply_results(@apply_results)}
-                    class="rounded-lg border border-error/40 bg-error/10 p-3 text-sm"
-                  >
-                    <p class="font-mono text-xs">{decision_id}</p>
-                    <p>{format_apply_reason(reason)}</p>
-                  </div>
-                </div>
-              <% end %>
 
               <button
                 type="button"
@@ -1580,7 +1378,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             if (el) el.focus()
           })
           this.handleEvent("focus_gtfs_import_files", () => {
-            const el = this.el.querySelector("#gtfs-import-files")
+            const el = this.el.querySelector("#gtfs-import-upload-input input")
             if (el) el.focus()
           })
         }
@@ -1815,6 +1613,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp recovery_card_icon(%Run{state: "cleaning"}), do: "hero-arrow-path"
   defp recovery_card_icon(%Run{}), do: "hero-clock"
 
+  defp recovery_badge_status(%Run{state: state}) when state in ~w(pending running cleaning),
+    do: :running
+
+  defp recovery_badge_status(%Run{state: "partial"}), do: :warning
+
+  defp recovery_badge_status(%Run{state: state})
+       when state in ~w(failed interrupted publication_failed cleanup_failed),
+       do: :failed
+
+  defp recovery_badge_status(%Run{}), do: :info
+
   defp recovery_card_state_label(%Run{state: "pending"}), do: "Import pending — preparing upload."
 
   defp recovery_card_state_label(%Run{state: "running"}),
@@ -1884,422 +1693,47 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     %{add: 0, modify: 0, remove: 0, conflict: 0}
   end
 
-  defp categorize_diff_files(files) do
-    grouped =
-      Enum.reduce(files, %{levels: [], stops: [], pathways: []}, fn file, acc ->
-        basename =
-          file.filename
-          |> Path.basename()
-          |> String.downcase()
-
-        normalized_file = %{file | filename: basename}
-
-        case basename do
-          "levels.txt" -> Map.update!(acc, :levels, &[normalized_file | &1])
-          "stops.txt" -> Map.update!(acc, :stops, &[normalized_file | &1])
-          "pathways.txt" -> Map.update!(acc, :pathways, &[normalized_file | &1])
-          _ -> acc
-        end
-      end)
-
-    duplicate_errors =
-      grouped
-      |> Enum.flat_map(fn
-        {_type, []} ->
-          []
-
-        {_type, [_single]} ->
-          []
-
-        {_type, files_for_type} ->
-          basenames = files_for_type |> Enum.map(& &1.filename) |> Enum.uniq() |> Enum.join(", ")
-
-          [
-            %{
-              file: basenames,
-              row: nil,
-              reason: :duplicate_entity_file
-            }
-          ]
-      end)
-
-    if duplicate_errors == [] do
-      {:ok,
-       %{
-         levels: single_optional_file(grouped.levels),
-         stops: single_optional_file(grouped.stops),
-         pathways: single_optional_file(grouped.pathways)
-       }}
-    else
-      {:error, duplicate_errors}
-    end
-  end
-
-  defp single_optional_file([]), do: nil
-  defp single_optional_file([file]), do: file
-
-  defp normalize_archive_warnings(warnings) when is_list(warnings) do
-    Enum.map(warnings, fn warning ->
-      reason =
-        case warning.reason do
-          :unzip_failed -> :archive_unreadable
-          :archive_too_large -> :archive_too_large
-          :nested_archive -> :nested_archive
-          _unknown -> :archive_unreadable
-        end
-
-      %ParseError{
-        file: warning.filename,
-        reason: reason,
-        metadata: %{}
+  defp decision_changes(%ChangeDecision{changed_fields: fields}) when is_list(fields) do
+    Enum.map(fields, fn field ->
+      %{
+        label: Map.get(field, "field", "Changed field"),
+        before: Map.get(field, "before"),
+        after: Map.get(field, "after")
       }
     end)
   end
 
-  defp normalize_duplicate_blocker(duplicate) do
-    %ParseError{
-      file: Map.get(duplicate, :file),
-      reason: :duplicate_entity_file,
-      metadata: %{}
-    }
+  defp decision_changes(_), do: []
+
+  defp format_diagnostic(%{} = diagnostic) do
+    code = Map.get(diagnostic, "code", Map.get(diagnostic, :code, "parse_error"))
+    detail = Map.get(diagnostic, "detail", Map.get(diagnostic, :detail, ""))
+    "#{String.replace(to_string(code), "_", " ")}: #{detail}"
   end
 
-  defp build_stop_validation_map(db_stops, stops_result) do
-    db_ids = Enum.map(db_stops, & &1.stop_id)
+  defp format_diagnostic(diagnostic), do: to_string(diagnostic)
 
-    uploaded_ids =
-      case stops_result do
-        {:ok, parsed_entity} ->
-          records_by_key = ParsedEntity.records_by_key(parsed_entity)
-          Map.values(records_by_key) |> Enum.map(&Map.get(&1, :stop_id))
-
-        {:error, %ParseFailure{preview_records_by_key: preview_records_by_key}} ->
-          Map.values(preview_records_by_key) |> Enum.map(&Map.get(&1, :stop_id))
-
-        :not_uploaded ->
-          []
-      end
-
-    (db_ids ++ uploaded_ids)
-    |> Enum.uniq()
-    |> Enum.reject(&(&1 in [nil, ""]))
-    |> Map.new(fn stop_id -> {stop_id, true} end)
-  end
-
-  defp stream_filtered_diff_decisions(socket) do
-    decisions =
-      socket.assigns.decisions_by_id
-      |> Map.values()
-      |> Enum.filter(fn decision ->
-        socket.assigns.diff_filter == :all or decision.action == socket.assigns.diff_filter
-      end)
-      |> Enum.sort_by(&display_decision_sort_key/1)
-      |> mark_group_boundaries()
-
-    stream(socket, :diff_decisions, decisions, reset: true)
-  end
-
-  defp mark_group_boundaries([]), do: []
-
-  defp mark_group_boundaries([%DiffDecision{} = first | rest]) do
-    {annotated, _} =
-      Enum.map_reduce(rest, first.entity_type, fn %DiffDecision{} = decision, prev_type ->
-        {%DiffDecision{decision | first_of_group: decision.entity_type != prev_type},
-         decision.entity_type}
-      end)
-
-    [%DiffDecision{first | first_of_group: true} | annotated]
-  end
-
-  defp display_decision_sort_key(decision) do
-    {entity_sort_rank(decision.entity_type), decision.natural_key,
-     action_sort_rank(decision.action)}
-  end
-
-  defp update_decision_status(socket, id, status) do
-    case Map.fetch(socket.assigns.decisions_by_id, id) do
-      {:ok, %DiffDecision{} = decision} ->
-        updated_decision = %DiffDecision{decision | status: status}
-
-        socket
-        |> assign(:decisions_by_id, Map.put(socket.assigns.decisions_by_id, id, updated_decision))
-        |> stream_filtered_diff_decisions()
-
-      :error ->
-        socket
-    end
-  end
-
-  defp order_apply_decisions(decisions) do
-    Enum.sort_by(decisions, fn decision ->
-      {decision_phase_rank(decision.action),
-       decision_entity_rank(decision.action, decision.entity_type)}
-    end)
-  end
-
-  defp decision_phase_rank(:add), do: 0
-  defp decision_phase_rank(:modify), do: 1
-  defp decision_phase_rank(:conflict), do: 1
-  defp decision_phase_rank(:remove), do: 2
-
-  defp decision_entity_rank(action, entity_type) when action in [:add, :modify, :conflict] do
-    case entity_type do
-      :level -> 0
-      :stop -> 1
-      :pathway -> 2
-    end
-  end
-
-  defp decision_entity_rank(:remove, entity_type) do
-    case entity_type do
-      :pathway -> 0
-      :stop -> 1
-      :level -> 2
-    end
-  end
-
-  defp apply_decision(%DiffDecision{action: :add, entity_type: :level, uploaded_attrs: attrs})
-       when is_map(attrs) do
-    attrs
-    |> Gtfs.create_level()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{action: :add, entity_type: :stop, uploaded_attrs: attrs})
-       when is_map(attrs) do
-    attrs
-    |> Gtfs.import_create_stop()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{action: :add, entity_type: :pathway, uploaded_attrs: attrs})
-       when is_map(attrs) do
-    attrs
-    |> Gtfs.create_pathway()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: action,
-         entity_type: :level,
-         current_record: current_record,
-         uploaded_attrs: uploaded_attrs
-       })
-       when action in [:modify, :conflict] and is_map(uploaded_attrs) and
-              not is_nil(current_record) do
-    managed_attrs = Map.take(uploaded_attrs, [:level_index, :level_name])
-
-    current_record
-    |> Gtfs.update_level(managed_attrs)
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: action,
-         entity_type: :stop,
-         current_record: current_record,
-         uploaded_attrs: uploaded_attrs
-       })
-       when action in [:modify, :conflict] and is_map(uploaded_attrs) and
-              not is_nil(current_record) do
-    managed_attrs =
-      Map.take(uploaded_attrs, [
-        :stop_name,
-        :stop_desc,
-        :stop_lat,
-        :stop_lon,
-        :location_type,
-        :wheelchair_boarding,
-        :platform_code,
-        :level_id,
-        :parent_station
-      ])
-
-    current_record
-    |> Gtfs.import_update_stop(managed_attrs)
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: action,
-         entity_type: :pathway,
-         current_record: current_record,
-         uploaded_attrs: uploaded_attrs
-       })
-       when action in [:modify, :conflict] and is_map(uploaded_attrs) and
-              not is_nil(current_record) do
-    managed_attrs =
-      Map.take(uploaded_attrs, [
-        :pathway_mode,
-        :is_bidirectional,
-        :traversal_time,
-        :length,
-        :stair_count,
-        :max_slope,
-        :min_width,
-        :signposted_as,
-        :reversed_signposted_as,
-        :from_stop_id,
-        :to_stop_id
-      ])
-
-    current_record
-    |> Gtfs.update_pathway(managed_attrs)
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: :remove,
-         entity_type: :level,
-         current_record: current_record
-       })
-       when not is_nil(current_record) do
-    current_record
-    |> Gtfs.delete_level()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: :remove,
-         entity_type: :stop,
-         current_record: current_record
-       })
-       when not is_nil(current_record) do
-    current_record
-    |> Gtfs.delete_stop()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(%DiffDecision{
-         action: :remove,
-         entity_type: :pathway,
-         current_record: current_record
-       })
-       when not is_nil(current_record) do
-    current_record
-    |> Gtfs.delete_pathway()
-    |> normalize_apply_result()
-  end
-
-  defp apply_decision(_), do: {:error, :invalid_decision}
-
-  defp normalize_apply_result({:ok, _record}), do: :ok
-  defp normalize_apply_result({:error, reason}), do: {:error, reason}
-
-  defp approved_decision_count(decisions_by_id) do
-    decisions_by_id
-    |> Map.values()
-    |> Enum.count(fn decision -> decision.status == :approved end)
-  end
-
-  defp successful_apply_count(apply_results) do
-    Enum.count(apply_results, fn {_decision_id, result} -> result == :ok end)
-  end
-
-  defp failed_apply_count(apply_results) do
-    Enum.count(apply_results, fn {_decision_id, result} -> match?({:error, _}, result) end)
-  end
-
-  defp failed_apply_results(apply_results) do
-    Enum.filter(apply_results, fn {_decision_id, result} -> match?({:error, _}, result) end)
-  end
-
-  defp entity_sort_rank(:level), do: 0
-  defp entity_sort_rank(:stop), do: 1
-  defp entity_sort_rank(:pathway), do: 2
-
-  defp action_sort_rank(:add), do: 0
-  defp action_sort_rank(:modify), do: 1
-  defp action_sort_rank(:conflict), do: 2
-  defp action_sort_rank(:remove), do: 3
-
-  defp format_value(nil), do: "nil"
-  defp format_value(value) when is_binary(value) and value == "", do: "\"\""
-  defp format_value(%Decimal{} = value), do: Decimal.to_string(value, :normal)
-  defp format_value(value) when is_binary(value), do: value
-  defp format_value(value), do: inspect(value)
-
-  defp action_dot_color(:add), do: "bg-emerald-600"
-  defp action_dot_color(:modify), do: "bg-amber-500"
-  defp action_dot_color(:conflict), do: "bg-red-600"
-  defp action_dot_color(:remove), do: "bg-base-content/40"
-
-  defp managed_fields_for(:level), do: [:level_name, :level_index]
-
-  defp managed_fields_for(:stop),
-    do: [
-      :stop_name,
-      :stop_desc,
-      :stop_lat,
-      :stop_lon,
-      :location_type,
-      :platform_code,
-      :level_id,
-      :parent_station,
-      :wheelchair_boarding
-    ]
-
-  defp managed_fields_for(:pathway),
-    do: [
-      :from_stop_id,
-      :to_stop_id,
-      :pathway_mode,
-      :is_bidirectional,
-      :traversal_time,
-      :length,
-      :stair_count,
-      :max_slope,
-      :min_width,
-      :signposted_as,
-      :reversed_signposted_as
-    ]
-
-  defp format_decision_details(%DiffDecision{action: :add} = d) do
-    managed_fields_for(d.entity_type)
-    |> Enum.map(fn field -> {field, Map.get(d.uploaded_attrs || %{}, field)} end)
-    |> Enum.reject(fn {_k, v} -> is_nil(v) or v == "" end)
-    |> Enum.map(fn {k, v} -> "#{k}: #{format_value(v)}" end)
-    |> Enum.join(", ")
-  end
-
-  defp format_decision_details(%DiffDecision{action: :remove} = d) do
-    record = d.current_record
-
-    managed_fields_for(d.entity_type)
-    |> Enum.map(fn field -> {field, record && Map.get(record, field)} end)
-    |> Enum.reject(fn {_k, v} -> is_nil(v) or v == "" end)
-    |> Enum.map(fn {k, v} -> "#{k}: #{format_value(v)}" end)
-    |> Enum.join(", ")
-  end
-
-  defp format_decision_details(%DiffDecision{changed_fields: fields}) do
-    fields
-    |> Enum.map(fn {field, {old, new}} ->
-      "#{field}: #{format_value(old)} \u2192 #{format_value(new)}"
-    end)
-    |> Enum.join(", ")
-  end
-
-  defp detail_fields(%DiffDecision{action: :add} = d) do
-    managed_fields_for(d.entity_type)
-    |> Enum.map(fn field -> {field, Map.get(d.uploaded_attrs || %{}, field)} end)
-  end
-
-  defp detail_fields(%DiffDecision{action: :remove} = d) do
-    record = d.current_record
-
-    managed_fields_for(d.entity_type)
-    |> Enum.map(fn field -> {field, record && Map.get(record, field)} end)
-  end
-
-  defp detail_fields(%DiffDecision{} = d) do
-    d.changed_fields
-  end
+  defp diff_state_label(%ChangeRun{state: :pending_compute}), do: "Staging review files"
+  defp diff_state_label(%ChangeRun{state: :computing}), do: "Computing durable review"
+  defp diff_state_label(%ChangeRun{state: :pending_apply}), do: "Preparing approved changes"
+  defp diff_state_label(%ChangeRun{state: :applying}), do: "Applying approved changes"
+  defp diff_state_label(%ChangeRun{state: :partial}), do: "Some changes need attention"
+  defp diff_state_label(%ChangeRun{state: :failed}), do: "Review failed"
+  defp diff_state_label(%ChangeRun{state: :interrupted}), do: "Review interrupted"
+  defp diff_state_label(%ChangeRun{state: :cancelled}), do: "Review cancelled"
+  defp diff_state_label(%ChangeRun{state: :expired}), do: "Review expired"
+  defp diff_state_label(%ChangeRun{}), do: "Review updated"
 
   defp non_zero_action_counts(summary) do
     [:add, :modify, :conflict, :remove]
     |> Enum.map(fn action -> {action, Map.get(summary, action, 0)} end)
     |> Enum.reject(fn {_action, count} -> count == 0 end)
+  end
+
+  defp approved_decision_count(decisions_by_id) do
+    decisions_by_id
+    |> Map.values()
+    |> Enum.count(fn decision -> decision.status == :approved end)
   end
 
   defp decision_total(summary) do
@@ -2319,6 +1753,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   end
 
   defp format_parse_error(%ParseError{reason: reason}), do: parse_reason_label(reason)
+  defp format_parse_error(%{reason: reason}), do: parse_reason_label(reason)
+  defp format_parse_error(_error), do: "Unable to compute review"
 
   defp parse_reason_label(:empty_content), do: "File is empty"
   defp parse_reason_label(:invalid_utf8), do: "File uses an unsupported text encoding"
@@ -2341,35 +1777,24 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp parse_reason_label(:semantic_row), do: "Invalid row value"
   defp parse_reason_label(:unexpected_parser_failure), do: "Unexpected parse failure"
 
-  defp format_failure_summary(%ParseFailure{
-         entity_type: entity_type,
-         total_error_count: total_error_count,
-         source_row_count: source_row_count
-       }) do
-    "#{entity_type_label(entity_type)} file could not be fully parsed: #{total_error_count} " <>
-      "#{pluralize(total_error_count, "error")} across #{source_row_count} rows."
+  defp parse_reason_label(reason) when is_atom(reason) do
+    reason
+    |> Atom.to_string()
+    |> String.replace("_", " ")
+    |> String.capitalize()
   end
+
+  defp parse_reason_label(reason) when is_binary(reason) do
+    reason
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  defp parse_reason_label(_reason), do: "Unable to compute review"
 
   defp entity_type_label(:level), do: "Levels"
   defp entity_type_label(:stop), do: "Stops"
   defp entity_type_label(:pathway), do: "Pathways"
-
-  defp pluralize(1, singular), do: singular
-  defp pluralize(_count, singular), do: "#{singular}s"
-
-  defp format_apply_reason(%Ecto.Changeset{} = changeset) do
-    errors =
-      Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-        Enum.reduce(opts, msg, fn {key, value}, acc ->
-          String.replace(acc, "%{#{key}}", to_string(value))
-        end)
-      end)
-
-    inspect(errors)
-  end
-
-  defp format_apply_reason(reason) when is_binary(reason), do: reason
-  defp format_apply_reason(reason), do: inspect(reason)
 
   defp upload_error_to_string(:too_large), do: "File exceeds 200MB limit"
   defp upload_error_to_string(:too_many_files), do: "Maximum 50 files allowed"
@@ -2378,6 +1803,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp upload_error_to_string({:error, reason}), do: reason
   defp upload_error_to_string(error) when is_binary(error), do: error
   defp upload_error_to_string(_), do: "Upload error"
+
+  defp upload_field_state(upload) do
+    if upload.errors != [] or Enum.any?(upload.entries, &(upload_errors(upload, &1) != [])) do
+      :failed
+    else
+      :idle
+    end
+  end
 
   defp diff_upload_error_to_string(:too_large), do: "File exceeds 50MB limit"
   defp diff_upload_error_to_string(:too_many_files), do: "Maximum 3 files allowed"

@@ -3,15 +3,19 @@ locals {
   container_name = "app"
   container_port = 4000
   environment = {
-    PHX_SERVER       = true
-    PHX_HOST         = var.domain
-    PORT             = local.container_port
-    MAIL_DOMAIN      = var.domain
-    DATABASE_URL     = "ecto://${var.db_username}@${var.db_host}:${var.db_port}/${var.db_name}"
-    DATABASE_USE_IAM = true
-    OTP_JAR_PATH     = "/opt/otp/otp.jar"
-    OTP_OSM_PATH     = "/opt/otp/data/philadelphia.osm.pbf"
-    GEOAPIFY_API_KEY = var.geoapify_api_key
+    PHX_SERVER                          = true
+    PHX_HOST                            = var.domain
+    PORT                                = local.container_port
+    MAIL_DOMAIN                         = var.domain
+    DATABASE_URL                        = "ecto://${var.db_username}@${var.db_host}:${var.db_port}/${var.db_name}"
+    DATABASE_USE_IAM                    = true
+    OTP_JAR_PATH                        = "/opt/otp/otp.jar"
+    OTP_OSM_PATH                        = "/opt/otp/data/philadelphia.osm.pbf"
+    GTFS_TASK_ARTIFACTS_PATH            = "/app/var/gtfs-task-artifacts"
+    GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES   = 157286400
+    GTFS_TASK_ARTIFACTS_MAX_TOTAL_BYTES = 1073741824
+    GTFS_TASK_ARTIFACTS_TTL_SECONDS     = 86400
+    GEOAPIFY_API_KEY                    = var.geoapify_api_key
   }
 }
 
@@ -46,6 +50,10 @@ resource "aws_ecs_task_definition" "this" {
         {
           containerPath = "/app/lib/gtfs_planner-0.1.0/priv/static/uploads",
           sourceVolume  = "uploads"
+        },
+        {
+          containerPath = "/app/var/gtfs-task-artifacts",
+          sourceVolume  = "task-artifacts"
         }
       ]
 
@@ -71,6 +79,16 @@ resource "aws_ecs_task_definition" "this" {
     s3files_volume_configuration {
       file_system_arn         = aws_s3files_file_system.uploads.arn
       root_directory          = "/"
+      transit_encryption_port = local.efs_port
+    }
+  }
+
+  volume {
+    name = "task-artifacts"
+
+    s3files_volume_configuration {
+      file_system_arn         = aws_s3files_file_system.uploads.arn
+      root_directory          = "/task-artifacts"
       transit_encryption_port = local.efs_port
     }
   }

@@ -393,8 +393,8 @@ defmodule GtfsPlannerWeb.Design.DesignSystemLive do
       current_path={@current_path}
       user_roles={[]}
     >
-      <div class="flex gap-8 max-w-6xl mx-auto">
-        <nav id="design-sidebar" aria-label="Design system" class="w-56 shrink-0">
+      <div class="mx-auto flex max-w-6xl flex-col gap-8 md:flex-row">
+        <nav id="design-sidebar" aria-label="Design system" class="w-full shrink-0 md:w-56">
           <div :for={{group, entries} <- page_groups()} class="mb-6">
             <h2 class="text-xs font-semibold text-base-content/70 mb-2">{group}</h2>
             <ul class="menu menu-sm p-0 gap-1 w-full">

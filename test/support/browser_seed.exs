@@ -22,6 +22,9 @@ alias GtfsPlanner.Accounts.User
 alias GtfsPlanner.Accounts.UserToken
 alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.DiagramStorage
+alias GtfsPlanner.Gtfs.Export.ArtifactStorage
+alias GtfsPlanner.Gtfs.ExportRuns
+alias GtfsPlanner.Gtfs.Import.ChangeRuns
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Repo
 alias GtfsPlanner.Versions
@@ -68,6 +71,113 @@ case Accounts.register_first_admin(%{
     })
 
     IO.puts("Browser seed: created editor #{editor.email} (id=#{editor.id})")
+    export_actor = %{id: editor.id, email: editor.email}
+
+    {:ok, partial_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Partial Retry Version"})
+
+    {:ok, partial_run} =
+      ChangeRuns.create_pending_compute(org.id, partial_version.id, export_actor, [])
+
+    {:ok, _computing_partial, partial_compute_generation, partial_compute_token} =
+      ChangeRuns.claim(org.id, partial_run.id, :compute)
+
+    partial_decision = %{
+      serializer_version: 1,
+      decision_id: "level:BROWSER_RETRY_LEVEL",
+      entity_type: :level,
+      action: :add,
+      status: :pending,
+      natural_key: "BROWSER_RETRY_LEVEL",
+      current_values: %{},
+      uploaded_values: %{level_index: 4.0, level_name: "Recovered level"},
+      changed_fields: [],
+      dependency_keys: [],
+      current_fingerprint: nil,
+      user_edited: false
+    }
+
+    {:ok, partial_review} =
+      ChangeRuns.persist_review(
+        org.id,
+        partial_run.id,
+        partial_compute_generation,
+        partial_compute_token,
+        %{
+          decisions: [partial_decision],
+          summary: %{add: 1, applicable: 1},
+          diagnostics: []
+        }
+      )
+
+    {:ok, _approved_partial} =
+      ChangeRuns.set_decision_status(
+        org.id,
+        partial_review.id,
+        partial_decision.decision_id,
+        :approved
+      )
+
+    {:ok, pending_partial_apply} = ChangeRuns.request_apply(org.id, partial_review.id)
+
+    {:ok, _applying_partial, partial_apply_generation, partial_apply_token} =
+      ChangeRuns.claim(org.id, pending_partial_apply.id, :apply)
+
+    {:ok, _failed_partial_decision} =
+      ChangeRuns.mark_apply_failure(
+        org.id,
+        pending_partial_apply.id,
+        partial_decision.decision_id,
+        partial_apply_generation,
+        partial_apply_token,
+        :browser_seed_failure
+      )
+
+    {:ok, _partial_run} =
+      ChangeRuns.finish_apply(
+        org.id,
+        pending_partial_apply.id,
+        partial_apply_generation,
+        partial_apply_token
+      )
+
+    {:ok, cancel_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Cancel Version"})
+
+    {:ok, _cancel_run} =
+      ChangeRuns.create_pending_compute(org.id, cancel_version.id, export_actor, [])
+
+    IO.puts("Browser seed: partial retry and pending cancellation change runs")
+
+    # A durable ready artifact lets the browser suite exercise the real scoped
+    # download controller without asking a browser test to race a ZIP worker.
+    # The bytes are intentionally tiny, but publication still follows the real
+    # pending -> claimed -> verified-artifact -> ready transition.
+    {:ok, browser_export_run} =
+      ExportRuns.create_pending(org.id, diagram_version.id, export_actor, :full)
+
+    {:ok, _claimed_export_run, export_generation, export_token} =
+      ExportRuns.claim(org.id, browser_export_run.id, :build)
+
+    {:ok, browser_export_artifact} =
+      ArtifactStorage.publish(
+        org.id,
+        diagram_version.id,
+        browser_export_run.id,
+        "browser-e2e-export.zip",
+        <<80, 75, 3, 4, 20, 0, 0, 0>>
+      )
+
+    {:ok, _ready_export_run} =
+      ExportRuns.mark_ready(
+        org.id,
+        browser_export_run.id,
+        export_generation,
+        export_token,
+        browser_export_artifact
+      )
+
+    IO.puts("Browser seed: ready export artifact for scoped download")
 
     # ── Station diagram seed data ──
     {:ok, station} =
@@ -760,7 +870,47 @@ case Accounts.register_first_admin(%{
         route_color: "003366"
       })
 
-    IO.puts("Browser seed: routes-only version #{routes_only_version.id} (routes but no stops)")
+    {:ok, current_export_run} =
+      ExportRuns.create_pending(org.id, routes_only_version.id, export_actor, :full)
+
+    {:ok, _claimed_current_export_run, current_export_generation, current_export_token} =
+      ExportRuns.claim(org.id, current_export_run.id, :build)
+
+    {:ok, current_export_artifact} =
+      ArtifactStorage.publish(
+        org.id,
+        routes_only_version.id,
+        current_export_run.id,
+        "browser-current-export.zip",
+        <<80, 75, 3, 4, 20, 0, 0, 0>>
+      )
+
+    {:ok, _warned_current_export} =
+      ExportRuns.persist_warnings(
+        org.id,
+        current_export_run.id,
+        current_export_generation,
+        current_export_token,
+        [
+          %{
+            code: "browser_preflight_warning",
+            detail:
+              "A deliberately long preflight diagnostic remains readable and wraps without creating horizontal overflow at narrow widths: " <>
+                String.duplicate("route-reference-", 18)
+          }
+        ]
+      )
+
+    {:ok, _ready_current_export_run} =
+      ExportRuns.mark_ready(
+        org.id,
+        current_export_run.id,
+        current_export_generation,
+        current_export_token,
+        current_export_artifact
+      )
+
+    IO.puts("Browser seed: routes-only version #{routes_only_version.id} with ready export")
 
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"

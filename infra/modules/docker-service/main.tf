@@ -1,9 +1,10 @@
 locals {
-  lb_file                = ".compose-loadbalancer.yml"
-  service_file           = ".compose-${var.project_name}-service-${var.name}.yml"
-  service_name           = "${var.project_name}-service-${var.name}"
-  service_uploads_volume = "${var.project_name}-service-${var.name}-uploads"
-  lb_network             = "proxy"
+  lb_file                       = ".compose-loadbalancer.yml"
+  service_file                  = ".compose-${var.project_name}-service-${var.name}.yml"
+  service_name                  = "${var.project_name}-service-${var.name}"
+  service_uploads_volume        = "${var.project_name}-service-${var.name}-uploads"
+  service_task_artifacts_volume = "${var.project_name}-service-${var.name}-task-artifacts"
+  lb_network                    = "proxy"
 
   lb_content = yamlencode({
     services = {
@@ -59,6 +60,10 @@ locals {
           "DATABASE_URL=ecto://${var.db_username}@${var.db_host}:${var.db_port}/${var.db_name}",
           "OTP_JAR_PATH=/opt/otp/otp.jar",
           "OTP_OSM_PATH=/opt/otp/data/philadelphia.osm.pbf",
+          "GTFS_TASK_ARTIFACTS_PATH=/app/var/gtfs-task-artifacts",
+          "GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES=157286400",
+          "GTFS_TASK_ARTIFACTS_MAX_TOTAL_BYTES=1073741824",
+          "GTFS_TASK_ARTIFACTS_TTL_SECONDS=86400",
           "GEOAPIFY_API_KEY=${var.geoapify_api_key}"
         ]
         networks = [
@@ -66,7 +71,8 @@ locals {
           var.db_host
         ]
         volumes = [
-          "${local.service_uploads_volume}:/app/lib/gtfs_planner-0.1.0/priv/static/uploads"
+          "${local.service_uploads_volume}:/app/lib/gtfs_planner-0.1.0/priv/static/uploads",
+          "${local.service_task_artifacts_volume}:/app/var/gtfs-task-artifacts"
         ]
         labels = [
           "traefik.enable=true",
@@ -78,7 +84,8 @@ locals {
       }
     }
     volumes = {
-      "${local.service_uploads_volume}" = {}
+      "${local.service_uploads_volume}"        = {}
+      "${local.service_task_artifacts_volume}" = {}
     }
     networks = {
       "${var.db_host}"      = {}

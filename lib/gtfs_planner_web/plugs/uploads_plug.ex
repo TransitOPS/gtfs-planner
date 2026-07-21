@@ -56,7 +56,17 @@ defmodule GtfsPlannerWeb.UploadsPlug do
   def call(conn, _opts), do: conn
 
   defp serve_upload(conn, rest) do
-    case diagram_request(rest) do
+    case upload_request(rest) do
+      :private_task_artifact ->
+        not_found(conn)
+
+      request ->
+        serve_classified_upload(conn, rest, request)
+    end
+  end
+
+  defp serve_classified_upload(conn, rest, request) do
+    case request do
       {:versioned, organization_id, gtfs_version_id, content_type} ->
         # Fail closed: validate the organization/version identity and confirm the
         # pair is published in the database before any filesystem access. A
@@ -84,6 +94,12 @@ defmodule GtfsPlannerWeb.UploadsPlug do
         serve_static_upload(conn, rest, &put_field_capture_headers/2)
     end
   end
+
+  defp upload_request([prefix | _rest])
+       when prefix in ["change-runs", "export-runs", "task-artifacts"],
+       do: :private_task_artifact
+
+  defp upload_request(rest), do: diagram_request(rest)
 
   # Diagram paths have only two supported exact grammars. Keeping classification
   # before filesystem access makes malformed and unknown-extension requests fail

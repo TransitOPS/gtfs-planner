@@ -1803,14 +1803,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
         <span class="text-sm text-base-content/70">
           {if @disabled, do: "Upload unavailable", else: @action_label}
         </span>
-        <.live_file_input
-          upload={@upload}
-          class="sr-only"
-          disabled={@disabled}
-          aria-labelledby={"#{@id}-label"}
-          aria-describedby={@input_describedby}
-          aria-invalid={to_string(@error != nil or @failure?)}
-        />
+        <span id={"#{@id}-input"}>
+          <.live_file_input
+            upload={@upload}
+            class="sr-only"
+            disabled={@disabled}
+            aria-labelledby={"#{@id}-label"}
+            aria-describedby={@input_describedby}
+            aria-invalid={to_string(@error != nil or @failure?)}
+          />
+        </span>
       </label>
 
       <label
@@ -1823,14 +1825,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
         ]}
       >
         <span>{if @disabled, do: "Upload unavailable", else: @action_label}</span>
-        <.live_file_input
-          upload={@upload}
-          class="sr-only"
-          disabled={@disabled}
-          aria-labelledby={"#{@id}-label"}
-          aria-describedby={@input_describedby}
-          aria-invalid={to_string(@error != nil or @failure?)}
-        />
+        <span id={"#{@id}-input"}>
+          <.live_file_input
+            upload={@upload}
+            class="sr-only"
+            disabled={@disabled}
+            aria-labelledby={"#{@id}-label"}
+            aria-describedby={@input_describedby}
+            aria-invalid={to_string(@error != nil or @failure?)}
+          />
+        </span>
       </label>
 
       <p :if={@error} id={"#{@id}-error"} class="text-sm text-error">

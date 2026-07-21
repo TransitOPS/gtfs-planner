@@ -214,6 +214,22 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       assert conn.resp_body == "nested content"
     end
 
+    test "never serves private task artifact namespaces", %{uploads_path: uploads_path} do
+      for prefix <- ["change-runs", "export-runs", "task-artifacts"] do
+        path = Path.join([uploads_path, prefix, "org", "version", "run", "artifact.zip"])
+        File.mkdir_p!(Path.dirname(path))
+        File.write!(path, "private")
+
+        conn =
+          conn(:get, "/uploads/#{prefix}/org/version/run/artifact.zip")
+          |> UploadsPlug.call([])
+
+        assert conn.halted
+        assert conn.status == 404
+        assert conn.resp_body == "Not Found"
+      end
+    end
+
     test "handles root uploads path request" do
       conn =
         conn(:get, "/uploads")

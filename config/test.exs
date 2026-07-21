@@ -13,8 +13,16 @@ config :gtfs_planner, GtfsPlanner.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
-# Use mock validator in tests
-config :gtfs_planner, :validator_module, GtfsPlanner.Gtfs.ValidatorMock
+# Use a deterministic final-validator adapter for browser journeys while ordinary
+# ExUnit cases retain process-owned Mox expectations.
+validator_module =
+  if System.get_env("BROWSER_E2E") == "true" do
+    GtfsPlanner.Gtfs.BrowserValidator
+  else
+    GtfsPlanner.Gtfs.ValidatorMock
+  end
+
+config :gtfs_planner, :validator_module, validator_module
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
@@ -43,6 +51,16 @@ config :swoosh, :api_client, false
 
 # Use isolated temp directory for uploads during tests
 config :gtfs_planner, :uploads_path, Path.join(System.tmp_dir!(), "gtfs_planner_test_uploads")
+
+# Durable task artifacts are private and intentionally separate from upload/static routing.
+config :gtfs_planner,
+  gtfs_task_artifacts_path: Path.join(System.tmp_dir!(), "gtfs_planner_test_task_artifacts"),
+  gtfs_task_artifacts_max_run_bytes: 150 * 1024 * 1024,
+  gtfs_task_artifacts_max_total_bytes: 1024 * 1024 * 1024,
+  gtfs_task_artifacts_ttl_seconds: 24 * 60 * 60
+
+# Maintenance is exercised explicitly so SQL sandbox tests retain process ownership.
+config :gtfs_planner, :task_artifact_maintenance_enabled, false
 
 # Print only warnings and errors during test
 config :logger, level: :warning
