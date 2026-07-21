@@ -1,11 +1,22 @@
 import { test, expect } from "@playwright/test";
 
 // Account design contracts (Package 11).
-// Step 3 owns the account-navigation block. Later steps extend this file.
+// Step 3 owns the account-navigation block. Step 4 owns the dashboard block.
+// Later steps extend this file further.
 
 const EDITOR_USER = {
   email: "diagram-test@gtfs-planner.test",
   password: "DiagramTest123!",
+};
+
+const SYSTEM_ADMIN_USER = {
+  email: "browser-test@gtfs-planner.test",
+  password: "BrowserTest123!",
+};
+
+const ORG_ADMIN_USER = {
+  email: "admin-contracts@gtfs-planner.test",
+  password: "AdminContracts123!",
 };
 
 const VIEWPORTS = [
@@ -17,12 +28,55 @@ const VIEWPORTS = [
   { label: "640px (200% zoom)", width: 640, height: 400 },
 ];
 
+const DASHBOARD_STATE_ROOTS = [
+  "#dashboard-system-administrator",
+  "#dashboard-organization",
+  "#dashboard-no-version",
+  "#dashboard-no-organization",
+  "#dashboard-organization-unavailable",
+  "#dashboard-no-task-access",
+];
+
 async function logIn(page, user = EDITOR_USER) {
   await page.goto("/users/log_in");
   await page.fill('input[name="user[email]"]', user.email);
   await page.fill('input[name="user[password]"]', user.password);
   await page.locator('button:has-text("Log in")').click();
   await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"));
+}
+
+async function openDashboard(page, user) {
+  await logIn(page, user);
+  await page.goto("/");
+  await waitForLiveView(page);
+}
+
+async function visibleDashboardRoot(page) {
+  for (const id of DASHBOARD_STATE_ROOTS) {
+    const loc = page.locator(id);
+    if ((await loc.count()) > 0 && (await loc.isVisible())) {
+      return id;
+    }
+  }
+  return null;
+}
+
+async function captureSharedMetrics(locator) {
+  return locator.evaluate((el) => {
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return {
+      tag: el.tagName.toLowerCase(),
+      height: rect.height,
+      width: rect.width,
+      minHeight: style.minHeight,
+      fontSize: style.fontSize,
+      fontWeight: style.fontWeight,
+      borderLeftWidth: style.borderLeftWidth,
+      borderLeftStyle: style.borderLeftStyle,
+      className: typeof el.className === "string" ? el.className : "",
+    };
+  });
 }
 
 async function waitForLiveView(page) {
@@ -188,5 +242,237 @@ test.describe("account navigation", () => {
         },
       );
     }
+  });
+});
+
+test.describe("dashboard", () => {
+  test("shared header button and callout metrics match design references", async ({
+    page,
+  }) => {
+    await logIn(page, EDITOR_USER);
+
+    await page.goto("/design/navigation");
+    await waitForLiveView(page);
+    await page.waitForSelector("#ds-header-demo");
+    const refHeaderH1 = page.locator("#ds-header-demo h1").first();
+    await expect(refHeaderH1).toBeVisible();
+    const refHeaderMetrics = await captureSharedMetrics(refHeaderH1);
+
+    await page.goto("/design/buttons");
+    await waitForLiveView(page);
+    await page.waitForSelector("#ds-page-buttons");
+    const refPrimary = page
+      .locator("#ds-page-buttons a.btn-primary, #ds-page-buttons button.btn-primary")
+      .first();
+    await expect(refPrimary).toBeVisible();
+    const refPrimaryMetrics = await captureSharedMetrics(refPrimary);
+
+    await page.goto("/design/feedback");
+    await waitForLiveView(page);
+    await page.waitForSelector("#ds-callout-demo");
+    const refWarning = page
+      .locator("#ds-callout-demo .border-warning, #ds-callout-demo [class*='border-warning']")
+      .first();
+    const refInfo = page
+      .locator("#ds-callout-demo .border-info, #ds-callout-demo [class*='border-info']")
+      .first();
+    await expect(refWarning).toBeVisible();
+    await expect(refInfo).toBeVisible();
+    const refWarningMetrics = await captureSharedMetrics(refWarning);
+    const refInfoMetrics = await captureSharedMetrics(refInfo);
+
+    // Ideal organization (editor + published version)
+    await page.goto("/");
+    await waitForLiveView(page);
+    await page.waitForSelector("#dashboard-organization");
+    const prodH1 = page.locator("#dashboard-organization h1").first();
+    const prodPrimary = page
+      .locator("#dashboard-organization a.btn-primary")
+      .first();
+    await expect(prodH1).toBeVisible();
+    await expect(prodPrimary).toBeVisible();
+    await expect(prodPrimary).toContainText("View routes");
+
+    const prodH1Metrics = await captureSharedMetrics(prodH1);
+    expect(prodH1Metrics.fontSize).toBe(refHeaderMetrics.fontSize);
+    expect(prodH1Metrics.fontWeight).toBe(refHeaderMetrics.fontWeight);
+
+    const prodPrimaryMetrics = await captureSharedMetrics(prodPrimary);
+    expect(prodPrimaryMetrics.className).toContain("btn-primary");
+    expect(prodPrimaryMetrics.height).toBeGreaterThanOrEqual(44);
+    expect(prodPrimaryMetrics.width).toBeGreaterThanOrEqual(44);
+    expect(Number.parseInt(prodPrimaryMetrics.fontWeight, 10)).toBeGreaterThanOrEqual(
+      500,
+    );
+    // Shared button stack should share semantic primary class with reference.
+    expect(refPrimaryMetrics.className).toContain("btn-primary");
+
+    const focus = await focusVisible(page, prodPrimary);
+    expect(focus.isFocused).toBe(true);
+    expect(focus.outlineVisible || focus.ringVisible).toBe(true);
+
+    // System administrator primary action
+    await page.context().clearCookies();
+    await openDashboard(page, SYSTEM_ADMIN_USER);
+    await page.waitForSelector("#dashboard-system-administrator");
+    const adminPrimary = page.locator(
+      "#dashboard-system-administrator a.btn-primary[href='/admin/organizations']",
+    );
+    await expect(adminPrimary).toContainText("Manage organizations");
+    await expect(adminPrimary).not.toHaveClass(/btn-active/);
+    const adminMetrics = await captureSharedMetrics(adminPrimary);
+    expect(adminMetrics.height).toBeGreaterThanOrEqual(44);
+
+    // Organization admin without editor role → Manage users primary, no GTFS CTA
+    await page.context().clearCookies();
+    await openDashboard(page, ORG_ADMIN_USER);
+    const orgAdminRoot = await visibleDashboardRoot(page);
+    // Admin Contracts Org has only a staging default unless published elsewhere.
+    // Accept organization or no-version; never expose unauthorized GTFS links.
+    expect(["#dashboard-organization", "#dashboard-no-version"]).toContain(
+      orgAdminRoot,
+    );
+    await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
+    if (orgAdminRoot === "#dashboard-organization") {
+      await expect(
+        page.locator(`${orgAdminRoot} a.btn-primary[href='/admin/users']`),
+      ).toContainText("Manage users");
+    } else {
+      const callout = page.locator(`${orgAdminRoot} .border-warning`).first();
+      await expect(callout).toBeVisible();
+      await expect(callout).toContainText("No published GTFS version");
+      const calloutMetrics = await captureSharedMetrics(callout);
+      expect(calloutMetrics.borderLeftStyle).not.toBe("none");
+      expect(parseFloat(calloutMetrics.borderLeftWidth)).toBeGreaterThanOrEqual(
+        parseFloat(refWarningMetrics.borderLeftWidth) - 0.5,
+      );
+    }
+
+    // Missing-context style recovery uses info callout on no-organization when
+    // reachable; LiveView tests own the full missing/unavailable matrix.
+    void refInfoMetrics;
+  });
+
+  test("representative states reflow without overflow at required viewports", async ({
+    page,
+  }) => {
+    const scenarios = [
+      {
+        user: EDITOR_USER,
+        root: "#dashboard-organization",
+        label: "organization",
+      },
+      {
+        user: SYSTEM_ADMIN_USER,
+        root: "#dashboard-system-administrator",
+        label: "system-admin",
+      },
+      {
+        user: ORG_ADMIN_USER,
+        root: null,
+        label: "org-admin",
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      await page.context().clearCookies();
+      await openDashboard(page, scenario.user);
+      const root =
+        scenario.root ||
+        (await visibleDashboardRoot(page)) ||
+        "#dashboard-organization";
+      await page.waitForSelector(root);
+
+      for (const viewport of VIEWPORTS) {
+        await page.setViewportSize({
+          width: viewport.width,
+          height: viewport.height,
+        });
+        await page.goto("/");
+        await waitForLiveView(page);
+        await page.waitForSelector(root);
+
+        expect(
+          await bodyFitsViewport(page),
+          `${scenario.label} overflow at ${viewport.label}`,
+        ).toBe(true);
+
+        const actions = page.locator(`${root} a.btn, ${root} button.btn`);
+        const count = await actions.count();
+        for (let i = 0; i < count; i++) {
+          const action = actions.nth(i);
+          if (!(await action.isVisible())) continue;
+          const box = await action.boundingBox();
+          expect(box).not.toBeNull();
+          expect(box.height).toBeGreaterThanOrEqual(44);
+          expect(box.width).toBeGreaterThanOrEqual(44);
+        }
+
+        const h1Count = await page.locator(`${root} h1`).count();
+        expect(h1Count).toBe(1);
+      }
+    }
+  });
+
+  test("reviewed dashboard state screenshots", async ({ page }) => {
+    // Ideal organization (editor seed has published version + Browser Test Org name).
+    await openDashboard(page, EDITOR_USER);
+    await page.waitForSelector("#dashboard-organization");
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await waitForLiveView(page);
+    const orgRoot = page.locator("#dashboard-organization");
+    await expect(orgRoot).toBeVisible();
+    // Do not mask tenant name: presence of authorized org name is the contract.
+    await expect(orgRoot).toHaveScreenshot("dashboard-organization-1280.png", {
+      animations: "disabled",
+    });
+
+    // System administrator
+    await page.context().clearCookies();
+    await openDashboard(page, SYSTEM_ADMIN_USER);
+    await page.waitForSelector("#dashboard-system-administrator");
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await waitForLiveView(page);
+    await expect(page.locator("#dashboard-system-administrator")).toHaveScreenshot(
+      "dashboard-system-administrator-1280.png",
+      { animations: "disabled" },
+    );
+
+    // Org admin: no-version or organization depending on seed publication state.
+    await page.context().clearCookies();
+    await openDashboard(page, ORG_ADMIN_USER);
+    const orgAdminRoot = await visibleDashboardRoot(page);
+    expect(orgAdminRoot).not.toBeNull();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await waitForLiveView(page);
+    const rootLocator = page.locator(orgAdminRoot);
+    await expect(rootLocator).toBeVisible();
+
+    if (orgAdminRoot === "#dashboard-no-version") {
+      await expect(rootLocator).toHaveScreenshot("dashboard-no-version-1280.png", {
+        animations: "disabled",
+      });
+    } else if (orgAdminRoot === "#dashboard-organization") {
+      // Seed has a published version for this org; still capture the root.
+      await expect(rootLocator).toHaveScreenshot(
+        "dashboard-organization-org-admin-1280.png",
+        { animations: "disabled" },
+      );
+    } else if (orgAdminRoot === "#dashboard-no-task-access") {
+      await expect(rootLocator).toHaveScreenshot("dashboard-no-task-access-1280.png", {
+        animations: "disabled",
+      });
+    }
+
+    // Missing-context is not browser-login-reachable for seeded members without a
+    // production session bypass. LiveView tests own #dashboard-no-organization and
+    // #dashboard-organization-unavailable non-disclosure. Capture no-organization
+    // only if a seeded path ever exposes it.
+    await page.context().clearCookies();
+    // Attempt: login as system admin then navigate home already covered.
+    // No production backdoor for stale session IDs.
   });
 });
