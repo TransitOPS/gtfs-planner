@@ -4526,6 +4526,86 @@ defmodule GtfsPlanner.Gtfs do
     end)
   end
 
+  @doc false
+  @spec record_change_in_transaction(AuditContext.t(), atom(), struct() | nil, String.t(), map()) ::
+          {:ok, ChangeLog.t()} | {:error, Ecto.Changeset.t()}
+  def record_change_in_transaction(
+        %AuditContext{} = ctx,
+        entity_type,
+        entity_or_nil,
+        action,
+        attrs \\ %{}
+      ) do
+    snapshot = build_snapshot(entity_type, entity_or_nil)
+    changed_fields_attrs = changed_fields_attrs(action, entity_type, attrs)
+    changed_fields = build_changed_fields(action, snapshot, changed_fields_attrs)
+
+    %ChangeLog{}
+    |> ChangeLog.changeset(%{
+      entity_type: Atom.to_string(entity_type),
+      entity_id: entity_id_for(entity_or_nil),
+      entity_external_id: entity_external_id_for(entity_type, entity_or_nil, attrs),
+      station_stop_id: ctx.station_stop_id,
+      actor_id: ctx.actor_id,
+      actor_email: ctx.actor_email,
+      snapshot: snapshot,
+      changed_fields: changed_fields,
+      action: action,
+      organization_id: ctx.organization_id,
+      gtfs_version_id: ctx.gtfs_version_id
+    })
+    |> Repo.insert()
+  end
+
+  @doc false
+  @spec lock_import_entity(atom(), Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          Level.t() | Stop.t() | Pathway.t() | nil
+  def lock_import_entity(entity_type, organization_id, gtfs_version_id, natural_key)
+      when entity_type in [:level, :stop, :pathway] and is_binary(natural_key) do
+    {schema, key_field} = import_entity_schema(entity_type)
+
+    from(entity in schema,
+      where:
+        entity.organization_id == ^organization_id and entity.gtfs_version_id == ^gtfs_version_id and
+          field(entity, ^key_field) == ^natural_key,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  @doc false
+  @spec apply_import_entity(:add | :modify | :remove | :conflict, atom(), struct() | nil, map()) ::
+          {:ok, struct()} | {:error, Ecto.Changeset.t() | term()}
+  def apply_import_entity(:add, :level, _current, attrs),
+    do: %Level{} |> Level.changeset(attrs) |> Repo.insert()
+
+  def apply_import_entity(:add, :stop, _current, attrs),
+    do: %Stop{} |> Stop.import_changeset(attrs) |> Repo.insert()
+
+  def apply_import_entity(:add, :pathway, _current, attrs),
+    do: %Pathway{} |> Pathway.changeset(attrs) |> Repo.insert()
+
+  def apply_import_entity(action, :level, %Level{} = current, attrs)
+      when action in [:modify, :conflict],
+      do: current |> Level.changeset(attrs) |> Repo.update()
+
+  def apply_import_entity(action, :stop, %Stop{} = current, attrs)
+      when action in [:modify, :conflict],
+      do: current |> Stop.import_changeset(attrs) |> Repo.update()
+
+  def apply_import_entity(action, :pathway, %Pathway{} = current, attrs)
+      when action in [:modify, :conflict],
+      do: current |> Pathway.changeset(attrs) |> Repo.update()
+
+  def apply_import_entity(:remove, _entity_type, current, _attrs) when not is_nil(current),
+    do: Repo.delete(current)
+
+  def apply_import_entity(_, _, _, _), do: {:error, :invalid_decision}
+
+  defp import_entity_schema(:level), do: {Level, :level_id}
+  defp import_entity_schema(:stop), do: {Stop, :stop_id}
+  defp import_entity_schema(:pathway), do: {Pathway, :pathway_id}
+
   defp changed_fields_attrs("updated", entity_type, attrs),
     do: reversible_attrs_for(entity_type, attrs)
 

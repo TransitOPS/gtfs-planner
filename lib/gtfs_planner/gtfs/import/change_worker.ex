@@ -33,6 +33,58 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorker do
       close(run, generation, token, "compute_failed")
   end
 
+  @doc "Applies approved or previously failed decisions through fenced per-row transactions."
+  @spec apply(struct(), pos_integer(), Ecto.UUID.t(), String.t(), keyword()) :: :ok
+  def apply(run, generation, token, _topic, opts \\ []) do
+    run.organization_id
+    |> ChangeRuns.applyable_decisions(run.id)
+    |> order_for_apply()
+    |> Enum.reduce_while(:ok, fn decision, :ok ->
+      case ChangeRuns.apply_decision(
+             run.organization_id,
+             run.id,
+             decision.decision_id,
+             generation,
+             token,
+             opts
+           ) do
+        {:ok, _applied} ->
+          {:cont, :ok}
+
+        {:error, :lease_lost} ->
+          {:halt, :lease_lost}
+
+        {:error, reason} ->
+          case ChangeRuns.mark_apply_failure(
+                 run.organization_id,
+                 run.id,
+                 decision.decision_id,
+                 generation,
+                 token,
+                 reason
+               ) do
+            {:ok, _failed} -> {:cont, :ok}
+            {:error, _} -> {:halt, :lease_lost}
+          end
+      end
+    end)
+    |> case do
+      :lease_lost ->
+        _ = ChangeRuns.finish_apply(run.organization_id, run.id, generation, token)
+        :ok
+
+      :ok ->
+        _ = ChangeRuns.finish_apply(run.organization_id, run.id, generation, token)
+        :ok
+    end
+  rescue
+    error ->
+      require Logger
+      Logger.error(Exception.format(:error, error, __STACKTRACE__))
+      _ = ChangeRuns.fail_apply(run.organization_id, run.id, generation, token, "apply_failed")
+      :ok
+  end
+
   defp close(run, generation, token, code) do
     _ = ChangeRuns.fail_compute(run.organization_id, run.id, generation, token, code)
     :ok
@@ -66,6 +118,34 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorker do
 
       {:error, _reason} ->
         close(run, generation, token, "review_persistence_failed")
+    end
+  end
+
+  defp order_for_apply(decisions) do
+    Enum.sort_by(decisions, fn decision ->
+      {action_rank(decision.action), entity_rank(decision.action, decision.entity_type),
+       decision.natural_key, decision.decision_id}
+    end)
+  end
+
+  defp action_rank(:add), do: 0
+  defp action_rank(:modify), do: 1
+  defp action_rank(:conflict), do: 1
+  defp action_rank(:remove), do: 2
+
+  defp entity_rank(action, entity_type) when action in [:add, :modify, :conflict] do
+    case entity_type do
+      :level -> 0
+      :stop -> 1
+      :pathway -> 2
+    end
+  end
+
+  defp entity_rank(:remove, entity_type) do
+    case entity_type do
+      :pathway -> 0
+      :stop -> 1
+      :level -> 2
     end
   end
 end

@@ -9,6 +9,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Import.ChangeDecision
   alias GtfsPlanner.Gtfs.Import.ChangeDecisionSerializer
   alias GtfsPlanner.Gtfs.Import.ChangeRun
@@ -239,7 +241,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
           if run.serializer_version == ChangeDecisionSerializer.serializer_version() do
             {:ok, pending} =
               Repo.update(
-                ChangeRun.system_changeset(run, %{state: :pending_apply, phase: :preflight})
+                ChangeRun.system_changeset(run, %{
+                  state: :pending_apply,
+                  phase: :preflight,
+                  progress_current: 0,
+                  progress_total: approved_decision_count(run.id)
+                })
               )
 
             {{:ok, pending}, [run.id]}
@@ -263,7 +270,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     end)
   end
 
-  @doc "Step 4 supplies the caller-owned GTFS mutation/audit transaction."
+  @doc "Applies one approved decision in the caller-owned mutation/audit/checkpoint transaction."
   @spec apply_decision(
           Ecto.UUID.t(),
           Ecto.UUID.t(),
@@ -273,7 +280,141 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
           term()
         ) ::
           {:ok, ChangeDecision.t()} | {:error, term()}
-  def apply_decision(_, _, _, _, _, _), do: {:error, :not_implemented}
+  def apply_decision(organization_id, run_id, decision_id, generation, token, opts)
+      when is_binary(decision_id) and is_list(opts) do
+    transaction_with_broadcast(fn ->
+      with {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
+           %ChangeDecision{} = decision <- lock_decision(run.id, decision_id) do
+        case decision.status do
+          :applied -> {{:ok, decision}, []}
+          _ -> apply_locked_decision(run, decision, generation, token, opts)
+        end
+      else
+        nil -> Repo.rollback(:not_found)
+        {:error, :lease_lost} -> Repo.rollback(:lease_lost)
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  def apply_decision(_, _, _, _, _, _), do: {:error, :invalid_apply_decision}
+
+  @doc false
+  @spec applyable_decisions(Ecto.UUID.t(), Ecto.UUID.t()) :: [ChangeDecision.t()]
+  def applyable_decisions(organization_id, run_id) do
+    from(d in ChangeDecision,
+      join: r in ChangeRun,
+      on: r.id == d.change_run_id,
+      where:
+        d.change_run_id == ^run_id and r.organization_id == ^organization_id and
+          d.status in [:approved, :failed],
+      order_by: [asc: d.decision_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc false
+  @spec mark_apply_failure(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          pos_integer(),
+          Ecto.UUID.t(),
+          term()
+        ) ::
+          {:ok, ChangeDecision.t()} | {:error, :lease_lost | term()}
+  def mark_apply_failure(organization_id, run_id, decision_id, generation, token, reason)
+      when is_binary(decision_id) do
+    transaction_with_broadcast(fn ->
+      with {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
+           %ChangeDecision{} = decision <- lock_decision(run.id, decision_id),
+           true <- decision.status in [:approved, :failed],
+           {:ok, failed} <-
+             Repo.update(
+               ChangeDecision.system_changeset(decision, %{
+                 status: failure_status(reason),
+                 apply_failure_code: failure_code(reason)
+               })
+             ) do
+        {{:ok, failed}, [run.id]}
+      else
+        {:error, :lease_lost} -> {{:error, :lease_lost}, []}
+        nil -> {{:error, :not_found}, []}
+        false -> {{:error, :invalid_transition}, []}
+        {:error, reason} -> {{:error, reason}, []}
+      end
+    end)
+  end
+
+  @doc false
+  @spec finish_apply(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t()) ::
+          {:ok, ChangeRun.t()} | {:error, :lease_lost}
+  def finish_apply(organization_id, run_id, generation, token) do
+    transaction_with_broadcast(fn ->
+      case lock_run(organization_id, run_id) do
+        %ChangeRun{} = run
+        when run.state == :applying and run.lease_generation == generation and
+               run.lease_token == token ->
+          if lease_current?(run.id) do
+            summary = apply_summary(run.id, run.summary)
+            state = terminal_apply_state(run, summary)
+
+            attrs = %{
+              state: state,
+              phase: :cleanup,
+              lease_token: nil,
+              lease_expires_at: nil,
+              summary: summary,
+              failure_code: if(state == :partial, do: "decision_failures", else: nil),
+              finished_at: DateTime.utc_now()
+            }
+
+            case Repo.update(ChangeRun.system_changeset(run, attrs)) do
+              {:ok, closed} -> {{:ok, closed}, [run.id]}
+              {:error, _} -> {{:error, :lease_lost}, []}
+            end
+          else
+            {{:error, :lease_lost}, []}
+          end
+
+        _ ->
+          {{:error, :lease_lost}, []}
+      end
+    end)
+  end
+
+  @doc false
+  @spec fail_apply(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t(), String.t()) ::
+          {:ok, ChangeRun.t()} | {:error, :lease_lost}
+  def fail_apply(organization_id, run_id, generation, token, code) when is_binary(code) do
+    transaction_with_broadcast(fn ->
+      case lock_run(organization_id, run_id) do
+        %ChangeRun{} = run
+        when run.state == :applying and run.lease_generation == generation and
+               run.lease_token == token ->
+          summary = apply_summary(run.id, run.summary)
+          state = if is_nil(run.cancel_requested_at), do: :partial, else: :cancelled
+
+          attrs = %{
+            state: state,
+            phase: :cleanup,
+            lease_token: nil,
+            lease_expires_at: nil,
+            summary: summary,
+            failure_code: String.slice(code, 0, 128),
+            finished_at: DateTime.utc_now()
+          }
+
+          case Repo.update(ChangeRun.system_changeset(run, attrs)) do
+            {:ok, closed} -> {{:ok, closed}, [run.id]}
+            {:error, _} -> {{:error, :lease_lost}, []}
+          end
+
+        _ ->
+          {{:error, :lease_lost}, []}
+      end
+    end)
+  end
 
   @spec request_cancel(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, ChangeRun.t()} | {:error, term()}
   def request_cancel(organization_id, run_id) do
@@ -614,6 +755,235 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
       {:ok, review_run} -> {:ok, review_run}
       {:error, changeset} -> {:error, changeset}
     end
+  end
+
+  defp applicable_decision?(%ChangeDecision{status: status}) when status in [:approved, :failed],
+    do: :ok
+
+  defp applicable_decision?(_), do: {:error, :invalid_transition}
+
+  defp apply_locked_decision(run, decision, generation, token, opts) do
+    with :ok <- applicable_decision?(decision),
+         :ok <- invoke_step(opts, :before_fingerprint),
+         {:ok, current} <- current_entity(run, decision),
+         :ok <- fingerprint_matches?(decision, current),
+         :ok <- dependencies_satisfied?(run, decision),
+         :ok <- invoke_step(opts, :before_mutation),
+         {:ok, entity} <- apply_mutation(run, decision, current),
+         :ok <- invoke_step(opts, :before_audit),
+         {:ok, _audit} <- record_audit(run, decision, current, entity),
+         :ok <- invoke_step(opts, :before_checkpoint),
+         {:ok, applied} <- checkpoint_decision(decision),
+         :ok <- invoke_step(opts, :before_progress),
+         {:ok, _run} <- increment_progress(run, generation, token) do
+      {{:ok, applied}, [run.id]}
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp current_entity(run, %ChangeDecision{
+         action: :add,
+         entity_type: type,
+         natural_key: natural_key
+       }) do
+    case Gtfs.lock_import_entity(type, run.organization_id, run.gtfs_version_id, natural_key) do
+      nil -> {:ok, nil}
+      _entity -> {:error, :drifted}
+    end
+  end
+
+  defp current_entity(run, %ChangeDecision{entity_type: type, natural_key: natural_key}) do
+    case Gtfs.lock_import_entity(type, run.organization_id, run.gtfs_version_id, natural_key) do
+      nil -> {:error, :drifted}
+      entity -> {:ok, entity}
+    end
+  end
+
+  defp fingerprint_matches?(%ChangeDecision{action: :add}, nil), do: :ok
+
+  defp fingerprint_matches?(%ChangeDecision{current_fingerprint: nil}, _entity), do: :ok
+
+  defp fingerprint_matches?(%ChangeDecision{} = decision, entity) do
+    fingerprint =
+      decision.entity_type
+      |> Gtfs.entity_snapshot(entity)
+      |> Map.take(Map.keys(decision.current_values))
+      |> ChangeDecisionSerializer.current_fingerprint()
+
+    if fingerprint == decision.current_fingerprint, do: :ok, else: {:error, :drifted}
+  end
+
+  defp dependencies_satisfied?(run, %ChangeDecision{dependency_keys: dependencies}) do
+    if Enum.all?(dependencies, &dependency_satisfied?(run, &1)),
+      do: :ok,
+      else: {:error, :dependencies_unmet}
+  end
+
+  defp dependency_satisfied?(run, dependency) do
+    case String.split(dependency, ":", parts: 2) do
+      [type, natural_key] ->
+        case dependency_entity_type(type) do
+          entity_type when entity_type in [:level, :stop, :pathway] ->
+            not is_nil(
+              Gtfs.lock_import_entity(
+                entity_type,
+                run.organization_id,
+                run.gtfs_version_id,
+                natural_key
+              )
+            )
+
+          _ ->
+            false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp dependency_entity_type("level"), do: :level
+  defp dependency_entity_type("stop"), do: :stop
+  defp dependency_entity_type("pathway"), do: :pathway
+  defp dependency_entity_type(_), do: :unknown
+
+  defp apply_mutation(run, decision, current) do
+    attrs =
+      decision.uploaded_values
+      |> atomize_allowed_keys()
+      |> Map.merge(identity_attrs(run, decision))
+
+    Gtfs.apply_import_entity(decision.action, decision.entity_type, current, attrs)
+  end
+
+  defp identity_attrs(run, %ChangeDecision{entity_type: :level, natural_key: natural_key}),
+    do: %{
+      organization_id: run.organization_id,
+      gtfs_version_id: run.gtfs_version_id,
+      level_id: natural_key
+    }
+
+  defp identity_attrs(run, %ChangeDecision{entity_type: :stop, natural_key: natural_key}),
+    do: %{
+      organization_id: run.organization_id,
+      gtfs_version_id: run.gtfs_version_id,
+      stop_id: natural_key
+    }
+
+  defp identity_attrs(run, %ChangeDecision{entity_type: :pathway, natural_key: natural_key}),
+    do: %{
+      organization_id: run.organization_id,
+      gtfs_version_id: run.gtfs_version_id,
+      pathway_id: natural_key
+    }
+
+  defp record_audit(run, decision, current, _entity) do
+    action = audit_action(decision.action)
+
+    context = %AuditContext{
+      organization_id: run.organization_id,
+      gtfs_version_id: run.gtfs_version_id,
+      station_stop_id: decision.natural_key,
+      actor_id: run.actor_id,
+      actor_email: run.actor_email
+    }
+
+    attrs = Map.merge(decision.uploaded_values, identity_attrs(run, decision))
+    Gtfs.record_change_in_transaction(context, decision.entity_type, current, action, attrs)
+  end
+
+  defp audit_action(:add), do: "created"
+  defp audit_action(:remove), do: "deleted"
+  defp audit_action(_), do: "updated"
+
+  defp checkpoint_decision(decision) do
+    Repo.update(
+      ChangeDecision.system_changeset(decision, %{
+        status: :applied,
+        apply_failure_code: nil,
+        applied_at: DateTime.utc_now()
+      })
+    )
+  end
+
+  defp increment_progress(run, generation, token) do
+    case Repo.update(
+           ChangeRun.system_changeset(run, %{
+             progress_current: min(run.progress_current + 1, run.progress_total)
+           })
+         ) do
+      {:ok, %ChangeRun{lease_generation: ^generation, lease_token: ^token} = updated} ->
+        {:ok, updated}
+
+      {:ok, _} ->
+        {:error, :lease_lost}
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  defp apply_summary(run_id, previous_summary) do
+    counts =
+      from(d in ChangeDecision,
+        where: d.change_run_id == ^run_id,
+        group_by: d.status,
+        select: {d.status, count(d.id)}
+      )
+      |> Repo.all()
+      |> Map.new()
+
+    previous_summary
+    |> Map.put("applied", Map.get(counts, :applied, 0))
+    |> Map.put("failed", Map.get(counts, :failed, 0) + Map.get(counts, :stale, 0))
+  end
+
+  defp approved_decision_count(run_id) do
+    from(d in ChangeDecision,
+      where: d.change_run_id == ^run_id and d.status == :approved,
+      select: count(d.id)
+    )
+    |> Repo.one()
+  end
+
+  defp terminal_apply_state(%ChangeRun{cancel_requested_at: value}, _summary)
+       when not is_nil(value),
+       do: :cancelled
+
+  defp terminal_apply_state(_run, summary) do
+    if Map.get(summary, "failed", 0) > 0, do: :partial, else: :completed
+  end
+
+  defp failure_code(reason) when is_atom(reason),
+    do: reason |> Atom.to_string() |> String.slice(0, 128)
+
+  defp failure_code(reason) when is_binary(reason), do: String.slice(reason, 0, 128)
+  defp failure_code(_reason), do: "apply_failed"
+  defp failure_status(:drifted), do: :stale
+  defp failure_status(_reason), do: :failed
+
+  defp invoke_step(opts, step) do
+    case Keyword.get(opts, :on_step) do
+      fun when is_function(fun, 1) -> fun.(step)
+      _ -> :ok
+    end
+  end
+
+  defp atomize_allowed_keys(values) do
+    Enum.reduce(values, %{}, fn {key, value}, attrs ->
+      case key do
+        key when is_atom(key) ->
+          Map.put(attrs, key, value)
+
+        key when is_binary(key) ->
+          try do
+            Map.put(attrs, String.to_existing_atom(key), value)
+          rescue
+            ArgumentError -> attrs
+          end
+      end
+    end)
   end
 
   defp maybe_filter_decisions(query, _field, nil, _allowed), do: query
