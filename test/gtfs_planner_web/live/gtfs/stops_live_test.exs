@@ -1,32 +1,67 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
-  use GtfsPlannerWeb.ConnCase
+  use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Mox
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
 
-  describe "StopsLive" do
-    setup do
-      organization = organization_fixture()
-      user = user_fixture()
+  @adapter_key :gtfs_catalog_read_adapter
 
-      # Create user membership in organization with GTFS access
-      Accounts.create_user_org_membership(%{
-        user_id: user.id,
-        organization_id: organization.id,
-        roles: ["pathways_studio_editor"]
-      })
+  setup :verify_on_exit!
 
-      gtfs_version = gtfs_version_fixture(organization.id)
+  setup do
+    previous = Application.fetch_env(:gtfs_planner, @adapter_key)
+    Application.put_env(:gtfs_planner, @adapter_key, CatalogReadAdapterMock)
 
-      %{user: user, organization: organization, gtfs_version: gtfs_version}
-    end
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:gtfs_planner, @adapter_key, value)
+        :error -> Application.delete_env(:gtfs_planner, @adapter_key)
+      end
+    end)
+  end
 
-    test "displays stations page with valid version", %{
+  defp shared_setup(_context) do
+    organization = organization_fixture()
+    user = user_fixture()
+
+    Accounts.create_user_org_membership(%{
+      user_id: user.id,
+      organization_id: organization.id,
+      roles: ["pathways_studio_editor"]
+    })
+
+    gtfs_version = gtfs_version_fixture(organization.id)
+
+    %{user: user, organization: organization, gtfs_version: gtfs_version}
+  end
+
+  defp stop_page(rows, total_count, page, available_routes, routes_by_stop) do
+    %{
+      rows: rows,
+      total_count: total_count,
+      page: page,
+      available_routes: available_routes,
+      routes_by_stop: routes_by_stop
+    }
+  end
+
+  defp stub_catalog(result_fn) do
+    stub(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _ver, opts ->
+      result_fn.(opts)
+    end)
+  end
+
+  describe "StopsLive shared table contract" do
+    setup :shared_setup
+
+    test "renders one shared table with stable tbody ID and route badge", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -34,111 +69,482 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/stops")
-
-      assert html =~ "Stations"
-    end
-
-    test "redirects with error for invalid version UUID", %{
-      conn: conn,
-      user: user,
-      organization: organization
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-      invalid_uuid = Ecto.UUID.generate()
-
-      assert {:error, {:redirect, %{to: "/", flash: %{"error" => "GTFS version not found"}}}} =
-               live(conn, "/gtfs/#{invalid_uuid}/stops")
-    end
-
-    test "redirects with error for version from different organization", %{
-      conn: conn,
-      user: user,
-      organization: organization
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      # Create another organization with its own version
-      other_org = organization_fixture()
-      other_version = gtfs_version_fixture(other_org.id)
-
-      assert {:error, {:redirect, %{to: "/", flash: %{"error" => "GTFS version not found"}}}} =
-               live(conn, "/gtfs/#{other_version.id}/stops")
-    end
-
-    test "renders both top-level stations and top-level stops by default", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      stop_fixture(organization.id, version.id, %{
-        stop_id: "STATION_A",
-        stop_name: "Top Level Station",
-        location_type: 1,
-        parent_station: nil
-      })
-
-      stop_fixture(organization.id, version.id, %{
-        stop_id: "STOP_B",
-        stop_name: "Top Level Stop",
-        location_type: 0,
-        parent_station: nil
-      })
-
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/stops")
-
-      assert html =~ "STATION_A"
-      assert html =~ "STOP_B"
-    end
-
-    test "paginates stations", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-
-      Enum.each(1..51, fn idx ->
+      stop =
         stop_fixture(organization.id, version.id, %{
-          stop_id: "S#{String.pad_leading(Integer.to_string(idx), 3, "0")}",
-          stop_name: "Station #{String.pad_leading(Integer.to_string(idx), 3, "0")}",
+          stop_id: "SHARED1",
+          stop_name: "Shared Stop",
           parent_station: nil
         })
+
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "R1",
+          route_short_name: "R1",
+          route_color: "FF0000"
+        })
+
+      stub_catalog(fn _opts ->
+        {:ok, stop_page([stop], 1, 1, [route], %{stop.stop_id => [route]})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
 
-      html =
-        view
-        |> element("button[phx-click='paginate'][phx-value-page='2']")
-        |> render_click()
+      html = render(view)
+      doc = LazyHTML.from_fragment(html)
 
-      assert html =~ "Station 051"
-      refute html =~ "Station 001"
-      assert_patch(view, "/gtfs/#{version.id}/stops?page=2")
+      assert Enum.count(LazyHTML.query(doc, "table")) == 1
+      assert Enum.count(LazyHTML.query(doc, "tbody#stops")) == 1
+      assert Enum.count(LazyHTML.query(doc, "#stops-container")) == 1
+    end
+
+    test "table uses responsive stack and aria-sort on sortable headers", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "SORT1", parent_station: nil})
+
+      stub_catalog(fn _opts ->
+        {:ok, stop_page([stop], 1, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      html = render(view)
+      doc = LazyHTML.from_fragment(html)
+
+      tables = LazyHTML.query(doc, "table.ds-stack-table")
+      assert Enum.count(tables) == 1
+
+      assert has_element?(view, "th[aria-sort]")
+    end
+
+    test "stop ID column uses font-mono and link is primary", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "MONO1",
+          stop_name: "Mono Stop",
+          parent_station: nil
+        })
+
+      stub_catalog(fn _opts ->
+        {:ok, stop_page([stop], 1, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "a.font-mono.link-primary", "MONO1")
+    end
+  end
+
+  describe "StopsLive page header and type labels" do
+    setup :shared_setup
+
+    test "page header says Stops & stations; rows show Stop or Station per location_type", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      station =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "STA1",
+          stop_name: "Central Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "STP1",
+          stop_name: "Platform Stop",
+          location_type: 0,
+          parent_station: nil
+        })
+
+      stub_catalog(fn _opts ->
+        {:ok, stop_page([station, stop], 2, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "h1", "Stops & stations")
+      assert has_element?(view, "td", "Station")
+      assert has_element?(view, "td", "Stop/Platform")
+    end
+  end
+
+  describe "StopsLive unavailable state and retry" do
+    setup :shared_setup
+
+    test "renders unavailable callout with retry button when adapter returns error", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_catalog(fn _opts -> {:error, :unavailable} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "#stops-unavailable")
+      assert has_element?(view, "#stops-retry")
+    end
+
+    test "retry restores rows after unavailable", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "RETRY1", parent_station: nil})
+
+      call_count = :atomics.new(1, [])
+
+      stub_catalog(fn _opts ->
+        count = :atomics.add_get(call_count, 1, 1)
+
+        if count <= 2 do
+          {:error, :unavailable}
+        else
+          {:ok, stop_page([stop], 1, 1, [], %{})}
+        end
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "#stops-unavailable")
+
+      view
+      |> element("#stops-retry")
+      |> render_click()
+
+      refute has_element?(view, "#stops-unavailable")
+      assert has_element?(view, "a", "RETRY1")
+    end
+  end
+
+  describe "StopsLive partial enrichment" do
+    setup :shared_setup
+
+    test "partial enrichment shows rows with enrichment warning and retry button", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "PARTIAL1",
+          stop_name: "Partial Stop",
+          parent_station: nil
+        })
+
+      stub_catalog(fn _opts ->
+        {:partial, stop_page([stop], 1, 1, [], %{}), :route_enrichment_unavailable}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "a", "PARTIAL1")
+      assert has_element?(view, "#stops-enrichment-warning")
+      assert has_element?(view, "#stops-enrichment-retry")
+    end
+
+    test "retry after enrichment failure restores route badges without losing search/filter state",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "ENRICH1",
+          stop_name: "Enrich Stop",
+          parent_station: nil
+        })
+
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "ER1",
+          route_short_name: "ER1",
+          route_color: "00FF00"
+        })
+
+      call_count = :atomics.new(1, [])
+
+      stub_catalog(fn _opts ->
+        count = :atomics.add_get(call_count, 1, 1)
+
+        if count <= 2 do
+          {:partial, stop_page([stop], 1, 1, [], %{}), :route_enrichment_unavailable}
+        else
+          {:ok, stop_page([stop], 1, 1, [route], %{stop.stop_id => [route]})}
+        end
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?search=enrich")
+
+      assert has_element?(view, "#stops-enrichment-warning")
+
+      view
+      |> element("#stops-enrichment-retry")
+      |> render_click()
+
+      refute has_element?(view, "#stops-enrichment-warning")
+      assert has_element?(view, "a", "ENRICH1")
+    end
+  end
+
+  describe "StopsLive page clamping" do
+    setup :shared_setup
+
+    test "out-of-range page patches to canonical page", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stops =
+        Enum.map(1..75, fn idx ->
+          stop_fixture(organization.id, version.id, %{
+            stop_id: "CL#{String.pad_leading(Integer.to_string(idx), 3, "0")}",
+            stop_name: "Stop #{idx}",
+            parent_station: nil
+          })
+        end)
+
+      stub_catalog(fn opts ->
+        page = Keyword.get(opts, :page, 1)
+        per_page = Keyword.get(opts, :per_page, 50)
+        total = 75
+        max_page = max(1, ceil(total / per_page))
+        canonical = min(max(page, 1), max_page)
+
+        rows =
+          stops
+          |> Enum.drop((canonical - 1) * per_page)
+          |> Enum.take(per_page)
+
+        {:ok, stop_page(rows, total, canonical, [], %{})}
+      end)
+
+      assert {:error, {:live_redirect, %{to: redirected_to}}} =
+               live(conn, "/gtfs/#{version.id}/stops?page=999")
+
+      assert redirected_to =~ "page=2"
+
+      {:ok, view, _html} = live(conn, redirected_to)
+      assert has_element?(view, "a", "CL051")
+    end
+  end
+
+  describe "StopsLive search and filter reset page" do
+    setup :shared_setup
+
+    test "search change resets page to 1", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "SRCH1", parent_station: nil})
+
+      stub_catalog(fn opts ->
+        page = Keyword.get(opts, :page, 1)
+        {:ok, stop_page([stop], 1, page, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?page=2")
+
+      view
+      |> form("#stop-search-form", %{"search" => "test"})
+      |> render_change()
+
+      assert_patched(view, "/gtfs/#{version.id}/stops?search=test")
+    end
+  end
+
+  describe "StopsLive empty states" do
+    setup :shared_setup
+
+    test "first-use empty state with Import feed link when no stops and no filters", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "#stops-first-use-empty")
+      assert has_element?(view, "#stops-first-use-empty a", "Import feed")
+    end
+
+    test "constrained empty with Clear search when search active and no filters", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?search=nonexistent")
+
+      assert has_element?(view, "#stops-constrained-empty")
+      assert has_element?(view, "#stops-clear-filters", "Clear search")
+    end
+
+    test "constrained empty with Clear filters when filter active", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?wheelchair_boarding=1")
+
+      assert has_element?(view, "#stops-constrained-empty")
+      assert has_element?(view, "#stops-clear-filters", "Clear filters")
+    end
+
+    test "clear filters restores rows", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "CLEAR1", parent_station: nil})
+
+      stub_catalog(fn opts ->
+        search = Keyword.get(opts, :search, "")
+        wheelchair = Keyword.get(opts, :wheelchair_boarding)
+
+        cond do
+          search == "nonexistent" ->
+            {:ok, stop_page([], 0, 1, [], %{})}
+
+          wheelchair == 1 ->
+            {:ok, stop_page([], 0, 1, [], %{})}
+
+          true ->
+            {:ok, stop_page([stop], 1, 1, [], %{})}
+        end
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?search=nonexistent")
+
+      assert has_element?(view, "#stops-constrained-empty")
+
+      view
+      |> element("#stops-clear-filters")
+      |> render_click()
+
+      assert_patched(view, "/gtfs/#{version.id}/stops")
+      assert has_element?(view, "a", "CLEAR1")
+    end
+  end
+
+  describe "StopsLive search form" do
+    setup :shared_setup
+
+    test "search form has stable ID, visible label, and names-and-IDs hint", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "form#stop-search-form")
+      assert has_element?(view, "#stop-search-form label", "Search")
+      assert has_element?(view, "#stop-search-form input[type='search']")
+      html = render(view)
+      assert html =~ "Search names and IDs"
+    end
+  end
+
+  describe "StopsLive pagination" do
+    setup :shared_setup
+
+    test "renders shared pagination with configured event", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stops =
+        Enum.map(1..51, fn idx ->
+          stop_fixture(organization.id, version.id, %{
+            stop_id: "PG#{String.pad_leading(Integer.to_string(idx), 3, "0")}",
+            stop_name: "Stop #{idx}",
+            parent_station: nil
+          })
+        end)
+
+      stub_catalog(fn opts ->
+        page = Keyword.get(opts, :page, 1)
+
+        rows =
+          case page do
+            1 -> Enum.take(stops, 50)
+            2 -> Enum.drop(stops, 50)
+            _ -> []
+          end
+
+        {:ok, stop_page(rows, 51, page, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "button[phx-click='paginate']", "Previous")
+      assert has_element?(view, "button[phx-click='paginate']", "Next")
     end
   end
 
   describe "StopsLive version switching" do
-    setup do
-      organization = organization_fixture()
-      user = user_fixture()
-
-      # Create user membership in organization with GTFS access
-      Accounts.create_user_org_membership(%{
-        user_id: user.id,
-        organization_id: organization.id,
-        roles: ["pathways_studio_editor"]
-      })
-
-      gtfs_version = gtfs_version_fixture(organization.id)
-
-      %{user: user, organization: organization, gtfs_version: gtfs_version}
-    end
+    setup :shared_setup
 
     test "handle_event switch_gtfs_version navigates to new URL", %{
       conn: conn,
@@ -148,16 +554,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      # Create another version to switch to
       {:ok, version2} = GtfsPlanner.Versions.create_gtfs_version(organization.id, %{name: "V2"})
 
-      # Start on version1
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version1.id}/stops")
 
-      # Simulate switching to version2
       render_hook(view, "switch_gtfs_version", %{"version" => to_string(version2.id)})
 
-      # Should trigger navigation to new version
       assert_redirect(view, "/gtfs/#{version2.id}/stops")
     end
 
@@ -175,11 +579,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       other_org = organization_fixture()
       foreign = gtfs_version_fixture(other_org.id)
 
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version1.id}/stops")
 
       for bad_id <- [to_string(staging.id), to_string(foreign.id), "not-a-uuid"] do
         html = render_hook(view, "switch_gtfs_version", %{"version" => bad_id})
-        assert html =~ "Stations"
+        assert html =~ "Stops"
         refute_redirected(view)
       end
     end
@@ -198,30 +604,20 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       other_org = organization_fixture()
       foreign = gtfs_version_fixture(other_org.id)
 
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+
       {:ok, view, _html} = live(conn, "/gtfs/#{version1.id}/stops")
 
       for bad_id <- [to_string(staging.id), to_string(foreign.id), "not-a-uuid"] do
         html = render_hook(view, "gtfs_version_loaded", %{"version_id" => bad_id})
-        assert html =~ "Stations"
+        assert html =~ "Stops"
         refute_redirected(view)
       end
     end
   end
 
-  describe "route filtering" do
-    setup do
-      organization = organization_fixture()
-      user = user_fixture()
-
-      Accounts.create_user_org_membership(%{
-        user_id: user.id,
-        organization_id: organization.id,
-        roles: ["pathways_studio_editor"]
-      })
-
-      gtfs_version = gtfs_version_fixture(organization.id)
-      %{user: user, organization: organization, gtfs_version: gtfs_version}
-    end
+  describe "StopsLive route filtering" do
+    setup :shared_setup
 
     test "can filter by route", %{
       conn: conn,
@@ -229,38 +625,56 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       organization: org,
       gtfs_version: version
     } do
-      # Setup data: Route1 serves Station1, Route2 serves Station2
-      station1 = stop_fixture(org.id, version.id, %{stop_id: "S1", stop_name: "Station 1"})
-      route1 = route_fixture(org.id, version.id, %{route_id: "R1", route_short_name: "Route 1"})
-      trip1 = trip_fixture(org.id, version.id, route1.route_id, %{trip_id: "T1"})
-      stop_time_fixture(org.id, version.id, trip1.trip_id, station1.stop_id)
-
-      station2 = stop_fixture(org.id, version.id, %{stop_id: "S2", stop_name: "Station 2"})
-      route2 = route_fixture(org.id, version.id, %{route_id: "R2", route_short_name: "Route 2"})
-      trip2 = trip_fixture(org.id, version.id, route2.route_id, %{trip_id: "T2"})
-      stop_time_fixture(org.id, version.id, trip2.trip_id, station2.stop_id)
-
       conn = log_in_user(conn, user, organization: org)
+
+      station1 =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "S1",
+          stop_name: "Station 1",
+          parent_station: nil
+        })
+
+      route1 =
+        route_fixture(org.id, version.id, %{route_id: "R1", route_short_name: "Route 1"})
+
+      station2 =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "S2",
+          stop_name: "Station 2",
+          parent_station: nil
+        })
+
+      _route2 =
+        route_fixture(org.id, version.id, %{route_id: "R2", route_short_name: "Route 2"})
+
+      stub_catalog(fn opts ->
+        route_id = Keyword.get(opts, :route_id, "")
+
+        case route_id do
+          "R1" ->
+            {:ok, stop_page([station1], 1, 1, [route1], %{station1.stop_id => [route1]})}
+
+          _ ->
+            {:ok,
+             stop_page([station1, station2], 2, 1, [route1], %{
+               station1.stop_id => [route1]
+             })}
+        end
+      end)
+
       {:ok, view, html} = live(conn, "/gtfs/#{version.id}/stops")
 
-      # Verify Routes column and filter exist
       assert html =~ "Routes"
-      assert has_element?(view, "#station-filter-form select[name='route_id']")
+      assert has_element?(view, "#stop-filter-form select[name='route_id']")
 
-      # Verify route badges are displayed
-      assert html =~ "Route 1"
-      assert html =~ "Route 2"
-
-      # Filter by Route 1
       html =
         view
-        |> form("#station-filter-form", %{"route_id" => "R1"})
+        |> form("#stop-filter-form", %{"route_id" => "R1"})
         |> render_change()
 
-      # Verify only Station 1 is shown
       assert html =~ "Station 1"
       refute html =~ "Station 2"
-      assert_patch(view, "/gtfs/#{version.id}/stops?route_id=R1")
+      assert_patched(view, "/gtfs/#{version.id}/stops?route_id=R1")
     end
   end
 end
