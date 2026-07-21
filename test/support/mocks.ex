@@ -5,3 +5,7 @@ Mox.defmock(GtfsPlanner.GeocodingMock, for: GtfsPlanner.Geocoding.Behaviour)
 Mox.defmock(GtfsPlanner.Organizations.AdminReadAdapterMock,
   for: GtfsPlanner.Organizations.AdminReadAdapter
 )
+
+Mox.defmock(GtfsPlanner.Gtfs.CatalogReadAdapterMock,
+  for: GtfsPlanner.Gtfs.CatalogReadAdapter
+)
