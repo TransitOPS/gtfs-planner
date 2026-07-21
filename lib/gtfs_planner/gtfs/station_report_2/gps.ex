@@ -61,7 +61,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Gps do
       id: "gps_presence_by_type",
       label: "GPS presence by location type",
       description:
-        "Stops, stations, and entrances all have coordinates \u2014 nodes and boarding areas use inherited positioning",
+        "Stops, stations, and entrances all have coordinates; nodes and boarding areas use inherited positioning",
       status: if(required_missing == 0, do: :pass, else: :fail),
       value: nil,
       value_format: :count,

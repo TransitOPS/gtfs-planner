@@ -650,11 +650,12 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
       <p class="mt-1 text-sm text-base-content/70">
         Dense evidence — groups of rows inside a card — nests by tier, not by box.
         The outermost card owns the only full border and rounding. A nested group
-        announces itself with a full-width tinted header band
-        (<code class="font-mono text-sm">bg-base-300/50</code> — distinct from the
-        base-200 page background, which would read as a hole in the card, and from
-        the base-200 row hover) and separates its rows with horizontal rules that
-        span the card. Side borders and rounded boxes
+        announces itself with a full-width header band tinted with the primary hue
+        at low opacity (<code class="font-mono text-sm">bg-primary/10</code>) and
+        separates its rows with horizontal rules that span the card. The band is a
+        hue on purpose: a gray band reads as the base-200 page background or a
+        hover state, and a green or teal band reads as a success state. The soft
+        indigo is structural wayfinding; state colors never mark structure. Side borders and rounded boxes
         never nest inside a card. Depth is carried by start padding: card content
         at <code class="font-mono text-sm">ps-4</code>, each nested tier one step
         deeper (<code class="font-mono text-sm">ps-8</code>, then <code class="font-mono text-sm">ps-12</code>) — bands and rules stay full
@@ -669,7 +670,7 @@ defmodule GtfsPlannerWeb.Design.ComponentPages do
           </p>
         </div>
         <div class="px-4 py-3 text-sm">Summary row for the first source.</div>
-        <div class="border-y border-base-300 bg-base-300/50 py-2.5 pe-4 ps-8 text-sm font-semibold">
+        <div class="border-y border-base-300 bg-primary/10 py-2.5 pe-4 ps-8 text-sm font-semibold">
           Entrance A
           <span class="font-normal text-base-content/70">
             · tier two: tinted band, full width, content at ps-8

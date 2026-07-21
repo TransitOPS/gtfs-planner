@@ -656,7 +656,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
           [
             "Route time of #{round(totals.time_seconds)}s exceeds the threshold. " <>
               "The #{mode_name} at step #{step.num} accounts for #{round(step.time)}s " <>
-              "of total traversal time \u2014 check whether traversal_time is set correctly on this pathway."
+              "of total traversal time; check whether traversal_time is set correctly on this pathway."
           ]
       end
     else

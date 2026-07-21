@@ -537,8 +537,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert html =~ "Generic node ID prefix"
       assert html =~ "Boarding area ID prefix"
       assert html =~ "Entrance ID prefix"
-      assert html =~ "location type match"
-      assert html =~ "human-written"
+      assert html =~ "Stop ID prefix matches location type"
+      assert html =~ "Human-written stop names"
     end
 
     test "naming conventions failing check renders FAIL badge", %{

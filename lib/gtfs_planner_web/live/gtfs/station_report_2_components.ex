@@ -161,7 +161,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
             >
               {section.label}
             </a>
-            <span class="text-base-content/70">{" — " <> section.desc}</span>
+            <span class="text-base-content/70">{" · " <> section.desc}</span>
           </li>
         </ol>
       </nav>
@@ -781,7 +781,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     <div class="border-l-4 border-error bg-error/10 px-4 py-3">
       <p class="text-sm">{@intro}</p>
       <p :if={@check.id == "naming_prefix_type_mismatch"} class="mt-1 text-xs text-base-content/70">
-        Expected prefixes by type — entrance/exit: entrance_ · boarding area: boarding_ · generic node: node_
+        Expected prefixes by type: entrance/exit entrance_ · boarding area boarding_ · generic node node_
       </p>
       <ul class="mt-2 space-y-1">
         <li
